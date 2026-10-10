@@ -1,0 +1,305 @@
+//! Reader for the ordered probe resource names at the start of a PNW network.
+//! The game loader consumes this list in FUN_1402b15e0 before its spatial tables.
+
+fn u32le(bytes: &[u8], at: usize) -> Result<u32, String> {
+    let end = at
+        .checked_add(4)
+        .ok_or("probe-network integer offset overflow")?;
+    let raw = bytes.get(at..end).ok_or_else(|| {
+        format!(
+            "truncated probe-network integer at {at:#x} of {:#x}",
+            bytes.len()
+        )
+    })?;
+    Ok(u32::from_le_bytes(raw.try_into().unwrap()))
+}
+
+pub fn ordered_probe_names(bytes: &[u8]) -> Result<(u8, Vec<String>, Vec<String>, usize), String> {
+    if bytes.len() < 8 || bytes.get(..3) != Some(b"PNW") {
+        return Err("invalid or truncated PNW header".into());
+    }
+    let version = bytes[3];
+    if version < 5 {
+        return Err(format!("unsupported probe-network version {version}"));
+    }
+    let count = u32le(bytes, 4)? as usize;
+    if count > 1_000_000 {
+        return Err(format!("unreasonable probe-network count {count}"));
+    }
+    let mut cursor = 8usize;
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        if version < 6 {
+            cursor = cursor
+                .checked_add(12)
+                .ok_or("probe-network offset overflow")?;
+        }
+        let length = u32le(bytes, cursor)? as usize;
+        cursor = cursor
+            .checked_add(4)
+            .ok_or("probe-network offset overflow")?;
+        if length > 1 << 20 {
+            return Err(format!("unreasonable probe resource name length {length}"));
+        }
+        let end = cursor
+            .checked_add(length)
+            .ok_or("probe-network offset overflow")?;
+        let raw = bytes
+            .get(cursor..end)
+            .ok_or("truncated probe resource name")?;
+        let name = std::str::from_utf8(raw).map_err(|error| error.to_string())?;
+        names.push(name.trim_end_matches('\0').to_owned());
+        cursor = end;
+    }
+    let secondary_count = u32le(bytes, cursor)? as usize;
+    cursor += 4;
+    if secondary_count > 1_000_000 {
+        return Err(format!(
+            "unreasonable secondary probe-network count {secondary_count}"
+        ));
+    }
+    let mut secondary = Vec::with_capacity(secondary_count);
+    for _ in 0..secondary_count {
+        if version < 6 {
+            cursor = cursor
+                .checked_add(12)
+                .ok_or("probe-network offset overflow")?;
+        }
+        let length = u32le(bytes, cursor)? as usize;
+        cursor = cursor
+            .checked_add(4)
+            .ok_or("probe-network offset overflow")?;
+        if length > 1 << 20 {
+            return Err(format!(
+                "unreasonable secondary resource name length {length}"
+            ));
+        }
+        let end = cursor
+            .checked_add(length)
+            .ok_or("probe-network offset overflow")?;
+        let raw = bytes
+            .get(cursor..end)
+            .ok_or("truncated secondary resource name")?;
+        let name = std::str::from_utf8(raw).map_err(|error| error.to_string())?;
+        secondary.push(name.trim_end_matches('\0').to_owned());
+        cursor = end;
+        if version < 6 {
+            cursor = cursor
+                .checked_add(4)
+                .ok_or("probe-network offset overflow")?;
+        }
+    }
+    Ok((version, names, secondary, cursor))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Tetrahedron {
+    pub vertex_indices: [u32; 4],
+    pub probe_indices: [u16; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TetrahedronVertex {
+    pub position: [f32; 3],
+    pub probe_weights: [u8; 4],
+}
+
+#[derive(Clone, Debug)]
+pub struct SpatialData {
+    pub voronoi_version: u32,
+    pub cell_count: usize,
+    pub tetrahedra: Vec<Tetrahedron>,
+    pub vertices: Vec<TetrahedronVertex>,
+    pub bytes_consumed: usize,
+}
+
+/// Read the geometry buffers used by the original indirect-lighting vertex
+/// shader. PNW v7 embeds Voronoi v9; cells and runtime tetrahedra are skipped
+/// using their saved deserializer layouts, then the packed shader buffers are
+/// decoded according to tetrahedron_t and tetrahedronVertex_t declarations.
+pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> {
+    let mut cursor = offset;
+    let voronoi_version = u32le(bytes, cursor)?;
+    cursor += 4;
+    if voronoi_version < 9 {
+        return Err(format!(
+            "unsupported Voronoi data version {voronoi_version}; reader is verified for v9"
+        ));
+    }
+    // FUN_1403843f0 reads a feature byte for Voronoi versions above 2; this
+    // gates optional fields in each cell neighbor record.
+    let data_feature = *bytes.get(cursor).ok_or("truncated Voronoi feature byte")?;
+    cursor += 1;
+    let cell_count = u32le(bytes, cursor)? as usize;
+    cursor += 4;
+    if cell_count > 1_000_000 {
+        return Err(format!("unreasonable Voronoi cell count {cell_count}"));
+    }
+    for cell_index in 0..cell_count {
+        let name_len = u32le(bytes, cursor)? as usize;
+        cursor = cursor
+            .checked_add(4 + name_len)
+            .ok_or("Voronoi cell name offset overflow")?;
+        if cursor > bytes.len() {
+            return Err("truncated Voronoi cell name".into());
+        }
+        // FUN_140384870 fixed fields through the variable neighbor list.
+        cursor = cursor
+            .checked_add(29)
+            .ok_or("Voronoi cell offset overflow")?;
+        let neighbor_records = u32le(bytes, cursor - 4)? as usize;
+        if neighbor_records > 1_000_000 {
+            return Err(format!(
+                "unreasonable Voronoi neighbor count {neighbor_records}"
+            ));
+        }
+        for neighbor_index in 0..neighbor_records {
+            cursor = cursor
+                .checked_add(
+                    44 + usize::from(voronoi_version >= 2) + usize::from(voronoi_version >= 7),
+                )
+                .ok_or("Voronoi neighbor offset overflow")?;
+            let vertex_count = u32le(bytes, cursor)? as usize;
+            cursor += 4;
+            if vertex_count > 1_000_000 {
+                return Err(format!("unreasonable Voronoi neighbor vertex count {vertex_count} at cell {cell_index}, neighbor {neighbor_index}, offset {cursor:#x}, feature {data_feature}"));
+            }
+            let per_vertex_extra =
+                usize::from(voronoi_version < 6) * 4 + usize::from(voronoi_version < 4) * 4;
+            cursor = cursor
+                .checked_add(
+                    vertex_count
+                        .checked_mul(12 + per_vertex_extra)
+                        .ok_or("Voronoi vertex count overflow")?,
+                )
+                .ok_or("Voronoi neighbor vertices offset overflow")?;
+            if cursor > bytes.len() {
+                return Err("truncated Voronoi neighbor vertices".into());
+            }
+        }
+        let face_count = u32le(bytes, cursor)? as usize;
+        cursor += 4;
+        if face_count > 1_000_000 {
+            return Err(format!("unreasonable Voronoi face count {face_count}"));
+        }
+        cursor = cursor
+            .checked_add(
+                face_count
+                    .checked_mul(4)
+                    .ok_or("Voronoi face count overflow")?,
+            )
+            .and_then(|value| value.checked_add(24))
+            .ok_or("Voronoi cell tail offset overflow")?;
+        if cursor > bytes.len() {
+            return Err("truncated Voronoi cell tail".into());
+        }
+    }
+
+    let tetrahedron_count = u32le(bytes, cursor)? as usize;
+    cursor += 4;
+    if tetrahedron_count > 10_000_000 {
+        return Err(format!(
+            "unreasonable Voronoi tetrahedron count {tetrahedron_count}"
+        ));
+    }
+    // FUN_140384d70 reads two ids and four serialized vec3 positions for v9.
+    cursor = cursor
+        .checked_add(
+            tetrahedron_count
+                .checked_mul(56)
+                .ok_or("tetrahedron count overflow")?,
+        )
+        .ok_or("Voronoi tetrahedron records offset overflow")?;
+
+    // FUN_1403843f0 reads raw byte sizes for 24-byte tetrahedron_t and
+    // 16-byte tetrahedronVertex_t shader records.
+    let tetrahedron_bytes = u32le(bytes, cursor)? as usize;
+    cursor += 4;
+    if tetrahedron_bytes % 24 != 0 {
+        return Err(format!(
+            "tetrahedron shader buffer has invalid byte size {tetrahedron_bytes}"
+        ));
+    }
+    let tetrahedron_end = cursor
+        .checked_add(tetrahedron_bytes)
+        .ok_or("tetrahedron shader buffer offset overflow")?;
+    let raw_tetrahedra = bytes
+        .get(cursor..tetrahedron_end)
+        .ok_or("truncated tetrahedron shader buffer")?;
+    let mut tetrahedra = Vec::with_capacity(tetrahedron_bytes / 24);
+    for record in raw_tetrahedra.chunks_exact(24) {
+        let read_u32 = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+        let first_probe_pair = read_u32(16);
+        let second_probe_pair = read_u32(20);
+        tetrahedra.push(Tetrahedron {
+            vertex_indices: [read_u32(0), read_u32(4), read_u32(8), read_u32(12)],
+            probe_indices: [
+                first_probe_pair as u16,
+                (first_probe_pair >> 16) as u16,
+                second_probe_pair as u16,
+                (second_probe_pair >> 16) as u16,
+            ],
+        });
+    }
+    cursor = tetrahedron_end;
+
+    let vertex_bytes = u32le(bytes, cursor)? as usize;
+    cursor += 4;
+    if vertex_bytes % 16 != 0 {
+        return Err(format!(
+            "tetrahedron-vertex buffer has invalid byte size {vertex_bytes}"
+        ));
+    }
+    let vertex_end = cursor
+        .checked_add(vertex_bytes)
+        .ok_or("tetrahedron-vertex buffer offset overflow")?;
+    let raw_vertices = bytes
+        .get(cursor..vertex_end)
+        .ok_or("truncated tetrahedron-vertex shader buffer")?;
+    let mut vertices = Vec::with_capacity(vertex_bytes / 16);
+    for record in raw_vertices.chunks_exact(16) {
+        let f32_at = |at: usize| f32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+        let packed = u32::from_le_bytes(record[12..16].try_into().unwrap());
+        vertices.push(TetrahedronVertex {
+            position: [f32_at(0), f32_at(4), f32_at(8)],
+            probe_weights: [
+                packed as u8,
+                (packed >> 8) as u8,
+                (packed >> 16) as u8,
+                (packed >> 24) as u8,
+            ],
+        });
+    }
+    cursor = vertex_end;
+
+    if tetrahedra.iter().any(|tetra| {
+        tetra
+            .vertex_indices
+            .iter()
+            .any(|&index| index as usize >= vertices.len())
+    }) {
+        return Err("tetrahedron references a vertex outside its shader buffer".into());
+    }
+    Ok(SpatialData {
+        voronoi_version,
+        cell_count,
+        tetrahedra,
+        vertices,
+        bytes_consumed: cursor,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_v7_ordered_names() {
+        let bytes = b"PNW\x07\x01\0\0\0\x03\0\0\0foo\0\0\0\0";
+        let (version, names, secondary, end) = ordered_probe_names(bytes).unwrap();
+        assert_eq!(version, 7);
+        assert_eq!(names, ["foo"]);
+        assert!(secondary.is_empty());
+        assert_eq!(end, bytes.len());
+    }
+}

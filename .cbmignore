@@ -1,0 +1,6 @@
+# Keep the source graph focused and preserve the database-only evidence policy.
+/knowledge/seed.json
+/artifacts/
+/analysis/ghidra/
+/target/
+/vendor/

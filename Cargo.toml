@@ -1,0 +1,68 @@
+[package]
+name = "dishonored2-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+bcdec_rs = "0.2.0"
+png = "0.18.1"
+half = "2.7.1"
+bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts"] }
+
+[patch.crates-io]
+bevy_light = { path = "vendor/bevy_light-0.19.1" }
+bevy_pbr = { path = "vendor/bevy_pbr-0.19.1" }
+
+[features]
+game = ["dep:bevy"]
+
+[[bin]]
+name = "dishonored2-rust"
+path = "src/bin/game.rs"
+required-features = ["game"]
+
+[[bin]]
+name = "dishonored2-tools"
+path = "src/main.rs"
+
+[[bin]]
+name = "texture-probe"
+path = "src/bin/texture_probe.rs"
+
+[[bin]]
+name = "material-audit"
+path = "src/bin/material_audit.rs"
+
+[[bin]]
+name = "model-audit"
+path = "src/bin/model_audit.rs"
+
+[[bin]]
+name = "md6-audit"
+path = "src/bin/md6_audit.rs"
+
+[[bin]]
+name = "physworld-audit"
+path = "src/bin/physworld_audit.rs"
+
+[[bin]]
+name = "entity-audit"
+path = "src/bin/entity_audit.rs"
+
+[[bin]]
+name = "level-audit"
+path = "src/bin/level_audit.rs"
+
+[[bin]]
+name = "tome-audit"
+path = "src/bin/tome_audit.rs"
+
+[[bin]]
+name = "visibility-probe"
+path = "src/bin/visibility_probe.rs"
+
+[profile.dev]
+debug = 0
+incremental = false
