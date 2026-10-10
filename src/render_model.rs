@@ -1,6 +1,61 @@
 //! Original render-model flag and finite query helpers.
 use crate::tome::NoDepthAabbQuery;
 
+/// FUN_14033ecd0 returns insertion index zero for every key pair. Its machine
+/// code's `CMOVA` tests a float against itself, so the move is never selected,
+/// including for unordered (NaN) inputs. This is only the callback result;
+/// FUN_140335360's list construction and pass scheduling remain separate.
+pub fn zprepass_keycompare_7_index(_keys: &[f32], _target_key: f32) -> u32 { 0 }
+
+/// FUN_1403386a0's ordered render-program selector, using observed raw offsets.
+/// `state` must contain bytes through +0x2c7; IDs are preserved as `u32`.
+pub fn static_surface_program_selector(
+    state: &[u8],
+    thresholds: &[f32; 10],
+) -> Result<u32, String> {
+    if state.len() < 0x2c8 {
+        return Err("static surface state is shorter than offset +0x2c7".to_owned());
+    }
+    let resource = u64::from_le_bytes(state[0x100..0x108].try_into().unwrap());
+    let flags48 = state[0x48];
+    let flags4a = state[0x4a];
+    let flags4b = state[0x4b];
+    let value = f32::from_le_bytes(state[0x2c4..0x2c8].try_into().unwrap())
+        + f32::from_le_bytes(state[0x2c0..0x2c4].try_into().unwrap());
+
+    if resource != 0 && flags4a & 0x10 == 0 {
+        return Ok(0x25);
+    }
+    if flags48 & 0x80 != 0 {
+        return Ok(0x2a);
+    }
+    if flags4a & 0x10 != 0 {
+        return Ok(0x36);
+    }
+    if (flags4b & 3).wrapping_sub(1) < 2 {
+        return Ok(0x29);
+    }
+    if flags48 & 0x10 != 0 {
+        return Ok(if matches!((flags4a >> 2) & 3, 0 | 3) {
+            0x23
+        } else {
+            0x37
+        });
+    }
+    if thresholds[0] > value {
+        return Ok(if flags4b & 0x80 != 0 { 0x37 } else { 0x23 });
+    }
+    for (index, program) in [
+        (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34),
+        (4, 0x2d), (6, 0x37), (7, 0x35), (8, 0x38),
+    ] {
+        if thresholds[index] > value {
+            return Ok(program);
+        }
+    }
+    Ok(if thresholds[9] > value { 0x39 } else { 0x41 })
+}
+
 /// FUN_14033a810's ordered linked-chain list builder, not a depth sort.
 /// `slots` models retained native storage; an empty record advances the
 /// logical count without overwriting its old slot. Links use `id & mask`.
@@ -63,6 +118,90 @@ mod zprepass_list_tests {
             cases += 1;
         }
         assert_eq!(cases, 256);
+    }
+
+    #[test]
+    fn keycompare_7_returns_zero_for_finite_unordered_and_empty_inputs() {
+        let keys = [f32::NAN, f32::NEG_INFINITY, -1.0, 0.0, 1.0, f32::INFINITY];
+        for target in [f32::NAN, f32::NEG_INFINITY, -1.0, 0.0, 1.0, f32::INFINITY] {
+            assert_eq!(super::zprepass_keycompare_7_index(&keys, target), 0);
+        }
+        assert_eq!(super::zprepass_keycompare_7_index(&[], 3.0), 0);
+    }
+
+    fn selector_state(
+        flags48: u8,
+        flags4a: u8,
+        flags4b: u8,
+        resource: u64,
+        first: f32,
+        second: f32,
+    ) -> Vec<u8> {
+        let mut state = vec![0; 0x2c8];
+        state[0x48] = flags48;
+        state[0x4a] = flags4a;
+        state[0x4b] = flags4b;
+        state[0x100..0x108].copy_from_slice(&resource.to_le_bytes());
+        state[0x2c0..0x2c4].copy_from_slice(&first.to_le_bytes());
+        state[0x2c4..0x2c8].copy_from_slice(&second.to_le_bytes());
+        state
+    }
+
+    #[test]
+    fn static_surface_selector_preserves_native_flag_precedence() {
+        let bands = [0.0; 10];
+        let select = |state: Vec<u8>| super::static_surface_program_selector(&state, &bands);
+        assert_eq!(select(selector_state(0, 0, 0, 1, 0.0, 0.0)), Ok(0x25));
+        assert_eq!(select(selector_state(0x80, 0x10, 0, 1, 0.0, 0.0)), Ok(0x2a));
+        assert_eq!(select(selector_state(0, 0x10, 0, 1, 0.0, 0.0)), Ok(0x36));
+        for low in [1, 2] {
+            assert_eq!(select(selector_state(0, 0, low, 0, 0.0, 0.0)), Ok(0x29));
+        }
+        assert_eq!(select(selector_state(0x10, 0, 0, 0, 0.0, 0.0)), Ok(0x23));
+        assert_eq!(select(selector_state(0x10, 4, 0, 0, 0.0, 0.0)), Ok(0x37));
+
+        let mut first_band = [0.0; 10];
+        first_band[0] = 1.0;
+        assert_eq!(
+            super::static_surface_program_selector(
+                &selector_state(0, 0, 0x80, 0, 0.0, 0.0),
+                &first_band,
+            ),
+            Ok(0x37),
+        );
+    }
+
+    #[test]
+    fn static_surface_selector_uses_native_threshold_order_and_nan_comparisons() {
+        let state = selector_state(0, 0, 0, 0, 1.0, 2.0);
+        let ordered = [
+            (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34), (4, 0x2d),
+            (6, 0x37), (7, 0x35), (8, 0x38), (9, 0x39),
+        ];
+        for (index, expected) in ordered {
+            let mut bands = [0.0; 10];
+            bands[index] = 4.0;
+            assert_eq!(
+                super::static_surface_program_selector(&state, &bands),
+                Ok(expected),
+                "threshold index {index}",
+            );
+        }
+        assert_eq!(super::static_surface_program_selector(&state, &[0.0; 10]), Ok(0x41));
+        let mut below_sum = [0.0; 10];
+        below_sum[0] = 2.5;
+        assert_eq!(
+            super::static_surface_program_selector(&state, &below_sum),
+            Ok(0x41),
+        );
+        assert_eq!(
+            super::static_surface_program_selector(
+                &selector_state(0, 0, 0, 0, f32::NAN, 2.0),
+                &[4.0; 10],
+            ),
+            Ok(0x41),
+        );
+        assert!(super::static_surface_program_selector(&[0; 0x2c7], &[0.0; 10]).is_err());
     }
 
     #[test]
