@@ -45,16 +45,6 @@ Keep this file short and operational. It is not a roadmap or a research log.
 - DH2 Ghidra MCP uses the shared backend in `.pi/mcp.json`; `.pi/tools/ensure-ghidra.py` starts its single project owner automatically. Use `program: "Dishonored2.exe"`; do not switch projects during concurrent research. After an ACP update, run `node analysis/probe_pi_delegate_tools.mjs` to check that read-only delegates retain `codemode`, `tool_search`, and the `dh2_*` register tools.
 - Pi uses SSE transport for this project. If model connection failures recur, inspect the recorded error codes in `artifacts/pi-network-errors.jsonl` before changing network settings or adding retries.
 
-## The smallest complete change
-
-Take the first option that fully works:
-2. Already in this codebase (a helper, component, service, pattern)? Use it the way the surrounding code does.
-3. Standard library or a platform feature? Use it, unless the project has its own. A house component beats a native widget.
-4. An installed dependency? Use it. Never add a dependency for a few lines.
-5. Can it be one line a reader gets at a glance? One line.
-6. Otherwise: the minimum code that works.
-
-
 ## Function coverage and reusable research
 
 - The ongoing objective is the complete, faithful Rust rewrite. User requests guide priorities; all original-game research must also advance overall rewrite coverage. Do not discard understood functions because they lie outside the immediate feature request.
@@ -66,18 +56,8 @@ Take the first option that fully works:
 - Use `dh2_coverage` at session start and before reporting completion to continue unfinished rewrite work across sessions. The function register supplements the existing findings and call graph in the same database; it is not a second source of truth.
 - Use Codebase Memory for Rust symbol/reuse and caller/callee investigations: `cbm_search_graph`, `cbm_get_code_snippet`, `cbm_search_code`; load `cbm_trace_path` through `cbm_search_tools`. Project: `D-Docs-Macros-MyCheats-DH2`. The adapter checks graph freshness at startup and refreshes after Rust source changes. `/cbm:index-status` checks it; `/cbm:index-repository` rebuilds it. The graph is best effort: inspect source when cfg branches or other index gaps hide an edge; a zero-result graph query does not prove absence. Original-game behavior still requires original evidence.
 
-## Repository map
+## Project map
 
-- `src/archive.rs`, `src/world_mesh.rs`, `src/bmodel.rs`, `src/bmd6.rs`,
-  `src/entities.rs`, `src/material.rs`, `src/material_surface.rs`, `src/texture.rs`,
-  and `src/physworld.rs` parse original data.
-- `src/bin/game.rs` is the Bevy client; `src/navigation.rs` handles walk collision;
-  `src/tome.rs` implements the currently understood visibility paths.
-- `assets/shaders/` contains rewrite-authored WGSL. `vendor/` contains licensed
-  patched dependencies. `artifacts/`, `bin/`, `reference/`, and `.pi/` are local-only.
-- Research integrations may use a shared Ghidra backend. Use program
-  `Dishonored2.exe` and do not switch projects during concurrent research. Keep
-  responses focused (start with 80 decompiled lines or 100 instructions). Raw tool
-  captures alone do not establish implementation coverage.
-- Keep configured delegate reasoning at MAX when overriding it; escalate the model
-  only for a concrete difficulty. Verify local tool allowlists after harness changes.
+- `src/archive.rs`, `src/world_mesh.rs`, `src/bmodel.rs`, `src/entities.rs`, `src/material.rs`, `src/texture.rs`, and `src/physworld.rs` parse original data.
+- `src/bin/game.rs` is the current Bevy game client; `src/navigation.rs` handles current walk collision.
+- `artifacts/` contains extracted local test inputs and captures; `bin/` contains the user-facing executable; `knowledge/` contains the indexed findings and supporting scripts.
