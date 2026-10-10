@@ -1478,9 +1478,77 @@ impl Affine {
     }
 }
 
+/// FUN_140cc3ba0 writes the original per-body byte classifier output.
+/// The byte codes remain raw: their higher-level meaning is not established.
+pub fn classify_original_body_rows(
+    body_ids: &[u32],
+    rows: &[u8],
+    output: &mut [u8],
+) -> Result<(), String> {
+    const ROW_STRIDE: usize = 0xb0;
+    if output.len() < body_ids.len() {
+        return Err("body-row output is shorter than the input ID list".into());
+    }
+    for (slot, body_id) in body_ids.iter().enumerate() {
+        let row_start = ((*body_id & 0x00ff_ffff) as usize)
+            .checked_mul(ROW_STRIDE)
+            .ok_or("body-row offset overflow")?;
+        let row_end = row_start.checked_add(0x49).ok_or("body-row extent overflow")?;
+        let row = rows
+            .get(row_start..row_end)
+            .ok_or_else(|| format!("body ID {body_id:#x} exceeds the row table"))?;
+        let flags = u32::from_le_bytes(row[0x44..0x48].try_into().unwrap());
+        let row_byte = row[0x48];
+        let selected = if flags & 0x100 != 0 {
+            1
+        } else if flags & 8 != 0 {
+            0
+        } else if flags & 1 == 0 {
+            if row_byte & 0x91 == 0 { 2 } else { 0 }
+        } else if row_byte & 0x91 == 0 {
+            4
+        } else {
+            3
+        };
+        output[slot] = selected;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_body_row_classifier_preserves_branch_order_and_id_mask() {
+        const STRIDE: usize = 0xb0;
+        fn set_row(rows: &mut [u8], id: usize, flags: u32, row_byte: u8) {
+            let start = id * STRIDE;
+            rows[start + 0x44..start + 0x48].copy_from_slice(&flags.to_le_bytes());
+            rows[start + 0x48] = row_byte;
+        }
+        let mut rows = vec![0; 6 * STRIDE];
+        set_row(&mut rows, 0, 0x100, 0x91); // bit 8 wins over later tests
+        set_row(&mut rows, 1, 8, 0x91); // bit 3 suppresses the remaining tests
+        set_row(&mut rows, 2, 0, 0);
+        set_row(&mut rows, 3, 1, 0);
+        set_row(&mut rows, 4, 0, 1); // byte mask 0x91 set
+        set_row(&mut rows, 5, 1, 1);
+
+        let ids = [0, 1, 2, 3, 4, 5, 0x0100_0001];
+        let mut output = [0xaa; 8];
+        classify_original_body_rows(&ids, &rows, &mut output).unwrap();
+        assert_eq!(output, [1, 0, 2, 4, 0, 3, 0, 0xaa]);
+    }
+
+    #[test]
+    fn original_body_row_classifier_checks_accessible_input_and_preserves_empty_call() {
+        let mut output = [0x77];
+        classify_original_body_rows(&[], &[], &mut output).unwrap();
+        assert_eq!(output, [0x77]);
+        assert!(classify_original_body_rows(&[0], &[0; 0x49], &mut []).is_err());
+        assert!(classify_original_body_rows(&[1], &[0; 0xb0], &mut [0]).is_err());
+    }
+
     #[test]
     fn rejects_short_resource() {
         assert!(parse(&[0u8; 3]).is_err());
