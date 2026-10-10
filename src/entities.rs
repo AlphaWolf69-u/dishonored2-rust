@@ -47,7 +47,17 @@ pub struct RigidBodySettings {
     pub collision_layer: Option<String>,
     pub material: Option<String>,
     pub mass_override: Option<f32>,
+    /// FUN_140808ea0 accepts mass above DAT_141ab3810 (0.01); None requires shape-derived mass.
+    pub descriptor_mass_override: Option<f32>,
     pub density_override: Option<f32>,
+    pub start_asleep: Option<bool>,
+    pub angular_damping: Option<f32>,
+    pub damage: Option<String>,
+    pub velocity_damage_threshold: Option<f32>,
+    pub velocity_damage_threshold_when_dropped: Option<f32>,
+    pub contact_impulse_max_damage: Option<f32>,
+    pub min_contact_impulse_for_damage: Option<f32>,
+    pub max_contact_impulse_for_damage: Option<f32>,
     pub lock_rotation: [bool; 3],
 }
 
@@ -1047,6 +1057,12 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                 Some(Value::Atom(value)) => Some(value.trim_matches('"').to_owned()),
                 _ => None,
             };
+            // Missing fields retain FUN_140806eb0 defaults; malformed authored values stay unknown.
+            let number = |key, default| match atom(key) {
+                Some(value) => value.parse().ok(),
+                None => Some(default),
+            };
+            let mass_override = atom("m_MassOverride").and_then(|value| value.parse().ok());
             Some(RigidBodySettings {
                 entity_id: binding.entity_id,
                 declaration_id: binding.declaration_id,
@@ -1055,8 +1071,20 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                 extra_hd_material: atom("m_materialForExtraHDcollision"),
                 collision_layer: atom("m_CollisionLayer"),
                 material: atom("m_MaterialOverride"),
-                mass_override: atom("m_MassOverride").and_then(|value| value.parse().ok()),
+                mass_override,
+                descriptor_mass_override: mass_override.filter(|&mass| mass > f32::from_bits(0x3c23d70a)),
                 density_override: atom("m_densityOverride").and_then(|value| value.parse().ok()),
+                start_asleep: match atom("m_startAsleep") {
+                    Some(value) => value.parse().ok(),
+                    None => Some(true),
+                },
+                angular_damping: number("m_angularDamping", 0.0),
+                damage: atom("m_damage"),
+                velocity_damage_threshold: number("m_velocityDamageThreshold", 0.1),
+                velocity_damage_threshold_when_dropped: number("m_velocityDamageThresholdWhenDropped", 20.0),
+                contact_impulse_max_damage: number("m_contactImpulseMaxDamage", 10.0),
+                min_contact_impulse_for_damage: number("m_minContactImpulseForDamage", 10.0),
+                max_contact_impulse_for_damage: number("m_maxContactImpulseForDamage", 100.0),
                 lock_rotation: ["m_lockRotationX", "m_lockRotationY", "m_lockRotationZ"]
                     .map(|key| atom(key).as_deref() == Some("true")),
             })
@@ -1794,6 +1822,15 @@ entity {{ entityDef crate {{ edit = {{ m_componentDecls = {{
             assert_eq!(bodies[0].physics_behavior.as_deref(), Some("BEHAVIOR_DYNAMIC"));
             assert_eq!(bodies[0].extra_hd_material, None);
             assert_eq!(bodies[0].material, None);
+            assert_eq!(bodies[0].descriptor_mass_override, None);
+            assert_eq!(bodies[0].start_asleep, Some(true));
+            assert_eq!(bodies[0].angular_damping, Some(0.0));
+            assert_eq!(bodies[0].damage, None);
+            assert_eq!(bodies[0].velocity_damage_threshold, Some(0.1));
+            assert_eq!(bodies[0].velocity_damage_threshold_when_dropped, Some(20.0));
+            assert_eq!(bodies[0].contact_impulse_max_damage, Some(10.0));
+            assert_eq!(bodies[0].min_contact_impulse_for_damage, Some(10.0));
+            assert_eq!(bodies[0].max_contact_impulse_for_damage, Some(100.0));
         }
         for (name, value) in [("PHYSICS_SHAPE_HKT", 0), ("PHYSICS_SHAPE_CONVEX", 1),
             ("PHYSICS_SHAPE_MESH", 2), ("PHYSICS_SHAPE_BOX", 3), ("PHYSICS_SHAPE_CONVEX_DECOMPOSITION", 4)] {
@@ -1814,6 +1851,9 @@ component { cpntRigidBody body { edit = {
     m_PhysicsBehavior = "BEHAVIOR_STATIC";
     m_materialForExtraHDcollision = "contactsystem/extra";
     m_MassOverride = 0.5; m_densityOverride = 500; m_lockRotationY = true;
+    m_startAsleep = false; m_angularDamping = 0.25; m_damage = "damage/example";
+    m_velocityDamageThreshold = 2; m_velocityDamageThresholdWhenDropped = 15;
+    m_contactImpulseMaxDamage = 1; m_minContactImpulseForDamage = 3; m_maxContactImpulseForDamage = 9;
 } } }
 entity { entityDef crate { edit = { m_componentDecls = {
     item_add["body"] = { mapComponentDecl = "body"; }
@@ -1825,8 +1865,45 @@ entity { entityDef crate { edit = { m_componentDecls = {
         assert_eq!(bodies[0].physics_behavior.as_deref(), Some("BEHAVIOR_STATIC"));
         assert_eq!(bodies[0].extra_hd_material.as_deref(), Some("contactsystem/extra"));
         assert_eq!(bodies[0].mass_override, Some(0.5));
+        assert_eq!(bodies[0].descriptor_mass_override, Some(0.5));
+        assert_eq!(bodies[0].start_asleep, Some(false));
+        assert_eq!(bodies[0].angular_damping, Some(0.25));
+        assert_eq!(bodies[0].damage.as_deref(), Some("damage/example"));
+        assert_eq!(bodies[0].velocity_damage_threshold, Some(2.0));
+        assert_eq!(bodies[0].velocity_damage_threshold_when_dropped, Some(15.0));
+        assert_eq!(bodies[0].contact_impulse_max_damage, Some(1.0));
+        assert_eq!(bodies[0].min_contact_impulse_for_damage, Some(3.0));
+        assert_eq!(bodies[0].max_contact_impulse_for_damage, Some(9.0));
         assert_eq!(bodies[0].lock_rotation, [false, true, false]);
     }
+    #[test]
+    fn rigid_body_mass_branch_preserves_above_threshold_override_without_guessing_fallback() {
+        for (mass, expected) in [("1", Some(1.0)), ("0.001", None), ("0.01", None),
+            ("0.010000001", Some(f32::from_bits(0x3c23d70b))), ("0", None), ("-0.0", None),
+            ("-2", None), ("NaN", None), ("inf", Some(f32::INFINITY)), ("invalid", None)] {
+            let text = format!(r#"Version 6
+component {{ cpntRigidBody body {{ edit = {{ m_MassOverride = {mass}; m_densityOverride = 500; }} }} }}
+entity {{ entityDef bucket {{ edit = {{ m_componentDecls = {{
+    item_add["body"] = {{ mapComponentDecl = "body"; }}
+}} }} }} }}"#);
+            let bodies = rigid_body_settings(&parse(&text).unwrap());
+            assert_eq!(bodies[0].descriptor_mass_override, expected, "{mass}");
+            assert_eq!(bodies[0].density_override, Some(500.0));
+        }
+    }
+
+    #[test]
+    fn malformed_rigid_body_values_do_not_become_constructor_defaults() {
+        let text = r#"Version 6
+component { cpntRigidBody body { edit = { m_startAsleep = invalid; m_angularDamping = invalid; } } }
+entity { entityDef crate { edit = { m_componentDecls = {
+    item_add["body"] = { mapComponentDecl = "body"; }
+} } } }"#;
+        let bodies = rigid_body_settings(&parse(text).unwrap());
+        assert_eq!(bodies[0].start_asleep, None);
+        assert_eq!(bodies[0].angular_damping, None);
+    }
+
     #[test]
     fn parses_nested_values_without_dropping_unknown_keys() {
         let source = "Version 6\nentity { entityDef example { edit = { item_add[\"two words\"] = { spawnPosition = { x = 1; } } } } }";

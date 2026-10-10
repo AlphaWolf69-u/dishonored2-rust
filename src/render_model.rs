@@ -1,6 +1,104 @@
 //! Original render-model flag and finite query helpers.
 use crate::tome::NoDepthAabbQuery;
 
+/// FUN_14033a810's ordered linked-chain list builder, not a depth sort.
+/// `slots` models retained native storage; an empty record advances the
+/// logical count without overwriting its old slot. Links use `id & mask`.
+/// Inputs must be the original caller's valid, acyclic record/link arrays.
+/// The render-graph producer/consumer remains to be integrated separately.
+pub fn build_zprepass_list(
+    slots: &mut Vec<Option<u32>>,
+    logical_count: &mut usize,
+    record_nonempty: &[bool],
+    next: &[u32],
+    mask: u32,
+    head: u32,
+    append: bool,
+) {
+    const END: u32 = u32::MAX;
+    let prefix = if append { *logical_count } else { 0 };
+    let mut id = head;
+    let mut chain_count = 0;
+    while id != END {
+        chain_count += 1;
+        id = next[(id & mask) as usize];
+    }
+    let requested = prefix + chain_count;
+    if requested > 0x00ff_ffff {
+        panic!("[sorted] zprepass renderlist is full");
+    }
+    if requested > slots.len() {
+        slots.try_reserve_exact(requested - slots.len())
+            .unwrap_or_else(|_| panic!("[sorted] zprepass renderlist is full"));
+        slots.resize(requested, None);
+    }
+    *logical_count = requested;
+    id = head;
+    for slot in &mut slots[prefix..requested] {
+        if record_nonempty[id as usize] {
+            *slot = Some(id);
+        }
+        id = next[(id & mask) as usize];
+    }
+}
+
+#[cfg(test)]
+mod zprepass_list_tests {
+    use super::build_zprepass_list;
+
+    #[test]
+    #[ignore = "requires local original executable capture from probe_original_zprepass_list.py"]
+    fn matches_original_zprepass_list_cases() {
+        let data = std::fs::read_to_string("analysis/native_zprepass_list_cases.txt").unwrap();
+        let mut cases = 0;
+        for line in data.lines() {
+            let row: Vec<u32> = line.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            assert_eq!(row.len(), 116);
+            let mut count = row[0] as usize;
+            let live: Vec<bool> = row[3..35].iter().map(|&v| v != 0).collect();
+            let mut slots: Vec<Option<u32>> = row[51..83].iter().copied().map(Some).collect();
+            build_zprepass_list(&mut slots, &mut count, &live, &row[35..51], 15, row[2], row[1] != 0);
+            assert_eq!(count, row[83] as usize, "case {cases}");
+            assert_eq!(slots, row[84..116].iter().copied().map(Some).collect::<Vec<_>>(), "case {cases}");
+            cases += 1;
+        }
+        assert_eq!(cases, 256);
+    }
+
+    #[test]
+    fn reset_preserves_empty_slots_and_chain_order() {
+        let mut slots = vec![Some(91), Some(92), Some(93), Some(94)];
+        let mut count = 4;
+        // 2 -> 0 -> 1 -> END. The empty record 0 leaves slot 1 intact.
+        build_zprepass_list(&mut slots, &mut count, &[false, true, true],
+            &[1, u32::MAX, 0], 3, 2, false);
+        assert_eq!(count, 3);
+        assert_eq!(slots, [Some(2), Some(92), Some(1), Some(94)]);
+    }
+
+    #[test]
+    fn append_and_masked_links_preserve_prefix() {
+        let mut slots = vec![Some(17)];
+        let mut count = 1;
+        // Record 4 follows bucket 0, not next[4].
+        build_zprepass_list(&mut slots, &mut count, &[true; 5],
+            &[1, u32::MAX, u32::MAX, u32::MAX], 3, 4, true);
+        assert_eq!(count, 3);
+        assert_eq!(slots, [Some(17), Some(4), Some(1)]);
+    }
+
+    #[test]
+    fn empty_chain_resets_or_retains_count_without_touching_storage() {
+        let mut slots = vec![Some(31), Some(32)];
+        let mut count = 2;
+        build_zprepass_list(&mut slots, &mut count, &[], &[], 0, u32::MAX, true);
+        assert_eq!(count, 2);
+        build_zprepass_list(&mut slots, &mut count, &[], &[], 0, u32::MAX, false);
+        assert_eq!(count, 0);
+        assert_eq!(slots, [Some(31), Some(32)]);
+    }
+}
+
 /// FUN_140872a50, 140872b1a: the qword store at +0xa8 also zeros
 /// maxVisibleRange at +0xac. This is the constructor default, not a cutoff.
 pub const INITIAL_MODEL_MAX_VISIBLE_RANGE: f32 = 0.0;

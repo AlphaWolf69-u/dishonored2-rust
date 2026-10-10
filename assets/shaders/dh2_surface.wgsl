@@ -16,6 +16,12 @@ struct SurfaceUniform {
     misc: vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
+
+// Installed HLSL uses compile-time #if material switches. Keep numeric
+// parameters in the uniform but specialize resource/feature branches.
+const compiled_flags = vec4<u32>(#{DH2_EXTRA_LAYERS}u, #{DH2_HAS_GLOSS}u, #{DH2_GLOSS_ALPHA}u, #{DH2_HAS_METALLIC}u);
+const compiled_misc = vec4<u32>(#{DH2_HAS_BUMP}u, #{DH2_VERTEX_COLOR_MULTIPLY}u, #{DH2_SURFACE_ENABLED}u, #{DH2_ALPHA_FLAGS}u);
+const compiled_occlusion = #{DH2_HAS_OCCLUSION}u;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var diffuse0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var diffuse1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var diffuse2: texture_2d<f32>;
@@ -83,10 +89,11 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     var gloss: array<f32, 3>;
     var metallic: array<f32, 3>;
     var bump: array<vec2<f32>, 3>;
-    let is_decal = (surface.misc.w & 2u) != 0u;
+    let is_decal = (compiled_misc.w & 2u) != 0u;
+    let is_vegetation = compiled_misc.z == 2u;
     // arkDecal uses LQ_FetchMasks/normal and Decal_FetchDiffuseAlbedo,
     // not arkDefault's additional albedo/normal layers.
-    let last_layer = select(surface.flags.x, 0u, is_decal);
+    let last_layer = select(compiled_flags.x, 0u, is_decal);
     for (var i = 0u; i <= last_layer; i += 1u) {
         let info = surface.mask_settings[i];
         let uv = select(uv0, uv1, surface.uv_sets[i].x != 0u);
@@ -120,28 +127,29 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         let reuse = surface.reuse[i];
         if i != 0u && reuse.x != 0u { diffuse[i] = diffuse[reuse.x - 1u]; }
         else { diffuse[i] = sample_role(i, u, ux, uy); }
-        if surface.flags.y != 0u {
+        // Native forward clipping happens at diffuse0, before normal/gloss
+        // fetches and additional-layer composition.
+        if i == 0u && (compiled_misc.w & 1u) != 0u && (is_decal || is_vegetation || compiled_flags.z == 0u) {
+            let cutoff = select(surface.alpha.x, 0.5, is_decal || is_vegetation);
+            if diffuse[0].a < cutoff { discard; }
+        }
+        if compiled_flags.y != 0u {
             if i != 0u && reuse.z != 0u { gloss[i] = gloss[reuse.z - 1u]; }
             else { gloss[i] = sample_role(6u + i, u, ux, uy).r; }
         }
-        if surface.flags.w != 0u {
+        if compiled_flags.w != 0u {
             if i != 0u && reuse.w != 0u { metallic[i] = metallic[reuse.w - 1u]; }
             else { metallic[i] = sample_role(9u + i, u, ux, uy).r; }
         }
-        if surface.misc.x != 0u {
+        if compiled_misc.x != 0u {
             if i != 0u && reuse.y != 0u { bump[i] = bump[reuse.y - 1u]; }
             else { bump[i] = sample_role(3u + i, u, ux, uy).rg; }
         }
     }
-    // Original forward alpha test precedes colour/layer composition. Decals
-    // use 0.5; ordinary HQ uses DefaultAlphaTest and skips gloss-in-alpha.
-    if (surface.misc.w & 1u) != 0u && (is_decal || surface.flags.z == 0u) {
-        let cutoff = select(surface.alpha.x, 0.5, is_decal);
-        if diffuse[0].a < cutoff { discard; }
-    }
     var out: SurfaceResult;
     out.albedo = diffuse[0];
-    if surface.mask_settings[0].z != 0u {
+    // arkVegetation samples diffuse0 directly; vertex RGB belongs to wind.
+    if !is_vegetation && surface.mask_settings[0].z != 0u {
         out.albedo *= mix(vec4<f32>(1.0), surface.colors[0], masks[0]);
     }
     var g = gloss[0];
@@ -150,29 +158,29 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     for (var i = 1u; i <= last_layer; i += 1u) {
         var color = diffuse[i];
         if surface.mask_settings[i].z != 0u { color *= surface.colors[i]; }
-        out.albedo = mix(out.albedo, color, masks[i]);
+        if !is_vegetation { out.albedo = mix(out.albedo, color, masks[i]); }
         if i != 1u || surface.reuse[i].z == 0u { g = mix(g, gloss[i], masks[i]); }
         if i != 1u || surface.reuse[i].w == 0u { m = mix(m, metallic[i], masks[i]); }
         // Layer1 bump reuse likewise skips interpolation of identical input.
         if i != 1u || surface.reuse[i].y == 0u { out.normal_xy = mix(out.normal_xy, bump[i], masks[i]); }
     }
-    if surface.misc.y != 0u { out.albedo *= vertex_color; }
-    if !is_decal { out.albedo = max(out.albedo, vec4<f32>(0.00001)); }
-    if surface.flags.z != 0u {
+    if !is_vegetation && compiled_misc.y != 0u { out.albedo *= vertex_color; }
+    if !is_decal && !is_vegetation { out.albedo = max(out.albedo, vec4<f32>(0.00001)); }
+    if compiled_flags.z != 0u {
         g = mix(surface.ranges.x, surface.ranges.y, out.albedo.a);
         out.albedo.a = 1.0;
-    } else if surface.flags.y != 0u {
+    } else if compiled_flags.y != 0u {
         g = mix(surface.ranges.x, surface.ranges.y, g);
     } else { g = surface.ranges.y; }
     out.occlusion = 1.0;
-    if !is_decal && surface.alpha.y != 0.0 {
+    if !is_decal && compiled_occlusion != 0u {
         let uv = select(uv0, uv1, surface.uv_sets[0].x != 0u);
         let dx = select(dx0, dx1, surface.uv_sets[0].x != 0u) * surface.uv[0].xy;
         let dy = select(dy0, dy1, surface.uv_sets[0].x != 0u) * surface.uv[0].xy;
         out.occlusion = textureSampleGrad(occlusion_texture, occlusion_sampler, scaled_uv(uv, surface.uv[0]), dx, dy).r;
     }
     out.roughness = 1.0 - g;
-    if surface.flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
+    if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }
     return out;
 }

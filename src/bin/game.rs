@@ -144,7 +144,7 @@ struct FocusTargets {
 struct SnapshotPath(PathBuf);
 
 #[derive(Resource)]
-struct BenchmarkSeconds(f32);
+struct BenchmarkSeconds(f32, f32);
 
 #[derive(Resource)]
 struct OriginalLocalLightCullEnabled(bool);
@@ -346,6 +346,7 @@ struct CachedMaterial {
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(SurfaceKey)]
 struct ProbeExtension {
     #[storage(100, read_only)]
     sh: Handle<ShaderBuffer>,
@@ -390,6 +391,20 @@ struct ProbeExtension {
 // inverse-transpose normals or a post-transform cross product under shear.
 const DH2_BITANGENT: MeshVertexAttribute = MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
 
+use surface_gpu::SurfaceKey;
+
+impl From<&ProbeExtension> for SurfaceKey {
+    fn from(extension: &ProbeExtension) -> Self { Self::from(&extension.surface) }
+}
+
+fn specialize_surface(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::SurfaceKey) {
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        for (name, value) in surface_gpu::SurfaceKey::NAMES.into_iter().zip(key.0) {
+            fragment.shader_defs.push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
+        }
+    }
+}
+
 fn authored_basis_pipeline(descriptor: &mut RenderPipelineDescriptor, layout: &MeshVertexBufferLayoutRef) -> Result<(), SpecializedMeshPipelineError> {
     if layout.0.contains(DH2_BITANGENT) {
         let extra = layout.0.get_layout(&[DH2_BITANGENT.at_shader_location(8)])?;
@@ -411,8 +426,9 @@ impl MaterialExtension for ProbeExtension {
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialExtensionKey<Self>,
+        key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        specialize_surface(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)
     }
 
@@ -498,12 +514,14 @@ native_image_access!(DecalExtension);
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 struct DecalKey {
     bias: i32,
+    surface: surface_gpu::SurfaceKey,
 }
 
 impl From<&DecalExtension> for DecalKey {
     fn from(extension: &DecalExtension) -> Self {
         Self {
             bias: extension.bias,
+            surface: surface_gpu::SurfaceKey::from(&extension.surface),
         }
     }
 }
@@ -528,6 +546,7 @@ impl MaterialExtension for DecalExtension {
             // the Void arkDecal z-bias needs an actual GPU depth offset.
             depth.bias.constant = key.bind_group_data.bias;
         }
+        specialize_surface(descriptor, key.bind_group_data.surface);
         authored_basis_pipeline(descriptor, layout)
     }
 }
@@ -1612,6 +1631,20 @@ fn view_of(target: &FocusTarget) -> Transform {
     .looking_at(target.center, Vec3::Y)
 }
 
+// Diagnostic replay preserves the saved view; it does not change game culling.
+fn f8_camera_pose(report: &str) -> Option<Transform> {
+    fn vector(report: &str, label: &str) -> Option<[f32; 3]> {
+        let text = report.lines().find_map(|line| line.strip_prefix(label))?.trim();
+        let values = text.strip_prefix('[')?.strip_suffix(']')?
+            .split(',').map(|part| part.trim().parse::<f32>()).collect::<Result<Vec<_>, _>>().ok()?;
+        let values: [f32; 3] = values.try_into().ok()?;
+        values.iter().all(|value| value.is_finite()).then_some(values)
+    }
+    let eye = game_to_view(vector(report, "Camera game_xyz:")?);
+    let direction = game_to_view(vector(report, "Camera direction game_xyz:")?);
+    (direction.length_squared() > 0.0).then(|| Transform::from_translation(eye).looking_to(direction, Vec3::Y))
+}
+
 fn original_light_preset(
     light: &entities::PlacedLight,
     linear_color: [f32; 3],
@@ -2263,13 +2296,13 @@ impl MaterialResolver<'_> {
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
-        uniform.misc.z = u32::from(surface.main_program.as_deref().is_some_and(|p| p.eq_ignore_ascii_case("arkDefault") || p.eq_ignore_ascii_case("arkDecal")));
         let program = surface.main_program.as_ref().and_then(|name| self.catalog.and_then(|c|
             c.read(&format!("generated/decls/renderprog/{}.decl", name.to_ascii_lowercase())).ok().flatten()));
         let program = program.as_deref().unwrap_or(&[]);
         let transparency = material::transparency_with_program(bytes, program);
         let program_is_decal = material::program_option(bytes, program, "isDecal");
-        uniform.misc.w = u32::from(surface.alpha_test) | (u32::from(program_is_decal) << 1);
+        let two_sided_lighting = material::program_option(bytes, program, "twoSidedLighting");
+        uniform.misc.w = u32::from(surface.alpha_test) | (u32::from(program_is_decal) << 1) | (u32::from(two_sided_lighting) << 2);
         let decal_bias = material::decal_depth_bias(bytes);
         let mut images = Vec::new();
         for index in 0..=surface.extra_layers {
@@ -2301,7 +2334,7 @@ impl MaterialResolver<'_> {
         if diffuse_image_slot.is_none() { self.misses += 1; }
         let alpha_mode = match transparency {
             material::Transparency::Opaque => AlphaMode::Opaque,
-            material::Transparency::Cutout => { self.cutout += 1; AlphaMode::Mask(surface.alpha_cutoff) }
+            material::Transparency::Cutout => { self.cutout += 1; AlphaMode::Mask(surface.forward_alpha_cutoff()) }
             material::Transparency::Coverage => {
                 if surface.main_program.as_deref().is_some_and(|p| p.eq_ignore_ascii_case("arkDecal")) { self.blended += 1; AlphaMode::Blend }
                 else { self.cutout += 1; AlphaMode::AlphaToCoverage }
@@ -2317,6 +2350,7 @@ impl MaterialResolver<'_> {
             unlit: !self.lit || path.contains("/vista/") || path.contains("/skies/"),
             perceptual_roughness: 1.0 - surface.ward[1],
             metallic: surface.metallic_min_max[1],
+            double_sided: two_sided_lighting,
             cull_mode: None,
             ..default()
         };
@@ -2892,6 +2926,11 @@ fn setup(
         best.0
     };
     let mut camera = view_of(&targets[active]);
+    if let Some(path) = env::var_os("DH2_REPLAY_F8") {
+        let report = fs::read_to_string(&path).expect("cannot read DH2_REPLAY_F8 capture");
+        camera = f8_camera_pose(&report).expect("DH2_REPLAY_F8 has an invalid camera pose");
+        println!("Replaying saved F8 camera from {}", PathBuf::from(path).display());
+    }
     let walking = navigation.is_some() && scene.player_start.is_some();
     let feet = camera.translation - Vec3::Y * 1.7;
     let walker = navigation
@@ -4921,15 +4960,18 @@ fn benchmark_frames(
     light_culling: Res<OriginalLocalLightCullStats>,
     mut elapsed: Local<f32>,
     mut measured: Local<(u64, f64)>,
+    mut frame_times: Local<Vec<f64>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(target) = target else {
         return;
     };
+    let previous_elapsed = *elapsed;
     *elapsed += time.delta_secs();
-    if *elapsed > 2.0 {
+    if previous_elapsed >= target.1 {
         measured.0 += 1;
         measured.1 += time.delta_secs_f64();
+        frame_times.push(time.delta_secs_f64() * 1000.0);
     }
     if *elapsed >= target.0 {
         let (samples, average_ms, max_ms) = visibility_timing
@@ -4994,6 +5036,12 @@ fn benchmark_frames(
             light_culling.sphere_query_ns as f64 / 1_000_000.0,
             light_culling.zero_preset_rgb,
         );
+        frame_times.sort_unstable_by(f64::total_cmp);
+        if !frame_times.is_empty() {
+            let quantile = |q: f64| frame_times[((frame_times.len() - 1) as f64 * q).round() as usize];
+            println!("BENCHMARK frame_ms[p50,p95,p99,max]={:.3},{:.3},{:.3},{:.3} warmup_seconds={:.1}",
+                quantile(0.5), quantile(0.95), quantile(0.99), quantile(1.0), target.1);
+        }
         exit.write(AppExit::Success);
     }
 }
@@ -5477,7 +5525,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.insert_resource(SnapshotPath(PathBuf::from(path)));
     }
     if let Ok(seconds) = env::var("DH2_BENCHMARK_SECONDS") {
-        app.insert_resource(BenchmarkSeconds(seconds.parse::<f32>()?.max(3.0)));
+        let total = seconds.parse::<f32>()?.max(3.0);
+        let warmup = env::var("DH2_BENCHMARK_WARMUP_SECONDS").unwrap_or_else(|_| "2".to_owned()).parse::<f32>()?;
+        if !total.is_finite() || !warmup.is_finite() || warmup < 0.0 || warmup >= total {
+            return Err("benchmark duration must be finite and exceed its non-negative warmup".into());
+        }
+        app.insert_resource(BenchmarkSeconds(total, warmup));
     }
     app.insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
@@ -5582,6 +5635,18 @@ mod game_control_tests {
     use super::*;
 
     #[test]
+    fn f8_replay_preserves_saved_camera_and_rejects_bad_input() {
+        let report = "Camera game_xyz: [-22.121996, 93.85251, 12.256257]\nCamera direction game_xyz: [0.04506988, -0.98096955, 0.18885912]\n";
+        let pose = f8_camera_pose(report).unwrap();
+        assert_eq!(view_to_game(pose.translation), [-22.121996, 93.85251, 12.256257]);
+        let expected = game_to_view([0.04506988, -0.98096955, 0.18885912]).normalize();
+        assert!(pose.forward().as_vec3().distance(expected) < 1e-6);
+        assert!(f8_camera_pose("").is_none());
+        assert!(f8_camera_pose(&report.replace("12.256257", "NaN")).is_none());
+        assert!(f8_camera_pose(&report.replace("0.04506988, -0.98096955, 0.18885912", "0, 0, 0")).is_none());
+    }
+
+    #[test]
     #[ignore = "requires a graphics adapter; validates both authored material pipelines offscreen"]
     fn authored_surface_gpu_pipelines_compile() {
         use bevy::render::render_resource::{CachedPipelineState, PipelineDescriptor};
@@ -5630,6 +5695,13 @@ mod game_control_tests {
                 mask2: None,
             },
         });
+        let mut vegetation = app.world().resource::<Assets<ProbeMaterial>>().get(&probe).unwrap().clone();
+        vegetation.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+            b"mainProgram arkVegetation\nhasBumpMap 1\nhasGlossMap 1\nalphaTest 1\n"));
+        vegetation.extension.surface.misc.w = 1 | 4;
+        vegetation.base.alpha_mode = AlphaMode::AlphaToCoverage;
+        vegetation.base.double_sided = true;
+        let vegetation = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(vegetation);
         let decal = app.world_mut().resource_mut::<Assets<DecalMaterial>>().add(DecalMaterial {
             base: StandardMaterial { alpha_mode: AlphaMode::Blend, ..default() },
             extension: DecalExtension { bias: 0, surface,
@@ -5651,7 +5723,8 @@ mod game_control_tests {
             },
         });
         app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(probe), Transform::from_xyz(-0.6, 0.0, 0.0)));
-        app.world_mut().spawn((Mesh3d(mesh), MeshMaterial3d(decal), Transform::from_xyz(0.6, 0.0, 0.0)));
+        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(decal), Transform::from_xyz(0.6, 0.0, 0.0)));
+        app.world_mut().spawn((Mesh3d(mesh), MeshMaterial3d(vegetation), Transform::from_xyz(0.0, 0.6, 0.0)));
         app.world_mut().spawn((Camera3d::default(), bevy::camera::RenderTarget::Image(target.into()),
             Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)));
         let mut validated = 0;
@@ -5665,10 +5738,10 @@ mod game_control_tests {
                     if d.fragment.as_ref().is_some_and(|f| f.shader == PROBE_SHADER_HANDLE || f.shader == DECAL_SHADER_HANDLE) { validated += 1; }
                 }
             }
-            if validated >= 2 { break; }
+            if validated >= 3 { break; }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(validated >= 2, "both authored shaders must actually compile, got {validated}");
+        assert!(validated >= 3, "ordinary, decal and vegetation shaders must actually compile, got {validated}");
     }
 
     #[test]

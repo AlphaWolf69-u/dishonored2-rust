@@ -7,7 +7,7 @@
     decal::clustered::apply_decals,
 }
 
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc}
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100)
 var<storage, read> probe_sh: array<array<vec4<f32>, 9>>;
@@ -60,7 +60,7 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
-    if surface.misc.z != 0u {
+    if compiled_misc.z != 0u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
         uv = vertex_output.uv;
@@ -78,8 +78,13 @@ fn fragment(
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
         pbr_input.diffuse_occlusion = vec3<f32>(authored.occlusion);
+        // Native twoSidedLighting reverses the whole geometric TBN, not just
+        // the normal-map Z lane (BRDF_vegetation's original-basis recovery).
+        let face_factor = select(1.0, -1.0, !is_front && (compiled_misc.w & 4u) != 0u);
+        pbr_input.world_normal = face_factor * vertex_output.world_normal;
+        pbr_input.N = normalize(pbr_input.world_normal);
 #ifdef VERTEX_TANGENTS
-        if surface.misc.x != 0u {
+        if compiled_misc.x != 0u {
             let normal = unpack_bc5_normal_map(authored.normal_xy);
             let n = vertex_output.world_normal;
             let t = vertex_output.world_tangent;
@@ -88,7 +93,7 @@ fn fragment(
 #else
             let b = cross(n, t.xyz) * t.w;
 #endif
-            pbr_input.N = normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
+            pbr_input.N = face_factor * normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
         }
 #endif
     }

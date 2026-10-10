@@ -2,6 +2,14 @@
 //! installed arkDefaultHelpers and renderParm declarations, not a PBR preset.
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Program {
+    Unsupported = 0,
+    Default = 1,
+    Vegetation = 2,
+}
+
 #[derive(Debug, Clone)]
 pub struct Layer {
     pub diffuse: Option<String>,
@@ -80,6 +88,20 @@ pub fn unpack_bc5_normal_map(xy: [f32; 2]) -> [f32; 3] {
 }
 
 impl Surface {
+    pub fn program(&self) -> Program {
+        match self.main_program.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Some("arkdefault" | "arkdecal") => Program::Default,
+            Some("arkvegetation") => Program::Vegetation,
+            _ => Program::Unsupported,
+        }
+    }
+
+    /// arkVegetation tests the raw diffuse alpha against 0.5, before gloss
+    /// consumes it. Its vertex RGB channels control wind, not albedo.
+    pub fn forward_alpha_cutoff(&self) -> f32 {
+        if self.program() == Program::Vegetation { 0.5 } else { self.alpha_cutoff }
+    }
+
     pub fn parse(bytes: &[u8]) -> Self {
         let v = fields(bytes);
         let layers = std::array::from_fn(|index| {
@@ -167,6 +189,7 @@ impl Surface {
     /// HQ_FetchDiffuseAlbedo's ordinary static, non-debug/non-effect branch.
     pub fn albedo(&self, vertex: [f32; 4], masks: [f32; 3], samples: [[f32; 4]; 3]) -> Result<[f32; 4], String> {
         if self.extra_layers > 2 { return Err("invalid authored extraLayer".into()); }
+        if self.program() == Program::Vegetation { return Ok(samples[0]); }
         let mut textures = samples;
         let mut result = textures[0];
         if self.layers[0].use_color {
@@ -250,6 +273,17 @@ mod tests {
         assert_eq!(s.occlusion_factor(0.25, false), 0.25);
         assert_eq!(s.occlusion_factor(0.25, true), 1.0);
         assert_eq!(Surface::parse(b"").occlusion_factor(0.25, false), 1.0);
+    }
+
+    #[test]
+    fn vegetation_uses_diffuse_not_wind_vertex_colors_or_layer_tints() {
+        let s = Surface::parse(b"mainProgram arkVegetation\nalphaTest 1\nDefaultAlphaTest {0.9}\nvtxColorMultiply 1\nuse_Layer0_ColorConstant 1\nLayer0_ColorConstant {1,0,0,1}\n");
+        assert_eq!(s.program(), Program::Vegetation);
+        assert_eq!(s.forward_alpha_cutoff(), 0.5);
+        let diffuse = [0.0, 0.4, 0.2, 0.49];
+        assert_eq!(s.albedo([1.0, 0.0, 0.0, 0.0], [1.0; 3], [diffuse, [1.0; 4], [1.0; 4]]).unwrap(), diffuse);
+        assert_eq!(Surface::parse(b"mainProgram unknown\n").program(), Program::Unsupported);
+        assert_eq!(Surface::parse(b"mainProgram arkDecal\n").program(), Program::Default);
     }
 
     #[test]
