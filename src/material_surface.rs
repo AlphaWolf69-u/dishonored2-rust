@@ -8,6 +8,7 @@ pub enum Program {
     Unsupported = 0,
     Default = 1,
     Vegetation = 2,
+    Water = 3,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,7 @@ impl Surface {
         match self.main_program.as_deref().map(str::to_ascii_lowercase).as_deref() {
             Some("arkdefault" | "arkdecal") => Program::Default,
             Some("arkvegetation") => Program::Vegetation,
+            Some("arkwater") => Program::Water,
             _ => Program::Unsupported,
         }
     }
@@ -284,6 +286,7 @@ mod tests {
         assert_eq!(s.albedo([1.0, 0.0, 0.0, 0.0], [1.0; 3], [diffuse, [1.0; 4], [1.0; 4]]).unwrap(), diffuse);
         assert_eq!(Surface::parse(b"mainProgram unknown\n").program(), Program::Unsupported);
         assert_eq!(Surface::parse(b"mainProgram arkDecal\n").program(), Program::Default);
+        assert_eq!(Surface::parse(b"mainProgram arkwater\n").program(), Program::Water);
     }
 
     #[test]

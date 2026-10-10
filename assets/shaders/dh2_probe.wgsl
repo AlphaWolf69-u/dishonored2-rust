@@ -60,7 +60,10 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
-    if compiled_misc.z != 0u {
+    // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
+    // Original arkWater requires a separate depth/HDR-dependent shader; do not
+    // feed it through the default layered-material equations.
+    if compiled_misc.z == 1u || compiled_misc.z == 2u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
         uv = vertex_output.uv;

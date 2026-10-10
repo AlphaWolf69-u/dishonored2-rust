@@ -81,9 +81,12 @@ mod tests {
     fn vegetation_program_is_a_distinct_authored_pipeline() {
         let default = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\n"));
         let vegetation = SurfaceUniform::from(&Surface::parse(b"mainProgram arkVegetation\n"));
+        let water = SurfaceUniform::from(&Surface::parse(b"mainProgram arkwater\n"));
         assert_eq!(default.misc.z, 1);
         assert_eq!(vegetation.misc.z, 2);
+        assert_eq!(water.misc.z, 3);
         assert_ne!(SurfaceKey::from(&default), SurfaceKey::from(&vegetation));
+        assert_ne!(SurfaceKey::from(&default), SurfaceKey::from(&water));
         assert_eq!(SurfaceUniform::from(&Surface::parse(b"mainProgram unknown\n")).misc.z, 0);
     }
 
