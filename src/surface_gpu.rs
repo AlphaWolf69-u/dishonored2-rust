@@ -55,7 +55,7 @@ impl From<&Surface> for SurfaceUniform {
             ranges: Vec4::new(s.ward[0], s.ward[1], s.metallic_min_max[0], s.metallic_min_max[1]),
             alpha: Vec4::new(s.alpha_cutoff, u32::from(s.has_occlusion) as f32, 0.0, 0.0),
             flags: UVec4::new(s.extra_layers as u32, u32::from(s.has_gloss), u32::from(s.gloss_in_alpha), u32::from(s.has_metallic)),
-            misc: UVec4::new(u32::from(s.has_bump), u32::from(s.vertex_color_multiply), s.program() as u32, 0),
+            misc: UVec4::new(u32::from(s.has_bump), u32::from(s.vertex_color_multiply), s.program() as u32, u32::from(s.alpha_test)),
         }
     }
 }
@@ -76,6 +76,15 @@ impl ImageRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_surface_conversion_preserves_authored_alpha_test() {
+        let enabled = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 1\n"));
+        let disabled = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 0\n"));
+        assert_eq!(enabled.misc.w & 1, 1);
+        assert_eq!(disabled.misc.w & 1, 0);
+        assert_ne!(SurfaceKey::from(&enabled), SurfaceKey::from(&disabled));
+    }
 
     #[test]
     fn vegetation_program_is_a_distinct_authored_pipeline() {

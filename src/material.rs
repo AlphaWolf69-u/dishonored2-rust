@@ -308,6 +308,21 @@ mod tests {
     }
 
     #[test]
+    fn native_visibility_and_alpha_options_inherit_and_allow_explicit_overrides() {
+        let program = b"options {\ninvisible 1\nalphaTest 1\n}\nhlsl_prefix {\ninvisible 0\nalphaTest 0\n";
+        assert!(program_option(b"", program, "invisible"));
+        assert!(program_option(b"", program, "alphaTest"));
+        assert_eq!(transparency_with_program(b"", program), Transparency::Cutout);
+        let visible_opaque = b"invisible 0\nALPHATEST 0 // explicit material overrides\n";
+        assert!(!program_option(visible_opaque, program, "invisible"));
+        assert!(!program_option(visible_opaque, program, "alphaTest"));
+        assert_eq!(transparency_with_program(visible_opaque, program), Transparency::Opaque);
+        assert!(program_option(b"Invisible 1\n", b"invisible 0\n", "invisible"));
+        assert!(!program_option(b"// invisible 1\n", b"", "invisible"));
+        assert!(!program_option(b"", b"", "invisible"));
+    }
+
+    #[test]
     fn parses_enabled_layer_zero_tint() {
         assert_eq!(
             layer0_color_constant(

@@ -195,6 +195,21 @@ pub struct EnvironmentLighting {
     pub auto_exposure_adapt_speed_down: Option<f32>,
 }
 
+/// Raw render-parameter entries retained in one authored environment layer.
+/// Keys and values stay as declared until the corresponding render pass is ported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentRenderParameterLayer {
+    pub resource: String,
+    pub parameters: Vec<(String, String)>,
+}
+
+/// Current environment first, followed by its inherited declaration layers.
+/// This preserves source values and order without guessing pass-specific semantics.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvironmentRenderParameters {
+    pub layers: Vec<EnvironmentRenderParameterLayer>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlacedEnvironmentVolume {
     pub id: String,
@@ -413,6 +428,43 @@ pub fn world_environment(document: &Document) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn decode_environment_source(source: &str) -> String {
+    source
+        .trim_matches('"')
+        .replace("\\t", "\t")
+        .replace("\\n", "\n")
+        .replace("\\\"", "\"")
+}
+
+fn parse_environment_render_parameters(source: &str) -> Vec<(String, String)> {
+    let decoded = decode_environment_source(source);
+    let mut in_render_parms = false;
+    let mut parameters = Vec::new();
+    for line in decoded.lines() {
+        let line = line.trim();
+        if !in_render_parms {
+            if line
+                .strip_prefix("renderParms")
+                .is_some_and(|rest| rest.trim_start().starts_with('{'))
+            {
+                in_render_parms = true;
+            }
+            continue;
+        }
+        if line.starts_with('}') {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(char::is_whitespace) {
+            let key = key.trim();
+            let value = value.trim();
+            if !key.is_empty() && !value.is_empty() {
+                parameters.push((key.to_owned(), value.to_owned()));
+            }
+        }
+    }
+    parameters
+}
+
 fn parse_env_vector(value: &str) -> Option<[f32; 3]> {
     let value = value.trim().trim_start_matches('{').trim_end_matches('}');
     let mut channels = value
@@ -428,11 +480,7 @@ fn parse_env_rgb(value: &str) -> Option<[f32; 3]> {
 
 /// Parse lighting keys from an authored env declaration's renderParms block.
 pub fn environment_lighting(source: &str) -> EnvironmentLighting {
-    let decoded = source
-        .trim_matches('"')
-        .replace("\\t", "\t")
-        .replace("\\n", "\n")
-        .replace("\\\"", "\"");
+    let decoded = decode_environment_source(source);
     let mut result = EnvironmentLighting {
         ambient_high: None,
         ambient_low: None,
@@ -509,11 +557,7 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
 }
 
 fn environment_parent(source: &str) -> Option<String> {
-    let decoded = source
-        .trim_matches('"')
-        .replace("\\t", "\t")
-        .replace("\\n", "\n")
-        .replace("\\\"", "\"");
+    let decoded = decode_environment_source(source);
     let mut in_inherit = false;
     for line in decoded.lines() {
         let line = line.trim();
@@ -624,6 +668,54 @@ where
     }
 
     visit(source, &mut resolve, &mut Vec::new(), 0)
+}
+
+/// Preserve raw renderParms by source resource, following the authored inherit chain.
+/// The child layer is first; callers must not assume render-pass semantics from this data.
+pub fn environment_render_parameters_with_inheritance<F>(
+    resource: &str,
+    source: &str,
+    mut resolve: F,
+) -> Result<EnvironmentRenderParameters, String>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    fn visit<F>(
+        resource: &str,
+        source: &str,
+        resolve: &mut F,
+        visited: &mut Vec<String>,
+        depth: usize,
+        layers: &mut Vec<EnvironmentRenderParameterLayer>,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&str) -> Result<Option<String>, String>,
+    {
+        layers.push(EnvironmentRenderParameterLayer {
+            resource: resource.to_owned(),
+            parameters: parse_environment_render_parameters(source),
+        });
+        if depth >= 16 {
+            return Ok(());
+        }
+        let Some(parent) = environment_parent(source) else {
+            return Ok(());
+        };
+        if visited.iter().any(|existing| existing == &parent) {
+            return Ok(());
+        }
+        let Some(parent_source) = resolve(&parent)? else {
+            return Ok(());
+        };
+        visited.push(parent.clone());
+        let result = visit(&parent, &parent_source, resolve, visited, depth + 1, layers);
+        visited.pop();
+        result
+    }
+
+    let mut layers = Vec::new();
+    visit(resource, source, &mut resolve, &mut Vec::new(), 0, &mut layers)?;
+    Ok(EnvironmentRenderParameters { layers })
 }
 
 /// Extract authored environment overrides on map-local arkAreaVolume entities.
@@ -1547,6 +1639,58 @@ pub fn player_start(document: &Document) -> Option<PlayerStart> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_render_parameters_preserve_raw_inherited_layers() {
+        let source = r#"inherit {
+            default
+        }
+        renderParms {
+            atm/worldfog/enablegodrays 1
+            water/watercolor { 0.49, 0.56, 0.62, 0 }
+            water/watercolor { 0.48, 0.55, 0.61, 0 }
+        }
+        audioParms {
+            soundAuxBus NULL
+        }"#;
+        let parameters = environment_render_parameters_with_inheritance(
+            "eotw/global",
+            source,
+            |parent| {
+                assert_eq!(parent, "default");
+                Ok(Some(
+                    r#"renderParms {
+                        env/atm/fog/globalscale 1.0
+                        water/watercolor { 0.1, 0.2, 0.3, 0 }
+                    }
+                    audioParms { soundAuxBus parent_only }"#
+                        .into(),
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(parameters.layers.len(), 2);
+        assert_eq!(parameters.layers[0].resource, "eotw/global");
+        assert_eq!(parameters.layers[0].parameters.len(), 3);
+        assert_eq!(
+            parameters.layers[0].parameters[0],
+            ("atm/worldfog/enablegodrays".into(), "1".into())
+        );
+        assert_eq!(
+            parameters.layers[0].parameters[1].0,
+            "water/watercolor"
+        );
+        assert_eq!(
+            parameters.layers[0].parameters[2].0,
+            "water/watercolor"
+        );
+        assert_eq!(parameters.layers[1].resource, "default");
+        assert_eq!(parameters.layers[1].parameters.len(), 2);
+        assert_eq!(
+            parameters.layers[1].parameters[0],
+            ("env/atm/fog/globalscale".into(), "1.0".into())
+        );
+    }
 
     #[test]
     fn resolves_light_declaration_and_map_overrides() {

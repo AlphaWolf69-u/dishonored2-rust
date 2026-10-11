@@ -4459,18 +4459,21 @@ pub fn render_query_aabb_visibility_without_depth(
 
 /// The original descriptor prepares bounds, planes and projection once before
 /// its repeated FUN_140a764c0 calls. Immutable within one merged query/frame.
-pub struct NoDepthAabbQuery {
+pub struct RenderAabbQuery<'a> {
     camera_imprecision: [f32; 3],
     planes: [[f32; 4]; 6],
     query_bounds: [[f32; 4]; 2],
     projection_columns: [[f32; 4]; 4],
+    viewport: [i32; 4],
+    depth_grid: Option<&'a [f32; 4096]>,
 }
 
-impl NoDepthAabbQuery {
-    pub fn from_state(state: &RenderQueryState) -> Result<Self, String> {
-        if state.depth_grid.is_some() {
-            return Err("Tome spatial-instance depth-grid projection is unsupported".into());
-        }
+/// Compatibility name for existing no-grid callers. The descriptor, not
+/// the name, determines which original FUN_140a79460 branch is used.
+pub type NoDepthAabbQuery<'a> = RenderAabbQuery<'a>;
+
+impl<'a> RenderAabbQuery<'a> {
+    pub fn from_state(state: &'a RenderQueryState) -> Result<Self, String> {
         let mut planes = query_planes_from_rows(state.render_rows, state.cropped_rows);
         // FUN_140a77560 normalizes only the first depth plane.
         let [x, y, z, _] = planes[0];
@@ -4495,6 +4498,8 @@ impl NoDepthAabbQuery {
             projection_columns: std::array::from_fn(|column| {
                 std::array::from_fn(|row| state.render_rows[row][column])
             }),
+            viewport: state.viewport,
+            depth_grid: state.depth_grid.as_deref(),
         })
     }
 
@@ -4517,8 +4522,11 @@ impl NoDepthAabbQuery {
     }
 
     pub fn visible(&self, bounds: [[f32; 3]; 2]) -> Result<bool, String> {
-        // The native no-grid bool is this predicate. Unconsumed area cannot
-        // affect it, so skip corner clipping/projection in the spatial caller.
+        if self.depth_grid.is_some() {
+            return self.visibility_and_area(bounds).map(|(visible, _)| visible);
+        }
+        // No-grid descriptors keep the original fast predicate: unused area
+        // cannot affect visibility, so no projection is needed here.
         query_bounds_accepts_aabb(
             self.query_bounds,
             self.expanded_bounds(bounds)?,
@@ -4528,12 +4536,17 @@ impl NoDepthAabbQuery {
     }
 
     pub fn visibility_and_area(&self, bounds: [[f32; 3]; 2]) -> Result<(bool, f32), String> {
-        query_aabb_visibility_without_depth(
-            self.query_bounds,
-            &self.planes,
-            self.expanded_bounds(bounds)?,
-            self.projection_columns,
-        )
+        let expanded = self.expanded_bounds(bounds)?;
+        if let Some(grid) = self.depth_grid {
+            query_aabb_visibility_with_depth(
+                self.query_bounds, &self.planes, expanded,
+                self.projection_columns, self.viewport, grid,
+            )
+        } else {
+            query_aabb_visibility_without_depth(
+                self.query_bounds, &self.planes, expanded, self.projection_columns,
+            )
+        }
     }
 }
 
@@ -4555,17 +4568,14 @@ fn render_query_aabb_without_depth(
     }
 }
 
-/// FUN_140a79460's no-grid branch, including its otherwise caller-visible
-/// projected area. Inputs are the original descriptor's +0x530 bounds,
-/// +0x1e0 planes, already expanded box, and +0x40 projection columns.
+/// Clip the expanded box exactly once for either FUN_140a79460 branch.
 #[cfg(target_arch = "x86_64")]
-pub fn query_aabb_visibility_without_depth(
+fn clipped_query_aabb(
     query_bounds: [[f32; 4]; 2],
     planes: &[[f32; 4]],
     expanded: [[f32; 4]; 2],
     rows: [[f32; 4]; 4],
-) -> Result<(bool, f32), String> {
-    use std::arch::x86_64::*;
+) -> Result<Option<[[f32; 4]; 2]>, String> {
     if query_bounds
         .iter()
         .flatten()
@@ -4579,7 +4589,7 @@ pub fn query_aabb_visibility_without_depth(
     }
     let all_planes = (0..planes.len()).collect::<Vec<_>>();
     if !query_bounds_accepts_aabb(query_bounds, expanded, planes, &all_planes)? {
-        return Ok((false, 0.0));
+        return Ok(None);
     }
     let active = active_query_planes(planes, expanded);
     let clipped = if active.is_empty() {
@@ -4587,6 +4597,18 @@ pub fn query_aabb_visibility_without_depth(
     } else {
         clip_box_to_active_query_planes(query_bounds, expanded, planes, &active)?
     };
+    Ok(Some(clipped))
+}
+
+/// Preserve native SSE reciprocal and extent-addition order. The no-grid
+/// branch has W-crossing masks; the depth branch deliberately does not.
+#[cfg(target_arch = "x86_64")]
+fn project_clipped_query_aabb(
+    clipped: [[f32; 4]; 2],
+    rows: [[f32; 4]; 4],
+    handle_w_crossing: bool,
+) -> [f32; 4] {
+    use std::arch::x86_64::*;
     // Keep the native operation order: z*row2 + row3, then y*row1,
     // then x*row0; the other corners add the three extent vectors.
     let corners = unsafe {
@@ -4621,7 +4643,7 @@ pub fn query_aabb_visibility_without_depth(
             values
         })
     };
-    let crossing = corners.iter().any(|corner| corner[3] < 0.0);
+    let crossing = handle_w_crossing && corners.iter().any(|corner| corner[3] < 0.0);
     let minps = |a: f32, b: f32| if a < b { a } else { b };
     let maxps = |a: f32, b: f32| if a > b { a } else { b };
     let mut low = [f32::INFINITY; 2];
@@ -4665,12 +4687,78 @@ pub fn query_aabb_visibility_without_depth(
             high[axis] = maxps(high[axis], maximum);
         }
     }
-    let rectangle =
-        [low[0], low[1], high[0], high[1]].map(|coordinate| maxps(minps(coordinate, 1.0), -1.0));
-    Ok((
-        true,
-        (rectangle[3] - rectangle[1]) * (rectangle[2] - rectangle[0]) * 0.25,
-    ))
+    [low[0], low[1], high[0], high[1]]
+}
+
+/// FUN_140a79460's no-grid branch, including caller-visible projected area.
+#[cfg(target_arch = "x86_64")]
+pub fn query_aabb_visibility_without_depth(
+    query_bounds: [[f32; 4]; 2],
+    planes: &[[f32; 4]],
+    expanded: [[f32; 4]; 2],
+    rows: [[f32; 4]; 4],
+) -> Result<(bool, f32), String> {
+    let Some(clipped) = clipped_query_aabb(query_bounds, planes, expanded, rows)? else {
+        return Ok((false, 0.0));
+    };
+    let rectangle = project_clipped_query_aabb(clipped, rows, true);
+    Ok((true, projected_object_area_metric(rectangle)))
+}
+
+/// FUN_140a79460 +0x590 != 0: nearest-Z corner, near-plane acceptance,
+/// native reciprocal projection and biased pixel rectangle, then 784c0.
+/// This consumes Umbra query depth, not a substituted GPU Z-buffer.
+#[cfg(target_arch = "x86_64")]
+pub fn query_aabb_visibility_with_depth(
+    query_bounds: [[f32; 4]; 2],
+    planes: &[[f32; 4]],
+    expanded: [[f32; 4]; 2],
+    rows: [[f32; 4]; 4],
+    viewport: [i32; 4],
+    depths: &[f32; 4096],
+) -> Result<(bool, f32), String> {
+    let Some(clipped) = clipped_query_aabb(query_bounds, planes, expanded, rows)? else {
+        return Ok((false, 0.0));
+    };
+    // Descriptor +0x340 marks strictly positive depth coefficients. Zero
+    // (including -0) selects the upper bound, too: although it contributes
+    // nothing to Z, that same corner's X/Y still contribute to clip W.
+    let nearest: [f32; 4] = std::array::from_fn(|axis| {
+        clipped[usize::from(!(rows[axis][2] > 0.0))][axis]
+    });
+    let dot = |component: usize| {
+        ((nearest[1] * rows[1][component] + nearest[0] * rows[0][component])
+            + nearest[2] * rows[2][component]) + nearest[3] * rows[3][component]
+    };
+    let z = dot(2);
+    let threshold = if z > 0.0 { z / dot(3) } else { 0.0 };
+    if threshold == 0.0 {
+        return Ok((true, 1.0));
+    }
+    let rectangle = project_clipped_query_aabb(clipped, rows, false);
+    let area = projected_object_area_metric(rectangle);
+    // 141e68090/141e680a0: raw projection is converted before viewport
+    // intersection; only the area, not these inputs, clamps to [-1,1].
+    // CVTTPS2DQ at 140a79c57 returns INT_MIN for overflow/NaN;
+    // Rust's saturating `as i32` is not equivalent at a W crossing.
+    let pixel = unsafe {
+        use std::arch::x86_64::*;
+        let bias = [32.0, 32.0, f32::from_bits(0x4203_ffff), f32::from_bits(0x4203_ffff)];
+        let scaled = _mm_add_ps(
+            _mm_mul_ps(_mm_loadu_ps(rectangle.as_ptr()), _mm_set1_ps(32.0)),
+            _mm_loadu_ps(bias.as_ptr()),
+        );
+        let mut pixel = [0; 4];
+        _mm_storeu_si128(pixel.as_mut_ptr().cast(), _mm_cvttps_epi32(scaled));
+        pixel
+    };
+    let visible = depth_grid_intersects_pixels(
+        depths,
+        [pixel[0].max(viewport[0]), pixel[1].max(viewport[1])],
+        [pixel[2].min(viewport[2]), pixel[3].min(viewport[3])],
+        threshold,
+    )?;
+    Ok((visible, area))
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -4679,6 +4767,14 @@ pub fn query_aabb_visibility_without_depth(
     _: &[[f32; 4]],
     _: [[f32; 4]; 2],
     _: [[f32; 4]; 4],
+) -> Result<(bool, f32), String> {
+    Err("original Tome projected box query requires x86_64 SSE".into())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn query_aabb_visibility_with_depth(
+    _: [[f32; 4]; 2], _: &[[f32; 4]], _: [[f32; 4]; 2],
+    _: [[f32; 4]; 4], _: [i32; 4], _: &[f32; 4096],
 ) -> Result<(bool, f32), String> {
     Err("original Tome projected box query requires x86_64 SSE".into())
 }
@@ -9066,6 +9162,54 @@ mod tests {
     }
 
     #[test]
+    fn depth_enabled_aabb_matches_installed_executable() {
+        let fixture = include_str!("../analysis/native_depth_aabb_cases.txt");
+        assert_eq!(fixture.lines().count(), 9000);
+        for (line_number, line) in fixture.lines().enumerate() {
+            let words: Vec<u32> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+            assert_eq!(words.len(), 64);
+            let viewport = std::array::from_fn(|axis| words[3 + axis] as i32);
+            let render_rows = std::array::from_fn(|row| {
+                std::array::from_fn(|column| f32::from_bits(words[10 + row * 4 + column]))
+            });
+            let grid = std::array::from_fn(|i| match words[0] {
+                0 => 0.0,
+                1 => f32::from_bits(0x3e4c_cccd),
+                2 => 1.0,
+                3 => (i * 7 % 101) as f32 / 100.0,
+                4 => if i % 67 == 0 { 1.0 } else { 0.0 },
+                _ => panic!("unknown native fixture grid pattern"),
+            });
+            let state = RenderQueryState {
+                render_rows,
+                cropped_rows: crop_query_rows(render_rows, viewport).unwrap(),
+                camera_point: [0.0; 3],
+                camera_imprecision: std::array::from_fn(|axis| f32::from_bits(words[7 + axis])),
+                winding_flip: false,
+                viewport,
+                maximum_depth: 0.0,
+                depth_grid: Some(Box::new(grid)),
+            };
+            let bounds = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| f32::from_bits(words[26 + side * 3 + axis]))
+            });
+            let query = RenderAabbQuery::from_state(&state).unwrap();
+            let native_planes: [[f32; 4]; 6] = std::array::from_fn(|plane| {
+                std::array::from_fn(|axis| f32::from_bits(words[32 + plane * 4 + axis]))
+            });
+            let native_bounds: [[f32; 4]; 2] = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| f32::from_bits(words[56 + side * 4 + axis]))
+            });
+            assert_eq!(query.planes, native_planes, "depth fixture {line_number}: query planes");
+            assert_eq!(query.query_bounds, native_bounds, "depth fixture {line_number}: query bounds");
+            let (visible, area) = query.visibility_and_area(bounds).unwrap();
+            assert_eq!(visible, words[1] != 0, "depth fixture {line_number}: {bounds:?}");
+            assert_eq!(area.to_bits(), words[2], "depth fixture {line_number}: area {area}");
+            assert_eq!(query.visible(bounds).unwrap(), visible);
+        }
+    }
+
+    #[test]
     fn no_depth_light_aabb_area_matches_installed_instructions() {
         let mut cases = 0;
         for (line_number, line) in include_str!("../analysis/native_light_aabb_cases.txt")
@@ -10337,7 +10481,7 @@ mod tests {
     }
 
     #[test]
-    fn spatial_query_rejects_unported_branches_and_bad_plane_indices() {
+    fn spatial_query_uses_native_depth_and_rejects_bad_plane_indices() {
         let rows = std::array::from_fn(|row| {
             std::array::from_fn(|column| if row == column { 1.0 } else { 0.0 })
         });
@@ -10355,11 +10499,13 @@ mod tests {
         assert!(render_query_aabb_visible_without_depth(Some(&state), bounds).unwrap());
         state.camera_imprecision = [0.6; 3];
         state.depth_grid = Some(Box::new([0.0; 4096]));
-        assert!(
-            render_query_aabb_visible_without_depth(Some(&state), bounds)
-                .unwrap_err()
-                .contains("depth-grid projection")
-        );
+        // Native nearest-Z <= 0 accepts, even with an empty depth grid.
+        assert!(render_query_aabb_visible_without_depth(Some(&state), bounds).unwrap());
+        state.camera_imprecision = [0.0; 3];
+        let in_front = [[-0.125, -0.125, 0.25], [0.125, 0.125, 0.75]];
+        assert!(!render_query_aabb_visible_without_depth(Some(&state), in_front).unwrap());
+        state.depth_grid = Some(Box::new([1.0; 4096]));
+        assert!(render_query_aabb_visible_without_depth(Some(&state), in_front).unwrap());
         assert!(query_bounds_accepts_aabb([[0.0; 4]; 2], [[0.0; 4]; 2], &[], &[0]).is_err());
         assert!(render_query_aabb_visible_without_depth(None, [[f32::NAN; 3]; 2]).unwrap());
     }

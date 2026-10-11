@@ -75,7 +75,7 @@ def digest(path: Path) -> str:
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=30)
+    db = sqlite3.connect(path, timeout=120)
     db.execute("PRAGMA foreign_keys = ON")
     db.executescript(SCHEMA.read_text(encoding="utf-8"))
     if "confirmed" not in {row[1] for row in db.execute("PRAGMA table_info(function_inspections)")}:

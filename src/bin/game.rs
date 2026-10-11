@@ -41,6 +41,7 @@ use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::camera::{PerspectiveProjection, Projection};
+use bevy::core_pipeline::prepass::DepthPrepass;
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::{
@@ -85,6 +86,8 @@ struct SceneData {
     placed_models: Vec<entities::PlacedModel>,
     placed_lights: Vec<entities::PlacedLight>,
     environment_lighting: Option<entities::EnvironmentLighting>,
+    #[allow(dead_code)] // Preserved for the not-yet-ported fog, water, sky, and postfx passes.
+    environment_render_parameters: Option<entities::EnvironmentRenderParameters>,
     environment_probes: Option<probe_lighting::ProbeLightingSet>,
     pickups: Vec<entities::Pickup>,
     catalog: Option<archive::Catalog>,
@@ -317,6 +320,8 @@ type DecalMaterial = ExtendedMaterial<StandardMaterial, DecalExtension>;
 type ProbeMaterial = ExtendedMaterial<StandardMaterial, ProbeExtension>;
 const PROBE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("169be3e1-273e-4607-aadf-e0d572cbf41d");
+const PROBE_PREPASS_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("f78172ec-62f2-4bb4-9e45-c6e99fdf6c36");
 const SURFACE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("b7018b4d-b81d-44c0-9dd0-0b64cc879316");
 const DECAL_SHADER_HANDLE: Handle<Shader> =
@@ -422,6 +427,10 @@ impl MaterialExtension for ProbeExtension {
         PROBE_SHADER_HANDLE.into()
     }
 
+    fn prepass_fragment_shader() -> ShaderRef {
+        PROBE_PREPASS_SHADER_HANDLE.into()
+    }
+
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -432,10 +441,8 @@ impl MaterialExtension for ProbeExtension {
         authored_basis_pipeline(descriptor, layout)
     }
 
-    // This path evaluates baked SH in the forward fragment shader. Disabling
-    // the deferred prepass keeps its authored probe contribution in that path.
     fn enable_prepass() -> bool {
-        false
+        true
     }
 }
 
@@ -2299,10 +2306,17 @@ impl MaterialResolver<'_> {
         let program = surface.main_program.as_ref().and_then(|name| self.catalog.and_then(|c|
             c.read(&format!("generated/decls/renderprog/{}.decl", name.to_ascii_lowercase())).ok().flatten()));
         let program = program.as_deref().unwrap_or(&[]);
+        // FUN_1402d5210 encodes inherited `invisible` as material+0x4b's
+        // excluded state; FUN_14033b350 rejects it before creating any rows.
+        if material::program_option(bytes, program, "invisible") {
+            self.cache.insert(key, None);
+            return None;
+        }
         let transparency = material::transparency_with_program(bytes, program);
         let program_is_decal = material::program_option(bytes, program, "isDecal");
         let two_sided_lighting = material::program_option(bytes, program, "twoSidedLighting");
-        uniform.misc.w = u32::from(surface.alpha_test) | (u32::from(program_is_decal) << 1) | (u32::from(two_sided_lighting) << 2);
+        let alpha_test = material::program_option(bytes, program, "alphaTest");
+        uniform.misc.w = u32::from(alpha_test) | (u32::from(program_is_decal) << 1) | (u32::from(two_sided_lighting) << 2);
         let decal_bias = material::decal_depth_bias(bytes);
         let mut images = Vec::new();
         for index in 0..=surface.extra_layers {
@@ -3002,6 +3016,13 @@ fn setup(
         camera,
         Msaa::Sample4,
     ));
+    // The installed arkDefault/arkVegetation shaders have a depth-only Z path.
+    // This broad Bevy approximation is opt-in: same-view profiling reduced fragment work
+    // but did not improve frame time. Enable with DH2_ZPREPASS=1 while the
+    // native list/eligibility path is being integrated.
+    if env::var("DH2_ZPREPASS").as_deref() == Ok("1") {
+        camera_entity.insert(DepthPrepass);
+    }
     if lit {
         if let Some(environment) = scene.environment_lighting {
             if environment.auto_exposure_ev.is_some()
@@ -5218,34 +5239,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .transpose()?
         .unwrap_or_default();
-    let environment_lighting = match (
-        entity_document
-            .as_ref()
-            .and_then(entities::world_environment)
-            .as_deref(),
-        catalog.as_ref(),
-    ) {
+    let world_environment = entity_document
+        .as_ref()
+        .and_then(entities::world_environment);
+    let environment_data = match (world_environment.as_deref(), catalog.as_ref()) {
         (Some(environment), Some(catalog)) => {
             let resource = format!("generated/decls/env/{environment}.decl");
             catalog
                 .read(&resource)?
                 .map(|bytes| {
-                    let source = String::from_utf8_lossy(&bytes);
-                    entities::environment_lighting_with_inheritance(&source, |parent| {
-                        let parent_resource = format!("generated/decls/env/{parent}.decl");
-                        catalog
-                            .read(&parent_resource)
-                            .map(|bytes| {
-                                bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                            })
-                            .map_err(|error| error.to_string())
-                    })
-                    .map_err(std::io::Error::other)
+                    let source = String::from_utf8_lossy(&bytes).into_owned();
+                    let lighting = entities::environment_lighting_with_inheritance(
+                        &source,
+                        |parent| {
+                            let parent_resource = format!("generated/decls/env/{parent}.decl");
+                            catalog
+                                .read(&parent_resource)
+                                .map(|bytes| {
+                                    bytes.map(|bytes| {
+                                        String::from_utf8_lossy(&bytes).into_owned()
+                                    })
+                                })
+                                .map_err(|error| error.to_string())
+                        },
+                    )
+                    .map_err(std::io::Error::other)?;
+                    let render_parameters =
+                        entities::environment_render_parameters_with_inheritance(
+                            environment,
+                            &source,
+                            |parent| {
+                                let parent_resource =
+                                    format!("generated/decls/env/{parent}.decl");
+                                catalog
+                                    .read(&parent_resource)
+                                    .map(|bytes| {
+                                        bytes.map(|bytes| {
+                                            String::from_utf8_lossy(&bytes).into_owned()
+                                        })
+                                    })
+                                    .map_err(|error| error.to_string())
+                            },
+                        )
+                        .map_err(std::io::Error::other)?;
+                    Ok::<_, std::io::Error>((lighting, render_parameters))
                 })
                 .transpose()?
         }
         _ => None,
     };
+    let (environment_lighting, environment_render_parameters) = environment_data
+        .map(|(lighting, parameters)| (Some(lighting), Some(parameters)))
+        .unwrap_or((None, None));
     let probe_start = Instant::now();
     let environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str())) {
         (Some(catalog), Some(stem)) => {
@@ -5264,6 +5309,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         println!("No unambiguous installed probe network matches the world stem.");
+    }
+    if let Some(parameters) = &environment_render_parameters {
+        let value_count = parameters
+            .layers
+            .iter()
+            .map(|layer| layer.parameters.len())
+            .sum::<usize>();
+        println!(
+            "World environment render parameters retained: {} layers, {value_count} raw entries (not yet consumed by fog/water/sky/postfx rendering)",
+            parameters.layers.len(),
+        );
     }
     if let Some(environment) = environment_lighting {
         println!(
@@ -5546,6 +5602,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             placed_models,
             placed_lights,
             environment_lighting,
+            environment_render_parameters,
             environment_probes,
             pickups,
             catalog,
@@ -5608,6 +5665,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "../../assets/shaders/dh2_probe.wgsl",
         Shader::from_wgsl
     );
+    bevy::asset::load_internal_asset!(
+        app,
+        PROBE_PREPASS_SHADER_HANDLE,
+        "../../assets/shaders/dh2_probe_prepass.wgsl",
+        Shader::from_wgsl
+    );
     bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
     bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
     let prepared_images = PreparedImageMailbox::default();
@@ -5659,6 +5722,7 @@ mod game_control_tests {
             .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
             .add_plugins(MaterialPlugin::<DecalMaterial>::default());
         bevy::asset::load_internal_asset!(app, PROBE_SHADER_HANDLE, "../../assets/shaders/dh2_probe.wgsl", Shader::from_wgsl);
+        bevy::asset::load_internal_asset!(app, PROBE_PREPASS_SHADER_HANDLE, "../../assets/shaders/dh2_probe_prepass.wgsl", Shader::from_wgsl);
         bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
         bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
         app.finish(); app.cleanup();
@@ -5667,7 +5731,8 @@ mod game_control_tests {
         let mut mesh = Mesh::from(Cuboid::new(1.0, 1.0, 1.0));
         let n = mesh.count_vertices();
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.3, 0.7, 1.0, 1.0]; n]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.25, 0.5]; n]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.25, 0.5]; n]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.75, 0.5]; n]);
         mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; n]);
         mesh.insert_attribute(DH2_BITANGENT, vec![[0.0, 1.0, 0.0]; n]);
         let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
@@ -5701,6 +5766,9 @@ mod game_control_tests {
         vegetation.extension.surface.misc.w = 1 | 4;
         vegetation.base.alpha_mode = AlphaMode::AlphaToCoverage;
         vegetation.base.double_sided = true;
+        let mut cutout = vegetation.clone();
+        cutout.base.alpha_mode = AlphaMode::Mask(0.5);
+        let cutout = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(cutout);
         let vegetation = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(vegetation);
         let decal = app.world_mut().resource_mut::<Assets<DecalMaterial>>().add(DecalMaterial {
             base: StandardMaterial { alpha_mode: AlphaMode::Blend, ..default() },
@@ -5722,26 +5790,155 @@ mod game_control_tests {
                 mask2: None,
             },
         });
-        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(probe), Transform::from_xyz(-0.6, 0.0, 0.0)));
+        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(probe.clone()), Transform::from_xyz(-0.6, 0.0, 0.0)));
         app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(decal), Transform::from_xyz(0.6, 0.0, 0.0)));
-        app.world_mut().spawn((Mesh3d(mesh), MeshMaterial3d(vegetation), Transform::from_xyz(0.0, 0.6, 0.0)));
-        app.world_mut().spawn((Camera3d::default(), bevy::camera::RenderTarget::Image(target.into()),
-            Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)));
+        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(vegetation), Transform::from_xyz(0.0, 0.6, 0.0)));
+        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(cutout), Transform::from_xyz(0.0, -0.6, 0.0)));
+        let camera = app.world_mut().spawn((Camera3d::default(), DepthPrepass, Msaa::Sample4, bevy::camera::RenderTarget::Image(target.into()),
+            Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y))).id();
         let mut validated = 0;
+        let mut prepass_validated = 0;
         for _ in 0..100 {
             app.update();
             let cache = app.sub_app(bevy::render::RenderApp).world().resource::<bevy::render::render_resource::PipelineCache>();
             validated = 0;
+            prepass_validated = 0;
             for p in cache.pipelines() {
                 if let CachedPipelineState::Err(e) = &p.state { panic!("GPU shader failure: {e}"); }
                 if let (CachedPipelineState::Ok(_), PipelineDescriptor::RenderPipelineDescriptor(d)) = (&p.state, &p.descriptor) {
-                    if d.fragment.as_ref().is_some_and(|f| f.shader == PROBE_SHADER_HANDLE || f.shader == DECAL_SHADER_HANDLE) { validated += 1; }
+                    if let Some(fragment) = d.fragment.as_ref() {
+                        if fragment.shader == PROBE_SHADER_HANDLE || fragment.shader == DECAL_SHADER_HANDLE || fragment.shader == PROBE_PREPASS_SHADER_HANDLE { validated += 1; }
+                        if fragment.shader == PROBE_PREPASS_SHADER_HANDLE { prepass_validated += 1; }
+                    }
                 }
             }
-            if validated >= 3 { break; }
+            if validated >= 5 && prepass_validated > 0 { break; }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(validated >= 3, "ordinary, decal and vegetation shaders must actually compile, got {validated}");
+        assert!(validated >= 5 && prepass_validated > 0, "ordinary, decal, vegetation, and alpha-cutout prepass shaders must actually compile, got {validated} pipelines / {prepass_validated} prepass");
+
+        app.world_mut().entity_mut(camera).insert(Msaa::Off);
+        // Sample the actual prepass attachment, not the main-pass depth that
+        // subsequent forward drawing can overwrite. It has TEXTURE_BINDING
+        // but no COPY_SRC, so a one-invocation compute probe reads its center.
+        fn center_depth(app: &mut App) -> f32 {
+            use bevy::core_pipeline::prepass::ViewPrepassTextures;
+            use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+            let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
+            let mut views = world.query::<&ViewPrepassTextures>();
+            let view = views.single(world).unwrap().depth.as_ref().unwrap().texture.default_view.clone();
+            let device = world.resource::<RenderDevice>();
+            let queue = world.resource::<RenderQueue>();
+            let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+                label: Some("test prepass depth readback"),
+                source: ShaderSource::Wgsl(r#"
+                    @group(0) @binding(0) var depth: texture_depth_2d;
+                    @group(0) @binding(1) var<storage, read_write> result: f32;
+                    @compute @workgroup_size(1) fn main() {
+                        result = textureLoad(depth, vec2<i32>(32, 32), 0);
+                    }
+                "#.into()),
+            });
+            let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
+                label: Some("test prepass depth readback"), layout: None, module: &module,
+                entry_point: Some("main"), compilation_options: default(), cache: None,
+            });
+            let output = device.create_buffer(&BufferDescriptor {
+                label: None, size: 4, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false,
+            });
+            let readback = device.create_buffer(&BufferDescriptor {
+                label: None, size: 4, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false,
+            });
+            let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+                label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
+                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view) },
+                    BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                ],
+            });
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, 4);
+            let submission = queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(MapMode::Read, move |result| { tx.send(result).unwrap(); });
+            device.poll(PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+            let bytes = readback.slice(..).get_mapped_range();
+            let depth = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+            drop(bytes);
+            readback.unmap();
+            depth
+        }
+
+        let entities: Vec<_> = app.world_mut().query_filtered::<Entity, With<Mesh3d>>().iter(app.world()).collect();
+        for entity in entities { app.world_mut().despawn(entity); }
+        let image = |alpha| Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2, &[255, 255, 255, alpha], TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        let solid = app.world_mut().resource_mut::<Assets<Image>>().add(image(255));
+        let empty = app.world_mut().resource_mut::<Assets<Image>>().add(image(0));
+        let translucent = app.world_mut().resource_mut::<Assets<Image>>().add(image(191));
+        let split = app.world_mut().resource_mut::<Assets<Image>>().add(Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 2, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2, &[255, 255, 255, 0, 255, 255, 255, 255], TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        ));
+        let mut material = app.world().resource::<Assets<ProbeMaterial>>().get(&probe).unwrap().clone();
+        material.base = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), ..default() };
+        material.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(b"mainProgram arkDefault\nalphaTest 1\nDefaultAlphaTest {0.5}\n"));
+        material.extension.surface.misc.w = 1;
+        material.extension.diffuse0 = Some(solid);
+        material.extension.diffuse1 = Some(empty.clone());
+        let mut tinted = material.clone();
+        tinted.extension.surface.colors[0].w = 0.0;
+        tinted.extension.surface.mask_settings[0] = UVec4::new(0, 3, 1, 0);
+        let mut layered = material.clone();
+        layered.extension.surface.flags.x = 1;
+        layered.extension.surface.mask_settings[1] = UVec4::new(0, 3, 0, 0);
+        let mut gloss_alpha = material.clone();
+        gloss_alpha.extension.diffuse0 = Some(empty.clone());
+        gloss_alpha.extension.surface.flags.z = 1;
+        let mut vegetation = material.clone();
+        vegetation.extension.diffuse0 = Some(translucent);
+        vegetation.extension.surface.misc.z = 2;
+        vegetation.extension.surface.alpha.x = 0.9;
+        let mut uv0 = material.clone();
+        uv0.extension.diffuse0 = Some(split);
+        let mut uv1 = uv0.clone();
+        uv1.extension.surface.uv_sets[0].x = 1;
+        let mut scaled = uv1.clone();
+        scaled.extension.surface.uv[0] = Vec4::new(0.0, 0.0, 0.25, 0.5);
+        let mut opaque = material.clone();
+        opaque.base.alpha_mode = AlphaMode::Opaque;
+        opaque.extension.diffuse0 = Some(empty);
+        opaque.extension.surface.misc.w = 0;
+        let cases = [
+            ("opaque alpha", material.clone(), true),
+            ("color constant must not erase depth", tinted, true),
+            ("layer1 must not erase depth", layered, true),
+            ("gloss alpha must not turn a hole opaque", gloss_alpha, false),
+            ("vegetation Z uses DefaultAlphaTest, not forward 0.5", vegetation, false),
+            ("layer0 UV0 selects transparent texel", uv0, false),
+            ("layer0 UV1 selects opaque texel", uv1, true),
+            ("layer0 scale/bias applies before clipping", scaled, false),
+            ("opaque Z variant never samples alpha", opaque, true),
+        ];
+        let handle = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(material);
+        app.world_mut().spawn((Mesh3d(mesh), MeshMaterial3d(handle.clone()), Transform::default()));
+        for (label, material, expected) in cases {
+            *app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&handle).unwrap() = material;
+            for _ in 0..6 { app.update(); }
+            let depth = center_depth(&mut app);
+            assert!(depth.is_finite(), "{label}: nonfinite depth {depth}");
+            assert_eq!(depth > 0.0, expected, "{label}: actual prepass depth {depth}");
+        }
     }
 
     #[test]
