@@ -6,6 +6,113 @@ use std::collections::HashMap;
 const TETRA_GRID_CELL_SIZE: f32 = 16.0;
 const MAX_TETRA_GRID_CELLS: usize = 512;
 
+/// PC sphericalharmonics.decl EvaluateSH (four- and nine-coefficient overloads).
+pub fn evaluate_sh<const N: usize>(direction: [f32; 3], sh: &[[f32; 3]; N]) -> [f32; 3] {
+    assert!(N == 4 || N == 9);
+    let [x, y, z] = direction;
+    let f0 = 0.28209479177387814_f32;
+    let f1 = 0.4886025119029199_f32;
+    let f2 = 1.092548430592079_f32;
+    let f3 = 0.31539156525252_f32;
+    let weights = [f0, f1*y, f1*z, f1*x, f2*x*y, f2*y*z,
+        f3*(3.0*z*z-1.0), f2*x*z, f2*0.5*(x*x-y*y)];
+    std::array::from_fn(|channel| {
+        (1..N).fold(weights[0]*sh[0][channel], |value, i| value + weights[i]*sh[i][channel]).max(0.0)
+    })
+}
+
+/// PC sphericalharmonics.decl EvaluateSHIrradiance. Do not normalize directions:
+/// the installed principal-direction constants deliberately use 0.7071, etc.
+pub fn evaluate_sh_irradiance([x, y, z]: [f32; 3], sh: &[[f32; 3]; 9]) -> [f32; 3] {
+    let c1 = 0.4290427654048917_f32;
+    let c2 = 0.5116633539732442_f32;
+    let c3 = 0.2477079561003757_f32;
+    let c4 = 0.886226925452758_f32;
+    std::array::from_fn(|c| {
+        ((c1*(x*x-y*y))*sh[8][c] + (c3*(3.0*z*z-1.0))*sh[6][c] + c4*sh[0][c]
+            + 2.0*c1*(sh[4][c]*x*y + sh[7][c]*x*z + sh[5][c]*y*z)
+            + 2.0*c2*(sh[3][c]*x + sh[1][c]*y + sh[2][c]*z)).max(0.0)
+    })
+}
+
+const PRINCIPAL_RAYS: [[f32; 3]; 3] = [
+    [0.7071, 0.0, 0.7071], [-0.35355, -0.61237, 0.7071], [-0.35355, 0.61237, 0.7071],
+];
+
+/// indirectLighting/common.decl PackSHPrincipalDirections, given the authored
+/// independently transformed T/B/N and already-selected/interpolated SH.
+pub fn pack_principal_irradiance(sh: &[[f32; 3]; 9], basis: [[f32; 3]; 3], two_sided: bool) -> [[f32; 3]; 4] {
+    std::array::from_fn(|i| {
+        let direction = if i == 3 {
+            basis[2].map(|v| if two_sided { -v } else { v })
+        } else {
+            std::array::from_fn(|c| PRINCIPAL_RAYS[i][0]*basis[0][c]
+                + PRINCIPAL_RAYS[i][1]*basis[1][c] + PRINCIPAL_RAYS[i][2]*basis[2][c])
+        };
+        evaluate_sh_irradiance(direction, sh)
+    })
+}
+
+/// indirectLighting/common.decl UnPackSHPrincipalDirections, both retail paths.
+/// One-sided weights are NOT saturated; the fourth 1e-6 lane preserves the ABI.
+pub fn unpack_principal_irradiance(mut direction: [f32; 3], basis: [[f32; 3]; 3], irradiance: [[f32; 3]; 4], ao: f32, two_sided: bool) -> [f32; 3] {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    if !two_sided {
+        direction = std::array::from_fn(|i| basis[2][i]*(1.0-ao) + direction[i]*ao);
+        let length = dot(direction, direction).sqrt();
+        let scale = if length > 1e-6 { length.recip() } else { 1.0 };
+        direction = direction.map(|v| v*scale);
+    }
+    let local = basis.map(|axis| dot(direction, axis));
+    let weights: [f32; 4] = std::array::from_fn(|i| {
+        let value = if i == 3 { if two_sided { -local[2] } else { local[2] } }
+            else { dot(local, PRINCIPAL_RAYS[i]) };
+        if two_sided { 0.5*value.clamp(0.0, 1.0) }
+            else { 0.5*value*if i == 3 { 1e-6 } else { 1.0 } }
+    });
+    std::array::from_fn(|c| ao*(weights[0]*irradiance[0][c] + weights[1]*irradiance[1][c]
+        + weights[2]*irradiance[2][c] + weights[3]*irradiance[3][c]))
+}
+
+/// colorimetry.decl: chroma ranges are twice the common Wikipedia convention.
+pub fn rgb_to_ycocg([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let co = r-b;
+    let t = b+co*0.5;
+    let cg = g-t;
+    [t+cg*0.5, co, cg]
+}
+
+pub fn ycocg_to_rgb([y, co, cg]: [f32; 3]) -> [f32; 3] {
+    let t = y-cg*0.5;
+    let g = cg+t;
+    let b = t-co*0.5;
+    [co+b, g, b]
+}
+
+/// PC WRITE/READ_INDIRECT_LIGHTING interpolants: one shared luminance and
+/// four Co/Cg pairs (the installed pack is intentionally lossy).
+#[derive(Clone, Copy, Debug)]
+pub struct PackedIrradiance {
+    pub luminance: f32,
+    pub chroma: [[f32; 2]; 4],
+}
+
+impl PackedIrradiance {
+    pub fn pack(irradiance: [[f32; 3]; 4]) -> Self {
+        let ycocg = irradiance.map(rgb_to_ycocg);
+        let luminance = ycocg.iter().map(|v| v[0]).fold(f32::NEG_INFINITY, f32::max);
+        let factor = (luminance*luminance).max(1e-4).recip();
+        Self { luminance, chroma: ycocg.map(|v| {
+            let scale = factor*v[0];
+            [v[1]*scale, v[2]*scale]
+        }) }
+    }
+
+    pub fn unpack(self) -> [[f32; 3]; 4] {
+        self.chroma.map(|[co, cg]| ycocg_to_rgb([self.luminance, co*self.luminance, cg*self.luminance]))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProbeLighting {
     pub resource: String,
@@ -29,6 +136,7 @@ pub struct ProbeLightingSet {
     pub secondary_resources: Vec<String>,
     pub rejected_resources: Vec<(String, String)>,
     pub spatial: pnetwork::SpatialData,
+    pub vertex_references: pnetwork::VertexReferences,
     tetra_grid: TetraGrid,
 }
 
@@ -133,19 +241,26 @@ pub fn load_for_world(
         return Ok(None);
     }
     let network_resource = candidates[0].clone();
-    // Mission PNW files can be hundreds of MiB. The ordered name tables are
-    // at the front, so only read the bounded prefix needed to parse them.
+    // FUN_1402b15e0 loads both trailing world-vertex buffers, not just the
+    // ordered names/Voronoi prefix. Bound decoding by the indexed asset size;
+    // EOTW's PNW is 247 MiB and its reference buffer follows the first 64 MiB.
+    let network_size = catalog.resource_size(&network_resource)
+        .ok_or_else(|| format!("missing probe network {network_resource}"))?;
     let network = catalog
-        .read_prefix(&network_resource, 64 * 1024 * 1024)
+        .read_prefix(&network_resource, network_size)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("missing probe network {network_resource}"))?;
+    if network.len() != network_size {
+        return Err(format!("truncated probe network {network_resource}: {} of {network_size} bytes", network.len()));
+    }
     let (_, names, secondary_resources, spatial_offset) =
         pnetwork::ordered_probe_names(&network).map_err(|error| error.to_string())?;
     let spatial =
         pnetwork::spatial_data(&network, spatial_offset).map_err(|error| error.to_string())?;
+    let vertex_references = pnetwork::vertex_references(&network, spatial.bytes_consumed, secondary_resources.len())?;
     let tetra_grid = TetraGrid::build(&spatial);
     let mut probes = Vec::with_capacity(names.len());
-    let mut rejected_resources = Vec::new();
+    let rejected_resources = Vec::new();
     for name in names {
         let resource = format!("{name}.bprobe");
         let parsed = catalog
@@ -168,7 +283,11 @@ pub fn load_for_world(
                 sky_occlusion_sh: probe.sky_occlusion_sh,
                 filtered_sky_occlusion_sh: probe.filtered_sky_occlusion_sh,
             }),
-            Err(error) => rejected_resources.push((resource, error)),
+            // FUN_1402b15e0:160-166 writes a slot for every primary name.
+            // Compacting failed decodes shifts every later native tetra ID.
+            // An unsupported required probe must fail loading, not become a
+            // fabricated black probe or a misindexed, partially loaded array.
+            Err(error) => return Err(format!("required primary probe {resource}: {error}; native ordered probe IDs cannot be compacted")),
         }
     }
     Ok(Some(ProbeLightingSet {
@@ -177,11 +296,39 @@ pub fn load_for_world(
         secondary_resources,
         rejected_resources,
         spatial,
+        vertex_references,
         tetra_grid,
     }))
 }
 
 impl ProbeLightingSet {
+    /// Repack the native typed SRVs into one read-only WGSL word buffer.
+    /// The layout changes; the indices and 24/16/4-byte native records do not.
+    pub fn vertex_shader_words(&self) -> Vec<u32> {
+        let refs = &self.vertex_references;
+        let mut words = vec![0u32; 8];
+        words[0] = words.len().try_into().expect("PNW GPU word count");
+        words.extend_from_slice(&refs.instance_offsets);
+        words[1] = words.len().try_into().expect("PNW GPU word count");
+        words.extend_from_slice(&refs.tetrahedron_indices);
+        words[2] = words.len().try_into().expect("PNW GPU word count");
+        for tetra in &self.spatial.tetrahedra {
+            words.extend_from_slice(&tetra.vertex_indices);
+            words.push(u32::from(tetra.probe_indices[0]) | u32::from(tetra.probe_indices[1]) << 16);
+            words.push(u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16);
+        }
+        words[3] = words.len().try_into().expect("PNW GPU word count");
+        for vertex in &self.spatial.vertices {
+            words.extend(vertex.position.map(f32::to_bits));
+            words.push(u32::from_le_bytes(vertex.probe_weights));
+        }
+        words[4] = refs.instance_offsets.len().try_into().expect("PNW instance count");
+        words[5] = refs.tetrahedron_indices.len().try_into().expect("PNW reference count");
+        words[6] = self.spatial.tetrahedra.len().try_into().expect("PNW tetrahedron count");
+        words[7] = self.spatial.vertices.len().try_into().expect("PNW vertex count");
+        words
+    }
+
     /// Use the game shader's tetrahedron and per-vertex packed-probe-weight
     /// interpolation, returning the authored SH coefficients for a world point.
     pub fn interpolate_static_sh(&self, position: [f32; 3]) -> Option<InterpolatedProbeLighting> {
@@ -299,5 +446,96 @@ impl ProbeLightingSet {
             });
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indirect_lighting_matches_installed_hlsl() {
+        let fixture = include_str!("../analysis/native_indirect_lighting_cases.txt");
+        assert_eq!(fixture.lines().count(), 64);
+        for (id, line) in fixture.lines().enumerate() {
+            let expected = line.split_whitespace()
+                .map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(expected.len(), 84);
+            let sh: [[f32; 3]; 9] = std::array::from_fn(|i| std::array::from_fn(|c| {
+                if id == 0 { 0.0 } else { (((id*17+i*5+c*3)%19) as i32-9) as f32/16.0 }
+            }));
+            let direction = [((id%5) as i32-2) as f32*0.25,
+                (((id/5)%5) as i32-2) as f32*0.25,
+                (((id/25)%5) as i32-2) as f32*0.25].map(|v| v*if id>=32 { 3.0 } else { 1.0 });
+            let mut basis = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            if id & 1 != 0 { basis[0] = [0.0, 1.0, 0.0]; basis[1] = [-1.0, 0.0, 0.0]; }
+            if id & 2 != 0 { basis[1] = basis[1].map(|v| -v); basis[2] = basis[2].map(|v| -v); }
+            let ao = (id%5) as f32*0.25;
+            let rays0 = pack_principal_irradiance(&sh, basis, false);
+            let rays1 = pack_principal_irradiance(&sh, basis, true);
+            let packed = PackedIrradiance::pack(rays0);
+            let mut actual = [[0.0; 4]; 21];
+            let sh4: [[f32; 3]; 4] = sh[..4].try_into().unwrap();
+            let values = [evaluate_sh(direction, &sh4), evaluate_sh(direction, &sh),
+                evaluate_sh_irradiance(direction, &sh),
+                unpack_principal_irradiance(direction, basis, rays0, ao, false),
+                unpack_principal_irradiance(direction, basis, rays1, ao, true)];
+            for (i, value) in values.into_iter().enumerate() { actual[i][..3].copy_from_slice(&value); }
+            for (i, value) in rays0.into_iter().enumerate() { actual[5+i][..3].copy_from_slice(&value); }
+            actual[9][0] = packed.luminance;
+            actual[10] = [packed.chroma[0][0], packed.chroma[0][1], packed.chroma[1][0], packed.chroma[1][1]];
+            actual[11] = [packed.chroma[2][0], packed.chroma[2][1], packed.chroma[3][0], packed.chroma[3][1]];
+            for (i, value) in packed.unpack().into_iter().enumerate() { actual[12+i][..3].copy_from_slice(&value); }
+            actual[16][..3].copy_from_slice(&unpack_principal_irradiance(direction, basis, packed.unpack(), ao, false));
+            let packed_two = PackedIrradiance::pack(rays1);
+            actual[17][0] = packed_two.luminance;
+            actual[18] = [packed_two.chroma[0][0], packed_two.chroma[0][1], packed_two.chroma[1][0], packed_two.chroma[1][1]];
+            actual[19] = [packed_two.chroma[2][0], packed_two.chroma[2][1], packed_two.chroma[3][0], packed_two.chroma[3][1]];
+            actual[20][..3].copy_from_slice(&unpack_principal_irradiance(direction, basis, packed_two.unpack(), ao, true));
+            for (index, (actual, expected)) in actual.into_iter().flatten().zip(expected).enumerate() {
+                assert!((actual-expected).abs() <= 3e-5*expected.abs().max(1.0),
+                    "native HLSL case{id} field{index}: {actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed EOTW assets and the extracted BWM"]
+    fn installed_vertex_references_match_world_instances() {
+        let catalog = archive::Catalog::open(std::path::Path::new(
+            "D:/Programs/Steam/steamapps/common/Dishonored2/base")).unwrap();
+        let set = load_for_world(&catalog, "eotw_p_lowchaos").unwrap().unwrap();
+        let world = crate::world_mesh::parse(&std::fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()).unwrap();
+        assert!(set.rejected_resources.is_empty(), "{:?}", set.rejected_resources);
+        eprintln!("PNW vertex lighting: probes={} cells={} tetrahedra={} offsets={} BWM_instances={} references={} bytes={}",
+            set.probes.len(), set.spatial.cell_count, set.spatial.tetrahedra.len(),
+            set.vertex_references.instance_offsets.len(), world.matrices.len(),
+            set.vertex_references.tetrahedron_indices.len(), set.vertex_references.bytes_consumed);
+        assert_eq!(set.vertex_references.instance_offsets.len(), world.matrices.len());
+        let mut vertices = 0;
+        for object in &world.objects {
+            let mesh = &world.meshes[object.mesh_index];
+            for instance in object.matrix_start..object.matrix_end {
+                let offset = set.vertex_references.instance_offsets[instance] as usize;
+                let end = offset.checked_add(mesh.positions.len()).unwrap();
+                let references = set.vertex_references.tetrahedron_indices.get(offset..end)
+                    .unwrap_or_else(|| panic!("instance{instance} reference range{offset}..{end}"));
+                for &tetrahedron in references {
+                    assert!((tetrahedron as usize) < set.spatial.tetrahedra.len(),
+                        "instance{instance} invalid tetrahedron{tetrahedron}");
+                }
+                vertices += references.len();
+            }
+        }
+        eprintln!("Validated {vertices} BWM instance-vertex references against PNW tetrahedra");
+    }
+
+    #[test]
+    fn color_conversion_uses_native_chroma_range() {
+        assert_eq!(rgb_to_ycocg([1.0, 0.0, 0.0]), [0.25, 1.0, -0.5]);
+        assert_eq!(ycocg_to_rgb([0.25, 1.0, -0.5]), [1.0, 0.0, 0.0]);
+        let packed = PackedIrradiance::pack([[0.0; 3]; 4]);
+        assert_eq!(packed.unpack(), [[0.0; 3]; 4]);
     }
 }

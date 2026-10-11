@@ -149,32 +149,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             &tree, &bytes, data, &input, job, job_count,
                         )
                     } else {
-                        let started = Instant::now();
-                        let mut progress = tome::OrdinaryQueryDiagnostics::default();
-                        let mut state = None;
-                        let result = input.for_render_job(job, job_count).and_then(|input| {
-                            state = Some(tome::RenderQueryState::from_input(
-                                &input,
-                                tome::render_query_job_tile(job, job_count)?,
-                            ));
-                            tome::ordinary_direct_tome_visible_objects_with_diagnostics(
-                                &tree,
-                                &bytes,
-                                &input,
-                                &mut progress,
-                            )
-                        });
-                        tome::RenderQueryJob {
-                            diagnostics: tome::RenderQueryJobDiagnostics {
-                                job_index: job,
-                                viewport: tome::render_query_job_tile(job, job_count).ok(),
-                                elapsed_ns: started.elapsed().as_nanos(),
-                                progress,
-                                error: result.as_ref().err().cloned(),
-                            },
-                            state,
-                            result,
-                        }
+                        tome::ordinary_direct_tome_render_job_uncached(
+                            &tree, &bytes, &input, job, job_count,
+                        )
                     }
                 })
                 .collect();

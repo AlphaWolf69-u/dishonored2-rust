@@ -170,6 +170,11 @@ impl Catalog {
         self.entry(path).is_some()
     }
 
+    /// Decoded size recorded by the installed resource index.
+    pub fn resource_size(&self, path: &str) -> Option<usize> {
+        self.entry(path).map(|entry| entry.size as usize)
+    }
+
     /// Resolve the source->compiled resource mapping stored by the game itself.
     pub fn image_resource(&self, source: &str) -> Option<&str> {
         let source = source.to_ascii_lowercase();

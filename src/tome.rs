@@ -507,6 +507,8 @@ pub struct CellTree {
     cell_visibility_counts: Vec<u32>,
     direct_cell_ids_available: bool,
     cell_bounds: Vec<[[f32; 3]; 2]>,
+    cell_bounds_root: [[f32; 3]; 2],
+    cell_table_at: usize,
     cell_link_ranges: Vec<(u32, u32)>,
     cell_candidate_ranges: Vec<(u32, u32)>,
     links_at: usize,
@@ -569,6 +571,10 @@ impl DirectTomeQueryData {
 
     pub fn cell_count(&self) -> usize {
         self.cell_count
+    }
+
+    pub fn object_count(&self) -> usize {
+        self.object_count
     }
 
     /// FUN_140a7b410/FUN_140a7b4d0 compose the spatial and local point
@@ -1306,6 +1312,34 @@ pub fn spatial_record_query_bounds(
     Ok(expanded)
 }
 
+/// FUN_140a82340 prepares scale and padding once; FUN_140a82710 then
+/// decodes the six u16 cell bounds in this order before emitting query depth.
+/// Do not expand the already decoded CellTree::cell_bounds: multiplying the
+/// quantized value before adding the base/padding preserves native rounding.
+pub fn quantized_cell_query_bounds(
+    root: [[f32; 3]; 2],
+    quantized: [[u16; 3]; 2],
+    record_padding: f32,
+    camera_imprecision: [f32; 3],
+) -> Result<[[f32; 4]; 2], String> {
+    if root.iter().flatten().chain(camera_imprecision.iter())
+        .any(|value| !value.is_finite()) || !record_padding.is_finite()
+    {
+        return Err("nonfinite Tome cell-depth bounds".into());
+    }
+    let mut bounds = [[0.0; 4]; 2];
+    for axis in 0..3 {
+        let scale = (root[1][axis] - root[0][axis]) * (1.0 / 65535.0);
+        let margin = record_padding + camera_imprecision[axis];
+        bounds[0][axis] = quantized[0][axis] as f32 * scale + (root[0][axis] - margin);
+        // 140a83e31 adds base+margin before 140a83e54 adds q*scale.
+        bounds[1][axis] = quantized[1][axis] as f32 * scale + (root[0][axis] + margin);
+    }
+    bounds[0][3] = 1.0;
+    bounds[1][3] = 1.0;
+    Ok(bounds)
+}
+
 /// Record-local state assembled by FUN_140a82340 before cell traversal.
 /// `query_planes` are supplied by the caller after constructing the current
 /// render-query matrix; this helper performs the record-specific setup.
@@ -1509,24 +1543,38 @@ pub fn query_planes_from_rows(depth: [[f32; 4]; 4], sides: [[f32; 4]; 4]) -> [[f
 /// A retained plane is passed to later clipping; this alone does not establish
 /// visibility.
 pub fn active_query_planes(planes: &[[f32; 4]], bounds: [[f32; 4]; 2]) -> Vec<usize> {
-    planes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, plane)| {
-            let corner: [f32; 4] = std::array::from_fn(|axis| {
-                if plane[axis] > 0.0 {
-                    bounds[0][axis]
-                } else {
-                    bounds[1][axis]
-                }
-            });
-            // The original MULPS/SHUFPS/ADDPS sequence adds x+y, then z,
-            // then w. Keep that order for the zero-boundary comparison.
-            let products: [f32; 4] = std::array::from_fn(|axis| corner[axis] * plane[axis]);
-            let distance = ((products[0] + products[1]) + products[2]) + products[3];
-            (distance <= 0.0).then_some(index)
-        })
-        .collect()
+    intersecting_query_plane_positions(planes, bounds, 0..planes.len())
+}
+
+/// FUN_140a76ac0 with param_3 != NULL tests the supplied plane indices,
+/// but emits positions within that list (uVar11 & 0xff), not plane IDs.
+/// Cell-depth clipping consumes these native slot values unchanged.
+pub fn active_query_plane_positions(
+    planes: &[[f32; 4]],
+    bounds: [[f32; 4]; 2],
+    candidates: &[usize],
+) -> Result<Vec<usize>, String> {
+    if candidates.iter().any(|&index| index >= planes.len()) {
+        return Err("invalid Tome active-plane candidate index".into());
+    }
+    Ok(intersecting_query_plane_positions(planes, bounds, candidates.iter().copied()))
+}
+
+fn intersecting_query_plane_positions(
+    planes: &[[f32; 4]],
+    bounds: [[f32; 4]; 2],
+    candidates: impl Iterator<Item = usize>,
+) -> Vec<usize> {
+    candidates.enumerate().filter_map(|(slot, index)| {
+        let plane = planes[index];
+        let products: [f32; 4] = std::array::from_fn(|axis| {
+            let corner = if plane[axis] > 0.0 { bounds[0][axis] } else { bounds[1][axis] };
+            corner * plane[axis]
+        });
+        // MULPS/SHUFPS/ADDPS adds x+y, then z, then w.
+        let distance = ((products[0] + products[1]) + products[2]) + products[3];
+        (distance <= 0.0).then_some(slot & 0xff)
+    }).collect()
 }
 
 /// FUN_140a71b90: reject a box outside the query bounds or the maximum-distance
@@ -1600,7 +1648,7 @@ pub fn clip_box_to_active_query_planes(
     let selected = active
         .iter()
         .copied()
-        .filter(|&index| index >= 2)
+        .skip_while(|&index| index < 2)
         .collect::<Vec<_>>();
     if selected.is_empty() {
         return Ok([low, high]);
@@ -2909,9 +2957,14 @@ impl CellWorkNodePool {
         })
     }
 
-    /// Create FUN_140a85090's bounded node pool, including sentinel ID zero.
+    /// FUN_140a85090 reserves one exterior node through 140a84e90 before
+    /// seeding any cell, even when no output depth descriptor is requested.
     pub fn new_for_original_query() -> Result<Self, String> {
-        Self::new(ORIGINAL_QUERY_WORK_NODE_COUNT)
+        let mut pool = Self::new(ORIGINAL_QUERY_WORK_NODE_COUNT)?;
+        let exterior = pool.free_head;
+        pool.free_head = pool.nodes[exterior as usize].next();
+        pool.nodes[exterior as usize].set_next(0);
+        Ok(pool)
     }
 
     pub fn free_count(&self) -> usize {
@@ -4220,6 +4273,7 @@ pub fn process_next_active_direct_cell<F>(
     worklists: &mut SpatialCellWorklists,
     pool: &mut CellWorkNodePool,
     coverage: &mut VisitedCellCoverage,
+    mut exterior: Option<&mut PortalTileMask>,
     mut process_recycled: F,
 ) -> Result<Option<CellWorkItem>, String>
 where
@@ -4258,10 +4312,30 @@ where
     ];
     for link in cells.traversal_records(bytes, source.cell_index)? {
         let Some(target) = direct_spatial_link_target(link) else {
-            // A bit-28 boundary face merges into the query's separate
-            // exterior mask node (+0x1c7e). It does not queue a local cell or
-            // add Tome object indices in the ordinary single-Tome result.
-            // The exterior mask output is not requested by this API.
+            // FUN_140a85bd0's bit-28 branch merges coverage into +0x1c7e,
+            // without scheduling a local cell. Finalization rasterizes it at1.
+            if let Some(mask) = exterior.as_deref_mut() {
+                if !traversal_link_precheck(bytes, link, direction, gate_states)?.allows_traversal() {
+                    continue;
+                }
+                let face = admitted_link_portal_face(
+                    bytes, record_offset, link, direction, query_point, point_mode_face,
+                )?;
+                if let Some((pixels, path)) = projected_link_portal_transition(
+                    bytes, record_offset, link, face, query_matrix, winding_flip,
+                    active_planes, viewport, &incoming,
+                )? {
+                    mask.grow_to_include(portal_tile_rect(pixels)?)?;
+                    match path {
+                        PortalCoveragePath::Unclipped => {
+                            mask.merge_new_coverage(&incoming)?;
+                        }
+                        PortalCoveragePath::Clipped { projected, face } => {
+                            mask.rasterize_projected_box(&incoming, pixels, projected, face)?;
+                        }
+                    }
+                }
+            }
             continue;
         };
         let target = target as usize;
@@ -4421,9 +4495,9 @@ pub struct RenderQueryState {
 }
 
 impl RenderQueryState {
-    /// FUN_140a788c0 copies the query descriptor before traversal, marks the
-    /// requested output valid, and initializes its maximum depth to zero.
-    /// The live direct-object path does not request a depth-grid output yet.
+    /// FUN_140a788c0 copies the requested descriptor and installs its inline
+    /// grid at+0x590. FUN_140a82630 zeroes4096 floats before any traversal.
+    /// This is output only: current cell-object tests still have no input grid.
     pub fn from_input(input: &OrdinaryDirectQueryInput<'_>, viewport: [i32; 4]) -> Self {
         Self {
             render_rows: input.render_rows,
@@ -4433,12 +4507,13 @@ impl RenderQueryState {
             winding_flip: input.winding_flip,
             viewport,
             maximum_depth: 0.0,
-            depth_grid: None,
+            depth_grid: Some(Box::new([0.0; 4096])),
         }
     }
 }
 
-/// The live no-depth spatial-instance caller does not consume the area.
+/// The spatial-instance caller does not consume the area; the descriptor
+/// determines whether the native no-grid or depth-grid predicate is used.
 pub fn render_query_aabb_visible_without_depth(
     state: Option<&RenderQueryState>,
     bounds: [[f32; 3]; 2],
@@ -4446,10 +4521,9 @@ pub fn render_query_aabb_visible_without_depth(
     render_query_aabb_without_depth(state, bounds, false).map(|(visible, _)| visible)
 }
 
-/// FUN_140a764c0 flag 0 / FUN_140a79460's no-grid branch. An invalid
-/// descriptor accepts without touching the caller's area (represented by
-/// None). Descriptor bounds follow FUN_140a77c00; depth-grid projection
-/// remains unsupported.
+/// FUN_140a764c0 flag0 / FUN_140a79460. An invalid descriptor accepts
+/// without touching the caller's area (None). A requested descriptor uses
+/// its generated depth grid; descriptors without one keep the no-grid path.
 pub fn render_query_aabb_visibility_without_depth(
     state: Option<&RenderQueryState>,
     bounds: [[f32; 3]; 2],
@@ -4503,6 +4577,20 @@ impl<'a> RenderAabbQuery<'a> {
         })
     }
 
+    // Cell generation consumes only immutable descriptor math. Do not borrow
+    // the output grid that the same worker is still building or clone16KiB.
+    fn for_cell_depth(state: &RenderQueryState) -> Result<RenderAabbQuery<'static>, String> {
+        let query = RenderAabbQuery::from_state(state)?;
+        Ok(RenderAabbQuery {
+            camera_imprecision: query.camera_imprecision,
+            planes: query.planes,
+            query_bounds: query.query_bounds,
+            projection_columns: query.projection_columns,
+            viewport: query.viewport,
+            depth_grid: None,
+        })
+    }
+
     fn expanded_bounds(&self, bounds: [[f32; 3]; 2]) -> Result<[[f32; 4]; 2], String> {
         let expanded: [[f32; 4]; 2] = std::array::from_fn(|side| {
             std::array::from_fn(|axis| {
@@ -4533,6 +4621,40 @@ impl<'a> RenderAabbQuery<'a> {
             &self.planes,
             &[0, 1, 2, 3, 4, 5],
         )
+    }
+
+    /// FUN_140a82710's cell-output branch, ending at 0x140a83f72.
+    /// This is farthest Z/W, unlike the nearest-depth object predicate.
+    /// Record-level planes are reduced against the padded cell before clipping.
+    pub fn cell_depth_value(
+        &self,
+        bounds: [[f32; 4]; 2],
+        record_active_planes: &[usize],
+    ) -> Result<f32, String> {
+        if bounds.iter().flatten().any(|value| !value.is_finite())
+            || record_active_planes.iter().any(|&index| index >= self.planes.len())
+        {
+            return Err("invalid Tome cell-depth query".into());
+        }
+        let active = active_query_plane_positions(&self.planes, bounds, record_active_planes)?;
+        let clipped = if active.is_empty() {
+            bounds
+        } else {
+            clip_box_to_active_query_planes(self.query_bounds, bounds, &self.planes, &active)?
+        };
+        let depth_row = self.projection_columns.map(|row| row[2]);
+        let w_row = self.projection_columns.map(|row| row[3]);
+        let corner: [f32; 4] = std::array::from_fn(|axis| {
+            if depth_row[axis] > 0.0 { clipped[1][axis] } else { clipped[0][axis] }
+        });
+        let dot = |row: [f32; 4]| {
+            ((row[1] * corner[1] + row[0] * corner[0]) + row[2] * corner[2])
+                + row[3] * corner[3]
+        };
+        let z = dot(depth_row);
+        let mut depth = if z > 0.0 { z / dot(w_row) } else { 0.0 };
+        if depth > 1.0 { depth = 1.0; }
+        Ok(depth)
     }
 
     pub fn visibility_and_area(&self, bounds: [[f32; 3]; 2]) -> Result<(bool, f32), String> {
@@ -4906,12 +5028,33 @@ pub struct RenderQueryJob {
 }
 
 /// FUN_14037e1d0's supported ordinary, direct-Tome world-object/cell query.
-/// The later light query, collection traversal and depth-buffer output remain
-/// unsupported by this path. A failed query exposes progress, never partial indices.
+/// Requested descriptors receive a depth grid; collection traversal and an
+/// optional input grid remain unsupported. Failure exposes progress, not partial indices.
 pub fn ordinary_direct_tome_render_job(
     tree: &SpatialTree,
     bytes: &[u8],
     data: &DirectTomeQueryData,
+    input: &OrdinaryDirectQueryInput<'_>,
+    job: u32,
+    count: u32,
+) -> RenderQueryJob {
+    ordinary_direct_tome_render_job_inner(tree, bytes, Some(data), input, job, count)
+}
+
+pub fn ordinary_direct_tome_render_job_uncached(
+    tree: &SpatialTree,
+    bytes: &[u8],
+    input: &OrdinaryDirectQueryInput<'_>,
+    job: u32,
+    count: u32,
+) -> RenderQueryJob {
+    ordinary_direct_tome_render_job_inner(tree, bytes, None, input, job, count)
+}
+
+fn ordinary_direct_tome_render_job_inner(
+    tree: &SpatialTree,
+    bytes: &[u8],
+    data: Option<&DirectTomeQueryData>,
     input: &OrdinaryDirectQueryInput<'_>,
     job: u32,
     count: u32,
@@ -4929,12 +5072,9 @@ pub fn ordinary_direct_tome_render_job(
         let viewport = render_query_job_tile(job, count)?;
         diagnostics.viewport = Some(viewport);
         state = Some(RenderQueryState::from_input(&job_input, viewport));
-        ordinary_direct_tome_visible_objects_cached_with_diagnostics(
-            tree,
-            bytes,
-            data,
-            &job_input,
-            &mut diagnostics.progress,
+        ordinary_direct_tome_visible_objects_inner(
+            tree, bytes, &job_input, data, &mut diagnostics.progress,
+            state.as_mut(),
         )
     });
     diagnostics.elapsed_ns = started.elapsed().as_nanos();
@@ -5035,7 +5175,7 @@ pub fn ordinary_direct_tome_visible_objects_with_diagnostics(
     input: &OrdinaryDirectQueryInput<'_>,
     diagnostics: &mut OrdinaryQueryDiagnostics,
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
-    ordinary_direct_tome_visible_objects_inner(tree, bytes, input, None, diagnostics)
+    ordinary_direct_tome_visible_objects_inner(tree, bytes, input, None, diagnostics, None)
 }
 
 pub fn ordinary_direct_tome_visible_objects_cached_with_diagnostics(
@@ -5045,7 +5185,7 @@ pub fn ordinary_direct_tome_visible_objects_cached_with_diagnostics(
     input: &OrdinaryDirectQueryInput<'_>,
     diagnostics: &mut OrdinaryQueryDiagnostics,
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
-    ordinary_direct_tome_visible_objects_inner(tree, bytes, input, Some(data), diagnostics)
+    ordinary_direct_tome_visible_objects_inner(tree, bytes, input, Some(data), diagnostics, None)
 }
 
 fn ordinary_direct_tome_visible_objects_inner(
@@ -5054,12 +5194,19 @@ fn ordinary_direct_tome_visible_objects_inner(
     input: &OrdinaryDirectQueryInput<'_>,
     data: Option<&DirectTomeQueryData>,
     diagnostics: &mut OrdinaryQueryDiagnostics,
+    mut output_state: Option<&mut RenderQueryState>,
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
     *diagnostics = OrdinaryQueryDiagnostics::default();
     diagnostics.stage = "setup";
     let planes = query_planes_from_rows(input.render_rows, input.cropped_rows);
     let stored_matrix = stored_query_matrix_from_render_rows(input.render_rows);
     let initial_mask = PortalTileMask::full(input.initial_tile_rect)?;
+    let depth_query = output_state.as_deref()
+        .filter(|state| state.depth_grid.is_some())
+        .map(RenderAabbQuery::for_cell_depth).transpose()?;
+    let mut exterior_mask = if depth_query.is_some() {
+        Some(PortalTileMask::new(input.initial_tile_rect)?)
+    } else { None };
     let parsed_rows;
     let rows = if let Some(data) = data {
         &data.slot_rows
@@ -5151,6 +5298,7 @@ fn ordinary_direct_tome_visible_objects_inner(
             &planes,
         )?;
         diagnostics.active_planes.clone_from(&setup.active_planes);
+        let record_padding = float(bytes, record_offset as usize + 0x30)?;
         diagnostics.stage = "cell_traversal";
         let direction = LinkQueryDirection::Volume {
             center: setup.link_center,
@@ -5191,6 +5339,20 @@ fn ordinary_direct_tome_visible_objects_inner(
                     &mut output,
                 )
                 .and_then(|()| {
+                    // 140a82710 emits cell depth after objects, before cells.
+                    if let (Some(depth_query), Some(state)) =
+                        (depth_query.as_ref(), output_state.as_deref_mut())
+                    {
+                        let bounds = cells.cell_depth_bounds(
+                            bytes, item.cell_index as usize, record_padding, input.camera_imprecision,
+                        )?;
+                        let value = depth_query.cell_depth_value(bounds, &setup.active_planes)?;
+                        if let Some(grid) = state.depth_grid.as_deref_mut() {
+                            state.maximum_depth = rasterize_depth_mask(
+                                grid, portal.rect, &portal.bits, value, state.maximum_depth,
+                            )?;
+                        }
+                    }
                     cells.append_visible_cell_indices(
                         bytes,
                         item.cell_index as usize,
@@ -5234,6 +5396,7 @@ fn ordinary_direct_tome_visible_objects_inner(
                 &mut worklists,
                 &mut pool,
                 &mut coverage,
+                exterior_mask.as_mut(),
                 &mut process_recycled,
             )
             .map_err(|error| {
@@ -5256,6 +5419,17 @@ fn ordinary_direct_tome_visible_objects_inner(
         diagnostics.cells_processed += cells_processed;
         record_result?;
         diagnostics.stage = "spatial_activation";
+    }
+    if let (Some(mask), Some(state)) = (exterior_mask.as_ref(), output_state.as_deref_mut()) {
+        if let Some(grid) = state.depth_grid.as_deref_mut() {
+            // 140a85bd0 flushes every delayed cell before the exterior mask.
+            // Ordinary world jobs have no input grid to min-clamp against.
+            if mask.bits.iter().any(|&word| word != 0) {
+                state.maximum_depth = rasterize_depth_mask(
+                    grid, mask.rect, &mask.bits, 1.0, state.maximum_depth,
+                )?;
+            }
+        }
     }
     diagnostics.stage = "complete";
     diagnostics.accepted_objects = output.count();
@@ -7141,6 +7315,8 @@ impl CellTree {
             cell_visibility_counts,
             direct_cell_ids_available,
             cell_bounds,
+            cell_bounds_root: root,
+            cell_table_at: cell_table,
             cell_link_ranges,
             cell_candidate_ranges,
             links_at,
@@ -7163,6 +7339,21 @@ impl CellTree {
     }
     pub fn cell_bounds(&self, index: usize) -> Option<[[f32; 3]; 2]> {
         self.cell_bounds.get(index).copied()
+    }
+
+    fn cell_depth_bounds(
+        &self, bytes: &[u8], index: usize, padding: f32, imprecision: [f32; 3],
+    ) -> Result<[[f32; 4]; 2], String> {
+        if index >= self.cell_count() {
+            return Err("Tome cell-depth index exceeds cell table".into());
+        }
+        let at = self.cell_table_at + index * 0x24;
+        let packed = [word(bytes, at + 0x18)?, word(bytes, at + 0x1c)?, word(bytes, at + 0x20)?];
+        let quantized = [
+            [(packed[0] >> 16) as u16, packed[0] as u16, (packed[1] >> 16) as u16],
+            [packed[1] as u16, (packed[2] >> 16) as u16, packed[2] as u16],
+        ];
+        quantized_cell_query_bounds(self.cell_bounds_root, quantized, padding, imprecision)
     }
     /// FUN_140a7b890: +0x34 high bits must be nonzero before the +0x10
     /// cell-table value is meaningful as a point-cell ID. Otherwise return
@@ -8092,6 +8283,7 @@ mod tests {
             &mut loop_worklists,
             &mut loop_pool,
             &mut loop_coverage,
+            None,
             |_, _, _| Ok(()),
         )
         .unwrap()
@@ -8125,6 +8317,7 @@ mod tests {
                 &mut loop_worklists,
                 &mut loop_pool,
                 &mut loop_coverage,
+                None,
                 |_, _, _| Ok(()),
             )
             .unwrap()
@@ -8233,6 +8426,61 @@ mod tests {
         assert!(diagnostics.current_object_cell.is_some());
         assert!(diagnostics.object_passes > 0);
         assert_eq!(diagnostics.accepted_objects, 0);
+    }
+
+    #[test]
+    #[ignore = "requires local original-game EOTW Tome fixture"]
+    fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
+        let bytes = std::fs::read("artifacts/eotw_p_lowchaos.tome").unwrap();
+        let tree = SpatialTree::parse(&bytes).unwrap();
+        let data = DirectTomeQueryData::parse(&bytes, &tree).unwrap();
+        let point = [-43.0, 138.0, 48.0];
+        let pose = [
+            [1.0, 0.0, 0.0, point[0]], [0.0, 1.0, 0.0, point[1]],
+            [0.0, 0.0, 1.0, point[2]], [0.0, 0.0, 0.0, 1.0],
+        ];
+        let rows = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+        let gates = initial_gate_states(&bytes).unwrap();
+        let input = OrdinaryDirectQueryInput {
+            camera_point: point, render_rows: rows, cropped_rows: rows,
+            initial_tile_rect: [0, 0, 8, 16], camera_imprecision: [0.6; 3],
+            object_imprecision: 0.6, minimum_area_metric: 25.0 / (1920.0 * 1080.0),
+            global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            winding_flip: query_matrix_winding_flip(rows), gate_states: Some(&gates),
+            output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+        };
+        for count in [1, 4] {
+            let mut cached_jobs = Vec::new();
+            for job in 0..count {
+                let cached = ordinary_direct_tome_render_job(&tree, &bytes, &data, &input, job, count);
+                let uncached = ordinary_direct_tome_render_job_uncached(&tree, &bytes, &input, job, count);
+                let left = cached.result.as_ref().unwrap().as_ref().unwrap();
+                let right = uncached.result.as_ref().unwrap().as_ref().unwrap();
+                assert_eq!(left.indices(), right.indices(), "job{job}/{count} object output");
+                assert_eq!(left.area_metrics(), right.area_metrics(), "job{job}/{count} area output");
+                assert_eq!(cached.state, uncached.state, "job{job}/{count} descriptor/grid");
+                // Requested output must not feed back into current object tests.
+                let local = input.for_render_job(job, count).unwrap();
+                let baseline = ordinary_direct_tome_visible_objects_cached_with_diagnostics(
+                    &tree, &bytes, &data, &local, &mut OrdinaryQueryDiagnostics::default(),
+                ).unwrap().unwrap();
+                assert_eq!(left.indices(), baseline.indices(), "job{job}/{count} output/input separation");
+                cached_jobs.push(cached);
+            }
+            let output = merge_render_query_outputs(&cached_jobs).unwrap().unwrap();
+            let state = output.state.as_ref().unwrap();
+            let grid = state.depth_grid.as_ref().expect("requested descriptor must contain generated depth");
+            let populated = grid.iter().filter(|&&value| value != 0.0).count();
+            assert!(populated > 0, "{count} jobs produced an empty grid");
+            assert!(grid.iter().all(|&value| value.is_finite() && (0.0..=1.0).contains(&value)));
+            assert!(state.maximum_depth > 0.0 && state.maximum_depth <= 1.0);
+            let query = RenderAabbQuery::from_state(state).unwrap();
+            for &index in output.indices() {
+                assert!(query.visible(object_bounds(&bytes, index).unwrap()).unwrap(),
+                    "generated depth rejected accepted object{index} with{count} jobs");
+            }
+            println!("EOTW depth jobs={count} objects={} populated={populated} maximum={}", output.indices().len(), state.maximum_depth);
+        }
     }
 
     #[test]
@@ -9159,6 +9407,52 @@ mod tests {
                 [-1.0, 1.0, 1.0],
             ]
         );
+    }
+
+    #[test]
+    fn cell_depth_output_matches_full_original_cell_worker() {
+        let mask = PortalTileMask::full([0, 0, 8, 16]).unwrap();
+        let fixture = include_str!("../analysis/native_cell_query_depth_cases.txt");
+        for (case, line) in fixture.lines().enumerate() {
+            let words: Vec<u64> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+            let f = |index: usize| f32::from_bits(words[index] as u32);
+            let root = std::array::from_fn(|side| std::array::from_fn(|axis| f(8 + side * 3 + axis)));
+            let quantized = std::array::from_fn(|side| std::array::from_fn(|axis| words[2 + side * 3 + axis] as u16));
+            let camera_imprecision = std::array::from_fn(|axis| f(15 + axis));
+            let bounds = quantized_cell_query_bounds(root, quantized, f(14), camera_imprecision).unwrap();
+            let render_rows = std::array::from_fn(|row| std::array::from_fn(|column| f(18 + row * 4 + column)));
+            let state = RenderQueryState {
+                render_rows,
+                cropped_rows: crop_query_rows(render_rows, render_query_job_tile(words[0] as u32, words[1] as u32).unwrap()).unwrap(),
+                camera_point: [0.0; 3],
+                camera_imprecision,
+                winding_flip: false,
+                viewport: render_query_job_tile(words[0] as u32, words[1] as u32).unwrap(),
+                maximum_depth: 0.0,
+                depth_grid: None,
+            };
+            let count = words[66] as usize;
+            assert_eq!(words.len(), 69 + count, "native cell depth case {case}");
+            let active = words[67..67 + count].iter().map(|&word| word as usize).collect::<Vec<_>>();
+            let query = RenderAabbQuery::from_state(&state).unwrap();
+            let native_planes: [[u32; 4]; 6] = std::array::from_fn(|plane| {
+                std::array::from_fn(|axis| words[34 + plane * 4 + axis] as u32)
+            });
+            let native_bounds: [[u32; 4]; 2] = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| words[58 + side * 4 + axis] as u32)
+            });
+            assert_eq!(query.planes.map(|row| row.map(f32::to_bits)), native_planes, "native cell query planes case {case}");
+            assert_eq!(query.query_bounds.map(|row| row.map(f32::to_bits)), native_bounds, "native cell query bounds case {case}");
+            let value = query.cell_depth_value(bounds, &active).unwrap();
+            let mut grid = [0.0f32; 4096];
+            let maximum = rasterize_depth_mask(&mut grid, mask.rect, &mask.bits, value, 0.0).unwrap();
+            assert_eq!(maximum.to_bits(), words[67 + count] as u32, "native cell depth maximum case {case}");
+            let digest = grid.iter().fold(0xcbf29ce484222325u64, |hash, depth| {
+                (hash ^ u64::from(depth.to_bits())).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(digest, words[68 + count], "native cell depth grid case {case}");
+        }
+        assert_eq!(fixture.lines().count(), 1440);
     }
 
     #[test]
@@ -10602,6 +10896,8 @@ mod tests {
             cell_visibility_counts: vec![0],
             direct_cell_ids_available: true,
             cell_bounds: vec![[[-1.0; 3], [1.0; 3]]],
+            cell_bounds_root: [[-1.0; 3], [1.0; 3]],
+            cell_table_at: 0,
             cell_link_ranges: vec![(0, 0)],
             cell_candidate_ranges: vec![(0, 1)],
             links_at: 0,
@@ -11098,6 +11394,8 @@ mod tests {
             cell_visibility_counts: vec![count],
             direct_cell_ids_available: true,
             cell_bounds: Vec::new(),
+            cell_bounds_root: [[0.0; 3]; 2],
+            cell_table_at: 0,
             cell_link_ranges: Vec::new(),
             cell_candidate_ranges: Vec::new(),
             links_at: 0,
@@ -11360,6 +11658,8 @@ mod tests {
             cell_visibility_counts: Vec::new(),
             direct_cell_ids_available: true,
             cell_bounds: Vec::new(),
+            cell_bounds_root: [[0.0; 3]; 2],
+            cell_table_at: 0,
             cell_link_ranges: Vec::new(),
             cell_candidate_ranges: vec![(0, 35)],
             links_at: 0,
@@ -12243,7 +12543,8 @@ mod tests {
             worklists.cell_states().len(),
             ORIGINAL_RECORD_CELL_STATE_COUNT
         );
-        assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 1);
+        // 140a85090 reserves exterior node1 before this camera-cell seed.
+        assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 2);
         let destination = TraversalCellId {
             spatial_index: 17,
             cell_index: 2,
@@ -12257,12 +12558,12 @@ mod tests {
         assert_eq!(
             item,
             CellWorkItem {
-                entry_id: 1,
+                entry_id: 2,
                 cell_index: 2
             }
         );
         assert_eq!(worklists.pending_cell(1, 2), Some(item));
-        assert_eq!(worklists.cell_states()[2], 0x8001);
+        assert_eq!(worklists.cell_states()[2], 0x8002);
         assert_eq!(coverage.coverage(destination).unwrap().bits, [u32::MAX; 2]);
         assert_eq!(
             worklists
@@ -12270,7 +12571,7 @@ mod tests {
                 .unwrap(),
             None
         );
-        assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 2);
+        assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 3);
     }
 
     #[test]

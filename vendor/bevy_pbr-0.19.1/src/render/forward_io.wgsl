@@ -27,8 +27,12 @@ struct Vertex {
     @location(6) joint_indices: vec4<u32>,
     @location(7) joint_weights: vec4<f32>,
 #endif
+#ifdef DH2_VERTEX_PROBE
+    @builtin(vertex_index) index: u32,
+#else
 #ifdef MORPH_TARGETS
     @builtin(vertex_index) index: u32,
+#endif
 #endif
 };
 
@@ -58,6 +62,11 @@ struct VertexOutput {
 #endif
 #ifdef VISIBILITY_RANGE_DITHER
     @location(7) @interpolate(flat) visibility_range_dither: i32,
+#endif
+#ifdef DH2_VERTEX_PROBE
+    @location(9) probe_luminance: f32,
+    @location(10) probe_chroma_a: vec4<f32>,
+    @location(11) probe_chroma_b: vec4<f32>,
 #endif
 }
 

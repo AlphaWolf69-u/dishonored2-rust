@@ -8,6 +8,13 @@ pub fn raise_image_priority(priority: &mut u8, requested: u8) {
     if *priority < requested { *priority = requested; }
 }
 
+/// FUN_1402c2b90 clears the 21 format bits, retaining descriptor ownership
+/// bits, and returns the same caller-owned word (not an allocated resource).
+pub fn reset_resource_format(packed: &mut u32) -> &mut u32 {
+    *packed &= 0xffe0_0000;
+    packed
+}
+
 /// FUN_1402c2e30: the low six format-family bits determine upload/storage bpp.
 pub fn image_bits_per_pixel(packed: u32) -> u32 {
     match packed & 63 {
@@ -921,6 +928,13 @@ mod tests {
                     let mut output = 0xa55a7e19;
                     let ok = map_image_format(f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap(), &mut output);
                     assert_eq!((u8::from(ok), output), (f[4].parse().unwrap(), f[5].parse().unwrap()), "{line}");
+                }
+                "C" => {
+                    let mut value = f[1].parse().unwrap();
+                    let address = &mut value as *mut u32;
+                    let returned = reset_resource_format(&mut value) as *mut u32;
+                    assert_eq!(returned == address, f[3] == "1", "{line}");
+                    assert_eq!(value, f[2].parse::<u32>().unwrap(), "{line}");
                 }
                 "B" => assert_eq!(image_bits_per_pixel(f[1].parse().unwrap()), f[2].parse::<u32>().unwrap(), "{line}"),
                 "N" => {

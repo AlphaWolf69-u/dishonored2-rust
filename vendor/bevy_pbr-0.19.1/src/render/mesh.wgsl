@@ -7,6 +7,10 @@
     view_transformations::position_world_to_clip,
 }
 
+#ifdef DH2_VERTEX_PROBE
+#import dh2_indirect::{native_vertex_sh, pack_vertex_irradiance}
+#endif
+
 #ifdef MORPH_TARGETS
 // The instance_index parameter must match vertex_in.instance_index. This is a work around for a wgpu dx12 bug.
 // See https://github.com/gfx-rs/naga/issues/2416
@@ -117,6 +121,21 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex_no_morph.instance_index, mesh_world_from_local[3]);
 #endif
 
+#ifdef DH2_VERTEX_PROBE
+    let sh = native_vertex_sh(mesh[vertex_no_morph.instance_index].tag,
+        vertex_no_morph.index - mesh[vertex_no_morph.instance_index].first_vertex_index,
+        out.world_position.xyz);
+#ifdef DH2_AUTHORED_BASIS
+    let bitangent = out.world_bitangent;
+#else
+    let bitangent = cross(out.world_normal, out.world_tangent.xyz) * out.world_tangent.w;
+#endif
+    let packed = pack_vertex_irradiance(sh, out.world_tangent.xyz, bitangent,
+        out.world_normal, (#{DH2_ALPHA_FLAGS}u & 4u) != 0u);
+    out.probe_luminance = packed.luminance;
+    out.probe_chroma_a = packed.chroma_a;
+    out.probe_chroma_b = packed.chroma_b;
+#endif
     return out;
 }
 

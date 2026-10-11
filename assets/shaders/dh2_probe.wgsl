@@ -8,9 +8,7 @@
 }
 
 #import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc}
-
-@group(#{MATERIAL_BIND_GROUP}) @binding(100)
-var<storage, read> probe_sh: array<array<vec4<f32>, 9>>;
+#import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse}
 
 fn evaluate_sh_irradiance(direction: vec3<f32>, probe_index: u32) -> vec3<f32> {
     let x = direction.x;
@@ -105,11 +103,25 @@ fn fragment(
 
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         let probe_index = mesh[vertex_output.instance_index].tag;
+#ifdef DH2_VERTEX_PROBE
+#ifdef DH2_AUTHORED_BASIS
+        let bitangent = vertex_output.world_bitangent;
+#else
+        let bitangent = cross(vertex_output.world_normal, vertex_output.world_tangent.xyz) * vertex_output.world_tangent.w;
+#endif
+        let indirect = unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
+            vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
+            pbr_input.N, vertex_output.world_tangent.xyz, bitangent,
+            vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
+        pbr_input.material.emissive = vec4(pbr_input.material.emissive.rgb
+            + indirect * pbr_input.material.base_color.rgb, pbr_input.material.emissive.a);
+#else
         pbr_input.material.emissive = vec4<f32>(
             pbr_input.material.emissive.rgb
                 + probe_diffuse(pbr_input.N, probe_index) * pbr_input.material.base_color.rgb * pbr_input.diffuse_occlusion,
             pbr_input.material.emissive.a,
         );
+#endif
     }
 
     var out: FragmentOutput;

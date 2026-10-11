@@ -1,6 +1,16 @@
 //! Original render-model flag and finite query helpers.
 use crate::tome::NoDepthAabbQuery;
 
+/// FUN_141374630 registers r_multiSamples="0" (no multisampled FBO).
+/// FUN_140347410 copies the setting into renderer state. This default must
+/// not inherit Bevy's four-sample default.
+pub const ORIGINAL_DEFAULT_MULTI_SAMPLES: i32 = 0;
+
+/// FUN_140346720: the physical texture sample count is at least one.
+pub fn original_renderer_sample_count(configured: i32) -> u32 {
+    configured.max(1) as u32
+}
+
 /// Bounded view of one native packed-count array used by FUN_140341fb0.
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceKeyArrayView<'a, T> {
@@ -3006,6 +3016,19 @@ impl VisibilityNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_multisample_getters_match_original() {
+        assert_eq!(original_renderer_sample_count(ORIGINAL_DEFAULT_MULTI_SAMPLES), 1);
+        let fixture = include_str!("../analysis/native_multisample_cases.txt");
+        for line in fixture.lines() {
+            let words = line.split_whitespace().map(|word| word.parse::<i32>().unwrap()).collect::<Vec<_>>();
+            assert_eq!(original_renderer_sample_count(words[0]), words[2] as u32);
+            // Entire FUN_14036b620 is integer equality against the raw setting,
+            // not the clamped texture count. Rust's existing equality suffices.
+            assert_eq!((words[0] == words[1]) as i32, words[3]);
+        }
+    }
 
     #[test]
     fn native_depth_draw_cache_reset_matches_conditional_two_qword_clear() {

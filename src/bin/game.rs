@@ -27,12 +27,18 @@ mod probe_lighting;
 mod render_light;
 #[path = "../render_model.rs"]
 mod render_model;
+#[path = "../render_resource.rs"]
+mod render_resource;
 #[path = "../runtime.rs"]
 mod runtime;
 #[path = "../texture.rs"]
 mod texture;
 #[path = "../tome.rs"]
 mod tome;
+#[path = "../tiled_lighting.rs"]
+mod tiled_lighting;
+#[path = "../tiled_lighting_gpu.rs"]
+mod tiled_lighting_gpu;
 #[path = "../world_mesh.rs"]
 mod world_mesh;
 
@@ -164,6 +170,7 @@ struct OriginalLocalLightCullStats {
     static_id_culled: usize,
     static_id_binding_active: bool,
     world_query_bound: bool,
+    world_query_depth_grid_bound: bool,
     world_query_unverified: usize,
     world_query_error: Option<String>,
     sphere_candidates: usize,
@@ -326,6 +333,8 @@ const SURFACE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("b7018b4d-b81d-44c0-9dd0-0b64cc879316");
 const DECAL_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("9165b294-a09d-46cb-af56-27edbe334a1b");
+const INDIRECT_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("8257a42a-79cb-431e-862a-d5c8380347b5");
 const ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES: f32 = 80.0;
 const ORIGINAL_DEFAULT_NEAR: f32 = 0.01;
 const ORIGINAL_DEFAULT_FAR: f32 = 7000.0;
@@ -341,6 +350,7 @@ struct ResolvedMaterial {
     handle: MaterialHandle,
     diffuse_image_slot: Option<usize>,
     probe_index: u32,
+    native_vertex_lighting: bool,
 }
 
 #[derive(Clone)]
@@ -348,6 +358,7 @@ struct CachedMaterial {
     handle: MaterialHandle,
     diffuse_image_slot: Option<usize>,
     images: Vec<(usize, surface_gpu::ImageRole)>,
+    native_vertex_lighting: bool,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -355,6 +366,8 @@ struct CachedMaterial {
 struct ProbeExtension {
     #[storage(100, read_only)]
     sh: Handle<ShaderBuffer>,
+    #[storage(119, read_only)]
+    vertex_probes: Handle<ShaderBuffer>,
     #[uniform(101)]
     surface: surface_gpu::SurfaceUniform,
     #[texture(102)]
@@ -437,6 +450,17 @@ impl MaterialExtension for ProbeExtension {
         layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        let native_lighting = matches!(key.bind_group_data.0[6], 1 | 2)
+            && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
+            && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
+            && descriptor.fragment.as_ref().is_some_and(|fragment| fragment.shader == PROBE_SHADER_HANDLE);
+        if native_lighting {
+            descriptor.vertex.shader_defs.push("DH2_VERTEX_PROBE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() { fragment.shader_defs.push("DH2_VERTEX_PROBE".into()); }
+            for (name, value) in surface_gpu::SurfaceKey::NAMES.into_iter().zip(key.bind_group_data.0) {
+                descriptor.vertex.shader_defs.push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
+            }
+        }
         specialize_surface(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)
     }
@@ -603,6 +627,15 @@ impl SceneRenderQueue {
             .extend_from_slice(output.cell_indices());
         self.visible_cell_mask = mask;
         self.light_query_state = output.state.clone();
+        // Diagnostic A/B keeps traversal identical and selects the existing
+        // no-grid descriptor path only for downstream model/light queries.
+        if env::var_os("DH2_PERF_PROFILE").is_some()
+            && env::var_os("DH2_PERF_WITHOUT_QUERY_DEPTH").is_some()
+        {
+            if let Some(state) = self.light_query_state.as_mut() {
+                state.depth_grid = None;
+            }
+        }
         Ok(())
     }
 }
@@ -1485,7 +1518,7 @@ impl TomeRenderInstanceMap {
         let query = if self.spatial_query_instances.is_empty() {
             None
         } else {
-            state.map(tome::NoDepthAabbQuery::from_state).transpose()?
+            state.map(tome::RenderAabbQuery::from_state).transpose()?
         };
         for instance in &self.spatial_query_instances {
             let visible = match &query {
@@ -1649,7 +1682,33 @@ fn f8_camera_pose(report: &str) -> Option<Transform> {
     }
     let eye = game_to_view(vector(report, "Camera game_xyz:")?);
     let direction = game_to_view(vector(report, "Camera direction game_xyz:")?);
-    (direction.length_squared() > 0.0).then(|| Transform::from_translation(eye).looking_to(direction, Vec3::Y))
+    let up = if report.lines().any(|line| line.starts_with("Camera up game_xyz:")) {
+        game_to_view(vector(report, "Camera up game_xyz:")?)
+    } else { Vec3::Y };
+    (direction.length_squared() > 0.0 && up.length_squared() > 0.0
+        && direction.cross(up).length_squared() > 0.0)
+        .then(|| Transform::from_translation(eye).looking_to(direction, up))
+}
+
+// Replay metadata is diagnostic input, not a replacement for the registered
+// 80-degree default. Original live capture can contain a user-adjusted FOV.
+fn f8_reference_fov(report: &str) -> Option<f32> {
+    let value = report.lines().find_map(|line| line.strip_prefix("Reference horizontal FOV degrees:"))
+        .map_or(Some(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES), |text| text.trim().parse::<f32>().ok())?;
+    (value > 0.0).then_some(())?;
+    tome::original_render_vertical_fov_radians(value).ok().map(|_| value)
+}
+
+fn reference_fov_from_projection(projection: &Projection) -> Result<f32, String> {
+    let Projection::Perspective(perspective) = projection else {
+        return Err("ordinary original world visibility requires a perspective projection".into());
+    };
+    let vertical = perspective.fov;
+    if !vertical.is_finite() || vertical <= 0.0 || vertical >= std::f32::consts::PI {
+        return Err("camera has an invalid vertical field of view".into());
+    }
+    // Inverse of the original FUN_140890b50 reference-aspect conversion.
+    Ok((2.0 * ((vertical * 0.5).tan() / 0.5625).atan()).to_degrees())
 }
 
 fn original_light_preset(
@@ -1950,7 +2009,7 @@ fn apply_placed_model_queries(
     {
         return Err("placed model query indices exceed render instances".into());
     }
-    let query = tome::NoDepthAabbQuery::from_state(state)?;
+    let query = tome::RenderAabbQuery::from_state(state)?;
     let mut accepted = 0;
     for group in groups {
         if render_model::model_visible(&query, camera, viewport, group.input)? {
@@ -2223,6 +2282,7 @@ struct MaterialResolver<'a> {
     decal_materials: &'a mut Assets<DecalMaterial>,
     probe_sh_buffers: &'a mut Assets<ShaderBuffer>,
     probe_sh_buffer: Handle<ShaderBuffer>,
+    vertex_probe_buffer: Handle<ShaderBuffer>,
     probe_sh_records: Vec<[Vec4; 9]>,
     probes: Option<&'a probe_lighting::ProbeLightingSet>,
     cache: HashMap<String, Option<CachedMaterial>>,
@@ -2290,7 +2350,7 @@ impl MaterialResolver<'_> {
         if let Some(cached) = self.cache.get(path) {
             let cached = cached.clone()?;
             let probe_index = self.append_probe_record(game_position);
-            return Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index });
+            return Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index, native_vertex_lighting: cached.native_vertex_lighting });
         }
         let key = path.to_owned();
         let bytes = self.catalog.and_then(|c| c.read(&format!("generated/decls/material/{path}.decl")).ok().flatten());
@@ -2368,6 +2428,7 @@ impl MaterialResolver<'_> {
             cull_mode: None,
             ..default()
         };
+        let native_vertex_lighting = matches!(uniform.misc.z, 1 | 2);
         let handle = if is_decal {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
@@ -2396,6 +2457,7 @@ impl MaterialResolver<'_> {
                 base,
                 extension: ProbeExtension {
                     sh: self.probe_sh_buffer.clone(),
+                    vertex_probes: self.vertex_probe_buffer.clone(),
                     surface: uniform,
                     diffuse0: None,
                     diffuse1: None,
@@ -2415,10 +2477,10 @@ impl MaterialResolver<'_> {
                 },
             }))
         };
-        let cached = CachedMaterial { handle, diffuse_image_slot, images };
+        let cached = CachedMaterial { handle, diffuse_image_slot, images, native_vertex_lighting };
         self.cache.insert(key, Some(cached.clone()));
         let probe_index = self.append_probe_record(game_position);
-        Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index })
+        Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index, native_vertex_lighting: cached.native_vertex_lighting })
     }
 }
 
@@ -2429,6 +2491,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut probe_materials: ResMut<Assets<ProbeMaterial>>,
     mut probe_sh_buffers: ResMut<Assets<ShaderBuffer>>,
+    render_device: Res<RenderDevice>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     mut exposure_curves: ResMut<Assets<AutoExposureCompensationCurve>>,
 ) {
@@ -2477,14 +2540,30 @@ fn setup(
             scene.placed_models.len()
         );
     }
-    let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(vec![[Vec4::ZERO; 9]]));
+    // Preserve ordered primary probe IDs in binding100; per-object records
+    // are appended after them. World geometry uses its PNW instance offset.
+    let mut records = scene.environment_probes.as_ref().map(|set| set.probes.iter()
+        .map(|probe| probe.static_lighting_sh.map(|v| if lit { Vec4::new(v[0],v[1],v[2],0.0) } else { Vec4::ZERO }))
+        .collect::<Vec<_>>()).unwrap_or_default();
+    if records.is_empty() { records.push([Vec4::ZERO; 9]); }
+    let words = scene.environment_probes.as_ref().map(probe_lighting::ProbeLightingSet::vertex_shader_words)
+        .unwrap_or_else(|| vec![0u32; 8]);
+    let bytes = words.len() as u64 * 4;
+    let limits = render_device.limits();
+    assert!(bytes <= u64::from(limits.max_storage_buffer_binding_size) && bytes <= limits.max_buffer_size,
+        "native PNW vertex lighting requires a {bytes}-byte buffer; device storage limit={}, buffer limit={}",
+        limits.max_storage_buffer_binding_size, limits.max_buffer_size);
+    println!("Native vertex-probe GPU data: {} primary records, {bytes} bytes (device storage limit {})", records.len(), limits.max_storage_buffer_binding_size);
+    let vertex_probe_buffer = probe_sh_buffers.add(ShaderBuffer::from(words));
+    let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(records.clone()));
     let mut resolver = MaterialResolver {
         catalog,
         probe_materials: &mut probe_materials,
         decal_materials: &mut decal_materials,
         probe_sh_buffers: &mut probe_sh_buffers,
         probe_sh_buffer,
-        probe_sh_records: vec![[Vec4::ZERO; 9]],
+        vertex_probe_buffer,
+        probe_sh_records: records,
         probes: scene.environment_probes.as_ref(),
         cache: HashMap::new(),
         diffuse_image_slots: HashMap::new(),
@@ -2579,7 +2658,7 @@ fn setup(
                     mesh: baked,
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: mat.probe_index,
+                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some() { 0x80000000 | matrix_index as u32 } else { mat.probe_index },
                     transform: Transform::IDENTITY,
                     bounds,
                     pickup_id: None,
@@ -2593,7 +2672,7 @@ fn setup(
                     mesh: mesh.clone(),
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: mat.probe_index,
+                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some() { 0x80000000 | matrix_index as u32 } else { mat.probe_index },
                     transform: instance,
                     bounds,
                     pickup_id: None,
@@ -2940,12 +3019,18 @@ fn setup(
         best.0
     };
     let mut camera = view_of(&targets[active]);
+    let mut reference_horizontal_fov = ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES;
     if let Some(path) = env::var_os("DH2_REPLAY_F8") {
         let report = fs::read_to_string(&path).expect("cannot read DH2_REPLAY_F8 capture");
         camera = f8_camera_pose(&report).expect("DH2_REPLAY_F8 has an invalid camera pose");
-        println!("Replaying saved F8 camera from {}", PathBuf::from(path).display());
+        reference_horizontal_fov = f8_reference_fov(&report)
+            .expect("DH2_REPLAY_F8 has an invalid reference horizontal FOV");
+        println!("Replaying saved F8 camera from {} at reference FOV {reference_horizontal_fov}", PathBuf::from(path).display());
     }
-    let walking = navigation.is_some() && scene.player_start.is_some();
+    // Replayed F8 poses are benchmark inputs, not spawn points. Gravity must
+    // not move the saved camera while comparing rendering at that same pose.
+    let walking = navigation.is_some() && scene.player_start.is_some()
+        && env::var_os("DH2_REPLAY_F8").is_none();
     let feet = camera.translation - Vec3::Y * 1.7;
     let walker = navigation
         .as_ref()
@@ -3003,8 +3088,19 @@ fn setup(
     // r_zfar=7000. The vertical FOV is derived by FUN_140890b50; Bevy updates
     // the projection aspect when the actual camera viewport changes.
     let game_default_vertical_fov =
-        tome::original_render_vertical_fov_radians(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES)
+        tome::original_render_vertical_fov_radians(reference_horizontal_fov)
             .expect("the registered game FOV default is valid");
+    // The original registers r_multiSamples=0 and clamps physical count to1.
+    // Override only in explicit profiling runs for same-source A/B testing.
+    let multi_samples = env::var("DH2_PERF_MULTI_SAMPLES").ok()
+        .filter(|_| env::var("DH2_PERF_PROFILE").as_deref() == Ok("1"))
+        .map(|value| value.parse::<i32>().expect("invalid DH2_PERF_MULTI_SAMPLES"))
+        .unwrap_or(render_model::ORIGINAL_DEFAULT_MULTI_SAMPLES);
+    let physical_samples = render_model::original_renderer_sample_count(multi_samples);
+    assert!([1, 2, 4, 8].contains(&physical_samples),
+        "DH2_PERF_MULTI_SAMPLES={multi_samples} requests {physical_samples} samples; this renderer supports 1, 2, 4, or 8");
+    let renderer_msaa = Msaa::from_samples(physical_samples);
+    eprintln!("[renderer] r_multiSamples={multi_samples} physical_samples={}", renderer_msaa.samples());
     let mut camera_entity = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
@@ -3014,7 +3110,7 @@ fn setup(
             ..default()
         }),
         camera,
-        Msaa::Sample4,
+        renderer_msaa,
     ));
     // The installed arkDefault/arkVegetation shaders have a depth-only Z path.
     // This broad Bevy approximation is opt-in: same-view profiling reduced fragment work
@@ -3802,6 +3898,7 @@ fn tome_camera_matrix_text(
     tome_world: &TomeWorld,
     camera: &Camera,
     transform: &Transform,
+    projection: &Projection,
 ) -> String {
     let Some(viewport) = camera.physical_viewport_size() else {
         return "Tome camera matrix unavailable: camera has no physical viewport".to_owned();
@@ -3818,9 +3915,13 @@ fn tome_camera_matrix_text(
         Ok(dimensions) => dimensions,
         Err(error) => return format!("Tome camera viewport unavailable: {error}"),
     };
+    let reference_fov = match reference_fov_from_projection(projection) {
+        Ok(fov) => fov,
+        Err(error) => return format!("Tome camera matrix unavailable: {error}"),
+    };
     let camera_pose = game_pose_from_view_transform(transform);
     let matrix = match tome::original_world_visibility_query_matrix(
-        ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
+        reference_fov,
         width as u32,
         height as u32,
         1.0,
@@ -3839,11 +3940,11 @@ fn tome_camera_matrix_text(
         [0.0; 3],
     ) {
         Ok(nodes) => format!(
-            "Tome matrix from registered defaults: viewport={}x{}, pixel aspect=1, camera_game_xyz={camera_position:?}, rows={matrix:?}\nGlobal spatial-record candidates from geometric prefilter: {nodes:?}. This geometric prefilter is not the final visibility result; the live query's traversal, accepted-object output, mapping and upload diagnostics are in the matching streaming history.",
+            "Tome matrix from current camera projection: viewport={}x{}, pixel aspect=1, camera_game_xyz={camera_position:?}, rows={matrix:?}\nGlobal spatial-record candidates from geometric prefilter: {nodes:?}. This geometric prefilter is not the final visibility result; the live query's traversal, accepted-object output, mapping and upload diagnostics are in the matching streaming history.",
             viewport.x, viewport.y
         ),
         Err(error) => format!(
-            "Tome matrix from registered defaults: viewport={}x{}, camera_game_xyz={camera_position:?}, rows={matrix:?}\nGlobal spatial-record prefilter failed: {error}",
+            "Tome matrix from current camera projection: viewport={}x{}, camera_game_xyz={camera_position:?}, rows={matrix:?}\nGlobal spatial-record prefilter failed: {error}",
             viewport.x, viewport.y
         ),
     }
@@ -3970,13 +4071,13 @@ fn collision_report(
     collision: Option<Res<NavigationWorld>>,
     tome_world: Option<Res<TomeWorld>>,
     render_queue: Res<SceneRenderQueue>,
-    cameras: Query<(&Camera, &Transform), With<Camera3d>>,
+    cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     diagnostics: Option<Res<StreamingDiagnostics>>,
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
     }
-    let Ok((camera_component, camera)) = cameras.single() else {
+    let Ok((camera_component, camera, projection)) = cameras.single() else {
         return;
     };
     let direction = camera.forward().as_vec3();
@@ -4042,7 +4143,7 @@ fn collision_report(
                 "feet",
                 view_to_game(probe_feet)
             ),
-            tome_camera_matrix_text(tome_world, camera_component, camera),
+            tome_camera_matrix_text(tome_world, camera_component, camera, projection),
         )
     } else {
         "Tome: no matching extracted map file loaded".to_owned()
@@ -4064,10 +4165,12 @@ fn collision_report(
     let report_path = directory.join(format!("{stem}.txt"));
     let screenshot_path = directory.join(format!("{stem}.png"));
     let report = format!(
-        "Level: {}\nCamera game_xyz: {:?}\nCamera direction game_xyz: {:?}\nFeet probe game_xyz: {:?}\nMode: {}\nWalker supported: {}\nWalker vertical speed: {:.3} m/s\n{}\n{}\n{}\nScreenshot: {}\nNote: In free-fly, feet probe is 1.7 m below the camera; walker state is inactive. BWM ray tests static world geometry; placed visual models are identified in the screenshot. Collision ray tests the combined loaded collision index. Tome object candidates precede the game's final visibility tests.\n",
+        "Level: {}\nCamera game_xyz: {:?}\nCamera direction game_xyz: {:?}\nCamera up game_xyz: {:?}\nReference horizontal FOV degrees: {}\nFeet probe game_xyz: {:?}\nMode: {}\nWalker supported: {}\nWalker vertical speed: {:.3} m/s\n{}\n{}\n{}\nScreenshot: {}\nNote: In free-fly, feet probe is 1.7 m below the camera; walker state is inactive. BWM ray tests static world geometry; placed visual models are identified in the screenshot. Collision ray tests the combined loaded collision index. Tome object candidates precede the game's final visibility tests.\n",
         scene.source_path.display(),
         view_to_game(camera.translation),
         view_to_game(direction),
+        view_to_game(camera.up().as_vec3()),
+        reference_fov_from_projection(projection).expect("F8 perspective camera must have a valid FOV"),
         view_to_game(probe_feet),
         if navigation.walking {
             "walk"
@@ -4151,7 +4254,7 @@ fn run_tome_render_jobs(
 // every failed job, and never retain a failed job's old or partial results.
 fn stream_visible_models(
     mut commands: Commands,
-    cameras: Query<(Option<&Camera>, Option<&Transform>), With<Camera3d>>,
+    cameras: Query<(Option<&Camera>, Option<&Transform>, Option<&Projection>), With<Camera3d>>,
     mut scene: ResMut<SceneRenderQueue>,
     tome_world: Option<Res<TomeWorld>>,
     placed_model_queries: Option<Res<PlacedModelQueries>>,
@@ -4167,7 +4270,7 @@ fn stream_visible_models(
     scene.visible_cell_indices.clear();
     scene.visible_cell_mask.clear();
     scene.light_query_state = None;
-    let Ok((camera, transform)) = cameras.single() else {
+    let Ok((camera, transform, projection)) = cameras.single() else {
         if let Some(diagnostics) = diagnostics.as_deref_mut() {
             diagnostics.frame += 1;
             diagnostics.status = "camera_unavailable".to_owned();
@@ -4201,22 +4304,24 @@ fn stream_visible_models(
     let mut tome_visibility = tome_world
         .as_ref()
         .map(|_| vec![false; scene.instances.len()]);
-    if let (Some(tome_world), Some(camera), Some(transform)) =
-        (tome_world.as_ref(), camera, transform)
+    if let (Some(tome_world), Some(camera), Some(transform), Some(projection)) =
+        (tome_world.as_ref(), camera, transform, projection)
     {
         if let Some(viewport) = camera.physical_viewport_size() {
             query_viewport = Some([viewport.x, viewport.y]);
             scene.texture_viewport_pixels = viewport.x.saturating_mul(viewport.y);
             let query_started = Instant::now();
-            let query = tome::original_world_visibility_query_matrix(
-                ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
-                viewport.x,
-                viewport.y,
-                1.0,
-                game_pose_from_view_transform(transform),
-                ORIGINAL_DEFAULT_NEAR,
-                ORIGINAL_DEFAULT_FAR,
-            )
+            let query = reference_fov_from_projection(projection).and_then(|reference_fov| {
+                tome::original_world_visibility_query_matrix(
+                    reference_fov,
+                    viewport.x,
+                    viewport.y,
+                    1.0,
+                    game_pose_from_view_transform(transform),
+                    ORIGINAL_DEFAULT_NEAR,
+                    ORIGINAL_DEFAULT_FAR,
+                )
+            })
             .and_then(|rows| {
                 query_rows = Some(rows);
                 let input = tome::OrdinaryDirectQueryInput {
@@ -4638,9 +4743,12 @@ fn cull_original_small_local_lights(
     stats.static_id_binding_active = visible_ids.is_some();
     let world_query = visible_ids
         .and_then(|_| scene.as_ref()?.light_query_state.as_ref())
-        .map(tome::NoDepthAabbQuery::from_state)
+        .map(tome::RenderAabbQuery::from_state)
         .transpose();
     stats.world_query_bound = matches!(&world_query, Ok(Some(_)));
+    stats.world_query_depth_grid_bound = stats.world_query_bound && scene.as_ref()
+        .and_then(|scene| scene.light_query_state.as_ref())
+        .is_some_and(|state| state.depth_grid.is_some());
     stats.world_query_unverified = 0;
     stats.world_query_error = world_query.as_ref().err().cloned();
     let minimum_area = camera.and_then(|(_, viewport, _)| {
@@ -4913,7 +5021,7 @@ fn finish_streaming_diagnostics(
         }
     }
     let identity_sample = format!(
-        "light_source_class[static,dynamic]={:?} static_name_hash_matches={} static_id_culled={} zero_preset_rgb={} rgb_eligibility=unsupported identity_binding={} projection_bounds_unverified={} world_query_bound={} world_query_unverified={} world_query_error={:?} projection_binding=no_depth sphere_path=initial_single_tome sphere_candidates={} sphere_culled={} sphere_unverified={} sphere_query_ms={:.3} sphere_error={:?}\n",
+        "light_source_class[static,dynamic]={:?} static_name_hash_matches={} static_id_culled={} zero_preset_rgb={} rgb_eligibility=unsupported identity_binding={} projection_bounds_unverified={} world_query_bound={} world_query_unverified={} world_query_error={:?} projection_binding={} sphere_path=initial_single_tome sphere_candidates={} sphere_culled={} sphere_unverified={} sphere_query_ms={:.3} sphere_error={:?}\n",
         light_culling.source_class_counts,
         light_culling.static_name_hash_matches,
         light_culling.static_id_culled,
@@ -4927,6 +5035,7 @@ fn finish_streaming_diagnostics(
         light_culling.world_query_bound,
         light_culling.world_query_unverified,
         light_culling.world_query_error,
+        if light_culling.world_query_depth_grid_bound { "query_depth_grid" } else { "no_depth" },
         light_culling.sphere_candidates,
         light_culling.sphere_culled,
         light_culling.sphere_unverified,
@@ -4982,6 +5091,8 @@ fn benchmark_frames(
     mut elapsed: Local<f32>,
     mut measured: Local<(u64, f64)>,
     mut frame_times: Local<Vec<f64>>,
+    render_diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
+    mut render_metrics: Local<std::collections::BTreeMap<String, (u64, f64, f64)>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(target) = target else {
@@ -4993,6 +5104,17 @@ fn benchmark_frames(
         measured.0 += 1;
         measured.1 += time.delta_secs_f64();
         frame_times.push(time.delta_secs_f64() * 1000.0);
+        if let Some(store) = render_diagnostics.as_deref() {
+            for diagnostic in store.iter() {
+                let path = diagnostic.path().as_str();
+                if path.starts_with("render/") && (path.ends_with("elapsed_gpu") || path.ends_with("shader_invocations")) {
+                    if let Some(value) = diagnostic.value().filter(|value| value.is_finite()) {
+                        let metric = render_metrics.entry(path.to_owned()).or_insert((0, 0.0, 0.0));
+                        metric.0 += 1; metric.1 += value; metric.2 = metric.2.max(value);
+                    }
+                }
+            }
+        }
     }
     if *elapsed >= target.0 {
         let (samples, average_ms, max_ms) = visibility_timing
@@ -5062,6 +5184,9 @@ fn benchmark_frames(
             let quantile = |q: f64| frame_times[((frame_times.len() - 1) as f64 * q).round() as usize];
             println!("BENCHMARK frame_ms[p50,p95,p99,max]={:.3},{:.3},{:.3},{:.3} warmup_seconds={:.1}",
                 quantile(0.5), quantile(0.95), quantile(0.99), quantile(1.0), target.1);
+        }
+        for (path, (samples, total, maximum)) in render_metrics.iter() {
+            println!("BENCHMARK_GPU {path} samples={samples} avg={:.3} max={maximum:.3}", total / *samples as f64);
         }
         exit.write(AppExit::Success);
     }
@@ -5671,6 +5796,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "../../assets/shaders/dh2_probe_prepass.wgsl",
         Shader::from_wgsl
     );
+    bevy::asset::load_internal_asset!(app, INDIRECT_SHADER_HANDLE, "../../assets/shaders/dh2_indirect.wgsl", Shader::from_wgsl);
     bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
     bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
     let prepared_images = PreparedImageMailbox::default();
@@ -5707,6 +5833,55 @@ mod game_control_tests {
         assert!(f8_camera_pose("").is_none());
         assert!(f8_camera_pose(&report.replace("12.256257", "NaN")).is_none());
         assert!(f8_camera_pose(&report.replace("0.04506988, -0.98096955, 0.18885912", "0, 0, 0")).is_none());
+        assert_eq!(f8_reference_fov(report), Some(80.0));
+        assert_eq!(f8_reference_fov(&format!("{report}Reference horizontal FOV degrees: 110\n")), Some(110.0));
+        for bad in ["0", "180", "NaN", "invalid"] {
+            assert!(f8_reference_fov(&format!("{report}Reference horizontal FOV degrees: {bad}\n")).is_none());
+        }
+        let rolled = format!("{report}Camera up game_xyz: [0.4, 0.2, 1]\n");
+        let rolled_pose = f8_camera_pose(&rolled).unwrap();
+        assert!(rolled_pose.forward().as_vec3().distance(expected) < 1e-6);
+        assert!(rolled_pose.rotation.angle_between(pose.rotation) > 0.01);
+        assert!(f8_camera_pose(&format!("{report}Camera up game_xyz: [0,0,0]\n")).is_none());
+    }
+
+    #[test]
+    fn visibility_uses_actual_camera_fov_not_registered_default() {
+        for reference in [55.0, 80.0, 110.0] {
+            let projection = Projection::Perspective(PerspectiveProjection {
+                fov: tome::original_render_vertical_fov_radians(reference).unwrap(),
+                ..default()
+            });
+            assert!((reference_fov_from_projection(&projection).unwrap() - reference).abs() < 0.00002);
+        }
+        assert!(reference_fov_from_projection(&Projection::Perspective(PerspectiveProjection {
+            fov: f32::NAN, ..default()
+        })).is_err());
+    }
+
+    #[test]
+    fn replayed_original_pose_matches_live_query_matrix() {
+        // Raw camera/query metadata captured at the user's 15-FPS location.
+        let report = include_str!("../../analysis/original_user_dense_pose.f8");
+        let pose = f8_camera_pose(report).unwrap();
+        let reference = f8_reference_fov(report).unwrap();
+        let projection = Projection::Perspective(PerspectiveProjection {
+            fov: tome::original_render_vertical_fov_radians(reference).unwrap(), ..default()
+        });
+        let rows = tome::original_world_visibility_query_matrix(
+            reference_fov_from_projection(&projection).unwrap(),1920,1080,1.0,
+            game_pose_from_view_transform(&pose), ORIGINAL_DEFAULT_NEAR,ORIGINAL_DEFAULT_FAR,
+        ).unwrap();
+        for (index, actual) in rows.into_iter().enumerate() {
+            let label = format!("Original query row{index}: ");
+            let text = report.lines().find_map(|line| line.strip_prefix(&label)).unwrap();
+            let expected: Vec<f32> = text.trim_matches(['[',']']).split(',')
+                .map(|part| part.trim().parse().unwrap()).collect();
+            for lane in 0..4 {
+                assert!((actual[lane]-expected[lane]).abs()<0.00004,
+                    "native row{index} lane{lane}: {} != {}", actual[lane],expected[lane]);
+            }
+        }
     }
 
     #[test]
@@ -5723,6 +5898,7 @@ mod game_control_tests {
             .add_plugins(MaterialPlugin::<DecalMaterial>::default());
         bevy::asset::load_internal_asset!(app, PROBE_SHADER_HANDLE, "../../assets/shaders/dh2_probe.wgsl", Shader::from_wgsl);
         bevy::asset::load_internal_asset!(app, PROBE_PREPASS_SHADER_HANDLE, "../../assets/shaders/dh2_probe_prepass.wgsl", Shader::from_wgsl);
+        bevy::asset::load_internal_asset!(app, INDIRECT_SHADER_HANDLE, "../../assets/shaders/dh2_indirect.wgsl", Shader::from_wgsl);
         bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
         bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
         app.finish(); app.cleanup();
@@ -5737,12 +5913,13 @@ mod game_control_tests {
         mesh.insert_attribute(DH2_BITANGENT, vec![[0.0, 1.0, 0.0]; n]);
         let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
         let sh = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[Vec4::ZERO; 9]]));
+        let vertex_probes = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![0u32; 8]));
         let mut surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[]));
         surface.misc = UVec4::new(1, 1, 1, 2);
         surface.flags = UVec4::new(2, 1, 0, 1);
         let probe = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(ProbeMaterial {
             base: StandardMaterial::default(),
-            extension: ProbeExtension { sh, surface: surface.clone(),
+            extension: ProbeExtension { sh, vertex_probes, surface: surface.clone(),
                 diffuse0: None,
                 diffuse1: None,
                 diffuse2: None,
@@ -5939,6 +6116,349 @@ mod game_control_tests {
             assert!(depth.is_finite(), "{label}: nonfinite depth {depth}");
             assert_eq!(depth > 0.0, expected, "{label}: actual prepass depth {depth}");
         }
+        native_probe_shader_matches_original(&mut app);
+        tiled_depth_shader_matches_reference(&mut app);
+    }
+
+    // Execute the actual shared WGSL functions, not a test-only reimplementation.
+    // Compare the complete one/two-sided packed paths against installed HLSL
+    // executed by D3D11, plus native PNW vertex-reference fetch/interpolation.
+    fn tiled_depth_shader_matches_reference(app: &mut App) {
+        tiled_depth_shader_matches_case(app,None);
+        for id in 0..64 {tiled_depth_shader_matches_case(app,Some(id));}
+        eprintln!("GPU TLF depth: 4 mixed tiles and 64 original-HLSL cases passed");
+        let device=app.sub_app(RenderApp).world().resource::<bevy::render::renderer::RenderDevice>();
+        let source=std::fs::read_to_string("assets/shaders/dh2_tlf_cull.wgsl").unwrap();
+        let module=device.create_and_validate_shader_module(bevy::render::render_resource::ShaderModuleDescriptor {
+            label:Some("original TLF light culler"),source:bevy::render::render_resource::ShaderSource::Wgsl(source.into()),
+        });
+        device.wgpu_device().create_compute_pipeline(&bevy::render::render_resource::RawComputePipelineDescriptor {
+            label:Some("original TLF light culler"),layout:None,module:&module,
+            entry_point:Some("cull"),compilation_options:default(),cache:None,
+        });
+        let point=[0.0f32,0.0,-2.0,1.0,0.0,0.0,-1.0,1.0,0.0,0.0,1.0,0.0].map(f32::to_bits);
+        for scattering in [false,true] {
+            assert_eq!(tiled_cull_gpu_lists(app,&point,scattering),[vec![0],vec![],vec![],vec![]]);
+        }
+        let fixture=include_str!("../../analysis/native_tlf_cull_cases.txt");
+        let mut checked=0;
+        for case in fixture.split("\nCASE ").skip(1) {
+            let header=case.lines().next().unwrap();
+            let packets=case.lines().find_map(|line|line.strip_prefix("LIGHTS id ")).unwrap();
+            let mut lights=Vec::new();
+            for (id,packet) in packets.split_whitespace().enumerate() {
+                let (index,hex)=packet.split_once(':').unwrap();assert_eq!(index.parse::<usize>().unwrap(),id);assert_eq!(hex.len(),96);
+                for word in hex.as_bytes().chunks_exact(8) {lights.push(u32::from_str_radix(std::str::from_utf8(word).unwrap(),16).unwrap());}
+            }
+            let mut expected:[Vec<u32>;4]=[Vec::new(),Vec::new(),Vec::new(),Vec::new()];
+            for line in case.lines().filter(|line|line.starts_with("ACCEPT type=")) {
+                let (kind,ids)=line.strip_prefix("ACCEPT type=").unwrap().split_once(" ids=").unwrap();
+                expected[kind.trim().parse::<usize>().unwrap()]=ids.trim().split(',').filter(|id|!id.is_empty()).map(|id|id.trim().parse().unwrap()).collect();
+            }
+            let scattering=header.contains("scatter=1");
+            let actual=tiled_cull_gpu_lists(app,&lights,scattering);
+            assert_eq!(actual,expected,"original HLSL {header}");
+            if scattering {
+                assert_eq!(tiled_cull_gpu_lists_with_prior(app,&lights,true,true),expected,
+                    "normal/scatter must share the pool without a counter reset between passes");
+            }
+            checked+=1;
+        }
+        assert_eq!(checked,2);eprintln!("GPU TLF culling: 512 original light packets and packed node chains passed");
+    }
+
+    fn tiled_cull_gpu_lists(app: &mut App, lights: &[u32], scattering: bool) -> [Vec<u32>;4] {
+        tiled_cull_gpu_lists_with_prior(app,lights,scattering,false)
+    }
+
+    fn tiled_cull_gpu_lists_with_prior(app: &mut App, lights: &[u32], scattering: bool, prior_normal: bool) -> [Vec<u32>;4] {
+        assert!(!prior_normal || scattering);
+        use bevy::render::{render_resource::*,renderer::{RenderDevice,RenderQueue}};
+        use std::sync::mpsc;
+        assert_eq!(lights.len()%12,0);let count=lights.len()/12;assert!(count>0&&count<=tiled_lighting::LIGHT_BUFFER_CAPACITY);
+        let render=app.sub_app(RenderApp).world();let device=render.resource::<RenderDevice>();let queue=render.resource::<RenderQueue>();
+        let source=std::fs::read_to_string("assets/shaders/dh2_tlf_cull.wgsl").unwrap();
+        let module=device.create_and_validate_shader_module(ShaderModuleDescriptor{label:Some("native TLF cull case"),source:ShaderSource::Wgsl(source.into())});
+        let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor{label:None,layout:None,module:&module,entry_point:Some("cull"),compilation_options:default(),cache:None});
+        let mut params=vec![0.0f32.to_bits(),0.0f32.to_bits(),1.0f32.to_bits(),1.0f32.to_bits()];
+        params.extend([1.0f32.to_bits();4]);
+        for _ in 0..2 {for row in 0..4 {for column in 0..4 {params.push(if row==column {1.0f32.to_bits()}else{0});}}}
+        params.extend([count as u32,u32::from(scattering),0,0]);assert_eq!(params.len(),44);
+        let bytes=|values:&[u32]|values.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<u8>>();
+        let uniform=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&params),usage:BufferUsages::UNIFORM});
+        let buffers=tiled_lighting_gpu::NativeTlfBuffers::new(device);
+        buffers.upload_cull_packets(queue,lights).unwrap();
+        let packets=buffers.resource(render_resource::resource_name_key("lightToPutInTiles")).unwrap();
+        let counter=buffers.resource(render_resource::resource_name_key("lightNodePoolNextFreeEntry")).unwrap();
+        let pool=buffers.resource(render_resource::resource_name_key("lightNodePool")).unwrap();
+        assert!(buffers.resource(render_resource::resource_name_key("missingNativeResource")).is_none());
+        let heads=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC|BufferUsages::COPY_DST});
+        // Native fixed allocations persist across all frames below.
+        let depth=device.create_texture(&TextureDescriptor{label:None,size:Extent3d{width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,format:TextureFormat::Rgba32Float,usage:TextureUsages::TEXTURE_BINDING|TextureUsages::COPY_DST,view_formats:&[]});
+        queue.write_texture(depth.as_image_copy(),&bytes(&[-0.5f32,-10.0,-4.0,f32::from_bits(u32::MAX)].map(f32::to_bits)),TexelCopyBufferLayout{offset:0,bytes_per_row:Some(16),rows_per_image:Some(1)},Extent3d{width:1,height:1,depth_or_array_layers:1});
+        let view=depth.create_view(&default());let layout=pipeline.get_bind_group_layout(0);
+        let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor{label:None,layout:&layout,entries:&[BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},BindGroupEntry{binding:1,resource:BindingResource::TextureView(&view)},BindGroupEntry{binding:2,resource:packets.as_entire_binding()},BindGroupEntry{binding:3,resource:heads.as_entire_binding()},BindGroupEntry{binding:4,resource:counter.as_entire_binding()},BindGroupEntry{binding:5,resource:pool.as_entire_binding()}]});
+        let prior_heads=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC|BufferUsages::COPY_DST});
+        params[41]=0;
+        let prior_uniform=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&params),usage:BufferUsages::UNIFORM});
+        let prior_group=device.wgpu_device().create_bind_group(&BindGroupDescriptor{label:None,layout:&layout,entries:&[BindGroupEntry{binding:0,resource:prior_uniform.as_entire_binding()},BindGroupEntry{binding:1,resource:BindingResource::TextureView(&view)},BindGroupEntry{binding:2,resource:packets.as_entire_binding()},BindGroupEntry{binding:3,resource:prior_heads.as_entire_binding()},BindGroupEntry{binding:4,resource:counter.as_entire_binding()},BindGroupEntry{binding:5,resource:pool.as_entire_binding()}]});
+        let pool_words=count*if prior_normal {2}else{1};
+        let readback=device.create_buffer(&BufferDescriptor{label:None,size:36+pool_words as u64*4,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut previous=None;
+        for frame in 0..3 {
+        // Each original-HLSL fixture starts with empty heads. They are
+        // caller-owned inputs; cull_lights only exchanges/appends them.
+        queue.write_buffer(&heads,0,&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]));
+        queue.write_buffer(&prior_heads,0,&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]));
+        let mut encoder=device.create_command_encoder(&default());
+        // Native351780 clears once BEFORE both passes, never between them.
+        buffers.begin_frame(&mut encoder);
+        if prior_normal {
+            let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor{label:None,timestamp_writes:None});pass.set_pipeline(&pipeline);pass.set_bind_group(0,&prior_group,&[]);pass.dispatch_workgroups(1,1,1);
+        }
+        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor{label:None,timestamp_writes:None});pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(1,1,1);}
+        encoder.copy_buffer_to_buffer(&heads,0,&readback,0,16);encoder.copy_buffer_to_buffer(&prior_heads,0,&readback,16,16);encoder.copy_buffer_to_buffer(counter,0,&readback,32,4);encoder.copy_buffer_to_buffer(pool,0,&readback,36,pool_words as u64*4);queue.submit([encoder.finish()]);
+        let(tx,rx)=mpsc::channel();readback.slice(..).map_async(MapMode::Read,move|r|{tx.send(r).unwrap();});device.poll(PollType::Wait{submission_index:None,timeout:Some(std::time::Duration::from_secs(10))}).unwrap();rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+        let bytes=readback.slice(..).get_mapped_range();let words:Vec<u32>=bytes.chunks_exact(4).map(|v|u32::from_le_bytes(v.try_into().unwrap())).collect();
+        let used=words[8] as usize;assert!(used<=pool_words);let mut seen=HashSet::new();let mut result=[Vec::new(),Vec::new(),Vec::new(),Vec::new()];
+        for chain in 0..if prior_normal {8}else{4} {
+            let kind=chain%4;let mut cursor=words[chain];
+            while cursor!=tiled_lighting::END_OF_LIGHT_LIST {
+                assert!((cursor as usize)<used);
+                assert!(seen.insert(cursor),"duplicate/cyclic TLF node or counter reset between passes");
+                let packed=tiled_lighting::PackedLightNode(words[9+cursor as usize]);let id=packed.light_index();
+                assert!((id as usize)<count);assert_eq!((lights[id as usize*12+11]>>4)&7,kind as u32);
+                if chain<4 {result[kind].push(id);}cursor=packed.next();
+            }
+            if chain<4 {result[kind].sort_unstable();}
+        }
+        if prior_normal {assert!(seen.len()>result.iter().map(Vec::len).sum::<usize>(),"normal prefix did not exercise shared allocation");}
+        assert_eq!(seen.len(),used);drop(bytes);readback.unmap();
+        if let Some(before)=&previous {assert_eq!(&result,before,"native TLF buffers accumulated stale links on frame {frame}");}
+        previous=Some(result);
+        }
+        previous.unwrap()
+    }
+
+    fn tiled_depth_shader_matches_case(app: &mut App, native_case: Option<usize>) {
+        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
+        let device = world.resource::<RenderDevice>();
+        let queue = world.resource::<RenderQueue>();
+        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("original tiled-depth reduction"),
+            source: ShaderSource::Wgsl(include_str!("../../assets/shaders/dh2_tlf_depth.wgsl").into()),
+        });
+        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: None, layout: None, module: &module, entry_point: Some("gather_depth"),
+            compilation_options: default(), cache: None,
+        });
+        let make_depth = || device.create_texture(&TextureDescriptor {
+            label: None, size: Extent3d { width:32,height:32,depth_or_array_layers:1 },
+            mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,
+            format:TextureFormat::Depth32Float,usage:TextureUsages::TEXTURE_BINDING|TextureUsages::RENDER_ATTACHMENT,
+            view_formats:&[],
+        });
+        let opaque = make_depth(); let alpha = make_depth();
+        let output = device.create_texture(&TextureDescriptor {
+            label:None,size:Extent3d {width:2,height:2,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,
+            format:TextureFormat::Rgba32Float,usage:TextureUsages::STORAGE_BINDING|TextureUsages::COPY_SRC,
+            view_formats:&[],
+        });
+        let original=native_case.map(tiled_lighting::original_depth_case);
+        let unproject=original.as_ref().map_or([-0.1,0.00001],|v|v.1);
+        let mut depths = [Vec::<f32>::new(),Vec::<f32>::new()];
+        for y in 0..32 { for x in 0..32 {
+            let tile = x/16+2*(y/16);
+            if let Some((input,_,_))=&original {
+                let pixel=(y%16)*16+x%16;
+                depths[0].push(input[pixel]);depths[1].push(input[pixel+256]);
+            } else {
+                depths[0].push(if tile == 3 {0.0} else {((x+y)%4+1) as f32*0.25});
+                depths[1].push(if tile == 3 || (x+y)%3==0 {0.0} else {0.125+((x*3+y)%5) as f32*0.125});
+            }
+        } }
+        // Depth32Float cannot be Queue::write_texture'd. Populate actual
+        // depth attachments through the rasterizer, as the engine does.
+        let fill_module=device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label:Some("synthetic depth fixture"),source:ShaderSource::Wgsl(r#"
+                @group(0) @binding(0) var<storage,read> depths:array<f32>;
+                @vertex fn vertex(@builtin(vertex_index) id:u32)->@builtin(position) vec4<f32> {
+                    let p=array<vec2<f32>,3>(vec2<f32>(-1,-1),vec2<f32>(3,-1),vec2<f32>(-1,3));
+                    return vec4<f32>(p[id],0,1);
+                }
+                @fragment fn fragment(@builtin(position) p:vec4<f32>)->@builtin(frag_depth) f32 {
+                    return depths[u32(p.y)*32u+u32(p.x)];
+                }
+            "#.into()),
+        });
+        let fill_pipeline=device.wgpu_device().create_render_pipeline(&RawRenderPipelineDescriptor {
+            label:None,layout:None,
+            vertex:RawVertexState {module:&fill_module,entry_point:Some("vertex"),compilation_options:default(),buffers:&[]},
+            fragment:Some(RawFragmentState {module:&fill_module,entry_point:Some("fragment"),compilation_options:default(),targets:&[]}),
+            primitive:default(),multisample:default(),multiview_mask:None,cache:None,
+            depth_stencil:Some(DepthStencilState {format:TextureFormat::Depth32Float,depth_write_enabled:Some(true),
+                depth_compare:Some(CompareFunction::Always),stencil:default(),bias:default()}),
+        });
+        let mut fill_encoder=device.create_command_encoder(&default());
+        for (texture,values) in [(&opaque,&depths[0]),(&alpha,&depths[1])] {
+            let bytes=values.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
+            let data=device.create_buffer_with_data(&BufferInitDescriptor {label:None,contents:&bytes,usage:BufferUsages::STORAGE});
+            let bind=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,
+                layout:&fill_pipeline.get_bind_group_layout(0),entries:&[BindGroupEntry {binding:0,resource:data.as_entire_binding()}]});
+            let view=texture.create_view(&default());
+            let mut pass=fill_encoder.begin_render_pass(&RenderPassDescriptor {label:None,color_attachments:&[],
+                depth_stencil_attachment:Some(RenderPassDepthStencilAttachment {view:&view,
+                    depth_ops:Some(Operations {load:LoadOp::Clear(0.0),store:StoreOp::Store}),stencil_ops:None}),
+                timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+            pass.set_pipeline(&fill_pipeline);pass.set_bind_group(0,&bind,&[]);pass.draw(0..3,0..1);
+        }
+        queue.submit([fill_encoder.finish()]);
+        let params = device.create_buffer_with_data(&BufferInitDescriptor {
+            label:None,contents:&[unproject[0].to_bits(),unproject[1].to_bits(),0,0,16,0,0,0]
+                .into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(),usage:BufferUsages::UNIFORM,
+        });
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            min_filter:FilterMode::Linear,mag_filter:FilterMode::Linear,..default()
+        });
+        let opaque_view=opaque.create_view(&default());let alpha_view=alpha.create_view(&default());
+        let output_view=output.create_view(&default());
+        let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+                BindGroupEntry {binding:0,resource:BindingResource::TextureView(&opaque_view)},
+                BindGroupEntry {binding:1,resource:BindingResource::TextureView(&alpha_view)},
+                BindGroupEntry {binding:2,resource:BindingResource::Sampler(&sampler)},
+                BindGroupEntry {binding:3,resource:params.as_entire_binding()},
+                BindGroupEntry {binding:4,resource:BindingResource::TextureView(&output_view)},
+            ],
+        });
+        let readback=device.create_buffer(&BufferDescriptor {label:None,size:512,
+            usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
+        let mut encoder=device.create_command_encoder(&default());
+        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor {label:None,timestamp_writes:None});
+            pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(2,2,1);}
+        encoder.copy_texture_to_buffer(TexelCopyTextureInfo {texture:&output,mip_level:0,origin:Origin3d::ZERO,aspect:TextureAspect::All},
+            TexelCopyBufferInfo {buffer:&readback,layout:TexelCopyBufferLayout {offset:0,bytes_per_row:Some(256),rows_per_image:Some(2)}},
+            Extent3d {width:2,height:2,depth_or_array_layers:1});
+        let submission=queue.submit([encoder.finish()]);let(tx,rx)=std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read,move|result|{tx.send(result).unwrap();});
+        device.poll(PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(10))}).unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+        let bytes=readback.slice(..).get_mapped_range();
+        for ty in 0..2 {for tx in 0..2 {
+            let mut tile=Vec::new();for source in &depths {for y in ty*16..ty*16+16 {for x in tx*16..tx*16+16 {tile.push(source[y*32+x]);}}}
+            let expected=original.as_ref().map(|v|v.2).unwrap_or_else(||
+                tiled_lighting::reduce_depth_tile(&tile,unproject).map(f32::to_bits));
+            for lane in 0..4 {
+                let at=ty*256+tx*16+lane*4;
+                let actual=u32::from_le_bytes(bytes[at..at+4].try_into().unwrap());
+                if lane==3 {assert_eq!(actual,expected[lane],"case{native_case:?} tile{tx},{ty} depth mask");}
+                else {assert!(actual.abs_diff(expected[lane])<=1,"case{native_case:?} tile{tx},{ty} endpoint{lane}: {actual:08x} vs {:08x}",expected[lane]);}
+            }
+        }}
+        drop(bytes);readback.unmap();
+
+    }
+
+    fn native_probe_shader_matches_original(app: &mut App) {
+        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
+        let device = world.resource::<RenderDevice>();
+        let queue = world.resource::<RenderQueue>();
+        let mut source = include_str!("../../assets/shaders/dh2_indirect.wgsl")
+            .replace("#define_import_path dh2_indirect", "")
+            .replace("#{MATERIAL_BIND_GROUP}", "0");
+        source.push_str(r#"
+@group(0) @binding(120) var<storage, read_write> result: array<vec4<f32>>;
+fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let id = invocation.x;
+    let sh = native_vertex_sh(id, 0u, vec3(0.0));
+    let d = vec3<f32>(vec3<i32>(i32(id%5u)-2,i32((id/5u)%5u)-2,i32((id/25u)%5u)-2))*0.25*select(1.0,3.0,id>=32u);
+    var t = vec3(1.0,0.0,0.0); var b = vec3(0.0,1.0,0.0); var n = vec3(0.0,0.0,1.0);
+    if (id & 1u) != 0u { t = vec3(0.0,1.0,0.0); b = vec3(-1.0,0.0,0.0); }
+    if (id & 2u) != 0u { b = -b; n = -n; }
+    let ao = f32(id%5u)*0.25;
+    let one = pack_vertex_irradiance(sh,view_vector(t),view_vector(b),view_vector(n),false);
+    let two = pack_vertex_irradiance(sh,view_vector(t),view_vector(b),view_vector(n),true);
+    let at = id*9u;
+    result[at] = vec4(irradiance(d,sh),0.0);
+    result[at+1u] = vec4(one.luminance,0.0,0.0,0.0);
+    result[at+2u] = one.chroma_a; result[at+3u] = one.chroma_b;
+    result[at+4u] = vec4(unpack_diffuse(one,view_vector(d),view_vector(t),view_vector(b),view_vector(n),ao,false),0.0);
+    result[at+5u] = vec4(two.luminance,0.0,0.0,0.0);
+    result[at+6u] = two.chroma_a; result[at+7u] = two.chroma_b;
+    result[at+8u] = vec4(unpack_diffuse(two,view_vector(d),view_vector(t),view_vector(b),view_vector(n),ao,true),0.0);
+    if id < 4u {
+        var p = vec3(0.25);
+        if id == 1u { p = vec3(1.0,0.0,0.0); }
+        if id == 2u { p = vec3(-0.25,1.25,-0.5); }
+        if id == 3u { p = vec3(0.0); }
+        let interpolated = native_vertex_sh(0x80000000u,0u,view_vector(p));
+        for (var i = 0u; i < 9u; i++) { result[64u*9u+id*9u+i] = vec4(interpolated[i],0.0); }
+    }
+}
+"#);
+        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("original PNW vertex SH numerical parity"), source: ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: default(), cache: None,
+        });
+        let mut sh = Vec::new();
+        for id in 0..64 { for i in 0..9 { for c in 0..4 {
+            sh.push(if c == 3 || id == 0 { 0.0f32 } else { (((id*17+i*5+c*3)%19) as i32-9) as f32/16.0 });
+        } } }
+        let sh_bytes = sh.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        let coefficients = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None, contents: &sh_bytes, usage: BufferUsages::STORAGE,
+        });
+        // One tetrahedron with four primary IDs and exact unit-axis positions.
+        let mut words = vec![8u32,9,10,16,1,1,1,4, 0,0, 0,1,2,3,0x00010000,0x00030002];
+        for i in 0..4 { for axis in 0..3 { words.push((if i == axis { 1.0f32 } else { 0.0f32 }).to_bits()); }
+            words.push(255u32 << (8*i)); }
+        let word_bytes = words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+        let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None, contents: &word_bytes, usage: BufferUsages::STORAGE,
+        });
+        let size = (64*9+4*9)*16;
+        let output = device.create_buffer(&BufferDescriptor { label: None, size, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let readback = device.create_buffer(&BufferDescriptor { label: None, size, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
+        let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
+                BindGroupEntry { binding: 100, resource: coefficients.as_entire_binding() },
+                BindGroupEntry { binding: 119, resource: vertices.as_entire_binding() },
+                BindGroupEntry { binding: 120, resource: output.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        { let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&pipeline); pass.set_bind_group(0,&bind,&[]); pass.dispatch_workgroups(64,1,1); }
+        encoder.copy_buffer_to_buffer(&output,0,&readback,0,size);
+        let submission = queue.submit([encoder.finish()]);
+        let (tx,rx) = std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read,move |result| { tx.send(result).unwrap(); });
+        device.poll(PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+        let bytes = readback.slice(..).get_mapped_range();
+        let actual = bytes.chunks_exact(4).map(|word| f32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
+        drop(bytes); readback.unmap();
+        for (id,line) in include_str!("../../analysis/native_indirect_lighting_cases.txt").lines().enumerate() {
+            let expected = line.split_whitespace().map(|v| f32::from_bits(u32::from_str_radix(v,16).unwrap())).collect::<Vec<_>>();
+            for (row,native) in [2,9,10,11,16,17,18,19,20].into_iter().enumerate() { for c in 0..4 {
+                let a = actual[(id*9+row)*4+c]; let b = expected[native*4+c];
+                assert!((a-b).abs() <= 3e-5*b.abs().max(1.0), "WGSL/native HLSL case{id} row{row} channel{c}: {a} != {b}");
+            } }
+        }
+        for (id,weights) in [[0.25f32;4],[1.0,0.0,0.0,0.0],[-0.25,1.25,-0.5,0.5],[0.0,0.0,0.0,1.0]].into_iter().enumerate() {
+            for i in 0..9 { for c in 0..3 {
+                let expected: f32 = (0..4).map(|p| weights[p]*sh[(p*9+i)*4+c]).sum();
+                let a = actual[(64*9+id*9+i)*4+c];
+                assert!((a-expected).abs() < 1e-5, "PNW GPU case{id} coefficient{i} channel{c}: {a} != {expected}");
+            } }
+        }
+        eprintln!("GPU native SH parity:64 original HLSL packed one/two-sided cases +4 PNW reference/interpolation cases passed");
     }
 
     #[test]
@@ -7265,6 +7785,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
             base: StandardMaterial::default(),
             extension: ProbeExtension {
                 sh: Handle::default(),
+                vertex_probes: Handle::default(),
                 surface: surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[])),
                 diffuse0: None,
                 diffuse1: None,
@@ -7829,6 +8350,120 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 }
                 assert!(!output.indices().contains(&22109));
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local original-game EOTW BWM/Tome fixtures and installed executable"]
+    fn dense_depth_grid_matches_original_bounds_after_camera_shifts() {
+        bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let bytes = fs::read("artifacts/eotw_p_lowchaos.tome").unwrap();
+        let tree = tome::SpatialTree::parse(&bytes).unwrap();
+        let query_data = tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap();
+        let world = TomeWorld {
+            sphere_graph: tome::SphereCellGraph::parse(&bytes),
+            gate_states: tome::initial_gate_states(&bytes).unwrap(),
+            bytes, tree, query_data, query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        };
+        let pose = [
+            [-0.72593063, 0.01375436, -0.6876305, -36.467716],
+            [-0.68776804, -0.014517557, 0.7257855, 192.6837],
+            [4.656613e-10, 0.9998, 0.019998547, 5.6344576],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let base = Mat4::from_cols_array_2d(&std::array::from_fn(|column| {
+            std::array::from_fn(|row| pose[row][column])
+        }));
+        let bwm = world_mesh::parse(&fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()).unwrap();
+        let mut bwm_instances = vec![Vec::new(); bwm.visibility.len()];
+        let mut triangles = Vec::new();
+        for object in &bwm.objects {
+            for instances in &mut bwm_instances[object.matrix_start..object.matrix_end] {
+                instances.push(triangles.len());
+                triangles.push(bwm.meshes[object.mesh_index].indices.len() / 3);
+            }
+        }
+        let mapping = TomeRenderInstanceMap::from_world_mapping(&bwm, &bwm_instances);
+        let groups: Vec<_> = bwm.visibility_groups.iter().map(|group| RenderSuppressionGroup {
+            parent: bwm_instances[group.parent].clone(),
+            children: group.children.iter().flat_map(|&index| bwm_instances[index].iter().copied()).collect(),
+        }).collect();
+        for yaw in [-0.0005, 0.0, 0.0005] {
+            let columns = (base * Mat4::from_rotation_y(yaw)).to_cols_array_2d();
+            let pose = std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]));
+            let rows = tome::original_world_visibility_query_matrix(
+                80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0,
+            ).unwrap();
+            let input = tome::OrdinaryDirectQueryInput {
+                camera_point: [pose[0][3], pose[1][3], pose[2][3]],
+                render_rows: rows, cropped_rows: rows, initial_tile_rect: [0, 0, 8, 16],
+                camera_imprecision: [0.6; 3], object_imprecision: 0.6,
+                minimum_area_metric: 25.0 / (1920.0 * 1017.0),
+                global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+                winding_flip: tome::query_matrix_winding_flip(rows),
+                gate_states: Some(&world.gate_states), output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+            };
+            let started = std::time::Instant::now();
+            let jobs = run_tome_render_jobs(&world, &input);
+            let output = tome::merge_render_query_outputs(&jobs).unwrap().unwrap();
+            let query_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let state = output.state.as_ref().unwrap();
+            let query = tome::RenderAabbQuery::from_state(state).unwrap();
+            let mut old_state = state.clone();
+            old_state.depth_grid = None;
+            let old_query = tome::RenderAabbQuery::from_state(&old_state).unwrap();
+            let mut workloads = Vec::new();
+            for candidate in [&old_state, state] {
+                let mut visible = vec![false; triangles.len()];
+                mapping.mark_visible_instances(output.indices(), &mut visible).unwrap();
+                let accepted = mapping.apply_spatial_queries(Some(candidate), &mut visible).unwrap();
+                RenderSuppressionGroup::apply_all(&groups, &mut visible);
+                let surfaces = visible.iter().filter(|&&value| value).count();
+                let geometry: usize = visible.iter().zip(&triangles)
+                    .filter_map(|(&value, &count)| value.then_some(count)).sum();
+                workloads.push((accepted, surfaces, geometry));
+            }
+            println!("dense yaw={yaw} query_ms={query_ms:.3} spatial/mapped_surfaces/mapped_triangles before={:?} after={:?}", workloads[0], workloads[1]);
+            let mut old_count = 0;
+            let mut depth_count = 0;
+            // World object output and later spatial AABB output are different
+            // native lists. Original764c0 also rejects world object7268 here;
+            // compare every bound with native rather than forcing a superset.
+            let mut raw = b"DH2DQ001".to_vec();
+            for value in state.viewport { raw.extend_from_slice(&value.to_le_bytes()); }
+            let unused_bounds = [0.0_f32; 6];
+            for value in state.render_rows.iter().flatten()
+                .chain(state.cropped_rows.iter().flatten())
+                .chain(state.camera_imprecision.iter())
+                .chain(std::iter::once(&state.maximum_depth))
+                .chain(unused_bounds.iter())
+                .chain(state.depth_grid.as_ref().unwrap().iter())
+            { raw.extend_from_slice(&value.to_le_bytes()); }
+            raw.extend_from_slice(&123.0_f32.to_le_bytes());
+            raw.extend_from_slice(&(world.query_data.object_count() as u32).to_le_bytes());
+            for index in 0..world.query_data.object_count() as u32 {
+                let bounds = tome::object_bounds(&world.bytes, index).unwrap();
+                let old = old_query.visible(bounds).unwrap();
+                let (depth, area) = query.visibility_and_area(bounds).unwrap();
+                assert!(!depth || old, "depth admitted outside-frustum object{index} yaw={yaw}");
+                old_count += usize::from(old);
+                depth_count += usize::from(depth);
+                raw.extend_from_slice(&index.to_le_bytes());
+                for value in bounds.iter().flatten() { raw.extend_from_slice(&value.to_le_bytes()); }
+                raw.extend_from_slice(&u32::from(depth).to_le_bytes());
+                raw.extend_from_slice(&area.to_le_bytes());
+            }
+            let fixture = "artifacts/dense-depth-query-state.bin";
+            fs::write(fixture, raw).unwrap();
+            let native = std::process::Command::new("python")
+                .args(["analysis/probe_original_depth_aabb.py", "--state", fixture])
+                .output().unwrap();
+            assert!(native.status.success(), "native AABB parity yaw={yaw}: {}{}",
+                String::from_utf8_lossy(&native.stdout), String::from_utf8_lossy(&native.stderr));
+            print!("{}", String::from_utf8_lossy(&native.stdout));
+            assert!(depth_count < old_count, "dense camera did not reject any extra bounds yaw={yaw}");
+            println!("dense yaw={yaw} frustum_bounds={old_count} depth_bounds={depth_count} accepted_objects={} grid_max={}",
+                output.indices().len(), state.maximum_depth);
         }
     }
 
