@@ -2188,6 +2188,21 @@ fn static_model_collision(
     (triangles, owners, matched, failed)
 }
 
+fn native_render_indices(indices: &[u16]) -> Indices {
+    // FUN_1402c53e0 uses clockwise fronts (D3D FrontCounterClockwise=0).
+    // Imported DH2 triangles are CW; Bevy's raster fronts are CCW. Convert
+    // render indices once, preserving native normals and collision indices.
+    assert_eq!(indices.len() % 3, 0, "incomplete native triangle");
+    Indices::U16(indices.chunks_exact(3).flat_map(|t| [t[0], t[2], t[1]]).collect())
+}
+
+fn mirrored_render_mesh(mut mesh: Mesh, indices: &[u16], flipped: bool) -> Mesh {
+    // A reflected affine instance reverses winding again. Preserve the native
+    // CW indices for that variant so its final raster fronts remain CCW.
+    if flipped { mesh.insert_indices(Indices::U16(indices.to_vec())); }
+    mesh
+}
+
 fn mesh_from_points(points: &[Vec3], uvs: &[[f32; 2]], indices: &[u16]) -> Mesh {
     let mut normals = vec![Vec3::ZERO; points.len()];
     for face in indices.chunks_exact(3) {
@@ -2216,7 +2231,7 @@ fn mesh_from_points(points: &[Vec3], uvs: &[[f32; 2]], indices: &[u16]) -> Mesh 
             .collect::<Vec<_>>(),
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
-    .with_inserted_indices(Indices::U16(indices.to_vec()))
+    .with_inserted_indices(native_render_indices(indices))
 }
 
 fn mean_game_position(points: &[Vec3]) -> [f32; 3] {
@@ -2256,14 +2271,15 @@ fn authored_mesh<const N: usize>(
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
         .with_inserted_attribute(DH2_BITANGENT, bitangents)
-        .with_inserted_indices(Indices::U16(indices.to_vec()));
+        .with_inserted_indices(native_render_indices(indices));
     if N == 16 { mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors); }
-    mesh
+    let flipped = transform_direction(Vec3::X).cross(transform_direction(Vec3::Y)).dot(transform_direction(Vec3::Z)) < 0.0;
+    mirrored_render_mesh(mesh, indices, flipped)
 }
 
-fn source_mesh<const N: usize>(positions: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u16], packed: &[[u8; N]]) -> Mesh {
+fn source_mesh<const N: usize>(positions: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u16], packed: &[[u8; N]], flipped: bool) -> Mesh {
     let points: Vec<Vec3> = positions.iter().copied().map(game_to_view).collect();
-    authored_mesh(&points, uvs, indices, packed, |n| game_to_view(n.to_array()))
+    mirrored_render_mesh(authored_mesh(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped)
 }
 
 fn needs_exact_world_mesh(instance: &Transform, positions: &[[f32; 3]], exact: &[Vec3]) -> bool {
@@ -2416,6 +2432,12 @@ impl MaterialResolver<'_> {
             material::Transparency::Blend => { self.blended += 1; AlphaMode::Blend }
         };
         let is_decal = program_is_decal || decal_bias.is_some();
+        let cull_mode = match material::cull_mode_with_program(bytes, program) {
+            Ok(material::CullMode::None) => None,
+            Ok(material::CullMode::Front) => Some(bevy::render::render_resource::Face::Front),
+            Ok(material::CullMode::Back) => Some(bevy::render::render_resource::Face::Back),
+            Err(error) => { eprintln!("Material {path}: {error}"); self.misses += 1; return None; }
+        };
         let base = StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: None,
@@ -2425,7 +2447,7 @@ impl MaterialResolver<'_> {
             perceptual_roughness: 1.0 - surface.ward[1],
             metallic: surface.metallic_min_max[1],
             double_sided: two_sided_lighting,
-            cull_mode: None,
+            cull_mode,
             ..default()
         };
         let native_vertex_lighting = matches!(uniform.misc.z, 1 | 2);
@@ -2579,7 +2601,7 @@ fn setup(
     };
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
-    let mut world_mesh_handles = HashMap::<usize, Handle<Mesh>>::new();
+    let mut world_mesh_handles = HashMap::<(usize, bool), Handle<Mesh>>::new();
     let mut baked_shear_instances = 0usize;
     let mut authored_lod_instances = BTreeMap::<usize, usize>::new();
     let mut render_instances = Vec::new();
@@ -2615,9 +2637,9 @@ fn setup(
         // layer0_vtxcolormaskchannel blends material layers, not final opacity.
         // Using it as vertex alpha made 1,059 authored world objects translucent.
         let mesh = world_mesh_handles
-            .entry(object.mesh_index)
+            .entry((object.mesh_index, object.flipped))
             .or_insert_with(|| {
-                meshes.add(source_mesh(&source.positions, &source.uvs, &source.indices, &source.packed_channels))
+                meshes.add(source_mesh(&source.positions, &source.uvs, &source.indices, &source.packed_channels, object.flipped))
             })
             .clone();
         for matrix_index in object.matrix_start..object.matrix_end {
@@ -2699,7 +2721,7 @@ fn setup(
     let mut model_cache = HashMap::<String, Option<bmodel::Model>>::new();
     let mut md6_cache = HashMap::<String, Option<bmd6::ModelInfo>>::new();
     let mut md6_rest_pose_instances = 0usize;
-    let mut model_mesh_handles = HashMap::<(String, usize), Handle<Mesh>>::new();
+    let mut model_mesh_handles = HashMap::<(String, usize, bool), Handle<Mesh>>::new();
     let pickup_ids: HashSet<&str> = scene
         .pickups
         .iter()
@@ -2800,13 +2822,14 @@ fn setup(
                         } else {
                             (
                                 model_mesh_handles
-                                    .entry((placement.resource_path.clone(), surface_number))
+                                    .entry((placement.resource_path.clone(), surface_number, instance.to_matrix().determinant() < 0.0))
                                     .or_insert_with(|| {
                                         meshes.add(source_mesh(
                                             &surface.positions,
                                             &surface.uvs,
                                             &surface.indices,
                                             &surface.packed_channels,
+                                            instance.to_matrix().determinant() < 0.0,
                                         ))
                                     })
                                     .clone(),
@@ -2907,13 +2930,14 @@ fn setup(
                 } else {
                     (
                         model_mesh_handles
-                            .entry((placement.resource_path.clone(), surface_number))
+                            .entry((placement.resource_path.clone(), surface_number, instance.to_matrix().determinant() < 0.0))
                             .or_insert_with(|| {
                                 meshes.add(source_mesh(
                                     &surface.positions,
                                     &surface.uvs,
                                     &surface.indices,
                                     &surface.packed_channels,
+                                    instance.to_matrix().determinant() < 0.0,
                                 ))
                             })
                             .clone(),
@@ -5824,6 +5848,26 @@ mod game_control_tests {
     use super::*;
 
     #[test]
+    fn native_mesh_winding_matches_authored_normals() {
+        let points = [Vec3::new(-1.0,-1.0,0.0),Vec3::new(1.0,-1.0,0.0),Vec3::new(0.0,1.0,0.0)];
+        let raw = [0u16,2,1]; // Original clockwise front, outward normal +Z.
+        let mesh = mesh_from_points(&points, &[[0.0;2];3], &raw);
+        assert_eq!(mesh.indices(), Some(&Indices::U16(vec![0,1,2])));
+        let cross = (points[1]-points[0]).cross(points[2]-points[0]);
+        let normals = mesh.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap().as_float3().unwrap();
+        assert!(normals.iter().all(|n| cross.dot(Vec3::from_array(*n)) > 0.0));
+        let mut packed = [[0u8;12];3];
+        for p in &mut packed { p[6]=127; p[8]=127; p[11]=127; }
+        let authored = authored_mesh(&points, &[[0.0;2];3], &raw, &packed, |n| n);
+        assert_eq!(authored.indices(), mesh.indices());
+        let reflected: Vec<Vec3> = points.iter().map(|p| *p * Vec3::new(-1.0,1.0,1.0)).collect();
+        let mirrored = authored_mesh(&reflected, &[[0.0;2];3], &raw, &packed, |n| n * Vec3::new(-1.0,1.0,1.0));
+        assert_eq!(mirrored.indices(), Some(&Indices::U16(raw.to_vec())));
+        let cross = (reflected[2]-reflected[0]).cross(reflected[1]-reflected[0]);
+        assert!(cross.z > 0.0);
+    }
+
+    #[test]
     fn f8_replay_preserves_saved_camera_and_rejects_bad_input() {
         let report = "Camera game_xyz: [-22.121996, 93.85251, 12.256257]\nCamera direction game_xyz: [0.04506988, -0.98096955, 0.18885912]\n";
         let pose = f8_camera_pose(report).unwrap();
@@ -5971,7 +6015,7 @@ mod game_control_tests {
         app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(decal), Transform::from_xyz(0.6, 0.0, 0.0)));
         app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(vegetation), Transform::from_xyz(0.0, 0.6, 0.0)));
         app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(cutout), Transform::from_xyz(0.0, -0.6, 0.0)));
-        let camera = app.world_mut().spawn((Camera3d::default(), DepthPrepass, Msaa::Sample4, bevy::camera::RenderTarget::Image(target.into()),
+        let camera = app.world_mut().spawn((Camera3d::default(), DepthPrepass, Msaa::Sample4, bevy::camera::RenderTarget::Image(target.clone().into()),
             Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y))).id();
         let mut validated = 0;
         let mut prepass_validated = 0;
@@ -6107,14 +6151,87 @@ mod game_control_tests {
             ("layer0 scale/bias applies before clipping", scaled, false),
             ("opaque Z variant never samples alpha", opaque, true),
         ];
+        let mut forward = material.clone();
+        forward.base.unlit = true;
         let handle = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(material);
-        app.world_mut().spawn((Mesh3d(mesh), MeshMaterial3d(handle.clone()), Transform::default()));
+        let entity = app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(handle.clone()), Transform::default())).id();
         for (label, material, expected) in cases {
             *app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&handle).unwrap() = material;
             for _ in 0..6 { app.update(); }
             let depth = center_depth(&mut app);
             assert!(depth.is_finite(), "{label}: nonfinite depth {depth}");
             assert_eq!(depth > 0.0, expected, "{label}: actual prepass depth {depth}");
+        }
+        // A valid prepass silhouette alone cannot catch a later forward discard.
+        app.world_mut().entity_mut(camera).remove::<DepthPrepass>();
+        app.world_mut().entity_mut(camera).get_mut::<Camera>().unwrap().clear_color = bevy::camera::ClearColorConfig::Custom(Color::BLACK);
+        let mut tint = forward.clone();
+        tint.extension.surface.colors[0].w = 0.0;
+        tint.extension.surface.mask_settings[0] = UVec4::new(0,3,1,0);
+        let mut layer = forward.clone();
+        layer.extension.surface.flags.x = 1;
+        layer.extension.surface.mask_settings[1] = UVec4::new(0,3,0,0);
+        let mut hole = forward.clone();
+        hole.extension.diffuse0 = hole.extension.diffuse1.clone();
+        let mut vertex = forward.clone();
+        vertex.extension.surface.misc.y = 1;
+        let mut zero_alpha = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap().clone();
+        let n = zero_alpha.count_vertices();
+        zero_alpha.insert_attribute(Mesh::ATTRIBUTE_COLOR,vec![[0.3,0.7,1.0,0.0];n]);
+        let zero_alpha = app.world_mut().resource_mut::<Assets<Mesh>>().add(zero_alpha);
+        // Isolate one face: reversing a closed cube still exposes its far face.
+        let mut face = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap().clone();
+        let normals = face.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap().as_float3().unwrap();
+        let indices: Vec<u32> = face.indices().unwrap().iter().map(|i| i as u32).collect();
+        let indices: Vec<u32> = indices.chunks_exact(3).filter(|t| normals[t[0] as usize][2] > 0.5).flatten().copied().collect();
+        assert_eq!(indices.len(), 6);
+        // Exercise the actual CW asset -> CCW render adapter for both sides.
+        let native_front: Vec<u16> = indices.chunks_exact(3).flat_map(|t| [t[0] as u16,t[2] as u16,t[1] as u16]).collect();
+        face.insert_indices(native_render_indices(&native_front));
+        let mut reversed = face.clone();
+        reversed.insert_indices(native_render_indices(&indices.iter().map(|i| *i as u16).collect::<Vec<_>>()));
+        let mut mirrored = mirrored_render_mesh(face.clone(), &native_front, true);
+        let positions = mirrored.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| [-p[0],p[1],p[2]]).collect::<Vec<_>>();
+        mirrored.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        let mirrored = app.world_mut().resource_mut::<Assets<Mesh>>().add(mirrored);
+        let face = app.world_mut().resource_mut::<Assets<Mesh>>().add(face);
+        let reversed = app.world_mut().resource_mut::<Assets<Mesh>>().add(reversed);
+        let mut back_cull = forward.clone();
+        back_cull.base.cull_mode = Some(bevy::render::render_resource::Face::Back);
+        let mut front_cull = forward.clone();
+        front_cull.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
+        let mut no_cull = forward.clone();
+        no_cull.base.cull_mode = None;
+        for (label,material,mesh,expected) in [
+            ("raw diffuse solid",forward,mesh.clone(),true),
+            ("raw diffuse hole",hole,mesh.clone(),false),
+            ("material tint alpha is not a second clip",tint,mesh.clone(),true),
+            ("layer alpha is not a second clip",layer,mesh.clone(),true),
+            ("vertex alpha is not a second clip",vertex,zero_alpha,true),
+            ("native BACK keeps mirrored CW fronts",back_cull.clone(),mirrored,true),
+            ("native BACK keeps front-facing triangles",back_cull.clone(),face.clone(),true),
+            ("native BACK rejects reverse coincident triangles",back_cull,reversed.clone(),false),
+            ("native FRONT rejects front-facing triangles",front_cull.clone(),face.clone(),false),
+            ("native FRONT keeps reverse-facing triangles",front_cull,reversed.clone(),true),
+            ("native NONE keeps front-facing triangles",no_cull.clone(),face,true),
+            ("native NONE keeps reverse-facing triangles",no_cull,reversed,true),
+        ] {
+            *app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&handle).unwrap() = material;
+            app.world_mut().entity_mut(entity).insert(Mesh3d(mesh));
+            for _ in 0..6 {app.update();}
+            let (tx,rx) = std::sync::mpsc::channel();
+            app.world_mut().spawn(Screenshot::image(target.clone())).observe(move |event: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
+                let data=event.image.data.as_ref().unwrap();
+                tx.send(<[u8;4]>::try_from(&data[(32*64+32)*4..(32*64+32)*4+4]).unwrap()).unwrap();
+            });
+            let mut pixel=None;
+            for _ in 0..200 {
+                app.update();
+                if let Ok(value)=rx.try_recv() {pixel=Some(value);break;}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let pixel=pixel.expect("forward screenshot did not complete");
+            assert_eq!(pixel[0]>20,expected,"{label}: forward pixel {pixel:?}");
         }
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
@@ -8868,6 +8985,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 material_path: "sample_roof".into(),
                 matrix_start: 0,
                 matrix_end: 1,
+                flipped: false,
                 lod: 0,
             }],
         };

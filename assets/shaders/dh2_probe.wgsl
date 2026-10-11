@@ -97,8 +97,10 @@ fn fragment(
             pbr_input.N = face_factor * normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
         }
 #endif
+    } else {
+        // Native paths already clip raw diffuse alpha before tints/layers.
+        pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     }
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     apply_decals(&pbr_input);
 
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {

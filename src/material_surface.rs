@@ -137,7 +137,8 @@ impl Surface {
             }
         });
         Self {
-            main_program: v.get("mainprogram").map(|name| name.trim_matches('"').to_owned()),
+            // 1402d61ef supplies the arkDefault interned name when absent.
+            main_program: Some(v.get("mainprogram").map_or("arkDefault", |name| name.trim_matches('"')).to_owned()),
             layers,
             extra_layers: number(&v, "extralayer", 0) as usize,
             has_bump: number(&v, "hasbumpmap", 0) != 0,
@@ -255,6 +256,17 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_program_selects_native_default_and_authored_maps() {
+        let s = Surface::parse(b"hasGlossMap 1\nhasMetallicMap 1\nmetallicMinMax {0,0.8,0,0}\nwardRoughness {0.3,1,0,0}\n");
+        assert_eq!(s.main_program.as_deref(), Some("arkDefault"));
+        assert_eq!(s.program(), Program::Default);
+        assert_eq!(s.metallic([0.0;3],[0.0;3]).unwrap(),0.0);
+        assert_eq!(s.roughness(&mut 1.0,[0.0;3],[0.0;3]).unwrap(),0.7);
+        assert_eq!(Surface::parse(b"mainProgram arkCloth\n").program(),Program::Unsupported);
+        assert_eq!(Surface::parse(b"mainProgram arkVegetation\n").program(),Program::Vegetation);
+    }
 
     #[test]
     fn signed_bc5_reconstructs_original_non_sqrt_z() {

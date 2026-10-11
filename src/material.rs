@@ -52,6 +52,31 @@ fn render_fields(bytes: &[u8]) -> std::collections::HashMap<String, String> {
     values
 }
 
+/// FUN_1402c4a70 token values; FUN_1402c3bc0 defaults bits 24..25 to 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CullMode { None = 0, Front = 1, Back = 2 }
+
+pub fn parse_cull_mode(token: &str) -> Result<CullMode, String> {
+    match token.to_ascii_uppercase().as_str() {
+        "NONE" => Ok(CullMode::None),
+        "FRONT" => Ok(CullMode::Front),
+        "BACK" => Ok(CullMode::Back),
+        _ => Err(format!("bad cull mode {token}")),
+    }
+}
+
+pub fn cull_mode_with_program(bytes: &[u8], program: &[u8]) -> Result<CullMode, String> {
+    let mut values = render_fields(program);
+    let mut authored = render_fields(bytes);
+    // FUN_1402d7b30 converts these legacy raster aliases, not twoSidedLighting.
+    if authored.get("version").and_then(|v| v.parse::<u32>().ok()).is_some_and(|v| v < 3) {
+        if authored.get("twosided").is_some_and(|v| v == "1") { authored.insert("cull".into(), "none".into()); }
+        if authored.get("backsided").is_some_and(|v| v == "1") { authored.insert("cull".into(), "front".into()); }
+    }
+    values.extend(authored);
+    values.get("cull").map_or(Ok(CullMode::Back), |v| parse_cull_mode(v))
+}
+
 pub fn program_option(bytes: &[u8], program: &[u8], key: &str) -> bool {
     let mut values = render_fields(program);
     values.extend(render_fields(bytes));
@@ -305,6 +330,19 @@ mod tests {
         assert_eq!(transparency(b"stageSort SortDecal\n"), Transparency::Blend);
         assert_eq!(transparency_with_program(b"blend ONE ZERO\n", program), Transparency::Opaque);
         assert_eq!(transparency_with_program(b"stageSort sortCoverage\n", program), Transparency::Blend);
+    }
+
+    #[test]
+    fn native_raster_culling_inherits_and_is_not_a_lighting_option() {
+        assert_eq!(cull_mode_with_program(b"", b""), Ok(CullMode::Back));
+        assert_eq!(cull_mode_with_program(b"state {\n}\n", b"cull FRONT\n"), Ok(CullMode::Front));
+        assert_eq!(cull_mode_with_program(b"cull NoNe // fabric\n", b"cull BACK\n"), Ok(CullMode::None));
+        assert_eq!(cull_mode_with_program(b"twoSidedLighting 1\n", b""), Ok(CullMode::Back));
+        assert_eq!(cull_mode_with_program(b"version 2\ntwoSided 1\n", b""), Ok(CullMode::None));
+        assert_eq!(cull_mode_with_program(b"version 2\nbackSided 1\n", b""), Ok(CullMode::Front));
+        assert_eq!(cull_mode_with_program(b"version 6\ntwoSided 1\n", b""), Ok(CullMode::Back));
+        assert_eq!(cull_mode_with_program(b"cull sideways\n", b""), Err("bad cull mode sideways".into()));
+        assert_eq!(cull_mode_with_program(b"", b"hlsl_prefix {\ncull NONE\n"), Ok(CullMode::Back));
     }
 
     #[test]

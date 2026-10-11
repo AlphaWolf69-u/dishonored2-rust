@@ -430,26 +430,38 @@ fn normalize_body_quaternion(_quaternion: [f32; 4]) -> [f32; 4] {
 }
 
 /// FUN_140aa0390: quaternion to all twelve matrix lanes, including padding.
-pub fn quaternion_basis([x, y, z, w]: [f32; 4]) -> [[f32; 4]; 3] {
-    let twice_x = x + x;
-    let twice_y = y + y;
-    let twice_z = z + z;
-    let xx = x * twice_x;
-    let yy = twice_y * y;
-    let xy = -(twice_y * x);
-    let xz = -(twice_z * x);
-    let yz = -(twice_z * y);
-    let wz = w * twice_z;
-    let wy = -(w * twice_y);
-    let wx = -(w * twice_x);
-    let one_minus_zz = -(z * twice_z) + 1.0;
-    let third_second = wx - yz;
-    let third_first = -wy - xz;
-    [
-        [one_minus_zz - yy, wz - xy, wy - xz, third_second],
-        [-wz - xy, one_minus_zz - xx, -wx - yz, third_first],
-        [third_first, third_second, (1.0 - xx) - twice_y * y, 0.0],
-    ]
+#[cfg(target_arch = "x86_64")]
+pub fn quaternion_basis(quaternion: [f32; 4]) -> [[f32; 4]; 3] {
+    use std::arch::x86_64::*;
+    // Packed operation order and sign-mask XORs preserve native NaN bits too.
+    unsafe {
+        let q = _mm_loadu_ps(quaternion.as_ptr());
+        let sign = _mm_castsi128_ps(_mm_set_epi32(i32::MIN, i32::MIN, i32::MIN, 0));
+        let cross_sign = _mm_castsi128_ps(_mm_set_epi32(i32::MIN, i32::MIN, 0, i32::MIN));
+        let one = _mm_set_ss(1.0);
+        let doubled = _mm_add_ps(q, q);
+        let xx = _mm_mul_ss(q, doubled);
+        let products = _mm_mul_ps(_mm_shuffle_ps::<0xa5>(doubled, doubled), _mm_shuffle_ps::<0x41>(q, q));
+        let cross = _mm_mul_ps(_mm_shuffle_ps::<0xfe>(q, q), _mm_shuffle_ps::<0x1a>(doubled, doubled));
+        let mut signed_products = _mm_xor_ps(sign, products);
+        let diagonal = _mm_sub_ss(_mm_sub_ss(one, xx), products);
+        let cross = _mm_add_ss(_mm_xor_ps(cross, cross_sign), one);
+        let first = _mm_sub_ps(cross, signed_products);
+        signed_products = _mm_move_ss(signed_products, xx);
+        let second = _mm_sub_ps(_mm_xor_ps(sign, cross), signed_products);
+        let second = _mm_shuffle_ps::<0xb1>(second, second);
+        let third = _mm_shuffle_ps::<0x8d>(_mm_movehl_ps(first, second), diagonal);
+        let mut result = [[0.0; 4]; 3];
+        for (column, value) in result.iter_mut().zip([first, second, third]) {
+            _mm_storeu_ps(column.as_mut_ptr(), value);
+        }
+        result
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn quaternion_basis(_quaternion: [f32; 4]) -> [[f32; 4]; 3] {
+    unimplemented!("Original DH2 basis conversion requires x86-64 SSE")
 }
 
 /// FUN_140aa0360: the original basis/quaternion/basis round trip before body creation.

@@ -64,6 +64,7 @@ pub struct WorldObject {
     pub material_path: String,
     pub matrix_start: usize,
     pub matrix_end: usize,
+    pub flipped: bool,
     pub lod: usize,
 }
 
@@ -283,6 +284,7 @@ pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
             material_path,
             matrix_start,
             matrix_end,
+            flipped: flipped != 0,
             lod,
         });
     }
