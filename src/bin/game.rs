@@ -4272,6 +4272,77 @@ fn run_tome_render_jobs(
     })
 }
 
+#[derive(PartialEq, Eq)]
+struct TomeRenderQueryKey {
+    camera_point: [u32; 3],
+    render_rows: [[u32; 4]; 4],
+    cropped_rows: [[u32; 4]; 4],
+    initial_tile_rect: [u8; 4],
+    camera_imprecision: [u32; 3],
+    object_imprecision: u32,
+    minimum_area_metric: u32,
+    global_distance_threshold: u32,
+    winding_flip: bool,
+    gate_states: Option<Vec<u32>>,
+    output_capacity: usize,
+    job_count: u32,
+}
+
+impl TomeRenderQueryKey {
+    fn new(input: &tome::OrdinaryDirectQueryInput<'_>, job_count: u32) -> Self {
+        // Exhaustive destructuring makes added query inputs a compile error.
+        let tome::OrdinaryDirectQueryInput {
+            camera_point, render_rows, cropped_rows, initial_tile_rect,
+            camera_imprecision, object_imprecision, minimum_area_metric,
+            global_distance_threshold, winding_flip, gate_states, output_capacity,
+        } = *input;
+        Self {
+            camera_point: camera_point.map(f32::to_bits),
+            render_rows: render_rows.map(|row| row.map(f32::to_bits)),
+            cropped_rows: cropped_rows.map(|row| row.map(f32::to_bits)),
+            initial_tile_rect,
+            camera_imprecision: camera_imprecision.map(f32::to_bits),
+            object_imprecision: object_imprecision.to_bits(),
+            minimum_area_metric: minimum_area_metric.to_bits(),
+            global_distance_threshold: global_distance_threshold.to_bits(),
+            winding_flip,
+            gate_states: gate_states.map(<[u32]>::to_vec),
+            output_capacity,
+            job_count,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TomeRenderQueryCache {
+    key: Option<TomeRenderQueryKey>,
+    output: Option<tome::RenderQueryObjectOutput>,
+    diagnostics: Vec<tome::RenderQueryJobDiagnostics>,
+}
+
+impl TomeRenderQueryCache {
+    fn matches(&self, key: &TomeRenderQueryKey, world_changed: bool) -> bool {
+        !world_changed && self.key.as_ref() == Some(key)
+    }
+
+    fn store(
+        &mut self,
+        key: TomeRenderQueryKey,
+        result: &Result<Option<tome::RenderQueryObjectOutput>, String>,
+        diagnostics: &[tome::RenderQueryJobDiagnostics],
+    ) {
+        self.key = None;
+        if diagnostics.iter().any(|job| job.error.is_some()) {
+            return;
+        }
+        if let Ok(output) = result {
+            self.output = output.clone();
+            self.diagnostics = diagnostics.to_vec();
+            self.key = Some(key);
+        }
+    }
+}
+
 // The ordinary direct-Tome query selects mapped static BWM instances and
 // forwards their projected image demand. The installed worker clears only
 // its own output on error, then returns; merge the successful siblings, log
@@ -4286,28 +4357,27 @@ fn stream_visible_models(
     mut timing: Option<ResMut<VisibilityElapsedTiming>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
+    mut query_cache: Local<TomeRenderQueryCache>,
 ) {
     let started = Instant::now();
+    if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
+        *query_cache = TomeRenderQueryCache::default();
+    }
     // Every frame replaces these outputs, including frames without a usable
     // camera. Do not expose a previous view's cells or IDs to light selection.
     scene.visible_authored_ids.clear();
     scene.visible_cell_indices.clear();
     scene.visible_cell_mask.clear();
     scene.light_query_state = None;
-    let Ok((camera, transform, projection)) = cameras.single() else {
-        if let Some(diagnostics) = diagnostics.as_deref_mut() {
-            diagnostics.frame += 1;
-            diagnostics.status = "camera_unavailable".to_owned();
-            diagnostics.pending = format!(
-                "frame={} status=camera_unavailable authored_ids=0 visible_cell_entries=0 cell_mask_words=0 light_binding=unavailable sphere_binding=unavailable",
-                diagnostics.frame
-            );
-        }
-        return;
-    };
+    // An unavailable view must still replace model visibility below.
+    let view = cameras.single().ok();
+    let (camera, transform, projection) = view.unwrap_or_default();
     let mut query_ns = 0;
+    let mut query_cached = false;
     let mut mapping_ns = 0;
-    let mut status = if tome_world.is_some() {
+    let mut status = if view.is_none() {
+        "camera_unavailable".to_owned()
+    } else if tome_world.is_some() {
         "camera_not_ready".to_owned()
     } else {
         "no_tome".to_owned()
@@ -4361,6 +4431,16 @@ fn stream_visible_models(
                     gate_states: Some(&tome_world.gate_states),
                     output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
                 };
+                let key = TomeRenderQueryKey::new(&input, tome_world.query_job_count);
+                if query_cache.matches(&key, tome_world.is_changed()) {
+                    query_cached = true;
+                    query_diagnostics = query_cache.diagnostics.clone();
+                    for job in &mut query_diagnostics {
+                        job.elapsed_ns = 0;
+                    }
+                    return Ok(query_cache.output.clone());
+                }
+                query_cache.key = None;
                 let jobs = run_tome_render_jobs(tome_world, &input);
                 let result = tome::merge_render_query_outputs(&jobs);
                 job_errors =
@@ -4375,6 +4455,10 @@ fn stream_visible_models(
                     .into_iter()
                     .map(|job| job.diagnostics)
                     .collect::<Vec<_>>();
+                // Only the immutable Tome query is reused. Mapping, moving
+                // models/pickups, light gathering and texture demand still run.
+                // Failed/partial jobs are always retried, never cached.
+                query_cache.store(key, &result, &query_diagnostics);
                 result
             });
             query_ns = query_started.elapsed().as_nanos();
@@ -4549,8 +4633,10 @@ fn stream_visible_models(
             .iter()
             .map(|job| job.progress.distance_rejected_objects)
             .sum();
+        let depth_grid_bound = scene.light_query_state.as_ref()
+            .is_some_and(|state| state.depth_grid.is_some());
         diagnostics.pending = format!(
-            "frame={} status={:?} jobs={} distance_rejected_job_candidates={distance_rejected_job_candidates} authored_ids={} authored_id_consumer=static_light_id_gate visible_cell_entries={visible_cell_entries} visible_cell_unique={visible_cell_unique} cell_mask_words={visible_cell_mask_words} light_binding=authored_ids_and_cells light_consumer=see_light_stage viewport={query_viewport:?} merged_query_tile={merged_query_tile:?} depth_grid=unsupported requested={requested} mapped={mapped_count} spatial_tested={} spatial_accepted_bwm={spatial_accepted} suppressed={suppressed} active={active}/{} spawned={spawned} shown={shown} hidden={hidden} query_ms={:.3} mapping_ms={:.3} elapsed_ms={:.3}\npose={pose:?}\nrender_rows={query_rows:?} winding_flip={:?}\naccepted_sample={accepted_sample:?}\nauthored_id_sample={authored_id_sample:?}\nvisible_cell_sample={visible_cell_sample:?}\n{query_diagnostics:?}",
+            "frame={} status={:?} jobs={} distance_rejected_job_candidates={distance_rejected_job_candidates} authored_ids={} authored_id_consumer=static_light_id_gate visible_cell_entries={visible_cell_entries} visible_cell_unique={visible_cell_unique} cell_mask_words={visible_cell_mask_words} light_binding=authored_ids_and_cells light_consumer=see_light_stage query_cached={query_cached} viewport={query_viewport:?} merged_query_tile={merged_query_tile:?} depth_grid_bound={depth_grid_bound} requested={requested} mapped={mapped_count} spatial_tested={} spatial_accepted_bwm={spatial_accepted} suppressed={suppressed} active={active}/{} spawned={spawned} shown={shown} hidden={hidden} query_ms={:.3} mapping_ms={:.3} elapsed_ms={:.3}\npose={pose:?}\nrender_rows={query_rows:?} winding_flip={:?}\naccepted_sample={accepted_sample:?}\nauthored_id_sample={authored_id_sample:?}\nvisible_cell_sample={visible_cell_sample:?}\n{query_diagnostics:?}",
             diagnostics.frame,
             diagnostics.status,
             query_diagnostics.len(),
@@ -5847,6 +5933,149 @@ fn main() {
 mod game_control_tests {
     use super::*;
 
+    fn cache_test_input(gates: Option<&[u32]>) -> tome::OrdinaryDirectQueryInput<'_> {
+        tome::OrdinaryDirectQueryInput {
+            camera_point: [0.0; 3],
+            render_rows: Mat4::IDENTITY.to_cols_array_2d(),
+            cropped_rows: Mat4::IDENTITY.to_cols_array_2d(),
+            initial_tile_rect: [0, 0, 8, 16],
+            camera_imprecision: [0.6; 3],
+            object_imprecision: 0.6,
+            minimum_area_metric: 25.0 / (1920.0 * 1080.0),
+            global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            winding_flip: false,
+            gate_states: gates,
+            output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+        }
+    }
+
+    #[test]
+    fn tome_query_cache_requires_every_exact_input_and_unchanged_world() {
+        let gates = [0u32, 1];
+        let input = cache_test_input(Some(&gates));
+        let key = || TomeRenderQueryKey::new(&input, 12);
+        let cache = TomeRenderQueryCache { key: Some(key()), ..default() };
+        assert!(cache.matches(&key(), false));
+        assert!(!cache.matches(&key(), true));
+        assert!(!cache.matches(&TomeRenderQueryKey::new(&input, 1), false));
+        let changed = |input| assert!(!cache.matches(&TomeRenderQueryKey::new(&input, 12), false));
+        for i in 0..3 {
+            let mut other = input;
+            other.camera_point[i] = -0.0; // Signed zero must not alias.
+            changed(other);
+            other = input;
+            other.camera_point[i] = f32::from_bits(1); // Smallest camera change.
+            changed(other);
+            other = input;
+            other.camera_imprecision[i] += 0.001;
+            changed(other);
+        }
+        for row in 0..4 {
+            for col in 0..4 {
+                let mut other = input;
+                other.render_rows[row][col] += 0.001;
+                changed(other);
+                other = input;
+                other.cropped_rows[row][col] += 0.001;
+                changed(other);
+            }
+            let mut other = input;
+            other.initial_tile_rect[row] += 1;
+            changed(other);
+        }
+        let mut other = input;
+        other.object_imprecision += 0.001;
+        changed(other);
+        other = input;
+        other.minimum_area_metric += 0.001;
+        changed(other);
+        other = input;
+        other.global_distance_threshold += 0.001;
+        changed(other);
+        other = input;
+        other.winding_flip = true;
+        changed(other);
+        other = input;
+        other.output_capacity -= 1;
+        changed(other);
+        changed(cache_test_input(Some(&[0, 0])));
+        changed(cache_test_input(None));
+        changed(cache_test_input(Some(&[])));
+    }
+
+    #[test]
+    fn tome_query_cache_never_keeps_failed_or_partial_job_results() {
+        let input = cache_test_input(None);
+        let key = || TomeRenderQueryKey::new(&input, 12);
+        let mut cache = TomeRenderQueryCache::default();
+        let mut output = tome::RenderQueryObjectOutput::default();
+        output.state = Some(tome::RenderQueryState::from_input(&input, [0, 0, 16, 16]));
+        let success = Ok(Some(output));
+        cache.store(key(), &success, &[]);
+        assert!(cache.matches(&key(), false));
+        let mut copy = cache.output.clone().unwrap();
+        copy.state.as_mut().unwrap().depth_grid.as_mut().unwrap()[0] = 1.0;
+        assert_eq!(cache.output.as_ref().unwrap().state.as_ref().unwrap().depth_grid.as_ref().unwrap()[0], 0.0);
+        cache.store(key(), &Err("merge failed".into()), &[]);
+        assert!(!cache.matches(&key(), false));
+        cache.store(key(), &success, &[]);
+        let failed_job = tome::RenderQueryJobDiagnostics {
+            job_index: 0, viewport: None, elapsed_ns: 1,
+            progress: default(), error: Some("worker failed".into()),
+        };
+        cache.store(key(), &success, &[failed_job]);
+        assert!(!cache.matches(&key(), false));
+        cache.store(key(), &Ok(None), &[]);
+        assert!(cache.matches(&key(), false));
+        assert!(cache.output.is_none());
+    }
+
+    #[test]
+    fn unavailable_or_unready_camera_replaces_model_and_texture_visibility() {
+        use bevy::ecs::system::RunSystemOnce;
+        for camera_count in [0, 1, 2] {
+            let mut world = World::new();
+            world.insert_resource(PickupState {
+                items: Vec::new(),
+                world: runtime::WorldState::default(),
+            });
+            world.insert_resource(VisibilityElapsedTiming::default());
+            let entity = world.spawn(Visibility::Visible).id();
+            world.insert_resource(SceneRenderQueue {
+                active: 1,
+                instances: vec![RenderInstance {
+                    mesh: Handle::default(),
+                    material: MaterialHandle::Probe(Handle::default()),
+                    diffuse_image_slot: None,
+                    probe_index: 0,
+                    transform: Transform::default(),
+                    bounds: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
+                    pickup_id: None,
+                    entity: Some(entity),
+                    visible: true,
+                }],
+                visible_authored_ids: vec![1],
+                visible_cell_indices: vec![1],
+                visible_cell_mask: vec![2],
+                light_query_state: Some(light_test_query_state()),
+                ..default()
+            });
+            for _ in 0..camera_count {
+                world.spawn(Camera3d::default());
+            }
+            world.run_system_once(stream_visible_models).unwrap();
+            let scene = world.resource::<SceneRenderQueue>();
+            assert_eq!(scene.active, 0, "camera count {camera_count}");
+            assert!(!scene.instances[0].visible); // Texture streaming uses this flag too.
+            assert_eq!(world.get::<Visibility>(entity), Some(&Visibility::Hidden));
+            assert!(scene.visible_authored_ids.is_empty());
+            assert!(scene.visible_cell_indices.is_empty());
+            assert!(scene.visible_cell_mask.is_empty());
+            assert!(scene.light_query_state.is_none());
+            assert_eq!(world.resource::<VisibilityElapsedTiming>().samples, 1);
+        }
+    }
+
     #[test]
     fn native_mesh_winding_matches_authored_normals() {
         let points = [Vec3::new(-1.0,-1.0,0.0),Vec3::new(1.0,-1.0,0.0),Vec3::new(0.0,1.0,0.0)];
@@ -6244,16 +6473,20 @@ mod game_control_tests {
         tiled_depth_shader_matches_case(app,None);
         for id in 0..64 {tiled_depth_shader_matches_case(app,Some(id));}
         eprintln!("GPU TLF depth: 4 mixed tiles and 64 original-HLSL cases passed");
-        let device=app.sub_app(RenderApp).world().resource::<bevy::render::renderer::RenderDevice>();
-        let source=std::fs::read_to_string("assets/shaders/dh2_tlf_cull.wgsl").unwrap();
-        let module=device.create_and_validate_shader_module(bevy::render::render_resource::ShaderModuleDescriptor {
-            label:Some("original TLF light culler"),source:bevy::render::render_resource::ShaderSource::Wgsl(source.into()),
-        });
-        device.wgpu_device().create_compute_pipeline(&bevy::render::render_resource::RawComputePipelineDescriptor {
-            label:Some("original TLF light culler"),layout:None,module:&module,
-            entry_point:Some("cull"),compilation_options:default(),cache:None,
-        });
-        let point=[0.0f32,0.0,-2.0,1.0,0.0,0.0,-1.0,1.0,0.0,0.0,1.0,0.0].map(f32::to_bits);
+        let mut raw_light = [0_u8; 0xe8];
+        raw_light[0] = 1;
+        raw_light[0x60..0x64].copy_from_slice(&3_u32.to_le_bytes());
+        assert!(tiled_lighting::includes_local_light(0, 3, 0, raw_light[0]));
+        raw_light[0x30..0x34].copy_from_slice(&(-2.0_f32).to_le_bytes());
+        raw_light[0x80..0x84].copy_from_slice(&1.0_f32.to_le_bytes());
+        raw_light[0x9c..0xa0].copy_from_slice(&1.0_f32.to_le_bytes());
+        let mut lighting = [0_u32; 28];
+        let mut used_shadows = 0;
+        assert_eq!(render_light::prepare_tlf_lighting_packet(&raw_light, 0, false, &mut used_shadows, &mut lighting), (6, None));
+        assert_eq!(lighting[2], (-2.0_f32).to_bits());
+        assert_eq!(lighting[24], u32::MAX);
+        let mut point = [0_u32; 12];
+        tiled_lighting::fill_light_cull_packet([0.0, 0.0, -2.0], &lighting, &mut point);
         for scattering in [false,true] {
             assert_eq!(tiled_cull_gpu_lists(app,&point,scattering),[vec![0],vec![],vec![],vec![]]);
         }
@@ -6282,6 +6515,102 @@ mod game_control_tests {
             checked+=1;
         }
         assert_eq!(checked,2);eprintln!("GPU TLF culling: 512 original light packets and packed node chains passed");
+        tiled_light_iterator_matches_reference(app);
+    }
+
+    fn tiled_light_iterator_matches_reference(app: &mut App) {
+        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        let render = app.sub_app(RenderApp).world();
+        let device = render.resource::<RenderDevice>();
+        let queue = render.resource::<RenderQueue>();
+        let mut pool = Vec::new();
+        let mut heads = [tiled_lighting::END_OF_LIGHT_LIST; 16];
+        // Two by two tiles, with four horizontal type planes. Distinct chains
+        // expose tile/type addressing and preserve deliberately unsorted IDs.
+        for (head_index, head) in heads.iter_mut().enumerate() {
+            for i in 0..40 {
+                let node = tiled_lighting::PackedLightNode::new(*head, (i * 37 + head_index as u32) & 511);
+                *head = pool.len() as u32;
+                pool.push(node);
+            }
+        }
+        let mut source = include_str!("../../assets/shaders/dh2_tlf_list.wgsl")
+            .lines().filter(|line| !line.starts_with('#')).collect::<Vec<_>>().join("\n");
+        source.push_str(r#"
+@group(0) @binding(0) var<storage> pool: array<u32>;
+@group(0) @binding(1) var<storage> heads: array<u32>;
+@group(0) @binding(2) var<storage, read_write> result: array<u32>;
+@compute @workgroup_size(64)
+fn exercise_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= 64u { return; }
+    let tile = gid.x & 3u;
+    let kind = (gid.x >> 2u) & 3u;
+    let maximum = array<u32, 4>(0u, 1u, 32u, 64u)[gid.x >> 4u];
+    let pixel = vec2<u32>((tile & 1u) * 16u + 11u, (tile >> 1u) * 16u + 7u);
+    let coordinate = light_head_coordinate(pixel, kind, 4u, 2u);
+    var list = begin_light_list(heads[coordinate.x + coordinate.y * 8u]);
+    let base = gid.x * 65u;
+    while has_light(list, maximum) {
+        let packed = pool[list.head];
+        let index = advance_light(&list, packed);
+        result[base + list.count] = index;
+    }
+    result[base] = list.count;
+}
+"#);
+        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("native PC LightContext consumer"), source: ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: Some("native PC LightContext consumer"), layout: None, module: &module,
+            entry_point: Some("exercise_lists"), compilation_options: default(), cache: None,
+        });
+        let bytes = |words: &[u32]| words.iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>();
+        let pool_buffer = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None, contents: &bytes(&pool.iter().map(|node| node.0).collect::<Vec<_>>()), usage: BufferUsages::STORAGE,
+        });
+        let heads_buffer = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None, contents: &bytes(&heads), usage: BufferUsages::STORAGE,
+        });
+        let size = 64 * 65 * 4;
+        let output = device.create_buffer(&BufferDescriptor {
+            label: None, size, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: None, size, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let group = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
+                BindGroupEntry { binding: 0, resource: pool_buffer.as_entire_binding() },
+                BindGroupEntry { binding: 1, resource: heads_buffer.as_entire_binding() },
+                BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&default());
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&pipeline); pass.set_bind_group(0, &group, &[]); pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+        queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read, move |result| tx.send(result).unwrap());
+        device.poll(PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+        let mapped = readback.slice(..).get_mapped_range();
+        let words = mapped.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
+        let grid = tiled_lighting::TileGrid::new(32, 32, 16).unwrap();
+        for case in 0..64usize {
+            let tile = case & 3;
+            let coordinate = grid.light_head_coordinate([((tile & 1) * 16 + 11) as u32, ((tile >> 1) * 16 + 7) as u32], ((case >> 2) & 3) as u32);
+            let head = heads[(coordinate[0] + coordinate[1] * 8) as usize];
+            let mut expected = Vec::new();
+            tiled_lighting::visit_light_list(&pool, head, [0, 1, 32, 64][case >> 4], |id| expected.push(id)).unwrap();
+            assert_eq!(words[case * 65] as usize, expected.len(), "PC LightContext case {case}");
+            assert_eq!(&words[case * 65 + 1..case * 65 + 1 + expected.len()], expected.as_slice(), "PC LightContext order {case}");
+        }
+        drop(mapped); readback.unmap();
+        eprintln!("GPU TLF PC consumer: 64 tile/type/limit/order cases passed");
     }
 
     fn tiled_cull_gpu_lists(app: &mut App, lights: &[u32], scattering: bool) -> [Vec<u32>;4] {
@@ -6293,18 +6622,29 @@ mod game_control_tests {
         use bevy::render::{render_resource::*,renderer::{RenderDevice,RenderQueue}};
         use std::sync::mpsc;
         assert_eq!(lights.len()%12,0);let count=lights.len()/12;assert!(count>0&&count<=tiled_lighting::LIGHT_BUFFER_CAPACITY);
-        let render=app.sub_app(RenderApp).world();let device=render.resource::<RenderDevice>();let queue=render.resource::<RenderQueue>();
-        let source=std::fs::read_to_string("assets/shaders/dh2_tlf_cull.wgsl").unwrap();
-        let module=device.create_and_validate_shader_module(ShaderModuleDescriptor{label:Some("native TLF cull case"),source:ShaderSource::Wgsl(source.into())});
-        let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor{label:None,layout:None,module:&module,entry_point:Some("cull"),compilation_options:default(),cache:None});
+        let render=app.sub_app_mut(RenderApp).world_mut();
+        render.init_resource::<tiled_lighting_gpu::NativeTlfPipelines>();
+        let device=render.resource::<RenderDevice>();let queue=render.resource::<RenderQueue>();
+        let pipeline=&render.resource::<tiled_lighting_gpu::NativeTlfPipelines>().cull;
         let mut params=vec![0.0f32.to_bits(),0.0f32.to_bits(),1.0f32.to_bits(),1.0f32.to_bits()];
         params.extend([1.0f32.to_bits();4]);
         for _ in 0..2 {for row in 0..4 {for column in 0..4 {params.push(if row==column {1.0f32.to_bits()}else{0});}}}
-        params.extend([count as u32,u32::from(scattering),0,0]);assert_eq!(params.len(),44);
+        params.extend([count.div_ceil(64) as u32 * 64,u32::from(scattering),0,0]);assert_eq!(params.len(),44);
         let bytes=|values:&[u32]|values.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<u8>>();
         let uniform=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&params),usage:BufferUsages::UNIFORM});
         let buffers=tiled_lighting_gpu::NativeTlfBuffers::new(device);
-        buffers.upload_cull_packets(queue,lights).unwrap();
+        // The original-HLSL fixture supplies cull records. Reconstruct its
+        // corresponding lighting fields to exercise the shared producer/upload
+        // path too; the 1-light case additionally dispatches all 63 padding lanes.
+        let lighting = lights.chunks_exact(12).map(|cull| {
+            let mut record = [0_u32; 28];
+            record[..3].copy_from_slice(&cull[..3]);
+            for (src, dst) in (3..11).zip([7, 8, 9, 10, 13, 16, 17, 18]) { record[dst] = cull[src]; }
+            record[25] = cull[11];
+            record
+        }).collect::<Vec<_>>();
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        assert_eq!(buffers.upload_lighting_packets(queue, &identity, &lighting).unwrap(), count.div_ceil(64) * 64);
         let packets=buffers.resource(render_resource::resource_name_key("lightToPutInTiles")).unwrap();
         let counter=buffers.resource(render_resource::resource_name_key("lightNodePoolNextFreeEntry")).unwrap();
         let pool=buffers.resource(render_resource::resource_name_key("lightNodePool")).unwrap();
@@ -6357,19 +6697,98 @@ mod game_control_tests {
         previous.unwrap()
     }
 
+    fn depth_copy_shader_matches_fixture(
+        device: &bevy::render::renderer::RenderDevice,
+        queue: &bevy::render::renderer::RenderQueue,
+        pipelines: &tiled_lighting_gpu::NativeTlfPipelines,
+        source: &bevy::render::render_resource::Texture,
+        expected: &[f32],
+        entry: &str,
+    ) {
+        use bevy::render::render_resource::*;
+        let array_source = entry == "fragment";
+        let output_size = if entry == "downscale" {16} else {32};
+        let module = &pipelines.depth_copy;
+        // Caller-owned fixture layout; not the original 32-byte vertex ABI.
+        let vertex_layout = [RawVertexBufferLayout {array_stride: 20, step_mode: VertexStepMode::Vertex,
+            attributes: &[VertexAttribute {format: VertexFormat::Float32x3, offset: 0, shader_location: 0},
+                VertexAttribute {format: VertexFormat::Float32x2, offset: 12, shader_location: 1}]}];
+        let pipeline = if array_source {device.create_render_pipeline(&RawRenderPipelineDescriptor {
+            label: Some("native depthcopy fixture"), layout: None,
+            vertex: RawVertexState {module, entry_point: Some("vertex"), compilation_options: default(), buffers: &vertex_layout},
+            fragment: Some(RawFragmentState {module, entry_point: Some(entry), compilation_options: default(), targets: &[]}),
+            primitive: default(), multisample: default(), multiview_mask: None, cache: None,
+            depth_stencil: Some(DepthStencilState {format: TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Always), stencil: default(), bias: default()}),
+        })} else {pipelines.depth_copy_pipeline(device, TextureFormat::Depth32Float, entry == "downscale", &vertex_layout)};
+        let destination = device.create_texture(&TextureDescriptor {label: Some("copied depth fixture"),
+            size: Extent3d {width: output_size, height: output_size, depth_or_array_layers: 1}, mip_level_count: 1, sample_count: 1,
+            dimension: TextureDimension::D2, format: TextureFormat::Depth32Float,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC, view_formats: &[]});
+        let source_view = source.create_view(&TextureViewDescriptor {dimension: Some(if array_source {
+            TextureViewDimension::D2Array
+        } else {TextureViewDimension::D2}), ..default()});
+        let destination_view = destination.create_view(&default());
+        let sampler = device.create_sampler(&SamplerDescriptor {min_filter: FilterMode::Nearest, mag_filter: FilterMode::Nearest, ..default()});
+        let readback = device.create_buffer(&BufferDescriptor {label: None, size: 32*256,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false});
+        for scale_bias in [[1_f32,1.,0.,0.], [0.5,0.5,0.25,0.25], [-1.,1.,1.,0.]] {
+            let mut vertex_data = [-1_f32,-1.,0.,0.,1., 3.,-1.,0.,2.,1., -1.,3.,0.,0.,-1.];
+            if !array_source { for v in vertex_data.chunks_mut(5) {
+                v[3] = v[3]*scale_bias[0]+scale_bias[2]; v[4] = v[4]*scale_bias[1]+scale_bias[3];
+            } }
+            let vertices = device.create_buffer_with_data(&BufferInitDescriptor {label: None,
+                contents: &vertex_data.into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>(), usage: BufferUsages::VERTEX});
+            let parameters = array_source.then(|| {
+                let mut words = scale_bias.map(f32::to_bits).to_vec(); words.extend([0;4]);
+                device.create_buffer_with_data(&BufferInitDescriptor {label: None,
+                    contents: &words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(), usage: BufferUsages::UNIFORM})
+            });
+            let mut bindings = vec![
+                BindGroupEntry {binding: 0, resource: BindingResource::TextureView(&source_view)},
+                BindGroupEntry {binding: 1, resource: BindingResource::Sampler(&sampler)},
+            ];
+            if let Some(parameters) = &parameters {bindings.push(BindGroupEntry {binding: 2, resource: parameters.as_entire_binding()});}
+            let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {label: None,
+                layout: &pipeline.get_bind_group_layout(0), entries: &bindings});
+            let mut encoder = device.create_command_encoder(&default());
+            { let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {label: None, color_attachments: &[],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {view: &destination_view,
+                    depth_ops: Some(Operations {load: LoadOp::Clear(0.333), store: StoreOp::Store}), stencil_ops: None}),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None});
+                pass.set_pipeline(&pipeline); pass.set_bind_group(0, &bind, &[]); pass.set_vertex_buffer(0, *vertices.slice(..)); pass.draw(0..3,0..1);
+            }
+            encoder.copy_texture_to_buffer(TexelCopyTextureInfo {texture: &destination, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::DepthOnly},
+                TexelCopyBufferInfo {buffer: &readback, layout: TexelCopyBufferLayout {offset: 0, bytes_per_row: Some(256), rows_per_image: Some(32)}},
+                Extent3d {width: output_size, height: output_size, depth_or_array_layers: 1});
+            let submission = queue.submit([encoder.finish()]); let (tx,rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(MapMode::Read,move|result|{tx.send(result).unwrap();});
+            device.poll(PollType::Wait {submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10))}).unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+            let bytes = readback.slice(..).get_mapped_range();
+            for y in 0..output_size as usize { for x in 0..output_size as usize {
+                let footprint = if entry == "downscale" {0.5} else {0.0};
+                let ratio = 32.0/output_size as f32;
+                let sx = (((x as f32+0.5)*ratio*scale_bias[0]+32.*scale_bias[2])-footprint).floor() as i32;
+                let sy = (((y as f32+0.5)*ratio*scale_bias[1]+32.*scale_bias[3])-footprint).floor() as i32;
+                let sample = |dx:i32,dy:i32| expected[(sy+dy).clamp(0,31) as usize*32+(sx+dx).clamp(0,31) as usize];
+                let predicted = if entry == "downscale" {
+                    sample(0,0).min(sample(1,0)).min(sample(0,1).min(sample(1,1)))
+                } else {sample(0,0)};
+                let at = y*256+x*4;
+                assert_eq!(u32::from_le_bytes(bytes[at..at+4].try_into().unwrap()), predicted.to_bits(), "depthcopy {entry} {scale_bias:?} pixel{x},{y}");
+            } }
+            drop(bytes); readback.unmap();
+        }
+    }
+
     fn tiled_depth_shader_matches_case(app: &mut App, native_case: Option<usize>) {
         use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
         let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
+        world.init_resource::<tiled_lighting_gpu::NativeTlfPipelines>();
         let device = world.resource::<RenderDevice>();
         let queue = world.resource::<RenderQueue>();
-        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("original tiled-depth reduction"),
-            source: ShaderSource::Wgsl(include_str!("../../assets/shaders/dh2_tlf_depth.wgsl").into()),
-        });
-        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
-            label: None, layout: None, module: &module, entry_point: Some("gather_depth"),
-            compilation_options: default(), cache: None,
-        });
+        let pipeline = &world.resource::<tiled_lighting_gpu::NativeTlfPipelines>().depth;
         let make_depth = || device.create_texture(&TextureDescriptor {
             label: None, size: Extent3d { width:32,height:32,depth_or_array_layers:1 },
             mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,
@@ -6432,6 +6851,12 @@ mod game_control_tests {
             pass.set_pipeline(&fill_pipeline);pass.set_bind_group(0,&bind,&[]);pass.draw(0..3,0..1);
         }
         queue.submit([fill_encoder.finish()]);
+        if native_case.is_none() {
+            let pipelines = world.resource::<tiled_lighting_gpu::NativeTlfPipelines>();
+            for entry in ["fragment", "identity", "downscale"] {
+                depth_copy_shader_matches_fixture(device, queue, pipelines, &opaque, &depths[0], entry);
+            }
+        }
         let params = device.create_buffer_with_data(&BufferInitDescriptor {
             label:None,contents:&[unproject[0].to_bits(),unproject[1].to_bits(),0,0,16,0,0,0]
                 .into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(),usage:BufferUsages::UNIFORM,
@@ -7497,8 +7922,60 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 GlobalTransform::from_translation(point),
             ))
             .id();
-        world.run_system_once(stream_visible_models).unwrap();
+        // Keep Local cache and change ticks across actual system invocations.
+        let stream = world.register_system(stream_visible_models);
+        world.run_system(stream).unwrap();
         assert_eq!(world.resource::<StreamingDiagnostics>().status, "ok");
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        let initial_ids = world.resource::<SceneRenderQueue>().visible_authored_ids.clone();
+        let initial_cells = world.resource::<SceneRenderQueue>().visible_cell_indices.clone();
+        let initial_depth = world.resource::<SceneRenderQueue>().light_query_state.as_ref().unwrap().depth_grid.clone();
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
+        assert_eq!(world.resource::<SceneRenderQueue>().visible_cell_indices, initial_cells);
+        assert_eq!(world.resource::<SceneRenderQueue>().light_query_state.as_ref().unwrap().depth_grid, initial_depth);
+
+        // Replacing the resource must invalidate even identical query inputs.
+        let unchanged_world = world.remove_resource::<TomeWorld>().unwrap();
+        world.insert_resource(unchanged_world);
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+
+        let projection = world.entity_mut(camera_entity).take::<Projection>().unwrap();
+        world.run_system(stream).unwrap();
+        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_not_ready");
+        assert!(world.resource::<SceneRenderQueue>().visible_authored_ids.is_empty());
+        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        world.entity_mut(camera_entity).insert(projection);
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
+
+        let viewport = world.get_mut::<Camera>(camera_entity).unwrap().viewport.take();
+        world.run_system(stream).unwrap();
+        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_not_ready");
+        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        world.get_mut::<Camera>(camera_entity).unwrap().viewport = viewport.clone();
+        world.get_mut::<Camera>(camera_entity).unwrap().viewport.as_mut().unwrap().physical_size = UVec2::ZERO;
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().status.starts_with("query_error:"));
+        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        world.get_mut::<Camera>(camera_entity).unwrap().viewport = viewport;
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+
+        let other_camera = world.spawn(Camera3d::default()).id();
+        world.run_system(stream).unwrap();
+        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_unavailable");
+        assert!(world.resource::<SceneRenderQueue>().visible_authored_ids.is_empty());
+        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        world.despawn(other_camera);
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
         let id = *world
             .resource::<SceneRenderQueue>()
             .visible_authored_ids
@@ -7604,7 +8081,10 @@ entity { entityDef lamp { class = "idLight"; edit = {
             .get_mut::<OriginalLocalLightCull>(light)
             .unwrap()
             .clip_to_world = Some(Mat4::from_translation(point));
-        world.run_system_once(stream_visible_models).unwrap();
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        world.run_system(stream).unwrap();
+        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
         assert!(
             world
                 .resource::<StreamingDiagnostics>()
@@ -7637,7 +8117,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
         // Losing the unique camera has no initialized query descriptor. The
         // cleared mask must not masquerade as a fresh empty native result.
         world.despawn(camera_entity);
-        world.run_system_once(stream_visible_models).unwrap();
+        world.run_system(stream).unwrap();
         assert_eq!(
             world.resource::<StreamingDiagnostics>().status,
             "camera_unavailable"
@@ -8321,6 +8801,16 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .unwrap()
                 .unwrap();
             let serial = tome::merge_render_query_outputs(&serial).unwrap().unwrap();
+            let diagnostics = parallel.into_iter().map(|job| job.diagnostics).collect::<Vec<_>>();
+            let mut cache = TomeRenderQueryCache::default();
+            cache.store(TomeRenderQueryKey::new(&input, count), &Ok(Some(merged.clone())), &diagnostics);
+            assert!(cache.matches(&TomeRenderQueryKey::new(&input, count), false));
+            let cached = cache.output.as_ref().unwrap();
+            assert_eq!(cached.indices(), merged.indices());
+            assert_eq!(cached.area_metrics().iter().map(|value| value.map(f32::to_bits)).collect::<Vec<_>>(),
+                       merged.area_metrics().iter().map(|value| value.map(f32::to_bits)).collect::<Vec<_>>());
+            assert_eq!(cached.cell_indices(), merged.cell_indices());
+            assert_eq!(cached.state, merged.state);
             assert_eq!(merged.indices(), serial.indices());
             assert_eq!(merged.area_metrics(), serial.area_metrics());
             assert_eq!(merged.state, serial.state);

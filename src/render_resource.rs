@@ -43,6 +43,43 @@ pub const fn resource_name_key(name: &str) -> u32 {
     resource_hash_bytes(name.as_bytes()).wrapping_mul(0x1000193)
 }
 
+/// Typed render-task properties used by FUN_14034a6b0. Registration replaces
+/// the first matching name in place; new names retain registration order.
+/// Rust owns the values instead of reproducing the native shared-pointer ABI.
+#[derive(Debug)]
+pub struct RenderTaskProperties<T> {
+    entries: Vec<(u32, T)>,
+}
+
+impl<T> Default for RenderTaskProperties<T> {
+    fn default() -> Self {
+        Self { entries: Vec::new() }
+    }
+}
+
+impl<T> RenderTaskProperties<T> {
+    pub fn register(&mut self, name: u32, value: T) {
+        if let Some((_, current)) = self.entries.iter_mut().find(|(key, _)| *key == name) {
+            *current = value;
+        } else {
+            self.entries.push((name, value));
+        }
+    }
+
+    pub fn get(&self, name: u32) -> Option<&T> {
+        self.entries.iter().find(|(key, _)| *key == name).map(|(_, value)| value)
+    }
+}
+
+/// FUN_14034d140 fans the same registration out to every render-task descriptor.
+/// Only the logical registration path is ported, not native allocator failure
+/// or shared-pointer control-block/destructor callbacks.
+pub fn register_render_task_property<T: Clone>(tasks: &mut [RenderTaskProperties<T>], name: u32, value: T) {
+    for task in tasks {
+        task.register(name, value.clone());
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferView {
     pub first_element: u32,
@@ -87,6 +124,22 @@ impl BufferViewCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_task_property_registration_replaces_in_place_and_fans_out() {
+        let mut tasks = [RenderTaskProperties::<u64>::default(), RenderTaskProperties::default()];
+        let packets = resource_name_key("cpu_lightToPutInTiles");
+        let constants = resource_name_key("cpu_lightToPutInTiles_cb");
+        register_render_task_property(&mut tasks, packets, 11);
+        register_render_task_property(&mut tasks, constants, 22);
+        register_render_task_property(&mut tasks, packets, 33);
+        for task in tasks {
+            assert_eq!(task.entries, [(packets, 33), (constants, 22)]);
+            assert_eq!(task.get(packets), Some(&33));
+            assert_eq!(task.get(0), None);
+        }
+        register_render_task_property::<u64>(&mut [], packets, 44);
+    }
 
     #[test]
     fn resource_hash_specializations_match_original_machine_code() {

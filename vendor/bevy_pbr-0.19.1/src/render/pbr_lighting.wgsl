@@ -1065,6 +1065,11 @@ fn rect_light(
     let distance_square = dot(light_to_frag, light_to_frag);
     let inverse_range_squared = 1.0 / max((*light).range * (*light).range, 0.0001);
     let range_falloff = getRangeFalloff(distance_square, inverse_range_squared, 0.0);
+    // Original areaLight multiplies both contributions by radial attenuation.
+    // Zero-radiance fragments need neither LTC lookup nor polygon integration.
+    if range_falloff == 0.0 {
+        return vec3<f32>(0.0);
+    }
 
     let light_normal = cross((*light).up, (*light).right);
     let hw = (*light).right * (*light).width  * 0.5;

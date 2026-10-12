@@ -3,8 +3,10 @@
 //! FUN_141369c60 registers tlf_TileDim with default "16", integer bounds 2..32.
 //! FUN_1402f8b60 uploads floor(log2(tile_dim)) and the four inverse dimensions.
 //! Native source lightcontext.renderprog.decl:164-267 supplies 9/23-bit links.
-//! The depth producer, pool capacity/reset and GPU pass ordering still need
-//! their original resource contracts before this can replace renderer lists.
+//! Depth/cull shaders and fixed buffer capacity/reset have native GPU fixtures.
+//! Live use still needs separate opaque/alpha depth ownership, upstream scene
+//! light/shadow inputs, packet-to-light index mapping and forward consumption.
+//! Bevy's merged depth and point/spot cluster ranges are not those contracts.
 
 pub const DEFAULT_TILE_DIMENSION: u32 = 16;
 pub const END_OF_LIGHT_LIST: u32 = (1 << 23) - 1;
@@ -18,6 +20,59 @@ pub const LIGHT_BUFFER_CAPACITY: usize = 0x1c0;
 pub const SHADOW_BUFFER_CAPACITY: usize = 0x100;
 pub const LIGHT_NODE_POOL_CAPACITY: usize = 0x119400;
 pub const LIGHT_NODE_COUNTER_BYTES: u64 = 4;
+
+/// FUN_1402f7260 admits these records in gathered-light order, before assigning
+/// the same index to the culling and 112-byte lighting buffers.
+pub fn includes_local_light(view_flags: u8, visibility_mask: u32, kind: i32, flags: u8) -> bool {
+    (!(view_flags >> 4) as u32 & visibility_mask & 3) != 0 && kind < 4 && flags & 1 != 0
+}
+
+/// FUN_140231590's row-major affine transform, without a homogeneous divide.
+pub fn light_view_position(view: &[[f32; 4]; 3], origin: [f32; 3]) -> [f32; 3] {
+    [
+        ((view[0][1] * origin[1] + origin[0] * view[0][0]) + view[0][2] * origin[2]) + view[0][3],
+        ((view[1][0] * origin[0] + view[1][1] * origin[1]) + view[1][2] * origin[2]) + view[1][3],
+        ((view[2][0] * origin[0] + view[2][1] * origin[1]) + view[2][2] * origin[2]) + view[2][3],
+    ]
+}
+
+/// FUN_1402f7260, 1402f78f7..1402f79a9: copy the prepared lighting record into
+/// its matching cull packet. The native stores replace only the low 16 flag bits.
+pub fn fill_light_cull_packet(
+    view_position: [f32; 3], lighting: &[u32; 28], packet: &mut [u32; 12],
+) {
+    packet[..3].copy_from_slice(&view_position.map(f32::to_bits));
+    for (dst, src) in (3..11).zip([7, 8, 9, 10, 13, 16, 17, 18]) {
+        packet[dst] = lighting[src];
+    }
+    packet[11] = (packet[11] & 0xffff_0000) | (lighting[25] & 0xffff);
+}
+
+/// FUN_1402f7260: preserve lighting order, transform each position and round the
+/// cull buffer to 64 lanes. Padding records retain only the native flag bits.
+/// The allocation has 448 lanes, but INC at 1402f78e8 precedes CMP/JNC at
+/// 1402f79a9: 448 selected lights is fatal; 447 may round to 448 cull lanes.
+pub fn prepare_light_cull_packets(
+    view: &[[f32; 4]; 3], lighting: &[[u32; 28]], packets: &mut [[u32; 12]],
+) -> Result<usize, String> {
+    let count = lighting.len();
+    let padded = (count + 63) & !63;
+    if count >= LIGHT_BUFFER_CAPACITY || padded > packets.len() {
+        return Err("Too many lights in view, probably during probe shooting !\n".into());
+    }
+    for (record, packet) in lighting.iter().zip(packets.iter_mut()) {
+        let origin = std::array::from_fn(|axis| f32::from_bits(record[axis]));
+        fill_light_cull_packet(light_view_position(view, origin), record, packet);
+    }
+    for packet in &mut packets[count..padded] {
+        packet[..3].fill(0x7f7f_ffff);
+        packet[3] = (-1.0_f32).to_bits();
+        packet[4..7].copy_from_slice(&[0, 0, 1.0_f32.to_bits()]);
+        packet[7..11].fill(0);
+        packet[11] = (packet[11] & 0xffff_ff20) | 0xff20;
+    }
+    Ok(padded)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileGrid {
@@ -137,6 +192,82 @@ pub(crate) fn original_depth_case(id: usize) -> (Vec<f32>, [f32;2], [u32;4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cull_packet_rounding_preserves_order_and_native_padding_fields() {
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        for count in [0_usize, 1, 63, 64, 65, 156, 192, 447] {
+            let lighting = (0..count).map(|i| { let mut r = [0; 28]; r[0] = (i as f32).to_bits(); r[7] = 1.0_f32.to_bits(); r[25] = i as u32; r }).collect::<Vec<_>>();
+            let mut packets = [[0xa5a5_1234; 12]; LIGHT_BUFFER_CAPACITY];
+            let padded = prepare_light_cull_packets(&identity, &lighting, &mut packets).unwrap();
+            assert_eq!(padded, count.div_ceil(64) * 64);
+            for i in 0..count { assert_eq!(packets[i][0], (i as f32).to_bits()); assert_eq!(packets[i][11], 0xa5a5_0000 | i as u32); }
+            for packet in &packets[count..padded] {
+                assert_eq!(*packet, [0x7f7f_ffff, 0x7f7f_ffff, 0x7f7f_ffff, 0xbf80_0000, 0, 0, 0x3f80_0000, 0, 0, 0, 0, 0xa5a5_ff20]);
+            }
+            assert!(packets[padded..].iter().all(|packet| *packet == [0xa5a5_1234; 12]));
+        }
+        let mut packets = [[0; 12]; LIGHT_BUFFER_CAPACITY];
+        assert!(prepare_light_cull_packets(&identity, &[[0; 28]; LIGHT_BUFFER_CAPACITY], &mut packets).is_err());
+        assert!(prepare_light_cull_packets(&identity, &[[0; 28]; LIGHT_BUFFER_CAPACITY + 1], &mut packets).is_err());
+        assert!(prepare_light_cull_packets(&identity, &[[0; 28]; 65], &mut packets[..64]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires artifacts/native-tlf-current-packets.json converted with the live probe"]
+    fn cull_packets_match_completed_original_frame() {
+        let fixture = std::fs::read_to_string("artifacts/native-tlf-live-packet-fixture.txt").unwrap();
+        let mut rows = fixture.lines().map(|line| line.split_whitespace().map(|word| u32::from_str_radix(word, 16).unwrap()).collect::<Vec<_>>());
+        let header = rows.next().unwrap();
+        assert_eq!(header.len(), 14);
+        let count = header[0] as usize;
+        let padded = header[1] as usize;
+        let view = std::array::from_fn(|row| std::array::from_fn(|column| f32::from_bits(header[2 + row * 4 + column])));
+        let rows = rows.collect::<Vec<_>>();
+        assert_eq!(rows.len(), padded);
+        let lighting = rows[..count].iter().map(|row| row[..28].try_into().unwrap()).collect::<Vec<[u32; 28]>>();
+        let mut packets = vec![[0_u32; 12]; padded];
+        for (packet, row) in packets.iter_mut().zip(&rows) { packet[11] = row[39] & 0xffff_0000; }
+        assert_eq!(prepare_light_cull_packets(&view, &lighting, &mut packets).unwrap(), padded);
+        for (i, (packet, row)) in packets.iter().zip(rows).enumerate() { assert_eq!(packet.as_slice(), &row[28..], "native frame light/padding index {i}"); }
+    }
+
+    #[test]
+    fn cull_packet_copy_and_affine_transform_match_original_machine_code() {
+        let mut checked = 0;
+        for line in include_str!("../analysis/original_tlf_packet_cases.txt").lines() {
+            let words: Vec<u32> = line.split_whitespace()
+                .map(|word| u32::from_str_radix(word, 16).unwrap()).collect();
+            assert_eq!(words.len(), 70);
+            let view = std::array::from_fn(|row| std::array::from_fn(|col|
+                f32::from_bits(words[row * 4 + col])));
+            let origin = std::array::from_fn(|i| f32::from_bits(words[12 + i]));
+            let position = light_view_position(&view, origin);
+            assert_eq!(position.map(f32::to_bits), words[15..18], "case {checked} transform");
+            let lighting = words[18..46].try_into().unwrap();
+            let mut packet = words[46..58].try_into().unwrap();
+            fill_light_cull_packet(position, &lighting, &mut packet);
+            assert_eq!(packet, words[58..70], "case {checked} packet");
+            checked += 1;
+        }
+        assert_eq!(checked, 512);
+    }
+
+    #[test]
+    fn gathered_light_filter_preserves_native_mode_and_type_rules() {
+        assert!(includes_local_light(0, 1, 0, 1));
+        assert!(includes_local_light(0, 2, 3, 1));
+        assert!(!includes_local_light(0, 0, 0, 1));
+        assert!(!includes_local_light(0, 4, 0, 1));
+        assert!(!includes_local_light(0, 3, 4, 1));
+        assert!(!includes_local_light(0, 3, 0, 0));
+        assert!(!includes_local_light(0x10, 1, 0, 1));
+        assert!(includes_local_light(0x10, 2, 0, 1));
+        assert!(includes_local_light(0x20, 1, 0, 1));
+        assert!(!includes_local_light(0x20, 2, 0, 1));
+        assert!(!includes_local_light(0x30, 3, 0, 1));
+        assert!(includes_local_light(0, 1, -1, 1)); // The original comparison is signed.
+    }
 
     #[test]
     fn renderer_light_buffers_match_native_initializer_and_capture() {

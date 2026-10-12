@@ -152,6 +152,97 @@ fn native_unit_clamp(value: f32) -> f32 {
     }
 }
 
+/// FUN_1402f8670's 112-byte lighting-record fields. The caller owns position,
+/// shadow index and untouched tail words. Return its minimum shadow count and
+/// the area-image association queued by 1402f84d0; atlas placement happens later.
+pub fn fill_tlf_lighting_packet(
+    light: &[u8; 0xe8], shadow_count: i32, packet: &mut [u32; 28],
+) -> (u32, Option<u64>) {
+    let word = |offset| u32::from_le_bytes(light[offset..offset + 4].try_into().unwrap());
+    let value = |offset| f32::from_bits(word(offset));
+    let kind = word(0x5c) as i32;
+    for (dst, src) in [(3, 0x7c), (7, 0x80), (4, 0x34), (5, 0x38), (6, 0x3c),
+        (12, 0x98), (13, 0x9c), (14, 0xa4), (15, 0xac)] {
+        packet[dst] = word(src);
+    }
+    packet[11] = native_unit_clamp(value(0x88)).to_bits();
+    packet[19] = native_unit_clamp(value(0xb0)).to_bits();
+    let flags = ((kind as u32) << 4 & 0x70) | u32::from(light[0] >> 7)
+        | (u32::from(light[1]) << 3 & 8) | (u32::from(light[0] >> 4) & 2)
+        | (u32::from(light[1]) << 1 & 4);
+    packet[25] = (packet[25] & !0x7f) | flags;
+    let normalize = || {
+        let v = [value(4), value(8), value(12)];
+        let length_squared = (v[0] * v[0] + v[1] * v[1]) + v[2] * v[2];
+        let squared = if length_squared > f32::MIN_POSITIVE { length_squared } else { f32::MIN_POSITIVE };
+        let scale = 1.0 / squared.sqrt();
+        v.map(|component| (component * scale).to_bits())
+    };
+    let copy_second_axis = |packet: &mut [u32; 28]| {
+        for (dst, src) in [(20, 0x10), (21, 0x14), (22, 0x18)] {
+            packet[dst] = word(src);
+        }
+    };
+    match kind {
+        0 => {
+            packet[16..19].fill(0);
+            if light[1] & 2 != 0 {
+                packet[23] = word(0xa8);
+                packet[8..11].copy_from_slice(&normalize());
+                copy_second_axis(packet);
+            }
+            (6, None)
+        }
+        1 => {
+            packet[16] = (1.0 / f32::from_bits(word(0x8c) ^ 0x8000_0000)).to_bits();
+            packet[17] = 1.0_f32.to_bits();
+            packet[8..11].copy_from_slice(&normalize());
+            (6, None)
+        }
+        2 => {
+            let inner = value(0x8c);
+            let limit = inner - f32::from_bits(0x3a83_126f);
+            let outer = if limit <= value(0x90) { limit } else { value(0x90) };
+            for (dst, src) in [(8, 4), (9, 8), (10, 12)] {
+                packet[dst] = word(src) ^ 0x8000_0000;
+            }
+            packet[16] = (1.0 / (outer - inner)).to_bits();
+            packet[17] = (inner / (outer - inner)).to_bits() ^ 0x8000_0000;
+            packet[18] = ((1.0 - outer * outer).sqrt() / outer).to_bits();
+            packet[25] = (packet[25] & !0x80) | (u32::from(shadow_count > 1) << 7);
+            packet[23] = word(0xa0);
+            copy_second_axis(packet);
+            (1, None)
+        }
+        3 => {
+            packet[8..11].copy_from_slice(&normalize());
+            packet[13] = word(0xc8) ^ 0x8000_0000;
+            let mut x = value(0xcc);
+            let mut y = value(0xd0);
+            let squared = x * x + y * y;
+            if squared.sqrt() > 1.0 {
+                let squared = if squared > f32::MIN_POSITIVE { squared } else { f32::MIN_POSITIVE };
+                let scale = 1.0 / squared.sqrt();
+                x *= scale;
+                y *= scale;
+            }
+            let q = (1.0 - x * x) - y * y;
+            let q = if q >= 0.0 { q } else { 0.0 };
+            let scale = 1000.0 - value(0xc8).powf(f32::from_bits(0x3c23_d70a)) * f32::from_bits(0x4479_ff5c);
+            packet[16] = (scale * x).to_bits();
+            packet[17] = (scale * y).to_bits();
+            packet[18] = (q.sqrt() * scale).to_bits();
+            copy_second_axis(packet);
+            packet[11] = word(0xc0);
+            packet[23] = word(0xc4);
+            packet[25] |= 0xff00;
+            let image = u64::from_le_bytes(light[0xb8..0xc0].try_into().unwrap());
+            (1, (image != 0).then_some(image))
+        }
+        _ => (0, None),
+    }
+}
+
 /// FUN_140001050 zeros endpoints with magnitude <= the installed threshold.
 pub fn interpolate(a: f32, b: f32, fraction: f32) -> f32 {
     let flush = |value: f32| {
@@ -162,6 +253,29 @@ pub fn interpolate(a: f32, b: f32, fraction: f32) -> f32 {
         }
     };
     (1.0 - fraction) * flush(a) + flush(b) * fraction
+}
+
+/// FUN_1402f7260's caller-owned position and shadow-range writes around the
+/// numeric writer. Shadow payload construction and area atlas ownership remain
+/// external; assigning an index does not construct those payloads.
+pub fn prepare_tlf_lighting_packet(
+    light: &[u8; 0xe8], shadow_header: u32, shadows_disabled: bool,
+    used_shadows: &mut u32, packet: &mut [u32; 28],
+) -> (u32, Option<u64>) {
+    let available = shadow_header & 0x00ff_ffff;
+    let result = fill_tlf_lighting_packet(light, available as i32, packet);
+    for (axis, word) in packet[..3].iter_mut().enumerate() {
+        let offset = 0x28 + axis * 4;
+        *word = u32::from_le_bytes(light[offset..offset + 4].try_into().unwrap());
+    }
+    let end = used_shadows.wrapping_add(available);
+    if light[0] & 2 != 0 && available >= result.0 && end <= 0x100 && !shadows_disabled {
+        packet[24] = *used_shadows;
+        *used_shadows = end;
+    } else {
+        packet[24] = u32::MAX;
+    }
+    result
 }
 
 /// FUN_1403595f0, all 14 preset branches and the shared shape/range tail.
@@ -243,6 +357,47 @@ pub fn convert(input: PresetInput) -> Option<PresetOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tlf_caller_copies_position_and_admits_only_native_shadow_ranges() {
+        // 1402f76bc..1402f76ef: source bit2, minimum count, 256-entry end,
+        // and view override; original position bytes at +28/+2c/+30.
+        for (flags, header, start, disabled, expected_index, expected_end) in [
+            (1, 6, 0, false, u32::MAX, 0),
+            (3, 5, 0, false, u32::MAX, 0),
+            (3, 6, 250, false, 250, 256),
+            (3, 6, 251, false, u32::MAX, 251),
+            (3, 6, 0, true, u32::MAX, 0),
+            (3, 0xfe00_0006, 0, false, 0, 6),
+        ] {
+            let mut light = [0; 0xe8]; light[0] = flags;
+            for (axis, word) in [0x8000_0000_u32, 0x7fc0_1234, 0x3f80_0000].into_iter().enumerate() { write_word(&mut light, 0x28 + axis * 4, word); }
+            let mut packet = [0xa5a5_1234; 28]; let mut used = start;
+            assert_eq!(prepare_tlf_lighting_packet(&light, header, disabled, &mut used, &mut packet), (6, None));
+            assert_eq!(&packet[..3], &[0x8000_0000, 0x7fc0_1234, 0x3f80_0000]);
+            assert_eq!(packet[24], expected_index); assert_eq!(used, expected_end);
+            assert_eq!(&packet[26..], &[0xa5a5_1234; 2]);
+        }
+    }
+
+    #[test]
+    fn tlf_lighting_records_match_original_machine_code() {
+        let mut cases = 0;
+        for (case, line) in include_str!("../analysis/original_tlf_lighting_packet_cases.txt").lines().enumerate() {
+            let words = line.split_whitespace().map(|word| u32::from_str_radix(word, 16).unwrap()).collect::<Vec<_>>();
+            assert_eq!(words.len(), 116);
+            let light: [u8; 0xe8] = words[2..60].iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>().try_into().unwrap();
+            let mut packet: [u32; 28] = words[60..88].try_into().unwrap();
+            let (minimum, image) = fill_tlf_lighting_packet(&light, words[0] as i32, &mut packet);
+            assert_eq!(minimum, words[1], "minimum shadows case {case}");
+            assert_eq!(image, None);
+            for (field, (actual, expected)) in packet.iter().zip(&words[88..]).enumerate() {
+                assert_eq!(actual, expected, "lighting case {case} raw kind {} field +{:#x}", words[2 + 0x5c / 4] as i32, field * 4);
+            }
+            cases += 1;
+        }
+        assert_eq!(cases, 1024);
+    }
 
     #[test]
     fn reflected_enum_names_and_constructor_defaults() {

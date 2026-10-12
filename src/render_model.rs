@@ -208,6 +208,58 @@ pub fn surface_lookup_3119a0(
         .ok_or_else(|| format!("static surface pointer-bank index {index} is out of bounds"))
 }
 
+/// The material/mesh inputs already loaded by FUN_140321860. Flags and
+/// pointer banks are native values, not inferred from transparency names.
+pub struct DepthAlphaSurface<'a> {
+    pub flags49: u8,
+    pub default_programs: &'a [u64],
+    pub override_programs: &'a [u64],
+    pub selector: i8,
+    pub has_optional_mesh: bool,
+    pub special_vertex_format: bool,
+    pub alternate_program: u64,
+    pub draw_state: [u32; 9],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DepthAlphaDrawPlan {
+    pub program: u64,
+    pub draw_state: [u32; 9],
+    pub stencil_reference: u8,
+    pub marks_alpha: bool,
+}
+
+/// FUN_140321860's three-pass program/state selection (140321ef3..14032219c).
+/// Reuses the original pointer-bank rule; a null selected program skips the
+/// draw without changing the alpha marker. Submission, list ownership and
+/// material flag production remain the caller's responsibility.
+pub fn prepare_depth_alpha_draw(
+    surface: &DepthAlphaSurface<'_>, pass: u8,
+) -> Result<Option<DepthAlphaDrawPlan>, String> {
+    if pass > 2 { return Err("native depth-alpha pass must be 0, 1 or 2".to_owned()); }
+    let alpha = surface.flags49 & 1 != 0;
+    let program = if pass == 2 {
+        if !alpha { return Ok(None); }
+        surface.alternate_program
+    } else {
+        let slot = if pass == 0 && alpha { 4 } else { 6 }
+            + u32::from(surface.special_vertex_format);
+        surface_lookup_3119a0(surface.default_programs, surface.override_programs,
+            surface.flags49, slot, u8::from(surface.has_optional_mesh), surface.selector)?
+    };
+    if program == 0 { return Ok(None); }
+    let mut state = surface.draw_state;
+    state[0] &= 0xfe1f_ffff;
+    state[1] &= 0xfe1f_ffff;
+    state[4] = state[4] & 0xff | 0xe80e_8000;
+    state[5] = if pass == 2 { state[5] & 0xff80_80ef | 0x0080_8028 }
+               else { state[5] & 0xff02_02ff | 0x0002_0228 };
+    let marks_alpha = pass == 0 && alpha;
+    if marks_alpha { state[0] = surface.draw_state[0] & 0xfe1f_fe23 | 0x0040_0023; }
+    Ok(Some(DepthAlphaDrawPlan {program, draw_state: state,
+        stencil_reference: if pass == 2 {0x80} else {2}, marks_alpha}))
+}
+
 fn surface_candidate_growth_capacity(capacity_word: u32, grow_one_at_a_time: bool) -> u32 {
     let capacity = capacity_word >> 8;
     let low_flags = capacity_word as u8;
@@ -3016,6 +3068,73 @@ impl VisibilityNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn depth_alpha_draw_matches_original_three_pass_dispatch() {
+        // probe_original_depth_alpha_draw.py executes unmodified 321860
+        // list/program/state branches with rendering/TLS callees intercepted.
+        let default: Vec<u64> = (100..144).collect();
+        let overrides: Vec<u64> = (1000..1330).collect();
+        let fixture = include_str!("../analysis/original_depth_alpha_draw_cases.txt");
+        let mut count = 0;
+        for (index, line) in fixture.lines().enumerate() {
+            let words: Vec<i64> = line.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            assert_eq!(words.len(), 26);
+            let surface = DepthAlphaSurface {flags49: words[0] as u8,
+                selector: words[1] as i8, has_optional_mesh: words[2] != 0,
+                special_vertex_format: words[3] != 0, alternate_program: 77,
+                default_programs: &default, override_programs: &overrides,
+                draw_state: words[5..14].iter().map(|v|*v as u32).collect::<Vec<_>>().try_into().unwrap()};
+            let actual = prepare_depth_alpha_draw(&surface, words[4] as u8).unwrap();
+            assert_eq!(actual.is_some(), words[14] != 0, "native row{index}");
+            if let Some(actual) = actual {
+                assert_eq!(actual.program, words[15] as u64, "native program row{index}");
+                assert_eq!(actual.stencil_reference, words[16] as u8, "native stencil row{index}");
+                assert_eq!(actual.draw_state.as_slice(), words[17..26].iter().map(|v|*v as u32).collect::<Vec<_>>(), "native state row{index}");
+            }
+            count += 1;
+        }
+        assert_eq!(count, 1440);
+    }
+
+    #[test]
+    fn depth_alpha_draw_selection_and_native_state_masks() {
+        let default: Vec<u64> = (100..144).collect();
+        let overrides: Vec<u64> = (1000..1330).collect();
+        let mut surface = DepthAlphaSurface {flags49: 0, default_programs: &default,
+            override_programs: &overrides, selector: -1, has_optional_mesh: false,
+            special_vertex_format: false, alternate_program: 77, draw_state: [u32::MAX;9]};
+        for flags in [0,1,0x40,0x41] {for optional in [false,true] {for special in [false,true] {
+            surface.flags49 = flags; surface.has_optional_mesh = optional; surface.special_vertex_format = special;
+            for selector in [-1,0,1,2,3,6,7,-128] {
+                surface.selector = selector;
+                for pass in 0..3 {
+                    let plan = prepare_depth_alpha_draw(&surface, pass).unwrap();
+                    if pass == 2 && flags & 1 == 0 {assert!(plan.is_none()); continue;}
+                    let plan = plan.unwrap();
+                    let slot = match (pass, flags & 1) {(0,1) => 4, _ => 6} + u64::from(special);
+                    let expected_program = if pass == 2 {77} else if selector != -1 && flags & 0x40 != 0 {
+                        let row = match selector {0=>0,1=>1,2=>2,3..=6=>3,_=>4};
+                        1000+(row*3+u64::from(optional))*22+slot
+                    } else {100+u64::from(optional)*22+slot};
+                    assert_eq!(plan.program, expected_program);
+                    assert_eq!(plan.stencil_reference, if pass==2 {0x80} else {2});
+                    assert_eq!(plan.marks_alpha, pass==0 && flags&1!=0);
+                    assert_eq!(plan.draw_state, [if plan.marks_alpha {0xfe5f_fe23} else {0xfe1f_ffff},
+                        0xfe1f_ffff,u32::MAX,u32::MAX,0xe80e_80ff,
+                        if pass==2 {0xff80_80ef} else {0xff02_02ff},u32::MAX,u32::MAX,u32::MAX]);
+                }
+            }
+        }}}
+        surface.flags49=1; surface.alternate_program=0;
+        assert!(prepare_depth_alpha_draw(&surface,2).unwrap().is_none());
+        surface.flags49=0; surface.selector=-1; surface.has_optional_mesh=false;
+        surface.default_programs=&[0;44];
+        assert!(prepare_depth_alpha_draw(&surface,0).unwrap().is_none());
+        assert!(prepare_depth_alpha_draw(&surface,3).is_err());
+        surface.default_programs=&[];
+        assert!(prepare_depth_alpha_draw(&surface,0).is_err());
+    }
 
     #[test]
     fn native_multisample_getters_match_original() {

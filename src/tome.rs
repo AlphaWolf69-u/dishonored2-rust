@@ -4414,7 +4414,7 @@ fn direct_cell_link_error(
 
 /// Query progress survives an error, unlike its deliberately discarded output.
 /// This is diagnostic state only; it never changes traversal or acceptance.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OrdinaryQueryDiagnostics {
     pub stage: &'static str,
     pub root_accepted: bool,
@@ -4469,7 +4469,7 @@ impl<'a> OrdinaryDirectQueryInput<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenderQueryJobDiagnostics {
     pub job_index: u32,
     pub viewport: Option<[i32; 4]>,
@@ -5091,7 +5091,7 @@ fn ordinary_direct_tome_render_job_inner(
 /// 0x10000 query capacity is per worker, not a cap on this merged list. Do not
 /// deduplicate across jobs: the original bitset is local to each query, and
 /// texture demand consumes their aligned full-view projected-area metrics.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RenderQueryObjectOutput {
     indices: Vec<u32>,
     area_metrics: Vec<Option<f32>>,
@@ -5744,17 +5744,29 @@ pub fn projected_portal_box_crossing_bounds(
             point[3] - point[1],
         ]
     };
-    let mut projected = Vec::with_capacity(48);
+    // Four clipping planes emit at most two vertices per input edge:
+    // 4 * 2^4 slots also cover arbitrary finite, nonconvex caller inputs.
+    let mut first = [[0.0f32; 4]; 64];
+    let mut second = [[0.0f32; 4]; 64];
+    let mut polygon = &mut first;
+    let mut clipped = &mut second;
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
     for face in FACES {
-        let mut polygon = face.map(|index| corners[index]).to_vec();
+        polygon[..4].copy_from_slice(&face.map(|index| corners[index]));
+        let mut polygon_len = 4;
         for plane in 0..4 {
-            if polygon.is_empty() {
+            if polygon_len == 0 {
                 break;
             }
-            let mut clipped = Vec::with_capacity(polygon.len() + 1);
-            let mut previous = *polygon.last().unwrap();
+            let mut clipped_len = 0;
+            let mut previous = polygon[polygon_len - 1];
             let mut previous_distance = distances(previous)[plane];
-            for current in polygon {
+            for current in polygon[..polygon_len].iter().copied() {
                 let current_distance = distances(current)[plane];
                 let previous_inside = previous_distance >= 0.0;
                 let current_inside = current_distance >= 0.0;
@@ -5762,38 +5774,33 @@ pub fn projected_portal_box_crossing_bounds(
                     let denominator = previous_distance - current_distance;
                     if denominator != 0.0 {
                         let t = previous_distance / denominator;
-                        clipped.push(std::array::from_fn(|lane| {
+                        clipped[clipped_len] = std::array::from_fn(|lane| {
                             previous[lane] + (current[lane] - previous[lane]) * t
-                        }));
+                        });
+                        clipped_len += 1;
                     }
                 }
                 if current_inside {
-                    clipped.push(current);
+                    clipped[clipped_len] = current;
+                    clipped_len += 1;
                 }
                 previous = current;
                 previous_distance = current_distance;
             }
-            polygon = clipped;
+            std::mem::swap(&mut polygon, &mut clipped);
+            polygon_len = clipped_len;
         }
-        projected.extend(polygon);
-    }
-
-    let mut bounds = [
-        f32::INFINITY,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::NEG_INFINITY,
-    ];
-    for point in projected {
-        if point[3] <= 0.0 {
-            continue;
+        for point in &polygon[..polygon_len] {
+            if point[3] <= 0.0 {
+                continue;
+            }
+            let x = point[0] / point[3];
+            let y = point[1] / point[3];
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
         }
-        let x = point[0] / point[3];
-        let y = point[1] / point[3];
-        bounds[0] = bounds[0].min(x);
-        bounds[1] = bounds[1].min(y);
-        bounds[2] = bounds[2].max(x);
-        bounds[3] = bounds[3].max(y);
     }
     if bounds.iter().all(|value| value.is_finite()) {
         Ok(Some(bounds))
@@ -11250,6 +11257,74 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!used_crossing_path);
+    }
+
+    // Frozen pre-optimization implementation, including vertex/reduction order.
+    fn portal_crossing_bounds_heap_reference(corners: [[f32; 4]; 8]) -> Option<[f32; 4]> {
+        const FACES: [[usize; 4]; 6] = [
+            [0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
+            [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+        ];
+        let distance = |p: [f32; 4], plane| [p[0] + p[3], p[3] - p[0], p[1] + p[3], p[3] - p[1]][plane];
+        let mut projected = Vec::with_capacity(48);
+        for face in FACES {
+            let mut polygon = face.map(|i| corners[i]).to_vec();
+            for plane in 0..4 {
+                if polygon.is_empty() { break; }
+                let mut clipped = Vec::with_capacity(polygon.len() + 1);
+                let mut previous = *polygon.last().unwrap();
+                let mut previous_distance = distance(previous, plane);
+                for current in polygon {
+                    let current_distance = distance(current, plane);
+                    if (previous_distance >= 0.0) != (current_distance >= 0.0) {
+                        let denominator = previous_distance - current_distance;
+                        if denominator != 0.0 {
+                            let t = previous_distance / denominator;
+                            clipped.push(std::array::from_fn(|lane| previous[lane] + (current[lane] - previous[lane]) * t));
+                        }
+                    }
+                    if current_distance >= 0.0 { clipped.push(current); }
+                    previous = current;
+                    previous_distance = current_distance;
+                }
+                polygon = clipped;
+            }
+            projected.extend(polygon);
+        }
+        let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for p in projected {
+            if p[3] <= 0.0 { continue; }
+            let x = p[0] / p[3];
+            let y = p[1] / p[3];
+            bounds[0] = bounds[0].min(x);
+            bounds[1] = bounds[1].min(y);
+            bounds[2] = bounds[2].max(x);
+            bounds[3] = bounds[3].max(y);
+        }
+        bounds.iter().all(|v| v.is_finite()).then_some(bounds)
+    }
+
+    #[test]
+    fn portal_crossing_stack_buffers_preserve_heap_results_bit_exactly() {
+        let mut seed = 0x4448_3201u32;
+        for case in 0..4096 {
+            let corners = std::array::from_fn(|_| std::array::from_fn(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let value = (seed >> 8) as f32 / (1u32 << 24) as f32 * 16.0 - 8.0;
+                match case % 16 {
+                    0 => 0.0,
+                    1 => -0.0,
+                    2 => value * 3.0e37,
+                    3 => value * 1.0e-37,
+                    _ => value,
+                }
+            }));
+            let expected = portal_crossing_bounds_heap_reference(corners).map(|b| b.map(f32::to_bits));
+            let actual = projected_portal_box_crossing_bounds(corners).unwrap().map(|b| b.map(f32::to_bits));
+            assert_eq!(actual, expected, "portal case {case}: {corners:?}");
+        }
+        assert!(projected_portal_box_crossing_bounds([[f32::NAN; 4]; 8]).is_err());
+        assert!(projected_portal_box_crossing_bounds([[f32::INFINITY; 4]; 8]).is_err());
     }
 
     #[test]
