@@ -9,6 +9,8 @@ mod bmodel;
 mod bprobe;
 #[path = "../entities.rs"]
 mod entities;
+#[path = "../frame_profile.rs"]
+mod frame_profile;
 #[path = "../material.rs"]
 mod material;
 #[path = "../material_surface.rs"]
@@ -134,6 +136,9 @@ struct NavigationState {
 
 #[derive(Component)]
 struct CoordinateOverlay;
+
+#[derive(Component)]
+struct FrameRateOverlay;
 
 #[derive(Clone)]
 struct FocusTarget {
@@ -2528,12 +2533,22 @@ fn setup(
                 top: px(12),
                 left: px(12),
                 padding: UiRect::all(px(8)),
+                flex_direction: FlexDirection::Column,
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
             ZIndex(100),
         ))
         .with_children(|parent| {
+            parent.spawn((
+                Text::new("FPS: measuring"),
+                TextFont {
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                FrameRateOverlay,
+            ));
             parent.spawn((
                 Text::new("Game XYZ: loading"),
                 TextFont {
@@ -3136,6 +3151,12 @@ fn setup(
         camera,
         renderer_msaa,
     ));
+    // Direct submission avoids Bevy's per-bin indirect-buffer uploads/unpacking.
+    // Mesh transforms, shaders and CPU/Tome visibility stay unchanged.
+    // Set only at camera creation; DH2_DIRECT_MESH_DRAWS=0 retains the A/B control.
+    if env::var("DH2_DIRECT_MESH_DRAWS").as_deref() != Ok("0") {
+        camera_entity.insert(bevy::render::view::NoIndirectDrawing);
+    }
     // The installed arkDefault/arkVegetation shaders have a depth-only Z path.
     // This broad Bevy approximation is opt-in: same-view profiling reduced fragment work
     // but did not improve frame time. Enable with DH2_ZPREPASS=1 while the
@@ -5203,6 +5224,8 @@ fn benchmark_frames(
     mut frame_times: Local<Vec<f64>>,
     render_diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
     mut render_metrics: Local<std::collections::BTreeMap<String, (u64, f64, f64)>>,
+    cpu_profile: Option<Res<frame_profile::CpuFrameProfile>>,
+    mut cpu_metrics: Local<(u64, [u128; frame_profile::COUNT], [u64; frame_profile::COUNT])>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(target) = target else {
@@ -5214,6 +5237,14 @@ fn benchmark_frames(
         measured.0 += 1;
         measured.1 += time.delta_secs_f64();
         frame_times.push(time.delta_secs_f64() * 1000.0);
+        if let Some(profile) = cpu_profile.as_ref() {
+            let latest = profile.latest_ns();
+            cpu_metrics.0 += 1;
+            for (i, ns) in latest.into_iter().enumerate() {
+                cpu_metrics.1[i] += ns as u128;
+                cpu_metrics.2[i] = cpu_metrics.2[i].max(ns);
+            }
+        }
         if let Some(store) = render_diagnostics.as_deref() {
             for diagnostic in store.iter() {
                 let path = diagnostic.path().as_str();
@@ -5227,6 +5258,11 @@ fn benchmark_frames(
         }
     }
     if *elapsed >= target.0 {
+        for (i, label) in frame_profile::LABELS.iter().enumerate().filter(|_| cpu_metrics.0 > 0) {
+            println!("BENCHMARK_CPU phase={} samples={} avg_ms={:.3} max_ms={:.3}", label, cpu_metrics.0,
+                cpu_metrics.1[i] as f64 / cpu_metrics.0 as f64 / 1_000_000.0,
+                cpu_metrics.2[i] as f64 / 1_000_000.0);
+        }
         let (samples, average_ms, max_ms) = visibility_timing
             .as_ref()
             .map(|timing| {
@@ -5306,17 +5342,23 @@ fn show_frame_rate(
     time: Res<Time<bevy::time::Real>>,
     scene: Res<SceneRenderQueue>,
     mut window: Single<&mut Window>,
+    mut overlays: Query<&mut Text, With<FrameRateOverlay>>,
     mut elapsed: Local<f32>,
     mut frames: Local<u32>,
 ) {
     *elapsed += time.delta_secs();
     *frames += 1;
     if *elapsed >= 1.0 {
+        let fps = *frames as f32 / *elapsed;
+        let frame_ms = *elapsed * 1000.0 / *frames as f32;
         window.title = format!(
             "Dishonored 2 Rust | {:.0} FPS | {} loaded",
-            *frames as f32 / *elapsed,
+            fps,
             scene.active
         );
+        for mut overlay in &mut overlays {
+            **overlay = format!("{fps:.0} FPS | {frame_ms:.1} ms");
+        }
         *elapsed = 0.0;
         *frames = 0;
     }
@@ -5842,7 +5884,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pickups,
             catalog,
         })
-        .add_plugins(DefaultPlugins);
+        .add_plugins(DefaultPlugins.set(bevy::window::WindowPlugin {
+            primary_window: Some(bevy::window::Window {
+                // Match the installed game's measured r_fullscreen=2 borderless mode.
+                // DH2_BORDERLESS=0 remains available for windowed debugging.
+                mode: if env::var("DH2_BORDERLESS").as_deref() != Ok("0") {
+                    bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary)
+                } else {
+                    bevy::window::WindowMode::Windowed
+                },
+                desired_maximum_frame_latency: env::var("DH2_FRAME_LATENCY").ok().and_then(|s| s.parse().ok()),
+                // The user's original r_swapInterval=0; retain that uncapped default.
+                present_mode: if env::var("DH2_NO_VSYNC").as_deref() != Ok("0") {
+                    bevy::window::PresentMode::AutoNoVsync
+                } else {
+                    bevy::window::Window::default().present_mode
+                },
+                ..default()
+            }),
+            ..default()
+        }));
     if env::var("DH2_RENDER_PROFILE").as_deref() == Ok("1") {
         println!(
             "Bevy render profiling enabled (GPU timestamps and pipeline stats require Vulkan or DX12)"
@@ -5851,6 +5912,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::render::diagnostic::RenderDiagnosticsPlugin,
         ));
+        frame_profile::install(&mut app);
     }
     app.add_plugins(AutoExposurePlugin)
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
@@ -7058,11 +7120,13 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
         world.insert_resource(Time::<()>::default());
         world.insert_resource(SceneRenderQueue::default());
         let window = world.spawn(Window::default()).id();
+        let overlay = world.spawn((Text::new("FPS: measuring"), FrameRateOverlay)).id();
         world.run_system_once(show_frame_rate).unwrap();
         assert_eq!(
             world.get::<Window>(window).unwrap().title,
             "Dishonored 2 Rust | 1 FPS | 0 loaded"
         );
+        assert_eq!(world.get::<Text>(overlay).unwrap().0, "1 FPS | 1500.0 ms");
     }
 
     #[test]

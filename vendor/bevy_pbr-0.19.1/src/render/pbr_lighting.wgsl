@@ -686,6 +686,11 @@ fn point_light(
             );
         }
     }
+    // Original BRDF::ComputeLighting only evaluates positive attenuation.
+    // A zero radial/hemisphere term cannot contribute; do not pay for the BRDF.
+    if rangeAttenuation == 0.0 || half_point_attenuation == 0.0 {
+        return vec3<f32>(0.0);
+    }
 
     // Base layer
 
@@ -826,9 +831,6 @@ fn spot_light(
     input: ptr<function, LightingInput>,
     enable_diffuse: bool
 ) -> vec3<f32> {
-    // reuse the point light calculations
-    let point_light = point_light(light_id, input, enable_diffuse, false);
-
     let light = &view_bindings::clustered_lights.data[light_id];
 
     // reconstruct spot dir from x/z and y-direction flag
@@ -845,6 +847,11 @@ fn spot_light(
     let cd = dot(-spot_dir, normalize(light_to_frag));
     let attenuation = saturate(cd * (*light).light_custom_data.z + (*light).light_custom_data.w);
     let spot_attenuation = attenuation * attenuation;
+    // Native angular attenuation is evaluated before BRDF::ComputeLighting.
+    if spot_attenuation == 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let point_light = point_light(light_id, input, enable_diffuse, false);
 
     var texture_sample = 1f;
 
