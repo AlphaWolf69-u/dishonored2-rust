@@ -47,6 +47,7 @@
 !/analysis/original_light_update_cases.txt
 !/analysis/original_mask_depth_cases.txt
 !/analysis/original_material_binding_cases.txt
+!/analysis/original_material_program_finalization_cases.txt
 !/analysis/original_model_geometry_cases.txt
 !/analysis/original_model_info_default_cases.txt
 !/analysis/original_model_registry_cases.txt
@@ -65,6 +66,7 @@
 !/analysis/original_query_state_cases.txt
 !/analysis/original_render_model_cases.txt
 !/analysis/original_rigid_body_basis_cases.txt
+!/analysis/original_shadow_alpha_cases.txt
 !/analysis/original_spatial_query_cases.txt
 !/analysis/original_static_resource_bounds_cases.txt
 !/analysis/original_viewport_scale_cases.txt

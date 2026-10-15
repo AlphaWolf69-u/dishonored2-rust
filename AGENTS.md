@@ -8,7 +8,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 - Use the Dishonored 2 Ghidra MCP whenever a claim about an original mechanic depends on executable code. Machine code can resolve an ambiguity. If Ghidra MCP is unavailable, find other way to use ghidra.
 - Implement behavior in the rewrite only when it is supported by original game files, decompiled game code, or measured game behavior. Never invent or substitute any unsupported behavior, regardless of subsystem or implementation detail. If the original behavior is not yet understood, investigate it until it can be implemented from evidence.
 - When correcting writing code, first trace how the original game handles the relevant path, then rewrite that behavior in Rust. A special case is not a replacement for the game's algorithm.
-- Before starting any research or implementation step, quickly search the Rust rewrite source in `src/`, the existing executable probes and test cases in `analysis/` and `src/` for that original game function or behavior. Reuse work already verified against the game
+- Before starting any research or implementation step, quickly search the Rust rewrite source in `src/`, the existing executable probes and test cases in `analysis/` and `src/` for that original game function or behavior. Use `rg --no-ignore` for `analysis/` (normal ripgrep skips these local-only probes). Reuse work already verified against the game
 - Never commit or publish copyrighted game data.
 
 ## Ownership and failure response
@@ -17,6 +17,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 - Treat unexpected behavior as a defect in you implementation or setup until evidence shows otherwise. Do not invoke an unclear engine or a rewrite design choice, environment restriction, or tool policy as an explanation without investigating and identifying the concrete cause.
 - Diagnose failures to their root cause, repair the responsible code or setup, and verify the most optimal workflow works again. A copy, bypass, hard-coded exception, or temporary visual trick is not a completed fix; if one is unavoidable, stop and report to user.
 - If you need to close the game or a rewrite, close it without asking the user. You are the boss.
+- Do not stop working untill you implemented the thing you were asked to implement in its entierty, unless you cannot progress further or need some action from the user.
 
 ## Running-game research
 

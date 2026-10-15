@@ -20,9 +20,12 @@ use std::path::Path;
 // Diagnostic geometry only: use the same authored column basis as the client.
 fn placed_vertex(placement: &entities::PlacedModel, local: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|row| {
-        placement.position[row] + (0..3).map(|column| {
-            placement.rotation[column][row] * placement.scale[column] * local[column]
-        }).sum::<f32>()
+        placement.position[row]
+            + (0..3)
+                .map(|column| {
+                    placement.rotation[column][row] * placement.scale[column] * local[column]
+                })
+                .sum::<f32>()
     })
 }
 
@@ -149,10 +152,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         let file = physworld::parse_hkx(&bytes)?;
         if args.next().as_deref() == Some("--schema") {
             for (index, ty) in file.types.iter().enumerate() {
-                if ty.name.contains("Compressed") || ty.name.contains("StaticTree")
-                    || ty.name.contains("StaticMesh") || ty.name == "hkAabb" {
-                    println!("TYPE {index} {} size={} parent={} fields={:?}", ty.name, ty.byte_size,
-                        ty.parent, ty.fields.iter().map(|field| (&field.name, field.offset, &file.types[field.type_index].name)).collect::<Vec<_>>());
+                if ty.name.contains("Compressed")
+                    || ty.name.contains("StaticTree")
+                    || ty.name.contains("StaticMesh")
+                    || ty.name == "hkAabb"
+                {
+                    println!(
+                        "TYPE {index} {} size={} parent={} fields={:?}",
+                        ty.name,
+                        ty.byte_size,
+                        ty.parent,
+                        ty.fields
+                            .iter()
+                            .map(|field| (
+                                &field.name,
+                                field.offset,
+                                &file.types[field.type_index].name
+                            ))
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
             return Ok(());
@@ -494,8 +512,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     if filter.as_deref() == Some("--near") {
-        let values = args.next().ok_or("--near needs x,y,z,radius")?
-            .split(',').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>()?;
+        let values = args
+            .next()
+            .ok_or("--near needs x,y,z,radius")?
+            .split(',')
+            .map(str::parse::<f32>)
+            .collect::<Result<Vec<_>, _>>()?;
         if values.len() != 4 || !values.iter().all(|value| value.is_finite()) || values[3] < 0.0 {
             return Err("--near needs finite x,y,z and nonnegative radius".into());
         }
@@ -507,17 +529,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if placement.id.matches("#blueprint[").count() >= 16 {
                     return Err(format!("Blueprint nesting exceeds16: {}", placement.id).into());
                 }
-                let bytes = catalog.read(&placement.resource_path)?.ok_or("missing blueprint")?;
-                placements.extend(entities::expand_blueprint(placement, &String::from_utf8_lossy(&bytes))?);
+                let bytes = catalog
+                    .read(&placement.resource_path)?
+                    .ok_or("missing blueprint")?;
+                placements.extend(entities::expand_blueprint(
+                    placement,
+                    &String::from_utf8_lossy(&bytes),
+                )?);
             }
             cursor += 1;
         }
         let mut models = HashMap::new();
         let mut nearby = Vec::new();
         for placement in &placements {
-            if !placement.resource_path.ends_with(".bmodel") { continue; }
+            if !placement.resource_path.ends_with(".bmodel") {
+                continue;
+            }
             if !models.contains_key(&placement.resource_path) {
-                let bytes = catalog.read(&placement.resource_path)?.ok_or("missing placed model")?;
+                let bytes = catalog
+                    .read(&placement.resource_path)?
+                    .ok_or("missing placed model")?;
                 models.insert(placement.resource_path.clone(), bmodel::parse(&bytes)?);
             }
             let model = &models[&placement.resource_path];
@@ -525,11 +556,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut high = [f32::NEG_INFINITY; 3];
             for local in model.surfaces.iter().flat_map(|surface| &surface.positions) {
                 let point = placed_vertex(placement, *local);
-                for axis in 0..3 { low[axis] = low[axis].min(point[axis]); high[axis] = high[axis].max(point[axis]); }
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(point[axis]);
+                    high[axis] = high[axis].max(point[axis]);
+                }
             }
-            let gap = (0..3).map(|axis| (values[axis] - values[axis].clamp(low[axis], high[axis])).powi(2))
-                .sum::<f32>().sqrt();
-            if gap <= values[3] { nearby.push((gap, placement, low, high)); }
+            let gap = (0..3)
+                .map(|axis| (values[axis] - values[axis].clamp(low[axis], high[axis])).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            if gap <= values[3] {
+                nearby.push((gap, placement, low, high));
+            }
         }
         nearby.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (gap, placement, low, high) in nearby {
@@ -539,8 +577,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let placed = entities::placed_models(&doc);
-    println!("{} placed models; {} explicit maxVisibleRange", placed.len(),
-        placed.iter().filter(|item| item.max_visible_range.is_some()).count());
+    println!(
+        "{} placed models; {} explicit maxVisibleRange",
+        placed.len(),
+        placed
+            .iter()
+            .filter(|item| item.max_visible_range.is_some())
+            .count()
+    );
     if filter.as_deref() == Some("--placements") {
         let term = args.next().ok_or("--placements needs a path fragment")?;
         for object in &placed {
@@ -747,10 +791,17 @@ mod diagnostic_tests {
     #[test]
     fn placed_point_uses_column_basis_and_signed_scale() {
         let placement = entities::PlacedModel {
-            id: "test".into(), resource_path: String::new(), position: [10.0, 20.0, 30.0],
+            id: "test".into(),
+            resource_path: String::new(),
+            position: [10.0, 20.0, 30.0],
             rotation: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-            scale: [-2.0, 3.0, 4.0], custom_materials: Vec::new(), max_visible_range: None,
+            scale: [-2.0, 3.0, 4.0],
+            custom_materials: Vec::new(),
+            max_visible_range: None,
         };
-        assert_eq!(placed_vertex(&placement, [1.0, 2.0, 3.0]), [4.0, 18.0, 42.0]);
+        assert_eq!(
+            placed_vertex(&placement, [1.0, 2.0, 3.0]),
+            [4.0, 18.0, 42.0]
+        );
     }
 }

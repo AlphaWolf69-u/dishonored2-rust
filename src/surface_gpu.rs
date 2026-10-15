@@ -1,7 +1,7 @@
 //! GPU inputs for the ordinary arkDefault/arkDecal layer branch.
+use crate::material_surface::Surface;
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
-use crate::material_surface::Surface;
 
 #[derive(Clone, Debug, Reflect, ShaderType)]
 pub struct SurfaceUniform {
@@ -26,17 +26,29 @@ pub struct SurfaceKey(pub [u32; 9]);
 
 impl SurfaceKey {
     pub const NAMES: [&'static str; 9] = [
-        "DH2_EXTRA_LAYERS", "DH2_HAS_GLOSS", "DH2_GLOSS_ALPHA",
-        "DH2_HAS_METALLIC", "DH2_HAS_BUMP", "DH2_VERTEX_COLOR_MULTIPLY",
-        "DH2_SURFACE_ENABLED", "DH2_ALPHA_FLAGS", "DH2_HAS_OCCLUSION",
+        "DH2_EXTRA_LAYERS",
+        "DH2_HAS_GLOSS",
+        "DH2_GLOSS_ALPHA",
+        "DH2_HAS_METALLIC",
+        "DH2_HAS_BUMP",
+        "DH2_VERTEX_COLOR_MULTIPLY",
+        "DH2_SURFACE_ENABLED",
+        "DH2_ALPHA_FLAGS",
+        "DH2_HAS_OCCLUSION",
     ];
 }
 
 impl From<&SurfaceUniform> for SurfaceKey {
     fn from(surface: &SurfaceUniform) -> Self {
         Self([
-            surface.flags.x, surface.flags.y, surface.flags.z, surface.flags.w,
-            surface.misc.x, surface.misc.y, surface.misc.z, surface.misc.w,
+            surface.flags.x,
+            surface.flags.y,
+            surface.flags.z,
+            surface.flags.w,
+            surface.misc.x,
+            surface.misc.y,
+            surface.misc.z,
+            surface.misc.w,
             u32::from(surface.alpha.y != 0.0),
         ])
     }
@@ -46,16 +58,57 @@ impl From<&Surface> for SurfaceUniform {
     fn from(s: &Surface) -> Self {
         Self {
             colors: s.layers.each_ref().map(|l| Vec4::from_array(l.color)),
-            uv: s.layers.each_ref().map(|l| Vec4::from_array(l.uv_scale_bias)),
-            mask_uv: s.layers.each_ref().map(|l| Vec4::from_array(l.mask_scale_bias)),
-            uv_sets: s.layers.each_ref().map(|l| UVec4::new(l.uv_set, l.mask_uv_set, 0, 0)),
-            mask_settings: s.layers.each_ref().map(|l| UVec4::new(l.mask_mode, l.mask_channel as u32, u32::from(l.use_color), u32::from(l.invert_mask))),
-            mask_range: s.layers.each_ref().map(|l| Vec4::new(l.rescale[0], l.rescale[1], l.reuse[4] as f32, 0.0)),
-            reuse: s.layers.each_ref().map(|l| UVec4::new(l.reuse[0] as u32, l.reuse[1] as u32, l.reuse[2] as u32, l.reuse[3] as u32)),
-            ranges: Vec4::new(s.ward[0], s.ward[1], s.metallic_min_max[0], s.metallic_min_max[1]),
+            uv: s
+                .layers
+                .each_ref()
+                .map(|l| Vec4::from_array(l.uv_scale_bias)),
+            mask_uv: s
+                .layers
+                .each_ref()
+                .map(|l| Vec4::from_array(l.mask_scale_bias)),
+            uv_sets: s
+                .layers
+                .each_ref()
+                .map(|l| UVec4::new(l.uv_set, l.mask_uv_set, 0, 0)),
+            mask_settings: s.layers.each_ref().map(|l| {
+                UVec4::new(
+                    l.mask_mode,
+                    l.mask_channel as u32,
+                    u32::from(l.use_color),
+                    u32::from(l.invert_mask),
+                )
+            }),
+            mask_range: s
+                .layers
+                .each_ref()
+                .map(|l| Vec4::new(l.rescale[0], l.rescale[1], l.reuse[4] as f32, 0.0)),
+            reuse: s.layers.each_ref().map(|l| {
+                UVec4::new(
+                    l.reuse[0] as u32,
+                    l.reuse[1] as u32,
+                    l.reuse[2] as u32,
+                    l.reuse[3] as u32,
+                )
+            }),
+            ranges: Vec4::new(
+                s.ward[0],
+                s.ward[1],
+                s.metallic_min_max[0],
+                s.metallic_min_max[1],
+            ),
             alpha: Vec4::new(s.alpha_cutoff, u32::from(s.has_occlusion) as f32, 0.0, 0.0),
-            flags: UVec4::new(s.extra_layers as u32, u32::from(s.has_gloss), u32::from(s.gloss_in_alpha), u32::from(s.has_metallic)),
-            misc: UVec4::new(u32::from(s.has_bump), u32::from(s.vertex_color_multiply), s.program() as u32, u32::from(s.alpha_test)),
+            flags: UVec4::new(
+                s.extra_layers as u32,
+                u32::from(s.has_gloss),
+                u32::from(s.gloss_in_alpha),
+                u32::from(s.has_metallic),
+            ),
+            misc: UVec4::new(
+                u32::from(s.has_bump),
+                u32::from(s.vertex_color_multiply),
+                s.program() as u32,
+                u32::from(s.alpha_test),
+            ),
         }
     }
 }
@@ -65,12 +118,24 @@ impl From<&Surface> for SurfaceUniform {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageRole(pub usize);
 impl ImageRole {
-    pub const fn diffuse(layer: usize) -> Self { Self(layer) }
-    pub const fn bump(layer: usize) -> Self { Self(3 + layer) }
-    pub const fn gloss(layer: usize) -> Self { Self(6 + layer) }
-    pub const fn metallic(layer: usize) -> Self { Self(9 + layer) }
-    pub const fn mask(layer: usize) -> Self { Self(12 + layer) }
-    pub const fn occlusion() -> Self { Self(15) }
+    pub const fn diffuse(layer: usize) -> Self {
+        Self(layer)
+    }
+    pub const fn bump(layer: usize) -> Self {
+        Self(3 + layer)
+    }
+    pub const fn gloss(layer: usize) -> Self {
+        Self(6 + layer)
+    }
+    pub const fn metallic(layer: usize) -> Self {
+        Self(9 + layer)
+    }
+    pub const fn mask(layer: usize) -> Self {
+        Self(12 + layer)
+    }
+    pub const fn occlusion() -> Self {
+        Self(15)
+    }
 }
 
 #[cfg(test)]
@@ -79,8 +144,10 @@ mod tests {
 
     #[test]
     fn direct_surface_conversion_preserves_authored_alpha_test() {
-        let enabled = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 1\n"));
-        let disabled = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 0\n"));
+        let enabled =
+            SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 1\n"));
+        let disabled =
+            SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\nalphaTest 0\n"));
         assert_eq!(enabled.misc.w & 1, 1);
         assert_eq!(disabled.misc.w & 1, 0);
         assert_ne!(SurfaceKey::from(&enabled), SurfaceKey::from(&disabled));
@@ -96,7 +163,12 @@ mod tests {
         assert_eq!(water.misc.z, 3);
         assert_ne!(SurfaceKey::from(&default), SurfaceKey::from(&vegetation));
         assert_ne!(SurfaceKey::from(&default), SurfaceKey::from(&water));
-        assert_eq!(SurfaceUniform::from(&Surface::parse(b"mainProgram unknown\n")).misc.z, 0);
+        assert_eq!(
+            SurfaceUniform::from(&Surface::parse(b"mainProgram unknown\n"))
+                .misc
+                .z,
+            0
+        );
     }
 
     #[test]

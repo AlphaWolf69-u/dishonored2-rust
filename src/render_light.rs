@@ -72,7 +72,7 @@ pub fn normalization() -> f32 {
     f32::from_bits(0x3da2_f983) * 1750.0
 }
 
-fn write_word(record: &mut [u8; 0xe8], offset: usize, value: u32) {
+fn write_word(record: &mut [u8], offset: usize, value: u32) {
     record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
@@ -152,29 +152,48 @@ fn native_unit_clamp(value: f32) -> f32 {
     }
 }
 
-/// FUN_1402f8670's 112-byte lighting-record fields. The caller owns position,
-/// shadow index and untouched tail words. Return its minimum shadow count and
-/// the area-image association queued by 1402f84d0; atlas placement happens later.
+/// FUN_1402f8670's 112-byte lighting-record fields. This numeric leaf leaves
+/// position, shadow index and untouched tail words to its caller. The shared
+/// `prepare_tlf_light_with_shadows` path below supplies position, admission,
+/// index assignment and 144-byte shadow-record publication. Return the minimum
+/// shadow count and area-image association; atlas placement happens later.
 pub fn fill_tlf_lighting_packet(
-    light: &[u8; 0xe8], shadow_count: i32, packet: &mut [u32; 28],
+    light: &[u8; 0xe8],
+    shadow_count: i32,
+    packet: &mut [u32; 28],
 ) -> (u32, Option<u64>) {
     let word = |offset| u32::from_le_bytes(light[offset..offset + 4].try_into().unwrap());
     let value = |offset| f32::from_bits(word(offset));
     let kind = word(0x5c) as i32;
-    for (dst, src) in [(3, 0x7c), (7, 0x80), (4, 0x34), (5, 0x38), (6, 0x3c),
-        (12, 0x98), (13, 0x9c), (14, 0xa4), (15, 0xac)] {
+    for (dst, src) in [
+        (3, 0x7c),
+        (7, 0x80),
+        (4, 0x34),
+        (5, 0x38),
+        (6, 0x3c),
+        (12, 0x98),
+        (13, 0x9c),
+        (14, 0xa4),
+        (15, 0xac),
+    ] {
         packet[dst] = word(src);
     }
     packet[11] = native_unit_clamp(value(0x88)).to_bits();
     packet[19] = native_unit_clamp(value(0xb0)).to_bits();
-    let flags = ((kind as u32) << 4 & 0x70) | u32::from(light[0] >> 7)
-        | (u32::from(light[1]) << 3 & 8) | (u32::from(light[0] >> 4) & 2)
+    let flags = ((kind as u32) << 4 & 0x70)
+        | u32::from(light[0] >> 7)
+        | (u32::from(light[1]) << 3 & 8)
+        | (u32::from(light[0] >> 4) & 2)
         | (u32::from(light[1]) << 1 & 4);
     packet[25] = (packet[25] & !0x7f) | flags;
     let normalize = || {
         let v = [value(4), value(8), value(12)];
         let length_squared = (v[0] * v[0] + v[1] * v[1]) + v[2] * v[2];
-        let squared = if length_squared > f32::MIN_POSITIVE { length_squared } else { f32::MIN_POSITIVE };
+        let squared = if length_squared > f32::MIN_POSITIVE {
+            length_squared
+        } else {
+            f32::MIN_POSITIVE
+        };
         let scale = 1.0 / squared.sqrt();
         v.map(|component| (component * scale).to_bits())
     };
@@ -202,7 +221,11 @@ pub fn fill_tlf_lighting_packet(
         2 => {
             let inner = value(0x8c);
             let limit = inner - f32::from_bits(0x3a83_126f);
-            let outer = if limit <= value(0x90) { limit } else { value(0x90) };
+            let outer = if limit <= value(0x90) {
+                limit
+            } else {
+                value(0x90)
+            };
             for (dst, src) in [(8, 4), (9, 8), (10, 12)] {
                 packet[dst] = word(src) ^ 0x8000_0000;
             }
@@ -221,14 +244,19 @@ pub fn fill_tlf_lighting_packet(
             let mut y = value(0xd0);
             let squared = x * x + y * y;
             if squared.sqrt() > 1.0 {
-                let squared = if squared > f32::MIN_POSITIVE { squared } else { f32::MIN_POSITIVE };
+                let squared = if squared > f32::MIN_POSITIVE {
+                    squared
+                } else {
+                    f32::MIN_POSITIVE
+                };
                 let scale = 1.0 / squared.sqrt();
                 x *= scale;
                 y *= scale;
             }
             let q = (1.0 - x * x) - y * y;
             let q = if q >= 0.0 { q } else { 0.0 };
-            let scale = 1000.0 - value(0xc8).powf(f32::from_bits(0x3c23_d70a)) * f32::from_bits(0x4479_ff5c);
+            let scale = 1000.0
+                - value(0xc8).powf(f32::from_bits(0x3c23_d70a)) * f32::from_bits(0x4479_ff5c);
             packet[16] = (scale * x).to_bits();
             packet[17] = (scale * y).to_bits();
             packet[18] = (q.sqrt() * scale).to_bits();
@@ -255,12 +283,65 @@ pub fn interpolate(a: f32, b: f32, fraction: f32) -> f32 {
     (1.0 - fraction) * flush(a) + flush(b) * fraction
 }
 
+/// FUN_1402f7260, admitted side publication: each 0x100-byte side contributes
+/// its two matrices at +0x20 and its low five flags at +4 to a 0x90-byte record.
+/// The remaining flag bits and the three tail words belong to the buffer owner.
+pub fn fill_tlf_shadow_packet(side: &[u8; 0x100], packet: &mut [u32; 36]) {
+    for (word, source) in packet[..32]
+        .iter_mut()
+        .zip(side[0x20..0xa0].chunks_exact(4))
+    {
+        *word = u32::from_le_bytes(source.try_into().unwrap());
+    }
+    let flags = u32::from_le_bytes(side[4..8].try_into().unwrap());
+    packet[32] = (packet[32] & !0x1f) | (flags & 0x1f);
+}
+
+/// Shared native admission and side publication from FUN_1402f7260. This is
+/// the implemented lighting-to-shadow index ABI: lighting word 24 names the
+/// first consecutive 144-byte side record, or u32::MAX when rejected. Rejected
+/// lights leave shadow records untouched; lighting retains gathered-light order.
+/// The caller must construct/cache the 0x100-byte sides and draw their atlas
+/// regions before exposing these records to the live material shader.
+pub fn prepare_tlf_light_with_shadows(
+    light: &[u8; 0xe8],
+    sides: &[[u8; 0x100]],
+    shadows_disabled: bool,
+    used_shadows: &mut u32,
+    lighting: &mut [u32; 28],
+    shadows: &mut [[u32; 36]],
+) -> Result<(u32, Option<u64>), String> {
+    if sides.len() > 0x00ff_ffff || shadows.len() < 0x100 || *used_shadows > 0x100 {
+        return Err("native TLF shadow side/count buffer is invalid".into());
+    }
+    let first = *used_shadows as usize;
+    let result = prepare_tlf_lighting_packet(
+        light,
+        sides.len() as u32,
+        shadows_disabled,
+        used_shadows,
+        lighting,
+    );
+    if lighting[24] != u32::MAX {
+        for (side, packet) in sides
+            .iter()
+            .zip(&mut shadows[first..*used_shadows as usize])
+        {
+            fill_tlf_shadow_packet(side, packet);
+        }
+    }
+    Ok(result)
+}
+
 /// FUN_1402f7260's caller-owned position and shadow-range writes around the
 /// numeric writer. Shadow payload construction and area atlas ownership remain
 /// external; assigning an index does not construct those payloads.
 pub fn prepare_tlf_lighting_packet(
-    light: &[u8; 0xe8], shadow_header: u32, shadows_disabled: bool,
-    used_shadows: &mut u32, packet: &mut [u32; 28],
+    light: &[u8; 0xe8],
+    shadow_header: u32,
+    shadows_disabled: bool,
+    used_shadows: &mut u32,
+    packet: &mut [u32; 28],
 ) -> (u32, Option<u64>) {
     let available = shadow_header & 0x00ff_ffff;
     let result = fill_tlf_lighting_packet(light, available as i32, packet);
@@ -370,12 +451,23 @@ mod tests {
             (3, 6, 0, true, u32::MAX, 0),
             (3, 0xfe00_0006, 0, false, 0, 6),
         ] {
-            let mut light = [0; 0xe8]; light[0] = flags;
-            for (axis, word) in [0x8000_0000_u32, 0x7fc0_1234, 0x3f80_0000].into_iter().enumerate() { write_word(&mut light, 0x28 + axis * 4, word); }
-            let mut packet = [0xa5a5_1234; 28]; let mut used = start;
-            assert_eq!(prepare_tlf_lighting_packet(&light, header, disabled, &mut used, &mut packet), (6, None));
+            let mut light = [0; 0xe8];
+            light[0] = flags;
+            for (axis, word) in [0x8000_0000_u32, 0x7fc0_1234, 0x3f80_0000]
+                .into_iter()
+                .enumerate()
+            {
+                write_word(&mut light, 0x28 + axis * 4, word);
+            }
+            let mut packet = [0xa5a5_1234; 28];
+            let mut used = start;
+            assert_eq!(
+                prepare_tlf_lighting_packet(&light, header, disabled, &mut used, &mut packet),
+                (6, None)
+            );
             assert_eq!(&packet[..3], &[0x8000_0000, 0x7fc0_1234, 0x3f80_0000]);
-            assert_eq!(packet[24], expected_index); assert_eq!(used, expected_end);
+            assert_eq!(packet[24], expected_index);
+            assert_eq!(used, expected_end);
             assert_eq!(&packet[26..], &[0xa5a5_1234; 2]);
         }
     }
@@ -383,20 +475,110 @@ mod tests {
     #[test]
     fn tlf_lighting_records_match_original_machine_code() {
         let mut cases = 0;
-        for (case, line) in include_str!("../analysis/original_tlf_lighting_packet_cases.txt").lines().enumerate() {
-            let words = line.split_whitespace().map(|word| u32::from_str_radix(word, 16).unwrap()).collect::<Vec<_>>();
+        for (case, line) in include_str!("../analysis/original_tlf_lighting_packet_cases.txt")
+            .lines()
+            .enumerate()
+        {
+            let words = line
+                .split_whitespace()
+                .map(|word| u32::from_str_radix(word, 16).unwrap())
+                .collect::<Vec<_>>();
             assert_eq!(words.len(), 116);
-            let light: [u8; 0xe8] = words[2..60].iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>().try_into().unwrap();
+            let light: [u8; 0xe8] = words[2..60]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
             let mut packet: [u32; 28] = words[60..88].try_into().unwrap();
             let (minimum, image) = fill_tlf_lighting_packet(&light, words[0] as i32, &mut packet);
             assert_eq!(minimum, words[1], "minimum shadows case {case}");
             assert_eq!(image, None);
             for (field, (actual, expected)) in packet.iter().zip(&words[88..]).enumerate() {
-                assert_eq!(actual, expected, "lighting case {case} raw kind {} field +{:#x}", words[2 + 0x5c / 4] as i32, field * 4);
+                assert_eq!(
+                    actual,
+                    expected,
+                    "lighting case {case} raw kind {} field +{:#x}",
+                    words[2 + 0x5c / 4] as i32,
+                    field * 4
+                );
             }
             cases += 1;
         }
         assert_eq!(cases, 1024);
+    }
+
+    #[test]
+    fn shadow_side_publication_preserves_owner_bits_and_padding() {
+        for flags in 0..64 {
+            let mut side = [0; 0x100];
+            write_word(&mut side, 4, flags | 0xfedc_0000);
+            for index in 0..32 {
+                write_word(
+                    &mut side,
+                    0x20 + index * 4,
+                    0x8000_0000_u32.wrapping_add(index as u32 * 0x0101_0101),
+                );
+            }
+            let mut packet = [0xa5a5_5678; 36];
+            fill_tlf_shadow_packet(&side, &mut packet);
+            for index in 0..32 {
+                assert_eq!(
+                    packet[index],
+                    0x8000_0000_u32.wrapping_add(index as u32 * 0x0101_0101)
+                );
+            }
+            assert_eq!(packet[32], (0xa5a5_5678 & !31) | (flags & 31));
+            assert_eq!(&packet[33..], &[0xa5a5_5678; 3]);
+        }
+    }
+
+    #[test]
+    fn admitted_shadow_sides_are_published_once_and_rejections_are_unchanged() {
+        for (kind, count, first, disabled, expected) in [
+            (0, 6, 250, false, Some(256)),
+            (1, 6, 250, false, Some(256)),
+            (0, 5, 0, false, None),
+            (0, 6, 251, false, None),
+            (2, 2, 1, false, Some(3)),
+            (3, 1, 255, false, Some(256)),
+            (2, 1, 0, true, None),
+        ] {
+            let mut light = [0; 0xe8];
+            light[0] = 3;
+            write_word(&mut light, 0x5c, kind);
+            let sides = (0..count)
+                .map(|index| {
+                    let mut side = [0; 0x100];
+                    write_word(&mut side, 4, index as u32);
+                    write_word(&mut side, 0x20, 0x1234_0000 + index as u32);
+                    side
+                })
+                .collect::<Vec<_>>();
+            let mut shadows = [[0xdead_beef; 36]; 256];
+            let mut lighting = [0xa5a5_1234; 28];
+            let mut used = first;
+            prepare_tlf_light_with_shadows(
+                &light,
+                &sides,
+                disabled,
+                &mut used,
+                &mut lighting,
+                &mut shadows,
+            )
+            .unwrap();
+            assert_eq!(used, expected.unwrap_or(first));
+            assert_eq!(lighting[24], expected.map_or(u32::MAX, |_| first));
+            for (index, packet) in shadows.iter().enumerate() {
+                if expected.is_some() && (first as usize..used as usize).contains(&index) {
+                    assert_eq!(packet[0], 0x1234_0000 + index as u32 - first);
+                    assert_eq!(packet[32], (0xdead_beef & !31) | (index as u32 - first));
+                    assert_eq!(&packet[33..], &[0xdead_beef; 3]);
+                } else {
+                    assert_eq!(*packet, [0xdead_beef; 36]);
+                }
+            }
+        }
     }
 
     #[test]

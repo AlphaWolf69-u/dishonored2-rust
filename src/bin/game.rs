@@ -11,14 +11,28 @@ mod bprobe;
 mod entities;
 #[path = "../frame_profile.rs"]
 mod frame_profile;
+#[path = "../game_clock.rs"]
+mod game_clock;
+#[path = "../game_clock_runtime.rs"]
+mod game_clock_runtime;
 #[path = "../material.rs"]
 mod material;
 #[path = "../material_surface.rs"]
 mod material_surface;
-#[path = "../surface_gpu.rs"]
-mod surface_gpu;
+#[path = "../native_coarse_depth.rs"]
+mod native_coarse_depth;
+#[path = "../native_screen_shadows.rs"]
+mod native_screen_shadows;
+#[path = "../native_shadow_gpu.rs"]
+mod native_shadow_gpu;
+#[path = "../native_shadow_sampling.rs"]
+mod native_shadow_sampling;
+#[path = "../native_shadow_scene.rs"]
+mod native_shadow_scene;
 #[path = "../navigation.rs"]
 mod navigation;
+#[path = "../original_settings.rs"]
+mod original_settings;
 #[path = "../physworld.rs"]
 mod physworld;
 #[path = "../pnetwork.rs"]
@@ -29,18 +43,30 @@ mod probe_lighting;
 mod render_light;
 #[path = "../render_model.rs"]
 mod render_model;
+#[path = "../render_program.rs"]
+mod render_program;
 #[path = "../render_resource.rs"]
 mod render_resource;
+#[path = "../render_shadow.rs"]
+mod render_shadow;
+#[path = "../render_state.rs"]
+mod render_state;
 #[path = "../runtime.rs"]
 mod runtime;
+#[path = "../shader_cache.rs"]
+mod shader_cache;
+#[path = "../shadow_receiver.rs"]
+mod shadow_receiver;
+#[path = "../surface_gpu.rs"]
+mod surface_gpu;
 #[path = "../texture.rs"]
 mod texture;
-#[path = "../tome.rs"]
-mod tome;
 #[path = "../tiled_lighting.rs"]
 mod tiled_lighting;
 #[path = "../tiled_lighting_gpu.rs"]
 mod tiled_lighting_gpu;
+#[path = "../tome.rs"]
+mod tome;
 #[path = "../world_mesh.rs"]
 mod world_mesh;
 
@@ -68,12 +94,13 @@ use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, PrimitiveTopology, RenderPipelineDescriptor,
-    SpecializedMeshPipelineError, TexelCopyBufferLayout, TextureDimension, TextureFormat, VertexFormat,
+    SpecializedMeshPipelineError, TexelCopyBufferLayout, TextureDimension, TextureFormat,
+    VertexFormat,
 };
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::storage::ShaderBuffer;
 use bevy::render::texture::GpuImage;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::shader::{Shader, ShaderRef};
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -97,6 +124,17 @@ struct SceneData {
     #[allow(dead_code)] // Preserved for the not-yet-ported fog, water, sky, and postfx passes.
     environment_render_parameters: Option<entities::EnvironmentRenderParameters>,
     environment_probes: Option<probe_lighting::ProbeLightingSet>,
+    #[allow(dead_code)]
+    // Actual startup inputs for the native CPU frame publisher, not captured defaults.
+    shadow_quality_preset: Option<u32>,
+    #[allow(dead_code)]
+    shadow_quality: Option<entities::ShadowQualitySettings>,
+    #[allow(dead_code)] // Actual startup target specification; not a fabricated Ready frame.
+    shadow_target_dimensions: Option<native_shadow_scene::NativeParallelShadowTargetDimensions>,
+    #[allow(dead_code)] // Original r_depthBiasClamp CVar used by native hardware shadow bias.
+    shadow_depth_bias_clamp: Option<f32>,
+    #[allow(dead_code)] // Authored whole-view receiver bounds, not visible-mesh bounds.
+    far_shadow_bounds: Option<[[f32; 3]; 2]>,
     pickups: Vec<entities::Pickup>,
     catalog: Option<archive::Catalog>,
 }
@@ -127,6 +165,9 @@ struct TomeWorld {
     sphere_graph: Result<tome::SphereCellGraph, String>,
     query_job_count: u32,
 }
+
+#[derive(Resource)]
+struct NativeShadowCasterWorld(tome::shadow_caster::ShadowCasterTome);
 
 #[derive(Resource)]
 struct NavigationState {
@@ -316,7 +357,42 @@ impl StreamingDiagnostics {
     }
 }
 
+/// Original asset association survives Bevy mesh conversion, including shear
+/// baked into world-space vertices. This is provenance, not a guessed native
+/// shadow program bank or a claim that skinned/rest-pose draws are supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderModelSurface {
+    World {
+        object: usize,
+        matrix: usize,
+    },
+    Bmodel {
+        placement: usize,
+        surface: usize,
+    },
+    Bmd6 {
+        placement: usize,
+        surface: usize,
+        cpu_vertex_declaration: u32,
+        gpu_vertex_declaration: u32,
+        skin_influences: u8,
+    },
+}
+
+/// The exact expanded placements used to enqueue models, including rigid-body
+/// additions. Model source indices refer here, NOT SceneData.placed_models.
+/// These are source associations/initial poses, not current animated poses.
+#[derive(Resource)]
+struct RenderSourcePlacements(Vec<entities::PlacedModel>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RenderInstanceSource {
+    surface: RenderModelSurface,
+    world_baked: bool,
+}
+
 struct RenderInstance {
+    source: Option<RenderInstanceSource>,
     mesh: Handle<Mesh>,
     material: MaterialHandle,
     diffuse_image_slot: Option<usize>,
@@ -358,12 +434,212 @@ struct ResolvedMaterial {
     native_vertex_lighting: bool,
 }
 
+/// Resolved once beside the real material/mesh association; the native CPU
+/// shadow owner consumes this rather than reparsing declarations every frame.
+#[derive(Clone, Debug)]
+struct NativeShadowMaterialInputs {
+    source: material::ShadowSourceInputs,
+    /// Actual slot-10 row-zero source identification. This is not the complete
+    /// native pointer bank, draw-state override, or a ready shadow frame.
+    rigid_base_source:
+        Result<Option<std::sync::Arc<shader_cache::CachedRigidShadowSource>>, String>,
+    main_program: Option<String>,
+    alpha_test: bool,
+    diffuse_image_slot: Option<usize>,
+    parameters: Result<Option<NativeShadowMaterialParameters>, String>,
+    cull_mode: Option<bevy::render::render_resource::Face>,
+}
+
+/// Literal material overrides and registered defaults remain separate from the
+/// draw owner's optional fallback. In particular, neither a forward material's
+/// UV values nor guessed wind/clock values become native shadow constants.
+#[derive(Clone, Debug)]
+struct NativeShadowMaterialParameters {
+    overrides: render_program::SerializedParameterBlock,
+    defaults: HashMap<Vec<u8>, [u32; 4]>,
+}
+
+impl NativeShadowMaterialParameters {
+    fn vector(
+        &self,
+        name: &[u8],
+        fallback: Option<&render_program::SerializedParameterBlock>,
+    ) -> Result<[f32; 4], String> {
+        let default = *self.defaults.get(name).ok_or_else(|| {
+            format!(
+                "unresolved native shadow Uniform {}",
+                String::from_utf8_lossy(name)
+            )
+        })?;
+        self.overrides
+            .vector_words(name, 0x30, default, fallback)
+            .map(|words| words.map(f32::from_bits))
+    }
+
+    fn vegetation(
+        &self,
+        fallback: Option<&render_program::SerializedParameterBlock>,
+    ) -> Result<native_shadow_scene::NativeVegetationShadowParameters, String> {
+        Ok(native_shadow_scene::NativeVegetationShadowParameters {
+            main_variation: self.vector(b"vegetanim/mainbendingvar", fallback)?,
+            main_frequency: self.vector(b"vegetanim/mainbendingfreq", fallback)?,
+            main_amplitude: self.vector(b"vegetanim/mainbendingamplitude", fallback)?,
+            minimum_wind: self.vector(b"vegetanim/leafminwindstrength", fallback)?,
+            leaf_frequency: self.vector(b"vegetanim/leaffreq", fallback)?,
+            leaf_amplitude: self.vector(b"vegetanim/leafamplitude", fallback)?,
+            branch_amplitude: self.vector(b"vegetanim/branchamplitude", fallback)?,
+        })
+    }
+
+    /// Resolve the real material vectors and original model-selected gameplay
+    /// clock into VS14200's exact 208-byte record. The draw owner still supplies
+    /// fallback, native model flags/offset, MVP and depth multiplier explicitly.
+    fn vegetation_instance_cb(
+        &self,
+        fallback: Option<&render_program::SerializedParameterBlock>,
+        clocks: &game_clock::GameplayViewClocks,
+        model_offset: f32,
+        model_flags_1c31: u8,
+        mvp_rows: &[[f32; 4]; 4],
+        model_depth_multiplier: f32,
+    ) -> Result<[u8; native_shadow_scene::NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES], String> {
+        let local_time = clocks
+            .model_local_time(model_offset, model_flags_1c31)
+            .ok_or_else(|| {
+                format!(
+                    "unavailable native vegetation clock group {}",
+                    render_model::model_shader_time_group(model_flags_1c31)
+                )
+            })?;
+        Ok(native_shadow_scene::native_vegetation_shadow_instance_cb(
+            self.vector(b"layer0_scalebias", fallback)?,
+            &self.vegetation(fallback)?,
+            mvp_rows,
+            local_time,
+            model_depth_multiplier,
+        ))
+    }
+}
+
+#[derive(Resource, Default)]
+struct NativeShadowMaterials(HashMap<MaterialHandle, Result<NativeShadowMaterialInputs, String>>);
+
+impl NativeShadowMaterials {
+    fn uses_vegetation(&self, material: &MaterialHandle) -> bool {
+        let Some(Ok(inputs)) = self.0.get(material) else {
+            return false;
+        };
+        let Ok(Some(source)) = &inputs.rigid_base_source else {
+            return false;
+        };
+        source.class == shader_cache::CachedRigidShadowClass::Vegetation
+    }
+}
+
+/// Original vertex inputs retained only for meshes whose resolved native source
+/// consumes them. Errors remain available to the shadow owner, not synthetic
+/// normals/colors or a silently substituted rigid program.
+#[derive(Resource, Default)]
+struct NativeVegetationMeshInputs(HashMap<bevy::asset::AssetId<Mesh>, Result<usize, String>>);
+
+impl NativeVegetationMeshInputs {
+    fn prepare<const N: usize>(
+        &mut self,
+        required: bool,
+        handle: &Handle<Mesh>,
+        meshes: &mut Assets<Mesh>,
+        positions: &[[f32; 3]],
+        packed: &[[u8; N]],
+    ) {
+        if !required || self.0.contains_key(&handle.id()) {
+            return;
+        }
+        let result = meshes
+            .get_mut(handle)
+            .ok_or_else(|| "native vegetation source Mesh is unavailable".to_string())
+            .and_then(|mut mesh| retain_native_vegetation_channels(&mut mesh, positions, packed))
+            .map(|()| positions.len());
+        if let Err(error) = &result {
+            eprintln!(
+                "Native vegetation Mesh {:?} unavailable: {error}",
+                handle.id()
+            );
+        }
+        self.0.insert(handle.id(), result);
+    }
+}
+
+/// Installed synchronous program-cache owner. Data streams stay lazy and
+/// read-only; this is source data, NOT a fabricated executable shadow bank.
+/// Keeping it separate from SceneData avoids invalidating visibility resources
+/// when an on-demand shader read advances a file cursor.
+#[derive(Resource)]
+struct NativeProgramCacheSource(Result<shader_cache::NativeProgramLibrary, String>);
+
 #[derive(Clone)]
 struct CachedMaterial {
     handle: MaterialHandle,
     diffuse_image_slot: Option<usize>,
     images: Vec<(usize, surface_gpu::ImageRole)>,
     native_vertex_lighting: bool,
+}
+
+fn native_shadow_target_dimensions(
+    slice_size: u32,
+    quality: &entities::ShadowQualitySettings,
+) -> Result<native_shadow_scene::NativeParallelShadowTargetDimensions, String> {
+    let target = render_shadow::ParallelShadowTargetDimensions::from_settings(
+        slice_size,
+        quality.parallel_resolution_divider,
+        quality.parallel_slice_count,
+    )?;
+    Ok(native_shadow_scene::NativeParallelShadowTargetDimensions {
+        width: target.side,
+        height: target.side,
+        layers: target.layers,
+        depth_32_bits: quality.depth_32_bits,
+    })
+}
+
+/// Changing the atlas association is rare; moving the camera only updates the
+/// shared receiver buffer, not every material or its bind group.
+fn sync_native_shadow_target(
+    frame: Res<native_shadow_scene::NativeShadowSceneFrame>,
+    sampling: Option<Res<native_shadow_sampling::NativeParallelSamplingBuffer>>,
+    mut materials: ResMut<Assets<ProbeMaterial>>,
+    mut added_materials: MessageReader<bevy::asset::AssetEvent<ProbeMaterial>>,
+    mut current: Local<Option<Handle<Image>>>,
+) {
+    let Some(sampling) = sampling else {
+        return;
+    };
+    let target = match &frame.state {
+        native_shadow_scene::NativeShadowSceneState::Ready { target_image, .. } => {
+            Some(target_image.clone())
+        }
+        _ => Some(sampling.unavailable_depth.clone()),
+    };
+    if *current == target {
+        // New streamed materials need the current atlas even when the owner
+        // hasn't changed targets. Process additions, not every material/frame.
+        for event in added_materials.read() {
+            if let bevy::asset::AssetEvent::Added { id } = event {
+                if let Some(mut material) = materials.get_mut(*id) {
+                    if material.extension.native_shadow_map != target {
+                        material.extension.native_shadow_map = target.clone();
+                    }
+                }
+            }
+        }
+        return;
+    }
+    added_materials.clear();
+    for (_, material) in materials.iter_mut() {
+        if material.extension.native_shadow_map != target {
+            material.extension.native_shadow_map = target.clone();
+        }
+    }
+    *current = target;
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -373,6 +649,11 @@ struct ProbeExtension {
     sh: Handle<ShaderBuffer>,
     #[storage(119, read_only)]
     vertex_probes: Handle<ShaderBuffer>,
+    #[storage(120, read_only)]
+    native_shadow: Handle<ShaderBuffer>,
+    #[texture(121, dimension = "2d_array", sample_type = "depth")]
+    #[sampler(122, sampler_type = "comparison")]
+    native_shadow_map: Option<Handle<Image>>,
     #[uniform(101)]
     surface: surface_gpu::SurfaceUniform,
     #[texture(102)]
@@ -412,27 +693,42 @@ struct ProbeExtension {
 // Original common vertex shader transforms N/T/B independently with the
 // model's linear rows. A separate bitangent avoids replacing that rule with
 // inverse-transpose normals or a post-transform cross product under shear.
-const DH2_BITANGENT: MeshVertexAttribute = MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
+const DH2_BITANGENT: MeshVertexAttribute =
+    MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
 
 use surface_gpu::SurfaceKey;
 
 impl From<&ProbeExtension> for SurfaceKey {
-    fn from(extension: &ProbeExtension) -> Self { Self::from(&extension.surface) }
+    fn from(extension: &ProbeExtension) -> Self {
+        Self::from(&extension.surface)
+    }
 }
 
 fn specialize_surface(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::SurfaceKey) {
     if let Some(fragment) = descriptor.fragment.as_mut() {
         for (name, value) in surface_gpu::SurfaceKey::NAMES.into_iter().zip(key.0) {
-            fragment.shader_defs.push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
+            fragment
+                .shader_defs
+                .push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
         }
     }
 }
 
-fn authored_basis_pipeline(descriptor: &mut RenderPipelineDescriptor, layout: &MeshVertexBufferLayoutRef) -> Result<(), SpecializedMeshPipelineError> {
+fn authored_basis_pipeline(
+    descriptor: &mut RenderPipelineDescriptor,
+    layout: &MeshVertexBufferLayoutRef,
+) -> Result<(), SpecializedMeshPipelineError> {
     if layout.0.contains(DH2_BITANGENT) {
-        let extra = layout.0.get_layout(&[DH2_BITANGENT.at_shader_location(8)])?;
-        descriptor.vertex.buffers[0].attributes.extend(extra.attributes);
-        descriptor.vertex.shader_defs.push("DH2_AUTHORED_BASIS".into());
+        let extra = layout
+            .0
+            .get_layout(&[DH2_BITANGENT.at_shader_location(8)])?;
+        descriptor.vertex.buffers[0]
+            .attributes
+            .extend(extra.attributes);
+        descriptor
+            .vertex
+            .shader_defs
+            .push("DH2_AUTHORED_BASIS".into());
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.push("DH2_AUTHORED_BASIS".into());
         }
@@ -458,12 +754,26 @@ impl MaterialExtension for ProbeExtension {
         let native_lighting = matches!(key.bind_group_data.0[6], 1 | 2)
             && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
             && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
-            && descriptor.fragment.as_ref().is_some_and(|fragment| fragment.shader == PROBE_SHADER_HANDLE);
+            && descriptor
+                .fragment
+                .as_ref()
+                .is_some_and(|fragment| fragment.shader == PROBE_SHADER_HANDLE);
         if native_lighting {
-            descriptor.vertex.shader_defs.push("DH2_VERTEX_PROBE".into());
-            if let Some(fragment) = descriptor.fragment.as_mut() { fragment.shader_defs.push("DH2_VERTEX_PROBE".into()); }
-            for (name, value) in surface_gpu::SurfaceKey::NAMES.into_iter().zip(key.bind_group_data.0) {
-                descriptor.vertex.shader_defs.push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
+            descriptor
+                .vertex
+                .shader_defs
+                .push("DH2_VERTEX_PROBE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("DH2_VERTEX_PROBE".into());
+            }
+            for (name, value) in surface_gpu::SurfaceKey::NAMES
+                .into_iter()
+                .zip(key.bind_group_data.0)
+            {
+                descriptor
+                    .vertex
+                    .shader_defs
+                    .push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
             }
         }
         specialize_surface(descriptor, key.bind_group_data);
@@ -563,7 +873,9 @@ impl From<&DecalExtension> for DecalKey {
 }
 
 impl MaterialExtension for DecalExtension {
-    fn fragment_shader() -> ShaderRef { DECAL_SHADER_HANDLE.into() }
+    fn fragment_shader() -> ShaderRef {
+        DECAL_SHADER_HANDLE.into()
+    }
 
     fn enable_prepass() -> bool {
         false
@@ -591,6 +903,11 @@ impl MaterialExtension for DecalExtension {
 struct SceneRenderQueue {
     instances: Vec<RenderInstance>,
     active: usize,
+    /// Renderer +0x2060 / slice task +0x68 ownership condition. Original
+    /// 23a98b calls factory295690 then stores its BWM owner at23a99e;
+    /// factory allocates even an empty model. Publish only after actual BWM
+    /// construction below, never from Tome/depth availability or mesh count.
+    static_world_model_present: bool,
     tome_render_instances: TomeRenderInstanceMap,
     // FUN_14037ef90's sorted authored-ID output. Its render-entity consumer
     // is still unverified; never equate these IDs with unmatched BWM records.
@@ -796,7 +1113,8 @@ fn upload_compressed_mips(
     uploads: &[CompressedMipUpload],
 ) -> Result<(), String> {
     let descriptor = &image.texture_descriptor;
-    let block_bytes = streamed_block_bytes(descriptor.format).ok_or("unsupported streamed GPU image format")?;
+    let block_bytes =
+        streamed_block_bytes(descriptor.format).ok_or("unsupported streamed GPU image format")?;
     let (source_first, target_first, copy_count) = match (copy, previous) {
         (GpuMipCopy::None, None) if !uploads.is_empty() => (0, 0, 0),
         (GpuMipCopy::Extend, Some(previous))
@@ -943,16 +1261,31 @@ fn read_streamed_diffuse_at_target(
 ) -> Result<Option<StreamedDiffuse>, String> {
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
-        let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else { return Ok(None); };
+        let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else {
+            return Ok(None);
+        };
         let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
         let uploads = vec![CompressedMipUpload {
-            mip_level: 0, width: compressed.width, height: compressed.height, payload: compressed.payload.to_vec(),
+            mip_level: 0,
+            width: compressed.width,
+            height: compressed.height,
+            payload: compressed.payload.to_vec(),
         }];
         return Ok(Some(StreamedDiffuse {
-            image: empty_streamed_image(compressed.width, compressed.height, 1, gpu_image_format(format)),
+            image: empty_streamed_image(
+                compressed.width,
+                compressed.height,
+                1,
+                gpu_image_format(format),
+            ),
             uploads,
-            level: DiffuseMipLevel { resource_mip: Some(mip), next_separate_suffix: mip.checked_sub(1),
-                width: compressed.width, height: compressed.height, format },
+            level: DiffuseMipLevel {
+                resource_mip: Some(mip),
+                next_separate_suffix: mip.checked_sub(1),
+                width: compressed.width,
+                height: compressed.height,
+                format,
+            },
         }));
     }
     let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
@@ -960,10 +1293,14 @@ fn read_streamed_diffuse_at_target(
     };
     let inline = texture::compressed_inline_chain(&bytes)?;
     let format = inline.info.format;
-    let highest_separate = (0..=15).rev().find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
+    let highest_separate = (0..=15)
+        .rev()
+        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
     let selected_separate = match target {
         TextureReadTarget::Initial(None) => None,
-        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred).rev().find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
+        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred)
+            .rev()
+            .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
         TextureReadTarget::Exact(_, _) => unreachable!(),
     };
     let mut uploads = Vec::new();
@@ -974,16 +1311,26 @@ fn read_streamed_diffuse_at_target(
         let last = highest_separate.ok_or("selected image mip has no lower levels")?;
         for mip in selected..=last {
             let path = format!("{stem}_mip{mip}");
-            let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or_else(|| format!("missing authored lower mip {path}"))?;
+            let bytes = catalog
+                .read(&path)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("missing authored lower mip {path}"))?;
             let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
             if let Some((width, height)) = previous {
-                if compressed.width != (width / 2).max(1) || compressed.height != (height / 2).max(1) {
+                if compressed.width != (width / 2).max(1)
+                    || compressed.height != (height / 2).max(1)
+                {
                     return Err("authored separate mip dimensions are not contiguous".into());
                 }
             }
             top.get_or_insert((compressed.width, compressed.height));
             previous = Some((compressed.width, compressed.height));
-            uploads.push(CompressedMipUpload { mip_level: mip_count, width: compressed.width, height: compressed.height, payload: compressed.payload.to_vec() });
+            uploads.push(CompressedMipUpload {
+                mip_level: mip_count,
+                width: compressed.width,
+                height: compressed.height,
+                payload: compressed.payload.to_vec(),
+            });
             mip_count += 1;
         }
     }
@@ -998,7 +1345,12 @@ fn read_streamed_diffuse_at_target(
         let width = (inline.info.width >> index).max(1);
         let height = (inline.info.height >> index).max(1);
         let size = width.div_ceil(4) as usize * height.div_ceil(4) as usize * format.block_bytes();
-        uploads.push(CompressedMipUpload { mip_level: mip_count + index, width, height, payload: inline.payload[offset..offset + size].to_vec() });
+        uploads.push(CompressedMipUpload {
+            mip_level: mip_count + index,
+            width,
+            height,
+            payload: inline.payload[offset..offset + size].to_vec(),
+        });
         offset += size;
     }
     mip_count += inline.info.mip_count;
@@ -1006,36 +1358,71 @@ fn read_streamed_diffuse_at_target(
     Ok(Some(StreamedDiffuse {
         image: empty_streamed_image(width, height, mip_count, gpu_image_format(format)),
         uploads,
-        level: DiffuseMipLevel { resource_mip: selected_separate,
-            next_separate_suffix: selected_separate.and_then(|mip| mip.checked_sub(1)).or_else(|| if selected_separate.is_none() { highest_separate } else { None }),
-            width, height, format },
+        level: DiffuseMipLevel {
+            resource_mip: selected_separate,
+            next_separate_suffix: selected_separate
+                .and_then(|mip| mip.checked_sub(1))
+                .or_else(|| {
+                    if selected_separate.is_none() {
+                        highest_separate
+                    } else {
+                        None
+                    }
+                }),
+            width,
+            height,
+            format,
+        },
     }))
 }
 
 fn gpu_image_format(format: texture::CompressedFormat) -> TextureFormat {
     use texture::CompressedFormat::*;
     match format {
-        Bc1 => TextureFormat::Bc1RgbaUnorm, Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
-        Bc3 => TextureFormat::Bc3RgbaUnorm, Bc3Srgb => TextureFormat::Bc3RgbaUnormSrgb,
-        Bc4 => TextureFormat::Bc4RUnorm, Bc4Snorm => TextureFormat::Bc4RSnorm,
-        Bc5 => TextureFormat::Bc5RgUnorm, Bc5Snorm => TextureFormat::Bc5RgSnorm,
-        Bc6Unsigned => TextureFormat::Bc6hRgbUfloat, Bc6Signed => TextureFormat::Bc6hRgbFloat,
-        Bc7 => TextureFormat::Bc7RgbaUnorm, Bc7Srgb => TextureFormat::Bc7RgbaUnormSrgb,
+        Bc1 => TextureFormat::Bc1RgbaUnorm,
+        Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
+        Bc3 => TextureFormat::Bc3RgbaUnorm,
+        Bc3Srgb => TextureFormat::Bc3RgbaUnormSrgb,
+        Bc4 => TextureFormat::Bc4RUnorm,
+        Bc4Snorm => TextureFormat::Bc4RSnorm,
+        Bc5 => TextureFormat::Bc5RgUnorm,
+        Bc5Snorm => TextureFormat::Bc5RgSnorm,
+        Bc6Unsigned => TextureFormat::Bc6hRgbUfloat,
+        Bc6Signed => TextureFormat::Bc6hRgbFloat,
+        Bc7 => TextureFormat::Bc7RgbaUnorm,
+        Bc7Srgb => TextureFormat::Bc7RgbaUnormSrgb,
     }
 }
 
 fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     match format {
-        TextureFormat::Bc1RgbaUnorm | TextureFormat::Bc1RgbaUnormSrgb | TextureFormat::Bc4RUnorm | TextureFormat::Bc4RSnorm => Some(8),
-        TextureFormat::Bc3RgbaUnorm | TextureFormat::Bc3RgbaUnormSrgb | TextureFormat::Bc5RgUnorm | TextureFormat::Bc5RgSnorm
-        | TextureFormat::Bc6hRgbUfloat | TextureFormat::Bc6hRgbFloat | TextureFormat::Bc7RgbaUnorm | TextureFormat::Bc7RgbaUnormSrgb => Some(16),
+        TextureFormat::Bc1RgbaUnorm
+        | TextureFormat::Bc1RgbaUnormSrgb
+        | TextureFormat::Bc4RUnorm
+        | TextureFormat::Bc4RSnorm => Some(8),
+        TextureFormat::Bc3RgbaUnorm
+        | TextureFormat::Bc3RgbaUnormSrgb
+        | TextureFormat::Bc5RgUnorm
+        | TextureFormat::Bc5RgSnorm
+        | TextureFormat::Bc6hRgbUfloat
+        | TextureFormat::Bc6hRgbFloat
+        | TextureFormat::Bc7RgbaUnorm
+        | TextureFormat::Bc7RgbaUnormSrgb => Some(16),
         _ => None,
     }
 }
 
 fn empty_streamed_image(width: u32, height: u32, mip_count: u32, format: TextureFormat) -> Image {
-    let mut image = Image::new_uninit(Extent3d { width, height, depth_or_array_layers: 1 },
-        TextureDimension::D2, format, RenderAssetUsages::RENDER_WORLD);
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     image.texture_descriptor.mip_level_count = mip_count;
     let mut sampler = ImageSamplerDescriptor::linear();
     sampler.set_address_mode(ImageAddressMode::Repeat);
@@ -1059,7 +1446,9 @@ fn attach_prepared_diffuse_image(
                         material.base.occlusion_texture = Some(handle.clone());
                     } else {
                         *material.extension.image_mut(*role) = Some(handle.clone());
-                        if role.0 == 0 { material.base.base_color_texture = Some(handle.clone()); }
+                        if role.0 == 0 {
+                            material.base.base_color_texture = Some(handle.clone());
+                        }
                     }
                 }
             }
@@ -1069,7 +1458,9 @@ fn attach_prepared_diffuse_image(
                         material.base.occlusion_texture = Some(handle.clone());
                     } else {
                         *material.extension.image_mut(*role) = Some(handle.clone());
-                        if role.0 == 0 { material.base.base_color_texture = Some(handle.clone()); }
+                        if role.0 == 0 {
+                            material.base.base_color_texture = Some(handle.clone());
+                        }
                     }
                 }
             }
@@ -1119,9 +1510,13 @@ fn stream_visible_textures(
     for instance in &queue.instances {
         if instance.visible {
             if let Some(slots) = queue.native_material_images.get(&instance.material) {
-                for &slot in slots { requested[slot] = true; }
+                for &slot in slots {
+                    requested[slot] = true;
+                }
             } else if let Some(slot) = instance.diffuse_image_slot {
-                if let Some(needed) = requested.get_mut(slot) { *needed = true; }
+                if let Some(needed) = requested.get_mut(slot) {
+                    *needed = true;
+                }
             }
         }
     }
@@ -1226,7 +1621,10 @@ fn stream_visible_textures(
             let previous = old_handle.id();
             let dropped = old_count - minimum_count;
             let handle = images.add(empty_streamed_image(
-                minimum.width, minimum.height, minimum_count, gpu_image_format(minimum.format),
+                minimum.width,
+                minimum.height,
+                minimum_count,
+                gpu_image_format(minimum.format),
             ));
             if let Some(prepared_images) = prepared_images.as_ref() {
                 queue.diffuse_image_pending[slot] = Some(handle.clone());
@@ -1573,7 +1971,13 @@ impl TomeRenderInstanceMap {
         render_instances: &[RenderInstance],
         image_demands: &[texture::ProjectedAreaDemand],
     ) -> Result<usize, String> {
-        self.submit_material_texture_demands(visible_tome_indices, area_metrics, render_instances, image_demands, &HashMap::new())
+        self.submit_material_texture_demands(
+            visible_tome_indices,
+            area_metrics,
+            render_instances,
+            image_demands,
+            &HashMap::new(),
+        )
     }
 
     fn submit_material_texture_demands(
@@ -1606,7 +2010,11 @@ impl TomeRenderInstanceMap {
                         return Err("render instance references an unknown material image".into());
                     };
                     // Spatial suppression applies to every shader image role.
-                    demand.submit(if self.zero_metric_instances.contains(&render_index) { 0.0 } else { *area_metric });
+                    demand.submit(if self.zero_metric_instances.contains(&render_index) {
+                        0.0
+                    } else {
+                        *area_metric
+                    });
                     submitted += 1;
                 }
             }
@@ -1679,18 +2087,35 @@ fn view_of(target: &FocusTarget) -> Transform {
 // Diagnostic replay preserves the saved view; it does not change game culling.
 fn f8_camera_pose(report: &str) -> Option<Transform> {
     fn vector(report: &str, label: &str) -> Option<[f32; 3]> {
-        let text = report.lines().find_map(|line| line.strip_prefix(label))?.trim();
-        let values = text.strip_prefix('[')?.strip_suffix(']')?
-            .split(',').map(|part| part.trim().parse::<f32>()).collect::<Result<Vec<_>, _>>().ok()?;
+        let text = report
+            .lines()
+            .find_map(|line| line.strip_prefix(label))?
+            .trim();
+        let values = text
+            .strip_prefix('[')?
+            .strip_suffix(']')?
+            .split(',')
+            .map(|part| part.trim().parse::<f32>())
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
         let values: [f32; 3] = values.try_into().ok()?;
-        values.iter().all(|value| value.is_finite()).then_some(values)
+        values
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(values)
     }
     let eye = game_to_view(vector(report, "Camera game_xyz:")?);
     let direction = game_to_view(vector(report, "Camera direction game_xyz:")?);
-    let up = if report.lines().any(|line| line.starts_with("Camera up game_xyz:")) {
+    let up = if report
+        .lines()
+        .any(|line| line.starts_with("Camera up game_xyz:"))
+    {
         game_to_view(vector(report, "Camera up game_xyz:")?)
-    } else { Vec3::Y };
-    (direction.length_squared() > 0.0 && up.length_squared() > 0.0
+    } else {
+        Vec3::Y
+    };
+    (direction.length_squared() > 0.0
+        && up.length_squared() > 0.0
         && direction.cross(up).length_squared() > 0.0)
         .then(|| Transform::from_translation(eye).looking_to(direction, up))
 }
@@ -1698,10 +2123,16 @@ fn f8_camera_pose(report: &str) -> Option<Transform> {
 // Replay metadata is diagnostic input, not a replacement for the registered
 // 80-degree default. Original live capture can contain a user-adjusted FOV.
 fn f8_reference_fov(report: &str) -> Option<f32> {
-    let value = report.lines().find_map(|line| line.strip_prefix("Reference horizontal FOV degrees:"))
-        .map_or(Some(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES), |text| text.trim().parse::<f32>().ok())?;
+    let value = report
+        .lines()
+        .find_map(|line| line.strip_prefix("Reference horizontal FOV degrees:"))
+        .map_or(Some(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES), |text| {
+            text.trim().parse::<f32>().ok()
+        })?;
     (value > 0.0).then_some(())?;
-    tome::original_render_vertical_fov_radians(value).ok().map(|_| value)
+    tome::original_render_vertical_fov_radians(value)
+        .ok()
+        .map(|_| value)
 }
 
 fn reference_fov_from_projection(projection: &Projection) -> Result<f32, String> {
@@ -1890,25 +2321,15 @@ fn game_to_view([x, y, z]: [f32; 3]) -> Vec3 {
     Vec3::new(x, z, -y)
 }
 
-fn environment_sun_ray(
-    environment: entities::EnvironmentLighting,
-    authored_light_azimuth: Option<f32>,
-) -> Option<Vec3> {
-    let theta = environment.sun_theta_degrees?.to_radians();
-    let phi = authored_light_azimuth
-        .or(environment.sun_phi_degrees)?
-        .to_radians();
-    // The EOTW authored parallel-light axis uses [cos(phi), -sin(phi)] in
-    // game XY. Use its azimuth when available; otherwise use environment phi.
-    // Treat environment theta as elevation and aim directional rays downward.
-    Some(
-        game_to_view([
-            theta.cos() * phi.cos(),
-            -theta.cos() * phi.sin(),
-            -theta.sin(),
-        ])
-        .normalize_or_zero(),
-    )
+fn environment_sun_ray(environment: entities::EnvironmentLighting) -> Option<Vec3> {
+    // FUN_140017d30 uses environment theta as a polar angle and environment
+    // phi directly. FUN_14032b280/140330c10 negate its toward-sun vector.
+    // Do not substitute an authored parallel entity's yaw or an elevation.
+    let toward_sun = render_shadow::environment_sun_direction(
+        environment.sun_theta_degrees?,
+        environment.sun_phi_degrees?,
+    );
+    Some(-game_to_view(toward_sun))
 }
 
 fn view_to_game(point: Vec3) -> [f32; 3] {
@@ -2069,13 +2490,26 @@ fn model_havok_path(placement: &entities::PlacedModel, kind: &str, hd: bool) -> 
         physworld::replace_shape_extension(model, "lwo")
     } else {
         // The root renderer retains .blueprint; its children have no bodies.
-        placement.resource_path.strip_prefix("generated/decls/blueprint/")?
-            .strip_suffix(".decl")?.to_owned()
+        placement
+            .resource_path
+            .strip_prefix("generated/decls/blueprint/")?
+            .strip_suffix(".decl")?
+            .to_owned()
     };
-    if placement.scale.iter().any(|scale| !(scale * 100.0).is_finite()) {
+    if placement
+        .scale
+        .iter()
+        .any(|scale| !(scale * 100.0).is_finite())
+    {
         return None;
     }
-    let key = physworld::physics_shape_key(&source, physworld::physics_shape_kind(kind), placement.scale, 0.01, hd)?;
+    let key = physworld::physics_shape_key(
+        &source,
+        physworld::physics_shape_kind(kind),
+        placement.scale,
+        0.01,
+        hd,
+    )?;
     Some(physworld::physics_shape_asset_path(&key))
 }
 
@@ -2133,22 +2567,40 @@ fn static_model_collision(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
 ) -> (Vec<([Vec3; 3], u32)>, Vec<String>, usize, usize) {
-    let roots: HashMap<_, _> = placements.iter()
-        .map(|placement| (placement.id.as_str(), placement)).collect();
+    let roots: HashMap<_, _> = placements
+        .iter()
+        .map(|placement| (placement.id.as_str(), placement))
+        .collect();
     let mut cached = HashMap::<String, Option<Vec<[[f32; 3]; 3]>>>::new();
     let mut triangles = Vec::new();
     let mut owners = Vec::new();
     let mut matched = 0usize;
     let mut failed = 0usize;
     for body in bodies {
-        let Some(&placement) = roots.get(body.entity_id.as_str()) else { continue; };
+        let Some(&placement) = roots.get(body.entity_id.as_str()) else {
+            continue;
+        };
         // Dynamic/keyframed bodies need simulation, not frozen walk colliders.
-        if body.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind) != Some(0) { continue; }
-        let kind = match body.shape_type.as_deref().and_then(entities::rigid_body_shape_kind) {
+        if body
+            .physics_behavior
+            .as_deref()
+            .and_then(entities::rigid_body_behavior_kind)
+            != Some(0)
+        {
+            continue;
+        }
+        let kind = match body
+            .shape_type
+            .as_deref()
+            .and_then(entities::rigid_body_shape_kind)
+        {
             Some(index) => ["hkt", "cvx", "msh", "box", "cvd"][index as usize],
             other => {
                 failed += 1;
-                eprintln!("Collision {}: unsupported declared shape {:?} ({other:?})", placement.id, body.shape_type);
+                eprintln!(
+                    "Collision {}: unsupported declared shape {:?} ({other:?})",
+                    placement.id, body.shape_type
+                );
                 continue;
             }
         };
@@ -2158,7 +2610,10 @@ fn static_model_collision(
             continue;
         };
         if body.extra_hd_material.is_some() {
-            eprintln!("Collision {}: primary shape only; ExtraHD acquisition still unsupported", placement.id);
+            eprintln!(
+                "Collision {}: primary shape only; ExtraHD acquisition still unsupported",
+                placement.id
+            );
         }
         let local = cached.entry(path.clone()).or_insert_with(|| {
             let parsed = load_model_havok(catalog, &path, 0);
@@ -2178,7 +2633,8 @@ fn static_model_collision(
         let owner = owners.len() as u32;
         owners.push(placement.id.clone());
         // FUN_140aa0360 is applied to the entity basis before native body creation.
-        let body_basis = physworld::rigid_body_basis(placement.rotation.map(|[x, y, z]| [x, y, z, 0.0]));
+        let body_basis =
+            physworld::rigid_body_basis(placement.rotation.map(|[x, y, z]| [x, y, z, 0.0]));
         let body_pose = entities::PlacedModel {
             rotation: body_basis.map(|[x, y, z, _]| [x, y, z]),
             ..placement.clone()
@@ -2198,13 +2654,20 @@ fn native_render_indices(indices: &[u16]) -> Indices {
     // Imported DH2 triangles are CW; Bevy's raster fronts are CCW. Convert
     // render indices once, preserving native normals and collision indices.
     assert_eq!(indices.len() % 3, 0, "incomplete native triangle");
-    Indices::U16(indices.chunks_exact(3).flat_map(|t| [t[0], t[2], t[1]]).collect())
+    Indices::U16(
+        indices
+            .chunks_exact(3)
+            .flat_map(|t| [t[0], t[2], t[1]])
+            .collect(),
+    )
 }
 
 fn mirrored_render_mesh(mut mesh: Mesh, indices: &[u16], flipped: bool) -> Mesh {
     // A reflected affine instance reverses winding again. Preserve the native
     // CW indices for that variant so its final raster fronts remain CCW.
-    if flipped { mesh.insert_indices(Indices::U16(indices.to_vec())); }
+    if flipped {
+        mesh.insert_indices(Indices::U16(indices.to_vec()));
+    }
     mesh
 }
 
@@ -2245,7 +2708,10 @@ fn mean_game_position(points: &[Vec3]) -> [f32; 3] {
 }
 
 fn authored_mesh<const N: usize>(
-    points: &[Vec3], uvs: &[[f32; 2]], indices: &[u16], packed: &[[u8; N]],
+    points: &[Vec3],
+    uvs: &[[f32; 2]],
+    indices: &[u16],
+    packed: &[[u8; N]],
     transform_direction: impl Fn(Vec3) -> Vec3,
 ) -> Mesh {
     assert_eq!(points.len(), packed.len(), "authored vertex channel count");
@@ -2267,24 +2733,84 @@ fn authored_mesh<const N: usize>(
             half::f16::from_bits(u16::from_le_bytes([p[0], p[1]])).to_f32(),
             half::f16::from_bits(u16::from_le_bytes([p[2], p[3]])).to_f32(),
         ]);
-        if N == 16 { colors.push(std::array::from_fn::<_, 4, _>(|i| p[12 + i] as f32 / 255.0)); }
+        if N == 16 {
+            colors.push(std::array::from_fn::<_, 4, _>(|i| p[12 + i] as f32 / 255.0));
+        }
     }
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, points.iter().map(|p| p.to_array()).collect::<Vec<_>>())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, uv1)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
-        .with_inserted_attribute(DH2_BITANGENT, bitangents)
-        .with_inserted_indices(native_render_indices(indices));
-    if N == 16 { mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors); }
-    let flipped = transform_direction(Vec3::X).cross(transform_direction(Vec3::Y)).dot(transform_direction(Vec3::Z)) < 0.0;
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        points.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, uv1)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
+    .with_inserted_attribute(DH2_BITANGENT, bitangents)
+    .with_inserted_indices(native_render_indices(indices));
+    if N == 16 {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+    let flipped = transform_direction(Vec3::X)
+        .cross(transform_direction(Vec3::Y))
+        .dot(transform_direction(Vec3::Z))
+        < 0.0;
     mirrored_render_mesh(mesh, indices, flipped)
 }
 
-fn source_mesh<const N: usize>(positions: &[[f32; 3]], uvs: &[[f32; 2]], indices: &[u16], packed: &[[u8; N]], flipped: bool) -> Mesh {
+fn source_mesh<const N: usize>(
+    positions: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    indices: &[u16],
+    packed: &[[u8; N]],
+    flipped: bool,
+) -> Mesh {
     let points: Vec<Vec3> = positions.iter().copied().map(game_to_view).collect();
-    mirrored_render_mesh(authored_mesh(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped)
+    mirrored_render_mesh(
+        authored_mesh(&points, uvs, indices, packed, |n| {
+            game_to_view(n.to_array())
+        }),
+        indices,
+        flipped,
+    )
+}
+
+/// VS14200 consumes original game-local POSITION, SNORM NORMAL.xy and UNORM
+/// COLOR.xyz before wind and placement. Forward positions/normals may already
+/// include axis conversion, placement and shear, and cannot supply those inputs.
+/// These additional attributes are uploaded only for actual vegetation programs;
+/// the forward mesh and its winding/UVs/basis remain unchanged.
+fn retain_native_vegetation_channels<const N: usize>(
+    mesh: &mut Mesh,
+    positions: &[[f32; 3]],
+    packed: &[[u8; N]],
+) -> Result<(), String> {
+    if N != 16 {
+        return Err(format!(
+            "native vegetation requires authored COLOR; {N}-byte channels have no COLOR"
+        ));
+    }
+    if positions.len() != packed.len() || mesh.count_vertices() != positions.len() {
+        return Err("native vegetation source/forward vertex counts disagree".into());
+    }
+    let normals: Vec<[f32; 2]> = packed
+        .iter()
+        .map(|p| [p[4], p[5]].map(|b| ((b as i8 as f32) / 127.0).max(-1.0)))
+        .collect();
+    let colors: Vec<[f32; 3]> = packed
+        .iter()
+        .map(|p| [p[12], p[13], p[14]].map(|b| b as f32 / 255.0))
+        .collect();
+    mesh.insert_attribute(
+        native_shadow_scene::NATIVE_VEGETATION_POSITION,
+        positions.to_vec(),
+    );
+    mesh.insert_attribute(native_shadow_scene::NATIVE_VEGETATION_NORMAL, normals);
+    mesh.insert_attribute(native_shadow_scene::NATIVE_VEGETATION_COLOR, colors);
+    Ok(())
 }
 
 fn needs_exact_world_mesh(instance: &Transform, positions: &[[f32; 3]], exact: &[Vec3]) -> bool {
@@ -2297,16 +2823,237 @@ fn needs_exact_world_mesh(instance: &Transform, positions: &[[f32; 3]], exact: &
     })
 }
 
+/// Resolve the slot-admission fields from the same dictionaries as 1402d5210.
+/// In particular +0x48 bit4 is MAIN-fallback isDecal, not invisible. This is
+/// source selection only, not a claim that all other material flags are loaded.
+fn resolve_native_shadow_source_inputs(
+    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+    bytes: &[u8],
+    program: &[u8],
+    main_program: Option<&str>,
+) -> Result<material::ShadowSourceInputs, String> {
+    let mut source = material::shadow_source_inputs(bytes, program)?;
+    let library = library
+        .ok_or("native program library is unavailable")?
+        .as_mut()
+        .map_err(|error| format!("native program library: {error}"))?;
+    let main = main_program.ok_or("shadow source owner has no main program")?;
+    let state = library
+        .definition(main.as_bytes())?
+        .ok_or_else(|| format!("missing native main program {main}"))?
+        .native_render_state();
+    source.main_blend_state = material::shadow_blend_factor_overrides(state[0], bytes)?;
+    // These constructor fields precede per-pass specialization. Read the
+    // material dictionary, not a block already overwritten for shadow slot 10.
+    let overrides = native_material_option_overrides(library, bytes)?;
+    let no_shadow = library.registered_option_value(&overrides, b"noShadow")? != 0;
+    let is_decal = library.option_value(main.as_bytes(), &overrides, b"isDecal")? & 1 != 0;
+    source.hair_type = library.option_value(main.as_bytes(), &overrides, b"hairType")? & 1 != 0;
+    source.sky_type = library.option_value(main.as_bytes(), &overrides, b"skyType")? as u32 & 3;
+    source.is_cloth = library.option_value(main.as_bytes(), &overrides, b"isCloth")? & 1 != 0;
+    source.source = material::shadow_program_source(
+        false,
+        no_shadow,
+        is_decal,
+        source.override_program.is_some(),
+        source.hair_type,
+        source.main_blend_state,
+        source.is_cloth,
+    );
+    source.cloth_source = material::shadow_program_source(
+        true,
+        no_shadow,
+        is_decal,
+        source.cloth_override_program.is_some(),
+        source.hair_type,
+        source.main_blend_state,
+        source.is_cloth,
+    );
+    // 1402d6e59..1402d6f39 subsequently clears rigid slot 10 in ALL three
+    // banks. An authored shadow override does not bypass this final stage.
+    // MAIN resolved above; a HasParm miss is the native implicit-main path.
+    let class = material::material_program_class(
+        true,
+        material::authored_program_override(bytes, "mainProgram").is_none(),
+        source.main_blend_state,
+        library.option_value(main.as_bytes(), &overrides, b"invisible")? != 0,
+    );
+    if material::finalize_material_programs(class, source.hair_type, source.sky_type).clear_slots
+        & (1 << 10)
+        != 0
+    {
+        source.source = material::ShadowProgramSource::Disabled;
+    }
+    Ok(source)
+}
+
+fn resolve_native_rigid_shadow_source(
+    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+    bytes: &[u8],
+    source: &material::ShadowSourceInputs,
+    main_program: Option<&str>,
+) -> Result<Option<std::sync::Arc<shader_cache::CachedRigidShadowSource>>, String> {
+    let name = match source.source {
+        material::ShadowProgramSource::Disabled => return Ok(None),
+        material::ShadowProgramSource::Authored => source.override_program.as_deref(),
+        material::ShadowProgramSource::MainProgram => main_program,
+    }
+    .ok_or("shadow source has no resolved program name")?;
+    // HasParm with an authored null source is not a request for the main shader.
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let library = library
+        .ok_or("native program library is unavailable")?
+        .as_mut()
+        .map_err(|error| format!("native program library: {error}"))?;
+    let overrides = native_shadow_variant_overrides(library, bytes, source, main_program, name)?;
+    library
+        .rigid_shadow_source(name.as_bytes(), &overrides)?
+        .map(Some)
+        .ok_or_else(|| format!("no resident rigid shadow variant for {name}"))
+}
+
+fn resolve_native_shadow_material_parameters(
+    library: &mut shader_cache::NativeProgramLibrary,
+    catalog: &archive::Catalog,
+    bytes: &[u8],
+    class: shader_cache::CachedRigidShadowClass,
+) -> Result<NativeShadowMaterialParameters, String> {
+    use shader_cache::CachedRigidShadowClass;
+    let names: &[&[u8]] = match class {
+        CachedRigidShadowClass::Opaque => &[],
+        CachedRigidShadowClass::AlphaTested => &[b"layer0_scalebias"],
+        CachedRigidShadowClass::Vegetation => &[
+            b"layer0_scalebias",
+            b"vegetanim/mainbendingvar",
+            b"vegetanim/mainbendingfreq",
+            b"vegetanim/mainbendingamplitude",
+            b"vegetanim/leafminwindstrength",
+            b"vegetanim/leaffreq",
+            b"vegetanim/leafamplitude",
+            b"vegetanim/branchamplitude",
+        ],
+    };
+    let values = entities::material_float_parameters(&String::from_utf8_lossy(bytes), |name| {
+        names.iter().any(|required| *required == name.as_bytes())
+    })?;
+    let overrides = render_program::SerializedParameterBlock {
+        flags: 0,
+        parameters: values
+            .into_iter()
+            .map(|(name, words)| render_program::SerializedParameter {
+                name: name.into_bytes(),
+                kind: render_program::RenderParameterKind::Uniform,
+                value: render_program::SerializedParameterValue::Words(words),
+            })
+            .collect(),
+    };
+    let empty = render_program::SerializedParameterBlock {
+        flags: 0,
+        parameters: Vec::new(),
+    };
+    let defaults = names
+        .iter()
+        .map(|name| {
+            library
+                .registered_float_vector(catalog, &empty, name, None)
+                .map(|words| (name.to_vec(), words))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(NativeShadowMaterialParameters {
+        overrides,
+        defaults,
+    })
+}
+
+fn native_material_option_overrides(
+    library: &shader_cache::NativeProgramLibrary,
+    bytes: &[u8],
+) -> Result<render_program::SerializedParameterBlock, String> {
+    let values = material::material_option_parameters(bytes, |name| {
+        library.parameter_kinds.get(name.as_bytes())
+            == Some(&render_program::RenderParameterKind::Option)
+    })?;
+    Ok(native_option_block(values))
+}
+
+fn native_option_block(values: Vec<(String, i32)>) -> render_program::SerializedParameterBlock {
+    render_program::SerializedParameterBlock {
+        flags: 0,
+        parameters: values
+            .into_iter()
+            .map(|(name, value)| render_program::SerializedParameter {
+                name: name.into_bytes(),
+                kind: render_program::RenderParameterKind::Option,
+                value: render_program::SerializedParameterValue::Words([value as u32, 0, 0, 0]),
+            })
+            .collect(),
+    }
+}
+
+fn native_shadow_variant_overrides(
+    library: &mut shader_cache::NativeProgramLibrary,
+    bytes: &[u8],
+    source: &material::ShadowSourceInputs,
+    main_program: Option<&str>,
+    selected_program: &str,
+) -> Result<render_program::SerializedParameterBlock, String> {
+    let original = native_material_option_overrides(library, bytes)?;
+    // Material +0x4b bit4 uses MAIN, even with an authored shadow source.
+    let main = main_program.ok_or("shadow alpha-test owner has no main program")?;
+    let alpha_test = library.option_value(main.as_bytes(), &original, b"alphaTest")?;
+    // isDecal uses MAIN, but decalType is material/registered-default only.
+    let is_decal = library.option_value(main.as_bytes(), &original, b"isDecal")? & 1 != 0;
+    let decal_type = library.registered_option_value(&original, b"decalType")? as u32;
+    let is_alpha = material::shadow_is_alpha(
+        source.main_blend_state,
+        is_decal,
+        decal_type,
+        source.sky_type,
+    );
+    // 1402d68bb..1402d697d: R15B starts as isAlpha, then ORs three
+    // nonzero tests. Each getter uses the SELECTED program +0x2b8 and
+    // the UNMODIFIED material block. Sky type is not noScreenShadows.
+    // Evaluate every getter even when an earlier operand is true.
+    let no_screen_shadows = [
+        b"noScreenShadows".as_slice(),
+        b"translucency_hq/enable",
+        b"translucency/enable",
+    ]
+    .into_iter()
+    .try_fold(is_alpha, |combined, name| {
+        library
+            .option_value(selected_program.as_bytes(), &original, name)
+            .map(|value| combined | (value != 0))
+    })?;
+    let values = material::rigid_shadow_option_parameters(
+        bytes,
+        alpha_test,
+        is_alpha,
+        no_screen_shadows,
+        |name| {
+            library.parameter_kinds.get(name.as_bytes())
+                == Some(&render_program::RenderParameterKind::Option)
+        },
+    )?;
+    Ok(native_option_block(values))
+}
+
 struct MaterialResolver<'a> {
     catalog: Option<&'a archive::Catalog>,
+    native_programs: Option<&'a mut Result<shader_cache::NativeProgramLibrary, String>>,
     probe_materials: &'a mut Assets<ProbeMaterial>,
     decal_materials: &'a mut Assets<DecalMaterial>,
     probe_sh_buffers: &'a mut Assets<ShaderBuffer>,
     probe_sh_buffer: Handle<ShaderBuffer>,
     vertex_probe_buffer: Handle<ShaderBuffer>,
+    native_shadow_buffer: Handle<ShaderBuffer>,
+    native_shadow_map: Handle<Image>,
     probe_sh_records: Vec<[Vec4; 9]>,
     probes: Option<&'a probe_lighting::ProbeLightingSet>,
     cache: HashMap<String, Option<CachedMaterial>>,
+    shadow_materials: NativeShadowMaterials,
     diffuse_image_slots: HashMap<String, usize>,
     diffuse_image_paths: Vec<String>,
     preferred_mip: Option<u8>,
@@ -2358,34 +3105,69 @@ impl MaterialResolver<'_> {
         let mut stem = material::compiled_image_stem(catalog, name)?;
         stem.make_ascii_lowercase();
         if !catalog.contains(&stem)
-            && !(0..=self.preferred_mip.unwrap_or(15)).any(|mip| catalog.contains(&format!("{stem}_mip{mip}")))
-        { return None; }
-        if let Some(&slot) = self.diffuse_image_slots.get(&stem) { return Some(slot); }
+            && !(0..=self.preferred_mip.unwrap_or(15))
+                .any(|mip| catalog.contains(&format!("{stem}_mip{mip}")))
+        {
+            return None;
+        }
+        if let Some(&slot) = self.diffuse_image_slots.get(&stem) {
+            return Some(slot);
+        }
         let slot = self.diffuse_image_paths.len();
         self.diffuse_image_paths.push(stem.clone());
         self.diffuse_image_slots.insert(stem, slot);
         Some(slot)
     }
 
-    fn get(&mut self, path: &str, _color_seed: usize, game_position: [f32; 3]) -> Option<ResolvedMaterial> {
+    fn get(
+        &mut self,
+        path: &str,
+        _color_seed: usize,
+        game_position: [f32; 3],
+    ) -> Option<ResolvedMaterial> {
         if let Some(cached) = self.cache.get(path) {
             let cached = cached.clone()?;
             let probe_index = self.append_probe_record(game_position);
-            return Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index, native_vertex_lighting: cached.native_vertex_lighting });
+            return Some(ResolvedMaterial {
+                handle: cached.handle,
+                diffuse_image_slot: cached.diffuse_image_slot,
+                probe_index,
+                native_vertex_lighting: cached.native_vertex_lighting,
+            });
         }
         let key = path.to_owned();
-        let bytes = self.catalog.and_then(|c| c.read(&format!("generated/decls/material/{path}.decl")).ok().flatten());
+        let bytes = self.catalog.and_then(|c| {
+            c.read(&format!("generated/decls/material/{path}.decl"))
+                .ok()
+                .flatten()
+        });
         let bytes = bytes.as_deref().unwrap_or(&[]);
-        if material::is_screen_gate_impostor(path, bytes) { self.cache.insert(key, None); return None; }
+        if material::is_screen_gate_impostor(path, bytes) {
+            self.cache.insert(key, None);
+            return None;
+        }
         let surface = material_surface::Surface::parse(bytes);
-        if surface.extra_layers > 2 || surface.layers.iter().any(|l| l.mask_channel > 3 || l.mask_mode > 2) {
+        if surface.extra_layers > 2
+            || surface
+                .layers
+                .iter()
+                .any(|l| l.mask_channel > 3 || l.mask_mode > 2)
+        {
             eprintln!("Unsupported material layer inputs {path}");
             self.cache.insert(key, None);
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
-        let program = surface.main_program.as_ref().and_then(|name| self.catalog.and_then(|c|
-            c.read(&format!("generated/decls/renderprog/{}.decl", name.to_ascii_lowercase())).ok().flatten()));
+        let program = surface.main_program.as_ref().and_then(|name| {
+            self.catalog.and_then(|c| {
+                c.read(&format!(
+                    "generated/decls/renderprog/{}.decl",
+                    name.to_ascii_lowercase()
+                ))
+                .ok()
+                .flatten()
+            })
+        });
         let program = program.as_deref().unwrap_or(&[]);
         // FUN_1402d5210 encodes inherited `invisible` as material+0x4b's
         // excluded state; FUN_14033b350 rejects it before creating any rows.
@@ -2397,23 +3179,52 @@ impl MaterialResolver<'_> {
         let program_is_decal = material::program_option(bytes, program, "isDecal");
         let two_sided_lighting = material::program_option(bytes, program, "twoSidedLighting");
         let alpha_test = material::program_option(bytes, program, "alphaTest");
-        uniform.misc.w = u32::from(alpha_test) | (u32::from(program_is_decal) << 1) | (u32::from(two_sided_lighting) << 2);
+        uniform.misc.w = u32::from(alpha_test)
+            | (u32::from(program_is_decal) << 1)
+            | (u32::from(two_sided_lighting) << 2);
         let decal_bias = material::decal_depth_bias(bytes);
         let mut images = Vec::new();
         for index in 0..=surface.extra_layers {
             let layer = &surface.layers[index];
             let candidates = [
-                (surface_gpu::ImageRole::diffuse(index), layer.diffuse.as_deref(), index == 0 || layer.reuse[0] == 0),
-                (surface_gpu::ImageRole::bump(index), layer.bump.as_deref(), surface.has_bump && (index == 0 || layer.reuse[1] == 0)),
-                (surface_gpu::ImageRole::gloss(index), layer.gloss.as_deref(), surface.has_gloss && !surface.gloss_in_alpha && (index == 0 || layer.reuse[2] == 0)),
-                (surface_gpu::ImageRole::metallic(index), layer.metallic.as_deref(), surface.has_metallic && (index == 0 || layer.reuse[3] == 0)),
-                (surface_gpu::ImageRole::mask(index), layer.mask.as_deref(), (index != 0 || layer.use_color) && layer.mask_mode != 0 && layer.reuse[4] == 0),
+                (
+                    surface_gpu::ImageRole::diffuse(index),
+                    layer.diffuse.as_deref(),
+                    index == 0 || layer.reuse[0] == 0,
+                ),
+                (
+                    surface_gpu::ImageRole::bump(index),
+                    layer.bump.as_deref(),
+                    surface.has_bump && (index == 0 || layer.reuse[1] == 0),
+                ),
+                (
+                    surface_gpu::ImageRole::gloss(index),
+                    layer.gloss.as_deref(),
+                    surface.has_gloss
+                        && !surface.gloss_in_alpha
+                        && (index == 0 || layer.reuse[2] == 0),
+                ),
+                (
+                    surface_gpu::ImageRole::metallic(index),
+                    layer.metallic.as_deref(),
+                    surface.has_metallic && (index == 0 || layer.reuse[3] == 0),
+                ),
+                (
+                    surface_gpu::ImageRole::mask(index),
+                    layer.mask.as_deref(),
+                    (index != 0 || layer.use_color) && layer.mask_mode != 0 && layer.reuse[4] == 0,
+                ),
             ];
             for (role, name, enabled) in candidates {
-                if !enabled { continue; }
+                if !enabled {
+                    continue;
+                }
                 if let Some(name) = name {
-                    if let Some(slot) = self.register_image(name) { images.push((slot, role)); }
-                    else { eprintln!("Material image missing {path} role={} name={name}", role.0); }
+                    if let Some(slot) = self.register_image(name) {
+                        images.push((slot, role));
+                    } else {
+                        eprintln!("Material image missing {path} role={} name={name}", role.0);
+                    }
                 }
             }
         }
@@ -2421,27 +3232,54 @@ impl MaterialResolver<'_> {
         // return 1.0 and do not request this texture.
         if surface.has_occlusion && !program_is_decal {
             if let Some(name) = surface.occlusion.as_deref() {
-                if let Some(slot) = self.register_image(name) { images.push((slot, surface_gpu::ImageRole::occlusion())); }
-                else { eprintln!("Material image missing {path} role=15 name={name}"); }
+                if let Some(slot) = self.register_image(name) {
+                    images.push((slot, surface_gpu::ImageRole::occlusion()));
+                } else {
+                    eprintln!("Material image missing {path} role=15 name={name}");
+                }
             }
         }
-        let diffuse_image_slot = images.iter().find(|(_, role)| role.0 == 0).map(|&(slot, _)| slot);
-        if diffuse_image_slot.is_none() { self.misses += 1; }
+        let diffuse_image_slot = images
+            .iter()
+            .find(|(_, role)| role.0 == 0)
+            .map(|&(slot, _)| slot);
+        if diffuse_image_slot.is_none() {
+            self.misses += 1;
+        }
         let alpha_mode = match transparency {
             material::Transparency::Opaque => AlphaMode::Opaque,
-            material::Transparency::Cutout => { self.cutout += 1; AlphaMode::Mask(surface.forward_alpha_cutoff()) }
-            material::Transparency::Coverage => {
-                if surface.main_program.as_deref().is_some_and(|p| p.eq_ignore_ascii_case("arkDecal")) { self.blended += 1; AlphaMode::Blend }
-                else { self.cutout += 1; AlphaMode::AlphaToCoverage }
+            material::Transparency::Cutout => {
+                self.cutout += 1;
+                AlphaMode::Mask(surface.forward_alpha_cutoff())
             }
-            material::Transparency::Blend => { self.blended += 1; AlphaMode::Blend }
+            material::Transparency::Coverage => {
+                if surface
+                    .main_program
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case("arkDecal"))
+                {
+                    self.blended += 1;
+                    AlphaMode::Blend
+                } else {
+                    self.cutout += 1;
+                    AlphaMode::AlphaToCoverage
+                }
+            }
+            material::Transparency::Blend => {
+                self.blended += 1;
+                AlphaMode::Blend
+            }
         };
         let is_decal = program_is_decal || decal_bias.is_some();
         let cull_mode = match material::cull_mode_with_program(bytes, program) {
             Ok(material::CullMode::None) => None,
             Ok(material::CullMode::Front) => Some(bevy::render::render_resource::Face::Front),
             Ok(material::CullMode::Back) => Some(bevy::render::render_resource::Face::Back),
-            Err(error) => { eprintln!("Material {path}: {error}"); self.misses += 1; return None; }
+            Err(error) => {
+                eprintln!("Material {path}: {error}");
+                self.misses += 1;
+                return None;
+            }
         };
         let base = StandardMaterial {
             base_color: Color::WHITE,
@@ -2485,6 +3323,8 @@ impl MaterialResolver<'_> {
                 extension: ProbeExtension {
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
+                    native_shadow: self.native_shadow_buffer.clone(),
+                    native_shadow_map: Some(self.native_shadow_map.clone()),
                     surface: uniform,
                     diffuse0: None,
                     diffuse1: None,
@@ -2504,18 +3344,76 @@ impl MaterialResolver<'_> {
                 },
             }))
         };
-        let cached = CachedMaterial { handle, diffuse_image_slot, images, native_vertex_lighting };
+        let shadow = resolve_native_shadow_source_inputs(
+            self.native_programs.as_deref_mut(),
+            bytes,
+            program,
+            surface.main_program.as_deref(),
+        )
+        .map(|source| {
+            let rigid_base_source = resolve_native_rigid_shadow_source(
+                self.native_programs.as_deref_mut(),
+                bytes,
+                &source,
+                surface.main_program.as_deref(),
+            );
+            let parameters = match &rigid_base_source {
+                Ok(None) => Ok(None),
+                Err(error) => Err(error.clone()),
+                Ok(Some(compiled)) => (|| {
+                    let catalog = self
+                        .catalog
+                        .ok_or("native shadow parameter catalog is unavailable")?;
+                    let library = self
+                        .native_programs
+                        .as_deref_mut()
+                        .ok_or("native program library is unavailable")?
+                        .as_mut()
+                        .map_err(|error| error.clone())?;
+                    resolve_native_shadow_material_parameters(
+                        library,
+                        catalog,
+                        bytes,
+                        compiled.class,
+                    )
+                    .map(Some)
+                })(),
+            };
+            NativeShadowMaterialInputs {
+                source,
+                rigid_base_source,
+                main_program: surface.main_program.clone(),
+                alpha_test,
+                diffuse_image_slot,
+                parameters,
+                cull_mode,
+            }
+        });
+        self.shadow_materials.0.insert(handle.clone(), shadow);
+        let cached = CachedMaterial {
+            handle,
+            diffuse_image_slot,
+            images,
+            native_vertex_lighting,
+        };
         self.cache.insert(key, Some(cached.clone()));
         let probe_index = self.append_probe_record(game_position);
-        Some(ResolvedMaterial { handle: cached.handle, diffuse_image_slot: cached.diffuse_image_slot, probe_index, native_vertex_lighting: cached.native_vertex_lighting })
+        Some(ResolvedMaterial {
+            handle: cached.handle,
+            diffuse_image_slot: cached.diffuse_image_slot,
+            probe_index,
+            native_vertex_lighting: cached.native_vertex_lighting,
+        })
     }
 }
 
 fn setup(
     mut commands: Commands,
     mut scene: ResMut<SceneData>,
+    mut native_programs: Option<ResMut<NativeProgramCacheSource>>,
     navigation: Option<Res<NavigationWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut probe_materials: ResMut<Assets<ProbeMaterial>>,
     mut probe_sh_buffers: ResMut<Assets<ShaderBuffer>>,
     render_device: Res<RenderDevice>,
@@ -2579,30 +3477,76 @@ fn setup(
     }
     // Preserve ordered primary probe IDs in binding100; per-object records
     // are appended after them. World geometry uses its PNW instance offset.
-    let mut records = scene.environment_probes.as_ref().map(|set| set.probes.iter()
-        .map(|probe| probe.static_lighting_sh.map(|v| if lit { Vec4::new(v[0],v[1],v[2],0.0) } else { Vec4::ZERO }))
-        .collect::<Vec<_>>()).unwrap_or_default();
-    if records.is_empty() { records.push([Vec4::ZERO; 9]); }
-    let words = scene.environment_probes.as_ref().map(probe_lighting::ProbeLightingSet::vertex_shader_words)
+    let mut records = scene
+        .environment_probes
+        .as_ref()
+        .map(|set| {
+            set.probes
+                .iter()
+                .map(|probe| {
+                    probe.static_lighting_sh.map(|v| {
+                        if lit {
+                            Vec4::new(v[0], v[1], v[2], 0.0)
+                        } else {
+                            Vec4::ZERO
+                        }
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if records.is_empty() {
+        records.push([Vec4::ZERO; 9]);
+    }
+    let words = scene
+        .environment_probes
+        .as_ref()
+        .map(probe_lighting::ProbeLightingSet::vertex_shader_words)
         .unwrap_or_else(|| vec![0u32; 8]);
     let bytes = words.len() as u64 * 4;
     let limits = render_device.limits();
     assert!(bytes <= u64::from(limits.max_storage_buffer_binding_size) && bytes <= limits.max_buffer_size,
         "native PNW vertex lighting requires a {bytes}-byte buffer; device storage limit={}, buffer limit={}",
         limits.max_storage_buffer_binding_size, limits.max_buffer_size);
-    println!("Native vertex-probe GPU data: {} primary records, {bytes} bytes (device storage limit {})", records.len(), limits.max_storage_buffer_binding_size);
+    println!(
+        "Native vertex-probe GPU data: {} primary records, {bytes} bytes (device storage limit {})",
+        records.len(),
+        limits.max_storage_buffer_binding_size
+    );
     let vertex_probe_buffer = probe_sh_buffers.add(ShaderBuffer::from(words));
     let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(records.clone()));
+    let native_shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
+        native_shadow_sampling::NativeParallelSamplingUniform::default(),
+    ));
+    let native_shadow_map = images.add(
+        native_shadow_gpu::shadow_depth_image(
+            bevy::render::render_resource::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureFormat::Depth24PlusStencil8,
+        )
+        .expect("unavailable depth binding descriptor"),
+    );
+    commands.insert_resource(native_shadow_sampling::NativeParallelSamplingBuffer {
+        buffer: native_shadow_buffer.clone(),
+        unavailable_depth: native_shadow_map.clone(),
+    });
     let mut resolver = MaterialResolver {
         catalog,
+        native_programs: native_programs.as_deref_mut().map(|source| &mut source.0),
         probe_materials: &mut probe_materials,
         decal_materials: &mut decal_materials,
         probe_sh_buffers: &mut probe_sh_buffers,
         probe_sh_buffer,
         vertex_probe_buffer,
+        native_shadow_buffer,
+        native_shadow_map,
         probe_sh_records: records,
         probes: scene.environment_probes.as_ref(),
         cache: HashMap::new(),
+        shadow_materials: NativeShadowMaterials::default(),
         diffuse_image_slots: HashMap::new(),
         diffuse_image_paths: Vec::new(),
         preferred_mip,
@@ -2617,6 +3561,7 @@ fn setup(
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
     let mut world_mesh_handles = HashMap::<(usize, bool), Handle<Mesh>>::new();
+    let mut native_vegetation_meshes = NativeVegetationMeshInputs::default();
     let mut baked_shear_instances = 0usize;
     let mut authored_lod_instances = BTreeMap::<usize, usize>::new();
     let mut render_instances = Vec::new();
@@ -2654,7 +3599,13 @@ fn setup(
         let mesh = world_mesh_handles
             .entry((object.mesh_index, object.flipped))
             .or_insert_with(|| {
-                meshes.add(source_mesh(&source.positions, &source.uvs, &source.indices, &source.packed_channels, object.flipped))
+                meshes.add(source_mesh(
+                    &source.positions,
+                    &source.uvs,
+                    &source.indices,
+                    &source.packed_channels,
+                    object.flipped,
+                ))
             })
             .clone();
         for matrix_index in object.matrix_start..object.matrix_end {
@@ -2690,12 +3641,30 @@ fn setup(
             let render_instance = if needs_exact_world_mesh(&instance, &source.positions, &points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
-                let baked = meshes.add(authored_mesh(&points, &source.uvs, &source.indices, &source.packed_channels, |v| transformed_direction(matrix, v)));
+                let baked = meshes.add(authored_mesh(
+                    &points,
+                    &source.uvs,
+                    &source.indices,
+                    &source.packed_channels,
+                    |v| transformed_direction(matrix, v),
+                ));
                 let render_instance = RenderInstance {
+                    source: Some(RenderInstanceSource {
+                        surface: RenderModelSurface::World {
+                            object: object_number,
+                            matrix: matrix_index,
+                        },
+                        world_baked: true,
+                    }),
                     mesh: baked,
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some() { 0x80000000 | matrix_index as u32 } else { mat.probe_index },
+                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some()
+                    {
+                        0x80000000 | matrix_index as u32
+                    } else {
+                        mat.probe_index
+                    },
                     transform: Transform::IDENTITY,
                     bounds,
                     pickup_id: None,
@@ -2706,10 +3675,22 @@ fn setup(
                 render_instance
             } else {
                 RenderInstance {
+                    source: Some(RenderInstanceSource {
+                        surface: RenderModelSurface::World {
+                            object: object_number,
+                            matrix: matrix_index,
+                        },
+                        world_baked: false,
+                    }),
                     mesh: mesh.clone(),
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some() { 0x80000000 | matrix_index as u32 } else { mat.probe_index },
+                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some()
+                    {
+                        0x80000000 | matrix_index as u32
+                    } else {
+                        mat.probe_index
+                    },
                     transform: instance,
                     bounds,
                     pickup_id: None,
@@ -2717,6 +3698,15 @@ fn setup(
                     visible: false,
                 }
             };
+            native_vegetation_meshes.prepare(
+                resolver
+                    .shadow_materials
+                    .uses_vegetation(&render_instance.material),
+                &render_instance.mesh,
+                &mut meshes,
+                &source.positions,
+                &source.packed_channels,
+            );
             let render_index = render_instances.len();
             bwm_visibility_render_instances[matrix_index].push(render_index);
             render_instances.push(render_instance);
@@ -2822,36 +3812,58 @@ fn setup(
                     };
                     let bounds = render_bounds(&points);
                     let instance = placed_transform(placement);
-                    let (mesh, transform) =
-                        if needs_exact_world_mesh(&instance, &surface.positions, &points) {
-                            (
-                                meshes.add(authored_mesh(
-                                    &points,
-                                    &surface.uvs,
-                                    &surface.indices,
-                                    &surface.packed_channels,
-                                    |v| placed_direction(placement, v),
-                                )),
-                                Transform::IDENTITY,
-                            )
-                        } else {
-                            (
-                                model_mesh_handles
-                                    .entry((placement.resource_path.clone(), surface_number, instance.to_matrix().determinant() < 0.0))
-                                    .or_insert_with(|| {
-                                        meshes.add(source_mesh(
-                                            &surface.positions,
-                                            &surface.uvs,
-                                            &surface.indices,
-                                            &surface.packed_channels,
-                                            instance.to_matrix().determinant() < 0.0,
-                                        ))
-                                    })
-                                    .clone(),
-                                instance,
-                            )
-                        };
+                    let world_baked =
+                        needs_exact_world_mesh(&instance, &surface.positions, &points);
+                    let (mesh, transform) = if world_baked {
+                        (
+                            meshes.add(authored_mesh(
+                                &points,
+                                &surface.uvs,
+                                &surface.indices,
+                                &surface.packed_channels,
+                                |v| placed_direction(placement, v),
+                            )),
+                            Transform::IDENTITY,
+                        )
+                    } else {
+                        (
+                            model_mesh_handles
+                                .entry((
+                                    placement.resource_path.clone(),
+                                    surface_number,
+                                    instance.to_matrix().determinant() < 0.0,
+                                ))
+                                .or_insert_with(|| {
+                                    meshes.add(source_mesh(
+                                        &surface.positions,
+                                        &surface.uvs,
+                                        &surface.indices,
+                                        &surface.packed_channels,
+                                        instance.to_matrix().determinant() < 0.0,
+                                    ))
+                                })
+                                .clone(),
+                            instance,
+                        )
+                    };
+                    native_vegetation_meshes.prepare(
+                        resolver.shadow_materials.uses_vegetation(&mat.handle),
+                        &mesh,
+                        &mut meshes,
+                        &surface.positions,
+                        &surface.packed_channels,
+                    );
                     render_instances.push(RenderInstance {
+                        source: Some(RenderInstanceSource {
+                            surface: RenderModelSurface::Bmd6 {
+                                placement: number,
+                                surface: surface_number,
+                                cpu_vertex_declaration: surface.cpu_vertex_declaration,
+                                gpu_vertex_declaration: surface.gpu_vertex_declaration,
+                                skin_influences: surface.skin_influences,
+                            },
+                            world_baked,
+                        }),
                         mesh,
                         material: mat.handle,
                         diffuse_image_slot: mat.diffuse_image_slot,
@@ -2935,31 +3947,55 @@ fn setup(
             };
             let bounds = render_bounds(&points);
             let instance = placed_transform(placement);
-            let (mesh, transform) =
-                if needs_exact_world_mesh(&instance, &surface.positions, &points) {
-                    baked_shear_instances += 1;
-                    (
-                        meshes.add(authored_mesh(&points, &surface.uvs, &surface.indices, &surface.packed_channels, |v| placed_direction(placement, v))),
-                        Transform::IDENTITY,
-                    )
-                } else {
-                    (
-                        model_mesh_handles
-                            .entry((placement.resource_path.clone(), surface_number, instance.to_matrix().determinant() < 0.0))
-                            .or_insert_with(|| {
-                                meshes.add(source_mesh(
-                                    &surface.positions,
-                                    &surface.uvs,
-                                    &surface.indices,
-                                    &surface.packed_channels,
-                                    instance.to_matrix().determinant() < 0.0,
-                                ))
-                            })
-                            .clone(),
-                        instance,
-                    )
-                };
+            let world_baked = needs_exact_world_mesh(&instance, &surface.positions, &points);
+            let (mesh, transform) = if world_baked {
+                baked_shear_instances += 1;
+                (
+                    meshes.add(authored_mesh(
+                        &points,
+                        &surface.uvs,
+                        &surface.indices,
+                        &surface.packed_channels,
+                        |v| placed_direction(placement, v),
+                    )),
+                    Transform::IDENTITY,
+                )
+            } else {
+                (
+                    model_mesh_handles
+                        .entry((
+                            placement.resource_path.clone(),
+                            surface_number,
+                            instance.to_matrix().determinant() < 0.0,
+                        ))
+                        .or_insert_with(|| {
+                            meshes.add(source_mesh(
+                                &surface.positions,
+                                &surface.uvs,
+                                &surface.indices,
+                                &surface.packed_channels,
+                                instance.to_matrix().determinant() < 0.0,
+                            ))
+                        })
+                        .clone(),
+                    instance,
+                )
+            };
+            native_vegetation_meshes.prepare(
+                resolver.shadow_materials.uses_vegetation(&mat.handle),
+                &mesh,
+                &mut meshes,
+                &surface.positions,
+                &surface.packed_channels,
+            );
             render_instances.push(RenderInstance {
+                source: Some(RenderInstanceSource {
+                    surface: RenderModelSurface::Bmodel {
+                        placement: number,
+                        surface: surface_number,
+                    },
+                    world_baked,
+                }),
                 mesh,
                 material: mat.handle,
                 diffuse_image_slot: mat.diffuse_image_slot,
@@ -3064,11 +4100,15 @@ fn setup(
         camera = f8_camera_pose(&report).expect("DH2_REPLAY_F8 has an invalid camera pose");
         reference_horizontal_fov = f8_reference_fov(&report)
             .expect("DH2_REPLAY_F8 has an invalid reference horizontal FOV");
-        println!("Replaying saved F8 camera from {} at reference FOV {reference_horizontal_fov}", PathBuf::from(path).display());
+        println!(
+            "Replaying saved F8 camera from {} at reference FOV {reference_horizontal_fov}",
+            PathBuf::from(path).display()
+        );
     }
     // Replayed F8 poses are benchmark inputs, not spawn points. Gravity must
     // not move the saved camera while comparing rendering at that same pose.
-    let walking = navigation.is_some() && scene.player_start.is_some()
+    let walking = navigation.is_some()
+        && scene.player_start.is_some()
         && env::var_os("DH2_REPLAY_F8").is_none();
     let feet = camera.translation - Vec3::Y * 1.7;
     let walker = navigation
@@ -3131,15 +4171,23 @@ fn setup(
             .expect("the registered game FOV default is valid");
     // The original registers r_multiSamples=0 and clamps physical count to1.
     // Override only in explicit profiling runs for same-source A/B testing.
-    let multi_samples = env::var("DH2_PERF_MULTI_SAMPLES").ok()
+    let multi_samples = env::var("DH2_PERF_MULTI_SAMPLES")
+        .ok()
         .filter(|_| env::var("DH2_PERF_PROFILE").as_deref() == Ok("1"))
-        .map(|value| value.parse::<i32>().expect("invalid DH2_PERF_MULTI_SAMPLES"))
+        .map(|value| {
+            value
+                .parse::<i32>()
+                .expect("invalid DH2_PERF_MULTI_SAMPLES")
+        })
         .unwrap_or(render_model::ORIGINAL_DEFAULT_MULTI_SAMPLES);
     let physical_samples = render_model::original_renderer_sample_count(multi_samples);
     assert!([1, 2, 4, 8].contains(&physical_samples),
         "DH2_PERF_MULTI_SAMPLES={multi_samples} requests {physical_samples} samples; this renderer supports 1, 2, 4, or 8");
     let renderer_msaa = Msaa::from_samples(physical_samples);
-    eprintln!("[renderer] r_multiSamples={multi_samples} physical_samples={}", renderer_msaa.samples());
+    eprintln!(
+        "[renderer] r_multiSamples={multi_samples} physical_samples={}",
+        renderer_msaa.samples()
+    );
     let mut camera_entity = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
@@ -3457,20 +4505,9 @@ fn setup(
                         let authored_direction =
                             game_to_view(light.rotation[0]).normalize_or_zero();
                         let direction = if light.preset.as_deref() == Some("LIGHT_PRESET_SUN") {
-                            let sun_axis = light.rotation[0];
-                            let authored_sun_azimuth = (light.orientation_authored
-                                && sun_axis[0] * sun_axis[0] + sun_axis[1] * sun_axis[1] > 0.0001)
-                                .then(|| {
-                                    (-sun_axis[1])
-                                        .atan2(sun_axis[0])
-                                        .to_degrees()
-                                        .rem_euclid(360.0)
-                                });
                             scene
                                 .environment_lighting
-                                .and_then(|environment| {
-                                    environment_sun_ray(environment, authored_sun_azimuth)
-                                })
+                                .and_then(environment_sun_ray)
                                 .filter(|direction| *direction != Vec3::ZERO)
                                 .unwrap_or(authored_direction)
                         } else {
@@ -3564,16 +4601,35 @@ fn setup(
     let mut diffuse_image_materials = vec![Vec::new(); resolver.diffuse_image_paths.len()];
     let mut native_material_images = HashMap::new();
     for cached in resolver.cache.values().flatten() {
-        native_material_images.insert(cached.handle.clone(), cached.images.iter().map(|&(slot, _)| slot).collect());
+        native_material_images.insert(
+            cached.handle.clone(),
+            cached.images.iter().map(|&(slot, _)| slot).collect(),
+        );
         for &(slot, role) in &cached.images {
             diffuse_image_materials[slot].push((cached.handle.clone(), role));
         }
     }
     let diffuse_image_count = resolver.diffuse_image_paths.len();
+    commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
+    commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    let vegetation_vertices: usize = native_vegetation_meshes
+        .0
+        .values()
+        .filter_map(|result| result.as_ref().ok())
+        .sum();
+    let vegetation_meshes = native_vegetation_meshes
+        .0
+        .values()
+        .filter(|result| result.is_ok())
+        .count();
+    println!("Native vegetation inputs: {vegetation_meshes} shared meshes, {vegetation_vertices} vertices, {} decoded attribute bytes; {} unavailable",
+        vegetation_vertices * std::mem::size_of::<[f32; 8]>(), native_vegetation_meshes.0.len() - vegetation_meshes);
+    commands.insert_resource(native_vegetation_meshes);
     commands.insert_resource(SceneRenderQueue {
         instances: render_instances,
         active: 0,
+        static_world_model_present: true,
         tome_render_instances,
         visible_authored_ids: Vec::new(),
         visible_cell_indices: Vec::new(),
@@ -3683,7 +4739,11 @@ fn camera_controls(
     }
     let dt = time.delta_secs();
     let speed = if keys.pressed(KeyCode::ShiftLeft) {
-        if navigation.walking { 10.0 } else { 30.0 }
+        if navigation.walking {
+            10.0
+        } else {
+            30.0
+        }
     } else {
         6.0
     };
@@ -4313,9 +5373,17 @@ impl TomeRenderQueryKey {
     fn new(input: &tome::OrdinaryDirectQueryInput<'_>, job_count: u32) -> Self {
         // Exhaustive destructuring makes added query inputs a compile error.
         let tome::OrdinaryDirectQueryInput {
-            camera_point, render_rows, cropped_rows, initial_tile_rect,
-            camera_imprecision, object_imprecision, minimum_area_metric,
-            global_distance_threshold, winding_flip, gate_states, output_capacity,
+            camera_point,
+            render_rows,
+            cropped_rows,
+            initial_tile_rect,
+            camera_imprecision,
+            object_imprecision,
+            minimum_area_metric,
+            global_distance_threshold,
+            winding_flip,
+            gate_states,
+            output_capacity,
         } = *input;
         Self {
             camera_point: camera_point.map(f32::to_bits),
@@ -4426,62 +5494,63 @@ fn stream_visible_models(
             query_viewport = Some([viewport.x, viewport.y]);
             scene.texture_viewport_pixels = viewport.x.saturating_mul(viewport.y);
             let query_started = Instant::now();
-            let query = reference_fov_from_projection(projection).and_then(|reference_fov| {
-                tome::original_world_visibility_query_matrix(
-                    reference_fov,
-                    viewport.x,
-                    viewport.y,
-                    1.0,
-                    game_pose_from_view_transform(transform),
-                    ORIGINAL_DEFAULT_NEAR,
-                    ORIGINAL_DEFAULT_FAR,
-                )
-            })
-            .and_then(|rows| {
-                query_rows = Some(rows);
-                let input = tome::OrdinaryDirectQueryInput {
-                    camera_point: view_to_game(transform.translation),
-                    render_rows: rows,
-                    cropped_rows: rows,
-                    initial_tile_rect: [0, 0, 8, 16],
-                    camera_imprecision: [0.6; 3],
-                    global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
-                    object_imprecision: 0.6,
-                    minimum_area_metric: 25.0 / (viewport.x as f32 * viewport.y as f32),
-                    winding_flip: tome::query_matrix_winding_flip(rows),
-                    gate_states: Some(&tome_world.gate_states),
-                    output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
-                };
-                let key = TomeRenderQueryKey::new(&input, tome_world.query_job_count);
-                if query_cache.matches(&key, tome_world.is_changed()) {
-                    query_cached = true;
-                    query_diagnostics = query_cache.diagnostics.clone();
-                    for job in &mut query_diagnostics {
-                        job.elapsed_ns = 0;
+            let query = reference_fov_from_projection(projection)
+                .and_then(|reference_fov| {
+                    tome::original_world_visibility_query_matrix(
+                        reference_fov,
+                        viewport.x,
+                        viewport.y,
+                        1.0,
+                        game_pose_from_view_transform(transform),
+                        ORIGINAL_DEFAULT_NEAR,
+                        ORIGINAL_DEFAULT_FAR,
+                    )
+                })
+                .and_then(|rows| {
+                    query_rows = Some(rows);
+                    let input = tome::OrdinaryDirectQueryInput {
+                        camera_point: view_to_game(transform.translation),
+                        render_rows: rows,
+                        cropped_rows: rows,
+                        initial_tile_rect: [0, 0, 8, 16],
+                        camera_imprecision: [0.6; 3],
+                        global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+                        object_imprecision: 0.6,
+                        minimum_area_metric: 25.0 / (viewport.x as f32 * viewport.y as f32),
+                        winding_flip: tome::query_matrix_winding_flip(rows),
+                        gate_states: Some(&tome_world.gate_states),
+                        output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                    };
+                    let key = TomeRenderQueryKey::new(&input, tome_world.query_job_count);
+                    if query_cache.matches(&key, tome_world.is_changed()) {
+                        query_cached = true;
+                        query_diagnostics = query_cache.diagnostics.clone();
+                        for job in &mut query_diagnostics {
+                            job.elapsed_ns = 0;
+                        }
+                        return Ok(query_cache.output.clone());
                     }
-                    return Ok(query_cache.output.clone());
-                }
-                query_cache.key = None;
-                let jobs = run_tome_render_jobs(tome_world, &input);
-                let result = tome::merge_render_query_outputs(&jobs);
-                job_errors =
-                    jobs.iter()
+                    query_cache.key = None;
+                    let jobs = run_tome_render_jobs(tome_world, &input);
+                    let result = tome::merge_render_query_outputs(&jobs);
+                    job_errors = jobs
+                        .iter()
                         .filter_map(|job| {
                             job.result.as_ref().err().map(|error| {
                                 format!("{error} (jobId {})", job.diagnostics.job_index)
                             })
                         })
                         .collect::<Vec<_>>();
-                query_diagnostics = jobs
-                    .into_iter()
-                    .map(|job| job.diagnostics)
-                    .collect::<Vec<_>>();
-                // Only the immutable Tome query is reused. Mapping, moving
-                // models/pickups, light gathering and texture demand still run.
-                // Failed/partial jobs are always retried, never cached.
-                query_cache.store(key, &result, &query_diagnostics);
-                result
-            });
+                    query_diagnostics = jobs
+                        .into_iter()
+                        .map(|job| job.diagnostics)
+                        .collect::<Vec<_>>();
+                    // Only the immutable Tome query is reused. Mapping, moving
+                    // models/pickups, light gathering and texture demand still run.
+                    // Failed/partial jobs are always retried, never cached.
+                    query_cache.store(key, &result, &query_diagnostics);
+                    result
+                });
             query_ns = query_started.elapsed().as_nanos();
             let mapping_started = Instant::now();
             match query {
@@ -4654,7 +5723,9 @@ fn stream_visible_models(
             .iter()
             .map(|job| job.progress.distance_rejected_objects)
             .sum();
-        let depth_grid_bound = scene.light_query_state.as_ref()
+        let depth_grid_bound = scene
+            .light_query_state
+            .as_ref()
             .is_some_and(|state| state.depth_grid.is_some());
         diagnostics.pending = format!(
             "frame={} status={:?} jobs={} distance_rejected_job_candidates={distance_rejected_job_candidates} authored_ids={} authored_id_consumer=static_light_id_gate visible_cell_entries={visible_cell_entries} visible_cell_unique={visible_cell_unique} cell_mask_words={visible_cell_mask_words} light_binding=authored_ids_and_cells light_consumer=see_light_stage query_cached={query_cached} viewport={query_viewport:?} merged_query_tile={merged_query_tile:?} depth_grid_bound={depth_grid_bound} requested={requested} mapped={mapped_count} spatial_tested={} spatial_accepted_bwm={spatial_accepted} suppressed={suppressed} active={active}/{} spawned={spawned} shown={shown} hidden={hidden} query_ms={:.3} mapping_ms={:.3} elapsed_ms={:.3}\npose={pose:?}\nrender_rows={query_rows:?} winding_flip={:?}\naccepted_sample={accepted_sample:?}\nauthored_id_sample={authored_id_sample:?}\nvisible_cell_sample={visible_cell_sample:?}\n{query_diagnostics:?}",
@@ -4877,9 +5948,11 @@ fn cull_original_small_local_lights(
         .map(tome::RenderAabbQuery::from_state)
         .transpose();
     stats.world_query_bound = matches!(&world_query, Ok(Some(_)));
-    stats.world_query_depth_grid_bound = stats.world_query_bound && scene.as_ref()
-        .and_then(|scene| scene.light_query_state.as_ref())
-        .is_some_and(|state| state.depth_grid.is_some());
+    stats.world_query_depth_grid_bound = stats.world_query_bound
+        && scene
+            .as_ref()
+            .and_then(|scene| scene.light_query_state.as_ref())
+            .is_some_and(|state| state.depth_grid.is_some());
     stats.world_query_unverified = 0;
     stats.world_query_error = world_query.as_ref().err().cloned();
     let minimum_area = camera.and_then(|(_, viewport, _)| {
@@ -5225,7 +6298,11 @@ fn benchmark_frames(
     render_diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
     mut render_metrics: Local<std::collections::BTreeMap<String, (u64, f64, f64)>>,
     cpu_profile: Option<Res<frame_profile::CpuFrameProfile>>,
-    mut cpu_metrics: Local<(u64, [u128; frame_profile::COUNT], [u64; frame_profile::COUNT])>,
+    mut cpu_metrics: Local<(
+        u64,
+        [u128; frame_profile::COUNT],
+        [u64; frame_profile::COUNT],
+    )>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(target) = target else {
@@ -5248,20 +6325,34 @@ fn benchmark_frames(
         if let Some(store) = render_diagnostics.as_deref() {
             for diagnostic in store.iter() {
                 let path = diagnostic.path().as_str();
-                if path.starts_with("render/") && (path.ends_with("elapsed_gpu") || path.ends_with("shader_invocations")) {
+                if path.starts_with("render/")
+                    && (path.ends_with("elapsed_gpu") || path.ends_with("shader_invocations"))
+                {
                     if let Some(value) = diagnostic.value().filter(|value| value.is_finite()) {
-                        let metric = render_metrics.entry(path.to_owned()).or_insert((0, 0.0, 0.0));
-                        metric.0 += 1; metric.1 += value; metric.2 = metric.2.max(value);
+                        let metric = render_metrics
+                            .entry(path.to_owned())
+                            .or_insert((0, 0.0, 0.0));
+                        metric.0 += 1;
+                        metric.1 += value;
+                        metric.2 = metric.2.max(value);
                     }
                 }
             }
         }
     }
     if *elapsed >= target.0 {
-        for (i, label) in frame_profile::LABELS.iter().enumerate().filter(|_| cpu_metrics.0 > 0) {
-            println!("BENCHMARK_CPU phase={} samples={} avg_ms={:.3} max_ms={:.3}", label, cpu_metrics.0,
+        for (i, label) in frame_profile::LABELS
+            .iter()
+            .enumerate()
+            .filter(|_| cpu_metrics.0 > 0)
+        {
+            println!(
+                "BENCHMARK_CPU phase={} samples={} avg_ms={:.3} max_ms={:.3}",
+                label,
+                cpu_metrics.0,
                 cpu_metrics.1[i] as f64 / cpu_metrics.0 as f64 / 1_000_000.0,
-                cpu_metrics.2[i] as f64 / 1_000_000.0);
+                cpu_metrics.2[i] as f64 / 1_000_000.0
+            );
         }
         let (samples, average_ms, max_ms) = visibility_timing
             .as_ref()
@@ -5327,12 +6418,22 @@ fn benchmark_frames(
         );
         frame_times.sort_unstable_by(f64::total_cmp);
         if !frame_times.is_empty() {
-            let quantile = |q: f64| frame_times[((frame_times.len() - 1) as f64 * q).round() as usize];
-            println!("BENCHMARK frame_ms[p50,p95,p99,max]={:.3},{:.3},{:.3},{:.3} warmup_seconds={:.1}",
-                quantile(0.5), quantile(0.95), quantile(0.99), quantile(1.0), target.1);
+            let quantile =
+                |q: f64| frame_times[((frame_times.len() - 1) as f64 * q).round() as usize];
+            println!(
+                "BENCHMARK frame_ms[p50,p95,p99,max]={:.3},{:.3},{:.3},{:.3} warmup_seconds={:.1}",
+                quantile(0.5),
+                quantile(0.95),
+                quantile(0.99),
+                quantile(1.0),
+                target.1
+            );
         }
         for (path, (samples, total, maximum)) in render_metrics.iter() {
-            println!("BENCHMARK_GPU {path} samples={samples} avg={:.3} max={maximum:.3}", total / *samples as f64);
+            println!(
+                "BENCHMARK_GPU {path} samples={samples} avg={:.3} max={maximum:.3}",
+                total / *samples as f64
+            );
         }
         exit.write(AppExit::Success);
     }
@@ -5353,8 +6454,7 @@ fn show_frame_rate(
         let frame_ms = *elapsed * 1000.0 / *frames as f32;
         window.title = format!(
             "Dishonored 2 Rust | {:.0} FPS | {} loaded",
-            fps,
-            scene.active
+            fps, scene.active
         );
         for mut overlay in &mut overlays {
             **overlay = format!("{fps:.0} FPS | {frame_ms:.1} ms");
@@ -5503,6 +6603,68 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             base.display()
         );
     }
+    // The original compiled programs live beside the archives in shaderCache,
+    // not necessarily in generated/renderprogs2/*.vbin archive entries.
+    let program_cache = match (game_base.as_deref(), catalog.as_ref()) {
+        (Some(base), Some(catalog)) => shader_cache::NativeProgramLibrary::open(
+            base,
+            shader_cache::ShaderCacheBackend::Pc,
+            catalog,
+        ),
+        _ => Err("original game base/catalog missing".to_owned()),
+    };
+    match &program_cache {
+        Ok(library) => println!("Installed native program cache: {} programs, {} stage records, {} shared names, {} parameter declarations (data streams/definitions lazy)",
+            library.cache.programs.len(), library.cache.stages.len(), library.cache.names.len(), library.parameter_kinds.len()),
+        Err(error) => eprintln!("Native program cache unavailable: {error}"),
+    }
+    // Resolve the user's ORIGINAL quality cvar and the installed declaration
+    // once. No per-frame filesystem/catalog scans and no copied capture values.
+    let original_shadow_settings = original_settings::read_shadow_settings();
+    let shadow_depth_bias_clamp = original_shadow_settings
+        .as_ref()
+        .ok()
+        .map(|(_, settings)| settings.depth_bias_clamp);
+    let (shadow_quality_preset, shadow_quality, shadow_target_dimensions) = match (
+        original_shadow_settings,
+        catalog.as_ref(),
+    ) {
+        (
+            Ok((
+                config_path,
+                original_settings::ShadowSettings {
+                    quality_preset: Some(preset),
+                    parallel_slice_size,
+                    depth_bias_clamp,
+                },
+            )),
+            Some(catalog),
+        ) => {
+            let settings =
+                load_installed_shadow_quality(catalog, preset).map_err(std::io::Error::other)?;
+            let target = settings
+                .as_ref()
+                .map(|quality| native_shadow_target_dimensions(parallel_slice_size, quality))
+                .transpose()
+                .map_err(std::io::Error::other)?;
+            println!("Native shadow quality from {}: preset={preset}, slice_size={parallel_slice_size}, depth_bias_clamp={depth_bias_clamp}, settings={settings:?}, target={target:?}", config_path.display());
+            (Some(preset), settings, target)
+        }
+        (Err(error), _) => {
+            eprintln!("Native shadow quality unavailable: {error}");
+            (None, None, None)
+        }
+        _ => {
+            eprintln!("Native shadow quality unavailable: original config setting or asset catalog missing");
+            (None, None, None)
+        }
+    };
+    let far_shadow_bounds = entity_document
+        .as_ref()
+        .map(entities::world_far_shadow_bounds)
+        .transpose()
+        .map_err(std::io::Error::other)?
+        .flatten();
     let placed_lights = entity_document
         .as_ref()
         .map(|document| {
@@ -5526,28 +6688,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .read(&resource)?
                 .map(|bytes| {
                     let source = String::from_utf8_lossy(&bytes).into_owned();
-                    let lighting = entities::environment_lighting_with_inheritance(
-                        &source,
-                        |parent| {
+                    let lighting =
+                        entities::environment_lighting_with_inheritance(&source, |parent| {
                             let parent_resource = format!("generated/decls/env/{parent}.decl");
                             catalog
                                 .read(&parent_resource)
                                 .map(|bytes| {
-                                    bytes.map(|bytes| {
-                                        String::from_utf8_lossy(&bytes).into_owned()
-                                    })
+                                    bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                                 })
                                 .map_err(|error| error.to_string())
-                        },
-                    )
-                    .map_err(std::io::Error::other)?;
+                        })
+                        .map_err(std::io::Error::other)?;
                     let render_parameters =
                         entities::environment_render_parameters_with_inheritance(
                             environment,
                             &source,
                             |parent| {
-                                let parent_resource =
-                                    format!("generated/decls/env/{parent}.decl");
+                                let parent_resource = format!("generated/decls/env/{parent}.decl");
                                 catalog
                                     .read(&parent_resource)
                                     .map(|bytes| {
@@ -5641,6 +6798,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             query_data.decoded_record_count(),
             tome_started.elapsed().as_secs_f64(),
         );
+        match tome::shadow_caster::ShadowCasterTome::parse(&tome_bytes) {
+            Ok(shadow_tome) => {
+                println!(
+                    "Native shadow Tome cache: {} original caster objects",
+                    shadow_tome.object_count()
+                );
+                app.insert_resource(NativeShadowCasterWorld(shadow_tome));
+            }
+            Err(error) => eprintln!("Native shadow Tome cache unavailable: {error}"),
+        }
         app.insert_resource(TomeWorld {
             sphere_graph: tome::SphereCellGraph::parse(&tome_bytes),
             bytes: tome_bytes,
@@ -5676,8 +6843,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         let model_start = std::time::Instant::now();
         let (model_collision, collider_owners) = if let Some(catalog) = catalog.as_ref() {
-            let bodies = entity_document.as_ref()
-                .map(entities::rigid_body_settings).unwrap_or_default();
+            let bodies = entity_document
+                .as_ref()
+                .map(entities::rigid_body_settings)
+                .unwrap_or_default();
             let (triangles, owners, matched, failed) =
                 static_model_collision(catalog, &placed_models, &bodies);
             println!(
@@ -5859,13 +7028,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Ok(seconds) = env::var("DH2_BENCHMARK_SECONDS") {
         let total = seconds.parse::<f32>()?.max(3.0);
-        let warmup = env::var("DH2_BENCHMARK_WARMUP_SECONDS").unwrap_or_else(|_| "2".to_owned()).parse::<f32>()?;
+        let warmup = env::var("DH2_BENCHMARK_WARMUP_SECONDS")
+            .unwrap_or_else(|_| "2".to_owned())
+            .parse::<f32>()?;
         if !total.is_finite() || !warmup.is_finite() || warmup < 0.0 || warmup >= total {
-            return Err("benchmark duration must be finite and exceed its non-negative warmup".into());
+            return Err(
+                "benchmark duration must be finite and exceed its non-negative warmup".into(),
+            );
         }
         app.insert_resource(BenchmarkSeconds(total, warmup));
     }
-    app.insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
+    app.insert_resource(NativeProgramCacheSource(program_cache))
+        .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
         // light. Dense missions contain hundreds of authored lights, so keep
         // the shadow maps small enough to leave room for the mission assets.
@@ -5881,29 +7055,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             environment_lighting,
             environment_render_parameters,
             environment_probes,
+            shadow_quality_preset,
+            shadow_quality,
+            shadow_target_dimensions,
+            shadow_depth_bias_clamp,
+            far_shadow_bounds,
             pickups,
             catalog,
         })
-        .add_plugins(DefaultPlugins.set(bevy::window::WindowPlugin {
-            primary_window: Some(bevy::window::Window {
-                // Match the installed game's measured r_fullscreen=2 borderless mode.
-                // DH2_BORDERLESS=0 remains available for windowed debugging.
-                mode: if env::var("DH2_BORDERLESS").as_deref() != Ok("0") {
-                    bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary)
-                } else {
-                    bevy::window::WindowMode::Windowed
-                },
-                desired_maximum_frame_latency: env::var("DH2_FRAME_LATENCY").ok().and_then(|s| s.parse().ok()),
-                // The user's original r_swapInterval=0; retain that uncapped default.
-                present_mode: if env::var("DH2_NO_VSYNC").as_deref() != Ok("0") {
-                    bevy::window::PresentMode::AutoNoVsync
-                } else {
-                    bevy::window::Window::default().present_mode
-                },
+        .add_plugins(
+            DefaultPlugins.set(bevy::window::WindowPlugin {
+                primary_window: Some(bevy::window::Window {
+                    // Match the installed game's measured r_fullscreen=2 borderless mode.
+                    // DH2_BORDERLESS=0 remains available for windowed debugging.
+                    mode: if env::var("DH2_BORDERLESS").as_deref() != Ok("0") {
+                        bevy::window::WindowMode::BorderlessFullscreen(
+                            bevy::window::MonitorSelection::Primary,
+                        )
+                    } else {
+                        bevy::window::WindowMode::Windowed
+                    },
+                    desired_maximum_frame_latency: env::var("DH2_FRAME_LATENCY")
+                        .ok()
+                        .and_then(|s| s.parse().ok()),
+                    // The user's original r_swapInterval=0; retain that uncapped default.
+                    present_mode: if env::var("DH2_NO_VSYNC").as_deref() != Ok("0") {
+                        bevy::window::PresentMode::AutoNoVsync
+                    } else {
+                        bevy::window::Window::default().present_mode
+                    },
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }));
+        );
     if env::var("DH2_RENDER_PROFILE").as_deref() == Ok("1") {
         println!(
             "Bevy render profiling enabled (GPU timestamps and pipeline stats require Vulkan or DX12)"
@@ -5915,6 +7100,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         frame_profile::install(&mut app);
     }
     app.add_plugins(AutoExposurePlugin)
+        .add_plugins(game_clock_runtime::NativeClockRuntimePlugin)
+        .add_plugins(native_shadow_scene::NativeShadowScenePlugin)
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .insert_resource(VisibilityElapsedTiming::default())
@@ -5968,9 +7155,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "../../assets/shaders/dh2_probe_prepass.wgsl",
         Shader::from_wgsl
     );
-    bevy::asset::load_internal_asset!(app, INDIRECT_SHADER_HANDLE, "../../assets/shaders/dh2_indirect.wgsl", Shader::from_wgsl);
-    bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
-    bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
+    bevy::asset::load_internal_asset!(
+        app,
+        INDIRECT_SHADER_HANDLE,
+        "../../assets/shaders/dh2_indirect.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        SURFACE_SHADER_HANDLE,
+        "../../assets/shaders/dh2_surface.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        DECAL_SHADER_HANDLE,
+        "../../assets/shaders/dh2_decal.wgsl",
+        Shader::from_wgsl
+    );
+    native_shadow_sampling::register_shaders(&mut app);
+    app.add_systems(
+        PostUpdate,
+        sync_native_shadow_target.after(bevy::asset::AssetEventSystems),
+    );
     let prepared_images = PreparedImageMailbox::default();
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.insert_resource(prepared_images.clone());
@@ -5984,6 +7191,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Original numeric quality -> the installed declaration's selected row.
+/// Never substitutes an extracted capture or an arbitrary quality profile.
+fn load_installed_shadow_quality(
+    catalog: &archive::Catalog,
+    preset: u32,
+) -> Result<Option<entities::ShadowQualitySettings>, String> {
+    let candidates = catalog.paths_containing("menusectionoptionvisuals");
+    if candidates.len() != 1 {
+        return Err(format!(
+            "expected one installed visuals declaration, found {}",
+            candidates.len()
+        ));
+    }
+    let resource = &candidates[0];
+    let bytes = catalog
+        .read(resource)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("indexed visuals declaration vanished: {resource}"))?;
+    let source = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    entities::shadow_quality_settings_for_preset(source, preset)
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("Game client error: {error}");
@@ -5994,6 +7223,31 @@ fn main() {
 #[cfg(test)]
 mod game_control_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires installed original catalog and Saved Games config"]
+    fn actual_shadow_quality_inputs_resolve_from_original_config_and_assets() {
+        let (_, settings) = original_settings::read_shadow_settings().unwrap();
+        let preset = settings.quality_preset.unwrap();
+        let catalog = archive::Catalog::open(Path::new(
+            r"D:\Programs\Steam\steamapps\common\Dishonored2\base",
+        ))
+        .unwrap();
+        let quality = load_installed_shadow_quality(&catalog, preset)
+            .unwrap()
+            .unwrap();
+        let target =
+            native_shadow_target_dimensions(settings.parallel_slice_size, &quality).unwrap();
+        assert!(quality.cull_distance.is_finite());
+        assert_eq!(target.layers, quality.parallel_slice_count + 1);
+        assert_eq!(
+            target.width,
+            settings.parallel_slice_size / (1 << quality.parallel_resolution_divider)
+        );
+        assert_eq!(target.width, target.height);
+        assert_eq!(target.depth_32_bits, quality.depth_32_bits);
+        println!("original shadow preset {preset}: {quality:?}; target={target:?}");
+    }
 
     fn cache_test_input(gates: Option<&[u32]>) -> tome::OrdinaryDirectQueryInput<'_> {
         tome::OrdinaryDirectQueryInput {
@@ -6016,7 +7270,10 @@ mod game_control_tests {
         let gates = [0u32, 1];
         let input = cache_test_input(Some(&gates));
         let key = || TomeRenderQueryKey::new(&input, 12);
-        let cache = TomeRenderQueryCache { key: Some(key()), ..default() };
+        let cache = TomeRenderQueryCache {
+            key: Some(key()),
+            ..default()
+        };
         assert!(cache.matches(&key(), false));
         assert!(!cache.matches(&key(), true));
         assert!(!cache.matches(&TomeRenderQueryKey::new(&input, 1), false));
@@ -6077,13 +7334,28 @@ mod game_control_tests {
         assert!(cache.matches(&key(), false));
         let mut copy = cache.output.clone().unwrap();
         copy.state.as_mut().unwrap().depth_grid.as_mut().unwrap()[0] = 1.0;
-        assert_eq!(cache.output.as_ref().unwrap().state.as_ref().unwrap().depth_grid.as_ref().unwrap()[0], 0.0);
+        assert_eq!(
+            cache
+                .output
+                .as_ref()
+                .unwrap()
+                .state
+                .as_ref()
+                .unwrap()
+                .depth_grid
+                .as_ref()
+                .unwrap()[0],
+            0.0
+        );
         cache.store(key(), &Err("merge failed".into()), &[]);
         assert!(!cache.matches(&key(), false));
         cache.store(key(), &success, &[]);
         let failed_job = tome::RenderQueryJobDiagnostics {
-            job_index: 0, viewport: None, elapsed_ns: 1,
-            progress: default(), error: Some("worker failed".into()),
+            job_index: 0,
+            viewport: None,
+            elapsed_ns: 1,
+            progress: default(),
+            error: Some("worker failed".into()),
         };
         cache.store(key(), &success, &[failed_job]);
         assert!(!cache.matches(&key(), false));
@@ -6106,6 +7378,7 @@ mod game_control_tests {
             world.insert_resource(SceneRenderQueue {
                 active: 1,
                 instances: vec![RenderInstance {
+                    source: None,
                     mesh: Handle::default(),
                     material: MaterialHandle::Probe(Handle::default()),
                     diffuse_image_slot: None,
@@ -6140,21 +7413,40 @@ mod game_control_tests {
 
     #[test]
     fn native_mesh_winding_matches_authored_normals() {
-        let points = [Vec3::new(-1.0,-1.0,0.0),Vec3::new(1.0,-1.0,0.0),Vec3::new(0.0,1.0,0.0)];
-        let raw = [0u16,2,1]; // Original clockwise front, outward normal +Z.
-        let mesh = mesh_from_points(&points, &[[0.0;2];3], &raw);
-        assert_eq!(mesh.indices(), Some(&Indices::U16(vec![0,1,2])));
-        let cross = (points[1]-points[0]).cross(points[2]-points[0]);
-        let normals = mesh.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap().as_float3().unwrap();
-        assert!(normals.iter().all(|n| cross.dot(Vec3::from_array(*n)) > 0.0));
-        let mut packed = [[0u8;12];3];
-        for p in &mut packed { p[6]=127; p[8]=127; p[11]=127; }
-        let authored = authored_mesh(&points, &[[0.0;2];3], &raw, &packed, |n| n);
+        let points = [
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(1.0, -1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let raw = [0u16, 2, 1]; // Original clockwise front, outward normal +Z.
+        let mesh = mesh_from_points(&points, &[[0.0; 2]; 3], &raw);
+        assert_eq!(mesh.indices(), Some(&Indices::U16(vec![0, 1, 2])));
+        let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        assert!(normals
+            .iter()
+            .all(|n| cross.dot(Vec3::from_array(*n)) > 0.0));
+        let mut packed = [[0u8; 12]; 3];
+        for p in &mut packed {
+            p[6] = 127;
+            p[8] = 127;
+            p[11] = 127;
+        }
+        let authored = authored_mesh(&points, &[[0.0; 2]; 3], &raw, &packed, |n| n);
         assert_eq!(authored.indices(), mesh.indices());
-        let reflected: Vec<Vec3> = points.iter().map(|p| *p * Vec3::new(-1.0,1.0,1.0)).collect();
-        let mirrored = authored_mesh(&reflected, &[[0.0;2];3], &raw, &packed, |n| n * Vec3::new(-1.0,1.0,1.0));
+        let reflected: Vec<Vec3> = points
+            .iter()
+            .map(|p| *p * Vec3::new(-1.0, 1.0, 1.0))
+            .collect();
+        let mirrored = authored_mesh(&reflected, &[[0.0; 2]; 3], &raw, &packed, |n| {
+            n * Vec3::new(-1.0, 1.0, 1.0)
+        });
         assert_eq!(mirrored.indices(), Some(&Indices::U16(raw.to_vec())));
-        let cross = (reflected[2]-reflected[0]).cross(reflected[1]-reflected[0]);
+        let cross = (reflected[2] - reflected[0]).cross(reflected[1] - reflected[0]);
         assert!(cross.z > 0.0);
     }
 
@@ -6162,16 +7454,28 @@ mod game_control_tests {
     fn f8_replay_preserves_saved_camera_and_rejects_bad_input() {
         let report = "Camera game_xyz: [-22.121996, 93.85251, 12.256257]\nCamera direction game_xyz: [0.04506988, -0.98096955, 0.18885912]\n";
         let pose = f8_camera_pose(report).unwrap();
-        assert_eq!(view_to_game(pose.translation), [-22.121996, 93.85251, 12.256257]);
+        assert_eq!(
+            view_to_game(pose.translation),
+            [-22.121996, 93.85251, 12.256257]
+        );
         let expected = game_to_view([0.04506988, -0.98096955, 0.18885912]).normalize();
         assert!(pose.forward().as_vec3().distance(expected) < 1e-6);
         assert!(f8_camera_pose("").is_none());
         assert!(f8_camera_pose(&report.replace("12.256257", "NaN")).is_none());
-        assert!(f8_camera_pose(&report.replace("0.04506988, -0.98096955, 0.18885912", "0, 0, 0")).is_none());
+        assert!(
+            f8_camera_pose(&report.replace("0.04506988, -0.98096955, 0.18885912", "0, 0, 0"))
+                .is_none()
+        );
         assert_eq!(f8_reference_fov(report), Some(80.0));
-        assert_eq!(f8_reference_fov(&format!("{report}Reference horizontal FOV degrees: 110\n")), Some(110.0));
+        assert_eq!(
+            f8_reference_fov(&format!("{report}Reference horizontal FOV degrees: 110\n")),
+            Some(110.0)
+        );
         for bad in ["0", "180", "NaN", "invalid"] {
-            assert!(f8_reference_fov(&format!("{report}Reference horizontal FOV degrees: {bad}\n")).is_none());
+            assert!(f8_reference_fov(&format!(
+                "{report}Reference horizontal FOV degrees: {bad}\n"
+            ))
+            .is_none());
         }
         let rolled = format!("{report}Camera up game_xyz: [0.4, 0.2, 1]\n");
         let rolled_pose = f8_camera_pose(&rolled).unwrap();
@@ -6187,11 +7491,17 @@ mod game_control_tests {
                 fov: tome::original_render_vertical_fov_radians(reference).unwrap(),
                 ..default()
             });
-            assert!((reference_fov_from_projection(&projection).unwrap() - reference).abs() < 0.00002);
+            assert!(
+                (reference_fov_from_projection(&projection).unwrap() - reference).abs() < 0.00002
+            );
         }
-        assert!(reference_fov_from_projection(&Projection::Perspective(PerspectiveProjection {
-            fov: f32::NAN, ..default()
-        })).is_err());
+        assert!(
+            reference_fov_from_projection(&Projection::Perspective(PerspectiveProjection {
+                fov: f32::NAN,
+                ..default()
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -6201,20 +7511,37 @@ mod game_control_tests {
         let pose = f8_camera_pose(report).unwrap();
         let reference = f8_reference_fov(report).unwrap();
         let projection = Projection::Perspective(PerspectiveProjection {
-            fov: tome::original_render_vertical_fov_radians(reference).unwrap(), ..default()
+            fov: tome::original_render_vertical_fov_radians(reference).unwrap(),
+            ..default()
         });
         let rows = tome::original_world_visibility_query_matrix(
-            reference_fov_from_projection(&projection).unwrap(),1920,1080,1.0,
-            game_pose_from_view_transform(&pose), ORIGINAL_DEFAULT_NEAR,ORIGINAL_DEFAULT_FAR,
-        ).unwrap();
+            reference_fov_from_projection(&projection).unwrap(),
+            1920,
+            1080,
+            1.0,
+            game_pose_from_view_transform(&pose),
+            ORIGINAL_DEFAULT_NEAR,
+            ORIGINAL_DEFAULT_FAR,
+        )
+        .unwrap();
         for (index, actual) in rows.into_iter().enumerate() {
             let label = format!("Original query row{index}: ");
-            let text = report.lines().find_map(|line| line.strip_prefix(&label)).unwrap();
-            let expected: Vec<f32> = text.trim_matches(['[',']']).split(',')
-                .map(|part| part.trim().parse().unwrap()).collect();
+            let text = report
+                .lines()
+                .find_map(|line| line.strip_prefix(&label))
+                .unwrap();
+            let expected: Vec<f32> = text
+                .trim_matches(['[', ']'])
+                .split(',')
+                .map(|part| part.trim().parse().unwrap())
+                .collect();
             for lane in 0..4 {
-                assert!((actual[lane]-expected[lane]).abs()<0.00004,
-                    "native row{index} lane{lane}: {} != {}", actual[lane],expected[lane]);
+                assert!(
+                    (actual[lane] - expected[lane]).abs() < 0.00004,
+                    "native row{index} lane{lane}: {} != {}",
+                    actual[lane],
+                    expected[lane]
+                );
             }
         }
     }
@@ -6224,21 +7551,64 @@ mod game_control_tests {
     fn authored_surface_gpu_pipelines_compile() {
         use bevy::render::render_resource::{CachedPipelineState, PipelineDescriptor};
         let mut app = App::new();
-        app.add_plugins(DefaultPlugins
-            .set(bevy::window::WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
-            .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: true, ..default() })
-            .disable::<bevy::winit::WinitPlugin>()
-            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>())
-            .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-            .add_plugins(MaterialPlugin::<DecalMaterial>::default());
-        bevy::asset::load_internal_asset!(app, PROBE_SHADER_HANDLE, "../../assets/shaders/dh2_probe.wgsl", Shader::from_wgsl);
-        bevy::asset::load_internal_asset!(app, PROBE_PREPASS_SHADER_HANDLE, "../../assets/shaders/dh2_probe_prepass.wgsl", Shader::from_wgsl);
-        bevy::asset::load_internal_asset!(app, INDIRECT_SHADER_HANDLE, "../../assets/shaders/dh2_indirect.wgsl", Shader::from_wgsl);
-        bevy::asset::load_internal_asset!(app, SURFACE_SHADER_HANDLE, "../../assets/shaders/dh2_surface.wgsl", Shader::from_wgsl);
-        bevy::asset::load_internal_asset!(app, DECAL_SHADER_HANDLE, "../../assets/shaders/dh2_decal.wgsl", Shader::from_wgsl);
-        app.finish(); app.cleanup();
-        let target = app.world_mut().resource_mut::<Assets<Image>>()
-            .add(Image::new_target_texture(64, 64, TextureFormat::Rgba8UnormSrgb, None));
+        app.add_plugins(
+            DefaultPlugins
+                .set(bevy::window::WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .set(bevy::render::RenderPlugin {
+                    synchronous_pipeline_compilation: true,
+                    ..default()
+                })
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        )
+        .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
+        .add_plugins(MaterialPlugin::<DecalMaterial>::default());
+        bevy::asset::load_internal_asset!(
+            app,
+            PROBE_SHADER_HANDLE,
+            "../../assets/shaders/dh2_probe.wgsl",
+            Shader::from_wgsl
+        );
+        bevy::asset::load_internal_asset!(
+            app,
+            PROBE_PREPASS_SHADER_HANDLE,
+            "../../assets/shaders/dh2_probe_prepass.wgsl",
+            Shader::from_wgsl
+        );
+        bevy::asset::load_internal_asset!(
+            app,
+            INDIRECT_SHADER_HANDLE,
+            "../../assets/shaders/dh2_indirect.wgsl",
+            Shader::from_wgsl
+        );
+        bevy::asset::load_internal_asset!(
+            app,
+            SURFACE_SHADER_HANDLE,
+            "../../assets/shaders/dh2_surface.wgsl",
+            Shader::from_wgsl
+        );
+        bevy::asset::load_internal_asset!(
+            app,
+            DECAL_SHADER_HANDLE,
+            "../../assets/shaders/dh2_decal.wgsl",
+            Shader::from_wgsl
+        );
+        native_shadow_sampling::register_shaders(&mut app);
+        app.finish();
+        app.cleanup();
+        let target =
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::new_target_texture(
+                    64,
+                    64,
+                    TextureFormat::Rgba8UnormSrgb,
+                    None,
+                ));
         let mut mesh = Mesh::from(Cuboid::new(1.0, 1.0, 1.0));
         let n = mesh.count_vertices();
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.3, 0.7, 1.0, 1.0]; n]);
@@ -6247,84 +7617,215 @@ mod game_control_tests {
         mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; n]);
         mesh.insert_attribute(DH2_BITANGENT, vec![[0.0, 1.0, 0.0]; n]);
         let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
-        let sh = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![[Vec4::ZERO; 9]]));
-        let vertex_probes = app.world_mut().resource_mut::<Assets<ShaderBuffer>>().add(ShaderBuffer::from(vec![0u32; 8]));
+        let sh = app
+            .world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(vec![[Vec4::ZERO; 9]]));
+        let vertex_probes = app
+            .world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(vec![0u32; 8]));
+        let native_shadow =
+            app.world_mut()
+                .resource_mut::<Assets<ShaderBuffer>>()
+                .add(ShaderBuffer::from(
+                    native_shadow_sampling::NativeParallelSamplingUniform::default(),
+                ));
+        let native_shadow_map = app.world_mut().resource_mut::<Assets<Image>>().add(
+            native_shadow_gpu::shadow_depth_image(
+                bevy::render::render_resource::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureFormat::Depth24PlusStencil8,
+            )
+            .unwrap(),
+        );
+        app.world_mut()
+            .insert_resource(native_shadow_scene::NativeShadowSceneFrame::default());
+        app.world_mut()
+            .insert_resource(native_shadow_sampling::NativeParallelSamplingBuffer {
+                buffer: native_shadow.clone(),
+                unavailable_depth: native_shadow_map.clone(),
+            });
+        app.add_systems(
+            PostUpdate,
+            sync_native_shadow_target.after(bevy::asset::AssetEventSystems),
+        );
         let mut surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[]));
         surface.misc = UVec4::new(1, 1, 1, 2);
         surface.flags = UVec4::new(2, 1, 0, 1);
-        let probe = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(ProbeMaterial {
-            base: StandardMaterial::default(),
-            extension: ProbeExtension { sh, vertex_probes, surface: surface.clone(),
-                diffuse0: None,
-                diffuse1: None,
-                diffuse2: None,
-                bump0: None,
-                bump1: None,
-                bump2: None,
-                gloss0: None,
-                gloss1: None,
-                gloss2: None,
-                metallic0: None,
-                metallic1: None,
-                metallic2: None,
-                mask0: None,
-                mask1: None,
-                mask2: None,
-            },
-        });
-        let mut vegetation = app.world().resource::<Assets<ProbeMaterial>>().get(&probe).unwrap().clone();
-        vegetation.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
-            b"mainProgram arkVegetation\nhasBumpMap 1\nhasGlossMap 1\nalphaTest 1\n"));
+        let probe = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(ProbeMaterial {
+                base: StandardMaterial::default(),
+                extension: ProbeExtension {
+                    sh,
+                    vertex_probes,
+                    native_shadow,
+                    native_shadow_map: Some(native_shadow_map.clone()),
+                    surface: surface.clone(),
+                    diffuse0: None,
+                    diffuse1: None,
+                    diffuse2: None,
+                    bump0: None,
+                    bump1: None,
+                    bump2: None,
+                    gloss0: None,
+                    gloss1: None,
+                    gloss2: None,
+                    metallic0: None,
+                    metallic1: None,
+                    metallic2: None,
+                    mask0: None,
+                    mask1: None,
+                    mask2: None,
+                },
+            });
+        // Establish the target, then add a material without a binding while the
+        // target stays unchanged. The event-driven sync must repair it before
+        // render extraction, without a full material scan every frame.
+        app.update();
+        let mut late = app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&probe)
+            .unwrap()
+            .clone();
+        late.extension.native_shadow_map = None;
+        let late = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(late);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<ProbeMaterial>>()
+                .get(&late)
+                .unwrap()
+                .extension
+                .native_shadow_map
+                .as_ref(),
+            Some(&native_shadow_map)
+        );
+        let mut vegetation = app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&probe)
+            .unwrap()
+            .clone();
+        vegetation.extension.surface =
+            surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+                b"mainProgram arkVegetation\nhasBumpMap 1\nhasGlossMap 1\nalphaTest 1\n",
+            ));
         vegetation.extension.surface.misc.w = 1 | 4;
         vegetation.base.alpha_mode = AlphaMode::AlphaToCoverage;
         vegetation.base.double_sided = true;
         let mut cutout = vegetation.clone();
         cutout.base.alpha_mode = AlphaMode::Mask(0.5);
-        let cutout = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(cutout);
-        let vegetation = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(vegetation);
-        let decal = app.world_mut().resource_mut::<Assets<DecalMaterial>>().add(DecalMaterial {
-            base: StandardMaterial { alpha_mode: AlphaMode::Blend, ..default() },
-            extension: DecalExtension { bias: 0, surface,
-                diffuse0: None,
-                diffuse1: None,
-                diffuse2: None,
-                bump0: None,
-                bump1: None,
-                bump2: None,
-                gloss0: None,
-                gloss1: None,
-                gloss2: None,
-                metallic0: None,
-                metallic1: None,
-                metallic2: None,
-                mask0: None,
-                mask1: None,
-                mask2: None,
-            },
-        });
-        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(probe.clone()), Transform::from_xyz(-0.6, 0.0, 0.0)));
-        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(decal), Transform::from_xyz(0.6, 0.0, 0.0)));
-        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(vegetation), Transform::from_xyz(0.0, 0.6, 0.0)));
-        app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(cutout), Transform::from_xyz(0.0, -0.6, 0.0)));
-        let camera = app.world_mut().spawn((Camera3d::default(), DepthPrepass, Msaa::Sample4, bevy::camera::RenderTarget::Image(target.clone().into()),
-            Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y))).id();
+        let cutout = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(cutout);
+        let vegetation = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(vegetation);
+        let decal = app
+            .world_mut()
+            .resource_mut::<Assets<DecalMaterial>>()
+            .add(DecalMaterial {
+                base: StandardMaterial {
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+                extension: DecalExtension {
+                    bias: 0,
+                    surface,
+                    diffuse0: None,
+                    diffuse1: None,
+                    diffuse2: None,
+                    bump0: None,
+                    bump1: None,
+                    bump2: None,
+                    gloss0: None,
+                    gloss1: None,
+                    gloss2: None,
+                    metallic0: None,
+                    metallic1: None,
+                    metallic2: None,
+                    mask0: None,
+                    mask1: None,
+                    mask2: None,
+                },
+            });
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(probe.clone()),
+            Transform::from_xyz(-0.6, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(decal),
+            Transform::from_xyz(0.6, 0.0, 0.0),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(vegetation),
+            Transform::from_xyz(0.0, 0.6, 0.0),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(cutout),
+            Transform::from_xyz(0.0, -0.6, 0.0),
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                DepthPrepass,
+                Msaa::Sample4,
+                bevy::camera::RenderTarget::Image(target.clone().into()),
+                Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+            ))
+            .id();
         let mut validated = 0;
         let mut prepass_validated = 0;
         for _ in 0..100 {
             app.update();
-            let cache = app.sub_app(bevy::render::RenderApp).world().resource::<bevy::render::render_resource::PipelineCache>();
+            let cache = app
+                .sub_app(bevy::render::RenderApp)
+                .world()
+                .resource::<bevy::render::render_resource::PipelineCache>();
             validated = 0;
             prepass_validated = 0;
             for p in cache.pipelines() {
-                if let CachedPipelineState::Err(e) = &p.state { panic!("GPU shader failure: {e}"); }
-                if let (CachedPipelineState::Ok(_), PipelineDescriptor::RenderPipelineDescriptor(d)) = (&p.state, &p.descriptor) {
+                if let CachedPipelineState::Err(e) = &p.state {
+                    panic!("GPU shader failure: {e}");
+                }
+                if let (
+                    CachedPipelineState::Ok(_),
+                    PipelineDescriptor::RenderPipelineDescriptor(d),
+                ) = (&p.state, &p.descriptor)
+                {
                     if let Some(fragment) = d.fragment.as_ref() {
-                        if fragment.shader == PROBE_SHADER_HANDLE || fragment.shader == DECAL_SHADER_HANDLE || fragment.shader == PROBE_PREPASS_SHADER_HANDLE { validated += 1; }
-                        if fragment.shader == PROBE_PREPASS_SHADER_HANDLE { prepass_validated += 1; }
+                        if fragment.shader == PROBE_SHADER_HANDLE
+                            || fragment.shader == DECAL_SHADER_HANDLE
+                            || fragment.shader == PROBE_PREPASS_SHADER_HANDLE
+                        {
+                            validated += 1;
+                        }
+                        if fragment.shader == PROBE_PREPASS_SHADER_HANDLE {
+                            prepass_validated += 1;
+                        }
                     }
                 }
             }
-            if validated >= 5 && prepass_validated > 0 { break; }
+            if validated >= 5 && prepass_validated > 0 {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(validated >= 5 && prepass_validated > 0, "ordinary, decal, vegetation, and alpha-cutout prepass shaders must actually compile, got {validated} pipelines / {prepass_validated} prepass");
@@ -6335,41 +7836,82 @@ mod game_control_tests {
         // but no COPY_SRC, so a one-invocation compute probe reads its center.
         fn center_depth(app: &mut App) -> f32 {
             use bevy::core_pipeline::prepass::ViewPrepassTextures;
-            use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+            use bevy::render::{
+                render_resource::*,
+                renderer::{RenderDevice, RenderQueue},
+            };
             let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
             let mut views = world.query::<&ViewPrepassTextures>();
-            let view = views.single(world).unwrap().depth.as_ref().unwrap().texture.default_view.clone();
+            let view = views
+                .single(world)
+                .unwrap()
+                .depth
+                .as_ref()
+                .unwrap()
+                .texture
+                .default_view
+                .clone();
             let device = world.resource::<RenderDevice>();
             let queue = world.resource::<RenderQueue>();
             let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
                 label: Some("test prepass depth readback"),
-                source: ShaderSource::Wgsl(r#"
+                source: ShaderSource::Wgsl(
+                    r#"
                     @group(0) @binding(0) var depth: texture_depth_2d;
                     @group(0) @binding(1) var<storage, read_write> result: f32;
                     @compute @workgroup_size(1) fn main() {
                         result = textureLoad(depth, vec2<i32>(32, 32), 0);
                     }
-                "#.into()),
+                "#
+                    .into(),
+                ),
             });
-            let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
-                label: Some("test prepass depth readback"), layout: None, module: &module,
-                entry_point: Some("main"), compilation_options: default(), cache: None,
-            });
+            let pipeline =
+                device
+                    .wgpu_device()
+                    .create_compute_pipeline(&RawComputePipelineDescriptor {
+                        label: Some("test prepass depth readback"),
+                        layout: None,
+                        module: &module,
+                        entry_point: Some("main"),
+                        compilation_options: default(),
+                        cache: None,
+                    });
             let output = device.create_buffer(&BufferDescriptor {
-                label: None, size: 4, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false,
+                label: None,
+                size: 4,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
             });
             let readback = device.create_buffer(&BufferDescriptor {
-                label: None, size: 4, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false,
+                label: None,
+                size: 4,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
             });
-            let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
-                label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
-                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view) },
-                    BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                ],
-            });
-            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+            let bind = device
+                .wgpu_device()
+                .create_bind_group(&BindGroupDescriptor {
+                    label: None,
+                    layout: &pipeline.get_bind_group_layout(0),
+                    entries: &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::TextureView(&view),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: output.as_entire_binding(),
+                        },
+                    ],
+                });
+            let mut encoder =
+                device.create_command_encoder(&CommandEncoderDescriptor { label: None });
             {
-                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
                 pass.set_pipeline(&pipeline);
                 pass.set_bind_group(0, &bind, &[]);
                 pass.dispatch_workgroups(1, 1, 1);
@@ -6377,9 +7919,18 @@ mod game_control_tests {
             encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, 4);
             let submission = queue.submit([encoder.finish()]);
             let (tx, rx) = std::sync::mpsc::channel();
-            readback.slice(..).map_async(MapMode::Read, move |result| { tx.send(result).unwrap(); });
-            device.poll(PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
-            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+            readback.slice(..).map_async(MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+            device
+                .poll(PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: Some(std::time::Duration::from_secs(10)),
+                })
+                .unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
             let bytes = readback.slice(..).get_mapped_range();
             let depth = f32::from_le_bytes(bytes[..4].try_into().unwrap());
             drop(bytes);
@@ -6387,24 +7938,67 @@ mod game_control_tests {
             depth
         }
 
-        let entities: Vec<_> = app.world_mut().query_filtered::<Entity, With<Mesh3d>>().iter(app.world()).collect();
-        for entity in entities { app.world_mut().despawn(entity); }
-        let image = |alpha| Image::new_fill(
-            bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            TextureDimension::D2, &[255, 255, 255, alpha], TextureFormat::Rgba8UnormSrgb,
-            bevy::asset::RenderAssetUsages::default(),
-        );
-        let solid = app.world_mut().resource_mut::<Assets<Image>>().add(image(255));
-        let empty = app.world_mut().resource_mut::<Assets<Image>>().add(image(0));
-        let translucent = app.world_mut().resource_mut::<Assets<Image>>().add(image(191));
-        let split = app.world_mut().resource_mut::<Assets<Image>>().add(Image::new_fill(
-            bevy::render::render_resource::Extent3d { width: 2, height: 1, depth_or_array_layers: 1 },
-            TextureDimension::D2, &[255, 255, 255, 0, 255, 255, 255, 255], TextureFormat::Rgba8UnormSrgb,
-            bevy::asset::RenderAssetUsages::default(),
-        ));
-        let mut material = app.world().resource::<Assets<ProbeMaterial>>().get(&probe).unwrap().clone();
-        material.base = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), ..default() };
-        material.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(b"mainProgram arkDefault\nalphaTest 1\nDefaultAlphaTest {0.5}\n"));
+        let entities: Vec<_> = app
+            .world_mut()
+            .query_filtered::<Entity, With<Mesh3d>>()
+            .iter(app.world())
+            .collect();
+        for entity in entities {
+            app.world_mut().despawn(entity);
+        }
+        let image = |alpha| {
+            Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                &[255, 255, 255, alpha],
+                TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            )
+        };
+        let solid = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(image(255));
+        let empty = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(image(0));
+        let translucent = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(image(191));
+        let split = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_fill(
+                bevy::render::render_resource::Extent3d {
+                    width: 2,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                &[255, 255, 255, 0, 255, 255, 255, 255],
+                TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let mut material = app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&probe)
+            .unwrap()
+            .clone();
+        material.base = StandardMaterial {
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        };
+        material.extension.surface =
+            surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+                b"mainProgram arkDefault\nalphaTest 1\nDefaultAlphaTest {0.5}\n",
+            ));
         material.extension.surface.misc.w = 1;
         material.extension.diffuse0 = Some(solid);
         material.extension.diffuse1 = Some(empty.clone());
@@ -6435,8 +8029,16 @@ mod game_control_tests {
             ("opaque alpha", material.clone(), true),
             ("color constant must not erase depth", tinted, true),
             ("layer1 must not erase depth", layered, true),
-            ("gloss alpha must not turn a hole opaque", gloss_alpha, false),
-            ("vegetation Z uses DefaultAlphaTest, not forward 0.5", vegetation, false),
+            (
+                "gloss alpha must not turn a hole opaque",
+                gloss_alpha,
+                false,
+            ),
+            (
+                "vegetation Z uses DefaultAlphaTest, not forward 0.5",
+                vegetation,
+                false,
+            ),
             ("layer0 UV0 selects transparent texel", uv0, false),
             ("layer0 UV1 selects opaque texel", uv1, true),
             ("layer0 scale/bias applies before clipping", scaled, false),
@@ -6444,45 +8046,102 @@ mod game_control_tests {
         ];
         let mut forward = material.clone();
         forward.base.unlit = true;
-        let handle = app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(material);
-        let entity = app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(handle.clone()), Transform::default())).id();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(material);
+        let entity = app
+            .world_mut()
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(handle.clone()),
+                Transform::default(),
+            ))
+            .id();
         for (label, material, expected) in cases {
-            *app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&handle).unwrap() = material;
-            for _ in 0..6 { app.update(); }
+            *app.world_mut()
+                .resource_mut::<Assets<ProbeMaterial>>()
+                .get_mut(&handle)
+                .unwrap() = material;
+            for _ in 0..6 {
+                app.update();
+            }
             let depth = center_depth(&mut app);
             assert!(depth.is_finite(), "{label}: nonfinite depth {depth}");
-            assert_eq!(depth > 0.0, expected, "{label}: actual prepass depth {depth}");
+            assert_eq!(
+                depth > 0.0,
+                expected,
+                "{label}: actual prepass depth {depth}"
+            );
         }
         // A valid prepass silhouette alone cannot catch a later forward discard.
         app.world_mut().entity_mut(camera).remove::<DepthPrepass>();
-        app.world_mut().entity_mut(camera).get_mut::<Camera>().unwrap().clear_color = bevy::camera::ClearColorConfig::Custom(Color::BLACK);
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Camera>()
+            .unwrap()
+            .clear_color = bevy::camera::ClearColorConfig::Custom(Color::BLACK);
         let mut tint = forward.clone();
         tint.extension.surface.colors[0].w = 0.0;
-        tint.extension.surface.mask_settings[0] = UVec4::new(0,3,1,0);
+        tint.extension.surface.mask_settings[0] = UVec4::new(0, 3, 1, 0);
         let mut layer = forward.clone();
         layer.extension.surface.flags.x = 1;
-        layer.extension.surface.mask_settings[1] = UVec4::new(0,3,0,0);
+        layer.extension.surface.mask_settings[1] = UVec4::new(0, 3, 0, 0);
         let mut hole = forward.clone();
         hole.extension.diffuse0 = hole.extension.diffuse1.clone();
         let mut vertex = forward.clone();
         vertex.extension.surface.misc.y = 1;
-        let mut zero_alpha = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap().clone();
+        let mut zero_alpha = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&mesh)
+            .unwrap()
+            .clone();
         let n = zero_alpha.count_vertices();
-        zero_alpha.insert_attribute(Mesh::ATTRIBUTE_COLOR,vec![[0.3,0.7,1.0,0.0];n]);
-        let zero_alpha = app.world_mut().resource_mut::<Assets<Mesh>>().add(zero_alpha);
+        zero_alpha.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.3, 0.7, 1.0, 0.0]; n]);
+        let zero_alpha = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(zero_alpha);
         // Isolate one face: reversing a closed cube still exposes its far face.
-        let mut face = app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap().clone();
-        let normals = face.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap().as_float3().unwrap();
+        let mut face = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&mesh)
+            .unwrap()
+            .clone();
+        let normals = face
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
         let indices: Vec<u32> = face.indices().unwrap().iter().map(|i| i as u32).collect();
-        let indices: Vec<u32> = indices.chunks_exact(3).filter(|t| normals[t[0] as usize][2] > 0.5).flatten().copied().collect();
+        let indices: Vec<u32> = indices
+            .chunks_exact(3)
+            .filter(|t| normals[t[0] as usize][2] > 0.5)
+            .flatten()
+            .copied()
+            .collect();
         assert_eq!(indices.len(), 6);
         // Exercise the actual CW asset -> CCW render adapter for both sides.
-        let native_front: Vec<u16> = indices.chunks_exact(3).flat_map(|t| [t[0] as u16,t[2] as u16,t[1] as u16]).collect();
+        let native_front: Vec<u16> = indices
+            .chunks_exact(3)
+            .flat_map(|t| [t[0] as u16, t[2] as u16, t[1] as u16])
+            .collect();
         face.insert_indices(native_render_indices(&native_front));
         let mut reversed = face.clone();
-        reversed.insert_indices(native_render_indices(&indices.iter().map(|i| *i as u16).collect::<Vec<_>>()));
+        reversed.insert_indices(native_render_indices(
+            &indices.iter().map(|i| *i as u16).collect::<Vec<_>>(),
+        ));
         let mut mirrored = mirrored_render_mesh(face.clone(), &native_front, true);
-        let positions = mirrored.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| [-p[0],p[1],p[2]]).collect::<Vec<_>>();
+        let positions = mirrored
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap()
+            .iter()
+            .map(|p| [-p[0], p[1], p[2]])
+            .collect::<Vec<_>>();
         mirrored.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         let mirrored = app.world_mut().resource_mut::<Assets<Mesh>>().add(mirrored);
         let face = app.world_mut().resource_mut::<Assets<Mesh>>().add(face);
@@ -6493,36 +8152,102 @@ mod game_control_tests {
         front_cull.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
         let mut no_cull = forward.clone();
         no_cull.base.cull_mode = None;
-        for (label,material,mesh,expected) in [
-            ("raw diffuse solid",forward,mesh.clone(),true),
-            ("raw diffuse hole",hole,mesh.clone(),false),
-            ("material tint alpha is not a second clip",tint,mesh.clone(),true),
-            ("layer alpha is not a second clip",layer,mesh.clone(),true),
-            ("vertex alpha is not a second clip",vertex,zero_alpha,true),
-            ("native BACK keeps mirrored CW fronts",back_cull.clone(),mirrored,true),
-            ("native BACK keeps front-facing triangles",back_cull.clone(),face.clone(),true),
-            ("native BACK rejects reverse coincident triangles",back_cull,reversed.clone(),false),
-            ("native FRONT rejects front-facing triangles",front_cull.clone(),face.clone(),false),
-            ("native FRONT keeps reverse-facing triangles",front_cull,reversed.clone(),true),
-            ("native NONE keeps front-facing triangles",no_cull.clone(),face,true),
-            ("native NONE keeps reverse-facing triangles",no_cull,reversed,true),
+        for (label, material, mesh, expected) in [
+            ("raw diffuse solid", forward, mesh.clone(), true),
+            ("raw diffuse hole", hole, mesh.clone(), false),
+            (
+                "material tint alpha is not a second clip",
+                tint,
+                mesh.clone(),
+                true,
+            ),
+            (
+                "layer alpha is not a second clip",
+                layer,
+                mesh.clone(),
+                true,
+            ),
+            (
+                "vertex alpha is not a second clip",
+                vertex,
+                zero_alpha,
+                true,
+            ),
+            (
+                "native BACK keeps mirrored CW fronts",
+                back_cull.clone(),
+                mirrored,
+                true,
+            ),
+            (
+                "native BACK keeps front-facing triangles",
+                back_cull.clone(),
+                face.clone(),
+                true,
+            ),
+            (
+                "native BACK rejects reverse coincident triangles",
+                back_cull,
+                reversed.clone(),
+                false,
+            ),
+            (
+                "native FRONT rejects front-facing triangles",
+                front_cull.clone(),
+                face.clone(),
+                false,
+            ),
+            (
+                "native FRONT keeps reverse-facing triangles",
+                front_cull,
+                reversed.clone(),
+                true,
+            ),
+            (
+                "native NONE keeps front-facing triangles",
+                no_cull.clone(),
+                face,
+                true,
+            ),
+            (
+                "native NONE keeps reverse-facing triangles",
+                no_cull,
+                reversed,
+                true,
+            ),
         ] {
-            *app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&handle).unwrap() = material;
+            *app.world_mut()
+                .resource_mut::<Assets<ProbeMaterial>>()
+                .get_mut(&handle)
+                .unwrap() = material;
             app.world_mut().entity_mut(entity).insert(Mesh3d(mesh));
-            for _ in 0..6 {app.update();}
-            let (tx,rx) = std::sync::mpsc::channel();
-            app.world_mut().spawn(Screenshot::image(target.clone())).observe(move |event: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
-                let data=event.image.data.as_ref().unwrap();
-                tx.send(<[u8;4]>::try_from(&data[(32*64+32)*4..(32*64+32)*4+4]).unwrap()).unwrap();
-            });
-            let mut pixel=None;
+            for _ in 0..6 {
+                app.update();
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.world_mut()
+                .spawn(Screenshot::image(target.clone()))
+                .observe(
+                    move |event: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
+                        let data = event.image.data.as_ref().unwrap();
+                        tx.send(
+                            <[u8; 4]>::try_from(&data[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 4])
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    },
+                );
+            let mut pixel = None;
             for _ in 0..200 {
                 app.update();
-                if let Ok(value)=rx.try_recv() {pixel=Some(value);break;}
+                if let Ok(value) = rx.try_recv() {
+                    pixel = Some(value);
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let pixel=pixel.expect("forward screenshot did not complete");
-            assert_eq!(pixel[0]>20,expected,"{label}: forward pixel {pixel:?}");
+            let pixel = pixel.expect("forward screenshot did not complete");
+            assert_eq!(pixel[0] > 20, expected, "{label}: forward pixel {pixel:?}");
         }
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
@@ -6532,8 +8257,10 @@ mod game_control_tests {
     // Compare the complete one/two-sided packed paths against installed HLSL
     // executed by D3D11, plus native PNW vertex-reference fetch/interpolation.
     fn tiled_depth_shader_matches_reference(app: &mut App) {
-        tiled_depth_shader_matches_case(app,None);
-        for id in 0..64 {tiled_depth_shader_matches_case(app,Some(id));}
+        tiled_depth_shader_matches_case(app, None);
+        for id in 0..64 {
+            tiled_depth_shader_matches_case(app, Some(id));
+        }
         eprintln!("GPU TLF depth: 4 mixed tiles and 64 original-HLSL cases passed");
         let mut raw_light = [0_u8; 0xe8];
         raw_light[0] = 1;
@@ -6544,44 +8271,80 @@ mod game_control_tests {
         raw_light[0x9c..0xa0].copy_from_slice(&1.0_f32.to_le_bytes());
         let mut lighting = [0_u32; 28];
         let mut used_shadows = 0;
-        assert_eq!(render_light::prepare_tlf_lighting_packet(&raw_light, 0, false, &mut used_shadows, &mut lighting), (6, None));
+        assert_eq!(
+            render_light::prepare_tlf_lighting_packet(
+                &raw_light,
+                0,
+                false,
+                &mut used_shadows,
+                &mut lighting
+            ),
+            (6, None)
+        );
         assert_eq!(lighting[2], (-2.0_f32).to_bits());
         assert_eq!(lighting[24], u32::MAX);
         let mut point = [0_u32; 12];
         tiled_lighting::fill_light_cull_packet([0.0, 0.0, -2.0], &lighting, &mut point);
-        for scattering in [false,true] {
-            assert_eq!(tiled_cull_gpu_lists(app,&point,scattering),[vec![0],vec![],vec![],vec![]]);
+        for scattering in [false, true] {
+            assert_eq!(
+                tiled_cull_gpu_lists(app, &point, scattering),
+                [vec![0], vec![], vec![], vec![]]
+            );
         }
-        let fixture=include_str!("../../analysis/native_tlf_cull_cases.txt");
-        let mut checked=0;
+        let fixture = include_str!("../../analysis/native_tlf_cull_cases.txt");
+        let mut checked = 0;
         for case in fixture.split("\nCASE ").skip(1) {
-            let header=case.lines().next().unwrap();
-            let packets=case.lines().find_map(|line|line.strip_prefix("LIGHTS id ")).unwrap();
-            let mut lights=Vec::new();
-            for (id,packet) in packets.split_whitespace().enumerate() {
-                let (index,hex)=packet.split_once(':').unwrap();assert_eq!(index.parse::<usize>().unwrap(),id);assert_eq!(hex.len(),96);
-                for word in hex.as_bytes().chunks_exact(8) {lights.push(u32::from_str_radix(std::str::from_utf8(word).unwrap(),16).unwrap());}
+            let header = case.lines().next().unwrap();
+            let packets = case
+                .lines()
+                .find_map(|line| line.strip_prefix("LIGHTS id "))
+                .unwrap();
+            let mut lights = Vec::new();
+            for (id, packet) in packets.split_whitespace().enumerate() {
+                let (index, hex) = packet.split_once(':').unwrap();
+                assert_eq!(index.parse::<usize>().unwrap(), id);
+                assert_eq!(hex.len(), 96);
+                for word in hex.as_bytes().chunks_exact(8) {
+                    lights
+                        .push(u32::from_str_radix(std::str::from_utf8(word).unwrap(), 16).unwrap());
+                }
             }
-            let mut expected:[Vec<u32>;4]=[Vec::new(),Vec::new(),Vec::new(),Vec::new()];
-            for line in case.lines().filter(|line|line.starts_with("ACCEPT type=")) {
-                let (kind,ids)=line.strip_prefix("ACCEPT type=").unwrap().split_once(" ids=").unwrap();
-                expected[kind.trim().parse::<usize>().unwrap()]=ids.trim().split(',').filter(|id|!id.is_empty()).map(|id|id.trim().parse().unwrap()).collect();
+            let mut expected: [Vec<u32>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            for line in case.lines().filter(|line| line.starts_with("ACCEPT type=")) {
+                let (kind, ids) = line
+                    .strip_prefix("ACCEPT type=")
+                    .unwrap()
+                    .split_once(" ids=")
+                    .unwrap();
+                expected[kind.trim().parse::<usize>().unwrap()] = ids
+                    .trim()
+                    .split(',')
+                    .filter(|id| !id.is_empty())
+                    .map(|id| id.trim().parse().unwrap())
+                    .collect();
             }
-            let scattering=header.contains("scatter=1");
-            let actual=tiled_cull_gpu_lists(app,&lights,scattering);
-            assert_eq!(actual,expected,"original HLSL {header}");
+            let scattering = header.contains("scatter=1");
+            let actual = tiled_cull_gpu_lists(app, &lights, scattering);
+            assert_eq!(actual, expected, "original HLSL {header}");
             if scattering {
-                assert_eq!(tiled_cull_gpu_lists_with_prior(app,&lights,true,true),expected,
-                    "normal/scatter must share the pool without a counter reset between passes");
+                assert_eq!(
+                    tiled_cull_gpu_lists_with_prior(app, &lights, true, true),
+                    expected,
+                    "normal/scatter must share the pool without a counter reset between passes"
+                );
             }
-            checked+=1;
+            checked += 1;
         }
-        assert_eq!(checked,2);eprintln!("GPU TLF culling: 512 original light packets and packed node chains passed");
+        assert_eq!(checked, 2);
+        eprintln!("GPU TLF culling: 512 original light packets and packed node chains passed");
         tiled_light_iterator_matches_reference(app);
     }
 
     fn tiled_light_iterator_matches_reference(app: &mut App) {
-        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        use bevy::render::{
+            render_resource::*,
+            renderer::{RenderDevice, RenderQueue},
+        };
         let render = app.sub_app(RenderApp).world();
         let device = render.resource::<RenderDevice>();
         let queue = render.resource::<RenderQueue>();
@@ -6591,14 +8354,19 @@ mod game_control_tests {
         // expose tile/type addressing and preserve deliberately unsorted IDs.
         for (head_index, head) in heads.iter_mut().enumerate() {
             for i in 0..40 {
-                let node = tiled_lighting::PackedLightNode::new(*head, (i * 37 + head_index as u32) & 511);
+                let node =
+                    tiled_lighting::PackedLightNode::new(*head, (i * 37 + head_index as u32) & 511);
                 *head = pool.len() as u32;
                 pool.push(node);
             }
         }
         let mut source = include_str!("../../assets/shaders/dh2_tlf_list.wgsl")
-            .lines().filter(|line| !line.starts_with('#')).collect::<Vec<_>>().join("\n");
-        source.push_str(r#"
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        source.push_str(
+            r#"
 @group(0) @binding(0) var<storage> pool: array<u32>;
 @group(0) @binding(1) var<storage> heads: array<u32>;
 @group(0) @binding(2) var<storage, read_write> result: array<u32>;
@@ -6619,142 +8387,439 @@ fn exercise_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     result[base] = list.count;
 }
-"#);
+"#,
+        );
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("native PC LightContext consumer"), source: ShaderSource::Wgsl(source.into()),
+            label: Some("native PC LightContext consumer"),
+            source: ShaderSource::Wgsl(source.into()),
         });
-        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
-            label: Some("native PC LightContext consumer"), layout: None, module: &module,
-            entry_point: Some("exercise_lists"), compilation_options: default(), cache: None,
-        });
-        let bytes = |words: &[u32]| words.iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>();
+        let pipeline =
+            device
+                .wgpu_device()
+                .create_compute_pipeline(&RawComputePipelineDescriptor {
+                    label: Some("native PC LightContext consumer"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("exercise_lists"),
+                    compilation_options: default(),
+                    cache: None,
+                });
+        let bytes = |words: &[u32]| {
+            words
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
         let pool_buffer = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: None, contents: &bytes(&pool.iter().map(|node| node.0).collect::<Vec<_>>()), usage: BufferUsages::STORAGE,
+            label: None,
+            contents: &bytes(&pool.iter().map(|node| node.0).collect::<Vec<_>>()),
+            usage: BufferUsages::STORAGE,
         });
         let heads_buffer = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: None, contents: &bytes(&heads), usage: BufferUsages::STORAGE,
+            label: None,
+            contents: &bytes(&heads),
+            usage: BufferUsages::STORAGE,
         });
         let size = 64 * 65 * 4;
         let output = device.create_buffer(&BufferDescriptor {
-            label: None, size, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false,
+            label: None,
+            size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
         let readback = device.create_buffer(&BufferDescriptor {
-            label: None, size, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false,
+            label: None,
+            size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
-        let group = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
-            label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
-                BindGroupEntry { binding: 0, resource: pool_buffer.as_entire_binding() },
-                BindGroupEntry { binding: 1, resource: heads_buffer.as_entire_binding() },
-                BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-            ],
-        });
+        let group = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: pool_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: heads_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: output.as_entire_binding(),
+                    },
+                ],
+            });
         let mut encoder = device.create_command_encoder(&default());
         {
-            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&pipeline); pass.set_bind_group(0, &group, &[]); pass.dispatch_workgroups(1, 1, 1);
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
         }
         encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
         queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
-        readback.slice(..).map_async(MapMode::Read, move |result| tx.send(result).unwrap());
-        device.poll(PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+        readback
+            .slice(..)
+            .map_async(MapMode::Read, move |result| tx.send(result).unwrap());
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
         let mapped = readback.slice(..).get_mapped_range();
-        let words = mapped.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
+        let words = mapped
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect::<Vec<_>>();
         let grid = tiled_lighting::TileGrid::new(32, 32, 16).unwrap();
         for case in 0..64usize {
             let tile = case & 3;
-            let coordinate = grid.light_head_coordinate([((tile & 1) * 16 + 11) as u32, ((tile >> 1) * 16 + 7) as u32], ((case >> 2) & 3) as u32);
+            let coordinate = grid.light_head_coordinate(
+                [((tile & 1) * 16 + 11) as u32, ((tile >> 1) * 16 + 7) as u32],
+                ((case >> 2) & 3) as u32,
+            );
             let head = heads[(coordinate[0] + coordinate[1] * 8) as usize];
             let mut expected = Vec::new();
-            tiled_lighting::visit_light_list(&pool, head, [0, 1, 32, 64][case >> 4], |id| expected.push(id)).unwrap();
-            assert_eq!(words[case * 65] as usize, expected.len(), "PC LightContext case {case}");
-            assert_eq!(&words[case * 65 + 1..case * 65 + 1 + expected.len()], expected.as_slice(), "PC LightContext order {case}");
+            tiled_lighting::visit_light_list(&pool, head, [0, 1, 32, 64][case >> 4], |id| {
+                expected.push(id)
+            })
+            .unwrap();
+            assert_eq!(
+                words[case * 65] as usize,
+                expected.len(),
+                "PC LightContext case {case}"
+            );
+            assert_eq!(
+                &words[case * 65 + 1..case * 65 + 1 + expected.len()],
+                expected.as_slice(),
+                "PC LightContext order {case}"
+            );
         }
-        drop(mapped); readback.unmap();
+        drop(mapped);
+        readback.unmap();
         eprintln!("GPU TLF PC consumer: 64 tile/type/limit/order cases passed");
     }
 
-    fn tiled_cull_gpu_lists(app: &mut App, lights: &[u32], scattering: bool) -> [Vec<u32>;4] {
-        tiled_cull_gpu_lists_with_prior(app,lights,scattering,false)
+    fn tiled_cull_gpu_lists(app: &mut App, lights: &[u32], scattering: bool) -> [Vec<u32>; 4] {
+        tiled_cull_gpu_lists_with_prior(app, lights, scattering, false)
     }
 
-    fn tiled_cull_gpu_lists_with_prior(app: &mut App, lights: &[u32], scattering: bool, prior_normal: bool) -> [Vec<u32>;4] {
+    fn tiled_cull_gpu_lists_with_prior(
+        app: &mut App,
+        lights: &[u32],
+        scattering: bool,
+        prior_normal: bool,
+    ) -> [Vec<u32>; 4] {
         assert!(!prior_normal || scattering);
-        use bevy::render::{render_resource::*,renderer::{RenderDevice,RenderQueue}};
+        use bevy::render::{
+            render_resource::*,
+            renderer::{RenderDevice, RenderQueue},
+        };
         use std::sync::mpsc;
-        assert_eq!(lights.len()%12,0);let count=lights.len()/12;assert!(count>0&&count<=tiled_lighting::LIGHT_BUFFER_CAPACITY);
-        let render=app.sub_app_mut(RenderApp).world_mut();
+        assert_eq!(lights.len() % 12, 0);
+        let count = lights.len() / 12;
+        assert!(count > 0 && count <= tiled_lighting::LIGHT_BUFFER_CAPACITY);
+        let render = app.sub_app_mut(RenderApp).world_mut();
         render.init_resource::<tiled_lighting_gpu::NativeTlfPipelines>();
-        let device=render.resource::<RenderDevice>();let queue=render.resource::<RenderQueue>();
-        let pipeline=&render.resource::<tiled_lighting_gpu::NativeTlfPipelines>().cull;
-        let mut params=vec![0.0f32.to_bits(),0.0f32.to_bits(),1.0f32.to_bits(),1.0f32.to_bits()];
-        params.extend([1.0f32.to_bits();4]);
-        for _ in 0..2 {for row in 0..4 {for column in 0..4 {params.push(if row==column {1.0f32.to_bits()}else{0});}}}
-        params.extend([count.div_ceil(64) as u32 * 64,u32::from(scattering),0,0]);assert_eq!(params.len(),44);
-        let bytes=|values:&[u32]|values.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<u8>>();
-        let uniform=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&params),usage:BufferUsages::UNIFORM});
-        let buffers=tiled_lighting_gpu::NativeTlfBuffers::new(device);
+        let device = render.resource::<RenderDevice>();
+        let queue = render.resource::<RenderQueue>();
+        let pipeline = &render
+            .resource::<tiled_lighting_gpu::NativeTlfPipelines>()
+            .cull;
+        let mut params = vec![
+            0.0f32.to_bits(),
+            0.0f32.to_bits(),
+            1.0f32.to_bits(),
+            1.0f32.to_bits(),
+        ];
+        params.extend([1.0f32.to_bits(); 4]);
+        for _ in 0..2 {
+            for row in 0..4 {
+                for column in 0..4 {
+                    params.push(if row == column { 1.0f32.to_bits() } else { 0 });
+                }
+            }
+        }
+        params.extend([count.div_ceil(64) as u32 * 64, u32::from(scattering), 0, 0]);
+        assert_eq!(params.len(), 44);
+        let bytes = |values: &[u32]| {
+            values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
+        };
+        let uniform = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None,
+            contents: &bytes(&params),
+            usage: BufferUsages::UNIFORM,
+        });
+        let buffers = tiled_lighting_gpu::NativeTlfBuffers::new(device);
         // The original-HLSL fixture supplies cull records. Reconstruct its
         // corresponding lighting fields to exercise the shared producer/upload
         // path too; the 1-light case additionally dispatches all 63 padding lanes.
-        let lighting = lights.chunks_exact(12).map(|cull| {
-            let mut record = [0_u32; 28];
-            record[..3].copy_from_slice(&cull[..3]);
-            for (src, dst) in (3..11).zip([7, 8, 9, 10, 13, 16, 17, 18]) { record[dst] = cull[src]; }
-            record[25] = cull[11];
-            record
-        }).collect::<Vec<_>>();
-        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
-        assert_eq!(buffers.upload_lighting_packets(queue, &identity, &lighting).unwrap(), count.div_ceil(64) * 64);
-        let packets=buffers.resource(render_resource::resource_name_key("lightToPutInTiles")).unwrap();
-        let counter=buffers.resource(render_resource::resource_name_key("lightNodePoolNextFreeEntry")).unwrap();
-        let pool=buffers.resource(render_resource::resource_name_key("lightNodePool")).unwrap();
-        assert!(buffers.resource(render_resource::resource_name_key("missingNativeResource")).is_none());
-        let heads=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC|BufferUsages::COPY_DST});
+        let lighting = lights
+            .chunks_exact(12)
+            .map(|cull| {
+                let mut record = [0_u32; 28];
+                record[..3].copy_from_slice(&cull[..3]);
+                for (src, dst) in (3..11).zip([7, 8, 9, 10, 13, 16, 17, 18]) {
+                    record[dst] = cull[src];
+                }
+                record[25] = cull[11];
+                record
+            })
+            .collect::<Vec<_>>();
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        assert_eq!(
+            buffers
+                .upload_lighting_packets(queue, &identity, &lighting)
+                .unwrap(),
+            count.div_ceil(64) * 64
+        );
+        let packets = buffers
+            .resource(render_resource::resource_name_key("lightToPutInTiles"))
+            .unwrap();
+        let counter = buffers
+            .resource(render_resource::resource_name_key(
+                "lightNodePoolNextFreeEntry",
+            ))
+            .unwrap();
+        let pool = buffers
+            .resource(render_resource::resource_name_key("lightNodePool"))
+            .unwrap();
+        assert!(buffers
+            .resource(render_resource::resource_name_key("missingNativeResource"))
+            .is_none());
+        let heads = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None,
+            contents: &bytes(&[tiled_lighting::END_OF_LIGHT_LIST; 4]),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        });
         // Native fixed allocations persist across all frames below.
-        let depth=device.create_texture(&TextureDescriptor{label:None,size:Extent3d{width:1,height:1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,format:TextureFormat::Rgba32Float,usage:TextureUsages::TEXTURE_BINDING|TextureUsages::COPY_DST,view_formats:&[]});
-        queue.write_texture(depth.as_image_copy(),&bytes(&[-0.5f32,-10.0,-4.0,f32::from_bits(u32::MAX)].map(f32::to_bits)),TexelCopyBufferLayout{offset:0,bytes_per_row:Some(16),rows_per_image:Some(1)},Extent3d{width:1,height:1,depth_or_array_layers:1});
-        let view=depth.create_view(&default());let layout=pipeline.get_bind_group_layout(0);
-        let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor{label:None,layout:&layout,entries:&[BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},BindGroupEntry{binding:1,resource:BindingResource::TextureView(&view)},BindGroupEntry{binding:2,resource:packets.as_entire_binding()},BindGroupEntry{binding:3,resource:heads.as_entire_binding()},BindGroupEntry{binding:4,resource:counter.as_entire_binding()},BindGroupEntry{binding:5,resource:pool.as_entire_binding()}]});
-        let prior_heads=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC|BufferUsages::COPY_DST});
-        params[41]=0;
-        let prior_uniform=device.create_buffer_with_data(&BufferInitDescriptor{label:None,contents:&bytes(&params),usage:BufferUsages::UNIFORM});
-        let prior_group=device.wgpu_device().create_bind_group(&BindGroupDescriptor{label:None,layout:&layout,entries:&[BindGroupEntry{binding:0,resource:prior_uniform.as_entire_binding()},BindGroupEntry{binding:1,resource:BindingResource::TextureView(&view)},BindGroupEntry{binding:2,resource:packets.as_entire_binding()},BindGroupEntry{binding:3,resource:prior_heads.as_entire_binding()},BindGroupEntry{binding:4,resource:counter.as_entire_binding()},BindGroupEntry{binding:5,resource:pool.as_entire_binding()}]});
-        let pool_words=count*if prior_normal {2}else{1};
-        let readback=device.create_buffer(&BufferDescriptor{label:None,size:36+pool_words as u64*4,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
-        let mut previous=None;
+        let depth = device.create_texture(&TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba32Float,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            depth.as_image_copy(),
+            &bytes(&[-0.5f32, -10.0, -4.0, f32::from_bits(u32::MAX)].map(f32::to_bits)),
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16),
+                rows_per_image: Some(1),
+            },
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = depth.create_view(&default());
+        let layout = pipeline.get_bind_group_layout(0);
+        let group = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&view),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: packets.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: heads.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: counter.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: pool.as_entire_binding(),
+                    },
+                ],
+            });
+        let prior_heads = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None,
+            contents: &bytes(&[tiled_lighting::END_OF_LIGHT_LIST; 4]),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        });
+        params[41] = 0;
+        let prior_uniform = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None,
+            contents: &bytes(&params),
+            usage: BufferUsages::UNIFORM,
+        });
+        let prior_group = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: prior_uniform.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&view),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: packets.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: prior_heads.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: counter.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: pool.as_entire_binding(),
+                    },
+                ],
+            });
+        let pool_words = count * if prior_normal { 2 } else { 1 };
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: 36 + pool_words as u64 * 4,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut previous = None;
         for frame in 0..3 {
-        // Each original-HLSL fixture starts with empty heads. They are
-        // caller-owned inputs; cull_lights only exchanges/appends them.
-        queue.write_buffer(&heads,0,&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]));
-        queue.write_buffer(&prior_heads,0,&bytes(&[tiled_lighting::END_OF_LIGHT_LIST;4]));
-        let mut encoder=device.create_command_encoder(&default());
-        // Native351780 clears once BEFORE both passes, never between them.
-        buffers.begin_frame(&mut encoder);
-        if prior_normal {
-            let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor{label:None,timestamp_writes:None});pass.set_pipeline(&pipeline);pass.set_bind_group(0,&prior_group,&[]);pass.dispatch_workgroups(1,1,1);
-        }
-        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor{label:None,timestamp_writes:None});pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(1,1,1);}
-        encoder.copy_buffer_to_buffer(&heads,0,&readback,0,16);encoder.copy_buffer_to_buffer(&prior_heads,0,&readback,16,16);encoder.copy_buffer_to_buffer(counter,0,&readback,32,4);encoder.copy_buffer_to_buffer(pool,0,&readback,36,pool_words as u64*4);queue.submit([encoder.finish()]);
-        let(tx,rx)=mpsc::channel();readback.slice(..).map_async(MapMode::Read,move|r|{tx.send(r).unwrap();});device.poll(PollType::Wait{submission_index:None,timeout:Some(std::time::Duration::from_secs(10))}).unwrap();rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
-        let bytes=readback.slice(..).get_mapped_range();let words:Vec<u32>=bytes.chunks_exact(4).map(|v|u32::from_le_bytes(v.try_into().unwrap())).collect();
-        let used=words[8] as usize;assert!(used<=pool_words);let mut seen=HashSet::new();let mut result=[Vec::new(),Vec::new(),Vec::new(),Vec::new()];
-        for chain in 0..if prior_normal {8}else{4} {
-            let kind=chain%4;let mut cursor=words[chain];
-            while cursor!=tiled_lighting::END_OF_LIGHT_LIST {
-                assert!((cursor as usize)<used);
-                assert!(seen.insert(cursor),"duplicate/cyclic TLF node or counter reset between passes");
-                let packed=tiled_lighting::PackedLightNode(words[9+cursor as usize]);let id=packed.light_index();
-                assert!((id as usize)<count);assert_eq!((lights[id as usize*12+11]>>4)&7,kind as u32);
-                if chain<4 {result[kind].push(id);}cursor=packed.next();
+            // Each original-HLSL fixture starts with empty heads. They are
+            // caller-owned inputs; cull_lights only exchanges/appends them.
+            queue.write_buffer(&heads, 0, &bytes(&[tiled_lighting::END_OF_LIGHT_LIST; 4]));
+            queue.write_buffer(
+                &prior_heads,
+                0,
+                &bytes(&[tiled_lighting::END_OF_LIGHT_LIST; 4]),
+            );
+            let mut encoder = device.create_command_encoder(&default());
+            // Native351780 clears once BEFORE both passes, never between them.
+            buffers.begin_frame(&mut encoder);
+            if prior_normal {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &prior_group, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
             }
-            if chain<4 {result[kind].sort_unstable();}
-        }
-        if prior_normal {assert!(seen.len()>result.iter().map(Vec::len).sum::<usize>(),"normal prefix did not exercise shared allocation");}
-        assert_eq!(seen.len(),used);drop(bytes);readback.unmap();
-        if let Some(before)=&previous {assert_eq!(&result,before,"native TLF buffers accumulated stale links on frame {frame}");}
-        previous=Some(result);
+            {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&heads, 0, &readback, 0, 16);
+            encoder.copy_buffer_to_buffer(&prior_heads, 0, &readback, 16, 16);
+            encoder.copy_buffer_to_buffer(counter, 0, &readback, 32, 4);
+            encoder.copy_buffer_to_buffer(pool, 0, &readback, 36, pool_words as u64 * 4);
+            queue.submit([encoder.finish()]);
+            let (tx, rx) = mpsc::channel();
+            readback.slice(..).map_async(MapMode::Read, move |r| {
+                tx.send(r).unwrap();
+            });
+            device
+                .poll(PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(std::time::Duration::from_secs(10)),
+                })
+                .unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+            let bytes = readback.slice(..).get_mapped_range();
+            let words: Vec<u32> = bytes
+                .chunks_exact(4)
+                .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+                .collect();
+            let used = words[8] as usize;
+            assert!(used <= pool_words);
+            let mut seen = HashSet::new();
+            let mut result = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            for chain in 0..if prior_normal { 8 } else { 4 } {
+                let kind = chain % 4;
+                let mut cursor = words[chain];
+                while cursor != tiled_lighting::END_OF_LIGHT_LIST {
+                    assert!((cursor as usize) < used);
+                    assert!(
+                        seen.insert(cursor),
+                        "duplicate/cyclic TLF node or counter reset between passes"
+                    );
+                    let packed = tiled_lighting::PackedLightNode(words[9 + cursor as usize]);
+                    let id = packed.light_index();
+                    assert!((id as usize) < count);
+                    assert_eq!((lights[id as usize * 12 + 11] >> 4) & 7, kind as u32);
+                    if chain < 4 {
+                        result[kind].push(id);
+                    }
+                    cursor = packed.next();
+                }
+                if chain < 4 {
+                    result[kind].sort_unstable();
+                }
+            }
+            if prior_normal {
+                assert!(
+                    seen.len() > result.iter().map(Vec::len).sum::<usize>(),
+                    "normal prefix did not exercise shared allocation"
+                );
+            }
+            assert_eq!(seen.len(), used);
+            drop(bytes);
+            readback.unmap();
+            if let Some(before) = &previous {
+                assert_eq!(
+                    &result, before,
+                    "native TLF buffers accumulated stale links on frame {frame}"
+                );
+            }
+            previous = Some(result);
         }
         previous.unwrap()
     }
@@ -6769,118 +8834,318 @@ fn exercise_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
     ) {
         use bevy::render::render_resource::*;
         let array_source = entry == "fragment";
-        let output_size = if entry == "downscale" {16} else {32};
+        let output_size = if entry == "downscale" { 16 } else { 32 };
         let module = &pipelines.depth_copy;
         // Caller-owned fixture layout; not the original 32-byte vertex ABI.
-        let vertex_layout = [RawVertexBufferLayout {array_stride: 20, step_mode: VertexStepMode::Vertex,
-            attributes: &[VertexAttribute {format: VertexFormat::Float32x3, offset: 0, shader_location: 0},
-                VertexAttribute {format: VertexFormat::Float32x2, offset: 12, shader_location: 1}]}];
-        let pipeline = if array_source {device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native depthcopy fixture"), layout: None,
-            vertex: RawVertexState {module, entry_point: Some("vertex"), compilation_options: default(), buffers: &vertex_layout},
-            fragment: Some(RawFragmentState {module, entry_point: Some(entry), compilation_options: default(), targets: &[]}),
-            primitive: default(), multisample: default(), multiview_mask: None, cache: None,
-            depth_stencil: Some(DepthStencilState {format: TextureFormat::Depth32Float, depth_write_enabled: Some(true),
-                depth_compare: Some(CompareFunction::Always), stencil: default(), bias: default()}),
-        })} else {pipelines.depth_copy_pipeline(device, TextureFormat::Depth32Float, entry == "downscale", &vertex_layout)};
-        let destination = device.create_texture(&TextureDescriptor {label: Some("copied depth fixture"),
-            size: Extent3d {width: output_size, height: output_size, depth_or_array_layers: 1}, mip_level_count: 1, sample_count: 1,
-            dimension: TextureDimension::D2, format: TextureFormat::Depth32Float,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC, view_formats: &[]});
-        let source_view = source.create_view(&TextureViewDescriptor {dimension: Some(if array_source {
-            TextureViewDimension::D2Array
-        } else {TextureViewDimension::D2}), ..default()});
+        let vertex_layout = [RawVertexBufferLayout {
+            array_stride: 20,
+            step_mode: VertexStepMode::Vertex,
+            attributes: &[
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x2,
+                    offset: 12,
+                    shader_location: 1,
+                },
+            ],
+        }];
+        let pipeline = if array_source {
+            device.create_render_pipeline(&RawRenderPipelineDescriptor {
+                label: Some("native depthcopy fixture"),
+                layout: None,
+                vertex: RawVertexState {
+                    module,
+                    entry_point: Some("vertex"),
+                    compilation_options: default(),
+                    buffers: &vertex_layout,
+                },
+                fragment: Some(RawFragmentState {
+                    module,
+                    entry_point: Some(entry),
+                    compilation_options: default(),
+                    targets: &[],
+                }),
+                primitive: default(),
+                multisample: default(),
+                multiview_mask: None,
+                cache: None,
+                depth_stencil: Some(DepthStencilState {
+                    format: TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(CompareFunction::Always),
+                    stencil: default(),
+                    bias: default(),
+                }),
+            })
+        } else {
+            pipelines.depth_copy_pipeline(
+                device,
+                TextureFormat::Depth32Float,
+                entry == "downscale",
+                &vertex_layout,
+            )
+        };
+        let destination = device.create_texture(&TextureDescriptor {
+            label: Some("copied depth fixture"),
+            size: Extent3d {
+                width: output_size,
+                height: output_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let source_view = source.create_view(&TextureViewDescriptor {
+            dimension: Some(if array_source {
+                TextureViewDimension::D2Array
+            } else {
+                TextureViewDimension::D2
+            }),
+            ..default()
+        });
         let destination_view = destination.create_view(&default());
-        let sampler = device.create_sampler(&SamplerDescriptor {min_filter: FilterMode::Nearest, mag_filter: FilterMode::Nearest, ..default()});
-        let readback = device.create_buffer(&BufferDescriptor {label: None, size: 32*256,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false});
-        for scale_bias in [[1_f32,1.,0.,0.], [0.5,0.5,0.25,0.25], [-1.,1.,1.,0.]] {
-            let mut vertex_data = [-1_f32,-1.,0.,0.,1., 3.,-1.,0.,2.,1., -1.,3.,0.,0.,-1.];
-            if !array_source { for v in vertex_data.chunks_mut(5) {
-                v[3] = v[3]*scale_bias[0]+scale_bias[2]; v[4] = v[4]*scale_bias[1]+scale_bias[3];
-            } }
-            let vertices = device.create_buffer_with_data(&BufferInitDescriptor {label: None,
-                contents: &vertex_data.into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>(), usage: BufferUsages::VERTEX});
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            min_filter: FilterMode::Nearest,
+            mag_filter: FilterMode::Nearest,
+            ..default()
+        });
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: 32 * 256,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        for scale_bias in [
+            [1_f32, 1., 0., 0.],
+            [0.5, 0.5, 0.25, 0.25],
+            [-1., 1., 1., 0.],
+        ] {
+            let mut vertex_data = [
+                -1_f32, -1., 0., 0., 1., 3., -1., 0., 2., 1., -1., 3., 0., 0., -1.,
+            ];
+            if !array_source {
+                for v in vertex_data.chunks_mut(5) {
+                    v[3] = v[3] * scale_bias[0] + scale_bias[2];
+                    v[4] = v[4] * scale_bias[1] + scale_bias[3];
+                }
+            }
+            let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
+                label: None,
+                contents: &vertex_data
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+                    .collect::<Vec<_>>(),
+                usage: BufferUsages::VERTEX,
+            });
             let parameters = array_source.then(|| {
-                let mut words = scale_bias.map(f32::to_bits).to_vec(); words.extend([0;4]);
-                device.create_buffer_with_data(&BufferInitDescriptor {label: None,
-                    contents: &words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(), usage: BufferUsages::UNIFORM})
+                let mut words = scale_bias.map(f32::to_bits).to_vec();
+                words.extend([0; 4]);
+                device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: None,
+                    contents: &words
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                    usage: BufferUsages::UNIFORM,
+                })
             });
             let mut bindings = vec![
-                BindGroupEntry {binding: 0, resource: BindingResource::TextureView(&source_view)},
-                BindGroupEntry {binding: 1, resource: BindingResource::Sampler(&sampler)},
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&source_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&sampler),
+                },
             ];
-            if let Some(parameters) = &parameters {bindings.push(BindGroupEntry {binding: 2, resource: parameters.as_entire_binding()});}
-            let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {label: None,
-                layout: &pipeline.get_bind_group_layout(0), entries: &bindings});
-            let mut encoder = device.create_command_encoder(&default());
-            { let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {label: None, color_attachments: &[],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {view: &destination_view,
-                    depth_ops: Some(Operations {load: LoadOp::Clear(0.333), store: StoreOp::Store}), stencil_ops: None}),
-                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None});
-                pass.set_pipeline(&pipeline); pass.set_bind_group(0, &bind, &[]); pass.set_vertex_buffer(0, *vertices.slice(..)); pass.draw(0..3,0..1);
+            if let Some(parameters) = &parameters {
+                bindings.push(BindGroupEntry {
+                    binding: 2,
+                    resource: parameters.as_entire_binding(),
+                });
             }
-            encoder.copy_texture_to_buffer(TexelCopyTextureInfo {texture: &destination, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::DepthOnly},
-                TexelCopyBufferInfo {buffer: &readback, layout: TexelCopyBufferLayout {offset: 0, bytes_per_row: Some(256), rows_per_image: Some(32)}},
-                Extent3d {width: output_size, height: output_size, depth_or_array_layers: 1});
-            let submission = queue.submit([encoder.finish()]); let (tx,rx) = std::sync::mpsc::channel();
-            readback.slice(..).map_async(MapMode::Read,move|result|{tx.send(result).unwrap();});
-            device.poll(PollType::Wait {submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10))}).unwrap();
-            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
+            let bind = device
+                .wgpu_device()
+                .create_bind_group(&BindGroupDescriptor {
+                    label: None,
+                    layout: &pipeline.get_bind_group_layout(0),
+                    entries: &bindings,
+                });
+            let mut encoder = device.create_command_encoder(&default());
+            {
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                        view: &destination_view,
+                        depth_ops: Some(Operations {
+                            load: LoadOp::Clear(0.333),
+                            store: StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.set_vertex_buffer(0, *vertices.slice(..));
+                pass.draw(0..3, 0..1);
+            }
+            encoder.copy_texture_to_buffer(
+                TexelCopyTextureInfo {
+                    texture: &destination,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: TextureAspect::DepthOnly,
+                },
+                TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(32),
+                    },
+                },
+                Extent3d {
+                    width: output_size,
+                    height: output_size,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let submission = queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+            device
+                .poll(PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: Some(std::time::Duration::from_secs(10)),
+                })
+                .unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
             let bytes = readback.slice(..).get_mapped_range();
-            for y in 0..output_size as usize { for x in 0..output_size as usize {
-                let footprint = if entry == "downscale" {0.5} else {0.0};
-                let ratio = 32.0/output_size as f32;
-                let sx = (((x as f32+0.5)*ratio*scale_bias[0]+32.*scale_bias[2])-footprint).floor() as i32;
-                let sy = (((y as f32+0.5)*ratio*scale_bias[1]+32.*scale_bias[3])-footprint).floor() as i32;
-                let sample = |dx:i32,dy:i32| expected[(sy+dy).clamp(0,31) as usize*32+(sx+dx).clamp(0,31) as usize];
-                let predicted = if entry == "downscale" {
-                    sample(0,0).min(sample(1,0)).min(sample(0,1).min(sample(1,1)))
-                } else {sample(0,0)};
-                let at = y*256+x*4;
-                assert_eq!(u32::from_le_bytes(bytes[at..at+4].try_into().unwrap()), predicted.to_bits(), "depthcopy {entry} {scale_bias:?} pixel{x},{y}");
-            } }
-            drop(bytes); readback.unmap();
+            for y in 0..output_size as usize {
+                for x in 0..output_size as usize {
+                    let footprint = if entry == "downscale" { 0.5 } else { 0.0 };
+                    let ratio = 32.0 / output_size as f32;
+                    let sx = (((x as f32 + 0.5) * ratio * scale_bias[0] + 32. * scale_bias[2])
+                        - footprint)
+                        .floor() as i32;
+                    let sy = (((y as f32 + 0.5) * ratio * scale_bias[1] + 32. * scale_bias[3])
+                        - footprint)
+                        .floor() as i32;
+                    let sample = |dx: i32, dy: i32| {
+                        expected
+                            [(sy + dy).clamp(0, 31) as usize * 32 + (sx + dx).clamp(0, 31) as usize]
+                    };
+                    let predicted = if entry == "downscale" {
+                        sample(0, 0)
+                            .min(sample(1, 0))
+                            .min(sample(0, 1).min(sample(1, 1)))
+                    } else {
+                        sample(0, 0)
+                    };
+                    let at = y * 256 + x * 4;
+                    assert_eq!(
+                        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()),
+                        predicted.to_bits(),
+                        "depthcopy {entry} {scale_bias:?} pixel{x},{y}"
+                    );
+                }
+            }
+            drop(bytes);
+            readback.unmap();
         }
     }
 
     fn tiled_depth_shader_matches_case(app: &mut App, native_case: Option<usize>) {
-        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        use bevy::render::{
+            render_resource::*,
+            renderer::{RenderDevice, RenderQueue},
+        };
         let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
         world.init_resource::<tiled_lighting_gpu::NativeTlfPipelines>();
         let device = world.resource::<RenderDevice>();
         let queue = world.resource::<RenderQueue>();
-        let pipeline = &world.resource::<tiled_lighting_gpu::NativeTlfPipelines>().depth;
-        let make_depth = || device.create_texture(&TextureDescriptor {
-            label: None, size: Extent3d { width:32,height:32,depth_or_array_layers:1 },
-            mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,
-            format:TextureFormat::Depth32Float,usage:TextureUsages::TEXTURE_BINDING|TextureUsages::RENDER_ATTACHMENT,
-            view_formats:&[],
-        });
-        let opaque = make_depth(); let alpha = make_depth();
+        let pipeline = &world
+            .resource::<tiled_lighting_gpu::NativeTlfPipelines>()
+            .depth;
+        let make_depth = || {
+            device.create_texture(&TextureDescriptor {
+                label: None,
+                size: Extent3d {
+                    width: 32,
+                    height: 32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+        };
+        let opaque = make_depth();
+        let alpha = make_depth();
         let output = device.create_texture(&TextureDescriptor {
-            label:None,size:Extent3d {width:2,height:2,depth_or_array_layers:1},
-            mip_level_count:1,sample_count:1,dimension:TextureDimension::D2,
-            format:TextureFormat::Rgba32Float,usage:TextureUsages::STORAGE_BINDING|TextureUsages::COPY_SRC,
-            view_formats:&[],
+            label: None,
+            size: Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba32Float,
+            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+            view_formats: &[],
         });
-        let original=native_case.map(tiled_lighting::original_depth_case);
-        let unproject=original.as_ref().map_or([-0.1,0.00001],|v|v.1);
-        let mut depths = [Vec::<f32>::new(),Vec::<f32>::new()];
-        for y in 0..32 { for x in 0..32 {
-            let tile = x/16+2*(y/16);
-            if let Some((input,_,_))=&original {
-                let pixel=(y%16)*16+x%16;
-                depths[0].push(input[pixel]);depths[1].push(input[pixel+256]);
-            } else {
-                depths[0].push(if tile == 3 {0.0} else {((x+y)%4+1) as f32*0.25});
-                depths[1].push(if tile == 3 || (x+y)%3==0 {0.0} else {0.125+((x*3+y)%5) as f32*0.125});
+        let original = native_case.map(tiled_lighting::original_depth_case);
+        let unproject = original.as_ref().map_or([-0.1, 0.00001], |v| v.1);
+        let mut depths = [Vec::<f32>::new(), Vec::<f32>::new()];
+        for y in 0..32 {
+            for x in 0..32 {
+                let tile = x / 16 + 2 * (y / 16);
+                if let Some((input, _, _)) = &original {
+                    let pixel = (y % 16) * 16 + x % 16;
+                    depths[0].push(input[pixel]);
+                    depths[1].push(input[pixel + 256]);
+                } else {
+                    depths[0].push(if tile == 3 {
+                        0.0
+                    } else {
+                        ((x + y) % 4 + 1) as f32 * 0.25
+                    });
+                    depths[1].push(if tile == 3 || (x + y) % 3 == 0 {
+                        0.0
+                    } else {
+                        0.125 + ((x * 3 + y) % 5) as f32 * 0.125
+                    });
+                }
             }
-        } }
+        }
         // Depth32Float cannot be Queue::write_texture'd. Populate actual
         // depth attachments through the rasterizer, as the engine does.
-        let fill_module=device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label:Some("synthetic depth fixture"),source:ShaderSource::Wgsl(r#"
+        let fill_module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("synthetic depth fixture"),
+            source: ShaderSource::Wgsl(
+                r#"
                 @group(0) @binding(0) var<storage,read> depths:array<f32>;
                 @vertex fn vertex(@builtin(vertex_index) id:u32)->@builtin(position) vec4<f32> {
                     let p=array<vec2<f32>,3>(vec2<f32>(-1,-1),vec2<f32>(3,-1),vec2<f32>(-1,3));
@@ -6889,84 +9154,231 @@ fn exercise_lists(@builtin(global_invocation_id) gid: vec3<u32>) {
                 @fragment fn fragment(@builtin(position) p:vec4<f32>)->@builtin(frag_depth) f32 {
                     return depths[u32(p.y)*32u+u32(p.x)];
                 }
-            "#.into()),
+            "#
+                .into(),
+            ),
         });
-        let fill_pipeline=device.wgpu_device().create_render_pipeline(&RawRenderPipelineDescriptor {
-            label:None,layout:None,
-            vertex:RawVertexState {module:&fill_module,entry_point:Some("vertex"),compilation_options:default(),buffers:&[]},
-            fragment:Some(RawFragmentState {module:&fill_module,entry_point:Some("fragment"),compilation_options:default(),targets:&[]}),
-            primitive:default(),multisample:default(),multiview_mask:None,cache:None,
-            depth_stencil:Some(DepthStencilState {format:TextureFormat::Depth32Float,depth_write_enabled:Some(true),
-                depth_compare:Some(CompareFunction::Always),stencil:default(),bias:default()}),
-        });
-        let mut fill_encoder=device.create_command_encoder(&default());
-        for (texture,values) in [(&opaque,&depths[0]),(&alpha,&depths[1])] {
-            let bytes=values.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>();
-            let data=device.create_buffer_with_data(&BufferInitDescriptor {label:None,contents:&bytes,usage:BufferUsages::STORAGE});
-            let bind=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,
-                layout:&fill_pipeline.get_bind_group_layout(0),entries:&[BindGroupEntry {binding:0,resource:data.as_entire_binding()}]});
-            let view=texture.create_view(&default());
-            let mut pass=fill_encoder.begin_render_pass(&RenderPassDescriptor {label:None,color_attachments:&[],
-                depth_stencil_attachment:Some(RenderPassDepthStencilAttachment {view:&view,
-                    depth_ops:Some(Operations {load:LoadOp::Clear(0.0),store:StoreOp::Store}),stencil_ops:None}),
-                timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
-            pass.set_pipeline(&fill_pipeline);pass.set_bind_group(0,&bind,&[]);pass.draw(0..3,0..1);
+        let fill_pipeline =
+            device
+                .wgpu_device()
+                .create_render_pipeline(&RawRenderPipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    vertex: RawVertexState {
+                        module: &fill_module,
+                        entry_point: Some("vertex"),
+                        compilation_options: default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(RawFragmentState {
+                        module: &fill_module,
+                        entry_point: Some("fragment"),
+                        compilation_options: default(),
+                        targets: &[],
+                    }),
+                    primitive: default(),
+                    multisample: default(),
+                    multiview_mask: None,
+                    cache: None,
+                    depth_stencil: Some(DepthStencilState {
+                        format: TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(CompareFunction::Always),
+                        stencil: default(),
+                        bias: default(),
+                    }),
+                });
+        let mut fill_encoder = device.create_command_encoder(&default());
+        for (texture, values) in [(&opaque, &depths[0]), (&alpha, &depths[1])] {
+            let bytes = values
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>();
+            let data = device.create_buffer_with_data(&BufferInitDescriptor {
+                label: None,
+                contents: &bytes,
+                usage: BufferUsages::STORAGE,
+            });
+            let bind = device
+                .wgpu_device()
+                .create_bind_group(&BindGroupDescriptor {
+                    label: None,
+                    layout: &fill_pipeline.get_bind_group_layout(0),
+                    entries: &[BindGroupEntry {
+                        binding: 0,
+                        resource: data.as_entire_binding(),
+                    }],
+                });
+            let view = texture.create_view(&default());
+            let mut pass = fill_encoder.begin_render_pass(&RenderPassDescriptor {
+                label: None,
+                color_attachments: &[],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(0.0),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&fill_pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.draw(0..3, 0..1);
         }
         queue.submit([fill_encoder.finish()]);
         if native_case.is_none() {
             let pipelines = world.resource::<tiled_lighting_gpu::NativeTlfPipelines>();
             for entry in ["fragment", "identity", "downscale"] {
-                depth_copy_shader_matches_fixture(device, queue, pipelines, &opaque, &depths[0], entry);
+                depth_copy_shader_matches_fixture(
+                    device, queue, pipelines, &opaque, &depths[0], entry,
+                );
             }
         }
         let params = device.create_buffer_with_data(&BufferInitDescriptor {
-            label:None,contents:&[unproject[0].to_bits(),unproject[1].to_bits(),0,0,16,0,0,0]
-                .into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>(),usage:BufferUsages::UNIFORM,
+            label: None,
+            contents: &[
+                unproject[0].to_bits(),
+                unproject[1].to_bits(),
+                0,
+                0,
+                16,
+                0,
+                0,
+                0,
+            ]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>(),
+            usage: BufferUsages::UNIFORM,
         });
         let sampler = device.create_sampler(&SamplerDescriptor {
-            min_filter:FilterMode::Linear,mag_filter:FilterMode::Linear,..default()
+            min_filter: FilterMode::Linear,
+            mag_filter: FilterMode::Linear,
+            ..default()
         });
-        let opaque_view=opaque.create_view(&default());let alpha_view=alpha.create_view(&default());
-        let output_view=output.create_view(&default());
-        let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
-            label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
-                BindGroupEntry {binding:0,resource:BindingResource::TextureView(&opaque_view)},
-                BindGroupEntry {binding:1,resource:BindingResource::TextureView(&alpha_view)},
-                BindGroupEntry {binding:2,resource:BindingResource::Sampler(&sampler)},
-                BindGroupEntry {binding:3,resource:params.as_entire_binding()},
-                BindGroupEntry {binding:4,resource:BindingResource::TextureView(&output_view)},
-            ],
+        let opaque_view = opaque.create_view(&default());
+        let alpha_view = alpha.create_view(&default());
+        let output_view = output.create_view(&default());
+        let bind = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&opaque_view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&alpha_view),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Sampler(&sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: params.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: BindingResource::TextureView(&output_view),
+                    },
+                ],
+            });
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: 512,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
-        let readback=device.create_buffer(&BufferDescriptor {label:None,size:512,
-            usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
-        let mut encoder=device.create_command_encoder(&default());
-        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor {label:None,timestamp_writes:None});
-            pass.set_pipeline(&pipeline);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(2,2,1);}
-        encoder.copy_texture_to_buffer(TexelCopyTextureInfo {texture:&output,mip_level:0,origin:Origin3d::ZERO,aspect:TextureAspect::All},
-            TexelCopyBufferInfo {buffer:&readback,layout:TexelCopyBufferLayout {offset:0,bytes_per_row:Some(256),rows_per_image:Some(2)}},
-            Extent3d {width:2,height:2,depth_or_array_layers:1});
-        let submission=queue.submit([encoder.finish()]);let(tx,rx)=std::sync::mpsc::channel();
-        readback.slice(..).map_async(MapMode::Read,move|result|{tx.send(result).unwrap();});
-        device.poll(PollType::Wait {submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(10))}).unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
-        let bytes=readback.slice(..).get_mapped_range();
-        for ty in 0..2 {for tx in 0..2 {
-            let mut tile=Vec::new();for source in &depths {for y in ty*16..ty*16+16 {for x in tx*16..tx*16+16 {tile.push(source[y*32+x]);}}}
-            let expected=original.as_ref().map(|v|v.2).unwrap_or_else(||
-                tiled_lighting::reduce_depth_tile(&tile,unproject).map(f32::to_bits));
-            for lane in 0..4 {
-                let at=ty*256+tx*16+lane*4;
-                let actual=u32::from_le_bytes(bytes[at..at+4].try_into().unwrap());
-                if lane==3 {assert_eq!(actual,expected[lane],"case{native_case:?} tile{tx},{ty} depth mask");}
-                else {assert!(actual.abs_diff(expected[lane])<=1,"case{native_case:?} tile{tx},{ty} endpoint{lane}: {actual:08x} vs {:08x}",expected[lane]);}
+        let mut encoder = device.create_command_encoder(&default());
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(2, 2, 1);
+        }
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: &output,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(2),
+                },
+            },
+            Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device
+            .poll(PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        let bytes = readback.slice(..).get_mapped_range();
+        for ty in 0..2 {
+            for tx in 0..2 {
+                let mut tile = Vec::new();
+                for source in &depths {
+                    for y in ty * 16..ty * 16 + 16 {
+                        for x in tx * 16..tx * 16 + 16 {
+                            tile.push(source[y * 32 + x]);
+                        }
+                    }
+                }
+                let expected = original.as_ref().map(|v| v.2).unwrap_or_else(|| {
+                    tiled_lighting::reduce_depth_tile(&tile, unproject).map(f32::to_bits)
+                });
+                for lane in 0..4 {
+                    let at = ty * 256 + tx * 16 + lane * 4;
+                    let actual = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+                    if lane == 3 {
+                        assert_eq!(
+                            actual, expected[lane],
+                            "case{native_case:?} tile{tx},{ty} depth mask"
+                        );
+                    } else {
+                        assert!(actual.abs_diff(expected[lane])<=1,"case{native_case:?} tile{tx},{ty} endpoint{lane}: {actual:08x} vs {:08x}",expected[lane]);
+                    }
+                }
             }
-        }}
-        drop(bytes);readback.unmap();
-
+        }
+        drop(bytes);
+        readback.unmap();
     }
 
     fn native_probe_shader_matches_original(app: &mut App) {
-        use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
+        use bevy::render::{
+            render_resource::*,
+            renderer::{RenderDevice, RenderQueue},
+        };
         let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
         let device = world.resource::<RenderDevice>();
         let queue = world.resource::<RenderQueue>();
@@ -7005,62 +9417,160 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
 }
 "#);
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("original PNW vertex SH numerical parity"), source: ShaderSource::Wgsl(source.into()),
+            label: Some("original PNW vertex SH numerical parity"),
+            source: ShaderSource::Wgsl(source.into()),
         });
-        let pipeline = device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {
-            label: None, layout: None, module: &module, entry_point: Some("main"), compilation_options: default(), cache: None,
-        });
+        let pipeline =
+            device
+                .wgpu_device()
+                .create_compute_pipeline(&RawComputePipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("main"),
+                    compilation_options: default(),
+                    cache: None,
+                });
         let mut sh = Vec::new();
-        for id in 0..64 { for i in 0..9 { for c in 0..4 {
-            sh.push(if c == 3 || id == 0 { 0.0f32 } else { (((id*17+i*5+c*3)%19) as i32-9) as f32/16.0 });
-        } } }
+        for id in 0..64 {
+            for i in 0..9 {
+                for c in 0..4 {
+                    sh.push(if c == 3 || id == 0 {
+                        0.0f32
+                    } else {
+                        (((id * 17 + i * 5 + c * 3) % 19) as i32 - 9) as f32 / 16.0
+                    });
+                }
+            }
+        }
         let sh_bytes = sh.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
         let coefficients = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: None, contents: &sh_bytes, usage: BufferUsages::STORAGE,
+            label: None,
+            contents: &sh_bytes,
+            usage: BufferUsages::STORAGE,
         });
         // One tetrahedron with four primary IDs and exact unit-axis positions.
-        let mut words = vec![8u32,9,10,16,1,1,1,4, 0,0, 0,1,2,3,0x00010000,0x00030002];
-        for i in 0..4 { for axis in 0..3 { words.push((if i == axis { 1.0f32 } else { 0.0f32 }).to_bits()); }
-            words.push(255u32 << (8*i)); }
-        let word_bytes = words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
-        let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: None, contents: &word_bytes, usage: BufferUsages::STORAGE,
-        });
-        let size = (64*9+4*9)*16;
-        let output = device.create_buffer(&BufferDescriptor { label: None, size, usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let readback = device.create_buffer(&BufferDescriptor { label: None, size, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
-        let bind = device.wgpu_device().create_bind_group(&BindGroupDescriptor {
-            label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
-                BindGroupEntry { binding: 100, resource: coefficients.as_entire_binding() },
-                BindGroupEntry { binding: 119, resource: vertices.as_entire_binding() },
-                BindGroupEntry { binding: 120, resource: output.as_entire_binding() },
-            ],
-        });
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
-        { let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&pipeline); pass.set_bind_group(0,&bind,&[]); pass.dispatch_workgroups(64,1,1); }
-        encoder.copy_buffer_to_buffer(&output,0,&readback,0,size);
-        let submission = queue.submit([encoder.finish()]);
-        let (tx,rx) = std::sync::mpsc::channel();
-        readback.slice(..).map_async(MapMode::Read,move |result| { tx.send(result).unwrap(); });
-        device.poll(PollType::Wait { submission_index: Some(submission), timeout: Some(std::time::Duration::from_secs(10)) }).unwrap();
-        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap();
-        let bytes = readback.slice(..).get_mapped_range();
-        let actual = bytes.chunks_exact(4).map(|word| f32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
-        drop(bytes); readback.unmap();
-        for (id,line) in include_str!("../../analysis/native_indirect_lighting_cases.txt").lines().enumerate() {
-            let expected = line.split_whitespace().map(|v| f32::from_bits(u32::from_str_radix(v,16).unwrap())).collect::<Vec<_>>();
-            for (row,native) in [2,9,10,11,16,17,18,19,20].into_iter().enumerate() { for c in 0..4 {
-                let a = actual[(id*9+row)*4+c]; let b = expected[native*4+c];
-                assert!((a-b).abs() <= 3e-5*b.abs().max(1.0), "WGSL/native HLSL case{id} row{row} channel{c}: {a} != {b}");
-            } }
+        let mut words = vec![
+            8u32, 9, 10, 16, 1, 1, 1, 4, 0, 0, 0, 1, 2, 3, 0x00010000, 0x00030002,
+        ];
+        for i in 0..4 {
+            for axis in 0..3 {
+                words.push((if i == axis { 1.0f32 } else { 0.0f32 }).to_bits());
+            }
+            words.push(255u32 << (8 * i));
         }
-        for (id,weights) in [[0.25f32;4],[1.0,0.0,0.0,0.0],[-0.25,1.25,-0.5,0.5],[0.0,0.0,0.0,1.0]].into_iter().enumerate() {
-            for i in 0..9 { for c in 0..3 {
-                let expected: f32 = (0..4).map(|p| weights[p]*sh[(p*9+i)*4+c]).sum();
-                let a = actual[(64*9+id*9+i)*4+c];
-                assert!((a-expected).abs() < 1e-5, "PNW GPU case{id} coefficient{i} channel{c}: {a} != {expected}");
-            } }
+        let word_bytes = words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: None,
+            contents: &word_bytes,
+            usage: BufferUsages::STORAGE,
+        });
+        let size = (64 * 9 + 4 * 9) * 16;
+        let output = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let bind = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 100,
+                        resource: coefficients.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 119,
+                        resource: vertices.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 120,
+                        resource: output.as_entire_binding(),
+                    },
+                ],
+            });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(64, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+        let submission = queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device
+            .poll(PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .unwrap();
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        let bytes = readback.slice(..).get_mapped_range();
+        let actual = bytes
+            .chunks_exact(4)
+            .map(|word| f32::from_le_bytes(word.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        drop(bytes);
+        readback.unmap();
+        for (id, line) in include_str!("../../analysis/native_indirect_lighting_cases.txt")
+            .lines()
+            .enumerate()
+        {
+            let expected = line
+                .split_whitespace()
+                .map(|v| f32::from_bits(u32::from_str_radix(v, 16).unwrap()))
+                .collect::<Vec<_>>();
+            for (row, native) in [2, 9, 10, 11, 16, 17, 18, 19, 20].into_iter().enumerate() {
+                for c in 0..4 {
+                    let a = actual[(id * 9 + row) * 4 + c];
+                    let b = expected[native * 4 + c];
+                    assert!(
+                        (a - b).abs() <= 3e-5 * b.abs().max(1.0),
+                        "WGSL/native HLSL case{id} row{row} channel{c}: {a} != {b}"
+                    );
+                }
+            }
+        }
+        for (id, weights) in [
+            [0.25f32; 4],
+            [1.0, 0.0, 0.0, 0.0],
+            [-0.25, 1.25, -0.5, 0.5],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for i in 0..9 {
+                for c in 0..3 {
+                    let expected: f32 = (0..4).map(|p| weights[p] * sh[(p * 9 + i) * 4 + c]).sum();
+                    let a = actual[(64 * 9 + id * 9 + i) * 4 + c];
+                    assert!(
+                        (a - expected).abs() < 1e-5,
+                        "PNW GPU case{id} coefficient{i} channel{c}: {a} != {expected}"
+                    );
+                }
+            }
         }
         eprintln!("GPU native SH parity:64 original HLSL packed one/two-sided cases +4 PNW reference/interpolation cases passed");
     }
@@ -7068,22 +9578,117 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
     #[test]
     fn authored_mesh_retains_native_uv_color_and_independent_sheared_basis() {
         use bevy::mesh::VertexAttributeValues;
-        let packed = [0x00, 0x38, 0x00, 0xbc, 127, 0, 0, 42, 0, 127, 0, 129, 0, 128, 255, 64];
-        let linear = [1.0, 2.0, 3.0, 1000.0, 0.0, 1.0, 4.0, 2000.0, 0.0, 0.0, 1.0, 3000.0];
-        let mesh = authored_mesh(&[Vec3::ZERO], &[[0.1, 0.2]], &[], &[packed], |v| transformed_direction(&linear, v));
-        let f3 = |attribute| match mesh.attribute(attribute).unwrap() { VertexAttributeValues::Float32x3(v) => v[0], _ => panic!("wrong vertex type") };
+        let packed = [
+            0x00, 0x38, 0x00, 0xbc, 127, 0, 0, 42, 0, 127, 0, 129, 0, 128, 255, 64,
+        ];
+        let linear = [
+            1.0, 2.0, 3.0, 1000.0, 0.0, 1.0, 4.0, 2000.0, 0.0, 0.0, 1.0, 3000.0,
+        ];
+        let mesh = authored_mesh(&[Vec3::ZERO], &[[0.1, 0.2]], &[], &[packed], |v| {
+            transformed_direction(&linear, v)
+        });
+        let f3 = |attribute| match mesh.attribute(attribute).unwrap() {
+            VertexAttributeValues::Float32x3(v) => v[0],
+            _ => panic!("wrong vertex type"),
+        };
         assert_eq!(f3(Mesh::ATTRIBUTE_NORMAL), [1.0, 0.0, 0.0]);
         assert_eq!(f3(DH2_BITANGENT), [-3.0, -1.0, 4.0]);
-        let VertexAttributeValues::Float32x4(t) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap() else { panic!() };
+        let VertexAttributeValues::Float32x4(t) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(t[0], [2.0, 0.0, -1.0, -1.0]);
-        let VertexAttributeValues::Float32x4(color) = mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap() else { panic!() };
+        let VertexAttributeValues::Float32x4(color) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(color[0], [0.0, 128.0 / 255.0, 1.0, 64.0 / 255.0]);
-        let VertexAttributeValues::Float32x2(uv1) = mesh.attribute(Mesh::ATTRIBUTE_UV_1).unwrap() else { panic!() };
+        let VertexAttributeValues::Float32x2(uv1) = mesh.attribute(Mesh::ATTRIBUTE_UV_1).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(uv1[0], [0.5, -1.0]);
         // MD6 declarations omit color, not an inferred byte channel.
         let md6_packed: [u8; 12] = packed[..12].try_into().unwrap();
         let md6 = authored_mesh(&[Vec3::ZERO], &[[0.0; 2]], &[], &[md6_packed], |v| v);
         assert!(md6.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+    }
+
+    #[test]
+    fn native_vegetation_channels_keep_local_inputs_on_baked_meshes() {
+        use bevy::mesh::VertexAttributeValues;
+        let packed = [
+            0x00, 0x38, 0x00, 0xbc, 128, 64, 127, 0, 0, 127, 0, 127, 128, 64, 255, 0,
+        ];
+        let local = [[2.0, 3.0, 4.0]];
+        let world = [Vec3::new(100.0, 200.0, 300.0)];
+        let mut mesh = authored_mesh(&world, &[[0.1, 0.2]], &[], &[packed], |v| v * 2.0);
+        retain_native_vegetation_channels(&mut mesh, &local, &[packed]).unwrap();
+        let f3 = |attribute| match mesh.attribute(attribute).unwrap() {
+            VertexAttributeValues::Float32x3(values) => values[0],
+            _ => panic!("wrong vertex type"),
+        };
+        assert_eq!(f3(Mesh::ATTRIBUTE_POSITION), world[0].to_array());
+        assert_eq!(f3(Mesh::ATTRIBUTE_NORMAL), [-2.0, 128.0 / 127.0, 2.0]);
+        assert_eq!(
+            f3(native_shadow_scene::NATIVE_VEGETATION_POSITION),
+            local[0]
+        );
+        assert_eq!(
+            f3(native_shadow_scene::NATIVE_VEGETATION_COLOR),
+            [128.0 / 255.0, 64.0 / 255.0, 1.0]
+        );
+        let VertexAttributeValues::Float32x2(normal) = mesh
+            .attribute(native_shadow_scene::NATIVE_VEGETATION_NORMAL)
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(normal[0], [-1.0, 64.0 / 127.0]);
+        let VertexAttributeValues::Float32x2(uv) = mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(uv[0], [0.1, 0.2]);
+
+        let short: [u8; 12] = packed[..12].try_into().unwrap();
+        let mut no_color = authored_mesh(&world, &[[0.0; 2]], &[], &[short], |v| v);
+        assert!(retain_native_vegetation_channels(&mut no_color, &local, &[short]).is_err());
+        assert!(no_color
+            .attribute(native_shadow_scene::NATIVE_VEGETATION_POSITION)
+            .is_none());
+        assert!(retain_native_vegetation_channels(&mut no_color, &[], &[packed]).is_err());
+    }
+
+    #[test]
+    fn native_vegetation_mesh_channels_are_selective_and_shared_once() {
+        use bevy::mesh::VertexAttributeValues;
+        let packed = [[0u8; 16]];
+        let local = [[2.0, 3.0, 4.0]];
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(source_mesh(&local, &[[0.0; 2]], &[], &packed, false));
+        let mut inputs = NativeVegetationMeshInputs::default();
+        inputs.prepare(false, &handle, &mut meshes, &local, &packed);
+        assert!(inputs.0.is_empty());
+        assert!(meshes
+            .get(&handle)
+            .unwrap()
+            .attribute(native_shadow_scene::NATIVE_VEGETATION_POSITION)
+            .is_none());
+        inputs.prepare(true, &handle, &mut meshes, &local, &packed);
+        assert!(inputs.0[&handle.id()].is_ok());
+        let raw_pointer = |mesh: &Mesh| match mesh
+            .attribute(native_shadow_scene::NATIVE_VEGETATION_POSITION)
+            .unwrap()
+        {
+            VertexAttributeValues::Float32x3(values) => values.as_ptr(),
+            _ => panic!("wrong vertex type"),
+        };
+        let first = raw_pointer(meshes.get(&handle).unwrap());
+        inputs.prepare(true, &handle, &mut meshes, &local, &packed);
+        assert_eq!(inputs.0.len(), 1);
+        assert_eq!(raw_pointer(meshes.get(&handle).unwrap()), first);
     }
 
     #[test]
@@ -7120,7 +9725,9 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
         world.insert_resource(Time::<()>::default());
         world.insert_resource(SceneRenderQueue::default());
         let window = world.spawn(Window::default()).id();
-        let overlay = world.spawn((Text::new("FPS: measuring"), FrameRateOverlay)).id();
+        let overlay = world
+            .spawn((Text::new("FPS: measuring"), FrameRateOverlay))
+            .id();
         world.run_system_once(show_frame_rate).unwrap();
         assert_eq!(
             world.get::<Window>(window).unwrap().title,
@@ -7149,10 +9756,13 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
 
         let crossing_camera_plane =
             Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::new(0.0, 0.0, 1.0, 1.0), Vec4::ZERO);
-        assert!(
-            projected_local_light_area_pixels(crossing_camera_plane, Vec3::ZERO, 0.1, viewport,)
-                .is_none()
-        );
+        assert!(projected_local_light_area_pixels(
+            crossing_camera_plane,
+            Vec3::ZERO,
+            0.1,
+            viewport,
+        )
+        .is_none());
 
         let near_camera_plane =
             Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(0.0, 0.0, 0.0, 1.0e-8));
@@ -7308,6 +9918,374 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
     }
 
     #[test]
+    #[ignore = "requires installed catalog and actual EOTW BWM material fixture"]
+    fn native_shadow_sources_resolve_actual_world_materials() {
+        let catalog = archive::Catalog::open(Path::new(
+            "D:/Programs/Steam/steamapps/common/Dishonored2/base",
+        ))
+        .unwrap();
+        let world = world_mesh::parse(&fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()).unwrap();
+        let mut library = shader_cache::NativeProgramLibrary::open(
+            Path::new("D:/Programs/Steam/steamapps/common/Dishonored2/base"),
+            shader_cache::ShaderCacheBackend::Pc,
+            &catalog,
+        );
+        let names: std::collections::BTreeSet<_> = world
+            .objects
+            .iter()
+            .map(|object| &object.material_path)
+            .collect();
+        let mut counts = [0usize; 5]; // disabled, opaque, cutout, vegetation, unsupported
+        let mut vegetation_materials = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        // Explicit synthetic model inputs validate the real material encoder;
+        // they are not a claim that every actual entity owns group 3/offset 0.
+        let mut clock = game_clock::NativeGameClock::from_bytes([0; game_clock::STATE_SIZE]);
+        clock.initialize();
+        let clocks = game_clock::GameplayViewClocks::from_clock(&clock);
+        let mvp = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        for name in names {
+            let result = (|| {
+                let bytes = catalog
+                    .read(&format!("generated/decls/material/{name}.decl"))
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("missing material {name}"))?;
+                let surface = material_surface::Surface::parse(&bytes);
+                let program = match surface.main_program.as_deref() {
+                    Some(name) => catalog
+                        .read(&format!(
+                            "generated/decls/renderprog/{}.decl",
+                            name.to_ascii_lowercase()
+                        ))
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| format!("missing main program {name}"))?,
+                    None => return Err("material has no main program".into()),
+                };
+                let source = resolve_native_shadow_source_inputs(
+                    Some(&mut library),
+                    &bytes,
+                    &program,
+                    surface.main_program.as_deref(),
+                )?;
+                // Read-only native material snapshot, not a path exception:
+                // final class 2 / hairType 0 clears all three rigid banks.
+                if name == "models/environment/props/generic/clocks_01/clocks_glass.material" {
+                    assert_eq!(source.source, material::ShadowProgramSource::Disabled);
+                }
+                let resolved = resolve_native_rigid_shadow_source(
+                    Some(&mut library),
+                    &bytes,
+                    &source,
+                    surface.main_program.as_deref(),
+                );
+                if let Err(error) = &resolved {
+                    let library = library.as_mut().map_err(|error| error.to_string())?;
+                    let main = surface.main_program.as_deref().unwrap();
+                    let selected = source.override_program.as_deref().unwrap_or(main);
+                    let parameters = native_shadow_variant_overrides(
+                        library,
+                        &bytes,
+                        &source,
+                        Some(main),
+                        selected,
+                    )?;
+                    let values: Vec<_> = [
+                        "noShadow",
+                        "invisible",
+                        "hairType",
+                        "skyType",
+                        "useDirectInstancing",
+                        "useMultiInstancing",
+                        "noScreenShadows",
+                        "translucency_hq/enable",
+                        "translucency/enable",
+                    ]
+                    .into_iter()
+                    .map(|name| {
+                        (
+                            name,
+                            library.option_value(main.as_bytes(), &parameters, name.as_bytes()),
+                        )
+                    })
+                    .collect();
+                    let requested_hash = library
+                        .specialization_hash(selected.as_bytes(), &parameters)?
+                        .map(|hash| format!("{hash:08x}"));
+                    let stage_ids = |data: render_program::D3dVariantData| {
+                        data.stages
+                            .into_iter()
+                            .map(|stage| {
+                                (
+                                    stage.kind,
+                                    match stage.bytecode {
+                                        render_program::StageBytecode::Absent => None,
+                                        render_program::StageBytecode::Cached(id) => Some(id),
+                                        render_program::StageBytecode::Inline(_) => Some(u32::MAX),
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let base = library
+                        .serialized_variant(selected.as_bytes(), &parameters)?
+                        .map(stage_ids);
+                    let mut banks = Vec::new();
+                    for (enabled, excluded) in [
+                        ("useDirectInstancing", "useMultiInstancing"),
+                        ("useMultiInstancing", "useDirectInstancing"),
+                    ] {
+                        if library.option_value(
+                            main.as_bytes(),
+                            &parameters,
+                            excluded.as_bytes(),
+                        )? != 0
+                        {
+                            continue;
+                        }
+                        let mut instanced = parameters.clone();
+                        instanced
+                            .parameters
+                            .push(render_program::SerializedParameter {
+                                name: enabled.as_bytes().to_vec(),
+                                kind: render_program::RenderParameterKind::Option,
+                                value: render_program::SerializedParameterValue::Words([
+                                    1, 0, 0, 0,
+                                ]),
+                            });
+                        let stages = library
+                            .serialized_variant(selected.as_bytes(), &instanced)?
+                            .map(stage_ids);
+                        let hash = library
+                            .specialization_hash(selected.as_bytes(), &instanced)?
+                            .map(|hash| format!("{hash:08x}"));
+                        banks.push((enabled, hash, stages));
+                    }
+                    let main_state = library
+                        .definition(main.as_bytes())?
+                        .unwrap()
+                        .native_render_state();
+                    return Err(format!("{error}; requested native signature {requested_hash:?}; base {base:?}; blend parsed={:08x} mainRpd={:08x}; effective main options {values:?}; native instance banks {banks:?}",
+                        source.main_blend_state, main_state[0]));
+                }
+                resolved
+            })();
+            match result {
+                Ok(None) => counts[0] += 1,
+                Ok(Some(source)) => {
+                    let material = catalog
+                        .read(&format!("generated/decls/material/{name}.decl"))
+                        .unwrap()
+                        .unwrap();
+                    let library = library.as_mut().unwrap();
+                    let parameters = resolve_native_shadow_material_parameters(
+                        library,
+                        &catalog,
+                        &material,
+                        source.class,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{name}: native shadow material parameters: {error}")
+                    });
+                    for (parameter, default) in &parameters.defaults {
+                        let expected = library
+                            .registered_float_vector(
+                                &catalog,
+                                &parameters.overrides,
+                                parameter,
+                                None,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            parameters
+                                .vector(parameter, None)
+                                .unwrap()
+                                .map(f32::to_bits),
+                            expected
+                        );
+                        let fallback = render_program::SerializedParameterBlock {
+                            flags: 0,
+                            parameters: vec![render_program::SerializedParameter {
+                                name: parameter.clone(),
+                                kind: render_program::RenderParameterKind::Uniform,
+                                value: render_program::SerializedParameterValue::Words(
+                                    [11.0f32.to_bits(); 4],
+                                ),
+                            }],
+                        };
+                        let expected = parameters
+                            .overrides
+                            .vector_words(parameter, 0x30, *default, Some(&fallback))
+                            .unwrap();
+                        assert_eq!(
+                            parameters
+                                .vector(parameter, Some(&fallback))
+                                .unwrap()
+                                .map(f32::to_bits),
+                            expected
+                        );
+                    }
+                    if source.class == shader_cache::CachedRigidShadowClass::Vegetation {
+                        let wind = parameters.vegetation(None).unwrap();
+                        let uv = parameters.vector(b"layer0_scalebias", None).unwrap();
+                        for group in 0..game_clock::GROUP_COUNT {
+                            let flags = (group as u8) << 4;
+                            let actual = parameters
+                                .vegetation_instance_cb(None, &clocks, 0.5, flags, &mvp, 1.0)
+                                .unwrap();
+                            let local_time = render_model::model_shader_local_time(
+                                0.5,
+                                clock.time(group).unwrap(),
+                                clock.delta(group).unwrap(),
+                            );
+                            let expected =
+                                native_shadow_scene::native_vegetation_shadow_instance_cb(
+                                    uv, &wind, &mvp, local_time, 1.0,
+                                );
+                            assert_eq!(actual, expected, "{name}: model clock group {group}");
+                        }
+                        assert!(parameters
+                            .vegetation_instance_cb(None, &clocks, 0.5, 0x50, &mvp, 1.0)
+                            .is_err());
+                    }
+                    match source.class {
+                        shader_cache::CachedRigidShadowClass::Opaque => counts[1] += 1,
+                        shader_cache::CachedRigidShadowClass::AlphaTested => counts[2] += 1,
+                        shader_cache::CachedRigidShadowClass::Vegetation => {
+                            counts[3] += 1;
+                            if vegetation_materials.is_empty() {
+                                let definition = library
+                                    .definition(&source.program)
+                                    .unwrap()
+                                    .unwrap()
+                                    .clone();
+                                let material = catalog
+                                    .read(&format!("generated/decls/material/{name}.decl"))
+                                    .unwrap()
+                                    .unwrap();
+                                let mut evidence = format!("material={name}\nprogram={}\ndefaults={:?}\nmaterialSource:\n{}\n",
+                                String::from_utf8_lossy(&source.program), definition.defaults, String::from_utf8_lossy(&material));
+                                let mut parameters = std::collections::BTreeSet::new();
+                                for stage in &source.variant.stages {
+                                    let names: Vec<_> = stage
+                                        .bindings
+                                        .parameters
+                                        .iter()
+                                        .filter_map(|entry| {
+                                            let name =
+                                                entry.name.bytes(&library.cache.names).unwrap();
+                                            let key: Vec<_> = name
+                                                .split(|byte| *byte == 0)
+                                                .next()
+                                                .unwrap()
+                                                .iter()
+                                                .map(u8::to_ascii_lowercase)
+                                                .collect();
+                                            (library.parameter_kinds.get(&key)
+                                                == Some(
+                                                    &render_program::RenderParameterKind::Uniform,
+                                                ))
+                                            .then(|| String::from_utf8_lossy(&key).into_owned())
+                                        })
+                                        .collect();
+                                    evidence.push_str(&format!(
+                                        "stage={} layout={:?} uniforms={names:?}\n",
+                                        stage.kind, stage.layout
+                                    ));
+                                    parameters.extend(names);
+                                }
+                                for parameter in parameters {
+                                    let path = format!(
+                                        "generated/decls/renderparm/{}.decl",
+                                        parameter.to_ascii_lowercase()
+                                    );
+                                    let bytes = catalog.read(&path).unwrap().unwrap();
+                                    evidence.push_str(&format!(
+                                        "\n{parameter}:\n{}\n",
+                                        String::from_utf8_lossy(&bytes)
+                                    ));
+                                }
+                                fs::write(
+                                    "artifacts/native-vegetation-uniform-evidence.txt",
+                                    evidence,
+                                )
+                                .unwrap();
+                            }
+                            vegetation_materials.insert(name.to_string());
+                        }
+                    }
+                }
+                Err(error) => {
+                    counts[4] += 1;
+                    failures.push(format!("{name}: {error}"));
+                }
+            }
+        }
+        // Exercise the production mesh/input preparation against every actual
+        // world mesh using a verified wind program, including shared LOD data.
+        let mut geometry = Assets::<Mesh>::default();
+        let mut handles = HashMap::new();
+        let mut inputs = NativeVegetationMeshInputs::default();
+        for object in &world.objects {
+            if !vegetation_materials.contains(&object.material_path) {
+                continue;
+            }
+            let source = &world.meshes[object.mesh_index];
+            let handle = handles.entry(object.mesh_index).or_insert_with(|| {
+                geometry.add(source_mesh(
+                    &source.positions,
+                    &source.uvs,
+                    &source.indices,
+                    &source.packed_channels,
+                    false,
+                ))
+            });
+            inputs.prepare(
+                true,
+                handle,
+                &mut geometry,
+                &source.positions,
+                &source.packed_channels,
+            );
+            assert!(
+                inputs.0[&handle.id()].is_ok(),
+                "{}: {:?}",
+                object.material_path,
+                inputs.0[&handle.id()]
+            );
+            let mesh = geometry.get(&*handle).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(raw)) =
+                mesh.attribute(native_shadow_scene::NATIVE_VEGETATION_POSITION)
+            else {
+                panic!("missing native local positions")
+            };
+            assert_eq!(raw, &source.positions);
+        }
+        assert!(vegetation_materials.is_empty() || !inputs.0.is_empty());
+        let vertices: usize = inputs
+            .0
+            .values()
+            .map(|result| *result.as_ref().unwrap())
+            .sum();
+        let geometry_report = format!("native vegetation geometry: {} shared meshes, {vertices} vertices, {} decoded attribute bytes", inputs.0.len(), vertices * std::mem::size_of::<[f32; 8]>());
+        eprintln!("{geometry_report}");
+        let report = format!("actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}\n{geometry_report}\n{}\n", failures.join("\n"));
+        fs::write("artifacts/native-world-shadow-source-coverage.txt", &report).unwrap();
+        eprintln!("actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}");
+        for error in failures.iter().take(25) {
+            eprintln!("unsupported shadow source: {error}");
+        }
+        assert!(
+            counts[1] + counts[2] > 0,
+            "no actual map materials resolved; this is NOT a complete-coverage assertion"
+        );
+    }
+
+    #[test]
     fn parsed_light_preset_inputs_reach_native_conversion() {
         let document = entities::parse(
             r#"Version 6
@@ -7354,8 +10332,8 @@ entity { entityDef lamp { class = "idLight"; edit = {
     #[test]
     fn area_preset_energy_reaches_actual_bevy_extraction_without_double_normalization() {
         use bevy::ecs::system::RunSystemOnce;
-        use bevy::pbr::{ExtractedRectLight, extract_lights};
-        use bevy::render::{MainWorld, sync_world::RenderEntity};
+        use bevy::pbr::{extract_lights, ExtractedRectLight};
+        use bevy::render::{sync_world::RenderEntity, MainWorld};
 
         let mut main_world = MainWorld::default();
         main_world.init_resource::<PointLightShadowMap>();
@@ -7810,6 +10788,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
         world.insert_resource(OriginalLocalLightCullEnabled(true));
         world.insert_resource(OriginalLocalLightCullStats::default());
         world.insert_resource(SceneRenderQueue {
+            static_world_model_present: false,
             instances: Vec::new(),
             active: 0,
             tome_render_instances: TomeRenderInstanceMap::default(),
@@ -7990,56 +10969,152 @@ entity { entityDef lamp { class = "idLight"; edit = {
         let stream = world.register_system(stream_visible_models);
         world.run_system(stream).unwrap();
         assert_eq!(world.resource::<StreamingDiagnostics>().status, "ok");
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
-        let initial_ids = world.resource::<SceneRenderQueue>().visible_authored_ids.clone();
-        let initial_cells = world.resource::<SceneRenderQueue>().visible_cell_indices.clone();
-        let initial_depth = world.resource::<SceneRenderQueue>().light_query_state.as_ref().unwrap().depth_grid.clone();
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=false"));
+        let initial_ids = world
+            .resource::<SceneRenderQueue>()
+            .visible_authored_ids
+            .clone();
+        let initial_cells = world
+            .resource::<SceneRenderQueue>()
+            .visible_cell_indices
+            .clone();
+        let initial_depth = world
+            .resource::<SceneRenderQueue>()
+            .light_query_state
+            .as_ref()
+            .unwrap()
+            .depth_grid
+            .clone();
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
-        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
-        assert_eq!(world.resource::<SceneRenderQueue>().visible_cell_indices, initial_cells);
-        assert_eq!(world.resource::<SceneRenderQueue>().light_query_state.as_ref().unwrap().depth_grid, initial_depth);
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=true"));
+        assert_eq!(
+            world.resource::<SceneRenderQueue>().visible_authored_ids,
+            initial_ids
+        );
+        assert_eq!(
+            world.resource::<SceneRenderQueue>().visible_cell_indices,
+            initial_cells
+        );
+        assert_eq!(
+            world
+                .resource::<SceneRenderQueue>()
+                .light_query_state
+                .as_ref()
+                .unwrap()
+                .depth_grid,
+            initial_depth
+        );
 
         // Replacing the resource must invalidate even identical query inputs.
         let unchanged_world = world.remove_resource::<TomeWorld>().unwrap();
         world.insert_resource(unchanged_world);
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=false"));
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=true"));
 
-        let projection = world.entity_mut(camera_entity).take::<Projection>().unwrap();
+        let projection = world
+            .entity_mut(camera_entity)
+            .take::<Projection>()
+            .unwrap();
         world.run_system(stream).unwrap();
-        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_not_ready");
-        assert!(world.resource::<SceneRenderQueue>().visible_authored_ids.is_empty());
-        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        assert_eq!(
+            world.resource::<StreamingDiagnostics>().status,
+            "camera_not_ready"
+        );
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .visible_authored_ids
+            .is_empty());
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .light_query_state
+            .is_none());
         world.entity_mut(camera_entity).insert(projection);
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
-        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=true"));
+        assert_eq!(
+            world.resource::<SceneRenderQueue>().visible_authored_ids,
+            initial_ids
+        );
 
-        let viewport = world.get_mut::<Camera>(camera_entity).unwrap().viewport.take();
+        let viewport = world
+            .get_mut::<Camera>(camera_entity)
+            .unwrap()
+            .viewport
+            .take();
         world.run_system(stream).unwrap();
-        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_not_ready");
-        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        assert_eq!(
+            world.resource::<StreamingDiagnostics>().status,
+            "camera_not_ready"
+        );
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .light_query_state
+            .is_none());
         world.get_mut::<Camera>(camera_entity).unwrap().viewport = viewport.clone();
-        world.get_mut::<Camera>(camera_entity).unwrap().viewport.as_mut().unwrap().physical_size = UVec2::ZERO;
+        world
+            .get_mut::<Camera>(camera_entity)
+            .unwrap()
+            .viewport
+            .as_mut()
+            .unwrap()
+            .physical_size = UVec2::ZERO;
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().status.starts_with("query_error:"));
-        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .status
+            .starts_with("query_error:"));
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .light_query_state
+            .is_none());
         world.get_mut::<Camera>(camera_entity).unwrap().viewport = viewport;
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=true"));
 
         let other_camera = world.spawn(Camera3d::default()).id();
         world.run_system(stream).unwrap();
-        assert_eq!(world.resource::<StreamingDiagnostics>().status, "camera_unavailable");
-        assert!(world.resource::<SceneRenderQueue>().visible_authored_ids.is_empty());
-        assert!(world.resource::<SceneRenderQueue>().light_query_state.is_none());
+        assert_eq!(
+            world.resource::<StreamingDiagnostics>().status,
+            "camera_unavailable"
+        );
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .visible_authored_ids
+            .is_empty());
+        assert!(world
+            .resource::<SceneRenderQueue>()
+            .light_query_state
+            .is_none());
         world.despawn(other_camera);
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=true"));
-        assert_eq!(world.resource::<SceneRenderQueue>().visible_authored_ids, initial_ids);
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=true"));
+        assert_eq!(
+            world.resource::<SceneRenderQueue>().visible_authored_ids,
+            initial_ids
+        );
         let id = *world
             .resource::<SceneRenderQueue>()
             .visible_authored_ids
@@ -8146,9 +11221,15 @@ entity { entityDef lamp { class = "idLight"; edit = {
             .unwrap()
             .clip_to_world = Some(Mat4::from_translation(point));
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=false"));
         world.run_system(stream).unwrap();
-        assert!(world.resource::<StreamingDiagnostics>().pending.contains("query_cached=false"));
+        assert!(world
+            .resource::<StreamingDiagnostics>()
+            .pending
+            .contains("query_cached=false"));
         assert!(
             world
                 .resource::<StreamingDiagnostics>()
@@ -8417,9 +11498,13 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .sum::<usize>(),
             262_144 + inline_chain.payload.len()
         );
-        let finer = read_streamed_diffuse_at_target(&catalog, stem, TextureReadTarget::Exact(2, texture::CompressedFormat::Bc7Srgb))
-            .unwrap()
-            .expect("single authored finer mip");
+        let finer = read_streamed_diffuse_at_target(
+            &catalog,
+            stem,
+            TextureReadTarget::Exact(2, texture::CompressedFormat::Bc7Srgb),
+        )
+        .unwrap()
+        .expect("single authored finer mip");
         assert_eq!(finer.uploads.len(), 1);
         assert_eq!(finer.uploads[0].payload.len(), 262_144);
         assert_eq!(finer.image.texture_descriptor.mip_level_count, 1);
@@ -8447,6 +11532,8 @@ entity { entityDef lamp { class = "idLight"; edit = {
             extension: ProbeExtension {
                 sh: Handle::default(),
                 vertex_probes: Handle::default(),
+                native_shadow: Handle::default(),
+                native_shadow_map: None,
                 surface: surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[])),
                 diffuse0: None,
                 diffuse1: None,
@@ -8469,7 +11556,9 @@ entity { entityDef lamp { class = "idLight"; edit = {
         app.insert_resource(Assets::<DecalMaterial>::default());
         app.insert_resource(TextureReadWorker::new(catalog, 1));
         app.insert_resource(SceneRenderQueue {
+            static_world_model_present: false,
             instances: vec![RenderInstance {
+                source: None,
                 mesh: Handle::default(),
                 material: MaterialHandle::Probe(material.clone()),
                 diffuse_image_slot: Some(0),
@@ -8489,7 +11578,10 @@ entity { entityDef lamp { class = "idLight"; edit = {
             diffuse_image_demands: vec![texture::ProjectedAreaDemand::default()],
             diffuse_image_paths: vec![stem],
             light_query_state: None,
-            diffuse_image_materials: vec![vec![(MaterialHandle::Probe(material.clone()), surface_gpu::ImageRole(0))]],
+            diffuse_image_materials: vec![vec![(
+                MaterialHandle::Probe(material.clone()),
+                surface_gpu::ImageRole(0),
+            )]],
             native_material_images: HashMap::new(),
             diffuse_image_handles: vec![None],
             diffuse_image_pending: vec![None],
@@ -8539,21 +11631,19 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .width,
             256
         );
-        assert!(
-            app.world()
-                .resource::<Assets<Image>>()
-                .get(&image)
-                .is_some()
-        );
-        assert!(
-            app.world()
-                .resource::<Assets<ProbeMaterial>>()
-                .get(&material)
-                .unwrap()
-                .base
-                .base_color_texture
-                .is_some()
-        );
+        assert!(app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&image)
+            .is_some());
+        assert!(app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&material)
+            .unwrap()
+            .base
+            .base_color_texture
+            .is_some());
 
         {
             let mut queue = app.world_mut().resource_mut::<SceneRenderQueue>();
@@ -8603,12 +11693,11 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .width,
             512
         );
-        assert!(
-            app.world()
-                .resource::<Assets<Image>>()
-                .get(&image)
-                .is_none()
-        );
+        assert!(app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&image)
+            .is_none());
 
         app.world_mut().resource_mut::<SceneRenderQueue>().instances[0].visible = false;
         for _ in 0..=TEXTURE_REDUCE_AFTER_FRAMES {
@@ -8639,21 +11728,19 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .width,
             256
         );
-        assert!(
-            app.world()
-                .resource::<Assets<Image>>()
-                .get(&finer)
-                .is_none()
-        );
-        assert!(
-            app.world()
-                .resource::<Assets<ProbeMaterial>>()
-                .get(&material)
-                .unwrap()
-                .base
-                .base_color_texture
-                .is_some()
-        );
+        assert!(app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&finer)
+            .is_none());
+        assert!(app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&material)
+            .unwrap()
+            .base
+            .base_color_texture
+            .is_some());
 
         let late_image = Image::new(
             Extent3d {
@@ -8734,6 +11821,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
             objects: Vec::new(),
         };
         let render_queue = SceneRenderQueue {
+            static_world_model_present: false,
             light_query_state: None,
             instances: Vec::new(),
             active: 0,
@@ -8865,14 +11953,31 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 .unwrap()
                 .unwrap();
             let serial = tome::merge_render_query_outputs(&serial).unwrap().unwrap();
-            let diagnostics = parallel.into_iter().map(|job| job.diagnostics).collect::<Vec<_>>();
+            let diagnostics = parallel
+                .into_iter()
+                .map(|job| job.diagnostics)
+                .collect::<Vec<_>>();
             let mut cache = TomeRenderQueryCache::default();
-            cache.store(TomeRenderQueryKey::new(&input, count), &Ok(Some(merged.clone())), &diagnostics);
+            cache.store(
+                TomeRenderQueryKey::new(&input, count),
+                &Ok(Some(merged.clone())),
+                &diagnostics,
+            );
             assert!(cache.matches(&TomeRenderQueryKey::new(&input, count), false));
             let cached = cache.output.as_ref().unwrap();
             assert_eq!(cached.indices(), merged.indices());
-            assert_eq!(cached.area_metrics().iter().map(|value| value.map(f32::to_bits)).collect::<Vec<_>>(),
-                       merged.area_metrics().iter().map(|value| value.map(f32::to_bits)).collect::<Vec<_>>());
+            assert_eq!(
+                cached
+                    .area_metrics()
+                    .iter()
+                    .map(|value| value.map(f32::to_bits))
+                    .collect::<Vec<_>>(),
+                merged
+                    .area_metrics()
+                    .iter()
+                    .map(|value| value.map(f32::to_bits))
+                    .collect::<Vec<_>>()
+            );
             assert_eq!(cached.cell_indices(), merged.cell_indices());
             assert_eq!(cached.state, merged.state);
             assert_eq!(merged.indices(), serial.indices());
@@ -9034,7 +12139,10 @@ entity { entityDef lamp { class = "idLight"; edit = {
         let world = TomeWorld {
             sphere_graph: tome::SphereCellGraph::parse(&bytes),
             gate_states: tome::initial_gate_states(&bytes).unwrap(),
-            bytes, tree, query_data, query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+            bytes,
+            tree,
+            query_data,
+            query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
         };
         let pose = [
             [-0.72593063, 0.01375436, -0.6876305, -36.467716],
@@ -9055,24 +12163,38 @@ entity { entityDef lamp { class = "idLight"; edit = {
             }
         }
         let mapping = TomeRenderInstanceMap::from_world_mapping(&bwm, &bwm_instances);
-        let groups: Vec<_> = bwm.visibility_groups.iter().map(|group| RenderSuppressionGroup {
-            parent: bwm_instances[group.parent].clone(),
-            children: group.children.iter().flat_map(|&index| bwm_instances[index].iter().copied()).collect(),
-        }).collect();
+        let groups: Vec<_> = bwm
+            .visibility_groups
+            .iter()
+            .map(|group| RenderSuppressionGroup {
+                parent: bwm_instances[group.parent].clone(),
+                children: group
+                    .children
+                    .iter()
+                    .flat_map(|&index| bwm_instances[index].iter().copied())
+                    .collect(),
+            })
+            .collect();
         for yaw in [-0.0005, 0.0, 0.0005] {
             let columns = (base * Mat4::from_rotation_y(yaw)).to_cols_array_2d();
-            let pose = std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]));
+            let pose =
+                std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]));
             let rows = tome::original_world_visibility_query_matrix(
                 80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0,
-            ).unwrap();
+            )
+            .unwrap();
             let input = tome::OrdinaryDirectQueryInput {
                 camera_point: [pose[0][3], pose[1][3], pose[2][3]],
-                render_rows: rows, cropped_rows: rows, initial_tile_rect: [0, 0, 8, 16],
-                camera_imprecision: [0.6; 3], object_imprecision: 0.6,
+                render_rows: rows,
+                cropped_rows: rows,
+                initial_tile_rect: [0, 0, 8, 16],
+                camera_imprecision: [0.6; 3],
+                object_imprecision: 0.6,
                 minimum_area_metric: 25.0 / (1920.0 * 1017.0),
                 global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
                 winding_flip: tome::query_matrix_winding_flip(rows),
-                gate_states: Some(&world.gate_states), output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                gate_states: Some(&world.gate_states),
+                output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
             };
             let started = std::time::Instant::now();
             let jobs = run_tome_render_jobs(&world, &input);
@@ -9086,12 +12208,19 @@ entity { entityDef lamp { class = "idLight"; edit = {
             let mut workloads = Vec::new();
             for candidate in [&old_state, state] {
                 let mut visible = vec![false; triangles.len()];
-                mapping.mark_visible_instances(output.indices(), &mut visible).unwrap();
-                let accepted = mapping.apply_spatial_queries(Some(candidate), &mut visible).unwrap();
+                mapping
+                    .mark_visible_instances(output.indices(), &mut visible)
+                    .unwrap();
+                let accepted = mapping
+                    .apply_spatial_queries(Some(candidate), &mut visible)
+                    .unwrap();
                 RenderSuppressionGroup::apply_all(&groups, &mut visible);
                 let surfaces = visible.iter().filter(|&&value| value).count();
-                let geometry: usize = visible.iter().zip(&triangles)
-                    .filter_map(|(&value, &count)| value.then_some(count)).sum();
+                let geometry: usize = visible
+                    .iter()
+                    .zip(&triangles)
+                    .filter_map(|(&value, &count)| value.then_some(count))
+                    .sum();
                 workloads.push((accepted, surfaces, geometry));
             }
             println!("dense yaw={yaw} query_ms={query_ms:.3} spatial/mapped_surfaces/mapped_triangles before={:?} after={:?}", workloads[0], workloads[1]);
@@ -9101,26 +12230,38 @@ entity { entityDef lamp { class = "idLight"; edit = {
             // native lists. Original764c0 also rejects world object7268 here;
             // compare every bound with native rather than forcing a superset.
             let mut raw = b"DH2DQ001".to_vec();
-            for value in state.viewport { raw.extend_from_slice(&value.to_le_bytes()); }
+            for value in state.viewport {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
             let unused_bounds = [0.0_f32; 6];
-            for value in state.render_rows.iter().flatten()
+            for value in state
+                .render_rows
+                .iter()
+                .flatten()
                 .chain(state.cropped_rows.iter().flatten())
                 .chain(state.camera_imprecision.iter())
                 .chain(std::iter::once(&state.maximum_depth))
                 .chain(unused_bounds.iter())
                 .chain(state.depth_grid.as_ref().unwrap().iter())
-            { raw.extend_from_slice(&value.to_le_bytes()); }
+            {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
             raw.extend_from_slice(&123.0_f32.to_le_bytes());
             raw.extend_from_slice(&(world.query_data.object_count() as u32).to_le_bytes());
             for index in 0..world.query_data.object_count() as u32 {
                 let bounds = tome::object_bounds(&world.bytes, index).unwrap();
                 let old = old_query.visible(bounds).unwrap();
                 let (depth, area) = query.visibility_and_area(bounds).unwrap();
-                assert!(!depth || old, "depth admitted outside-frustum object{index} yaw={yaw}");
+                assert!(
+                    !depth || old,
+                    "depth admitted outside-frustum object{index} yaw={yaw}"
+                );
                 old_count += usize::from(old);
                 depth_count += usize::from(depth);
                 raw.extend_from_slice(&index.to_le_bytes());
-                for value in bounds.iter().flatten() { raw.extend_from_slice(&value.to_le_bytes()); }
+                for value in bounds.iter().flatten() {
+                    raw.extend_from_slice(&value.to_le_bytes());
+                }
                 raw.extend_from_slice(&u32::from(depth).to_le_bytes());
                 raw.extend_from_slice(&area.to_le_bytes());
             }
@@ -9128,11 +12269,19 @@ entity { entityDef lamp { class = "idLight"; edit = {
             fs::write(fixture, raw).unwrap();
             let native = std::process::Command::new("python")
                 .args(["analysis/probe_original_depth_aabb.py", "--state", fixture])
-                .output().unwrap();
-            assert!(native.status.success(), "native AABB parity yaw={yaw}: {}{}",
-                String::from_utf8_lossy(&native.stdout), String::from_utf8_lossy(&native.stderr));
+                .output()
+                .unwrap();
+            assert!(
+                native.status.success(),
+                "native AABB parity yaw={yaw}: {}{}",
+                String::from_utf8_lossy(&native.stdout),
+                String::from_utf8_lossy(&native.stderr)
+            );
             print!("{}", String::from_utf8_lossy(&native.stdout));
-            assert!(depth_count < old_count, "dense camera did not reject any extra bounds yaw={yaw}");
+            assert!(
+                depth_count < old_count,
+                "dense camera did not reject any extra bounds yaw={yaw}"
+            );
             println!("dense yaw={yaw} frustum_bounds={old_count} depth_bounds={depth_count} accepted_objects={} grid_max={}",
                 output.indices().len(), state.maximum_depth);
         }
@@ -9190,11 +12339,9 @@ entity { entityDef lamp { class = "idLight"; edit = {
             let surfaces = mapping.get(index);
             let has_far = surfaces.iter().any(|&surface| lods[surface] > 0);
             if has_far {
-                assert!(
-                    tome::object_distance_bounds(&tome_bytes, index as u32)
-                        .unwrap()
-                        .is_some()
-                );
+                assert!(tome::object_distance_bounds(&tome_bytes, index as u32)
+                    .unwrap()
+                    .is_some());
                 far_groups += 1;
                 mixed_groups += usize::from(surfaces.iter().any(|&surface| lods[surface] == 0));
             }
@@ -9263,7 +12410,9 @@ entity { entityDef lamp { class = "idLight"; edit = {
             world: runtime::WorldState::from_pickups(&[]).unwrap(),
         });
         app.insert_resource(SceneRenderQueue {
+            static_world_model_present: false,
             instances: vec![RenderInstance {
+                source: None,
                 mesh: Handle::default(),
                 material: MaterialHandle::Probe(Handle::default()),
                 diffuse_image_slot: None,
@@ -9364,7 +12513,10 @@ entity { entityDef lamp { class = "idLight"; edit = {
     #[test]
     #[ignore = "requires installed original image indices/resources"]
     fn installed_image_source_aliases_load_lod_and_constant_maps() {
-        let catalog = archive::Catalog::open(std::path::Path::new("D:/Programs/Steam/steamapps/common/Dishonored2/base")).unwrap();
+        let catalog = archive::Catalog::open(std::path::Path::new(
+            "D:/Programs/Steam/steamapps/common/Dishonored2/base",
+        ))
+        .unwrap();
         let cases = [
             ("models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips", "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips.tga.bimage7"),
             ("models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips", "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips.bimage7"),
@@ -9390,6 +12542,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
             &[vec![0], vec![1]],
         );
         let instances = [0, 1].map(|diffuse_image_slot| RenderInstance {
+            source: None,
             mesh: Handle::default(),
             material: MaterialHandle::Probe(Handle::default()),
             diffuse_image_slot: Some(diffuse_image_slot),
@@ -9411,10 +12564,9 @@ entity { entityDef lamp { class = "idLight"; edit = {
         );
         assert_eq!(demands[0].take(), 0.25);
         assert_eq!(demands[1].take(), 0.5);
-        assert!(
-            map.submit_texture_demands(&[2], &[Some(1.0)], &instances, &demands)
-                .is_err()
-        );
+        assert!(map
+            .submit_texture_demands(&[2], &[Some(1.0)], &instances, &demands)
+            .is_err());
     }
 
     #[test]
@@ -9470,11 +12622,11 @@ entity { entityDef lamp { class = "idLight"; edit = {
         assert_eq!(visible, [true, false, true]);
         assert_eq!(map.apply_spatial_queries(None, &mut visible).unwrap(), 2);
         assert_eq!(visible, [true; 3]);
-        assert!(
-            map.apply_spatial_queries(Some(&state), &mut visible[..1])
-                .is_err()
-        );
+        assert!(map
+            .apply_spatial_queries(Some(&state), &mut visible[..1])
+            .is_err());
         let instances = [0, 1, 2].map(|slot| RenderInstance {
+            source: None,
             mesh: Handle::default(),
             material: MaterialHandle::Probe(Handle::default()),
             diffuse_image_slot: Some(slot),
@@ -9675,10 +12827,14 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 region: [0.0, 0.0, 0.0, 32768.0],
             },
         };
-        assert!(
-            apply_placed_model_queries(&mut visible, &[invalid], &state, [0.0; 3], [1280, 720])
-                .is_err()
-        );
+        assert!(apply_placed_model_queries(
+            &mut visible,
+            &[invalid],
+            &state,
+            [0.0; 3],
+            [1280, 720]
+        )
+        .is_err());
         assert_eq!(visible, [true, false, false, false]);
     }
 
@@ -9697,7 +12853,10 @@ entity { entityDef lamp { class = "idLight"; edit = {
         let default_input = initial_placed_model_query(&placement, bounds).unwrap();
         assert_eq!(default_input.bounds, [[0.0, 2.0, 4.0], [6.0, 6.0, 6.0]]);
         assert_eq!(default_input.region, [0.0, 0.0, 0.0, 32768.0]);
-        assert!(render_model::model_eligible(default_input.frame_flags, u8::MAX));
+        assert!(render_model::model_eligible(
+            default_input.frame_flags,
+            u8::MAX
+        ));
         placement.max_visible_range = Some(40.0);
         let input = initial_placed_model_query(&placement, bounds).unwrap();
         assert_eq!(input.bounds, [[0.0, 2.0, 4.0], [6.0, 6.0, 6.0]]);
@@ -9773,47 +12932,80 @@ entity { entityDef lamp { class = "idLight"; edit = {
         let placement = entities::PlacedModel {
             id: "root".into(),
             resource_path: "generated/decls/blueprint/models/fence.blueprint.decl".into(),
-            position: [0.0; 3], scale: [1.5, -0.015, 1.0],
+            position: [0.0; 3],
+            scale: [1.5, -0.015, 1.0],
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            custom_materials: Vec::new(), max_visible_range: None,
+            custom_materials: Vec::new(),
+            max_visible_range: None,
         };
-        assert_eq!(model_havok_path(&placement, "hkt", false).as_deref(),
-            Some("generated/models/fence.blueprint.hkt._150_-1_100.10.hkx"));
-        assert_eq!(model_havok_path(&placement, "box", false).as_deref(),
-            Some("generated/models/fence.blueprint.box._150_-1_100.10.hkx"));
-        assert_eq!(model_havok_path(&placement, "cvd", false).as_deref(),
-            Some("generated/models/fence.blueprint.cvd._150_-1_100.10.hkx"));
-        assert_eq!(model_havok_path(&placement, "hkt", true).as_deref(),
-            Some("generated/models/fence_hd.blueprint.hkt._150_-1_100.10.hkx"));
+        assert_eq!(
+            model_havok_path(&placement, "hkt", false).as_deref(),
+            Some("generated/models/fence.blueprint.hkt._150_-1_100.10.hkx")
+        );
+        assert_eq!(
+            model_havok_path(&placement, "box", false).as_deref(),
+            Some("generated/models/fence.blueprint.box._150_-1_100.10.hkx")
+        );
+        assert_eq!(
+            model_havok_path(&placement, "cvd", false).as_deref(),
+            Some("generated/models/fence.blueprint.cvd._150_-1_100.10.hkx")
+        );
+        assert_eq!(
+            model_havok_path(&placement, "hkt", true).as_deref(),
+            Some("generated/models/fence_hd.blueprint.hkt._150_-1_100.10.hkx")
+        );
         assert_eq!(model_havok_path(&placement, "unknown", false), None);
     }
 
     #[test]
     #[ignore = "requires installed catalog and artifacts/eotw_p_lowchaos.entities"]
     fn blueprint_root_collision_uses_component_not_render_children() {
-        let document = entities::parse(&fs::read_to_string("artifacts/eotw_p_lowchaos.entities").unwrap()).unwrap();
+        let document =
+            entities::parse(&fs::read_to_string("artifacts/eotw_p_lowchaos.entities").unwrap())
+                .unwrap();
         let bodies = entities::rigid_body_settings(&document);
-        let parent = entities::render_placements(&document).into_iter()
-            .find(|placement| placement.id == "env_bp_fence_metal_200cm_02").unwrap();
+        let parent = entities::render_placements(&document)
+            .into_iter()
+            .find(|placement| placement.id == "env_bp_fence_metal_200cm_02")
+            .unwrap();
         let catalog = archive::Catalog::open(&PathBuf::from(
-            r"D:\Programs\Steam\steamapps\common\Dishonored2\base")).unwrap();
+            r"D:\Programs\Steam\steamapps\common\Dishonored2\base",
+        ))
+        .unwrap();
         assert_eq!(model_havok_path(&parent, "hkt", false).as_deref(),
             Some("generated/models/environment/props/karnaca/fence_metal_set_01/bp_fence_metal_200cm_02.blueprint.hkt._100_100_100.10.hkx"));
         let placements = expanded_model_placements(&[parent], &catalog);
         assert_eq!(placements.len(), 10);
-        let (triangles, owners, matched, failed) = static_model_collision(&catalog, &placements, &bodies);
+        let (triangles, owners, matched, failed) =
+            static_model_collision(&catalog, &placements, &bodies);
         assert_eq!((matched, failed, triangles.len()), (1, 0, 312));
         assert_eq!(owners, ["env_bp_fence_metal_200cm_02"]);
-        assert!(triangles.iter().all(|(vertices, owner)| *owner == 0
-            && vertices.iter().all(|point| point.is_finite())));
-        assert_eq!(static_model_collision(&catalog, &placements, &[]).0.len(), 0);
+        assert!(
+            triangles
+                .iter()
+                .all(|(vertices, owner)| *owner == 0
+                    && vertices.iter().all(|point| point.is_finite()))
+        );
+        assert_eq!(
+            static_model_collision(&catalog, &placements, &[]).0.len(),
+            0
+        );
         let mut unbound_defaults = bodies.clone();
-        for body in &mut unbound_defaults { body.physics_behavior = None; }
-        assert_eq!(static_model_collision(&catalog, &placements, &unbound_defaults).0.len(), 0);
+        for body in &mut unbound_defaults {
+            body.physics_behavior = None;
+        }
+        assert_eq!(
+            static_model_collision(&catalog, &placements, &unbound_defaults)
+                .0
+                .len(),
+            0
+        );
         let world = navigation::CollisionWorld::with_owned(triangles, owners);
         let eye = game_to_view([-33.679825, 83.83279, 18.319]);
         let direction = game_to_view([0.5484812, 0.29665253, -0.78177094]).normalize();
-        let (distance, owner, _) = world.first_hit_details(eye, eye + direction * 40.0).unwrap();
+        let (distance, owner, _) = world
+            .first_hit_details(eye, eye + direction * 40.0)
+            .unwrap();
         assert_eq!(world.owner_name(owner), Some("env_bp_fence_metal_200cm_02"));
         assert!((distance - 0.28008184).abs() < 0.00001);
     }

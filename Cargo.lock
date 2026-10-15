@@ -1364,8 +1364,6 @@ dependencies = [
 [[package]]
 name = "bevy_render_macros"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6be6eba0ce9770ae4576693804d6c605f8afd9c4769787414254efcf92196a90"
 dependencies = [
  "bevy_macro_utils",
  "proc-macro2",

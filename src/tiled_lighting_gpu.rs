@@ -2,15 +2,18 @@
 use bevy::{
     prelude::{FromWorld, Resource, World},
     render::{
-        render_resource::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder,
-            ComputePipeline, RawComputePipelineDescriptor, ShaderModule, ShaderModuleDescriptor, ShaderSource},
+        render_resource::{
+            Buffer, BufferDescriptor, BufferUsages, CommandEncoder, ComputePipeline,
+            RawComputePipelineDescriptor, ShaderModule, ShaderModuleDescriptor, ShaderSource,
+        },
         renderer::{RenderDevice, RenderQueue},
     },
 };
 
 use crate::render_resource::{resource_name_key, RenderTaskProperties};
 use crate::tiled_lighting::{
-    prepare_light_cull_packets, LIGHT_BUFFER_CAPACITY, LIGHT_NODE_COUNTER_BYTES, LIGHT_NODE_POOL_CAPACITY,
+    prepare_light_cull_packets, LIGHT_BUFFER_CAPACITY, LIGHT_NODE_COUNTER_BYTES,
+    LIGHT_NODE_POOL_CAPACITY,
 };
 
 /// The shared render-world pipelines execute the original-backed shaders used
@@ -19,35 +22,121 @@ use crate::tiled_lighting::{
 pub struct NativeTlfPipelines {
     pub depth: ComputePipeline,
     pub cull: ComputePipeline,
+    /// FUN_1402fc6a0's last-mip reduction/unprojection into the 64×64 CPU grid.
+    /// Source mip, viewport scale and inverse projection belong to the caller.
+    pub coarse_depth: ComputePipeline,
+    /// FUN_1402fbe40: one dispatch writes all four downsampled linear-depth mips.
+    pub depth_reduction: ComputePipeline,
     /// Original depthcopy.decl; frame-graph destination/state remain external.
     pub depth_copy: ShaderModule,
     /// Captured 2D identity/downscale shaders used by the original depth inputs.
     pub depth_copy_2d: ShaderModule,
+    /// Original PCF, shadow-offset, side selection and paraboloid algorithms.
+    /// Atlas/matrix/update ownership is supplied by the native shadow pass.
+    pub shadow: ShaderModule,
 }
 
 impl NativeTlfPipelines {
+    /// FUN_1402fcff0's unhackDepthBuffer program, after the source depth/stencil
+    /// copy. Only stencil bit-zero == 1 is multiplied by the caller's resolved
+    /// modelDepthHack.x; all ordinary-world pixels and stencil remain intact.
+    /// This pipeline does not own/guess the source copy, factor or framebuffer.
+    pub fn unhack_depth_pipeline(
+        &self,
+        device: &RenderDevice,
+        format: bevy::render::render_resource::TextureFormat,
+        buffers: &[bevy::render::render_resource::RawVertexBufferLayout<'_>],
+    ) -> Result<bevy::render::render_resource::RenderPipeline, String> {
+        use bevy::render::render_resource::*;
+        if !format.has_stencil_aspect() {
+            return Err("native depth unhack requires the copied stencil partition".into());
+        }
+        let keep_equal = StencilFaceState {
+            compare: CompareFunction::Equal,
+            fail_op: StencilOperation::Keep,
+            depth_fail_op: StencilOperation::Keep,
+            pass_op: StencilOperation::Keep,
+        };
+        Ok(device.create_render_pipeline(&RawRenderPipelineDescriptor {
+            label: Some("native unhackDepthBuffer stencil-one pixels"),
+            layout: None,
+            vertex: RawVertexState {
+                module: &self.depth_copy_2d,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers,
+            },
+            fragment: Some(RawFragmentState {
+                module: &self.depth_copy_2d,
+                entry_point: Some("unhack"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            primitive: PrimitiveState {
+                front_face: FrontFace::Cw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+            depth_stencil: Some(DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Always),
+                stencil: StencilState {
+                    front: keep_equal,
+                    back: keep_equal,
+                    read_mask: 1,
+                    write_mask: 1,
+                },
+                bias: Default::default(),
+            }),
+        }))
+    }
+
     /// Capture82270 events25931/25946: point-clamp 2D depth copy/min-gather,
     /// full-screen triangle, no colour outputs, depth write with Always test.
     /// Build once for the caller-owned depth format and vertex layout.
     /// The capture's vertex stride is 32; compact fixture vertices are not the
     /// native buffer ABI. Never compile per frame.
     pub fn depth_copy_pipeline(
-        &self, device: &RenderDevice,
-        format: bevy::render::render_resource::TextureFormat, downscale: bool,
+        &self,
+        device: &RenderDevice,
+        format: bevy::render::render_resource::TextureFormat,
+        downscale: bool,
         buffers: &[bevy::render::render_resource::RawVertexBufferLayout<'_>],
     ) -> bevy::render::render_resource::RenderPipeline {
         use bevy::render::render_resource::*;
         device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native 2D depth copy/downscale"), layout: None,
-            vertex: RawVertexState {module: &self.depth_copy_2d, entry_point: Some("vertex"),
-                compilation_options: Default::default(), buffers},
-            fragment: Some(RawFragmentState {module: &self.depth_copy_2d,
-                entry_point: Some(if downscale {"downscale"} else {"identity"}),
-                compilation_options: Default::default(), targets: &[]}),
-            primitive: PrimitiveState {front_face: FrontFace::Cw, ..Default::default()},
-            multisample: Default::default(), multiview_mask: None, cache: None,
-            depth_stencil: Some(DepthStencilState {format, depth_write_enabled: Some(true),
-                depth_compare: Some(CompareFunction::Always), stencil: Default::default(), bias: Default::default()}),
+            label: Some("native 2D depth copy/downscale"),
+            layout: None,
+            vertex: RawVertexState {
+                module: &self.depth_copy_2d,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers,
+            },
+            fragment: Some(RawFragmentState {
+                module: &self.depth_copy_2d,
+                entry_point: Some(if downscale { "downscale" } else { "identity" }),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            primitive: PrimitiveState {
+                front_face: FrontFace::Cw,
+                ..Default::default()
+            },
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+            depth_stencil: Some(DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
         })
     }
 }
@@ -57,23 +146,49 @@ impl FromWorld for NativeTlfPipelines {
         let device = world.resource::<RenderDevice>();
         let compile = |source: &'static str, entry: &'static str| {
             let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-                label: Some(entry), source: ShaderSource::Wgsl(source.into()),
+                label: Some(entry),
+                source: ShaderSource::Wgsl(source.into()),
             });
             device.create_compute_pipeline(&RawComputePipelineDescriptor {
-                label: Some(entry), layout: None, module: &module,
-                entry_point: Some(entry), compilation_options: Default::default(), cache: None,
+                label: Some(entry),
+                layout: None,
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
             })
         };
         Self {
-            depth: compile(include_str!("../assets/shaders/dh2_tlf_depth.wgsl"), "gather_depth"),
+            depth: compile(
+                include_str!("../assets/shaders/dh2_tlf_depth.wgsl"),
+                "gather_depth",
+            ),
             cull: compile(include_str!("../assets/shaders/dh2_tlf_cull.wgsl"), "cull"),
+            coarse_depth: compile(
+                include_str!("../assets/shaders/dh2_coarse_depth.wgsl"),
+                "generate_coarse_depth",
+            ),
+            depth_reduction: compile(
+                include_str!("../assets/shaders/dh2_depth_reduction.wgsl"),
+                "reduce_depth",
+            ),
             depth_copy: device.create_and_validate_shader_module(ShaderModuleDescriptor {
                 label: Some("native depthcopy"),
-                source: ShaderSource::Wgsl(include_str!("../assets/shaders/depth_copy.wgsl").into()),
+                source: ShaderSource::Wgsl(
+                    include_str!("../assets/shaders/depth_copy.wgsl").into(),
+                ),
             }),
             depth_copy_2d: device.create_and_validate_shader_module(ShaderModuleDescriptor {
                 label: Some("native 2D depth identity/downscale"),
-                source: ShaderSource::Wgsl(include_str!("../assets/shaders/depth_copy_2d.wgsl").into()),
+                source: ShaderSource::Wgsl(
+                    include_str!("../assets/shaders/depth_copy_2d.wgsl").into(),
+                ),
+            }),
+            shadow: device.create_and_validate_shader_module(ShaderModuleDescriptor {
+                label: Some("native shadow sampling"),
+                source: ShaderSource::Wgsl(
+                    include_str!("../assets/shaders/dh2_shadow.wgsl").into(),
+                ),
             }),
         }
     }
@@ -122,7 +237,9 @@ impl NativeTlfBuffers {
             ("lightNodePoolNextFreeEntry", &buffers.counter),
             ("lightNodePool", &buffers.pool),
         ] {
-            buffers.inputs.register(resource_name_key(name), buffer.clone());
+            buffers
+                .inputs
+                .register(resource_name_key(name), buffer.clone());
         }
         buffers
     }
@@ -156,11 +273,18 @@ impl NativeTlfBuffers {
     /// their index/order, use the original affine arithmetic and initialize all
     /// padding lanes before publishing the GPU buffer. Return the rounded count.
     pub fn upload_lighting_packets(
-        &self, queue: &RenderQueue, view: &[[f32; 4]; 3], lighting: &[[u32; 28]],
+        &self,
+        queue: &RenderQueue,
+        view: &[[f32; 4]; 3],
+        lighting: &[[u32; 28]],
     ) -> Result<usize, String> {
         let mut packets = [[0; 12]; LIGHT_BUFFER_CAPACITY];
         let count = prepare_light_cull_packets(view, lighting, &mut packets)?;
-        let words = packets[..count].iter().flatten().copied().collect::<Vec<_>>();
+        let words = packets[..count]
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
         self.upload_cull_packets(queue, &words)?;
         Ok(count)
     }

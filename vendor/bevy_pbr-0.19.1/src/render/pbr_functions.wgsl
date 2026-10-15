@@ -336,6 +336,17 @@ fn calculate_contact_shadow(
 fn apply_pbr_lighting(
     in: pbr_types::PbrInput,
 ) -> vec4<f32> {
+    // Stock callers retain their original shadow path. External shadow maps
+    // supply only the chosen directional light, never the final lit color.
+    return apply_pbr_lighting_with_directional_shadow(in, 0xffffffffu, 1.0, 1.0);
+}
+
+fn apply_pbr_lighting_with_directional_shadow(
+    in: pbr_types::PbrInput,
+    directional_index: u32,
+    directional_shadow: f32,
+    transmitted_directional_shadow: f32,
+) -> vec4<f32> {
     var output_color: vec4<f32> = in.material.base_color;
 
     let emissive = in.material.emissive;
@@ -612,7 +623,9 @@ fn apply_pbr_lighting(
 #endif  // LIGHTMAP
 
         var shadow: f32 = 1.0;
-        if ((in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u
+        if i == directional_index {
+            shadow = directional_shadow;
+        } else if ((in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u
                 && (view_bindings::lights.directional_lights[i].flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
             shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.frag_coord.xy);
         }
@@ -646,7 +659,9 @@ fn apply_pbr_lighting(
         // F_ab = vec2<f32>(0.1)
         // F0 = vec3<f32>(0.0)
         var transmitted_shadow: f32 = 1.0;
-        if ((in.flags & (MESH_FLAGS_SHADOW_RECEIVER_BIT | MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT)) == (MESH_FLAGS_SHADOW_RECEIVER_BIT | MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT)
+        if i == directional_index {
+            transmitted_shadow = transmitted_directional_shadow;
+        } else if ((in.flags & (MESH_FLAGS_SHADOW_RECEIVER_BIT | MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT)) == (MESH_FLAGS_SHADOW_RECEIVER_BIT | MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT)
                 && (view_bindings::lights.directional_lights[i].flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
             transmitted_shadow = shadows::fetch_directional_shadow(i, diffuse_transmissive_lobe_world_position, -in.world_normal, view_z, in.frag_coord.xy);
         }

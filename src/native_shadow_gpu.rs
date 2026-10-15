@@ -1,0 +1,1027 @@
+//! Native shadow depth-array storage and comparison state.
+//!
+//! Gameplay capture dh2_frame1145447.rdc records D24S8 arrays and a
+//! linear/comparison/Less/clamp sampler. The shader declaration
+//! `smp_shadowhardwarepcfsampler` in dh2_frame400867.shadow-buffers.json selects
+//! sampler 16599; the point sampler belongs to the separate depth-copy draw.
+//! Enums are resolved in artifacts/renderdoc/shadow-enums.json. Sizes and layer counts belong
+//! to the original shadow owner, not defaults in this storage helper. Allocation
+//! happens when that owner changes; this does not clear or redraw static cache
+//! entries every frame, nor does it enable Bevy's shadow rendering.
+use bevy::render::{
+    render_resource::{
+        AddressMode, CompareFunction, Extent3d, FilterMode, MipmapFilterMode, Sampler,
+        SamplerDescriptor, Texture, TextureAspect, TextureDescriptor, TextureDimension,
+        TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
+    },
+    renderer::RenderDevice,
+};
+use bevy::{
+    asset::RenderAssetUsages,
+    image::{Image, ImageSampler},
+};
+
+pub struct NativeShadowDepthArray {
+    pub texture: Texture,
+    pub sampled: TextureView,
+    pub layers: Vec<TextureView>,
+    pub size: Extent3d,
+}
+
+impl NativeShadowDepthArray {
+    /// Allocate from the actual native quality/CVar owner, not a capture.
+    /// Native false/true image templates resolve to D16 / D24S8 respectively;
+    /// the "32 bits" CVar includes stencil and does not request D32F.
+    pub fn parallel(
+        device: &RenderDevice,
+        slice_size: u32,
+        divider: u32,
+        cascade_count: u32,
+        depth_32_bits: bool,
+        label: &str,
+    ) -> Result<Self, String> {
+        let target = crate::render_shadow::ParallelShadowTargetDimensions::from_settings(
+            slice_size,
+            divider,
+            cascade_count,
+        )?;
+        let format = match crate::render_shadow::parallel_shadow_depth_format(depth_32_bits)? {
+            crate::render_shadow::ParallelShadowDepthFormat::Depth16 => TextureFormat::Depth16Unorm,
+            crate::render_shadow::ParallelShadowDepthFormat::Depth24Stencil8 => {
+                TextureFormat::Depth24PlusStencil8
+            }
+        };
+        Self::new_with_format(
+            device,
+            Extent3d {
+                width: target.side,
+                height: target.side,
+                depth_or_array_layers: target.layers,
+            },
+            format,
+            label,
+        )
+    }
+
+    pub fn new(device: &RenderDevice, size: Extent3d, label: &str) -> Result<Self, String> {
+        Self::new_with_format(device, size, TextureFormat::Depth24PlusStencil8, label)
+    }
+
+    pub fn new_with_format(
+        device: &RenderDevice,
+        size: Extent3d,
+        format: TextureFormat,
+        label: &str,
+    ) -> Result<Self, String> {
+        if !matches!(
+            format,
+            TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
+        ) {
+            return Err("unsupported native parallel shadow depth-array format".into());
+        }
+        let limits = device.limits();
+        if size.width == 0
+            || size.height == 0
+            || size.depth_or_array_layers == 0
+            || size.width > limits.max_texture_dimension_2d
+            || size.height > limits.max_texture_dimension_2d
+            || size.depth_or_array_layers > limits.max_texture_array_layers
+        {
+            return Err("invalid native shadow depth-array dimensions".into());
+        }
+        // Native shadow descriptors explicitly request one mip. The shared
+        // original finalizer therefore preserves all four fields (2e98a0).
+        let mut mip_counts = [1; 4];
+        let family = if format == TextureFormat::Depth16Unorm {
+            2
+        } else {
+            22
+        };
+        crate::texture::initialize_image_mip_counts(
+            family,
+            [size.width as i32, size.height as i32, 1],
+            &mut mip_counts,
+        );
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: mip_counts[0] as u32,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC
+                | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        Self::from_owned_texture(texture, label)
+    }
+
+    /// Whole native cache-resource transfer (2bb270 -> D3D11 CopyResource).
+    /// Match the actual owner's complete descriptor; this is not the separate
+    /// per-slice copy or depth-copy shader, and must not silently select layer 0.
+    pub fn copy_resource_from(
+        &self,
+        encoder: &mut CommandEncoder,
+        source: &Self,
+    ) -> Result<(), String> {
+        if self.texture.id() == source.texture.id() {
+            return Err("native shadow cache cannot copy a resource onto itself".into());
+        }
+        if self.size != source.size || self.texture.format() != source.texture.format() {
+            return Err(
+                "native whole-resource shadow copy requires matching format and dimensions".into(),
+            );
+        }
+        if !source.texture.usage().contains(TextureUsages::COPY_SRC)
+            || !self.texture.usage().contains(TextureUsages::COPY_DST)
+        {
+            return Err(
+                "native shadow cache owner did not allocate copy source/destination usage".into(),
+            );
+        }
+        encoder.copy_texture_to_texture(
+            source.texture.as_image_copy(),
+            self.texture.as_image_copy(),
+            self.size,
+        );
+        Ok(())
+    }
+
+    /// Attach views to the renderer's existing image allocation. Rendering and
+    /// material sampling must alias this SAME texture, not two lookalike arrays.
+    pub fn from_owned_texture(texture: Texture, label: &str) -> Result<Self, String> {
+        let size = texture.size();
+        if !matches!(
+            texture.format(),
+            TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
+        ) || texture.dimension() != TextureDimension::D2
+            || texture.sample_count() != 1
+            || texture.mip_level_count() != 1
+            || !texture
+                .usage()
+                .contains(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING)
+        {
+            return Err("invalid native shadow image allocation".into());
+        }
+        let sampled = texture.create_view(&TextureViewDescriptor {
+            label: Some(label),
+            dimension: Some(TextureViewDimension::D2Array),
+            aspect: TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        let layers = (0..size.depth_or_array_layers)
+            .map(|layer| {
+                texture.create_view(&TextureViewDescriptor {
+                    label: Some(label),
+                    dimension: Some(TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        Ok(Self {
+            texture,
+            sampled,
+            layers,
+            size,
+        })
+    }
+}
+
+/// The original hardware-PCF sampler. The optimized 3x3/5x5 shader coefficients
+/// rely on bilinear comparison filtering; a point sampler gives the wrong kernel.
+pub fn native_shadow_comparison_sampler(device: &RenderDevice) -> Sampler {
+    device.create_sampler(&native_shadow_comparison_descriptor())
+}
+
+pub fn native_shadow_comparison_descriptor() -> SamplerDescriptor<'static> {
+    SamplerDescriptor {
+        label: Some("native shadow linear/Less/clamp comparison"),
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        address_mode_w: AddressMode::Repeat,
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Nearest,
+        lod_max_clamp: 13.0,
+        compare: Some(CompareFunction::Less),
+        ..Default::default()
+    }
+}
+
+/// A renderer-owned depth asset with the SAME sampled view and hardware-PCF
+/// sampler as the raster target. It contains no captured or CPU-uploaded pixels.
+/// The 1x1 unavailable binding uses this too; sampling is disabled by the shared
+/// receiver header, rather than relying on Bevy's noncomparison fallback image.
+pub fn shadow_depth_image(size: Extent3d, format: TextureFormat) -> Result<Image, String> {
+    if size.width == 0
+        || size.height == 0
+        || size.depth_or_array_layers == 0
+        || !matches!(
+            format,
+            TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
+        )
+    {
+        return Err("invalid native shadow depth-image descriptor".into());
+    }
+    let mut image = Image::new_uninit(
+        size,
+        TextureDimension::D2,
+        format,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage = TextureUsages::RENDER_ATTACHMENT
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC
+        | TextureUsages::COPY_DST;
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        aspect: TextureAspect::DepthOnly,
+        ..Default::default()
+    });
+    image.sampler = ImageSampler::Descriptor(native_shadow_comparison_descriptor().into());
+    Ok(image)
+}
+
+/// Original `bilinearsampler.decl`: linear min/mag, point mip, wrap U/V/W.
+/// RenderDoc smp_bilinearsampler descriptor confirms LOD 0..13, no bias or
+/// comparison. Shadow alpha must not reuse the forward anisotropic sampler.
+pub fn native_shadow_alpha_sampler(device: &RenderDevice) -> Sampler {
+    device.create_sampler(&SamplerDescriptor {
+        label: Some("native shadow diffuse bilinear/wrap sampler"),
+        address_mode_u: AddressMode::Repeat,
+        address_mode_v: AddressMode::Repeat,
+        address_mode_w: AddressMode::Repeat,
+        min_filter: FilterMode::Linear,
+        mag_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Nearest,
+        lod_max_clamp: 13.0,
+        ..Default::default()
+    })
+}
+
+use bevy::render::{
+    render_resource::{
+        BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer, BufferBinding,
+        BufferUsages, CommandEncoder, DepthBiasState, DepthStencilState, DownlevelFlags, Face,
+        FrontFace, IndexFormat, LoadOp, MultisampleState, Operations, PolygonMode, PrimitiveState,
+        RawFragmentState, RawRenderPipelineDescriptor, RawVertexBufferLayout, RawVertexState,
+        RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+        ShaderModuleDescriptor, ShaderSource, StencilFaceState, StencilOperation, StencilState,
+        StoreOp, VertexAttribute, VertexFormat, VertexStepMode,
+    },
+    renderer::RenderAdapter,
+};
+use std::{num::NonZeroU64, ops::Range};
+
+/// Stride of the captured fixture, not a shader requirement. The position-only
+/// native program can use the existing rewrite mesh owner's layout unchanged.
+pub const NATIVE_SHADOW_OPAQUE_VERTEX_STRIDE: u64 = 32;
+const NATIVE_SHADOW_PER_INSTANCE_BYTES: u64 = 80;
+
+/// Translate the verified native descriptor into the platform's equivalent
+/// depth/stencil operations. Disabled native tests must not start writing depth
+/// merely because their ignored write-mask field is set.
+pub fn native_depth_stencil_gpu(
+    state: &crate::render_state::NativeRenderState,
+    format: TextureFormat,
+) -> Result<DepthStencilState, String> {
+    let depth = crate::render_state::native_depth_stencil_state(state);
+    let raster = crate::render_state::native_raster_state(state);
+    if !format.has_depth_aspect() || (depth.stencil_enabled && !format.has_stencil_aspect()) {
+        return Err("native depth/stencil state and actual target aspects differ".into());
+    }
+    let compare = |code| match code {
+        1 => CompareFunction::Never,
+        2 => CompareFunction::Less,
+        3 => CompareFunction::Equal,
+        4 => CompareFunction::LessEqual,
+        5 => CompareFunction::Greater,
+        6 => CompareFunction::NotEqual,
+        7 => CompareFunction::GreaterEqual,
+        _ => CompareFunction::Always,
+    };
+    let operation = |code| match code {
+        2 => StencilOperation::Zero,
+        3 => StencilOperation::Replace,
+        4 => StencilOperation::IncrementClamp,
+        5 => StencilOperation::DecrementClamp,
+        6 => StencilOperation::Invert,
+        7 => StencilOperation::IncrementWrap,
+        8 => StencilOperation::DecrementWrap,
+        _ => StencilOperation::Keep,
+    };
+    let face = |native: crate::render_state::NativeStencilFace| StencilFaceState {
+        compare: compare(native.compare),
+        fail_op: operation(native.fail),
+        depth_fail_op: operation(native.depth_fail),
+        pass_op: operation(native.pass),
+    };
+    Ok(DepthStencilState {
+        format,
+        depth_write_enabled: Some(depth.depth_enabled && depth.depth_write),
+        depth_compare: Some(if depth.depth_enabled {
+            compare(depth.depth_compare)
+        } else {
+            CompareFunction::Always
+        }),
+        stencil: if depth.stencil_enabled {
+            StencilState {
+                front: face(depth.front),
+                back: face(depth.back),
+                read_mask: u32::from(depth.stencil_read_mask),
+                write_mask: u32::from(depth.stencil_write_mask),
+            }
+        } else {
+            StencilState::default()
+        },
+        bias: DepthBiasState {
+            constant: raster.depth_bias,
+            slope_scale: f32::from_bits(raster.slope_scaled_depth_bias_bits),
+            clamp: f32::from_bits(raster.depth_bias_clamp_bits),
+        },
+    })
+}
+
+/// A native depth draw with caller-prepared model state and vertex streams.
+/// Index format, ranges and scissor are explicit. Rigid opaque/cutout and the
+/// verified vegetation program are supported; skin/paraboloid remain unmapped.
+pub struct NativeOpaqueShadowDraw<'a> {
+    pub model_state: &'a BindGroup,
+    /// Required for cutout variants, using the ORIGINAL diffuse and sampler.
+    /// Rigid alpha additionally binds layer-zero UV scale/bias here; vegetation
+    /// stores that transform in the model CB instead.
+    pub alpha_material: Option<&'a BindGroup>,
+    pub vertex_buffer: &'a Buffer,
+    pub index_buffer: &'a Buffer,
+    pub index_format: IndexFormat,
+    pub indices: Range<u32>,
+    pub base_vertex: i32,
+    pub instances: Range<u32>,
+    pub scissor: NativeShadowScissor,
+}
+
+/// Scissor-on raster state captured for the native model-shadow draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeShadowScissor {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Verified native vertex/fragment pairs; layout is part of each program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeShadowDepthProgram {
+    Opaque,
+    RigidAlpha,
+    /// Installed VS14200/PS14201: raw color.xyz/normal.xy and 208-byte CB.
+    Vegetation,
+}
+
+impl NativeShadowDepthProgram {
+    pub fn model_uniform_bytes(self) -> u64 {
+        match self {
+            Self::Opaque | Self::RigidAlpha => NATIVE_SHADOW_PER_INSTANCE_BYTES,
+            Self::Vegetation => 208,
+        }
+    }
+}
+
+/// Cached native depth pipeline. The legacy type name is retained for existing
+/// owners; the explicit program controls vertex streams and uniform layout.
+pub struct NativeOpaqueShadowPipeline {
+    pipeline: RenderPipeline,
+    format: TextureFormat,
+    alpha_test: bool,
+    program: NativeShadowDepthProgram,
+    stencil_reference: u32,
+}
+
+impl NativeOpaqueShadowPipeline {
+    /// Build the original-backed opaque vertex pipeline. Bias and the complete
+    /// owner vertex layout are explicit inputs, not defaults. The capture used
+    /// `DepthBiasState { constant: 80, slope_scale: 5.0, clamp: 1000.0 }`; this
+    /// is not assumed for other instances. Nonzero clamp is accepted only when
+    /// the active adapter reports `DEPTH_BIAS_CLAMP` support.
+    pub fn new(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+    ) -> Result<Self, String> {
+        Self::new_with_format(
+            device,
+            adapter,
+            vertex_layout,
+            bias,
+            TextureFormat::Depth24PlusStencil8,
+        )
+    }
+
+    /// Match the actual original image template, including the D16 branch.
+    pub fn new_with_format(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+    ) -> Result<Self, String> {
+        Self::new_with_raster_state(
+            device,
+            adapter,
+            vertex_layout,
+            bias,
+            format,
+            FrontFace::Cw,
+            Some(Face::Back),
+        )
+    }
+
+    /// Use the owner's resolved culling and mesh representation. Native DH2
+    /// indices have CW fronts; game.rs reverses them once for Bevy's CCW
+    /// representation (including reflected-instance variants). Reusing those
+    /// GPU allocations must therefore use CCW, not the capture's CW state.
+    pub fn new_with_raster_state(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(
+            device,
+            adapter,
+            vertex_layout,
+            bias,
+            format,
+            front_face,
+            cull_mode,
+            NativeShadowDepthProgram::Opaque,
+            None,
+        )
+    }
+
+    /// arkDefault's rigid alpha-test shadow path. The layout's location 1 is
+    /// the owner's selected layer-zero UV stream; it is not always UV0.
+    pub fn new_alpha_with_raster_state(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(
+            device,
+            adapter,
+            vertex_layout,
+            bias,
+            format,
+            front_face,
+            cull_mode,
+            NativeShadowDepthProgram::RigidAlpha,
+            None,
+        )
+    }
+
+    /// The installed vegetation shadow program. The owner must supply the
+    /// original color.xyz and normal.xy stream values, not forward albedo or
+    /// a guessed decoded normal, and the complete 208-byte PerInstanceCB.
+    pub fn new_vegetation_with_raster_state(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(
+            device,
+            adapter,
+            vertex_layout,
+            bias,
+            format,
+            front_face,
+            cull_mode,
+            NativeShadowDepthProgram::Vegetation,
+            None,
+        )
+    }
+
+    /// The same evidenced rigid position program, with the main-Z owner's
+    /// actual prepared state/reference and D32S8 target. Instance CB bytes are
+    /// still caller-owned: a model's stencil flag is NOT its shader multiplier.
+    /// This covers rigid opaque geometry only, not a guessed alpha/skin variant.
+    pub fn new_main_opaque_depth(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        state: &crate::render_state::NativeRenderState,
+        stencil_reference: u32,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        use bevy::render::settings::WgpuFeatures;
+        let features = device.wgpu_device().features();
+        if !features.contains(WgpuFeatures::DEPTH32FLOAT_STENCIL8) {
+            return Err("native main-Z requires enabled DEPTH32FLOAT_STENCIL8".into());
+        }
+        let raster = crate::render_state::native_raster_state(state);
+        let polygon_mode = if raster.fill_mode == 2 {
+            PolygonMode::Line
+        } else {
+            PolygonMode::Fill
+        };
+        if polygon_mode == PolygonMode::Line && !features.contains(WgpuFeatures::POLYGON_MODE_LINE)
+        {
+            return Err("native wireframe main-Z requires enabled POLYGON_MODE_LINE".into());
+        }
+        if !raster.depth_clip && !features.contains(WgpuFeatures::DEPTH_CLIP_CONTROL) {
+            return Err("native unclipped main-Z requires enabled DEPTH_CLIP_CONTROL".into());
+        }
+        if raster.antialiased_line {
+            return Err("native antialiased-line main-Z rasterization is not mapped".into());
+        }
+        let primitive = PrimitiveState {
+            front_face,
+            cull_mode,
+            polygon_mode,
+            unclipped_depth: !raster.depth_clip,
+            ..Default::default()
+        };
+        let depth = native_depth_stencil_gpu(state, TextureFormat::Depth32FloatStencil8)?;
+        let mut pipeline = Self::with_program(
+            device,
+            adapter,
+            vertex_layout,
+            depth.bias,
+            depth.format,
+            front_face,
+            cull_mode,
+            NativeShadowDepthProgram::Opaque,
+            Some((depth, primitive)),
+        )?;
+        pipeline.stencil_reference = stencil_reference;
+        Ok(pipeline)
+    }
+
+    fn with_program(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+        program: NativeShadowDepthProgram,
+        resolved_state: Option<(DepthStencilState, PrimitiveState)>,
+    ) -> Result<Self, String> {
+        if !matches!(
+            format,
+            TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
+        ) && !(resolved_state.is_some() && format == TextureFormat::Depth32FloatStencil8)
+        {
+            return Err("unsupported native rigid depth format".into());
+        }
+        let alpha_test = program != NativeShadowDepthProgram::Opaque;
+        if program == NativeShadowDepthProgram::Vegetation {
+            validate_vegetation_vertex_layout(vertex_layout)?;
+        } else {
+            validate_opaque_vertex_layout(vertex_layout)?;
+            if alpha_test {
+                validate_alpha_vertex_layout(vertex_layout)?;
+            }
+        }
+        validate_opaque_depth_bias(bias, adapter.get_downlevel_capabilities().flags)?;
+        let (depth_state, primitive) = resolved_state.unwrap_or((
+            DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Less),
+                stencil: StencilState::default(),
+                bias,
+            },
+            PrimitiveState {
+                front_face,
+                cull_mode,
+                ..Default::default()
+            },
+        ));
+        let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("native resolved shadow vertex program"),
+            source: ShaderSource::Wgsl(
+                match program {
+                    NativeShadowDepthProgram::Opaque => {
+                        include_str!("../assets/shaders/dh2_shadow_opaque.wgsl")
+                    }
+                    NativeShadowDepthProgram::RigidAlpha => {
+                        include_str!("../assets/shaders/dh2_shadow_alpha.wgsl")
+                    }
+                    NativeShadowDepthProgram::Vegetation => {
+                        include_str!("../assets/shaders/dh2_shadow_vegetation.wgsl")
+                    }
+                }
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
+            label: Some("native resolved rigid depth pipeline"),
+            layout: None,
+            vertex: RawVertexState {
+                module: &shader,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(vertex_layout),
+            },
+            fragment: alpha_test.then_some(RawFragmentState {
+                module: &shader,
+                entry_point: Some("fragment"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            primitive,
+            multisample: MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+            depth_stencil: Some(depth_state),
+        });
+        Ok(Self {
+            pipeline,
+            format,
+            alpha_test,
+            program,
+            stencil_reference: 0,
+        })
+    }
+
+    /// The caller supplies the resolved original $diffusemap/$bilinearSampler
+    /// and a 16-byte layer-zero scale/bias buffer. No forward cutoff, tint,
+    /// fallback texture or guessed addressing mode enters the shadow pass.
+    pub fn bind_alpha_material(
+        &self,
+        device: &RenderDevice,
+        diffuse: &TextureView,
+        sampler: &Sampler,
+        uv_scale_bias: &Buffer,
+    ) -> Result<BindGroup, String> {
+        if self.program != NativeShadowDepthProgram::RigidAlpha {
+            return Err(
+                "separate layer-zero UV binding requires the rigid alpha shadow program".into(),
+            );
+        }
+        if uv_scale_bias.size() < 16 || !uv_scale_bias.usage().contains(BufferUsages::UNIFORM) {
+            return Err("shadow layer-zero scale/bias needs 16 uniform bytes".into());
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(
+            &BindGroupDescriptor {
+                label: Some("native rigid shadow diffuse-alpha material"),
+                layout: &self.pipeline.get_bind_group_layout(1),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(diffuse),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::Buffer(BufferBinding {
+                            buffer: uv_scale_bias,
+                            offset: 0,
+                            size: NonZeroU64::new(16),
+                        }),
+                    },
+                ],
+            },
+        )))
+    }
+
+    /// Bind the vegetation program's diffuse/bilinear resources. Its UV
+    /// scale/bias is in the owner's model CB at byte 0, not a third material
+    /// binding. The supplied sampler must be the resolved original sampler.
+    pub fn bind_vegetation_material(
+        &self,
+        device: &RenderDevice,
+        diffuse: &TextureView,
+        sampler: &Sampler,
+    ) -> Result<BindGroup, String> {
+        if self.program != NativeShadowDepthProgram::Vegetation {
+            return Err(
+                "vegetation material binding requires the vegetation shadow program".into(),
+            );
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(
+            &BindGroupDescriptor {
+                label: Some("native vegetation shadow diffuse/bilinear material"),
+                layout: &self.pipeline.get_bind_group_layout(1),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(diffuse),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(sampler),
+                    },
+                ],
+            },
+        )))
+    }
+
+    /// Make a cached binding for the selected program's caller-prepared CB.
+    /// Rigid: 80 bytes, W/Z/Y/X rows at 0/16/32/48, depthhack at 64.
+    /// Vegetation: 208 bytes, wind fields/UV followed by Z/Y/X/W rows and time.
+    pub fn bind_prepared_model_state(
+        &self,
+        device: &RenderDevice,
+        prepared_model_state: &Buffer,
+    ) -> Result<BindGroup, String> {
+        self.bind_prepared_model_state_at(device, prepared_model_state, 0)
+    }
+
+    /// Bind one unchanged native record from a persistent uniform pool. A
+    /// layer owner can upload many matrices in one write rather than allocate
+    /// a buffer per surface or recreate bindings during every shadow redraw.
+    /// The offset obeys the active backend's uniform-binding alignment.
+    pub fn bind_prepared_model_state_at(
+        &self,
+        device: &RenderDevice,
+        prepared_model_state: &Buffer,
+        offset: u64,
+    ) -> Result<BindGroup, String> {
+        let required = self.program.model_uniform_bytes();
+        if offset
+            .checked_add(required)
+            .is_none_or(|end| end > prepared_model_state.size())
+        {
+            return Err(format!(
+                "native {:?} shadow PerInstanceCB needs {required} bytes at offset {offset}, buffer has {}",
+                self.program,
+                prepared_model_state.size()
+            ));
+        }
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+        if offset % alignment != 0 {
+            return Err(format!(
+                "native opaque shadow PerInstanceCB offset {offset} is not aligned to {alignment} bytes"
+            ));
+        }
+        if !prepared_model_state.usage().contains(BufferUsages::UNIFORM) {
+            return Err("native opaque shadow PerInstanceCB buffer lacks UNIFORM usage".into());
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(
+            &BindGroupDescriptor {
+                label: Some("native opaque shadow prepared PerInstanceCB"),
+                layout: &self.pipeline.get_bind_group_layout(0),
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer: prepared_model_state,
+                        offset,
+                        size: NonZeroU64::new(required),
+                    }),
+                }],
+            },
+        )))
+    }
+
+    /// Record indexed opaque model draws into a cached depth-array layer view.
+    /// The caller supplies load/store operations. Empty cached reuse is a no-op;
+    /// explicit clears/discards still execute even when no caster was selected.
+    /// Otherwise an empty dirty layer retains stale occluders instead of the
+    /// original owner's clear depth. Each draw uses existing mesh buffers,
+    /// a prepared state binding, an explicit index type/range, and a scissor.
+    pub fn draw_layer(
+        &self,
+        encoder: &mut CommandEncoder,
+        depths: &NativeShadowDepthArray,
+        layer: u32,
+        depth_ops: Operations<f32>,
+        stencil_ops: Option<Operations<u32>>,
+        draws: &[NativeOpaqueShadowDraw<'_>],
+    ) -> Result<(), String> {
+        if depths.texture.format() != self.format {
+            return Err("native shadow pipeline and depth-array formats differ".into());
+        }
+        if self.format == TextureFormat::Depth16Unorm && stencil_ops.is_some() {
+            return Err("native D16 parallel shadow target has no stencil aspect".into());
+        }
+        let Some(view) = depths.layers.get(layer as usize) else {
+            return Err(format!(
+                "native opaque shadow layer {layer} is outside {} cached layers",
+                depths.layers.len()
+            ));
+        };
+        self.draw_depth_view(
+            encoder,
+            view,
+            [depths.size.width, depths.size.height],
+            depth_ops,
+            stencil_ops,
+            draws,
+        )
+    }
+
+    /// Submit resolved rigid model draws to an owner's actual main-Z view or
+    /// cached shadow layer. No geometry copying or depth-only stencil fallback.
+    pub fn draw_depth_view(
+        &self,
+        encoder: &mut CommandEncoder,
+        view: &TextureView,
+        dimensions: [u32; 2],
+        depth_ops: Operations<f32>,
+        stencil_ops: Option<Operations<u32>>,
+        draws: &[NativeOpaqueShadowDraw<'_>],
+    ) -> Result<(), String> {
+        for draw in draws {
+            if self.alpha_test != draw.alpha_material.is_some() {
+                return Err("native shadow draw and alpha material variant differ".into());
+            }
+            let scissor = draw.scissor;
+            let right = scissor.x.checked_add(scissor.width);
+            let bottom = scissor.y.checked_add(scissor.height);
+            if scissor.width == 0
+                || scissor.height == 0
+                || right.is_none_or(|right| right > dimensions[0])
+                || bottom.is_none_or(|bottom| bottom > dimensions[1])
+            {
+                return Err(format!(
+                    "native opaque shadow scissor is outside layer: {scissor:?}"
+                ));
+            }
+            if draw.indices.start >= draw.indices.end
+                || (draw.indices.end - draw.indices.start) % 3 != 0
+                || draw.instances.start >= draw.instances.end
+            {
+                return Err(
+                    "native opaque shadow requires nonempty indexed triangle and instance ranges"
+                        .into(),
+                );
+            }
+        }
+        if draws.is_empty()
+            && matches!(depth_ops.load, LoadOp::Load)
+            && depth_ops.store == StoreOp::Store
+            && stencil_ops
+                .as_ref()
+                .is_none_or(|ops| matches!(ops.load, LoadOp::Load) && ops.store == StoreOp::Store)
+        {
+            return Ok(());
+        }
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("native opaque model-shadow layer draws"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(depth_ops),
+                stencil_ops,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_stencil_reference(self.stencil_reference);
+        for draw in draws {
+            pass.set_scissor_rect(
+                draw.scissor.x,
+                draw.scissor.y,
+                draw.scissor.width,
+                draw.scissor.height,
+            );
+            pass.set_bind_group(0, draw.model_state, &[]);
+            if let Some(material) = draw.alpha_material {
+                pass.set_bind_group(1, material, &[]);
+            }
+            pass.set_vertex_buffer(0, *draw.vertex_buffer.slice(..));
+            pass.set_index_buffer(*draw.index_buffer.slice(..), draw.index_format);
+            pass.draw_indexed(
+                draw.indices.clone(),
+                draw.base_vertex,
+                draw.instances.clone(),
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_opaque_depth_bias(
+    bias: DepthBiasState,
+    adapter_flags: DownlevelFlags,
+) -> Result<(), String> {
+    if !bias.slope_scale.is_finite() || !bias.clamp.is_finite() {
+        return Err("native opaque shadow depth bias must be finite".into());
+    }
+    if bias.clamp != 0.0 && !adapter_flags.contains(DownlevelFlags::DEPTH_BIAS_CLAMP) {
+        return Err(format!(
+            "native opaque shadow depth-bias clamp {} is unsupported: adapter lacks DownlevelFlags::DEPTH_BIAS_CLAMP",
+            bias.clamp
+        ));
+    }
+    Ok(())
+}
+
+fn validate_opaque_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(), String> {
+    if layout.array_stride == 0 || layout.array_stride % 4 != 0 {
+        return Err(
+            "native opaque shadow vertex stride must be nonzero and four-byte aligned".into(),
+        );
+    }
+    if layout.step_mode != VertexStepMode::Vertex {
+        return Err("native opaque shadow position stream must use per-vertex stepping".into());
+    }
+    let positions: Vec<&VertexAttribute> = layout
+        .attributes
+        .iter()
+        .filter(|attribute| attribute.shader_location == 0)
+        .collect();
+    if positions.len() != 1
+        || positions[0].format != VertexFormat::Float32x3
+        || positions[0].offset % 4 != 0
+        || positions[0]
+            .offset
+            .checked_add(12)
+            .is_none_or(|end| end > layout.array_stride)
+    {
+        return Err(
+            "native opaque shadow requires one aligned Float32x3 position at location 0 within the owner's stride"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_alpha_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(), String> {
+    let mut uv = layout
+        .attributes
+        .iter()
+        .filter(|attribute| attribute.shader_location == 1);
+    let Some(attribute) = uv.next() else {
+        return Err("alpha shadow mesh lacks layer-zero UV stream".into());
+    };
+    if uv.next().is_some()
+        || attribute.format != VertexFormat::Float32x2
+        || attribute.offset % 4 != 0
+        || attribute
+            .offset
+            .checked_add(8)
+            .is_none_or(|end| end > layout.array_stride)
+    {
+        return Err("alpha shadow needs one aligned Float32x2 UV at location 1".into());
+    }
+    Ok(())
+}
+
+fn validate_vegetation_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(), String> {
+    validate_opaque_vertex_layout(layout)?;
+    validate_alpha_vertex_layout(layout)?;
+    for (location, format, bytes, name) in [
+        (2, VertexFormat::Float32x3, 12, "raw color.xyz"),
+        (3, VertexFormat::Float32x2, 8, "original normal.xy"),
+    ] {
+        let mut fields = layout
+            .attributes
+            .iter()
+            .filter(|field| field.shader_location == location);
+        let Some(field) = fields.next() else {
+            return Err(format!(
+                "vegetation shadow mesh lacks {name} at location {location}"
+            ));
+        };
+        if fields.next().is_some()
+            || field.format != format
+            || field.offset % 4 != 0
+            || field
+                .offset
+                .checked_add(bytes)
+                .is_none_or(|end| end > layout.array_stride)
+        {
+            return Err(format!(
+                "vegetation shadow needs one aligned {format:?} {name} at location {location}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "native_shadow_gpu_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "native_shadow_vegetation_tests.rs"]
+mod vegetation_tests;

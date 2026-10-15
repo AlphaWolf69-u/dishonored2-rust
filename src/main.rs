@@ -315,7 +315,12 @@ fn run() -> Result<()> {
             let bytes = read_entry(base, first)?;
             for duplicate in &matching[1..] {
                 if read_entry(base, duplicate)? != bytes {
-                    return Err(format!("{} has {} different indexed copies; extraction is ambiguous", query, matching.len()).into());
+                    return Err(format!(
+                        "{} has {} different indexed copies; extraction is ambiguous",
+                        query,
+                        matching.len()
+                    )
+                    .into());
                 }
             }
             let base = fs::canonicalize(base)?;

@@ -245,8 +245,10 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
                 uvs.push([u, v]);
                 let mut packed = [0; 12];
                 packed[..4].copy_from_slice(&uv[4..8]);
-                packed[4..8].copy_from_slice(&normal_stream[vertex_index * 4..vertex_index * 4 + 4]);
-                packed[8..12].copy_from_slice(&tangent_stream[vertex_index * 4..vertex_index * 4 + 4]);
+                packed[4..8]
+                    .copy_from_slice(&normal_stream[vertex_index * 4..vertex_index * 4 + 4]);
+                packed[8..12]
+                    .copy_from_slice(&tangent_stream[vertex_index * 4..vertex_index * 4 + 4]);
                 packed_channels.push(packed);
                 let width = skin_influences as usize;
                 let skin = &skin_stream[vertex_index * width * 2..(vertex_index + 1) * width * 2];

@@ -3,7 +3,9 @@
 /// FUN_1402d1a00: first semantic/index match; missing uses UINT32_MAX.
 /// A validated slice represents the native packed low-24-bit element count.
 pub fn find_vertex_element(elements: &[[u8; 8]], semantic: u8, index: u8) -> u32 {
-    elements.iter().position(|e| e[4] == semantic && e[5] == index)
+    elements
+        .iter()
+        .position(|e| e[4] == semantic && e[5] == index)
         .map_or(u32::MAX, |i| i as u32)
 }
 
@@ -415,10 +417,19 @@ mod tests {
         let mut verified = 0;
         for line in text.lines().filter(|l| l.starts_with("decl_raw ")) {
             let hex = line.split_whitespace().last().unwrap();
-            let bytes = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect::<Vec<_>>();
-            let elements = bytes.chunks_exact(8).map(|e| e.try_into().unwrap()).collect::<Vec<[u8; 8]>>();
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>();
+            let elements = bytes
+                .chunks_exact(8)
+                .map(|e| e.try_into().unwrap())
+                .collect::<Vec<[u8; 8]>>();
             for (index, element) in elements.iter().enumerate() {
-                assert_eq!(find_vertex_element(&elements, element[4], element[5]), index as u32);
+                assert_eq!(
+                    find_vertex_element(&elements, element[4], element[5]),
+                    index as u32
+                );
                 verified += 1;
             }
             assert_eq!(find_vertex_element(&elements, 255, 255), u32::MAX);

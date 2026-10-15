@@ -3,10 +3,10 @@
 use std::{env, fs, time::Instant};
 #[path = "../bmodel.rs"]
 mod bmodel;
-#[path = "../tome.rs"]
-mod tome;
 #[path = "../render_model.rs"]
 mod render_model;
+#[path = "../tome.rs"]
+mod tome;
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();

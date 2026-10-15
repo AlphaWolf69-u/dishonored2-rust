@@ -6,8 +6,10 @@
 //! The ordinary camera query combines global spatial selection, local cell
 //! traversal, portal coverage, and per-cell object acceptance.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
+#[path = "shadow_caster.rs"]
+pub mod shadow_caster;
 #[path = "tome_sphere.rs"]
 mod sphere;
 pub use sphere::{
@@ -657,11 +659,30 @@ pub fn object_ids(bytes: &[u8]) -> Result<Vec<u32>, String> {
         .collect()
 }
 
+/// Number of Tome object indices in the header, shared by cached renderer
+/// views so frame queries do not reread or reinterpret the header.
+pub fn object_count(bytes: &[u8]) -> Result<usize, String> {
+    Ok(word(bytes, 0x40)? as usize)
+}
+
 /// FUN_140a767e0/FUN_140a768d0 map one Tome object index to the authored
 /// object IDs consumed by the world renderer. With header+0x4c present, it
 /// indexes two offsets into the ID table at header+0x50; otherwise there is
 /// one ID per Tome index. Empty groups are valid in the packed format.
 pub fn object_ids_for_index(bytes: &[u8], index: u32) -> Result<Vec<u32>, String> {
+    let mut result = Vec::new();
+    append_object_ids_for_index(bytes, index, &mut result)?;
+    Ok(result)
+}
+
+/// Append FUN_140a767e0/FUN_140a768d0's mapped IDs without allocating a
+/// temporary per object. Cached renderer tables use this during load, then
+/// reuse their flattened ID storage for every frame.
+pub fn append_object_ids_for_index(
+    bytes: &[u8],
+    index: u32,
+    output: &mut Vec<u32>,
+) -> Result<(), String> {
     let count = word(bytes, 0x40)?;
     if index >= count {
         return Err("Tome object index out of range".into());
@@ -699,7 +720,10 @@ pub fn object_ids_for_index(bytes: &[u8], index: u32) -> Result<Vec<u32>, String
     if bytes.get(first..last).is_none() {
         return Err("truncated Tome object ID group".into());
     }
-    (start..end).map(|i| word(bytes, ids_at + i * 4)).collect()
+    for i in start..end {
+        output.push(word(bytes, ids_at + i * 4)?);
+    }
+    Ok(())
 }
 
 /// FUN_14031cf30 searches unsigned IDs and returns the last matching
@@ -1322,8 +1346,12 @@ pub fn quantized_cell_query_bounds(
     record_padding: f32,
     camera_imprecision: [f32; 3],
 ) -> Result<[[f32; 4]; 2], String> {
-    if root.iter().flatten().chain(camera_imprecision.iter())
-        .any(|value| !value.is_finite()) || !record_padding.is_finite()
+    if root
+        .iter()
+        .flatten()
+        .chain(camera_imprecision.iter())
+        .any(|value| !value.is_finite())
+        || !record_padding.is_finite()
     {
         return Err("nonfinite Tome cell-depth bounds".into());
     }
@@ -1536,6 +1564,77 @@ pub fn query_planes_from_rows(depth: [[f32; 4]; 4], sides: [[f32; 4]; 4]) -> [[f
     ]
 }
 
+/// FUN_140a77560/FUN_140a77c00 plane and maximum-distance-box fields.
+/// The caster initializer FUN_140a72df0 uses the full viewport and zero
+/// imprecision; ordinary camera jobs may provide cropped rows instead.
+pub fn query_plane_geometry_from_rows(
+    render_rows: [[f32; 4]; 4],
+    cropped_rows: [[f32; 4]; 4],
+    camera_imprecision: [f32; 3],
+) -> Result<([[f32; 4]; 6], [[f32; 4]; 2]), String> {
+    let mut planes = query_planes_from_rows(render_rows, cropped_rows);
+    // Only the near plane is normalized by the original constructor.
+    let [x, y, z, _] = planes[0];
+    let reciprocal_length = 1.0 / (y * y + x * x + z * z).sqrt();
+    for coefficient in &mut planes[0] {
+        *coefficient *= reciprocal_length;
+    }
+    if planes
+        .iter()
+        .flatten()
+        .chain(camera_imprecision.iter())
+        .any(|v| !v.is_finite())
+    {
+        return Err("nonfinite Tome spatial-query box or plane".into());
+    }
+    Ok((
+        planes,
+        query_bounds_from_planes(&planes, camera_imprecision)?,
+    ))
+}
+
+/// FUN_140a77b10 initializes the plane-query portion of an existing native
+/// context. Preserve every byte that the original leaves untouched. In
+/// particular, primary-query bounds are +/-f32::MAX in all four lanes, NOT
+/// the finite intersection bounds of a receiver or cascade.
+///
+/// The three 22-plane regions end at 0x1e0/0x340/0x4a0 respectively. A larger
+/// slice cannot represent this original layout and is rejected before writes.
+/// Executable fixture: analysis/native_plane_initialization_cases.txt.
+pub fn initialize_native_plane_query(
+    context: &mut [u8; 0x590],
+    planes: &[[f32; 4]],
+) -> Result<(), String> {
+    if planes.len() > 22 {
+        return Err("native plane-query context supports at most 22 planes".into());
+    }
+    for (offset, value) in [(0x580, 0u32), (0x584, 1), (0x4ac, planes.len() as u32)] {
+        context[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    context[0x4c0..0x4d0].fill(0);
+    context[0x4d0] = 0;
+    for (index, plane) in planes.iter().enumerate() {
+        let at = 0x4d4 + index * 4;
+        context[at..at + 4].copy_from_slice(&(index as u32).to_le_bytes());
+        for (axis, &coefficient) in plane.iter().enumerate() {
+            for base in [0x80, 0x1e0] {
+                let at = base + index * 16 + axis * 4;
+                context[at..at + 4].copy_from_slice(&coefficient.to_bits().to_le_bytes());
+            }
+            let at = 0x340 + index * 16 + axis * 4;
+            let sign = if 0.0 < coefficient { u32::MAX } else { 0 };
+            context[at..at + 4].copy_from_slice(&sign.to_le_bytes());
+        }
+    }
+    for (base, value) in [(0x530, -f32::MAX), (0x540, f32::MAX)] {
+        for axis in 0..4 {
+            let at = base + axis * 4;
+            context[at..at + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
 /// FUN_140a76ac0 selects query planes that can intersect a box. The sign
 /// masks at query+0x340 are generated from positive plane components by
 /// FUN_140a77b10; the original SIMD bit-select uses the lower bound for those
@@ -1544,6 +1643,15 @@ pub fn query_planes_from_rows(depth: [[f32; 4]; 4], sides: [[f32; 4]; 4]) -> [[f
 /// visibility.
 pub fn active_query_planes(planes: &[[f32; 4]], bounds: [[f32; 4]; 2]) -> Vec<usize> {
     intersecting_query_plane_positions(planes, bounds, 0..planes.len())
+}
+
+/// Reuse caller-owned plane-index storage for the same FUN_140a76ac0 path.
+pub fn active_query_planes_into(
+    planes: &[[f32; 4]],
+    bounds: [[f32; 4]; 2],
+    output: &mut Vec<usize>,
+) {
+    fill_query_plane_positions(planes, bounds, 0..planes.len(), output);
 }
 
 /// FUN_140a76ac0 with param_3 != NULL tests the supplied plane indices,
@@ -1557,7 +1665,11 @@ pub fn active_query_plane_positions(
     if candidates.iter().any(|&index| index >= planes.len()) {
         return Err("invalid Tome active-plane candidate index".into());
     }
-    Ok(intersecting_query_plane_positions(planes, bounds, candidates.iter().copied()))
+    Ok(intersecting_query_plane_positions(
+        planes,
+        bounds,
+        candidates.iter().copied(),
+    ))
 }
 
 fn intersecting_query_plane_positions(
@@ -1565,16 +1677,34 @@ fn intersecting_query_plane_positions(
     bounds: [[f32; 4]; 2],
     candidates: impl Iterator<Item = usize>,
 ) -> Vec<usize> {
-    candidates.enumerate().filter_map(|(slot, index)| {
+    let mut output = Vec::new();
+    fill_query_plane_positions(planes, bounds, candidates, &mut output);
+    output
+}
+
+fn fill_query_plane_positions(
+    planes: &[[f32; 4]],
+    bounds: [[f32; 4]; 2],
+    candidates: impl Iterator<Item = usize>,
+    output: &mut Vec<usize>,
+) {
+    output.clear();
+    for (slot, index) in candidates.enumerate() {
         let plane = planes[index];
         let products: [f32; 4] = std::array::from_fn(|axis| {
-            let corner = if plane[axis] > 0.0 { bounds[0][axis] } else { bounds[1][axis] };
+            let corner = if plane[axis] > 0.0 {
+                bounds[0][axis]
+            } else {
+                bounds[1][axis]
+            };
             corner * plane[axis]
         });
         // MULPS/SHUFPS/ADDPS adds x+y, then z, then w.
         let distance = ((products[0] + products[1]) + products[2]) + products[3];
-        (distance <= 0.0).then_some(slot & 0xff)
-    }).collect()
+        if distance <= 0.0 {
+            output.push(slot & 0xff);
+        }
+    }
 }
 
 /// FUN_140a71b90: reject a box outside the query bounds or the maximum-distance
@@ -1589,23 +1719,370 @@ pub fn query_bounds_accepts_aabb(
     if active.is_empty() {
         return Ok(true);
     }
+    let minimum = query_plane_minimum(planes, input, active, true, 0.0)?;
+    Ok(!(minimum < 0.0
+        || (0..4).any(|axis| {
+            query_bounds[1][axis] < input[0][axis] || input[1][axis] < query_bounds[0][axis]
+        })))
+}
+
+/// FUN_140a76f30: minimum-corner containment, with no query-bounds gate.
+/// The caster query uses this to stop testing later receiver/cascade volumes
+/// once a box is completely contained. This is NOT a depth-occlusion test.
+/// DAT_141f69a00 initializes the original four-lane MINPS accumulator to 1.
+pub fn query_planes_contain_aabb(
+    planes: &[[f32; 4]],
+    input: [[f32; 4]; 2],
+    active: &[usize],
+) -> Result<bool, String> {
+    Ok(!(query_plane_minimum(planes, input, active, false, 1.0)? < 0.0))
+}
+
+/// Three-way receiver/cascade classification composed from the already
+/// ported FUN_140a71b90 broad acceptance and FUN_140a76f30 minimum-corner
+/// containment predicates. This classifies bounds against a caller-provided
+/// verified receiver state; it does not construct the native receiver volume
+/// or perform FUN_140a707e0's extrusion/distance setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeReceiverBoundsClass {
+    Outside,
+    Intersecting,
+    Contained,
+}
+
+pub fn classify_native_receiver_bounds(
+    receiver_bounds: [[f32; 4]; 2],
+    object_bounds: [[f32; 4]; 2],
+    planes: &[[f32; 4]],
+    active: &[usize],
+) -> Result<NativeReceiverBoundsClass, String> {
+    if receiver_bounds
+        .iter()
+        .flatten()
+        .chain(object_bounds.iter().flatten())
+        .any(|value| !value.is_finite())
+        || (0..4).any(|axis| {
+            receiver_bounds[0][axis] > receiver_bounds[1][axis]
+                || object_bounds[0][axis] > object_bounds[1][axis]
+        })
+    {
+        return Err("invalid native receiver/object bounds".into());
+    }
+    if !query_bounds_accepts_aabb(receiver_bounds, object_bounds, planes, active)? {
+        return Ok(NativeReceiverBoundsClass::Outside);
+    }
+    if query_planes_contain_aabb(planes, object_bounds, active)? {
+        Ok(NativeReceiverBoundsClass::Contained)
+    } else {
+        Ok(NativeReceiverBoundsClass::Intersecting)
+    }
+}
+
+/// Distance branches observed in FUN_140a73bf0. Only the explicitly verified
+/// unbounded path with no per-node records is handled by the full-domain query.
+/// A bounded descriptor or node+0x48 records must not be silently treated as
+/// an AABB-only query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeShadowDistancePath {
+    /// Caller verified param_4 is null/has no positive +0x0c radius and every
+    /// traversed node has a zero +0x48 distance-record offset.
+    UnboundedNoAuxiliaryRecords,
+    BoundedOrAuxiliaryRecords,
+    Unknown,
+}
+
+/// Parent/child IDs consumed directly as byte offsets into FUN_140330c10's
+/// per-receiver caster mask. Keep these in the original traversal order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeShadowCasterSuppression {
+    pub parent_id: u32,
+    pub suppressed_child_id: u32,
+}
+
+/// State for the implemented original-backed AABB candidate query. Receiver
+/// bounds/planes must already be built from FUN_140a707e0/FUN_140a88460;
+/// caster flags and ordered suppression links must come from original-backed
+/// state. The query scans the full cached Tome object domain, never ordinary
+/// camera visibility output. It does not build FUN_140330c10's
+/// +0x1840/+0x1850 instance bounds or apply native per-node candidate filters.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeShadowCasterAabbQueryInput<'a> {
+    pub receivers: &'a [shadow_caster::VerifiedShadowReceiverState<'a>],
+    pub caster_enabled: &'a [bool],
+    pub parent_suppression: &'a [NativeShadowCasterSuppression],
+    pub distance_path: NativeShadowDistancePath,
+}
+
+/// Reusable full-Tome AABB candidate query. Object AABBs and authored IDs are
+/// read from `ShadowCasterTome`'s load-time cache; bitsets, output rows, and
+/// ID deduplication storage are allocated once here and retained across frames.
+/// `query_candidates` is the broad AABB path. `query_directional_candidates`
+/// additionally applies both native baked-direction table encodings. Neither
+/// implements the bounded/per-node distance or receiver-depth branches, so
+/// neither is yet the complete gatherCaster result.
+#[derive(Debug)]
+pub struct NativeShadowCasterAabbQueryScratch {
+    object_count: usize,
+    selected_by_receiver: Vec<Vec<u32>>,
+    output_by_receiver: Vec<Vec<u32>>,
+    active_ids: HashSet<u32>,
+}
+
+impl NativeShadowCasterAabbQueryScratch {
+    pub fn new(
+        tome: &shadow_caster::ShadowCasterTome,
+        receiver_count: usize,
+    ) -> Result<Self, String> {
+        let object_count = tome.object_count();
+        let word_count = object_count
+            .checked_add(31)
+            .ok_or("shadow caster mask size overflow")?
+            / 32;
+        let mut id_capacity = 0usize;
+        for index in 0..object_count {
+            let object = tome
+                .object(index as u32)
+                .ok_or("shadow caster Tome object index is absent")?;
+            id_capacity = id_capacity
+                .checked_add(object.object_ids.len())
+                .ok_or("shadow caster ID count overflow")?;
+        }
+        Ok(Self {
+            object_count,
+            selected_by_receiver: (0..receiver_count).map(|_| vec![0; word_count]).collect(),
+            output_by_receiver: (0..receiver_count)
+                .map(|_| Vec::with_capacity(id_capacity))
+                .collect(),
+            active_ids: HashSet::with_capacity(id_capacity),
+        })
+    }
+
+    /// Recompute per-receiver AABB candidate IDs by testing every cached Tome
+    /// object against caller-provided receiver states. Containment stops later
+    /// receiver tests as FUN_140a76f30 does; then ordered authored-ID parent
+    /// suppression follows FUN_140330c10. This is not the complete gatherCaster
+    /// result: FUN_140a73bf0 reads 24-byte candidate records at node+0x44 and,
+    /// when `*(u32 *)(node+0x48) != 0` (`local_34c`), 32-byte distance records
+    /// there, with a radius descriptor at param_4+0x0c. `FUN_140a7bbf0` obtains
+    /// the work record through FUN_140a7bdb0 using `(ctx+0x40)+(*(i32 *)(ctx+0x4c)
+    /// + index*0x20)`; its mapping to Tome candidate records remains unresolved.
+    /// Trace that mapping or capture runtime values before enabling these filters.
+    pub fn query_candidates<'a>(
+        &'a mut self,
+        tome: &shadow_caster::ShadowCasterTome,
+        input: NativeShadowCasterAabbQueryInput<'_>,
+    ) -> Result<&'a [Vec<u32>], String> {
+        self.query_candidates_filtered(tome, input, |_| Ok(true))
+    }
+
+    /// Apply FUN_140a73bf0's 0x140a74a19/0x140a7538d direction gate after
+    /// broad acceptance, before publishing any receiver mask. The low two
+    /// node-header flag bits choose dense one-bit or palette/nibble tables;
+    /// the palette accepts precisely 0x7f7f. The immutable bytes must be the
+    /// same global Tome resource used to build `tome`. No table is copied or
+    /// allocated in the frame loop. Distance/depth branches remain explicit
+    /// blockers rather than being replaced by this gate.
+    pub fn query_directional_candidates<'a>(
+        &'a mut self,
+        tome: &shadow_caster::ShadowCasterTome,
+        bytes: &[u8],
+        receiver_direction: [f32; 3],
+        input: NativeShadowCasterAabbQueryInput<'_>,
+    ) -> Result<&'a [Vec<u32>], String> {
+        let direction = object_count(bytes).and_then(|count| {
+            if count != self.object_count {
+                return Err(
+                    "shadow direction tables belong to a different Tome object domain".into(),
+                );
+            }
+            shadow_caster::NativeCasterDirection::from_receiver_direction(receiver_direction)
+        });
+        let direction = match direction {
+            Ok(direction) => direction,
+            Err(error) => {
+                self.reset_output();
+                return Err(error);
+            }
+        };
+        self.query_candidates_filtered(tome, input, |index| direction.allows_object(bytes, index))
+    }
+
+    fn reset_output(&mut self) {
+        for mask in &mut self.selected_by_receiver {
+            mask.fill(0);
+        }
+        for output in &mut self.output_by_receiver {
+            output.clear();
+        }
+        self.active_ids.clear();
+    }
+
+    fn query_candidates_filtered<'a>(
+        &'a mut self,
+        tome: &shadow_caster::ShadowCasterTome,
+        input: NativeShadowCasterAabbQueryInput<'_>,
+        mut direction_allows: impl FnMut(u32) -> Result<bool, String>,
+    ) -> Result<&'a [Vec<u32>], String> {
+        self.reset_output();
+
+        if input.distance_path != NativeShadowDistancePath::UnboundedNoAuxiliaryRecords {
+            return Err("unsupported native shadow distance branch".into());
+        }
+        if tome.object_count() != self.object_count {
+            return Err("shadow caster scratch belongs to a different Tome object domain".into());
+        }
+        if input.receivers.len() != self.selected_by_receiver.len() {
+            return Err("shadow caster scratch receiver count mismatch".into());
+        }
+        if input.caster_enabled.len() != self.object_count {
+            return Err("shadow caster flag table does not match Tome object count".into());
+        }
+        for receiver in input.receivers {
+            if receiver
+                .bounds
+                .iter()
+                .flatten()
+                .any(|value| !value.is_finite())
+                || (0..3).any(|axis| receiver.bounds[0][axis] > receiver.bounds[1][axis])
+            {
+                return Err("invalid native shadow receiver bounds".into());
+            }
+            if receiver
+                .active_planes
+                .iter()
+                .any(|&index| index >= receiver.planes.len())
+            {
+                return Err("invalid native shadow receiver plane index".into());
+            }
+        }
+
+        for object_index in 0..self.object_count {
+            if !input.caster_enabled[object_index] {
+                continue;
+            }
+            let object = tome
+                .object(object_index as u32)
+                .ok_or("shadow caster Tome object index is absent")?;
+            let object_bounds = [
+                [
+                    object.bounds[0][0],
+                    object.bounds[0][1],
+                    object.bounds[0][2],
+                    1.0,
+                ],
+                [
+                    object.bounds[1][0],
+                    object.bounds[1][1],
+                    object.bounds[1][2],
+                    1.0,
+                ],
+            ];
+            let mut direction_checked = false;
+            for (receiver_index, receiver) in input.receivers.iter().enumerate() {
+                let receiver_bounds = [
+                    [
+                        receiver.bounds[0][0],
+                        receiver.bounds[0][1],
+                        receiver.bounds[0][2],
+                        1.0,
+                    ],
+                    [
+                        receiver.bounds[1][0],
+                        receiver.bounds[1][1],
+                        receiver.bounds[1][2],
+                        1.0,
+                    ],
+                ];
+                let class = classify_native_receiver_bounds(
+                    receiver_bounds,
+                    object_bounds,
+                    receiver.planes,
+                    receiver.active_planes,
+                )?;
+                if class != NativeReceiverBoundsClass::Outside && !direction_checked {
+                    if !direction_allows(object_index as u32)? {
+                        break;
+                    }
+                    direction_checked = true;
+                }
+                match class {
+                    NativeReceiverBoundsClass::Outside => continue,
+                    NativeReceiverBoundsClass::Intersecting => {
+                        self.selected_by_receiver[receiver_index][object_index / 32] |=
+                            1 << (object_index % 32);
+                    }
+                    NativeReceiverBoundsClass::Contained => {
+                        self.selected_by_receiver[receiver_index][object_index / 32] |=
+                            1 << (object_index % 32);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for receiver_index in 0..self.selected_by_receiver.len() {
+            let selected = &self.selected_by_receiver[receiver_index];
+            let output = &mut self.output_by_receiver[receiver_index];
+            for object_index in 0..self.object_count {
+                if selected[object_index / 32] & (1 << (object_index % 32)) == 0 {
+                    continue;
+                }
+                let object = tome
+                    .object(object_index as u32)
+                    .ok_or("shadow caster Tome object index is absent")?;
+                for &id in object.object_ids {
+                    if !self.active_ids.contains(&id) {
+                        if self.active_ids.len() == self.active_ids.capacity()
+                            || output.len() == output.capacity()
+                        {
+                            return Err("shadow caster scratch ID capacity mismatch".into());
+                        }
+                        self.active_ids.insert(id);
+                        output.push(id);
+                    }
+                }
+            }
+            // Native parent suppression observes the mask after earlier rows;
+            // do not turn this into a set of independent parent tests.
+            for edge in input.parent_suppression {
+                if self.active_ids.contains(&edge.parent_id) {
+                    self.active_ids.remove(&edge.suppressed_child_id);
+                }
+            }
+            output.retain(|id| self.active_ids.contains(id));
+            self.active_ids.clear();
+        }
+        Ok(&self.output_by_receiver)
+    }
+
+    pub fn candidate_ids(&self, receiver_index: usize) -> Option<&[u32]> {
+        self.output_by_receiver
+            .get(receiver_index)
+            .map(Vec::as_slice)
+    }
+}
+
+// Shared native support-plane reduction for maximum-corner overlap and
+// minimum-corner containment. Keep MINPS operand order for NaNs/zeroes.
+fn query_plane_minimum(
+    planes: &[[f32; 4]],
+    input: [[f32; 4]; 2],
+    active: &[usize],
+    maximum_corner: bool,
+    mut minimum: f32,
+) -> Result<f32, String> {
     if active.iter().any(|&index| index >= planes.len()) {
         return Err("invalid Tome query-bounds plane index".into());
     }
     let distance = |index: usize| {
         let plane = planes[index];
         let terms: [f32; 4] = std::array::from_fn(|axis| {
-            let corner = if plane[axis] > 0.0 {
-                input[1][axis]
-            } else {
-                input[0][axis]
-            };
-            corner * plane[axis]
+            let upper = (plane[axis] > 0.0) == maximum_corner;
+            input[usize::from(upper)][axis] * plane[axis]
         });
         ((terms[1] + terms[0]) + terms[2]) + terms[3]
     };
     let minps = |a: f32, b: f32| if a < b { a } else { b };
-    let mut minimum = 0.0;
     let mut groups = active.chunks_exact(4);
     for group in &mut groups {
         let first = minps(distance(group[0]), distance(group[1]));
@@ -1615,10 +2092,7 @@ pub fn query_bounds_accepts_aabb(
     for &index in groups.remainder() {
         minimum = minps(minimum, distance(index));
     }
-    Ok(!(minimum < 0.0
-        || (0..4).any(|axis| {
-            query_bounds[1][axis] < input[0][axis] || input[1][axis] < query_bounds[0][axis]
-        })))
+    Ok(minimum)
 }
 
 /// FUN_140a76bd0 clips a four-lane box against the selected query planes
@@ -4315,15 +4789,28 @@ where
             // FUN_140a85bd0's bit-28 branch merges coverage into +0x1c7e,
             // without scheduling a local cell. Finalization rasterizes it at1.
             if let Some(mask) = exterior.as_deref_mut() {
-                if !traversal_link_precheck(bytes, link, direction, gate_states)?.allows_traversal() {
+                if !traversal_link_precheck(bytes, link, direction, gate_states)?.allows_traversal()
+                {
                     continue;
                 }
                 let face = admitted_link_portal_face(
-                    bytes, record_offset, link, direction, query_point, point_mode_face,
+                    bytes,
+                    record_offset,
+                    link,
+                    direction,
+                    query_point,
+                    point_mode_face,
                 )?;
                 if let Some((pixels, path)) = projected_link_portal_transition(
-                    bytes, record_offset, link, face, query_matrix, winding_flip,
-                    active_planes, viewport, &incoming,
+                    bytes,
+                    record_offset,
+                    link,
+                    face,
+                    query_matrix,
+                    winding_flip,
+                    active_planes,
+                    viewport,
+                    &incoming,
                 )? {
                     mask.grow_to_include(portal_tile_rect(pixels)?)?;
                     match path {
@@ -4548,24 +5035,14 @@ pub type NoDepthAabbQuery<'a> = RenderAabbQuery<'a>;
 
 impl<'a> RenderAabbQuery<'a> {
     pub fn from_state(state: &'a RenderQueryState) -> Result<Self, String> {
-        let mut planes = query_planes_from_rows(state.render_rows, state.cropped_rows);
-        // FUN_140a77560 normalizes only the first depth plane.
-        let [x, y, z, _] = planes[0];
-        let reciprocal_length = 1.0 / (y * y + x * x + z * z).sqrt();
-        for coefficient in &mut planes[0] {
-            *coefficient *= reciprocal_length;
-        }
-        if planes
-            .iter()
-            .flatten()
-            .chain(state.camera_imprecision.iter())
-            .any(|value| !value.is_finite())
-        {
-            return Err("nonfinite Tome spatial-query box or plane".into());
-        }
+        let (planes, query_bounds) = query_plane_geometry_from_rows(
+            state.render_rows,
+            state.cropped_rows,
+            state.camera_imprecision,
+        )?;
         Ok(Self {
             camera_imprecision: state.camera_imprecision,
-            query_bounds: query_bounds_from_planes(&planes, state.camera_imprecision)?,
+            query_bounds,
             planes,
             // Native +0x40 is the transpose of full-view +0x00; job cropping
             // changes side planes, not this projection matrix.
@@ -4632,7 +5109,9 @@ impl<'a> RenderAabbQuery<'a> {
         record_active_planes: &[usize],
     ) -> Result<f32, String> {
         if bounds.iter().flatten().any(|value| !value.is_finite())
-            || record_active_planes.iter().any(|&index| index >= self.planes.len())
+            || record_active_planes
+                .iter()
+                .any(|&index| index >= self.planes.len())
         {
             return Err("invalid Tome cell-depth query".into());
         }
@@ -4645,15 +5124,20 @@ impl<'a> RenderAabbQuery<'a> {
         let depth_row = self.projection_columns.map(|row| row[2]);
         let w_row = self.projection_columns.map(|row| row[3]);
         let corner: [f32; 4] = std::array::from_fn(|axis| {
-            if depth_row[axis] > 0.0 { clipped[1][axis] } else { clipped[0][axis] }
+            if depth_row[axis] > 0.0 {
+                clipped[1][axis]
+            } else {
+                clipped[0][axis]
+            }
         });
         let dot = |row: [f32; 4]| {
-            ((row[1] * corner[1] + row[0] * corner[0]) + row[2] * corner[2])
-                + row[3] * corner[3]
+            ((row[1] * corner[1] + row[0] * corner[0]) + row[2] * corner[2]) + row[3] * corner[3]
         };
         let z = dot(depth_row);
         let mut depth = if z > 0.0 { z / dot(w_row) } else { 0.0 };
-        if depth > 1.0 { depth = 1.0; }
+        if depth > 1.0 {
+            depth = 1.0;
+        }
         Ok(depth)
     }
 
@@ -4661,12 +5145,19 @@ impl<'a> RenderAabbQuery<'a> {
         let expanded = self.expanded_bounds(bounds)?;
         if let Some(grid) = self.depth_grid {
             query_aabb_visibility_with_depth(
-                self.query_bounds, &self.planes, expanded,
-                self.projection_columns, self.viewport, grid,
+                self.query_bounds,
+                &self.planes,
+                expanded,
+                self.projection_columns,
+                self.viewport,
+                grid,
             )
         } else {
             query_aabb_visibility_without_depth(
-                self.query_bounds, &self.planes, expanded, self.projection_columns,
+                self.query_bounds,
+                &self.planes,
+                expanded,
+                self.projection_columns,
             )
         }
     }
@@ -4845,12 +5336,12 @@ pub fn query_aabb_visibility_with_depth(
     // Descriptor +0x340 marks strictly positive depth coefficients. Zero
     // (including -0) selects the upper bound, too: although it contributes
     // nothing to Z, that same corner's X/Y still contribute to clip W.
-    let nearest: [f32; 4] = std::array::from_fn(|axis| {
-        clipped[usize::from(!(rows[axis][2] > 0.0))][axis]
-    });
+    let nearest: [f32; 4] =
+        std::array::from_fn(|axis| clipped[usize::from(!(rows[axis][2] > 0.0))][axis]);
     let dot = |component: usize| {
         ((nearest[1] * rows[1][component] + nearest[0] * rows[0][component])
-            + nearest[2] * rows[2][component]) + nearest[3] * rows[3][component]
+            + nearest[2] * rows[2][component])
+            + nearest[3] * rows[3][component]
     };
     let z = dot(2);
     let threshold = if z > 0.0 { z / dot(3) } else { 0.0 };
@@ -4865,7 +5356,12 @@ pub fn query_aabb_visibility_with_depth(
     // Rust's saturating `as i32` is not equivalent at a W crossing.
     let pixel = unsafe {
         use std::arch::x86_64::*;
-        let bias = [32.0, 32.0, f32::from_bits(0x4203_ffff), f32::from_bits(0x4203_ffff)];
+        let bias = [
+            32.0,
+            32.0,
+            f32::from_bits(0x4203_ffff),
+            f32::from_bits(0x4203_ffff),
+        ];
         let scaled = _mm_add_ps(
             _mm_mul_ps(_mm_loadu_ps(rectangle.as_ptr()), _mm_set1_ps(32.0)),
             _mm_loadu_ps(bias.as_ptr()),
@@ -4895,8 +5391,12 @@ pub fn query_aabb_visibility_without_depth(
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn query_aabb_visibility_with_depth(
-    _: [[f32; 4]; 2], _: &[[f32; 4]], _: [[f32; 4]; 2],
-    _: [[f32; 4]; 4], _: [i32; 4], _: &[f32; 4096],
+    _: [[f32; 4]; 2],
+    _: &[[f32; 4]],
+    _: [[f32; 4]; 2],
+    _: [[f32; 4]; 4],
+    _: [i32; 4],
+    _: &[f32; 4096],
 ) -> Result<(bool, f32), String> {
     Err("original Tome projected box query requires x86_64 SSE".into())
 }
@@ -5073,7 +5573,11 @@ fn ordinary_direct_tome_render_job_inner(
         diagnostics.viewport = Some(viewport);
         state = Some(RenderQueryState::from_input(&job_input, viewport));
         ordinary_direct_tome_visible_objects_inner(
-            tree, bytes, &job_input, data, &mut diagnostics.progress,
+            tree,
+            bytes,
+            &job_input,
+            data,
+            &mut diagnostics.progress,
             state.as_mut(),
         )
     });
@@ -5201,12 +5705,16 @@ fn ordinary_direct_tome_visible_objects_inner(
     let planes = query_planes_from_rows(input.render_rows, input.cropped_rows);
     let stored_matrix = stored_query_matrix_from_render_rows(input.render_rows);
     let initial_mask = PortalTileMask::full(input.initial_tile_rect)?;
-    let depth_query = output_state.as_deref()
+    let depth_query = output_state
+        .as_deref()
         .filter(|state| state.depth_grid.is_some())
-        .map(RenderAabbQuery::for_cell_depth).transpose()?;
+        .map(RenderAabbQuery::for_cell_depth)
+        .transpose()?;
     let mut exterior_mask = if depth_query.is_some() {
         Some(PortalTileMask::new(input.initial_tile_rect)?)
-    } else { None };
+    } else {
+        None
+    };
     let parsed_rows;
     let rows = if let Some(data) = data {
         &data.slot_rows
@@ -5344,12 +5852,19 @@ fn ordinary_direct_tome_visible_objects_inner(
                         (depth_query.as_ref(), output_state.as_deref_mut())
                     {
                         let bounds = cells.cell_depth_bounds(
-                            bytes, item.cell_index as usize, record_padding, input.camera_imprecision,
+                            bytes,
+                            item.cell_index as usize,
+                            record_padding,
+                            input.camera_imprecision,
                         )?;
                         let value = depth_query.cell_depth_value(bounds, &setup.active_planes)?;
                         if let Some(grid) = state.depth_grid.as_deref_mut() {
                             state.maximum_depth = rasterize_depth_mask(
-                                grid, portal.rect, &portal.bits, value, state.maximum_depth,
+                                grid,
+                                portal.rect,
+                                &portal.bits,
+                                value,
+                                state.maximum_depth,
                             )?;
                         }
                     }
@@ -5425,9 +5940,8 @@ fn ordinary_direct_tome_visible_objects_inner(
             // 140a85bd0 flushes every delayed cell before the exterior mask.
             // Ordinary world jobs have no input grid to min-clamp against.
             if mask.bits.iter().any(|&word| word != 0) {
-                state.maximum_depth = rasterize_depth_mask(
-                    grid, mask.rect, &mask.bits, 1.0, state.maximum_depth,
-                )?;
+                state.maximum_depth =
+                    rasterize_depth_mask(grid, mask.rect, &mask.bits, 1.0, state.maximum_depth)?;
             }
         }
     }
@@ -7349,15 +7863,27 @@ impl CellTree {
     }
 
     fn cell_depth_bounds(
-        &self, bytes: &[u8], index: usize, padding: f32, imprecision: [f32; 3],
+        &self,
+        bytes: &[u8],
+        index: usize,
+        padding: f32,
+        imprecision: [f32; 3],
     ) -> Result<[[f32; 4]; 2], String> {
         if index >= self.cell_count() {
             return Err("Tome cell-depth index exceeds cell table".into());
         }
         let at = self.cell_table_at + index * 0x24;
-        let packed = [word(bytes, at + 0x18)?, word(bytes, at + 0x1c)?, word(bytes, at + 0x20)?];
+        let packed = [
+            word(bytes, at + 0x18)?,
+            word(bytes, at + 0x1c)?,
+            word(bytes, at + 0x20)?,
+        ];
         let quantized = [
-            [(packed[0] >> 16) as u16, packed[0] as u16, (packed[1] >> 16) as u16],
+            [
+                (packed[0] >> 16) as u16,
+                packed[0] as u16,
+                (packed[1] >> 16) as u16,
+            ],
             [packed[1] as u16, (packed[2] >> 16) as u16, packed[2] as u16],
         ];
         quantized_cell_query_bounds(self.cell_bounds_root, quantized, padding, imprecision)
@@ -8443,50 +8969,93 @@ mod tests {
         let data = DirectTomeQueryData::parse(&bytes, &tree).unwrap();
         let point = [-43.0, 138.0, 48.0];
         let pose = [
-            [1.0, 0.0, 0.0, point[0]], [0.0, 1.0, 0.0, point[1]],
-            [0.0, 0.0, 1.0, point[2]], [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, point[0]],
+            [0.0, 1.0, 0.0, point[1]],
+            [0.0, 0.0, 1.0, point[2]],
+            [0.0, 0.0, 0.0, 1.0],
         ];
         let rows = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
         let gates = initial_gate_states(&bytes).unwrap();
         let input = OrdinaryDirectQueryInput {
-            camera_point: point, render_rows: rows, cropped_rows: rows,
-            initial_tile_rect: [0, 0, 8, 16], camera_imprecision: [0.6; 3],
-            object_imprecision: 0.6, minimum_area_metric: 25.0 / (1920.0 * 1080.0),
+            camera_point: point,
+            render_rows: rows,
+            cropped_rows: rows,
+            initial_tile_rect: [0, 0, 8, 16],
+            camera_imprecision: [0.6; 3],
+            object_imprecision: 0.6,
+            minimum_area_metric: 25.0 / (1920.0 * 1080.0),
             global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
-            winding_flip: query_matrix_winding_flip(rows), gate_states: Some(&gates),
+            winding_flip: query_matrix_winding_flip(rows),
+            gate_states: Some(&gates),
             output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
         };
         for count in [1, 4] {
             let mut cached_jobs = Vec::new();
             for job in 0..count {
-                let cached = ordinary_direct_tome_render_job(&tree, &bytes, &data, &input, job, count);
-                let uncached = ordinary_direct_tome_render_job_uncached(&tree, &bytes, &input, job, count);
+                let cached =
+                    ordinary_direct_tome_render_job(&tree, &bytes, &data, &input, job, count);
+                let uncached =
+                    ordinary_direct_tome_render_job_uncached(&tree, &bytes, &input, job, count);
                 let left = cached.result.as_ref().unwrap().as_ref().unwrap();
                 let right = uncached.result.as_ref().unwrap().as_ref().unwrap();
-                assert_eq!(left.indices(), right.indices(), "job{job}/{count} object output");
-                assert_eq!(left.area_metrics(), right.area_metrics(), "job{job}/{count} area output");
-                assert_eq!(cached.state, uncached.state, "job{job}/{count} descriptor/grid");
+                assert_eq!(
+                    left.indices(),
+                    right.indices(),
+                    "job{job}/{count} object output"
+                );
+                assert_eq!(
+                    left.area_metrics(),
+                    right.area_metrics(),
+                    "job{job}/{count} area output"
+                );
+                assert_eq!(
+                    cached.state, uncached.state,
+                    "job{job}/{count} descriptor/grid"
+                );
                 // Requested output must not feed back into current object tests.
                 let local = input.for_render_job(job, count).unwrap();
                 let baseline = ordinary_direct_tome_visible_objects_cached_with_diagnostics(
-                    &tree, &bytes, &data, &local, &mut OrdinaryQueryDiagnostics::default(),
-                ).unwrap().unwrap();
-                assert_eq!(left.indices(), baseline.indices(), "job{job}/{count} output/input separation");
+                    &tree,
+                    &bytes,
+                    &data,
+                    &local,
+                    &mut OrdinaryQueryDiagnostics::default(),
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    left.indices(),
+                    baseline.indices(),
+                    "job{job}/{count} output/input separation"
+                );
                 cached_jobs.push(cached);
             }
             let output = merge_render_query_outputs(&cached_jobs).unwrap().unwrap();
             let state = output.state.as_ref().unwrap();
-            let grid = state.depth_grid.as_ref().expect("requested descriptor must contain generated depth");
+            let grid = state
+                .depth_grid
+                .as_ref()
+                .expect("requested descriptor must contain generated depth");
             let populated = grid.iter().filter(|&&value| value != 0.0).count();
             assert!(populated > 0, "{count} jobs produced an empty grid");
-            assert!(grid.iter().all(|&value| value.is_finite() && (0.0..=1.0).contains(&value)));
+            assert!(grid
+                .iter()
+                .all(|&value| value.is_finite() && (0.0..=1.0).contains(&value)));
             assert!(state.maximum_depth > 0.0 && state.maximum_depth <= 1.0);
             let query = RenderAabbQuery::from_state(state).unwrap();
             for &index in output.indices() {
-                assert!(query.visible(object_bounds(&bytes, index).unwrap()).unwrap(),
-                    "generated depth rejected accepted object{index} with{count} jobs");
+                assert!(
+                    query
+                        .visible(object_bounds(&bytes, index).unwrap())
+                        .unwrap(),
+                    "generated depth rejected accepted object{index} with{count} jobs"
+                );
             }
-            println!("EOTW depth jobs={count} objects={} populated={populated} maximum={}", output.indices().len(), state.maximum_depth);
+            println!(
+                "EOTW depth jobs={count} objects={} populated={populated} maximum={}",
+                output.indices().len(),
+                state.maximum_depth
+            );
         }
     }
 
@@ -9421,16 +9990,28 @@ mod tests {
         let mask = PortalTileMask::full([0, 0, 8, 16]).unwrap();
         let fixture = include_str!("../analysis/native_cell_query_depth_cases.txt");
         for (case, line) in fixture.lines().enumerate() {
-            let words: Vec<u64> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+            let words: Vec<u64> = line
+                .split_whitespace()
+                .map(|word| word.parse().unwrap())
+                .collect();
             let f = |index: usize| f32::from_bits(words[index] as u32);
-            let root = std::array::from_fn(|side| std::array::from_fn(|axis| f(8 + side * 3 + axis)));
-            let quantized = std::array::from_fn(|side| std::array::from_fn(|axis| words[2 + side * 3 + axis] as u16));
+            let root =
+                std::array::from_fn(|side| std::array::from_fn(|axis| f(8 + side * 3 + axis)));
+            let quantized = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| words[2 + side * 3 + axis] as u16)
+            });
             let camera_imprecision = std::array::from_fn(|axis| f(15 + axis));
-            let bounds = quantized_cell_query_bounds(root, quantized, f(14), camera_imprecision).unwrap();
-            let render_rows = std::array::from_fn(|row| std::array::from_fn(|column| f(18 + row * 4 + column)));
+            let bounds =
+                quantized_cell_query_bounds(root, quantized, f(14), camera_imprecision).unwrap();
+            let render_rows =
+                std::array::from_fn(|row| std::array::from_fn(|column| f(18 + row * 4 + column)));
             let state = RenderQueryState {
                 render_rows,
-                cropped_rows: crop_query_rows(render_rows, render_query_job_tile(words[0] as u32, words[1] as u32).unwrap()).unwrap(),
+                cropped_rows: crop_query_rows(
+                    render_rows,
+                    render_query_job_tile(words[0] as u32, words[1] as u32).unwrap(),
+                )
+                .unwrap(),
                 camera_point: [0.0; 3],
                 camera_imprecision,
                 winding_flip: false,
@@ -9440,7 +10021,10 @@ mod tests {
             };
             let count = words[66] as usize;
             assert_eq!(words.len(), 69 + count, "native cell depth case {case}");
-            let active = words[67..67 + count].iter().map(|&word| word as usize).collect::<Vec<_>>();
+            let active = words[67..67 + count]
+                .iter()
+                .map(|&word| word as usize)
+                .collect::<Vec<_>>();
             let query = RenderAabbQuery::from_state(&state).unwrap();
             let native_planes: [[u32; 4]; 6] = std::array::from_fn(|plane| {
                 std::array::from_fn(|axis| words[34 + plane * 4 + axis] as u32)
@@ -9448,16 +10032,33 @@ mod tests {
             let native_bounds: [[u32; 4]; 2] = std::array::from_fn(|side| {
                 std::array::from_fn(|axis| words[58 + side * 4 + axis] as u32)
             });
-            assert_eq!(query.planes.map(|row| row.map(f32::to_bits)), native_planes, "native cell query planes case {case}");
-            assert_eq!(query.query_bounds.map(|row| row.map(f32::to_bits)), native_bounds, "native cell query bounds case {case}");
+            assert_eq!(
+                query.planes.map(|row| row.map(f32::to_bits)),
+                native_planes,
+                "native cell query planes case {case}"
+            );
+            assert_eq!(
+                query.query_bounds.map(|row| row.map(f32::to_bits)),
+                native_bounds,
+                "native cell query bounds case {case}"
+            );
             let value = query.cell_depth_value(bounds, &active).unwrap();
             let mut grid = [0.0f32; 4096];
-            let maximum = rasterize_depth_mask(&mut grid, mask.rect, &mask.bits, value, 0.0).unwrap();
-            assert_eq!(maximum.to_bits(), words[67 + count] as u32, "native cell depth maximum case {case}");
+            let maximum =
+                rasterize_depth_mask(&mut grid, mask.rect, &mask.bits, value, 0.0).unwrap();
+            assert_eq!(
+                maximum.to_bits(),
+                words[67 + count] as u32,
+                "native cell depth maximum case {case}"
+            );
             let digest = grid.iter().fold(0xcbf29ce484222325u64, |hash, depth| {
                 (hash ^ u64::from(depth.to_bits())).wrapping_mul(0x100000001b3)
             });
-            assert_eq!(digest, words[68 + count], "native cell depth grid case {case}");
+            assert_eq!(
+                digest,
+                words[68 + count],
+                "native cell depth grid case {case}"
+            );
         }
         assert_eq!(fixture.lines().count(), 1440);
     }
@@ -9467,7 +10068,10 @@ mod tests {
         let fixture = include_str!("../analysis/native_depth_aabb_cases.txt");
         assert_eq!(fixture.lines().count(), 9000);
         for (line_number, line) in fixture.lines().enumerate() {
-            let words: Vec<u32> = line.split_whitespace().map(|word| word.parse().unwrap()).collect();
+            let words: Vec<u32> = line
+                .split_whitespace()
+                .map(|word| word.parse().unwrap())
+                .collect();
             assert_eq!(words.len(), 64);
             let viewport = std::array::from_fn(|axis| words[3 + axis] as i32);
             let render_rows = std::array::from_fn(|row| {
@@ -9478,7 +10082,13 @@ mod tests {
                 1 => f32::from_bits(0x3e4c_cccd),
                 2 => 1.0,
                 3 => (i * 7 % 101) as f32 / 100.0,
-                4 => if i % 67 == 0 { 1.0 } else { 0.0 },
+                4 => {
+                    if i % 67 == 0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 _ => panic!("unknown native fixture grid pattern"),
             });
             let state = RenderQueryState {
@@ -9501,11 +10111,25 @@ mod tests {
             let native_bounds: [[f32; 4]; 2] = std::array::from_fn(|side| {
                 std::array::from_fn(|axis| f32::from_bits(words[56 + side * 4 + axis]))
             });
-            assert_eq!(query.planes, native_planes, "depth fixture {line_number}: query planes");
-            assert_eq!(query.query_bounds, native_bounds, "depth fixture {line_number}: query bounds");
+            assert_eq!(
+                query.planes, native_planes,
+                "depth fixture {line_number}: query planes"
+            );
+            assert_eq!(
+                query.query_bounds, native_bounds,
+                "depth fixture {line_number}: query bounds"
+            );
             let (visible, area) = query.visibility_and_area(bounds).unwrap();
-            assert_eq!(visible, words[1] != 0, "depth fixture {line_number}: {bounds:?}");
-            assert_eq!(area.to_bits(), words[2], "depth fixture {line_number}: area {area}");
+            assert_eq!(
+                visible,
+                words[1] != 0,
+                "depth fixture {line_number}: {bounds:?}"
+            );
+            assert_eq!(
+                area.to_bits(),
+                words[2],
+                "depth fixture {line_number}: area {area}"
+            );
             assert_eq!(query.visible(bounds).unwrap(), visible);
         }
     }
@@ -10714,6 +11338,241 @@ mod tests {
     }
 
     #[test]
+    fn caster_containment_matches_installed_executable_cases() {
+        let mut checked = 0;
+        for (case, line) in include_str!("../analysis/original_shadow_containment_cases.txt")
+            .lines()
+            .enumerate()
+        {
+            let values: Vec<u32> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let count = values[0] as usize;
+            assert_eq!(values.len(), 34 + count);
+            let bounds = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| f32::from_bits(values[2 + side * 4 + axis]))
+            });
+            let planes: [[f32; 4]; 6] = std::array::from_fn(|plane| {
+                std::array::from_fn(|axis| f32::from_bits(values[10 + plane * 4 + axis]))
+            });
+            let active: Vec<usize> = values[34..].iter().map(|&v| v as usize).collect();
+            assert_eq!(
+                query_planes_contain_aabb(&planes, bounds, &active).unwrap(),
+                values[1] != 0,
+                "containment case {case}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2048);
+        assert!(query_planes_contain_aabb(&[], [[0.0; 4]; 2], &[0]).is_err());
+    }
+
+    #[test]
+    fn native_plane_initializer_matches_original_bytes() {
+        let fixture = include_str!("../analysis/native_plane_initialization_cases.txt");
+        let mut cases = 0;
+        for (case, line) in fixture.lines().enumerate() {
+            let mut fields = line.split_whitespace();
+            let count = fields.next().unwrap().parse::<usize>().unwrap();
+            let mut planes = [[0.0; 4]; 22];
+            for plane in &mut planes[..count] {
+                for coefficient in plane {
+                    *coefficient =
+                        f32::from_bits(u32::from_str_radix(fields.next().unwrap(), 16).unwrap());
+                }
+            }
+            let expected = fields.next().unwrap();
+            assert_eq!(expected.len(), 0x590 * 2);
+            assert!(fields.next().is_none());
+            let expected: Vec<u8> = (0..0x590)
+                .map(|index| u8::from_str_radix(&expected[index * 2..index * 2 + 2], 16).unwrap())
+                .collect();
+            let mut context = std::array::from_fn(|index| ((index * 37 + count * 17) & 255) as u8);
+            initialize_native_plane_query(&mut context, &planes[..count]).unwrap();
+            assert_eq!(
+                context.as_slice(),
+                expected.as_slice(),
+                "initializer case {case}"
+            );
+            cases += 1;
+        }
+        assert_eq!(cases, 9);
+    }
+
+    #[test]
+    fn native_plane_initializer_rejects_oversize_before_writing() {
+        let mut context = [0xa5; 0x590];
+        let original = context;
+        assert!(initialize_native_plane_query(&mut context, &[[1.0; 4]; 23]).is_err());
+        assert_eq!(context, original);
+    }
+
+    #[test]
+    fn native_shadow_caster_query_returns_ordered_candidate_ids() {
+        fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        fn put_f32(bytes: &mut [u8], offset: usize, value: f32) {
+            put_u32(bytes, offset, value.to_bits());
+        }
+        fn box_planes(bounds: [[f32; 3]; 2]) -> [[f32; 4]; 6] {
+            [
+                [1.0, 0.0, 0.0, -bounds[0][0]],
+                [-1.0, 0.0, 0.0, bounds[1][0]],
+                [0.0, 1.0, 0.0, -bounds[0][1]],
+                [0.0, -1.0, 0.0, bounds[1][1]],
+                [0.0, 0.0, 1.0, -bounds[0][2]],
+                [0.0, 0.0, -1.0, bounds[1][2]],
+            ]
+        }
+
+        let count = 5usize;
+        let bounds_at = 0x60;
+        let ids_at = bounds_at + count * 0x18;
+        let mut bytes = vec![0; ids_at + count * 4];
+        put_u32(&mut bytes, 0x40, count as u32);
+        put_u32(&mut bytes, 0x44, bounds_at as u32);
+        put_u32(&mut bytes, 0x50, ids_at as u32);
+        for (index, center_x) in [0.4, 0.5, 0.6, 0.0, 3.0].into_iter().enumerate() {
+            let at = bounds_at + index * 0x18;
+            for (axis, center) in [center_x, 0.0, 0.0].into_iter().enumerate() {
+                put_f32(&mut bytes, at + axis * 4, center - 0.1);
+                put_f32(&mut bytes, at + 12 + axis * 4, center + 0.1);
+            }
+            put_u32(&mut bytes, ids_at + index * 4, 100 + index as u32);
+        }
+        let tome = shadow_caster::ShadowCasterTome::parse(&bytes).unwrap();
+        let narrow = [[-0.25; 3], [0.25; 3]];
+        let broad = [[-1.0; 3], [1.0; 3]];
+        let narrow_planes = box_planes(narrow);
+        let broad_planes = box_planes(broad);
+        let active = [0, 1, 2, 3, 4, 5];
+        let receivers = [
+            shadow_caster::VerifiedShadowReceiverState {
+                bounds: narrow,
+                planes: &narrow_planes,
+                active_planes: &active,
+            },
+            shadow_caster::VerifiedShadowReceiverState {
+                bounds: broad,
+                planes: &broad_planes,
+                active_planes: &active,
+            },
+        ];
+        let flags = [true; 5];
+        let parent_suppression = [
+            NativeShadowCasterSuppression {
+                parent_id: 101,
+                suppressed_child_id: 100,
+            },
+            NativeShadowCasterSuppression {
+                parent_id: 100,
+                suppressed_child_id: 102,
+            },
+        ];
+        let mut scratch = NativeShadowCasterAabbQueryScratch::new(&tome, receivers.len()).unwrap();
+        let input = NativeShadowCasterAabbQueryInput {
+            receivers: &receivers,
+            caster_enabled: &flags,
+            parent_suppression: &parent_suppression,
+            distance_path: NativeShadowDistancePath::UnboundedNoAuxiliaryRecords,
+        };
+        assert_eq!(
+            scratch.query_candidates(&tome, input).unwrap(),
+            &[vec![103], vec![101, 102]]
+        );
+        let capacities: Vec<_> = scratch
+            .output_by_receiver
+            .iter()
+            .map(Vec::capacity)
+            .collect();
+        let id_capacity = scratch.active_ids.capacity();
+        assert_eq!(
+            scratch.query_candidates(&tome, input).unwrap(),
+            &[vec![103], vec![101, 102]]
+        );
+        assert_eq!(
+            scratch
+                .output_by_receiver
+                .iter()
+                .map(Vec::capacity)
+                .collect::<Vec<_>>(),
+            capacities
+        );
+        assert_eq!(scratch.active_ids.capacity(), id_capacity);
+        assert_eq!(
+            scratch
+                .query_directional_candidates(&tome, &bytes, [1.0, 0.0, 0.0], input)
+                .unwrap(),
+            &[vec![103], vec![101, 102]]
+        );
+
+        // Dense table: direction [1,0,0] selects face 0, bin (8,8).
+        // Only objects 0,1,3 may cast; suppression still removes object 0.
+        bytes.resize(0x600, 0);
+        put_u32(&mut bytes, 0x10, 2);
+        put_u32(&mut bytes, 0x140, 0x180);
+        for index in [0, 1, 3] {
+            let bit = (8 * 16 + 8) * count + index;
+            let at = 0x180 + (bit / 32) * 4;
+            let word = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+            put_u32(&mut bytes, at, word | (1 << (bit % 32)));
+        }
+        assert_eq!(
+            scratch
+                .query_directional_candidates(&tome, &bytes, [1.0, 0.0, 0.0], input)
+                .unwrap(),
+            &[vec![103], vec![101]]
+        );
+
+        // Palette table: nibble zero selects each object's palette entry.
+        // Only objects 0 and 3 have the native accepting sentinel 0x7f7f.
+        bytes[0x180..].fill(0);
+        put_u32(&mut bytes, 0x10, 1);
+        put_u32(&mut bytes, 0x13c, 0x180);
+        put_u32(&mut bytes, 0x140, 0x400);
+        put_u32(&mut bytes, 0x144, 0x500);
+        put_u32(&mut bytes, 0x148, 1);
+        for index in 0..count {
+            put_u32(
+                &mut bytes,
+                0x180 + index * 0x40 + 4,
+                if index == 0 || index == 3 { 0 } else { 1 },
+            );
+        }
+        bytes[0x500..0x502].copy_from_slice(&0x7f7fu16.to_le_bytes());
+        assert_eq!(
+            scratch
+                .query_directional_candidates(&tome, &bytes, [1.0, 0.0, 0.0], input)
+                .unwrap(),
+            &[vec![103], vec![100]]
+        );
+        assert_eq!(scratch.active_ids.capacity(), id_capacity);
+        assert_eq!(
+            scratch
+                .output_by_receiver
+                .iter()
+                .map(Vec::capacity)
+                .collect::<Vec<_>>(),
+            capacities
+        );
+        assert!(scratch
+            .query_directional_candidates(&tome, &bytes, [f32::NAN, 0.0, 0.0], input)
+            .is_err());
+        assert_eq!(scratch.candidate_ids(0), Some(&[][..]));
+        assert_eq!(scratch.candidate_ids(1), Some(&[][..]));
+
+        let unsupported = NativeShadowCasterAabbQueryInput {
+            distance_path: NativeShadowDistancePath::Unknown,
+            ..input
+        };
+        assert!(scratch.query_candidates(&tome, unsupported).is_err());
+        assert_eq!(scratch.candidate_ids(0), Some(&[][..]));
+        assert_eq!(scratch.candidate_ids(1), Some(&[][..]));
+    }
+
+    #[test]
     fn spatial_query_and_bounds_match_installed_executable_cases() {
         let mut checked = [0; 2];
         for (case, line) in include_str!("../analysis/original_spatial_query_cases.txt")
@@ -11262,15 +12121,22 @@ mod tests {
     // Frozen pre-optimization implementation, including vertex/reduction order.
     fn portal_crossing_bounds_heap_reference(corners: [[f32; 4]; 8]) -> Option<[f32; 4]> {
         const FACES: [[usize; 4]; 6] = [
-            [0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
-            [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+            [0, 1, 2, 3],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
         ];
-        let distance = |p: [f32; 4], plane| [p[0] + p[3], p[3] - p[0], p[1] + p[3], p[3] - p[1]][plane];
+        let distance =
+            |p: [f32; 4], plane| [p[0] + p[3], p[3] - p[0], p[1] + p[3], p[3] - p[1]][plane];
         let mut projected = Vec::with_capacity(48);
         for face in FACES {
             let mut polygon = face.map(|i| corners[i]).to_vec();
             for plane in 0..4 {
-                if polygon.is_empty() { break; }
+                if polygon.is_empty() {
+                    break;
+                }
                 let mut clipped = Vec::with_capacity(polygon.len() + 1);
                 let mut previous = *polygon.last().unwrap();
                 let mut previous_distance = distance(previous, plane);
@@ -11280,10 +12146,14 @@ mod tests {
                         let denominator = previous_distance - current_distance;
                         if denominator != 0.0 {
                             let t = previous_distance / denominator;
-                            clipped.push(std::array::from_fn(|lane| previous[lane] + (current[lane] - previous[lane]) * t));
+                            clipped.push(std::array::from_fn(|lane| {
+                                previous[lane] + (current[lane] - previous[lane]) * t
+                            }));
                         }
                     }
-                    if current_distance >= 0.0 { clipped.push(current); }
+                    if current_distance >= 0.0 {
+                        clipped.push(current);
+                    }
                     previous = current;
                     previous_distance = current_distance;
                 }
@@ -11291,9 +12161,16 @@ mod tests {
             }
             projected.extend(polygon);
         }
-        let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
         for p in projected {
-            if p[3] <= 0.0 { continue; }
+            if p[3] <= 0.0 {
+                continue;
+            }
             let x = p[0] / p[3];
             let y = p[1] / p[3];
             bounds[0] = bounds[0].min(x);
@@ -11308,19 +12185,24 @@ mod tests {
     fn portal_crossing_stack_buffers_preserve_heap_results_bit_exactly() {
         let mut seed = 0x4448_3201u32;
         for case in 0..4096 {
-            let corners = std::array::from_fn(|_| std::array::from_fn(|_| {
-                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                let value = (seed >> 8) as f32 / (1u32 << 24) as f32 * 16.0 - 8.0;
-                match case % 16 {
-                    0 => 0.0,
-                    1 => -0.0,
-                    2 => value * 3.0e37,
-                    3 => value * 1.0e-37,
-                    _ => value,
-                }
-            }));
-            let expected = portal_crossing_bounds_heap_reference(corners).map(|b| b.map(f32::to_bits));
-            let actual = projected_portal_box_crossing_bounds(corners).unwrap().map(|b| b.map(f32::to_bits));
+            let corners = std::array::from_fn(|_| {
+                std::array::from_fn(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let value = (seed >> 8) as f32 / (1u32 << 24) as f32 * 16.0 - 8.0;
+                    match case % 16 {
+                        0 => 0.0,
+                        1 => -0.0,
+                        2 => value * 3.0e37,
+                        3 => value * 1.0e-37,
+                        _ => value,
+                    }
+                })
+            });
+            let expected =
+                portal_crossing_bounds_heap_reference(corners).map(|b| b.map(f32::to_bits));
+            let actual = projected_portal_box_crossing_bounds(corners)
+                .unwrap()
+                .map(|b| b.map(f32::to_bits));
             assert_eq!(actual, expected, "portal case {case}: {corners:?}");
         }
         assert!(projected_portal_box_crossing_bounds([[f32::NAN; 4]; 8]).is_err());

@@ -147,13 +147,21 @@ impl Catalog {
                 false
             }
         });
-        let mut image_sources: Vec<_> = image_sources.into_iter().map(|(source, path)| {
-            let index = entries.binary_search_by(|(key, _)| key.cmp(&path)).unwrap();
-            (source, index)
-        }).collect();
+        let mut image_sources: Vec<_> = image_sources
+            .into_iter()
+            .map(|(source, path)| {
+                let index = entries.binary_search_by(|(key, _)| key.cmp(&path)).unwrap();
+                (source, index)
+            })
+            .collect();
         image_sources.sort_by(|left, right| left.0.cmp(&right.0));
         image_sources.dedup_by(|later, earlier| {
-            if later.0 == earlier.0 { earlier.1 = later.1; true } else { false }
+            if later.0 == earlier.0 {
+                earlier.1 = later.1;
+                true
+            } else {
+                false
+            }
         });
         Ok(Self {
             base: base.to_path_buf(),
@@ -178,7 +186,10 @@ impl Catalog {
     /// Resolve the source->compiled resource mapping stored by the game itself.
     pub fn image_resource(&self, source: &str) -> Option<&str> {
         let source = source.to_ascii_lowercase();
-        let index = self.image_sources.binary_search_by(|(key, _)| key.cmp(&source)).ok()?;
+        let index = self
+            .image_sources
+            .binary_search_by(|(key, _)| key.cmp(&source))
+            .ok()?;
         Some(&self.entries[self.image_sources[index].1].0)
     }
 
@@ -339,8 +350,20 @@ mod tests {
             &root.join("game1_patch.index"),
             &[
                 index_entry("Thing/Asset.bin", 0, 5),
-                typed_index_entry("image", "tree$nomips.tga", "generated/image/tree$nomips.tga.bimage7", 0, 5),
-                typed_index_entry("image", "ipr_constantcolor( 0, 0, 0, 1).imageprog", "generated/image/ipr_constantcolor__0__0__0__1_.bimage7", 0, 5),
+                typed_index_entry(
+                    "image",
+                    "tree$nomips.tga",
+                    "generated/image/tree$nomips.tga.bimage7",
+                    0,
+                    5,
+                ),
+                typed_index_entry(
+                    "image",
+                    "ipr_constantcolor( 0, 0, 0, 1).imageprog",
+                    "generated/image/ipr_constantcolor__0__0__0__1_.bimage7",
+                    0,
+                    5,
+                ),
             ],
         );
         write_index(&root.join("game2_patch.index"), &[]);
@@ -353,8 +376,14 @@ mod tests {
         let catalog = Catalog::open(&root).unwrap();
         assert_eq!(catalog.len(), 3);
         assert!(catalog.contains("THING/ASSET.BIN"));
-        assert_eq!(catalog.image_resource("TREE$nomips.TGA"), Some("generated/image/tree$nomips.tga.bimage7"));
-        assert_eq!(catalog.image_resource("ipr_constantColor( 0, 0, 0, 1).imageprog"), Some("generated/image/ipr_constantcolor__0__0__0__1_.bimage7"));
+        assert_eq!(
+            catalog.image_resource("TREE$nomips.TGA"),
+            Some("generated/image/tree$nomips.tga.bimage7")
+        );
+        assert_eq!(
+            catalog.image_resource("ipr_constantColor( 0, 0, 0, 1).imageprog"),
+            Some("generated/image/ipr_constantcolor__0__0__0__1_.bimage7")
+        );
         assert_eq!(catalog.image_resource("tree.tga"), None);
         assert_eq!(
             catalog.read("Thing/Asset.bin").unwrap(),

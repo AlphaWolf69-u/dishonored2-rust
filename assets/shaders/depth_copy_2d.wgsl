@@ -4,6 +4,9 @@
 // These are 2D input shaders, not the array-input depthcopy.decl variant.
 @group(0) @binding(0) var source: texture_depth_2d;
 @group(0) @binding(1) var point_clamp: sampler;
+// unhackdepthbuffer.decl: modelDepthHack.x comes from the actual callback
+// (reciprocal of its positive depth-hack value, otherwise 1).
+@group(0) @binding(2) var<uniform> model_depth_hack: vec4<f32>;
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -16,6 +19,9 @@ struct VertexOutput {
 }
 @fragment fn identity(input: VertexOutput) -> @builtin(frag_depth) f32 {
     return textureSampleLevel(source, point_clamp, input.uv, 0);
+}
+@fragment fn unhack(input: VertexOutput) -> @builtin(frag_depth) f32 {
+    return textureSampleLevel(source, point_clamp, input.uv, 0) * model_depth_hack.x;
 }
 @fragment fn downscale(input: VertexOutput) -> @builtin(frag_depth) f32 {
     let four = textureGather(source, point_clamp, input.uv);

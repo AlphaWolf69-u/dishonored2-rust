@@ -20,8 +20,8 @@
 //! 1400459a0/14043cc50/14113bf30 did not establish a GPU-context receiver;
 //! only callsite windows were inspected, not complete function semantics.
 
-use std::collections::BTreeMap;
 use crate::texture::image_bits_per_pixel;
+use std::collections::BTreeMap;
 
 /// FUN_1402fc580/1402fc600/140331740/1402f82a0 specialize this recurrence
 /// for 8/11/12/24 bytes. MOVSX at 140331740 and 1403317ca proves SIGNED
@@ -53,7 +53,9 @@ pub struct RenderTaskProperties<T> {
 
 impl<T> Default for RenderTaskProperties<T> {
     fn default() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -67,14 +69,21 @@ impl<T> RenderTaskProperties<T> {
     }
 
     pub fn get(&self, name: u32) -> Option<&T> {
-        self.entries.iter().find(|(key, _)| *key == name).map(|(_, value)| value)
+        self.entries
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
     }
 }
 
 /// FUN_14034d140 fans the same registration out to every render-task descriptor.
 /// Only the logical registration path is ported, not native allocator failure
 /// or shared-pointer control-block/destructor callbacks.
-pub fn register_render_task_property<T: Clone>(tasks: &mut [RenderTaskProperties<T>], name: u32, value: T) {
+pub fn register_render_task_property<T: Clone>(
+    tasks: &mut [RenderTaskProperties<T>],
+    name: u32,
+    value: T,
+) {
     for task in tasks {
         task.register(name, value.clone());
     }
@@ -93,8 +102,11 @@ pub fn buffer_view_key(format_word: u32, first: u32, count: u32) -> u32 {
         let high = (value as i32 >> 4) as u32;
         (high.wrapping_shl(10) ^ high) & 0x000f_fc00
     };
-    ((format_word >> 13) & 255) ^ ((count & 15) << 4 | first & 15
-        | spread(count).wrapping_shl(12) | spread(first).wrapping_shl(2))
+    ((format_word >> 13) & 255)
+        ^ ((count & 15) << 4
+            | first & 15
+            | spread(count).wrapping_shl(12)
+            | spread(first).wrapping_shl(2))
 }
 
 #[derive(Debug, Default)]
@@ -104,20 +116,36 @@ pub struct BufferViewCache {
 
 impl BufferViewCache {
     pub fn get(
-        &mut self, byte_width: u32, default_element_count: u32,
-        format_word: u32, first: u32, requested_count: u32,
+        &mut self,
+        byte_width: u32,
+        default_element_count: u32,
+        format_word: u32,
+        first: u32,
+        requested_count: u32,
     ) -> Result<&BufferView, String> {
         let available = if format_word & 0x001f_e000 != 0 {
             let bpp = image_bits_per_pixel(format_word);
-            if bpp == 0 { return Err("native typed buffer view has zero bits per pixel".into()); }
+            if bpp == 0 {
+                return Err("native typed buffer view has zero bits per pixel".into());
+            }
             byte_width.wrapping_shl(3) / bpp
-        } else { default_element_count };
-        let count = if requested_count == 0 { available } else { requested_count };
-        let key = buffer_view_key(format_word,first,count);
+        } else {
+            default_element_count
+        };
+        let count = if requested_count == 0 {
+            available
+        } else {
+            requested_count
+        };
+        let key = buffer_view_key(format_word, first, count);
         // Only native key equality matters, even when source fields differ.
-        Ok(self.views.entry(key).or_insert_with(|| Box::new(BufferView {
-            first_element:first,element_count:count,format_word,
-        })))
+        Ok(self.views.entry(key).or_insert_with(|| {
+            Box::new(BufferView {
+                first_element: first,
+                element_count: count,
+                format_word,
+            })
+        }))
     }
 }
 
@@ -127,7 +155,10 @@ mod tests {
 
     #[test]
     fn render_task_property_registration_replaces_in_place_and_fans_out() {
-        let mut tasks = [RenderTaskProperties::<u64>::default(), RenderTaskProperties::default()];
+        let mut tasks = [
+            RenderTaskProperties::<u64>::default(),
+            RenderTaskProperties::default(),
+        ];
         let packets = resource_name_key("cpu_lightToPutInTiles");
         let constants = resource_name_key("cpu_lightToPutInTiles_cb");
         register_render_task_property(&mut tasks, packets, 11);
@@ -146,59 +177,90 @@ mod tests {
         let mut checked = 0;
         for line in include_str!("../analysis/original_resource_name_hash_cases.txt").lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
-            let bytes: Vec<u8> = fields[1].as_bytes().chunks_exact(2)
-                .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(),16).unwrap()).collect();
-            let expected = u32::from_str_radix(fields[2],16).unwrap();
-            assert_eq!(resource_hash_bytes(&bytes),expected,"{line}");
+            let bytes: Vec<u8> = fields[1]
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
+                .collect();
+            let expected = u32::from_str_radix(fields[2], 16).unwrap();
+            assert_eq!(resource_hash_bytes(&bytes), expected, "{line}");
             checked += 1;
         }
-        assert_eq!(checked,512);
-        assert_ne!(resource_hash_bytes(&[0x80]),(0x811c9dc5u32 ^ 0x80).wrapping_mul(0x1000193));
-        for name in ["lightNodePool","lightNodePoolNextFreeEntry","perTileLightListHeads"] {
-            let mut terminated=name.as_bytes().to_vec();terminated.push(0);
-            assert_eq!(resource_name_key(name),resource_hash_bytes(&terminated));
+        assert_eq!(checked, 512);
+        assert_ne!(
+            resource_hash_bytes(&[0x80]),
+            (0x811c9dc5u32 ^ 0x80).wrapping_mul(0x1000193)
+        );
+        for name in [
+            "lightNodePool",
+            "lightNodePoolNextFreeEntry",
+            "perTileLightListHeads",
+        ] {
+            let mut terminated = name.as_bytes().to_vec();
+            terminated.push(0);
+            assert_eq!(resource_name_key(name), resource_hash_bytes(&terminated));
         }
     }
 
     #[test]
     fn buffer_views_match_original_cache_fields_and_identity() {
-        let mut cache=BufferViewCache::default();
-        let mut case=None;let mut identities=BTreeMap::new();let mut checked=0;
+        let mut cache = BufferViewCache::default();
+        let mut case = None;
+        let mut identities = BTreeMap::new();
+        let mut checked = 0;
         for line in include_str!("../analysis/original_buffer_view_cases.txt").lines() {
-            let f:Vec<u32>=line.split_whitespace().map(|v|v.parse().unwrap()).collect();
-            if case!=Some(f[0]) {cache=BufferViewCache::default();identities.clear();case=Some(f[0]);}
-            let view=cache.get(f[1],f[2],f[3],f[4],f[5]).unwrap();
-            assert_eq!((view.first_element,view.element_count,view.format_word),(f[6],f[7],f[8]),"{line}");
-            let address=view as *const BufferView as usize;
-            let repeated=identities.contains_key(&address);
-            let next=identities.len() as u32;
-            assert_eq!(*identities.entry(address).or_insert(next),f[9],"{line}");
-            assert_eq!(u32::from(repeated),f[10],"{line}");checked+=1;
+            let f: Vec<u32> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            if case != Some(f[0]) {
+                cache = BufferViewCache::default();
+                identities.clear();
+                case = Some(f[0]);
+            }
+            let view = cache.get(f[1], f[2], f[3], f[4], f[5]).unwrap();
+            assert_eq!(
+                (view.first_element, view.element_count, view.format_word),
+                (f[6], f[7], f[8]),
+                "{line}"
+            );
+            let address = view as *const BufferView as usize;
+            let repeated = identities.contains_key(&address);
+            let next = identities.len() as u32;
+            assert_eq!(*identities.entry(address).or_insert(next), f[9], "{line}");
+            assert_eq!(u32::from(repeated), f[10], "{line}");
+            checked += 1;
         }
-        assert_eq!(checked,1350);
+        assert_eq!(checked, 1350);
     }
 
     #[test]
     fn original_buffer_view_zero_count_and_cached_identity() {
-        let mut cache=BufferViewCache::default();
-        let view=cache.get(4608000,1152000,0,0,0).unwrap();
-        assert_eq!(view.element_count,1152000);
-        let address=view as *const BufferView;
-        assert_eq!(cache.get(1,1152000,0,0,0).unwrap() as *const BufferView,address);
+        let mut cache = BufferViewCache::default();
+        let view = cache.get(4608000, 1152000, 0, 0, 0).unwrap();
+        assert_eq!(view.element_count, 1152000);
+        let address = view as *const BufferView;
+        assert_eq!(
+            cache.get(1, 1152000, 0, 0, 0).unwrap() as *const BufferView,
+            address
+        );
         // Native R32 family=3, converted format=42 (nonzero format field).
-        let word=3 | (42<<13);
-        assert_eq!(cache.get(400,1,word,2,0).unwrap().element_count,100);
-        assert_eq!(cache.get(400,1,word,2,7).unwrap().element_count,7);
-        assert!(cache.get(400,1,42<<13,2,0).is_err());
+        let word = 3 | (42 << 13);
+        assert_eq!(cache.get(400, 1, word, 2, 0).unwrap().element_count, 100);
+        assert_eq!(cache.get(400, 1, word, 2, 7).unwrap().element_count, 7);
+        assert!(cache.get(400, 1, 42 << 13, 2, 0).is_err());
     }
 
     #[test]
     fn native_buffer_key_keeps_original_aliasing() {
-        let mut cache=BufferViewCache::default();
+        let mut cache = BufferViewCache::default();
         // Top index bits are discarded by the native key construction.
-        let first=cache.get(4,1,0,0,1).unwrap() as *const BufferView;
-        assert_eq!(buffer_view_key(0,0,1),buffer_view_key(0,0x8000_0000,1));
-        assert_eq!(cache.get(4,1,0,0x8000_0000,1).unwrap() as *const BufferView,first);
-        assert_eq!(cache.get(4,1,0,0x8000_0000,1).unwrap().first_element,0);
+        let first = cache.get(4, 1, 0, 0, 1).unwrap() as *const BufferView;
+        assert_eq!(buffer_view_key(0, 0, 1), buffer_view_key(0, 0x8000_0000, 1));
+        assert_eq!(
+            cache.get(4, 1, 0, 0x8000_0000, 1).unwrap() as *const BufferView,
+            first
+        );
+        assert_eq!(cache.get(4, 1, 0, 0x8000_0000, 1).unwrap().first_element, 0);
     }
 }

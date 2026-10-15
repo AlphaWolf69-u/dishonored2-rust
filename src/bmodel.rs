@@ -48,17 +48,30 @@ fn float_at(bytes: &[u8], at: usize) -> Result<f32, String> {
 /// FUN_140269ff0: union authored, non-null surface bounds into a resource.
 /// Empty lists retain prior bounds. Null geometry/shader recovery belongs to
 /// the owning loader and is not represented by this typed helper.
-pub fn accumulate_resource_bounds(previous: [[f32; 3]; 2], surfaces: &[[[f32; 3]; 2]]) -> [[f32; 3]; 2] {
-    if surfaces.is_empty() { return previous; }
+pub fn accumulate_resource_bounds(
+    previous: [[f32; 3]; 2],
+    surfaces: &[[[f32; 3]; 2]],
+) -> [[f32; 3]; 2] {
+    if surfaces.is_empty() {
+        return previous;
+    }
     let initial = f32::from_bits(0x7149_f2ca);
     let mut result = [[initial; 3], [-initial; 3]];
     for surface in surfaces {
         for axis in 0..3 {
-            if surface[0][axis] <= result[0][axis] { result[0][axis] = surface[0][axis]; }
-            if result[1][axis] <= surface[1][axis] { result[1][axis] = surface[1][axis]; }
+            if surface[0][axis] <= result[0][axis] {
+                result[0][axis] = surface[0][axis];
+            }
+            if result[1][axis] <= surface[1][axis] {
+                result[1][axis] = surface[1][axis];
+            }
         }
     }
-    if result[1][0] <= result[0][0] && result[0][0] != result[1][0] { [[0.0; 3]; 2] } else { result }
+    if result[1][0] <= result[0][0] && result[0][0] != result[1][0] {
+        [[0.0; 3]; 2]
+    } else {
+        result
+    }
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Model, String> {
@@ -107,7 +120,8 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
         }
         let cpu_declaration = u32_at(bytes, btri + 8)?;
         let gpu_declaration = u32_at(bytes, btri + 12)?;
-        if cpu_declaration != 1 || gpu_declaration != 1 || region(bytes, btri + 0x3c, 8)? != [0; 8] {
+        if cpu_declaration != 1 || gpu_declaration != 1 || region(bytes, btri + 0x3c, 8)? != [0; 8]
+        {
             return Err(format!("surface {surface_number} unsupported vertex declarations {cpu_declaration}/{gpu_declaration} or GPU stream"));
         }
         let vertex_count = u32_at(bytes, btri + 0x38)? as usize;
@@ -166,8 +180,16 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
         at += index_bytes.len();
         // FUN_14025a040: authored minimum/maximum then the seventh field.
         let authored_bounds = [
-            [float_at(bytes, at)?, float_at(bytes, at + 4)?, float_at(bytes, at + 8)?],
-            [float_at(bytes, at + 12)?, float_at(bytes, at + 16)?, float_at(bytes, at + 20)?],
+            [
+                float_at(bytes, at)?,
+                float_at(bytes, at + 4)?,
+                float_at(bytes, at + 8)?,
+            ],
+            [
+                float_at(bytes, at + 12)?,
+                float_at(bytes, at + 16)?,
+                float_at(bytes, at + 20)?,
+            ],
         ];
         float_at(bytes, at + 24)?;
         at += 28;
@@ -207,7 +229,10 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
         at += 12;
         material_bindings.push(path);
     }
-    let surface_bounds: Vec<_> = surfaces.iter().map(|surface| surface.authored_bounds).collect();
+    let surface_bounds: Vec<_> = surfaces
+        .iter()
+        .map(|surface| surface.authored_bounds)
+        .collect();
     let authored_bounds = accumulate_resource_bounds([[0.0; 3]; 2], &surface_bounds);
     Ok(Model {
         surfaces,
@@ -240,13 +265,21 @@ mod tests {
         header[0x38..0x3c].copy_from_slice(&3u32.to_le_bytes());
         bytes.extend(header);
         for point in [[0.0f32; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
-            for value in point { bytes.extend(value.to_le_bytes()); }
+            for value in point {
+                bytes.extend(value.to_le_bytes());
+            }
             bytes.extend([0; 20]);
         }
         u32_bytes(&mut bytes, 3);
-        for index in [0u16, 1, 2] { bytes.extend(index.to_le_bytes()); }
+        for index in [0u16, 1, 2] {
+            bytes.extend(index.to_le_bytes());
+        }
         let bounds = [[-10.0f32, -20.0, -30.0], [40.0, 50.0, 60.0]];
-        for side in bounds { for value in side { bytes.extend(value.to_le_bytes()); } }
+        for side in bounds {
+            for value in side {
+                bytes.extend(value.to_le_bytes());
+            }
+        }
         bytes.extend(7.0f32.to_le_bytes());
         bytes.extend(b"BML1");
         u32_bytes(&mut bytes, 0);

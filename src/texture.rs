@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// FUN_1402eab10: image priority is a monotonic byte maximum, not a
 /// replacement value. The owning material enumerator supplies the request.
 pub fn raise_image_priority(priority: &mut u8, requested: u8) {
-    if *priority < requested { *priority = requested; }
+    if *priority < requested {
+        *priority = requested;
+    }
 }
 
 /// FUN_1402c2b90 clears the 21 format bits, retaining descriptor ownership
@@ -38,15 +40,36 @@ pub fn map_image_format(family: u32, selector: i32, precision: u32, output: &mut
     let choose = |pairs: &[(i32, u32)]| pairs.iter().find(|(s, _)| *s == selector).map(|(_, v)| *v);
     let value = match family {
         0 => Some(0),
-        1 => choose(&[(1, 60), (2, 64), (3, 62), (4, 63), (5, if precision == 1 { 61 } else { 65 })]),
-        2 => choose(&[(1, 53), (2, 59), (3, 57), (4, 58), (5, 56), (7, if precision == 4 { 53 } else { 54 })]),
+        1 => choose(&[
+            (1, 60),
+            (2, 64),
+            (3, 62),
+            (4, 63),
+            (5, if precision == 1 { 61 } else { 65 }),
+        ]),
+        2 => choose(&[
+            (1, 53),
+            (2, 59),
+            (3, 57),
+            (4, 58),
+            (5, 56),
+            (7, if precision == 4 { 53 } else { 54 }),
+        ]),
         3 => {
-            if precision == 0 { return true; }
+            if precision == 0 {
+                return true;
+            }
             if precision > 3 {
-                if precision == 4 { Some(if selector == 1 { 39 } else { 40 }) }
-                else if precision == 6 { return false; }
-                else { return true; }
-            } else { choose(&[(1, 39), (2, 43), (3, 42), (7, 41)]) }
+                if precision == 4 {
+                    Some(if selector == 1 { 39 } else { 40 })
+                } else if precision == 6 {
+                    return false;
+                } else {
+                    return true;
+                }
+            } else {
+                choose(&[(1, 39), (2, 43), (3, 42), (7, 41)])
+            }
         }
         4 => choose(&[(1, 48), (2, 52), (3, 50), (4, 51), (5, 49)]),
         5 => choose(&[(1, 33), (2, 38), (3, 36), (4, 37), (5, 35), (7, 34)]),
@@ -69,24 +92,70 @@ pub fn map_image_format(family: u32, selector: i32, precision: u32, output: &mut
         20 => choose(&[(1, 97), (5, 98), (6, 99)]),
         22 | 23 => {
             if precision == 5 {
-                if selector != 3 { return false; }
+                if selector != 3 {
+                    return false;
+                }
                 Some(if family == 22 { 47 } else { 22 })
-            } else if precision != 4 && precision != 6 { return true; }
-            else if family == 22 { choose(&[(1, 44), (5, 46)]) }
-            else { choose(&[(1, 19), (7, 21)]) }
+            } else if precision != 4 && precision != 6 {
+                return true;
+            } else if family == 22 {
+                choose(&[(1, 44), (5, 46)])
+            } else {
+                choose(&[(1, 19), (7, 21)])
+            }
         }
         24 => choose(&[(7, 26)]),
         _ => return true,
     };
-    if let Some(value) = value { *output = value; true } else { false }
+    if let Some(value) = value {
+        *output = value;
+        true
+    } else {
+        false
+    }
+}
+
+/// FUN_1402e98a0: auto-fill the four mip-count fields (+0x24..+0x30)
+/// only when the first is zero. This is the original descriptor rule,
+/// not the usual max-dimension full mip chain. Families14..20 stop at4x4.
+pub fn initialize_image_mip_counts(family: u32, dimensions: [i32; 3], counts: &mut [i32; 4]) {
+    if counts[0] != 0 {
+        return;
+    }
+    let [mut width, mut height, mut depth] = dimensions;
+    let has_depth = depth >= 2;
+    let blocked = family.wrapping_sub(14) < 7;
+    let mut count = 1;
+    if width > 1 {
+        while height > 1 && (!has_depth || depth > 1) {
+            width >>= 1;
+            height >>= 1;
+            depth >>= 1;
+            if blocked && (width < 4 || height < 4) {
+                break;
+            }
+            count += 1;
+            if width < 2 {
+                break;
+            }
+        }
+    }
+    counts.fill(count);
 }
 
 /// FUN_1402c2ef0, on its defined writing/failure branches. Successful no-write
 /// conversions otherwise read an uninitialized native stack local: reject them.
 pub fn normalize_image_format(packed: &mut u32) -> Result<(), String> {
     let mut mapped = u32::MAX;
-    if map_image_format(*packed & 63, ((*packed >> 6) & 15) as i32, (*packed >> 10) & 7, &mut mapped) {
-        if mapped == u32::MAX { return Err("native image format conversion has unspecified output".into()); }
+    if map_image_format(
+        *packed & 63,
+        ((*packed >> 6) & 15) as i32,
+        (*packed >> 10) & 7,
+        &mut mapped,
+    ) {
+        if mapped == u32::MAX {
+            return Err("native image format conversion has unspecified output".into());
+        }
         *packed = (*packed & !0x1fe000) | ((mapped << 13) & 0x1fe000);
     }
     Ok(())
@@ -94,23 +163,51 @@ pub fn normalize_image_format(packed: &mut u32) -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressedFormat {
-    Bc1, Bc1Srgb, Bc3, Bc3Srgb, Bc4, Bc4Snorm, Bc5, Bc5Snorm,
-    Bc6Unsigned, Bc6Signed, Bc7, Bc7Srgb,
+    Bc1,
+    Bc1Srgb,
+    Bc3,
+    Bc3Srgb,
+    Bc4,
+    Bc4Snorm,
+    Bc5,
+    Bc5Snorm,
+    Bc6Unsigned,
+    Bc6Signed,
+    Bc7,
+    Bc7Srgb,
 }
 
 impl CompressedFormat {
     pub fn from_dxgi(value: u32) -> Result<Self, String> {
         Ok(match value {
-            71 => Self::Bc1, 72 => Self::Bc1Srgb, 77 => Self::Bc3, 78 => Self::Bc3Srgb,
-            80 => Self::Bc4, 81 => Self::Bc4Snorm, 83 => Self::Bc5, 84 => Self::Bc5Snorm,
-            95 => Self::Bc6Unsigned, 96 => Self::Bc6Signed, 98 => Self::Bc7, 99 => Self::Bc7Srgb,
-            _ => return Err(format!("unsupported native compressed texture format {value}")),
+            71 => Self::Bc1,
+            72 => Self::Bc1Srgb,
+            77 => Self::Bc3,
+            78 => Self::Bc3Srgb,
+            80 => Self::Bc4,
+            81 => Self::Bc4Snorm,
+            83 => Self::Bc5,
+            84 => Self::Bc5Snorm,
+            95 => Self::Bc6Unsigned,
+            96 => Self::Bc6Signed,
+            98 => Self::Bc7,
+            99 => Self::Bc7Srgb,
+            _ => {
+                return Err(format!(
+                    "unsupported native compressed texture format {value}"
+                ))
+            }
         })
     }
     pub fn block_bytes(self) -> usize {
-        match self { Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8, _ => 16 }
+        match self {
+            Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8,
+            _ => 16,
+        }
     }
-    pub fn bits_per_pixel(self) -> i32 { self.block_bytes() as i32 / 2 }
+    pub fn bits_per_pixel(self) -> i32 {
+        self.block_bytes() as i32 / 2
+    }
 }
 
 /// The base BIM file owns the format. Separate mip headers contain no format.
@@ -124,48 +221,92 @@ pub struct BimageInfo {
 }
 impl BimageInfo {
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.get(..3) != Some(b"BIM") { return Err("not a BIM image".into()); }
+        if bytes.get(..3) != Some(b"BIM") {
+            return Err("not a BIM image".into());
+        }
         let family = word(bytes, 12)?;
         let selector = word(bytes, 16)?;
         let precision = word(bytes, 20)?;
-        if family > 63 || selector > 15 || precision > 7 { return Err("invalid BIM format fields".into()); }
+        if family > 63 || selector > 15 || precision > 7 {
+            return Err("invalid BIM format fields".into());
+        }
         let mut packed_format = family | selector << 6 | precision << 10;
         normalize_image_format(&mut packed_format)?;
         let format = CompressedFormat::from_dxgi((packed_format >> 13) & 255)?;
-        Ok(Self { width: word(bytes, 24)?, height: word(bytes, 28)?, mip_count: word(bytes, 44)?, packed_format, format })
+        Ok(Self {
+            width: word(bytes, 24)?,
+            height: word(bytes, 28)?,
+            mip_count: word(bytes, 44)?,
+            packed_format,
+            format,
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompressedMip<'a> { pub width: u32, pub height: u32, pub payload: &'a [u8] }
-
-pub fn compressed_mip(bytes: &[u8], level: u32, format: CompressedFormat) -> Result<CompressedMip<'_>, String> {
-    let mip = BimageMipResource::parse(bytes)?;
-    if mip.mip_level != level { return Err("bimage mip level differs from request".into()); }
-    let expected = mip.width.div_ceil(4) as usize * mip.height.div_ceil(4) as usize * format.block_bytes();
-    if mip.payload.len() != expected { return Err(format!("invalid {format:?} mip payload: expected {expected}, got {}", mip.payload.len())); }
-    Ok(CompressedMip { width: mip.width, height: mip.height, payload: mip.payload })
+pub struct CompressedMip<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub payload: &'a [u8],
 }
 
-pub struct InlineCompressedChain { pub info: BimageInfo, pub payload: Vec<u8> }
+pub fn compressed_mip(
+    bytes: &[u8],
+    level: u32,
+    format: CompressedFormat,
+) -> Result<CompressedMip<'_>, String> {
+    let mip = BimageMipResource::parse(bytes)?;
+    if mip.mip_level != level {
+        return Err("bimage mip level differs from request".into());
+    }
+    let expected =
+        mip.width.div_ceil(4) as usize * mip.height.div_ceil(4) as usize * format.block_bytes();
+    if mip.payload.len() != expected {
+        return Err(format!(
+            "invalid {format:?} mip payload: expected {expected}, got {}",
+            mip.payload.len()
+        ));
+    }
+    Ok(CompressedMip {
+        width: mip.width,
+        height: mip.height,
+        payload: mip.payload,
+    })
+}
+
+pub struct InlineCompressedChain {
+    pub info: BimageInfo,
+    pub payload: Vec<u8>,
+}
 pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, String> {
     let info = BimageInfo::parse(bytes)?;
-    if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 { return Err("invalid BIM dimensions/mip count".into()); }
+    if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
+        return Err("invalid BIM dimensions/mip count".into());
+    }
     let mut at = 62usize;
     let mut payload = Vec::new();
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
-        let header = bytes.get(at..at + 20).ok_or("truncated inline mip header")?;
+        let header = bytes
+            .get(at..at + 20)
+            .ok_or("truncated inline mip header")?;
         let size = word(header, 16)? as usize;
-        let end = at.checked_add(20).and_then(|at| at.checked_add(size)).ok_or("inline mip size overflow")?;
+        let end = at
+            .checked_add(20)
+            .and_then(|at| at.checked_add(size))
+            .ok_or("inline mip size overflow")?;
         let record = bytes.get(at..end).ok_or("truncated inline mip payload")?;
         let mip = compressed_mip(record, level, info.format)?;
-        if (mip.width, mip.height) != (width, height) { return Err("inline mip dimensions disagree with BIM header".into()); }
+        if (mip.width, mip.height) != (width, height) {
+            return Err("inline mip dimensions disagree with BIM header".into());
+        }
         payload.extend_from_slice(mip.payload);
         at = end;
     }
-    if at != bytes.len() { return Err("inline mip chain size mismatch".into()); }
+    if at != bytes.len() {
+        return Err("inline mip chain size mismatch".into());
+    }
     Ok(InlineCompressedChain { info, payload })
 }
 
@@ -919,6 +1060,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_descriptor_mip_counts_match_original() {
+        let mut checked = 0;
+        for line in include_str!("../analysis/original_image_mip_count_cases.txt").lines() {
+            let w: Vec<i32> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let mut counts = [w[4], 71, 83, 97];
+            initialize_image_mip_counts(w[0] as u32, [w[1], w[2], w[3]], &mut counts);
+            assert_eq!(counts, [w[5], w[6], w[7], w[8]], "{line}");
+            checked += 1;
+        }
+        assert_eq!(checked, 13650);
+    }
+
+    #[test]
     fn image_formats_match_original() {
         let mut count = 0;
         for line in include_str!("../analysis/original_image_format_cases.txt").lines() {
@@ -926,8 +1083,17 @@ mod tests {
             match f[0] {
                 "F" => {
                     let mut output = 0xa55a7e19;
-                    let ok = map_image_format(f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap(), &mut output);
-                    assert_eq!((u8::from(ok), output), (f[4].parse().unwrap(), f[5].parse().unwrap()), "{line}");
+                    let ok = map_image_format(
+                        f[1].parse().unwrap(),
+                        f[2].parse().unwrap(),
+                        f[3].parse().unwrap(),
+                        &mut output,
+                    );
+                    assert_eq!(
+                        (u8::from(ok), output),
+                        (f[4].parse().unwrap(), f[5].parse().unwrap()),
+                        "{line}"
+                    );
                 }
                 "C" => {
                     let mut value = f[1].parse().unwrap();
@@ -936,7 +1102,11 @@ mod tests {
                     assert_eq!(returned == address, f[3] == "1", "{line}");
                     assert_eq!(value, f[2].parse::<u32>().unwrap(), "{line}");
                 }
-                "B" => assert_eq!(image_bits_per_pixel(f[1].parse().unwrap()), f[2].parse::<u32>().unwrap(), "{line}"),
+                "B" => assert_eq!(
+                    image_bits_per_pixel(f[1].parse().unwrap()),
+                    f[2].parse::<u32>().unwrap(),
+                    "{line}"
+                ),
                 "N" => {
                     let mut value = f[1].parse().unwrap();
                     normalize_image_format(&mut value).unwrap();
@@ -952,16 +1122,30 @@ mod tests {
     #[test]
     #[ignore = "requires the installed original game archives"]
     fn installed_bimage_formats_and_mips() {
-        let catalog = crate::archive::Catalog::open(std::path::Path::new(r"D:\Programs\Steam\steamapps\common\Dishonored2\base")).unwrap();
-        let root = "generated/image/models/environment/archi/generic/ext_stairs_set_01/ext_stairs_01";
-        for (suffix, format) in [("d", CompressedFormat::Bc7Srgb), ("n", CompressedFormat::Bc5Snorm), ("g", CompressedFormat::Bc4)] {
+        let catalog = crate::archive::Catalog::open(std::path::Path::new(
+            r"D:\Programs\Steam\steamapps\common\Dishonored2\base",
+        ))
+        .unwrap();
+        let root =
+            "generated/image/models/environment/archi/generic/ext_stairs_set_01/ext_stairs_01";
+        for (suffix, format) in [
+            ("d", CompressedFormat::Bc7Srgb),
+            ("n", CompressedFormat::Bc5Snorm),
+            ("g", CompressedFormat::Bc4),
+        ] {
             let stem = format!("{root}_{suffix}.bimage7");
             let bytes = catalog.read(&stem).unwrap().unwrap();
             let chain = compressed_inline_chain(&bytes).unwrap();
             assert_eq!(chain.info.format, format);
-            assert_eq!((chain.info.width, chain.info.height, chain.info.mip_count), (512, 256, 7));
+            assert_eq!(
+                (chain.info.width, chain.info.height, chain.info.mip_count),
+                (512, 256, 7)
+            );
             for level in 0..2 {
-                let bytes = catalog.read(&format!("{stem}_mip{level}")).unwrap().unwrap();
+                let bytes = catalog
+                    .read(&format!("{stem}_mip{level}"))
+                    .unwrap()
+                    .unwrap();
                 let mip = compressed_mip(&bytes, level, format).unwrap();
                 assert_eq!((mip.width, mip.height), (2048 >> level, 1024 >> level));
             }
@@ -973,7 +1157,9 @@ mod tests {
         let mut checked = 0;
         for line in include_str!("../analysis/original_material_binding_cases.txt").lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
-            if fields[0] != "P" { continue; }
+            if fields[0] != "P" {
+                continue;
+            }
             let mut priority = fields[1].parse::<u8>().unwrap();
             raise_image_priority(&mut priority, fields[2].parse().unwrap());
             assert_eq!(priority, fields[3].parse::<u8>().unwrap(), "{line}");
@@ -982,10 +1168,15 @@ mod tests {
         assert_eq!(checked, 65536);
         let demand = PackedTextureVisibilityDemand::default();
         let mut priority = 0;
-        for requested in [1, 16, 4] { raise_image_priority(&mut priority, requested); }
+        for requested in [1, 16, 4] {
+            raise_image_priority(&mut priority, requested);
+        }
         demand.submit(0.25, 1, priority);
         assert_eq!((demand.metadata() >> 1) & 31, 16);
-        assert_eq!(streamer_projected_pixels(demand.area(), u32::from(demand.metadata()), true, 100, 100), 40000.0);
+        assert_eq!(
+            streamer_projected_pixels(demand.area(), u32::from(demand.metadata()), true, 100, 100),
+            40000.0
+        );
     }
 
     use std::sync::Arc;

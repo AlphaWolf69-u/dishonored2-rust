@@ -14,9 +14,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let world = physworld::parse(&bytes)?;
     if env::args().any(|argument| argument == "--schema") {
         for typ in &world.types {
-            if typ.name.contains("Compressed") || typ.name.contains("StaticTree") || typ.name.contains("StaticMesh") || typ.name.contains("ShapeInstance") || typ.name.contains("Primitive") || typ.name.contains("Palette") {
-                println!("TYPE {} size={} parent={}", typ.name, typ.byte_size, typ.parent);
-                for field in &typ.fields { println!("  {} +{:#x} type={}", field.name, field.offset, world.types[field.type_index].name); }
+            if typ.name.contains("Compressed")
+                || typ.name.contains("StaticTree")
+                || typ.name.contains("StaticMesh")
+                || typ.name.contains("ShapeInstance")
+                || typ.name.contains("Primitive")
+                || typ.name.contains("Palette")
+            {
+                println!(
+                    "TYPE {} size={} parent={}",
+                    typ.name, typ.byte_size, typ.parent
+                );
+                for field in &typ.fields {
+                    println!(
+                        "  {} +{:#x} type={}",
+                        field.name, field.offset, world.types[field.type_index].name
+                    );
+                }
             }
         }
         return Ok(());
@@ -41,7 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .get(shape_ref)
                 .map(|item| world.types[item.type_index].name.as_str())
                 .unwrap_or("invalid");
-            let word = |offset| u32::from_le_bytes(bytes[at + offset..at + offset + 4].try_into().unwrap());
+            let word = |offset| {
+                u32::from_le_bytes(bytes[at + offset..at + offset + 4].try_into().unwrap())
+            };
             println!("body {number}: shape item {shape_ref} type={shape_type} flags={:#x} control={:#x} filter={:#x} material={} name_ref={} motion={}", word(8), word(12), word(16), word(20), word(24), word(40));
         }
         return Ok(());
@@ -122,31 +138,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let collision = world.collision_shapes(&bytes)?;
     if let Some(raw) = env::args().skip_while(|arg| arg != "--triangle").nth(1) {
-        let values = raw.split(',').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>()?;
-        if values.len() != 9 { return Err("--triangle requires nine coordinates".into()); }
-        let vertices: [[f32; 3]; 3] = std::array::from_fn(|vertex| std::array::from_fn(|axis| values[vertex * 3 + axis]));
+        let values = raw
+            .split(',')
+            .map(str::parse::<f32>)
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() != 9 {
+            return Err("--triangle requires nine coordinates".into());
+        }
+        let vertices: [[f32; 3]; 3] =
+            std::array::from_fn(|vertex| std::array::from_fn(|axis| values[vertex * 3 + axis]));
         for triangle in &collision.triangles {
-            if triangle.vertices.iter().zip(vertices).all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.0001)) {
+            if triangle
+                .vertices
+                .iter()
+                .zip(vertices)
+                .all(|(a, b)| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.0001))
+            {
                 let index = triangle.source_shape_item;
                 let item = &world.items[index];
-                println!("MATCH shape={index} type={} data_offset={} triangle={:?} bodies={:?}", world.types[item.type_index].name, item.offset, triangle.vertices, collision.shape_bodies.get(&index));
+                println!(
+                    "MATCH shape={index} type={} data_offset={} triangle={:?} bodies={:?}",
+                    world.types[item.type_index].name,
+                    item.offset,
+                    triangle.vertices,
+                    collision.shape_bodies.get(&index)
+                );
                 for (parent, item) in world.items.iter().enumerate() {
-                    if world.types[item.type_index].name != "hknpCompoundShape" { continue; }
+                    if world.types[item.type_index].name != "hknpCompoundShape" {
+                        continue;
+                    }
                     let mut kind = item.type_index;
                     let offset = loop {
-                        if let Some(field) = world.types[kind].fields.iter().find(|field| field.name == "instances") { break field.offset; }
+                        if let Some(field) = world.types[kind]
+                            .fields
+                            .iter()
+                            .find(|field| field.name == "instances")
+                        {
+                            break field.offset;
+                        }
                         kind = world.types[kind].parent;
-                        if kind == 0 { return Err("compound instances schema missing".into()); }
+                        if kind == 0 {
+                            return Err("compound instances schema missing".into());
+                        }
                     };
                     let at = world.data_start + item.offset + offset;
                     let list = u32::from_le_bytes(bytes[at..at + 4].try_into()?) as usize;
-                    if list == 0 { continue; }
+                    if list == 0 {
+                        continue;
+                    }
                     let list = &world.items[list];
                     for n in 0..list.count {
-                        let at = world.data_start + list.offset + n * world.types[list.type_index].byte_size;
-                        let child = u32::from_le_bytes(bytes[at + 0x50..at + 0x54].try_into()?) as usize;
+                        let at = world.data_start
+                            + list.offset
+                            + n * world.types[list.type_index].byte_size;
+                        let child =
+                            u32::from_le_bytes(bytes[at + 0x50..at + 0x54].try_into()?) as usize;
                         if child == index {
-                            println!("PARENT compound={parent} instance={n} shapeTag={} scaleW={:#x}", u16::from_le_bytes(bytes[at + 0x58..at + 0x5a].try_into()?), u32::from_le_bytes(bytes[at + 0x4c..at + 0x50].try_into()?));
+                            println!(
+                                "PARENT compound={parent} instance={n} shapeTag={} scaleW={:#x}",
+                                u16::from_le_bytes(bytes[at + 0x58..at + 0x5a].try_into()?),
+                                u32::from_le_bytes(bytes[at + 0x4c..at + 0x50].try_into()?)
+                            );
                         }
                     }
                 }

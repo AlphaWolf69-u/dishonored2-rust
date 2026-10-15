@@ -14,6 +14,7 @@ bevy = { version = "0.19.1", optional = true, default-features = false, features
 [patch.crates-io]
 bevy_light = { path = "vendor/bevy_light-0.19.1" }
 bevy_pbr = { path = "vendor/bevy_pbr-0.19.1" }
+bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 
 [features]
 game = ["dep:bevy"]

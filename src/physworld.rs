@@ -290,7 +290,13 @@ fn ascii_cstr_compare(left: &[u8], right: &[u8]) -> i32 {
     for index in 0.. {
         let a = left.get(index).copied().unwrap_or(0);
         let b = right.get(index).copied().unwrap_or(0);
-        let fold = |byte: u8| if byte.is_ascii_uppercase() { byte + 32 } else { byte };
+        let fold = |byte: u8| {
+            if byte.is_ascii_uppercase() {
+                byte + 32
+            } else {
+                byte
+            }
+        };
         let difference = (fold(a) as i8 as i32) - (fold(b) as i8 as i32);
         if difference != 0 {
             return difference.signum();
@@ -304,9 +310,10 @@ fn ascii_cstr_compare(left: &[u8], right: &[u8]) -> i32 {
 
 /// FUN_14008c680: suffix kinds 0=hkt, 1=cvx, 2=msh, 3=box, 4=other.
 pub fn physics_shape_kind(suffix: &str) -> u8 {
-    ["hkt", "cvx", "msh", "box"].iter().position(|kind|
-        ascii_cstr_compare(suffix.as_bytes(), kind.as_bytes()) == 0
-    ).map_or(4, |index| index as u8)
+    ["hkt", "cvx", "msh", "box"]
+        .iter()
+        .position(|kind| ascii_cstr_compare(suffix.as_bytes(), kind.as_bytes()) == 0)
+        .map_or(4, |index| index as u8)
 }
 
 /// FUN_140145000 stops at either path separator when removing an extension.
@@ -326,13 +333,23 @@ pub fn replace_shape_extension(path: &str, extension: &str) -> String {
 
 /// FUN_14008c010 restores the encoded _hd marker before replacing the extension.
 pub fn hkt_shape_name(name: &str, hd: bool) -> String {
-    let name = if hd { format!("{}_hd", strip_shape_extension(name)) } else { name.to_owned() };
+    let name = if hd {
+        format!("{}_hd", strip_shape_extension(name))
+    } else {
+        name.to_owned()
+    };
     replace_shape_extension(&name, "hkt")
 }
 
 /// FUN_14008c330 recipe value. Unsupported enum values and floorf's unported
 /// NaN dispatcher are explicit failures; HD preserves the original extension.
-pub fn physics_shape_key(name: &str, kind: u8, scale: [f32; 3], radius: f32, hd: bool) -> Option<String> {
+pub fn physics_shape_key(
+    name: &str,
+    kind: u8,
+    scale: [f32; 3],
+    radius: f32,
+    hd: bool,
+) -> Option<String> {
     let suffix = ["hkt", "cvx", "msh", "box", "cvd"].get(kind as usize)?;
     if scale.into_iter().chain([radius]).any(f32::is_nan) {
         return None;
@@ -351,7 +368,11 @@ pub fn physics_shape_key(name: &str, kind: u8, scale: [f32; 3], radius: f32, hd:
         let integer = quantize(value, 100.0);
         if integer == 0 {
             // FUN_140166830 only homes its variadic arguments and returns.
-            if value < 0.0 { -1 } else { 1 }
+            if value < 0.0 {
+                -1
+            } else {
+                1
+            }
         } else {
             integer
         }
@@ -361,10 +382,15 @@ pub fn physics_shape_key(name: &str, kind: u8, scale: [f32; 3], radius: f32, hd:
     let hd_name;
     let name = if hd {
         // Extraction scans all dots; stripping stops at a path separator.
-        let extension = name.rsplit_once('.').map(|(_, extension)| extension).unwrap_or("");
+        let extension = name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension)
+            .unwrap_or("");
         hd_name = format!("{}_hd.{extension}", strip_shape_extension(name));
         &hd_name
-    } else { name };
+    } else {
+        name
+    };
     Some(format!("{name}.{suffix}._{x}_{y}_{z}.{radius}"))
 }
 
@@ -392,8 +418,9 @@ pub fn basis_quaternion(basis: [[f32; 4]; 3]) -> [f32; 4] {
         let next = [1, 2, 0];
         let second = next[largest];
         let third = next[second];
-        let root = ((basis[largest][largest]
-            - (basis[third][third] + basis[second][second])) + 1.0).sqrt();
+        let root = ((basis[largest][largest] - (basis[third][third] + basis[second][second]))
+            + 1.0)
+            .sqrt();
         let factor = 0.5 / root;
         quaternion[largest] = root * 0.5;
         quaternion[3] = (basis[second][third] - basis[third][second]) * factor;
@@ -441,8 +468,14 @@ pub fn quaternion_basis(quaternion: [f32; 4]) -> [[f32; 4]; 3] {
         let one = _mm_set_ss(1.0);
         let doubled = _mm_add_ps(q, q);
         let xx = _mm_mul_ss(q, doubled);
-        let products = _mm_mul_ps(_mm_shuffle_ps::<0xa5>(doubled, doubled), _mm_shuffle_ps::<0x41>(q, q));
-        let cross = _mm_mul_ps(_mm_shuffle_ps::<0xfe>(q, q), _mm_shuffle_ps::<0x1a>(doubled, doubled));
+        let products = _mm_mul_ps(
+            _mm_shuffle_ps::<0xa5>(doubled, doubled),
+            _mm_shuffle_ps::<0x41>(q, q),
+        );
+        let cross = _mm_mul_ps(
+            _mm_shuffle_ps::<0xfe>(q, q),
+            _mm_shuffle_ps::<0x1a>(doubled, doubled),
+        );
         let mut signed_products = _mm_xor_ps(sign, products);
         let diagonal = _mm_sub_ss(_mm_sub_ss(one, xx), products);
         let cross = _mm_add_ss(_mm_xor_ps(cross, cross_sign), one);
@@ -643,7 +676,10 @@ fn parse_tagged(
 impl PhysWorld {
     fn field(&self, mut type_index: usize, wanted: &str) -> Result<&TagField, String> {
         for _ in 0..self.types.len() {
-            let ty = self.types.get(type_index).ok_or("invalid Havok type index")?;
+            let ty = self
+                .types
+                .get(type_index)
+                .ok_or("invalid Havok type index")?;
             if let Some(field) = ty.fields.iter().find(|field| field.name == wanted) {
                 return Ok(field);
             }
@@ -659,22 +695,51 @@ impl PhysWorld {
         Ok(self.field(type_index, wanted)?.offset)
     }
 
-    fn compressed_tree<'a>(&self, bytes: &'a [u8], shape_index: usize) -> Result<(&'a [u8], usize), String> {
-        let shape_type = self.items.get(shape_index).ok_or("missing compressed shape")?.type_index;
+    fn compressed_tree<'a>(
+        &self,
+        bytes: &'a [u8],
+        shape_index: usize,
+    ) -> Result<(&'a [u8], usize), String> {
+        let shape_type = self
+            .items
+            .get(shape_index)
+            .ok_or("missing compressed shape")?
+            .type_index;
         let shape = self.item_at(bytes, shape_index, 0)?;
         let data_ref = le32(shape, self.field_offset(shape_type, "data")?)? as usize;
-        let data_type = self.items.get(data_ref).ok_or("missing compressed mesh data")?.type_index;
+        let data_type = self
+            .items
+            .get(data_ref)
+            .ok_or("missing compressed mesh data")?
+            .type_index;
         let data = self.item_at(bytes, data_ref, 0)?;
         let tree = self.field(data_type, "meshTree")?;
-        Ok((slice(data, tree.offset, self.type_size(tree.type_index)?)?, tree.type_index))
+        Ok((
+            slice(data, tree.offset, self.type_size(tree.type_index)?)?,
+            tree.type_index,
+        ))
     }
 
-    fn compressed_domain(&self, tree: &[u8], tree_type: usize) -> Result<([f32; 3], [f32; 3]), String> {
+    fn compressed_domain(
+        &self,
+        tree: &[u8],
+        tree_type: usize,
+    ) -> Result<([f32; 3], [f32; 3]), String> {
         let domain = self.field(tree_type, "domain")?;
         let low = domain.offset + self.field_offset(domain.type_index, "min")?;
         let high = domain.offset + self.field_offset(domain.type_index, "max")?;
-        Ok(([float(tree, low)?, float(tree, low + 4)?, float(tree, low + 8)?],
-            [float(tree, high)?, float(tree, high + 4)?, float(tree, high + 8)?]))
+        Ok((
+            [
+                float(tree, low)?,
+                float(tree, low + 4)?,
+                float(tree, low + 8)?,
+            ],
+            [
+                float(tree, high)?,
+                float(tree, high + 4)?,
+                float(tree, high + 8)?,
+            ],
+        ))
     }
     /// Decode a standalone model/blueprint HKX whose item 1 is its root shape.
     pub fn standalone_shapes(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
@@ -808,8 +873,13 @@ impl PhysWorld {
             let first = output.triangles.len();
             self.visit_shape(bytes, shape, Affine::translated(position), 0, &mut output)?;
             for triangle in &output.triangles[first..] {
-                let bodies = output.shape_bodies.entry(triangle.source_shape_item).or_default();
-                if bodies.last() != Some(&body) { bodies.push(body); }
+                let bodies = output
+                    .shape_bodies
+                    .entry(triangle.source_shape_item)
+                    .or_default();
+                if bodies.last() != Some(&body) {
+                    bodies.push(body);
+                }
             }
         }
         Ok(output)
@@ -1011,10 +1081,16 @@ impl PhysWorld {
         transform: Affine,
         output: &mut CollisionExtraction,
     ) -> Result<(), String> {
-        let references: Vec<usize> = ["sections", "primitives", "sharedVerticesIndex", "packedVertices", "sharedVertices"]
-            .into_iter()
-            .map(|name| le32(tree, self.field_offset(tree_type, name)?).map(|value| value as usize))
-            .collect::<Result<_, _>>()?;
+        let references: Vec<usize> = [
+            "sections",
+            "primitives",
+            "sharedVerticesIndex",
+            "packedVertices",
+            "sharedVertices",
+        ]
+        .into_iter()
+        .map(|name| le32(tree, self.field_offset(tree_type, name)?).map(|value| value as usize))
+        .collect::<Result<_, _>>()?;
         let [sections_ref, primitives_ref, shared_index_ref, packed_ref, shared_ref] =
             references.try_into().unwrap();
         let section_count = self
@@ -1074,13 +1150,26 @@ impl PhysWorld {
             // FUN_14127f590 dispatches each primitive independently. Convex
             // headers can coexist with ordinary triangles in one section.
             let domain = [
-                [float(section, 0x10)?, float(section, 0x14)?, float(section, 0x18)?, float(section, 0x1c)?],
-                [float(section, 0x20)?, float(section, 0x24)?, float(section, 0x28)?, float(section, 0x2c)?],
+                [
+                    float(section, 0x10)?,
+                    float(section, 0x14)?,
+                    float(section, 0x18)?,
+                    float(section, 0x1c)?,
+                ],
+                [
+                    float(section, 0x20)?,
+                    float(section, 0x24)?,
+                    float(section, 0x28)?,
+                    float(section, 0x2c)?,
+                ],
             ];
             let nodes_ref = le32(section, 0)? as usize;
             let node_count = self.items.get(nodes_ref).map_or(0, |item| item.count);
             let nodes: Vec<[u8; 4]> = (0..node_count)
-                .map(|node| self.item_at(bytes, nodes_ref, node).map(|data| data[..4].try_into().unwrap()))
+                .map(|node| {
+                    self.item_at(bytes, nodes_ref, node)
+                        .map(|data| data[..4].try_into().unwrap())
+                })
                 .collect::<Result<_, _>>()?;
             for number in first_primitive..first_primitive + num_primitives {
                 let primitive = self.item_at(bytes, primitives_ref, number)?;
@@ -1107,45 +1196,90 @@ impl PhysWorld {
                     ) as usize;
                     let count = ((header >> 8) as usize).min(0x70);
                     let codec = (header >> 4) & 3;
-                    let words = match codec { 0 => count, 1 => (count + 1) / 2, 2 => (count + 3) / 4, _ => 0 };
+                    let words = match codec {
+                        0 => count,
+                        1 => (count + 1) / 2,
+                        2 => (count + 3) / 4,
+                        _ => 0,
+                    };
                     if header & 0xf != 2 || codec > 2 || count < 3 || start + words > shared_count {
                         return Err(format!("compressed shape {shape_index} section {section_number}: unsupported convex leaf header {header:#x}, start={start}"));
                     }
                     // The primitive's second byte selects its BVH node, not
                     // the section-wide domain (FUN_14127f030).
-                    let [min, max] = compressed_tree_node_bounds(domain, &nodes, primitive[1] as usize)?;
-                    let low = if codec == 0 { domain_min } else { [min[0], min[1], min[2]] };
-                    let high = if codec == 0 { domain_max } else { [max[0], max[1], max[2]] };
+                    let [min, max] =
+                        compressed_tree_node_bounds(domain, &nodes, primitive[1] as usize)?;
+                    let low = if codec == 0 {
+                        domain_min
+                    } else {
+                        [min[0], min[1], min[2]]
+                    };
+                    let high = if codec == 0 {
+                        domain_max
+                    } else {
+                        [max[0], max[1], max[2]]
+                    };
                     let divisor = match codec {
                         0 => [1.0 / 2097151.0, 1.0 / 2097151.0, 1.0 / 4194303.0],
-                        1 => [f32::from_bits(0x3a00_1002), f32::from_bits(0x3a00_1002), f32::from_bits(0x3a80_2008)],
-                        2 => [f32::from_bits(0x3d04_2108), f32::from_bits(0x3d04_2108), f32::from_bits(0x3c82_0821)],
+                        1 => [
+                            f32::from_bits(0x3a00_1002),
+                            f32::from_bits(0x3a00_1002),
+                            f32::from_bits(0x3a80_2008),
+                        ],
+                        2 => [
+                            f32::from_bits(0x3d04_2108),
+                            f32::from_bits(0x3d04_2108),
+                            f32::from_bits(0x3c82_0821),
+                        ],
                         _ => unreachable!(),
                     };
-                    let scale: [f32; 3] = std::array::from_fn(|axis| (high[axis] - low[axis]) * divisor[axis]);
+                    let scale: [f32; 3] =
+                        std::array::from_fn(|axis| (high[axis] - low[axis]) * divisor[axis]);
                     let mut hull = Vec::with_capacity(count);
                     for vertex in 0..count {
                         let quantized = match codec {
                             0 => {
-                                let value = u64::from_le_bytes(self.item_at(bytes, shared_ref, start + vertex)?[..8].try_into().unwrap());
-                                [(value & 0x1f_ffff) as f32, ((value >> 21) & 0x1f_ffff) as f32, (value >> 42) as f32]
+                                let value = u64::from_le_bytes(
+                                    self.item_at(bytes, shared_ref, start + vertex)?[..8]
+                                        .try_into()
+                                        .unwrap(),
+                                );
+                                [
+                                    (value & 0x1f_ffff) as f32,
+                                    ((value >> 21) & 0x1f_ffff) as f32,
+                                    (value >> 42) as f32,
+                                ]
                             }
                             1 => {
                                 // Native swaps each u32 pair, including odd tails.
                                 let word = start * 2 + (vertex ^ 1);
-                                let value = le32(self.item_at(bytes, shared_ref, word / 2)?, (word & 1) * 4)?;
-                                [(value & 0x7ff) as f32, ((value >> 11) & 0x7ff) as f32, (value >> 22) as f32]
+                                let value = le32(
+                                    self.item_at(bytes, shared_ref, word / 2)?,
+                                    (word & 1) * 4,
+                                )?;
+                                [
+                                    (value & 0x7ff) as f32,
+                                    ((value >> 11) & 0x7ff) as f32,
+                                    (value >> 22) as f32,
+                                ]
                             }
                             2 => {
                                 // Native reverses each four-u16 group.
                                 let word = start * 4 + (vertex ^ 3);
                                 let data = self.item_at(bytes, shared_ref, word / 4)?;
-                                let value = u16::from_le_bytes(data[(word & 3) * 2..(word & 3) * 2 + 2].try_into().unwrap());
-                                [(value & 31) as f32, ((value >> 5) & 31) as f32, (value >> 10) as f32]
+                                let value = u16::from_le_bytes(
+                                    data[(word & 3) * 2..(word & 3) * 2 + 2].try_into().unwrap(),
+                                );
+                                [
+                                    (value & 31) as f32,
+                                    ((value >> 5) & 31) as f32,
+                                    (value >> 10) as f32,
+                                ]
                             }
                             _ => unreachable!(),
                         };
-                        let local = std::array::from_fn(|axis| quantized[axis] * scale[axis] + low[axis]);
+                        let local =
+                            std::array::from_fn(|axis| quantized[axis] * scale[axis] + low[axis]);
                         hull.push(transform.apply(local));
                     }
                     triangulate_convex_vertices(&hull, shape_index, &mut output.triangles)?;
@@ -1161,25 +1295,45 @@ impl PhysWorld {
                 let number = index as usize;
                 if number < num_packed {
                     let value = le32(self.item_at(bytes, packed_ref, first_packed + number)?, 0)?;
-                    return Ok([base[0] + (value & 0x7ff) as f32 * scale[0],
+                    return Ok([
+                        base[0] + (value & 0x7ff) as f32 * scale[0],
                         base[1] + ((value >> 11) & 0x7ff) as f32 * scale[1],
-                        base[2] + (value >> 22) as f32 * scale[2]]);
+                        base[2] + (value >> 22) as f32 * scale[2],
+                    ]);
                 }
                 if number >= num_packed + num_shared {
                     return Err(format!("compressed shape {shape_index} section {section_number}: vertex index out of range"));
                 }
-                let shared_index = u16::from_le_bytes(self.item_at(bytes, shared_index_ref, first_shared + number - num_packed)?[..2].try_into().unwrap()) as usize;
+                let shared_index = u16::from_le_bytes(
+                    self.item_at(bytes, shared_index_ref, first_shared + number - num_packed)?[..2]
+                        .try_into()
+                        .unwrap(),
+                ) as usize;
                 if shared_index >= shared_count {
                     return Err(format!("compressed shape {shape_index} section {section_number}: shared vertex index {shared_index} >= {shared_count}"));
                 }
-                let value = u64::from_le_bytes(self.item_at(bytes, shared_ref, shared_index)?[..8].try_into().unwrap());
-                Ok([domain_min[0] + (value & 0x1f_ffff) as f32 / 0x1f_ffff as f32 * (domain_max[0] - domain_min[0]),
-                    domain_min[1] + ((value >> 21) & 0x1f_ffff) as f32 / 0x1f_ffff as f32 * (domain_max[1] - domain_min[1]),
-                    domain_min[2] + ((value >> 42) & 0x3f_ffff) as f32 / 0x3f_ffff as f32 * (domain_max[2] - domain_min[2])])
+                let value = u64::from_le_bytes(
+                    self.item_at(bytes, shared_ref, shared_index)?[..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                Ok([
+                    domain_min[0]
+                        + (value & 0x1f_ffff) as f32 / 0x1f_ffff as f32
+                            * (domain_max[0] - domain_min[0]),
+                    domain_min[1]
+                        + ((value >> 21) & 0x1f_ffff) as f32 / 0x1f_ffff as f32
+                            * (domain_max[1] - domain_min[1]),
+                    domain_min[2]
+                        + ((value >> 42) & 0x3f_ffff) as f32 / 0x3f_ffff as f32
+                            * (domain_max[2] - domain_min[2]),
+                ])
             };
             for number in 0..num_primitives {
                 let primitive = self.item_at(bytes, primitives_ref, first_primitive + number)?;
-                if !primitive_has_surface(primitive) { continue; }
+                if !primitive_has_surface(primitive) {
+                    continue;
+                }
                 let corner = |at: usize| corner(primitive[at]);
                 if distinct3(primitive[0], primitive[1], primitive[2]) {
                     let [a, b, c] = [corner(0)?, corner(1)?, corner(2)?];
@@ -1206,41 +1360,76 @@ fn distinct3(a: u8, b: u8, c: u8) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompressedPrimitiveKind { Empty, Triangle, Quad, Convex }
+enum CompressedPrimitiveKind {
+    Empty,
+    Triangle,
+    Quad,
+    Convex,
+}
 
 fn compressed_primitive_kind(primitive: &[u8]) -> CompressedPrimitiveKind {
-    if primitive == [0xde, 0xad, 0xde, 0xad] { CompressedPrimitiveKind::Empty }
-    else if primitive[1] == primitive[3] { CompressedPrimitiveKind::Convex }
-    else if primitive[2] == primitive[3] { CompressedPrimitiveKind::Triangle }
-    else { CompressedPrimitiveKind::Quad }
+    if primitive == [0xde, 0xad, 0xde, 0xad] {
+        CompressedPrimitiveKind::Empty
+    } else if primitive[1] == primitive[3] {
+        CompressedPrimitiveKind::Convex
+    } else if primitive[2] == primitive[3] {
+        CompressedPrimitiveKind::Triangle
+    } else {
+        CompressedPrimitiveKind::Quad
+    }
 }
 
 fn primitive_has_surface(primitive: &[u8]) -> bool {
-    matches!(compressed_primitive_kind(primitive), CompressedPrimitiveKind::Triangle | CompressedPrimitiveKind::Quad)
+    matches!(
+        compressed_primitive_kind(primitive),
+        CompressedPrimitiveKind::Triangle | CompressedPrimitiveKind::Quad
+    )
 }
 
 // FUN_140c253a0: Codec3Axis4 child bounds; fourth byte's low nibble
 // is a tree link, not a W-axis upper shrink. Constants read from running DH2.
 fn compressed_tree_child_bounds(parent: [[f32; 4]; 2], node: [u8; 4]) -> [[f32; 4]; 2] {
-    let scale: [f32; 4] = std::array::from_fn(|axis| (parent[1][axis] - parent[0][axis]) * f32::from_bits(0x3b90_fdbc));
-    [std::array::from_fn(|axis| {
-        let q = (node[axis] >> 4) as f32;
-        q * q * scale[axis] + parent[0][axis]
-    }), std::array::from_fn(|axis| {
-        let q = if axis == 3 { 0.0 } else { (node[axis] & 15) as f32 };
-        parent[1][axis] - q * q * scale[axis]
-    })]
+    let scale: [f32; 4] = std::array::from_fn(|axis| {
+        (parent[1][axis] - parent[0][axis]) * f32::from_bits(0x3b90_fdbc)
+    });
+    [
+        std::array::from_fn(|axis| {
+            let q = (node[axis] >> 4) as f32;
+            q * q * scale[axis] + parent[0][axis]
+        }),
+        std::array::from_fn(|axis| {
+            let q = if axis == 3 {
+                0.0
+            } else {
+                (node[axis] & 15) as f32
+            };
+            parent[1][axis] - q * q * scale[axis]
+        }),
+    ]
 }
 
 // FUN_14127f030: follow the packed child offsets to a requested BVH node.
-fn compressed_tree_node_bounds(mut bounds: [[f32; 4]; 2], nodes: &[[u8; 4]], target: usize) -> Result<[[f32; 4]; 2], String> {
+fn compressed_tree_node_bounds(
+    mut bounds: [[f32; 4]; 2],
+    nodes: &[[u8; 4]],
+    target: usize,
+) -> Result<[[f32; 4]; 2], String> {
     let mut current = 0;
     while current != target {
-        let node = nodes.get(current).ok_or("compressed tree node out of range")?;
+        let node = nodes
+            .get(current)
+            .ok_or("compressed tree node out of range")?;
         let right = current + (node[3] & 0xfe) as usize;
         let next = if right <= target { right } else { current + 1 };
-        if next <= current || next > target { return Err("compressed tree has invalid child offset".into()); }
-        bounds = compressed_tree_child_bounds(bounds, *nodes.get(next).ok_or("compressed tree child out of range")?);
+        if next <= current || next > target {
+            return Err("compressed tree has invalid child offset".into());
+        }
+        bounds = compressed_tree_child_bounds(
+            bounds,
+            *nodes
+                .get(next)
+                .ok_or("compressed tree child out of range")?,
+        );
         current = next;
     }
     Ok(bounds)
@@ -1505,7 +1694,9 @@ pub fn classify_original_body_rows(
         let row_start = ((*body_id & 0x00ff_ffff) as usize)
             .checked_mul(ROW_STRIDE)
             .ok_or("body-row offset overflow")?;
-        let row_end = row_start.checked_add(0x49).ok_or("body-row extent overflow")?;
+        let row_end = row_start
+            .checked_add(0x49)
+            .ok_or("body-row extent overflow")?;
         let row = rows
             .get(row_start..row_end)
             .ok_or_else(|| format!("body ID {body_id:#x} exceeds the row table"))?;
@@ -1516,7 +1707,11 @@ pub fn classify_original_body_rows(
         } else if flags & 8 != 0 {
             0
         } else if flags & 1 == 0 {
-            if row_byte & 0x91 == 0 { 2 } else { 0 }
+            if row_byte & 0x91 == 0 {
+                2
+            } else {
+                0
+            }
         } else if row_byte & 0x91 == 0 {
             4
         } else {
@@ -1568,16 +1763,44 @@ mod tests {
 
     #[test]
     fn physics_shape_kinds_match_original_suffix_order() {
-        assert_eq!(replace_shape_extension("folder.with.dot/fence.blueprint", "hkt"), "folder.with.dot/fence.hkt");
-        assert_eq!(replace_shape_extension("folder.with.dot/fence", ".hkt"), "folder.with.dot/fence.hkt");
-        assert_eq!(replace_shape_extension("folder\\with.dot\\fence.lwo", "cvx"), "folder\\with.dot\\fence.cvx");
-        assert_eq!(hkt_shape_name("models/fence.lwo", false), "models/fence.hkt");
-        assert_eq!(hkt_shape_name("models/fence.lwo", true), "models/fence_hd.hkt");
-        assert_eq!(physics_shape_asset_path("models/props/fence.blueprint.hkt._100_100_100.10"),
-            "generated/models/props/fence.blueprint.hkt._100_100_100.10.hkx");
-        assert_eq!(physics_shape_asset_path("models/fence.hkt._100_100_100.10\0ignored"),
-            "generated/models/fence.hkt._100_100_100.10.hkx");
-        for (name, expected) in [("hkt", 0), ("CVX", 1), ("MsH", 2), ("box", 3), (".hkt", 4), ("hktx", 4), ("", 4), ("hkt\0ignored", 0)] {
+        assert_eq!(
+            replace_shape_extension("folder.with.dot/fence.blueprint", "hkt"),
+            "folder.with.dot/fence.hkt"
+        );
+        assert_eq!(
+            replace_shape_extension("folder.with.dot/fence", ".hkt"),
+            "folder.with.dot/fence.hkt"
+        );
+        assert_eq!(
+            replace_shape_extension("folder\\with.dot\\fence.lwo", "cvx"),
+            "folder\\with.dot\\fence.cvx"
+        );
+        assert_eq!(
+            hkt_shape_name("models/fence.lwo", false),
+            "models/fence.hkt"
+        );
+        assert_eq!(
+            hkt_shape_name("models/fence.lwo", true),
+            "models/fence_hd.hkt"
+        );
+        assert_eq!(
+            physics_shape_asset_path("models/props/fence.blueprint.hkt._100_100_100.10"),
+            "generated/models/props/fence.blueprint.hkt._100_100_100.10.hkx"
+        );
+        assert_eq!(
+            physics_shape_asset_path("models/fence.hkt._100_100_100.10\0ignored"),
+            "generated/models/fence.hkt._100_100_100.10.hkx"
+        );
+        for (name, expected) in [
+            ("hkt", 0),
+            ("CVX", 1),
+            ("MsH", 2),
+            ("box", 3),
+            (".hkt", 4),
+            ("hktx", 4),
+            ("", 4),
+            ("hkt\0ignored", 0),
+        ] {
             assert_eq!(physics_shape_kind(name), expected);
         }
     }
@@ -1588,9 +1811,13 @@ mod tests {
         let cases = std::fs::read_to_string("analysis/original_physics_shape_kind_cases.txt")
             .expect("missing native physics shape comparison/kind fixture");
         let decode = |text: &str| -> Vec<u8> {
-            if text == "-" { return Vec::new(); }
-            text.as_bytes().chunks_exact(2).map(|hex|
-                u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap()).collect()
+            if text == "-" {
+                return Vec::new();
+            }
+            text.as_bytes()
+                .chunks_exact(2)
+                .map(|hex| u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap())
+                .collect()
         };
         let mut count = 0;
         for line in cases.lines() {
@@ -1598,9 +1825,17 @@ mod tests {
             let left = decode(fields[1]);
             if fields[0] == "C" {
                 let right = decode(fields[2]);
-                assert_eq!(ascii_cstr_compare(&left, &right), fields[3].parse::<i32>().unwrap(), "{line}");
+                assert_eq!(
+                    ascii_cstr_compare(&left, &right),
+                    fields[3].parse::<i32>().unwrap(),
+                    "{line}"
+                );
             } else {
-                assert_eq!(physics_shape_kind(std::str::from_utf8(&left).unwrap()), fields[2].parse::<u8>().unwrap(), "{line}");
+                assert_eq!(
+                    physics_shape_kind(std::str::from_utf8(&left).unwrap()),
+                    fields[2].parse::<u8>().unwrap(),
+                    "{line}"
+                );
             }
             count += 1;
         }
@@ -1612,20 +1847,34 @@ mod tests {
         let mut count = 0;
         for line in include_str!("../analysis/original_physics_shape_key_cases.txt").lines() {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            let values: Vec<u32> = fields[..5].iter().map(|value| value.parse().unwrap()).collect();
+            let values: Vec<u32> = fields[..5]
+                .iter()
+                .map(|value| value.parse().unwrap())
+                .collect();
             let scale = std::array::from_fn(|axis| f32::from_bits(values[axis + 1]));
-            let expected: Vec<u8> = fields[5].as_bytes().chunks_exact(2).map(|pair| {
-                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
-            }).collect();
+            let expected: Vec<u8> = fields[5]
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
             assert_eq!(
-                physics_shape_key("models/fence.blueprint", values[0] as u8, scale, f32::from_bits(values[4]), false),
+                physics_shape_key(
+                    "models/fence.blueprint",
+                    values[0] as u8,
+                    scale,
+                    f32::from_bits(values[4]),
+                    false
+                ),
                 Some(String::from_utf8(expected).unwrap()),
                 "native ordinary physics recipe {count}"
             );
             count += 1;
         }
         assert_eq!(count, 1088);
-        assert_eq!(physics_shape_key("a\0ignored", 0, [-0.015, 0.0001, -0.0001], 0.01, false), Some("a.hkt._-1_1_-1.10".into()));
+        assert_eq!(
+            physics_shape_key("a\0ignored", 0, [-0.015, 0.0001, -0.0001], 0.01, false),
+            Some("a.hkt._-1_1_-1.10".into())
+        );
         assert_eq!(physics_shape_key("a", 5, [1.0; 3], 0.01, false), None);
         assert_eq!(physics_shape_key("a", 0, [f32::NAN; 3], 0.01, false), None);
         assert_eq!(physics_shape_key("a", 0, [1.0; 3], f32::NAN, false), None);
@@ -1633,22 +1882,43 @@ mod tests {
     #[test]
     fn physics_hd_recipe_matches_original_builder() {
         let decode = |text: &str| -> String {
-            if text == "-" { return String::new(); }
-            String::from_utf8(text.as_bytes().chunks_exact(2).map(|pair|
-                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()).unwrap()
+            if text == "-" {
+                return String::new();
+            }
+            String::from_utf8(
+                text.as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect(),
+            )
+            .unwrap()
         };
         let mut count = 0;
         for line in include_str!("../analysis/original_physics_shape_hd_cases.txt").lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
-            let values: Vec<u32> = fields[..5].iter().map(|value| value.parse().unwrap()).collect();
+            let values: Vec<u32> = fields[..5]
+                .iter()
+                .map(|value| value.parse().unwrap())
+                .collect();
             let scale = std::array::from_fn(|axis| f32::from_bits(values[axis + 1]));
-            assert_eq!(physics_shape_key(&decode(fields[5]), values[0] as u8,
-                scale, f32::from_bits(values[4]), true), Some(decode(fields[6])), "{line}");
+            assert_eq!(
+                physics_shape_key(
+                    &decode(fields[5]),
+                    values[0] as u8,
+                    scale,
+                    f32::from_bits(values[4]),
+                    true
+                ),
+                Some(decode(fields[6])),
+                "{line}"
+            );
             count += 1;
         }
         assert_eq!(count, 1128);
-        assert_eq!(physics_shape_key("models/fence.blueprint\0ignored", 0, [1.0; 3], 0.01, true),
-            Some("models/fence_hd.blueprint.hkt._100_100_100.10".into()));
+        assert_eq!(
+            physics_shape_key("models/fence.blueprint\0ignored", 0, [1.0; 3], 0.01, true),
+            Some("models/fence_hd.blueprint.hkt._100_100_100.10".into())
+        );
     }
     #[test]
     #[ignore = "requires local installed-game fixture artifacts/railing-blueprint-root.hkx"]
@@ -1656,11 +1926,29 @@ mod tests {
         let bytes = std::fs::read("artifacts/railing-blueprint-root.hkx")
             .expect("missing required railing-blueprint-root.hkx fixture");
         let world = parse_hkx(&bytes).unwrap();
-        assert_eq!(world.field_offset(world.items[1].type_index, "data").unwrap(), 64);
-        assert_eq!(world.field_offset(world.items[2].type_index, "meshTree").unwrap(), 16);
+        assert_eq!(
+            world
+                .field_offset(world.items[1].type_index, "data")
+                .unwrap(),
+            64
+        );
+        assert_eq!(
+            world
+                .field_offset(world.items[2].type_index, "meshTree")
+                .unwrap(),
+            16
+        );
         let geometry = world.standalone_shapes(&bytes).unwrap();
-        assert!(geometry.unknown_shapes.is_empty(), "{:?}", geometry.unknown_shapes);
-        assert!(geometry.compressed_decode_failures.is_empty(), "{:?}", geometry.compressed_decode_failures);
+        assert!(
+            geometry.unknown_shapes.is_empty(),
+            "{:?}",
+            geometry.unknown_shapes
+        );
+        assert!(
+            geometry.compressed_decode_failures.is_empty(),
+            "{:?}",
+            geometry.compressed_decode_failures
+        );
         assert_eq!(geometry.compressed.len(), 1);
         assert_eq!(geometry.convex.len(), 26);
         assert_eq!(geometry.triangles.len(), 312);
@@ -1690,19 +1978,29 @@ mod tests {
             let kind = fields.next().unwrap();
             let words: Vec<u32> = fields.map(|value| value.parse().unwrap()).collect();
             if kind == "M" {
-                let basis = std::array::from_fn(|column|
-                    std::array::from_fn(|lane| f32::from_bits(words[column * 4 + lane])));
+                let basis = std::array::from_fn(|column| {
+                    std::array::from_fn(|lane| f32::from_bits(words[column * 4 + lane]))
+                });
                 same(&basis_quaternion(basis), &words[12..16], line);
                 let actual = rigid_body_basis(basis);
                 for column in 0..3 {
-                    same(&actual[column], &words[16 + column * 4..20 + column * 4], line);
+                    same(
+                        &actual[column],
+                        &words[16 + column * 4..20 + column * 4],
+                        line,
+                    );
                 }
                 matrices += 1;
             } else {
                 assert_eq!(kind, "Q");
-                let actual = quaternion_basis(std::array::from_fn(|lane| f32::from_bits(words[lane])));
+                let actual =
+                    quaternion_basis(std::array::from_fn(|lane| f32::from_bits(words[lane])));
                 for column in 0..3 {
-                    same(&actual[column], &words[4 + column * 4..8 + column * 4], line);
+                    same(
+                        &actual[column],
+                        &words[4 + column * 4..8 + column * 4],
+                        line,
+                    );
                 }
                 quaternions += 1;
             }
@@ -1734,23 +2032,53 @@ mod tests {
     }
     #[test]
     fn compressed_primitive_header_dispatch_matches_original() {
-        assert_eq!(compressed_primitive_kind(&[0xde, 0xad, 0xde, 0xad]), CompressedPrimitiveKind::Empty);
-        assert_eq!(compressed_primitive_kind(&[32, 6, 11, 6]), CompressedPrimitiveKind::Convex);
-        assert_eq!(compressed_primitive_kind(&[0, 1, 2, 2]), CompressedPrimitiveKind::Triangle);
-        assert_eq!(compressed_primitive_kind(&[0, 1, 2, 3]), CompressedPrimitiveKind::Quad);
+        assert_eq!(
+            compressed_primitive_kind(&[0xde, 0xad, 0xde, 0xad]),
+            CompressedPrimitiveKind::Empty
+        );
+        assert_eq!(
+            compressed_primitive_kind(&[32, 6, 11, 6]),
+            CompressedPrimitiveKind::Convex
+        );
+        assert_eq!(
+            compressed_primitive_kind(&[0, 1, 2, 2]),
+            CompressedPrimitiveKind::Triangle
+        );
+        assert_eq!(
+            compressed_primitive_kind(&[0, 1, 2, 3]),
+            CompressedPrimitiveKind::Quad
+        );
     }
     #[test]
     fn compressed_tree_bounds_match_installed_executable() {
         let mut cases = 0;
         for line in include_str!("../analysis/original_compressed_tree_cases.txt").lines() {
-            let fields: Vec<u32> = line.split_whitespace().map(|field| field.parse().unwrap()).collect();
+            let fields: Vec<u32> = line
+                .split_whitespace()
+                .map(|field| field.parse().unwrap())
+                .collect();
             let count = fields[1] as usize;
-            let domain = std::array::from_fn(|side| std::array::from_fn(|axis| f32::from_bits(fields[3 + side * 4 + axis])));
-            let nodes: Vec<[u8; 4]> = (0..count).map(|node| std::array::from_fn(|axis| fields[11 + node * 4 + axis] as u8)).collect();
-            let result = if fields[0] == 0 { compressed_tree_child_bounds(domain, nodes[0]) }
-                else { compressed_tree_node_bounds(domain, &nodes, fields[2] as usize).unwrap() };
+            let domain = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| f32::from_bits(fields[3 + side * 4 + axis]))
+            });
+            let nodes: Vec<[u8; 4]> = (0..count)
+                .map(|node| std::array::from_fn(|axis| fields[11 + node * 4 + axis] as u8))
+                .collect();
+            let result = if fields[0] == 0 {
+                compressed_tree_child_bounds(domain, nodes[0])
+            } else {
+                compressed_tree_node_bounds(domain, &nodes, fields[2] as usize).unwrap()
+            };
             let expected = &fields[11 + count * 4..];
-            assert_eq!(result.concat().iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected, "native compressed bounds case{cases}");
+            assert_eq!(
+                result
+                    .concat()
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                expected,
+                "native compressed bounds case{cases}"
+            );
             cases += 1;
         }
         assert_eq!(cases, 1024);

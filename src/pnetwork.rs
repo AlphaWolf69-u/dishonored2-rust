@@ -313,39 +313,67 @@ pub fn vertex_references(
     let columns = u32le(bytes, cursor + 4)? as usize;
     cursor += 8;
     if rows > 1_000_000 || columns > 4 {
-        return Err(format!("invalid probe-index table dimensions {rows}x{columns}"));
+        return Err(format!(
+            "invalid probe-index table dimensions {rows}x{columns}"
+        ));
     }
-    let table_bytes = rows.checked_mul(columns).and_then(|n| n.checked_mul(4))
+    let table_bytes = rows
+        .checked_mul(columns)
+        .and_then(|n| n.checked_mul(4))
         .ok_or("probe-index table size overflow")?;
-    let table_end = cursor.checked_add(table_bytes).ok_or("probe-index table offset overflow")?;
-    let raw = bytes.get(cursor..table_end).ok_or("truncated probe-index table")?;
+    let table_end = cursor
+        .checked_add(table_bytes)
+        .ok_or("probe-index table offset overflow")?;
+    let raw = bytes
+        .get(cursor..table_end)
+        .ok_or("truncated probe-index table")?;
     let mut cell_probe_indices = vec![[u32::MAX; 4]; rows];
     for (i, word) in raw.chunks_exact(4).enumerate() {
         let index = u32::from_le_bytes(word.try_into().unwrap());
         // FUN_1402b15e0 clamps non-sentinel out-of-range secondary IDs to 0.
-        cell_probe_indices[i / columns][i % columns] =
-            if secondary_probe_count != 0 && index != u32::MAX && index as usize >= secondary_probe_count {
-                0
-            } else { index };
+        cell_probe_indices[i / columns][i % columns] = if secondary_probe_count != 0
+            && index != u32::MAX
+            && index as usize >= secondary_probe_count
+        {
+            0
+        } else {
+            index
+        };
     }
     cursor = table_end;
     let tetrahedron_indices = read_word_buffer(bytes, &mut cursor)?;
-    let status = *bytes.get(cursor).ok_or("truncated probe-network buffer status")?;
+    let status = *bytes
+        .get(cursor)
+        .ok_or("truncated probe-network buffer status")?;
     cursor += 1;
     if status != 0 {
         return Err("probe-network vertex lighting unavailable (native load status 9)".into());
     }
     let instance_offsets = read_word_buffer(bytes, &mut cursor)?;
-    Ok(VertexReferences { cell_probe_indices, instance_offsets, tetrahedron_indices, bytes_consumed: cursor })
+    Ok(VertexReferences {
+        cell_probe_indices,
+        instance_offsets,
+        tetrahedron_indices,
+        bytes_consumed: cursor,
+    })
 }
 
 fn read_word_buffer(bytes: &[u8], cursor: &mut usize) -> Result<Vec<u32>, String> {
     let size = (u32le(bytes, *cursor)? as usize >> 2) * 4;
-    *cursor = cursor.checked_add(4).ok_or("probe-network buffer offset overflow")?;
-    let end = cursor.checked_add(size).ok_or("probe-network buffer size overflow")?;
-    let raw = bytes.get(*cursor..end).ok_or("truncated probe-network word buffer")?;
+    *cursor = cursor
+        .checked_add(4)
+        .ok_or("probe-network buffer offset overflow")?;
+    let end = cursor
+        .checked_add(size)
+        .ok_or("probe-network buffer size overflow")?;
+    let raw = bytes
+        .get(*cursor..end)
+        .ok_or("truncated probe-network word buffer")?;
     *cursor = end;
-    Ok(raw.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect())
+    Ok(raw
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -365,28 +393,36 @@ mod tests {
     #[test]
     fn reads_native_vertex_reference_tail() {
         let mut bytes = Vec::new();
-        for word in [1u32, 2, 7, 9, 8, 11, 22] { bytes.extend_from_slice(&word.to_le_bytes()); }
+        for word in [1u32, 2, 7, 9, 8, 11, 22] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
         bytes.push(0);
-        for word in [12u32, 3, 4, 5] { bytes.extend_from_slice(&word.to_le_bytes()); }
+        for word in [12u32, 3, 4, 5] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
         let tail = vertex_references(&bytes, 0, 8).unwrap();
         assert_eq!(tail.cell_probe_indices, [[7, 0, u32::MAX, u32::MAX]]);
         assert_eq!(tail.tetrahedron_indices, [11, 22]);
         assert_eq!(tail.instance_offsets, [3, 4, 5]);
         assert_eq!(tail.bytes_consumed, bytes.len());
         bytes[28] = 1;
-        assert!(vertex_references(&bytes, 0, 8).unwrap_err().contains("status 9"));
+        assert!(vertex_references(&bytes, 0, 8)
+            .unwrap_err()
+            .contains("status 9"));
     }
 
     #[test]
     fn native_word_buffers_floor_the_declared_size() {
         let mut bytes = Vec::new();
-        for word in [0u32, 4, 5, 123] { bytes.extend_from_slice(&word.to_le_bytes()); }
+        for word in [0u32, 4, 5, 123] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
         bytes.push(0);
         bytes.extend_from_slice(&0u32.to_le_bytes());
         let tail = vertex_references(&bytes, 0, 0).unwrap();
         assert_eq!(tail.tetrahedron_indices, [123]);
         assert!(tail.instance_offsets.is_empty());
         assert_eq!(tail.bytes_consumed, bytes.len());
-        assert!(vertex_references(&bytes[..bytes.len()-1], 0, 0).is_err());
+        assert!(vertex_references(&bytes[..bytes.len() - 1], 0, 0).is_err());
     }
 }

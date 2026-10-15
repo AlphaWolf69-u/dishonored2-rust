@@ -41,9 +41,10 @@ const SURFACE_ARRAY_COUNT_MASK: u32 = 0x00ff_ffff;
 
 fn packed_surface_prefix<'a, T>(array: &SurfaceKeyArrayView<'a, T>) -> Result<&'a [T], String> {
     let count = (array.packed_count & SURFACE_ARRAY_COUNT_MASK) as usize;
-    array.values.get(..count).ok_or_else(|| {
-        "surface sort key packed count exceeds its supplied data".to_owned()
-    })
+    array
+        .values
+        .get(..count)
+        .ok_or_else(|| "surface sort key packed count exceeds its supplied data".to_owned())
 }
 
 /// FUN_140341fb0: equality of the nested short-key and four-word arrays.
@@ -71,18 +72,34 @@ pub fn surface_nested_key_equal(
 
 fn surface_float_order(left: f32, right: f32) -> i32 {
     if left != right {
-        if left < right { -1 } else { 1 }
+        if left < right {
+            -1
+        } else {
+            1
+        }
     } else {
         0
     }
 }
 
 fn surface_signed_order(left: i64, right: i64) -> u32 {
-    if left < right { u32::MAX } else if left > right { 1 } else { 0 }
+    if left < right {
+        u32::MAX
+    } else if left > right {
+        1
+    } else {
+        0
+    }
 }
 
 fn surface_unsigned_order(left: u64, right: u64) -> u32 {
-    if left < right { u32::MAX } else if left > right { 1 } else { 0 }
+    if left < right {
+        u32::MAX
+    } else if left > right {
+        1
+    } else {
+        0
+    }
 }
 
 /// FUN_14033a590: native draw-surface tie comparator. Nonzero flag bytes sort
@@ -95,17 +112,27 @@ pub fn surface_key_compare(
         return Ok(if left.flags[0] != 0 { u32::MAX } else { 1 });
     }
     let order = surface_float_order(left.primary, right.primary);
-    if order != 0 { return Ok(order as u32); }
+    if order != 0 {
+        return Ok(order as u32);
+    }
     if left.flags[1] != right.flags[1] {
         return Ok(if left.flags[1] != 0 { u32::MAX } else { 1 });
     }
     for (left, right) in left.signed_keys.into_iter().zip(right.signed_keys) {
         let order = surface_signed_order(left, right);
-        if order != 0 { return Ok(order); }
+        if order != 0 {
+            return Ok(order);
+        }
     }
     let order = surface_unsigned_order(left.unsigned_key, right.unsigned_key);
-    if order != 0 { return Ok(order); }
-    Ok(if surface_nested_key_equal(&left.nested, &right.nested)? { 0 } else { 1 })
+    if order != 0 {
+        return Ok(order);
+    }
+    Ok(if surface_nested_key_equal(&left.nested, &right.nested)? {
+        0
+    } else {
+        1
+    })
 }
 
 /// FUN_14033e520: rightmost exact-key search used by the native sorted list.
@@ -115,8 +142,12 @@ pub fn surface_key_find_rightmost_equal(
     count: i32,
     target: &SurfaceSortKeyView<'_>,
 ) -> Result<i32, String> {
-    let Some(entries) = entries else { return Ok(-1); };
-    if count == 0 { return Ok(-1); }
+    let Some(entries) = entries else {
+        return Ok(-1);
+    };
+    if count == 0 {
+        return Ok(-1);
+    }
     if entries.is_empty() {
         return Err("native surface key search reads entry zero from an empty slice".to_owned());
     }
@@ -124,14 +155,20 @@ pub fn surface_key_find_rightmost_equal(
         return Err("surface sort count exceeds its supplied entries".to_owned());
     }
     if count < 0 {
-        return Ok(if surface_key_compare(&entries[0], target)? == 0 { 0 } else { -1 });
+        return Ok(if surface_key_compare(&entries[0], target)? == 0 {
+            0
+        } else {
+            -1
+        });
     }
     let mut index = 0i32;
     let mut remaining = count;
     while remaining > 1 {
         let half = remaining >> 1;
         let order = surface_key_compare(&entries[(index + half) as usize], target)? as i32;
-        if order <= 0 { index += half; }
+        if order <= 0 {
+            index += half;
+        }
         remaining -= half;
     }
     let order = surface_key_compare(&entries[index as usize], target)?;
@@ -144,7 +181,9 @@ pub fn surface_key_lower_bound(
     count: i32,
     target: &SurfaceSortKeyView<'_>,
 ) -> Result<i32, String> {
-    if count < 1 { return Ok(0); }
+    if count < 1 {
+        return Ok(0);
+    }
     let Some(entries) = entries else {
         return Err("native surface lower-bound search received a null list".to_owned());
     };
@@ -156,16 +195,22 @@ pub fn surface_key_lower_bound(
     loop {
         let half = remaining >> 1;
         let order = surface_key_compare(&entries[(index + half) as usize], target)? as i32;
-        if order < 0 { index += half; }
+        if order < 0 {
+            index += half;
+        }
         remaining -= half;
-        if half == 0 { return Ok(index + i32::from(order < 0)); }
+        if half == 0 {
+            return Ok(index + i32::from(order < 0));
+        }
     }
 }
 
 /// FUN_14033ecd0 (`SurfaceCompare<1>` slot +0x18) returns zero for every
 /// signed count and valid key pair. This models only its observable index;
 /// native object-pointer reads at +0x74 are not reproduced here.
-pub const fn surface_compare_1_index_result() -> u32 { 0 }
+pub const fn surface_compare_1_index_result() -> u32 {
+    0
+}
 
 /// Safe Rust view of FUN_1403119a0's pointer-bank lookup. The original
 /// caller supplies `param_2`/`param_3` and a signed selector; an enabled
@@ -234,30 +279,127 @@ pub struct DepthAlphaDrawPlan {
 /// draw without changing the alpha marker. Submission, list ownership and
 /// material flag production remain the caller's responsibility.
 pub fn prepare_depth_alpha_draw(
-    surface: &DepthAlphaSurface<'_>, pass: u8,
+    surface: &DepthAlphaSurface<'_>,
+    pass: u8,
 ) -> Result<Option<DepthAlphaDrawPlan>, String> {
-    if pass > 2 { return Err("native depth-alpha pass must be 0, 1 or 2".to_owned()); }
+    if pass > 2 {
+        return Err("native depth-alpha pass must be 0, 1 or 2".to_owned());
+    }
     let alpha = surface.flags49 & 1 != 0;
     let program = if pass == 2 {
-        if !alpha { return Ok(None); }
+        if !alpha {
+            return Ok(None);
+        }
         surface.alternate_program
     } else {
-        let slot = if pass == 0 && alpha { 4 } else { 6 }
-            + u32::from(surface.special_vertex_format);
-        surface_lookup_3119a0(surface.default_programs, surface.override_programs,
-            surface.flags49, slot, u8::from(surface.has_optional_mesh), surface.selector)?
+        let slot =
+            if pass == 0 && alpha { 4 } else { 6 } + u32::from(surface.special_vertex_format);
+        surface_lookup_3119a0(
+            surface.default_programs,
+            surface.override_programs,
+            surface.flags49,
+            slot,
+            u8::from(surface.has_optional_mesh),
+            surface.selector,
+        )?
     };
-    if program == 0 { return Ok(None); }
+    if program == 0 {
+        return Ok(None);
+    }
     let mut state = surface.draw_state;
     state[0] &= 0xfe1f_ffff;
     state[1] &= 0xfe1f_ffff;
     state[4] = state[4] & 0xff | 0xe80e_8000;
-    state[5] = if pass == 2 { state[5] & 0xff80_80ef | 0x0080_8028 }
-               else { state[5] & 0xff02_02ff | 0x0002_0228 };
+    state[5] = if pass == 2 {
+        state[5] & 0xff80_80ef | 0x0080_8028
+    } else {
+        state[5] & 0xff02_02ff | 0x0002_0228
+    };
     let marks_alpha = pass == 0 && alpha;
-    if marks_alpha { state[0] = surface.draw_state[0] & 0xfe1f_fe23 | 0x0040_0023; }
-    Ok(Some(DepthAlphaDrawPlan {program, draw_state: state,
-        stencil_reference: if pass == 2 {0x80} else {2}, marks_alpha}))
+    if marks_alpha {
+        state[0] = surface.draw_state[0] & 0xfe1f_fe23 | 0x0040_0023;
+    }
+    Ok(Some(DepthAlphaDrawPlan {
+        program,
+        draw_state: state,
+        stencil_reference: if pass == 2 { 0x80 } else { 2 },
+        marks_alpha,
+    }))
+}
+
+// Shared declaration logic also serves the asset-audit tools; no renderer dependency.
+pub use crate::material::{native_blend_enabled, shadow_program_source, ShadowProgramSource};
+
+/// FUN_140329120's dynamic-model program/state preparation only. The existing
+/// pointer-bank selector is identical; shadow slots are 10/11. Bounds testing,
+/// material production and draw submission remain the caller's responsibility.
+/// `special_vertex_format` is the same native +0x90 template comparison used
+/// by depth-alpha; `alternate_program` is not used by this pass. The context
+/// byte is the MVP determinant sign written by FUN_14010b310, not an enabled
+/// renderer flag. Prefer `prepare_shadow_model_draw_for_mvp` with actual rows.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ShadowModelDrawPlan {
+    pub program: u64,
+    pub draw_state: [u32; 9],
+}
+
+pub fn prepare_shadow_model_draw(
+    surface: &DepthAlphaSurface<'_>,
+    bias: [f32; 3],
+    frustum_margin: f32,
+    model_mvp_flipped: bool,
+) -> Result<Option<ShadowModelDrawPlan>, String> {
+    let program = surface_lookup_3119a0(
+        surface.default_programs,
+        surface.override_programs,
+        surface.flags49,
+        10 + u32::from(surface.special_vertex_format),
+        u8::from(surface.has_optional_mesh),
+        surface.selector,
+    )?;
+    if program == 0 {
+        return Ok(None);
+    }
+    let mut state = surface.draw_state;
+    state[0] = state[0] & 0xfe1f_f802 | 2;
+    // COMISS 0,margin / SETA: NaN is NOT negative. The decompiler's
+    // `0 <= margin` expression loses this unordered branch.
+    state[5] = state[5] & 0xefff_fff9
+        | 1
+        | (u32::from(!(frustum_margin < 0.0)) << 28)
+        | (u32::from(!model_mvp_flipped) << 27);
+    state[6..].fill(0);
+    if surface.flags49 & 2 == 0 {
+        // CVTTSS2SI returns integer-indefinite, not Rust's saturating cast,
+        // for NaN/overflow. The original reorders clamp and slope words.
+        state[6] = if (-2147483648.0..2147483648.0).contains(&bias[0]) {
+            bias[0] as i32 as u32
+        } else {
+            0x8000_0000
+        };
+        state[7] = bias[2].to_bits();
+        state[8] = bias[1].to_bits();
+    }
+    Ok(Some(ShadowModelDrawPlan {
+        program,
+        draw_state: state,
+    }))
+}
+
+/// The native 329120 call sequence publishes the MVP rows/handedness before
+/// preparing this draw state. Keep the matrix-derived flag paired with its draw.
+pub fn prepare_shadow_model_draw_for_mvp(
+    surface: &DepthAlphaSurface<'_>,
+    bias: [f32; 3],
+    frustum_margin: f32,
+    mvp: &crate::render_shadow::ShadowMatrix,
+) -> Result<Option<ShadowModelDrawPlan>, String> {
+    prepare_shadow_model_draw(
+        surface,
+        bias,
+        frustum_margin,
+        crate::render_shadow::model_mvp_winding_flipped(mvp),
+    )
 }
 
 fn surface_candidate_growth_capacity(capacity_word: u32, grow_one_at_a_time: bool) -> u32 {
@@ -365,7 +507,10 @@ pub fn reallocate_surface_candidate_rows(
     replacement
         .try_reserve_exact(requested_capacity as usize)
         .map_err(|error| format!("native surface row allocation failed: {error}"))?;
-    replacement.resize(requested_capacity as usize, NativeSurfaceCandidateRow::default());
+    replacement.resize(
+        requested_capacity as usize,
+        NativeSurfaceCandidateRow::default(),
+    );
     replacement[..copy_count].copy_from_slice(&rows[..copy_count]);
     *rows = replacement;
     Ok(())
@@ -404,10 +549,8 @@ impl NativeSurfaceCandidateRows {
         let capacity = self.capacity_word >> 8;
         let mut allocation_succeeds = true;
         if count == capacity {
-            let requested = surface_candidate_growth_capacity(
-                self.capacity_word,
-                grow_one_at_a_time,
-            );
+            let requested =
+                surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
             if requested as usize > self.rows.len() {
                 if reallocate_surface_candidate_rows(&mut self.rows, count, requested).is_err() {
                     allocation_succeeds = false;
@@ -454,7 +597,8 @@ pub fn allocate_zeroed_native_surface_pointers(capacity: u32) -> Result<Vec<u64>
         return Err("native surface pointer capacity exceeds 24 bits".to_owned());
     }
     let mut slots = Vec::new();
-    slots.try_reserve_exact(capacity as usize)
+    slots
+        .try_reserve_exact(capacity as usize)
         .map_err(|error| format!("native surface pointer allocation failed: {error}"))?;
     slots.resize(capacity as usize, 0);
     Ok(slots)
@@ -468,7 +612,8 @@ pub fn reallocate_native_surface_pointers(
     capacity_word: &mut u32,
     new_capacity: u32,
 ) -> Result<(), String> {
-    if new_capacity > 0x00ff_ffff || live_count > new_capacity || live_count as usize > slots.len() {
+    if new_capacity > 0x00ff_ffff || live_count > new_capacity || live_count as usize > slots.len()
+    {
         return Err("native surface pointer reallocation metadata is out of range".to_owned());
     }
     let mut replacement = allocate_zeroed_native_surface_pointers(new_capacity)?;
@@ -501,7 +646,11 @@ impl NativeSurfacePointerList {
     /// publishes the requested header even when its void allocator fails;
     /// `insert` detects the resulting storage/header mismatch before writing
     /// out of bounds. Allocator ownership/failure side effects differ by caller.
-    pub fn set_capacity(&mut self, requested: i32, allocation_succeeds: bool) -> Result<bool, String> {
+    pub fn set_capacity(
+        &mut self,
+        requested: i32,
+        allocation_succeeds: bool,
+    ) -> Result<bool, String> {
         if requested < 1 {
             if self.capacity_word as u8 & 0x40 == 0 {
                 self.slots = Vec::new();
@@ -515,7 +664,9 @@ impl NativeSurfacePointerList {
             return Err("native surface pointer capacity exceeds 24 bits".to_owned());
         }
         let old_capacity = self.capacity_word >> 8;
-        if requested == old_capacity { return Ok(true); }
+        if requested == old_capacity {
+            return Ok(true);
+        }
         let allocation_mode = (self.capacity_word >> 6) & 3;
         if allocation_mode == 3 && old_capacity < requested {
             let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
@@ -534,7 +685,9 @@ impl NativeSurfacePointerList {
             self.capacity_word = requested.wrapping_shl(8) | u32::from(flags);
             return Ok(true);
         }
-        if allocation_mode != 0 { return Ok(false); }
+        if allocation_mode != 0 {
+            return Ok(false);
+        }
         let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
         if !allocation_succeeds {
             self.slots = Vec::new();
@@ -573,9 +726,14 @@ impl NativeSurfacePointerList {
         if old_count > old_capacity || old_capacity as usize != self.slots.len() {
             return Err("native surface pointer list metadata disagrees with storage".to_owned());
         }
-        let index = if (requested_index as i32) < 0 { 0 } else { requested_index.min(old_count) };
+        let index = if (requested_index as i32) < 0 {
+            0
+        } else {
+            requested_index.min(old_count)
+        };
         if old_count == old_capacity {
-            let requested = surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
+            let requested =
+                surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
             if requested <= old_capacity || requested > 0x00ff_ffff {
                 return Err("native surface pointer growth exceeds packed capacity".to_owned());
             }
@@ -583,7 +741,9 @@ impl NativeSurfacePointerList {
                 return Err("native surface pointer allocator rejected growth mode".to_owned());
             }
             if self.capacity() as usize != self.slots.len() {
-                return Err("native surface pointer allocation left a short backing array".to_owned());
+                return Err(
+                    "native surface pointer allocation left a short backing array".to_owned(),
+                );
             }
         }
         let appended = reserve_surface_candidate_row_index(
@@ -603,12 +763,20 @@ impl NativeSurfacePointerList {
     }
 
     pub fn values(&self) -> &[u64] {
-        self.slots.get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize).unwrap_or(&[])
+        self.slots
+            .get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize)
+            .unwrap_or(&[])
     }
 
-    pub fn count(&self) -> u32 { self.count_word & SURFACE_ARRAY_COUNT_MASK }
-    pub fn capacity(&self) -> u32 { self.capacity_word >> 8 }
-    pub fn packed_header(&self) -> (u32, u32) { (self.count_word, self.capacity_word) }
+    pub fn count(&self) -> u32 {
+        self.count_word & SURFACE_ARRAY_COUNT_MASK
+    }
+    pub fn capacity(&self) -> u32 {
+        self.capacity_word >> 8
+    }
+    pub fn packed_header(&self) -> (u32, u32) {
+        (self.count_word, self.capacity_word)
+    }
 }
 
 /// FUN_140335360 stores 0x38-byte rows in this packed list. Fourteen raw
@@ -620,7 +788,9 @@ pub fn first_qword_of_native_surface_batch_row(row: &NativeSurfaceBatchRow) -> u
     u64::from(row[0]) | (u64::from(row[1]) << 32)
 }
 
-fn allocate_zeroed_native_surface_rows(capacity: u32) -> Result<Vec<NativeSurfaceBatchRow>, String> {
+fn allocate_zeroed_native_surface_rows(
+    capacity: u32,
+) -> Result<Vec<NativeSurfaceBatchRow>, String> {
     if capacity > 0x00ff_ffff {
         return Err("native surface row capacity exceeds 24 bits".to_owned());
     }
@@ -652,7 +822,11 @@ impl NativeSurfaceBatchRowList {
 
     /// FUN_14033dd60 dispatches packed row-list capacity changes. Its mode-3
     /// helper has no failure return and the caller publishes capacity anyway.
-    pub fn set_capacity(&mut self, requested: i32, allocation_succeeds: bool) -> Result<bool, String> {
+    pub fn set_capacity(
+        &mut self,
+        requested: i32,
+        allocation_succeeds: bool,
+    ) -> Result<bool, String> {
         if requested < 1 {
             if self.capacity_word as u8 & 0x40 == 0 {
                 self.rows = Vec::new();
@@ -666,7 +840,9 @@ impl NativeSurfaceBatchRowList {
             return Err("native surface row capacity exceeds 24 bits".to_owned());
         }
         let old_capacity = self.capacity_word >> 8;
-        if requested == old_capacity { return Ok(true); }
+        if requested == old_capacity {
+            return Ok(true);
+        }
         let allocation_mode = (self.capacity_word >> 6) & 3;
         if allocation_mode == 3 && old_capacity < requested {
             let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
@@ -683,7 +859,9 @@ impl NativeSurfaceBatchRowList {
             self.capacity_word = requested.wrapping_shl(8) | u32::from(flags);
             return Ok(true);
         }
-        if allocation_mode != 0 { return Ok(false); }
+        if allocation_mode != 0 {
+            return Ok(false);
+        }
         let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
         if !allocation_succeeds {
             self.rows = Vec::new();
@@ -710,14 +888,19 @@ impl NativeSurfaceBatchRowList {
     }
 
     /// Reserve and zero one row, growing with the native packed capacity rule.
-    pub fn push_zeroed_row(&mut self, grow_one_at_a_time: bool, allocation_succeeds: bool) -> Result<u32, String> {
+    pub fn push_zeroed_row(
+        &mut self,
+        grow_one_at_a_time: bool,
+        allocation_succeeds: bool,
+    ) -> Result<u32, String> {
         let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
         let capacity = self.capacity_word >> 8;
         if count > capacity || capacity as usize != self.rows.len() {
             return Err("native surface row-list metadata disagrees with storage".to_owned());
         }
         if count == capacity {
-            let requested = surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
+            let requested =
+                surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
             if requested <= capacity || requested > 0x00ff_ffff {
                 return Err("native surface row growth exceeds packed capacity".to_owned());
             }
@@ -735,21 +918,33 @@ impl NativeSurfaceBatchRowList {
     }
 
     pub fn rows(&self) -> &[NativeSurfaceBatchRow] {
-        self.rows.get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize).unwrap_or(&[])
+        self.rows
+            .get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize)
+            .unwrap_or(&[])
     }
 
     pub fn row_mut(&mut self, index: u32) -> Option<&mut NativeSurfaceBatchRow> {
-        if index >= (self.count_word & SURFACE_ARRAY_COUNT_MASK) { return None; }
+        if index >= (self.count_word & SURFACE_ARRAY_COUNT_MASK) {
+            return None;
+        }
         self.rows.get_mut(index as usize)
     }
 
     pub fn first_qword(&self, index: u32) -> Option<u64> {
-        self.rows().get(index as usize).map(first_qword_of_native_surface_batch_row)
+        self.rows()
+            .get(index as usize)
+            .map(first_qword_of_native_surface_batch_row)
     }
 
-    pub fn count(&self) -> u32 { self.count_word & SURFACE_ARRAY_COUNT_MASK }
-    pub fn capacity(&self) -> u32 { self.capacity_word >> 8 }
-    pub fn packed_header(&self) -> (u32, u32) { (self.count_word, self.capacity_word) }
+    pub fn count(&self) -> u32 {
+        self.count_word & SURFACE_ARRAY_COUNT_MASK
+    }
+    pub fn capacity(&self) -> u32 {
+        self.capacity_word >> 8
+    }
+    pub fn packed_header(&self) -> (u32, u32) {
+        (self.count_word, self.capacity_word)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -775,14 +970,19 @@ pub fn insert_native_sorted_surface_pointer<'a>(
         .map_err(|_| "native surface sorted list exceeds signed count".to_owned())?;
     let existing = surface_key_find_rightmost_equal(Some(sorted_keys), count, &target)?;
     if existing >= 0 {
-        return Ok(NativeSurfaceSortedInsert::Existing { index: existing as u32 });
+        return Ok(NativeSurfaceSortedInsert::Existing {
+            index: existing as u32,
+        });
     }
     let index = surface_key_lower_bound(Some(sorted_keys), count, &target)? as usize;
-    sorted_keys.try_reserve(1)
+    sorted_keys
+        .try_reserve(1)
         .map_err(|error| format!("native surface key allocation failed: {error}"))?;
     pointers.insert(index as u32, pointer, grow_one_at_a_time)?;
     sorted_keys.insert(index, target);
-    Ok(NativeSurfaceSortedInsert::Inserted { index: index as u32 })
+    Ok(NativeSurfaceSortedInsert::Inserted {
+        index: index as u32,
+    })
 }
 
 /// HashIndex storage used by FUN_14000ad90. The native arrays use 0xffffffff
@@ -801,7 +1001,11 @@ pub struct NativeSurfaceHashIndex {
 
 impl NativeSurfaceHashIndex {
     /// Construct the native reset state: both pointers refer to the sentinel.
-    pub fn lazy(bucket_count: u32, chain_capacity: u32, growth_granularity: u32) -> Result<Self, String> {
+    pub fn lazy(
+        bucket_count: u32,
+        chain_capacity: u32,
+        growth_granularity: u32,
+    ) -> Result<Self, String> {
         if bucket_count == 0 || bucket_count > i32::MAX as u32 || chain_capacity > i32::MAX as u32 {
             return Err("native surface HashIndex capacities are out of range".to_owned());
         }
@@ -816,7 +1020,11 @@ impl NativeSurfaceHashIndex {
         })
     }
 
-    pub fn with_capacity(bucket_count: u32, chain_capacity: u32, growth_granularity: u32) -> Result<Self, String> {
+    pub fn with_capacity(
+        bucket_count: u32,
+        chain_capacity: u32,
+        growth_granularity: u32,
+    ) -> Result<Self, String> {
         let mut result = Self::lazy(bucket_count, chain_capacity, growth_granularity)?;
         result.reset(bucket_count, chain_capacity)?;
         Ok(result)
@@ -837,7 +1045,8 @@ impl NativeSurfaceHashIndex {
             return Err("native surface HashIndex capacities are out of range".to_owned());
         }
         let mut buckets = Vec::new();
-        buckets.try_reserve_exact(bucket_count as usize)
+        buckets
+            .try_reserve_exact(bucket_count as usize)
             .map_err(|error| format!("native surface hash allocation failed: {error}"))?;
         buckets.resize(bucket_count as usize, u32::MAX);
         let mut next = Vec::new();
@@ -857,13 +1066,19 @@ impl NativeSurfaceHashIndex {
     /// FUN_1400fe970: grow only the next-index array, preserving old links and
     /// filling new slots with the native -1 sentinel.
     fn grow_chain(&mut self, requested: u32) -> Result<(), String> {
-        if requested <= self.chain_capacity { return Ok(()); }
+        if requested <= self.chain_capacity {
+            return Ok(());
+        }
         let capacity = if self.growth_granularity == 0 {
-            if requested < 0x4000_0001 { requested.checked_next_power_of_two().unwrap_or(0x7fff_ffff) }
-            else { 0x7fff_ffff }
+            if requested < 0x4000_0001 {
+                requested.checked_next_power_of_two().unwrap_or(0x7fff_ffff)
+            } else {
+                0x7fff_ffff
+            }
         } else {
             let granularity = self.growth_granularity;
-            let rounded = requested.checked_sub(1)
+            let rounded = requested
+                .checked_sub(1)
                 .and_then(|value| value.checked_add(granularity))
                 .ok_or_else(|| "native surface chain capacity overflow".to_owned())?;
             rounded - rounded % granularity
@@ -871,7 +1086,8 @@ impl NativeSurfaceHashIndex {
         if capacity > i32::MAX as u32 {
             return Err("native surface chain capacity exceeds signed native range".to_owned());
         }
-        self.next_indices.try_reserve_exact((capacity - self.chain_capacity) as usize)
+        self.next_indices
+            .try_reserve_exact((capacity - self.chain_capacity) as usize)
             .map_err(|error| format!("native surface chain growth failed: {error}"))?;
         self.next_indices.resize(capacity as usize, u32::MAX);
         self.chain_capacity = capacity;
@@ -884,17 +1100,27 @@ impl NativeSurfaceHashIndex {
         let index = u32::try_from(index)
             .map_err(|_| "native surface HashIndex insertion index is negative".to_owned())?;
         if self.bucket_heads.is_empty() {
-            let requested = self.chain_capacity.max(index.checked_add(1)
-                .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?);
+            let requested = self.chain_capacity.max(
+                index
+                    .checked_add(1)
+                    .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?,
+            );
             self.reset(self.bucket_count, requested)?;
         } else if self.chain_capacity <= index {
-            self.grow_chain(index.checked_add(1)
-                .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?)?;
+            self.grow_chain(
+                index
+                    .checked_add(1)
+                    .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?,
+            )?;
         }
         let bucket = (key & self.bucket_mask) as usize;
-        let head = self.bucket_heads.get_mut(bucket)
+        let head = self
+            .bucket_heads
+            .get_mut(bucket)
             .ok_or_else(|| "native surface HashIndex bucket exceeds storage".to_owned())?;
-        let next = self.next_indices.get_mut(index as usize)
+        let next = self
+            .next_indices
+            .get_mut(index as usize)
             .ok_or_else(|| "native surface HashIndex index exceeds storage".to_owned())?;
         *next = *head;
         *head = index;
@@ -902,9 +1128,13 @@ impl NativeSurfaceHashIndex {
     }
 
     pub fn bucket_chain(&self, key: u32) -> Result<Vec<u32>, String> {
-        if self.bucket_heads.is_empty() { return Ok(Vec::new()); }
+        if self.bucket_heads.is_empty() {
+            return Ok(Vec::new());
+        }
         let bucket = (key & self.bucket_mask) as usize;
-        let mut current = *self.bucket_heads.get(bucket)
+        let mut current = *self
+            .bucket_heads
+            .get(bucket)
             .ok_or_else(|| "native surface HashIndex bucket exceeds storage".to_owned())?;
         let mut result = Vec::new();
         while current != u32::MAX {
@@ -912,17 +1142,29 @@ impl NativeSurfaceHashIndex {
                 return Err("native surface HashIndex chain is cyclic".to_owned());
             }
             result.push(current);
-            current = *self.next_indices.get(current as usize)
+            current = *self
+                .next_indices
+                .get(current as usize)
                 .ok_or_else(|| "native surface HashIndex link exceeds storage".to_owned())?;
         }
         Ok(result)
     }
 
-    pub fn bucket_heads(&self) -> &[u32] { &self.bucket_heads }
-    pub fn next_indices(&self) -> &[u32] { &self.next_indices }
-    pub fn bucket_mask(&self) -> u32 { self.bucket_mask }
-    pub fn chain_capacity(&self) -> u32 { self.chain_capacity }
-    pub fn cached_state_word(&self) -> u32 { self.cached_state_word }
+    pub fn bucket_heads(&self) -> &[u32] {
+        &self.bucket_heads
+    }
+    pub fn next_indices(&self) -> &[u32] {
+        &self.next_indices
+    }
+    pub fn bucket_mask(&self) -> u32 {
+        self.bucket_mask
+    }
+    pub fn chain_capacity(&self) -> u32 {
+        self.chain_capacity
+    }
+    pub fn cached_state_word(&self) -> u32 {
+        self.cached_state_word
+    }
 }
 
 /// FUN_140359bd0 input scalars after reading the original pointer graph. Field
@@ -947,7 +1189,9 @@ pub struct NativeSurfaceCandidateSortFields {
 /// FUN_140359bd0: create the seven-qword auxiliary sort payload copied into
 /// candidate-row +0x40..+0x77. Padding bytes are zeroed; native stack padding
 /// is unspecified and is not claimed to match.
-pub fn native_surface_candidate_sort_payload(fields: &NativeSurfaceCandidateSortFields) -> [u8; 0x38] {
+pub fn native_surface_candidate_sort_payload(
+    fields: &NativeSurfaceCandidateSortFields,
+) -> [u8; 0x38] {
     let mut bytes = [0; 0x38];
     bytes[0x00..0x08].copy_from_slice(&fields.candidate_material_pointer.to_le_bytes());
     bytes[0x08..0x10].copy_from_slice(&fields.owner_sort_value_1bb0.to_le_bytes());
@@ -1020,9 +1264,21 @@ pub fn native_transformed_aabb_clip_cull(
 ) -> NativeAabbClipCullResult {
     let mut corners = [[0.0_f32; 4]; 8];
     for (index, corner) in corners.iter_mut().enumerate() {
-        let x = if index & 1 == 0 { minimum[0] } else { maximum[0] };
-        let y = if index & 2 == 0 { minimum[1] } else { maximum[1] };
-        let z = if index & 4 == 0 { minimum[2] } else { maximum[2] };
+        let x = if index & 1 == 0 {
+            minimum[0]
+        } else {
+            maximum[0]
+        };
+        let y = if index & 2 == 0 {
+            minimum[1]
+        } else {
+            maximum[1]
+        };
+        let z = if index & 4 == 0 {
+            minimum[2]
+        } else {
+            maximum[2]
+        };
         let xy0 = matrix[0] * x + matrix[3] + matrix[1] * y;
         let xy1 = matrix[4] * x + matrix[7] + matrix[5] * y;
         let xy2 = matrix[8] * x + matrix[11] + matrix[9] * y;
@@ -1044,7 +1300,9 @@ pub fn native_transformed_aabb_clip_cull(
     ];
     let mut inside_mask = 0_u8;
     for (bit, inside) in plane_inside.into_iter().enumerate() {
-        if inside { inside_mask |= 1 << bit; }
+        if inside {
+            inside_mask |= 1 << bit;
+        }
     }
     let outside_plane_mask = inside_mask ^ 0x3f;
     NativeAabbClipCullResult {
@@ -1063,10 +1321,15 @@ pub fn native_surface_candidate_iteration_indices(
     pass_filter: i32,
 ) -> Result<(i8, Vec<u32>), String> {
     let count = packed_count & 0x00ff_ffff;
-    let mode = if count < 2 || context_flags_18bc & 0x10 != 0 { 0 } else { 1 };
+    let mode = if count < 2 || context_flags_18bc & 0x10 != 0 {
+        0
+    } else {
+        1
+    };
     let mut indices = Vec::new();
     if pass_filter < 0 {
-        indices.try_reserve_exact(count as usize)
+        indices
+            .try_reserve_exact(count as usize)
             .map_err(|error| format!("native surface iteration allocation failed: {error}"))?;
         indices.extend(0..count);
     } else if (pass_filter as u32) < count {
@@ -1087,7 +1350,11 @@ pub fn visit_native_surface_container_rows(
     mut visit: impl FnMut(i8, u32, &[u8; 0x80]) -> Result<(), String>,
 ) -> Result<usize, String> {
     let count = packed_count & 0x00ff_ffff;
-    let mode = if count < 2 || context_flags_18bc & 0x10 != 0 { 0 } else { 1 };
+    let mode = if count < 2 || context_flags_18bc & 0x10 != 0 {
+        0
+    } else {
+        1
+    };
     let required = (count as usize)
         .checked_mul(0x80)
         .ok_or_else(|| "native surface container byte length overflow".to_owned())?;
@@ -1133,7 +1400,9 @@ pub fn native_surface_candidate_category_key(
 ) -> Option<u32> {
     if !gates.material_pointer_present
         || !gates.surface_pointer_30_present
-        || gates.optional_pointer_78_value.is_some_and(|value| value == 0)
+        || gates
+            .optional_pointer_78_value
+            .is_some_and(|value| value == 0)
         || gates.material_flags_4b & 0x0c == 4
         || (gates.mode != 0
             && !gates.surface_pointer_40_present
@@ -1147,7 +1416,11 @@ pub fn native_surface_candidate_category_key(
     if category == 0 || !gates.candidate_parameter_lookup_present {
         return None;
     }
-    let enabled = feature_bits.wrapping_mul(2).wrapping_shr(u32::from(category)) & 1 != 0;
+    let enabled = feature_bits
+        .wrapping_mul(2)
+        .wrapping_shr(u32::from(category))
+        & 1
+        != 0;
     enabled.then_some(u32::from(category) + 8)
 }
 
@@ -1275,7 +1548,9 @@ pub fn build_prepass_hash_chain_pointer_list(
         if visited >= nodes.len() {
             return Err("surface hash chain is cyclic".to_owned());
         }
-        let node = nodes.get(index).ok_or_else(|| "surface hash node index is out of bounds".to_owned())?;
+        let node = nodes
+            .get(index)
+            .ok_or_else(|| "surface hash node index is out of bounds".to_owned())?;
         let insertion_index = surface_compare_1_index_result() as i32;
         insert_preallocated_surface_pointer(
             slots,
@@ -1305,8 +1580,14 @@ pub fn build_prepass_hash_chain_pointer_list_growing(
         if visited >= nodes.len() {
             return Err("surface hash chain is cyclic".to_owned());
         }
-        let node = nodes.get(index).ok_or_else(|| "surface hash node index is out of bounds".to_owned())?;
-        output.insert(surface_compare_1_index_result(), node.surface_pointer, grow_one_at_a_time)?;
+        let node = nodes
+            .get(index)
+            .ok_or_else(|| "surface hash node index is out of bounds".to_owned())?;
+        output.insert(
+            surface_compare_1_index_result(),
+            node.surface_pointer,
+            grow_one_at_a_time,
+        )?;
         current = node.next;
         visited += 1;
     }
@@ -1327,10 +1608,13 @@ pub fn native_prepass_surface_pointers_for_bucket(
         return Ok(Vec::new());
     }
     let mut nodes = Vec::new();
-    nodes.try_reserve_exact(chain.len())
+    nodes
+        .try_reserve_exact(chain.len())
         .map_err(|error| format!("native prepass chain allocation failed: {error}"))?;
     for (position, row_index) in chain.iter().copied().enumerate() {
-        let row = rows.rows().get(row_index as usize)
+        let row = rows
+            .rows()
+            .get(row_index as usize)
             .ok_or_else(|| "native prepass hash index exceeds candidate rows".to_owned())?;
         let surface_pointer = u64::from_le_bytes(row.bytes[0x10..0x18].try_into().unwrap());
         nodes.push(SurfaceHashChainNode {
@@ -1352,9 +1636,13 @@ fn surface_key_compare_7(
     target: &SurfaceSortKeyView<'_>,
 ) -> Result<u32, String> {
     let primary = surface_float_order(candidate.primary, target.primary);
-    if primary != 0 { return Ok(primary as u32); }
+    if primary != 0 {
+        return Ok(primary as u32);
+    }
     let secondary = surface_float_order(candidate.secondary, target.secondary);
-    if secondary != 0 { return Ok(secondary as u32); }
+    if secondary != 0 {
+        return Ok(secondary as u32);
+    }
     surface_key_compare(candidate, target)
 }
 
@@ -1366,7 +1654,9 @@ pub fn surface_key_compare_7_insertion_index(
     count: i32,
     target: &SurfaceSortKeyView<'_>,
 ) -> Result<u32, String> {
-    if count < 1 { return Ok(0); }
+    if count < 1 {
+        return Ok(0);
+    }
     if count as usize > entries.len() {
         return Err("surface sort count exceeds its supplied entries".to_owned());
     }
@@ -1377,9 +1667,13 @@ pub fn surface_key_compare_7_insertion_index(
         let index = (low + half) as usize;
         let order = surface_key_compare_7(&entries[index], target)? as i32;
         let less = order < 0;
-        if less { low += half; }
+        if less {
+            low += half;
+        }
         remaining -= half;
-        if half == 0 { return Ok((low + i32::from(less)) as u32); }
+        if half == 0 {
+            return Ok((low + i32::from(less)) as u32);
+        }
     }
 }
 
@@ -1422,8 +1716,14 @@ pub fn static_surface_program_selector(
         return Ok(if flags4b & 0x80 != 0 { 0x37 } else { 0x23 });
     }
     for (index, program) in [
-        (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34),
-        (4, 0x2d), (6, 0x37), (7, 0x35), (8, 0x38),
+        (1, 0x26),
+        (2, 0x32),
+        (3, 0x33),
+        (5, 0x34),
+        (4, 0x2d),
+        (6, 0x37),
+        (7, 0x35),
+        (8, 0x38),
     ] {
         if thresholds[index] > value {
             return Ok(program);
@@ -1451,14 +1751,24 @@ pub fn parameterized_surface_program_selector(
         return Ok(0x2a);
     }
     if flags48 & 0x10 != 0 {
-        return Ok(if matches!((flags4a >> 2) & 3, 0 | 3) { 0x23 } else { 0x37 });
+        return Ok(if matches!((flags4a >> 2) & 3, 0 | 3) {
+            0x23
+        } else {
+            0x37
+        });
     }
     if value < thresholds[0] {
         return Ok(if state[0x4b] & 0x80 != 0 { 0x37 } else { 0x23 });
     }
     for (index, program) in [
-        (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34),
-        (4, 0x2d), (6, 0x37), (7, 0x35), (8, 0x38),
+        (1, 0x26),
+        (2, 0x32),
+        (3, 0x33),
+        (5, 0x34),
+        (4, 0x2d),
+        (6, 0x37),
+        (7, 0x35),
+        (8, 0x38),
     ] {
         if value < thresholds[index] {
             return Ok(program);
@@ -1473,7 +1783,8 @@ pub fn native_surface_parameter_float_lookup(
     parameter_object: &[u8],
     parameter_id: u64,
 ) -> Result<(u64, u64, u32), &'static str> {
-    let owner = parameter_object.get(0x10..0x18)
+    let owner = parameter_object
+        .get(0x10..0x18)
         .ok_or("native parameter object is shorter than its owner pointer at +0x10")?;
     let property = u64::from_le_bytes(owner.try_into().unwrap()).wrapping_add(0x2d8);
     Ok((property, parameter_id, 0))
@@ -1488,7 +1799,8 @@ pub fn reset_native_depth_draw_cache_if_bound(cache: &mut [u64; 4]) {
 }
 
 fn native_indirect_pointer_plus(base: &[u8], addend: u64) -> Result<u64, &'static str> {
-    let pointer = base.get(0x10..0x18)
+    let pointer = base
+        .get(0x10..0x18)
         .ok_or("native object is shorter than its pointer at +0x10")?;
     let pointer = u64::from_le_bytes(pointer.try_into().unwrap());
     Ok(pointer.wrapping_add(addend))
@@ -1524,7 +1836,8 @@ pub fn dispatch_native_depthpass_worker(
     worker_1: impl FnOnce() -> u64,
     worker_other: impl FnOnce(&[u8]) -> u64,
 ) -> Result<u64, String> {
-    let index = context.get(0xf8..0xfc)
+    let index = context
+        .get(0xf8..0xfc)
         .ok_or_else(|| "native depth-pass context is shorter than its worker index".to_owned())?;
     let worker_index = i32::from_le_bytes(index.try_into().unwrap());
     Ok(match worker_index {
@@ -1542,12 +1855,14 @@ pub fn native_depthpass_index0_early_exit(
     renderer_state: &mut [u8],
     state_pointer: u64,
 ) -> Result<Option<u64>, &'static str> {
-    let flags = *view.get(0x3a34)
+    let flags = *view
+        .get(0x3a34)
         .ok_or("native view is shorter than its +0x3a34 flags byte")?;
     if flags & 0x10 == 0 {
         return Ok(None);
     }
-    let completed = renderer_state.get_mut(0x12ad4)
+    let completed = renderer_state
+        .get_mut(0x12ad4)
         .ok_or("native renderer state is shorter than its +0x12ad4 completion byte")?;
     *completed = 1;
     Ok(Some(state_pointer & !0xff))
@@ -1577,15 +1892,18 @@ pub fn write_native_depthpass_parameter_slots(
     let mut destinations = [0usize; 4];
     for (slot, destination) in destinations.iter_mut().enumerate() {
         let field = FIRST_INDEX + slot * 4;
-        let bytes = context.get(field..field + 4)
+        let bytes = context
+            .get(field..field + 4)
             .ok_or("native depth-pass context lacks parameter slot indices")?;
         let index = i32::from_le_bytes(bytes.try_into().unwrap());
-        let start = i64::from(index).checked_mul(16)
+        let start = i64::from(index)
+            .checked_mul(16)
             .and_then(|offset| offset.checked_add(16))
             .ok_or("native depth-pass parameter slot offset overflow")?;
         let start = usize::try_from(start)
             .map_err(|_| "native depth-pass parameter slot index is negative")?;
-        let end = start.checked_add(16)
+        let end = start
+            .checked_add(16)
             .ok_or("native depth-pass parameter slot range overflow")?;
         if end > context.len() {
             return Err("native depth-pass parameter slot exceeds context");
@@ -1626,7 +1944,8 @@ pub fn build_zprepass_list(
         panic!("[sorted] zprepass renderlist is full");
     }
     if requested > slots.len() {
-        slots.try_reserve_exact(requested - slots.len())
+        slots
+            .try_reserve_exact(requested - slots.len())
             .unwrap_or_else(|_| panic!("[sorted] zprepass renderlist is full"));
         slots.resize(requested, None);
     }
@@ -1643,9 +1962,8 @@ pub fn build_zprepass_list(
 #[cfg(test)]
 mod zprepass_list_tests {
     use super::{
-        build_zprepass_list, copy_native_64_to_four_destinations,
-        dispatch_native_depthpass_worker, native_depthpass_index0_early_exit,
-        write_native_depthpass_parameter_slots,
+        build_zprepass_list, copy_native_64_to_four_destinations, dispatch_native_depthpass_worker,
+        native_depthpass_index0_early_exit, write_native_depthpass_parameter_slots,
     };
 
     #[test]
@@ -1653,9 +1971,8 @@ mod zprepass_list_tests {
         let mut view = vec![0; 0x3a35];
         view[0x3a34] = 0x10;
         let mut state = vec![0; 0x12ad5];
-        let result = native_depthpass_index0_early_exit(
-            &view, &mut state, 0x1234_5678_9abc_def7,
-        ).unwrap();
+        let result =
+            native_depthpass_index0_early_exit(&view, &mut state, 0x1234_5678_9abc_def7).unwrap();
         assert_eq!(result, Some(0x1234_5678_9abc_de00));
         assert_eq!(state[0x12ad4], 1);
     }
@@ -1664,7 +1981,10 @@ mod zprepass_list_tests {
     fn native_depthpass_index0_without_flag_continues_without_writing_state() {
         let view = vec![0; 0x3a35];
         let mut state = vec![0; 0x12ad5];
-        assert_eq!(native_depthpass_index0_early_exit(&view, &mut state, 0xff), Ok(None));
+        assert_eq!(
+            native_depthpass_index0_early_exit(&view, &mut state, 0xff),
+            Ok(None)
+        );
         assert_eq!(state[0x12ad4], 0);
         assert!(native_depthpass_index0_early_exit(&[], &mut state, 0).is_err());
         let mut short_state = vec![0; 0x12ad4];
@@ -1690,7 +2010,10 @@ mod zprepass_list_tests {
         write_native_depthpass_parameter_slots(&mut context, source).unwrap();
         for index in 0..4 {
             let start = (index + 1) * 16;
-            assert_eq!(&context[start..start + 16], &source[index * 16..index * 16 + 16]);
+            assert_eq!(
+                &context[start..start + 16],
+                &source[index * 16..index * 16 + 16]
+            );
         }
 
         let mut aliased = vec![0; 0x123f8];
@@ -1709,13 +2032,43 @@ mod zprepass_list_tests {
             bytes[0xf8..0xfc].copy_from_slice(&index.to_le_bytes());
             bytes
         };
-        assert_eq!(dispatch_native_depthpass_worker(&make_context(0), || 10, || 11, |_| panic!("wrong worker")), Ok(10));
-        assert_eq!(dispatch_native_depthpass_worker(&make_context(1), || 10, || 11, |_| panic!("wrong worker")), Ok(11));
+        assert_eq!(
+            dispatch_native_depthpass_worker(
+                &make_context(0),
+                || 10,
+                || 11,
+                |_| panic!("wrong worker")
+            ),
+            Ok(10)
+        );
+        assert_eq!(
+            dispatch_native_depthpass_worker(
+                &make_context(1),
+                || 10,
+                || 11,
+                |_| panic!("wrong worker")
+            ),
+            Ok(11)
+        );
         let context = make_context(2);
         let mut passed_same_context = false;
-        assert_eq!(dispatch_native_depthpass_worker(&context, || 10, || 11, |other| { passed_same_context = std::ptr::eq(other, context.as_slice()); 12 }), Ok(12));
+        assert_eq!(
+            dispatch_native_depthpass_worker(
+                &context,
+                || 10,
+                || 11,
+                |other| {
+                    passed_same_context = std::ptr::eq(other, context.as_slice());
+                    12
+                }
+            ),
+            Ok(12)
+        );
         assert!(passed_same_context);
-        assert_eq!(dispatch_native_depthpass_worker(&make_context(-1), || 10, || 11, |_| 13), Ok(13));
+        assert_eq!(
+            dispatch_native_depthpass_worker(&make_context(-1), || 10, || 11, |_| 13),
+            Ok(13)
+        );
         assert!(dispatch_native_depthpass_worker(&[0; 0xfb], || 10, || 11, |_| 13).is_err());
     }
 
@@ -1725,14 +2078,29 @@ mod zprepass_list_tests {
         let data = std::fs::read_to_string("analysis/native_zprepass_list_cases.txt").unwrap();
         let mut cases = 0;
         for line in data.lines() {
-            let row: Vec<u32> = line.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            let row: Vec<u32> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
             assert_eq!(row.len(), 116);
             let mut count = row[0] as usize;
             let live: Vec<bool> = row[3..35].iter().map(|&v| v != 0).collect();
             let mut slots: Vec<Option<u32>> = row[51..83].iter().copied().map(Some).collect();
-            build_zprepass_list(&mut slots, &mut count, &live, &row[35..51], 15, row[2], row[1] != 0);
+            build_zprepass_list(
+                &mut slots,
+                &mut count,
+                &live,
+                &row[35..51],
+                15,
+                row[2],
+                row[1] != 0,
+            );
             assert_eq!(count, row[83] as usize, "case {cases}");
-            assert_eq!(slots, row[84..116].iter().copied().map(Some).collect::<Vec<_>>(), "case {cases}");
+            assert_eq!(
+                slots,
+                row[84..116].iter().copied().map(Some).collect::<Vec<_>>(),
+                "case {cases}"
+            );
             cases += 1;
         }
         assert_eq!(cases, 256);
@@ -1744,8 +2112,14 @@ mod zprepass_list_tests {
         super::SurfaceSortKeyView {
             signed_keys: [0; 3],
             nested: super::SurfaceNestedKeyView {
-                record_words: super::SurfaceKeyArrayView { values: &RECORDS, packed_count: 0 },
-                short_keys: super::SurfaceKeyArrayView { values: &SHORTS, packed_count: 0 },
+                record_words: super::SurfaceKeyArrayView {
+                    values: &RECORDS,
+                    packed_count: 0,
+                },
+                short_keys: super::SurfaceKeyArrayView {
+                    values: &SHORTS,
+                    packed_count: 0,
+                },
             },
             unsigned_key: 0,
             primary,
@@ -1761,8 +2135,14 @@ mod zprepass_list_tests {
         record_count: u32,
     ) -> super::SurfaceNestedKeyView<'a> {
         super::SurfaceNestedKeyView {
-            short_keys: super::SurfaceKeyArrayView { values: shorts, packed_count: short_count },
-            record_words: super::SurfaceKeyArrayView { values: records, packed_count: record_count },
+            short_keys: super::SurfaceKeyArrayView {
+                values: shorts,
+                packed_count: short_count,
+            },
+            record_words: super::SurfaceKeyArrayView {
+                values: records,
+                packed_count: record_count,
+            },
         }
     }
 
@@ -1775,11 +2155,19 @@ mod zprepass_list_tests {
         let left = nested_surface_key(&left_short, 0xaa00_0002, &left_records, 0xbb00_0001);
         let right = nested_surface_key(&right_short, 0x5500_0002, &right_records, 0x1100_0001);
         assert_eq!(super::surface_nested_key_equal(&left, &right), Ok(true));
-        let different_length = nested_surface_key(&right_short, 0x5500_0001, &right_records, 0x1100_0001);
-        assert_eq!(super::surface_nested_key_equal(&left, &different_length), Ok(false));
+        let different_length =
+            nested_surface_key(&right_short, 0x5500_0001, &right_records, 0x1100_0001);
+        assert_eq!(
+            super::surface_nested_key_equal(&left, &different_length),
+            Ok(false)
+        );
         let different_words = [[1u32, 2, 3, 5]];
-        let different_record = nested_surface_key(&right_short, 0x5500_0002, &different_words, 0x1100_0001);
-        assert_eq!(super::surface_nested_key_equal(&left, &different_record), Ok(false));
+        let different_record =
+            nested_surface_key(&right_short, 0x5500_0002, &different_words, 0x1100_0001);
+        assert_eq!(
+            super::surface_nested_key_equal(&left, &different_record),
+            Ok(false)
+        );
     }
 
     #[test]
@@ -1817,33 +2205,93 @@ mod zprepass_list_tests {
 
     #[test]
     fn native_surface_key_search_and_lower_bound_preserve_duplicate_rules() {
-        let entries = [surface_key(0.0, 0.0), surface_key(1.0, 0.0), surface_key(1.0, 2.0), surface_key(1.0, 3.0), surface_key(2.0, 0.0)];
+        let entries = [
+            surface_key(0.0, 0.0),
+            surface_key(1.0, 0.0),
+            surface_key(1.0, 2.0),
+            surface_key(1.0, 3.0),
+            surface_key(2.0, 0.0),
+        ];
         let zero = surface_key(0.0, 0.0);
         let one = surface_key(1.0, 0.0);
         let between = surface_key(1.5, 0.0);
         let two = surface_key(2.0, 0.0);
         let nan = surface_key(f32::NAN, 0.0);
 
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 5, &zero), Ok(0));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 5, &one), Ok(3));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 5, &two), Ok(4));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 1, &zero), Ok(0));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 1, &one), Ok(-1));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 5, &between), Ok(-1));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 5, &nan), Ok(-1));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), 0, &one), Ok(-1));
-        assert_eq!(super::surface_key_find_rightmost_equal(None, 5, &one), Ok(-1));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), -1, &zero), Ok(0));
-        assert_eq!(super::surface_key_find_rightmost_equal(Some(&entries), -1, &one), Ok(-1));
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 5, &zero),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 5, &one),
+            Ok(3)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 5, &two),
+            Ok(4)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 1, &zero),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 1, &one),
+            Ok(-1)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 5, &between),
+            Ok(-1)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 5, &nan),
+            Ok(-1)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), 0, &one),
+            Ok(-1)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(None, 5, &one),
+            Ok(-1)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), -1, &zero),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_find_rightmost_equal(Some(&entries), -1, &one),
+            Ok(-1)
+        );
         assert!(super::surface_key_find_rightmost_equal(Some(&entries), 6, &one).is_err());
 
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 5, &zero), Ok(0));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 5, &one), Ok(1));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 5, &between), Ok(4));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 5, &two), Ok(4));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 1, &zero), Ok(0));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 1, &one), Ok(1));
-        assert_eq!(super::surface_key_lower_bound(Some(&entries), 5, &nan), Ok(0));
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 5, &zero),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 5, &one),
+            Ok(1)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 5, &between),
+            Ok(4)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 5, &two),
+            Ok(4)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 1, &zero),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 1, &one),
+            Ok(1)
+        );
+        assert_eq!(
+            super::surface_key_lower_bound(Some(&entries), 5, &nan),
+            Ok(0)
+        );
         assert_eq!(super::surface_key_lower_bound(None, 0, &one), Ok(0));
         assert_eq!(super::surface_key_lower_bound(None, -1, &one), Ok(0));
         assert!(super::surface_key_lower_bound(None, 1, &one).is_err());
@@ -1859,13 +2307,37 @@ mod zprepass_list_tests {
         let key2 = surface_key(2.0, 0.0);
         let key_between = surface_key(1.5, 0.0);
 
-        assert_eq!(super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key0, 10, false), Ok(super::NativeSurfaceSortedInsert::Inserted { index: 0 }));
-        assert_eq!(super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 20, false), Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 }));
-        assert_eq!(super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 99, false), Ok(super::NativeSurfaceSortedInsert::Existing { index: 1 }));
-        assert_eq!(super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key_between, 15, false), Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 }));
-        assert_eq!(super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key1, 13, false), Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 }));
+        assert_eq!(
+            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key0, 10, false),
+            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 0 })
+        );
+        assert_eq!(
+            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 20, false),
+            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+        );
+        assert_eq!(
+            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 99, false),
+            Ok(super::NativeSurfaceSortedInsert::Existing { index: 1 })
+        );
+        assert_eq!(
+            super::insert_native_sorted_surface_pointer(
+                &mut keys,
+                &mut pointers,
+                key_between,
+                15,
+                false
+            ),
+            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+        );
+        assert_eq!(
+            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key1, 13, false),
+            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+        );
 
-        assert_eq!(keys.iter().map(|key| key.primary).collect::<Vec<_>>(), [0.0, 1.0, 1.5, 2.0]);
+        assert_eq!(
+            keys.iter().map(|key| key.primary).collect::<Vec<_>>(),
+            [0.0, 1.0, 1.5, 2.0]
+        );
         assert_eq!(pointers.values(), &[10, 13, 15, 20]);
         assert_eq!(pointers.count(), keys.len() as u32);
         assert!(pointers.capacity() >= pointers.count());
@@ -1874,11 +2346,18 @@ mod zprepass_list_tests {
     #[test]
     fn native_prepass_hash_chain_uses_full_pointer_growth_and_front_order() {
         let nodes = [
-            super::SurfaceHashChainNode { next: Some(1), surface_pointer: 0x11 },
-            super::SurfaceHashChainNode { next: None, surface_pointer: 0x22 },
+            super::SurfaceHashChainNode {
+                next: Some(1),
+                surface_pointer: 0x11,
+            },
+            super::SurfaceHashChainNode {
+                next: None,
+                surface_pointer: 0x22,
+            },
         ];
         let mut output = super::NativeSurfacePointerList::with_capacity(0, 0).unwrap();
-        super::build_prepass_hash_chain_pointer_list_growing(&nodes, Some(0), &mut output, true).unwrap();
+        super::build_prepass_hash_chain_pointer_list_growing(&nodes, Some(0), &mut output, true)
+            .unwrap();
         assert_eq!(output.values(), &[0x22, 0x11]);
         assert_eq!(output.count(), 2);
         assert_eq!(output.capacity(), 2);
@@ -1887,11 +2366,26 @@ mod zprepass_list_tests {
 
     #[test]
     fn native_surface_iteration_matches_fun_14033b280_count_mode_and_filter() {
-        assert_eq!(super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, -1), Ok((1, vec![0, 1, 2])));
-        assert_eq!(super::native_surface_candidate_iteration_indices(0xaa00_0003, 0x10, -1), Ok((0, vec![0, 1, 2])));
-        assert_eq!(super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 1), Ok((1, vec![1])));
-        assert_eq!(super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 3), Ok((1, vec![])));
-        assert_eq!(super::native_surface_candidate_iteration_indices(0xaa00_0001, 0, -1), Ok((0, vec![0])));
+        assert_eq!(
+            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, -1),
+            Ok((1, vec![0, 1, 2]))
+        );
+        assert_eq!(
+            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0x10, -1),
+            Ok((0, vec![0, 1, 2]))
+        );
+        assert_eq!(
+            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 1),
+            Ok((1, vec![1]))
+        );
+        assert_eq!(
+            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 3),
+            Ok((1, vec![]))
+        );
+        assert_eq!(
+            super::native_surface_candidate_iteration_indices(0xaa00_0001, 0, -1),
+            Ok((0, vec![0]))
+        );
     }
 
     #[test]
@@ -1914,7 +2408,10 @@ mod zprepass_list_tests {
                     .unwrap();
             let mut visited = Vec::new();
             let count = super::visit_native_surface_container_rows(
-                &rows, packed_count, flags, filter,
+                &rows,
+                packed_count,
+                flags,
+                filter,
                 |actual_mode, index, row| {
                     assert_eq!(actual_mode, mode);
                     assert_eq!(row[0], index as u8);
@@ -1922,7 +2419,8 @@ mod zprepass_list_tests {
                     visited.push(index);
                     Ok(())
                 },
-            ).unwrap();
+            )
+            .unwrap();
             assert_eq!(visited, expected_indices);
             assert_eq!(count, expected_indices.len());
         }
@@ -1931,18 +2429,23 @@ mod zprepass_list_tests {
     #[test]
     fn surface_container_rejects_truncation_before_visiting_and_propagates_error() {
         let mut visits = 0;
-        assert!(super::visit_native_surface_container_rows(
-            &[0; 0x7f], 1, 0, -1,
-            |_, _, _| { visits += 1; Ok(()) },
-        ).is_err());
-        assert_eq!(visits, 0);
-        let error = super::visit_native_surface_container_rows(
-            &[0; 3 * 0x80], 3, 0, -1,
-            |_, index, _| {
+        assert!(
+            super::visit_native_surface_container_rows(&[0; 0x7f], 1, 0, -1, |_, _, _| {
                 visits += 1;
-                if index == 1 { Err("callback error".to_owned()) } else { Ok(()) }
-            },
+                Ok(())
+            },)
+            .is_err()
         );
+        assert_eq!(visits, 0);
+        let error =
+            super::visit_native_surface_container_rows(&[0; 3 * 0x80], 3, 0, -1, |_, index, _| {
+                visits += 1;
+                if index == 1 {
+                    Err("callback error".to_owned())
+                } else {
+                    Ok(())
+                }
+            });
         assert_eq!(error, Err("callback error".to_owned()));
         assert_eq!(visits, 2);
     }
@@ -1950,47 +2453,88 @@ mod zprepass_list_tests {
     #[test]
     fn transformed_aabb_clip_matches_original_plane_mask_and_cull_return() {
         let identity = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 0.1], [0.5, 0.5, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0, output_byte: 0, culled: false },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0,
+                output_byte: 0,
+                culled: false
+            },
         );
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [-3.0, 0.0, 0.1], [-2.0, 1.0, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x01, output_byte: 0x01, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x01,
+                output_byte: 0x01,
+                culled: true
+            },
         );
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [2.0, 0.0, 0.1], [3.0, 1.0, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x02, output_byte: 0x02, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x02,
+                output_byte: 0x02,
+                culled: true
+            },
         );
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [0.0, -3.0, 0.1], [1.0, -2.0, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x04, output_byte: 0x04, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x04,
+                output_byte: 0x04,
+                culled: true
+            },
         );
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [0.0, 2.0, 0.1], [1.0, 3.0, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x08, output_byte: 0x08, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x08,
+                output_byte: 0x08,
+                culled: true
+            },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [-0.5, -0.5, -2.0], [0.5, 0.5, -1.0]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x10, output_byte: 0x10, culled: true },
+            super::native_transformed_aabb_clip_cull(
+                &identity,
+                [-0.5, -0.5, -2.0],
+                [0.5, 0.5, -1.0]
+            ),
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x10,
+                output_byte: 0x10,
+                culled: true
+            },
         );
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 2.0], [0.5, 0.5, 3.0]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x20, output_byte: 0x20, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x20,
+                output_byte: 0x20,
+                culled: true
+            },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [-1.0, -0.5, 0.1], [-1.0, 0.5, 0.9]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x01, output_byte: 0x01, culled: true },
+            super::native_transformed_aabb_clip_cull(
+                &identity,
+                [-1.0, -0.5, 0.1],
+                [-1.0, 0.5, 0.9]
+            ),
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x01,
+                output_byte: 0x01,
+                culled: true
+            },
         );
         let nan = f32::NAN;
         assert_eq!(
             super::native_transformed_aabb_clip_cull(&identity, [nan; 3], [nan; 3]),
-            super::NativeAabbClipCullResult { outside_plane_mask: 0x3f, output_byte: 0x3f, culled: true },
+            super::NativeAabbClipCullResult {
+                outside_plane_mask: 0x3f,
+                output_byte: 0x3f,
+                culled: true
+            },
         );
     }
 
@@ -2008,44 +2552,75 @@ mod zprepass_list_tests {
             surface_kind_pointer_present: true,
             candidate_parameter_lookup_present: true,
         };
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 1), Some(9));
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            Some(9)
+        );
         let identity = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         gates.mode = 1;
         gates.helper_140109dd0_returns_nonzero = false;
-        assert_eq!(super::native_surface_candidate_category_key_with_bounds(
-            &gates, 0x20, 1, &identity, [-0.5, -0.5, 0.1], [0.5, 0.5, 0.9],
-        ), Some(9));
-        assert_eq!(super::native_surface_candidate_category_key_with_bounds(
-            &gates, 0x20, 1, &identity, [-3.0, 0.0, 0.1], [-2.0, 1.0, 0.9],
-        ), None);
+        assert_eq!(
+            super::native_surface_candidate_category_key_with_bounds(
+                &gates,
+                0x20,
+                1,
+                &identity,
+                [-0.5, -0.5, 0.1],
+                [0.5, 0.5, 0.9],
+            ),
+            Some(9)
+        );
+        assert_eq!(
+            super::native_surface_candidate_category_key_with_bounds(
+                &gates,
+                0x20,
+                1,
+                &identity,
+                [-3.0, 0.0, 0.1],
+                [-2.0, 1.0, 0.9],
+            ),
+            None
+        );
         gates.mode = 0;
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0, u32::MAX), None);
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 0), None);
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0, u32::MAX),
+            None
+        );
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 0),
+            None
+        );
         gates.optional_pointer_78_value = Some(0);
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 1), None);
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            None
+        );
         gates.optional_pointer_78_value = None;
         gates.material_flags_4b = 4;
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 1), None);
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            None
+        );
         gates.material_flags_4b = 0;
         gates.mode = 1;
         gates.helper_140109dd0_returns_nonzero = true;
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 1), None);
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            None
+        );
         gates.surface_pointer_40_present = true;
-        assert_eq!(super::native_surface_candidate_category_key(&gates, 0x20, 1), Some(9));
+        assert_eq!(
+            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            Some(9)
+        );
     }
 
     #[test]
     fn native_prepass_candidate_gate_row_hash_bucket_and_front_insert_compose() {
         let identity = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         let gates = super::NativeSurfaceCandidateBranchGates {
             material_pointer_present: true,
@@ -2084,27 +2659,66 @@ mod zprepass_list_tests {
         };
         let mut rows = super::NativeSurfaceCandidateRows::with_capacity(0, 0).unwrap();
         let mut hash = super::NativeSurfaceHashIndex::lazy(4, 0, 0).unwrap();
-        assert_eq!(super::append_native_surface_candidate_if_eligible(
-            &input(0x0a, 0x20, 1, true), &mut rows, &mut hash, false,
-        ), Ok(Some(0)));
-        assert_eq!(super::append_native_surface_candidate_if_eligible(
-            &input(0x0b, 0x40, 2, true), &mut rows, &mut hash, false,
-        ), Ok(Some(1)));
-        assert_eq!(super::append_native_surface_candidate_if_eligible(
-            &input(0x0c, 0x20, 1, true), &mut rows, &mut hash, false,
-        ), Ok(Some(2)));
-        assert_eq!(super::append_native_surface_candidate_if_eligible(
-            &input(0x0d, 0x20, 1, false), &mut rows, &mut hash, false,
-        ), Ok(None));
-        assert_eq!(super::append_native_surface_candidate_if_eligible(
-            &input(0x0e, 0xa0, 16, true), &mut rows, &mut hash, false,
-        ), Ok(Some(3)));
+        assert_eq!(
+            super::append_native_surface_candidate_if_eligible(
+                &input(0x0a, 0x20, 1, true),
+                &mut rows,
+                &mut hash,
+                false,
+            ),
+            Ok(Some(0))
+        );
+        assert_eq!(
+            super::append_native_surface_candidate_if_eligible(
+                &input(0x0b, 0x40, 2, true),
+                &mut rows,
+                &mut hash,
+                false,
+            ),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            super::append_native_surface_candidate_if_eligible(
+                &input(0x0c, 0x20, 1, true),
+                &mut rows,
+                &mut hash,
+                false,
+            ),
+            Ok(Some(2))
+        );
+        assert_eq!(
+            super::append_native_surface_candidate_if_eligible(
+                &input(0x0d, 0x20, 1, false),
+                &mut rows,
+                &mut hash,
+                false,
+            ),
+            Ok(None)
+        );
+        assert_eq!(
+            super::append_native_surface_candidate_if_eligible(
+                &input(0x0e, 0xa0, 16, true),
+                &mut rows,
+                &mut hash,
+                false,
+            ),
+            Ok(Some(3))
+        );
         assert_eq!(rows.count(), 4);
         // Categories 9 and 13 collide in the four-bucket HashIndex. The
         // insertion callback reverses the bucket walk but does not compare keys.
-        assert_eq!(super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 9), Ok(vec![0x0a, 0x0c, 0x0e]));
-        assert_eq!(super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 10), Ok(vec![0x0b]));
-        assert_eq!(super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 11), Ok(Vec::new()));
+        assert_eq!(
+            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 9),
+            Ok(vec![0x0a, 0x0c, 0x0e])
+        );
+        assert_eq!(
+            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 10),
+            Ok(vec![0x0b])
+        );
+        assert_eq!(
+            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 11),
+            Ok(Vec::new())
+        );
     }
 
     #[test]
@@ -2112,12 +2726,18 @@ mod zprepass_list_tests {
         let mut rows = super::NativeSurfaceCandidateRows::with_capacity(1, 0).unwrap();
         let mut hash = super::NativeSurfaceHashIndex::lazy(8, 1, 0).unwrap();
         let row = super::NativeSurfaceCandidateRow::default();
-        assert_eq!(super::append_surface_candidate_to_hash(&mut rows, &mut hash, 11, row, false), Ok(0));
+        assert_eq!(
+            super::append_surface_candidate_to_hash(&mut rows, &mut hash, 11, row, false),
+            Ok(0)
+        );
         assert_eq!(hash.bucket_mask(), 7);
         assert_eq!(hash.cached_state_word(), u32::MAX);
         assert_eq!(hash.bucket_heads().len(), 8);
         assert_eq!(hash.next_indices(), &[u32::MAX]);
-        assert_eq!(super::append_surface_candidate_to_hash(&mut rows, &mut hash, 19, row, false), Ok(1));
+        assert_eq!(
+            super::append_surface_candidate_to_hash(&mut rows, &mut hash, 19, row, false),
+            Ok(1)
+        );
         assert_eq!(hash.chain_capacity(), 2);
         assert_eq!(hash.next_indices(), &[u32::MAX, 0]);
         assert_eq!(hash.bucket_chain(11), Ok(vec![1, 0]));
@@ -2126,7 +2746,10 @@ mod zprepass_list_tests {
         assert_eq!(hash.cached_state_word(), 0);
         assert!(hash.bucket_heads().is_empty());
         assert_eq!(hash.bucket_chain(11), Ok(Vec::new()));
-        assert_eq!(super::append_surface_candidate_to_hash(&mut rows, &mut hash, 11, row, false), Ok(2));
+        assert_eq!(
+            super::append_surface_candidate_to_hash(&mut rows, &mut hash, 11, row, false),
+            Ok(2)
+        );
         assert_eq!(hash.bucket_chain(11), Ok(vec![2]));
     }
 
@@ -2149,39 +2772,83 @@ mod zprepass_list_tests {
         };
         let payload = super::native_surface_candidate_sort_payload(&sort);
         assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 0x101);
-        assert_eq!(u64::from_le_bytes(payload[8..16].try_into().unwrap()), 0x202);
-        assert_eq!(u64::from_le_bytes(payload[16..24].try_into().unwrap()), 0x303);
-        assert_eq!(u64::from_le_bytes(payload[24..32].try_into().unwrap()), 0x5950);
-        assert_eq!(u64::from_le_bytes(payload[32..40].try_into().unwrap()), 0x404);
-        assert_eq!(u32::from_le_bytes(payload[40..44].try_into().unwrap()), 0x3f000000);
-        assert_eq!(u32::from_le_bytes(payload[44..48].try_into().unwrap()), u32::MAX);
+        assert_eq!(
+            u64::from_le_bytes(payload[8..16].try_into().unwrap()),
+            0x202
+        );
+        assert_eq!(
+            u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+            0x303
+        );
+        assert_eq!(
+            u64::from_le_bytes(payload[24..32].try_into().unwrap()),
+            0x5950
+        );
+        assert_eq!(
+            u64::from_le_bytes(payload[32..40].try_into().unwrap()),
+            0x404
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[40..44].try_into().unwrap()),
+            0x3f000000
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+            u32::MAX
+        );
         assert_eq!(payload[48], 1);
         assert_eq!(payload[49], 1);
         assert_eq!(payload[50..52], [0xa5, 0x5a]);
-        assert_eq!(u32::from_le_bytes(payload[52..56].try_into().unwrap()), 0x7f7fffff);
+        assert_eq!(
+            u32::from_le_bytes(payload[52..56].try_into().unwrap()),
+            0x7f7fffff
+        );
 
-        let row = super::native_surface_candidate_branch_row(&super::NativeSurfaceCandidateBranchFields {
-            owner_byte_1c31: 0x06,
-            global_byte_77b0: 0x80,
-            context_pointer: 0x505,
-            surface_container_pointer: 0x606,
-            material_pointer: 0x707,
-            selected_parameter_pointer: 0x808,
-            override_parameter_pointer: 0x909,
-            secondary_parameter_pointer: 0xa0a,
-            material_parameter_float: 0.5,
-            auxiliary_payload: payload,
-        });
+        let row = super::native_surface_candidate_branch_row(
+            &super::NativeSurfaceCandidateBranchFields {
+                owner_byte_1c31: 0x06,
+                global_byte_77b0: 0x80,
+                context_pointer: 0x505,
+                surface_container_pointer: 0x606,
+                material_pointer: 0x707,
+                selected_parameter_pointer: 0x808,
+                override_parameter_pointer: 0x909,
+                secondary_parameter_pointer: 0xa0a,
+                material_parameter_float: 0.5,
+                auxiliary_payload: payload,
+            },
+        );
         assert_eq!(row.bytes[0], 0x81);
         assert_eq!(row.bytes[1], 0xff);
-        assert_eq!(u64::from_le_bytes(row.bytes[8..16].try_into().unwrap()), 0x505);
-        assert_eq!(u64::from_le_bytes(row.bytes[16..24].try_into().unwrap()), 0x606);
-        assert_eq!(u64::from_le_bytes(row.bytes[24..32].try_into().unwrap()), 0x707);
-        assert_eq!(u64::from_le_bytes(row.bytes[32..40].try_into().unwrap()), 0x808);
-        assert_eq!(u64::from_le_bytes(row.bytes[40..48].try_into().unwrap()), 0x909);
-        assert_eq!(u64::from_le_bytes(row.bytes[48..56].try_into().unwrap()), 0xa0a);
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[8..16].try_into().unwrap()),
+            0x505
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[16..24].try_into().unwrap()),
+            0x606
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[24..32].try_into().unwrap()),
+            0x707
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[32..40].try_into().unwrap()),
+            0x808
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[40..48].try_into().unwrap()),
+            0x909
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[48..56].try_into().unwrap()),
+            0xa0a
+        );
         assert_eq!(row.bytes[0x38..0x40], [0; 8]);
-        assert_eq!(u32::from_le_bytes(row.bytes[0x78..0x7c].try_into().unwrap()), 0.5_f32.to_bits());
+        assert_eq!(
+            u32::from_le_bytes(row.bytes[0x78..0x7c].try_into().unwrap()),
+            0.5_f32.to_bits()
+        );
 
         let mut gated = sort;
         gated.surface_state_pointer_40 = 1;
@@ -2192,27 +2859,55 @@ mod zprepass_list_tests {
     fn preallocated_surface_pointer_insert_matches_native_clamp_shift_and_count() {
         let mut slots = [11, 22, 33, 0];
         let mut count = 0xa500_0003;
-        assert_eq!(super::insert_preallocated_surface_pointer(&mut slots, &mut count, 4, 1, 99), Ok(1));
+        assert_eq!(
+            super::insert_preallocated_surface_pointer(&mut slots, &mut count, 4, 1, 99),
+            Ok(1)
+        );
         assert_eq!(slots, [11, 99, 22, 33]);
         assert_eq!(count, 0xa500_0004);
-        assert_eq!(super::insert_preallocated_surface_pointer(&mut slots, &mut count, 4, -7, 88), Err("native surface pointer vector growth is required".to_owned()));
+        assert_eq!(
+            super::insert_preallocated_surface_pointer(&mut slots, &mut count, 4, -7, 88),
+            Err("native surface pointer vector growth is required".to_owned())
+        );
 
         let mut empty = [0; 2];
         let mut empty_count = 0;
-        assert_eq!(super::insert_preallocated_surface_pointer(&mut empty, &mut empty_count, 2, i32::MIN, 7), Ok(0));
+        assert_eq!(
+            super::insert_preallocated_surface_pointer(
+                &mut empty,
+                &mut empty_count,
+                2,
+                i32::MIN,
+                7
+            ),
+            Ok(0)
+        );
         assert_eq!(empty, [7, 0]);
         assert_eq!(empty_count, 1);
 
         let nodes = [
-            super::SurfaceHashChainNode { next: Some(2), surface_pointer: 10 },
-            super::SurfaceHashChainNode { next: None, surface_pointer: 30 },
-            super::SurfaceHashChainNode { next: Some(1), surface_pointer: 10 },
+            super::SurfaceHashChainNode {
+                next: Some(2),
+                surface_pointer: 10,
+            },
+            super::SurfaceHashChainNode {
+                next: None,
+                surface_pointer: 30,
+            },
+            super::SurfaceHashChainNode {
+                next: Some(1),
+                surface_pointer: 10,
+            },
         ];
         let mut prefixed = [20, 21, 22, 23, 0, 0, 0];
         let mut prefixed_count = 4;
         assert_eq!(
             super::build_prepass_hash_chain_pointer_list(
-                &nodes, Some(0), &mut prefixed, &mut prefixed_count, 7,
+                &nodes,
+                Some(0),
+                &mut prefixed,
+                &mut prefixed_count,
+                7,
             ),
             Ok(()),
         );
@@ -2221,7 +2916,10 @@ mod zprepass_list_tests {
 
         let mut full = [1, 2];
         let mut full_count = 2;
-        assert_eq!(super::insert_preallocated_surface_pointer(&mut full, &mut full_count, 2, 100, 3), Err("native surface pointer vector growth is required".to_owned()));
+        assert_eq!(
+            super::insert_preallocated_surface_pointer(&mut full, &mut full_count, 2, 100, 3),
+            Err("native surface pointer vector growth is required".to_owned())
+        );
     }
 
     #[test]
@@ -2279,7 +2977,10 @@ mod zprepass_list_tests {
         super::reallocate_native_surface_pointers(&mut slots, 2, &mut capacity_word, 4).unwrap();
         assert_eq!(slots, [11, 22, 0, 0]);
         assert_eq!(capacity_word, (4 << 8) | 0x3f);
-        assert_eq!(super::allocate_zeroed_native_surface_pointers(3).unwrap(), [0, 0, 0]);
+        assert_eq!(
+            super::allocate_zeroed_native_surface_pointers(3).unwrap(),
+            [0, 0, 0]
+        );
     }
 
     #[test]
@@ -2353,9 +3054,7 @@ mod zprepass_list_tests {
         );
         for selector in [3, 6] {
             assert_eq!(
-                super::surface_lookup_3119a0(
-                    &default_bank, &override_bank, 0x40, 4, 2, selector,
-                ),
+                super::surface_lookup_3119a0(&default_bank, &override_bank, 0x40, 4, 2, selector,),
                 Ok(0x2000 + 246),
             );
         }
@@ -2441,9 +3140,18 @@ mod zprepass_list_tests {
         let row = super::NativeSurfaceCandidateRow::default();
         assert_eq!(row.bytes[0], 0);
         assert_eq!(row.bytes[1], 0xff);
-        assert_eq!(u32::from_le_bytes(row.bytes[0x6c..0x70].try_into().unwrap()), u32::MAX);
-        assert_eq!(u64::from_le_bytes(row.bytes[0x74..0x7c].try_into().unwrap()), 0x7f7f_ffff);
-        assert_eq!(u32::from_le_bytes(row.bytes[0x94..0x98].try_into().unwrap()), 0x3f80_0000);
+        assert_eq!(
+            u32::from_le_bytes(row.bytes[0x6c..0x70].try_into().unwrap()),
+            u32::MAX
+        );
+        assert_eq!(
+            u64::from_le_bytes(row.bytes[0x74..0x7c].try_into().unwrap()),
+            0x7f7f_ffff
+        );
+        assert_eq!(
+            u32::from_le_bytes(row.bytes[0x94..0x98].try_into().unwrap()),
+            0x3f80_0000
+        );
         assert_eq!(&row.bytes[0x98..0xa4], &[0; 12]);
     }
 
@@ -2489,14 +3197,36 @@ mod zprepass_list_tests {
 
     #[test]
     fn keycompare_7_binary_search_uses_both_float_keys_and_tie_comparator() {
-        let entries = [surface_key(1.0, 0.0), surface_key(3.0, 0.0), surface_key(5.0, 0.0)];
-        assert_eq!(super::surface_key_compare_7_insertion_index(&entries, 3, &surface_key(4.0, 0.0)), Ok(2));
-        assert_eq!(super::surface_key_compare_7_insertion_index(&entries, 3, &entries[1]), Ok(1));
-        assert_eq!(super::surface_key_compare_7_insertion_index(&entries, 0, &entries[1]), Ok(0));
-        assert_eq!(super::surface_key_compare_7_insertion_index(&entries, -1, &entries[1]), Ok(0));
+        let entries = [
+            surface_key(1.0, 0.0),
+            surface_key(3.0, 0.0),
+            surface_key(5.0, 0.0),
+        ];
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&entries, 3, &surface_key(4.0, 0.0)),
+            Ok(2)
+        );
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&entries, 3, &entries[1]),
+            Ok(1)
+        );
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&entries, 0, &entries[1]),
+            Ok(0)
+        );
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&entries, -1, &entries[1]),
+            Ok(0)
+        );
         let secondary = [surface_key(3.0, 1.0), surface_key(3.0, 3.0)];
-        assert_eq!(super::surface_key_compare_7_insertion_index(&secondary, 2, &surface_key(3.0, 2.0)), Ok(1));
-        assert_eq!(super::surface_key_compare_7_insertion_index(&entries, 4, &entries[1]), Err("surface sort count exceeds its supplied entries".to_owned()));
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&secondary, 2, &surface_key(3.0, 2.0)),
+            Ok(1)
+        );
+        assert_eq!(
+            super::surface_key_compare_7_insertion_index(&entries, 4, &entries[1]),
+            Err("surface sort count exceeds its supplied entries".to_owned())
+        );
     }
 
     fn selector_state(
@@ -2545,8 +3275,15 @@ mod zprepass_list_tests {
     fn static_surface_selector_uses_native_threshold_order_and_nan_comparisons() {
         let state = selector_state(0, 0, 0, 0, 1.0, 2.0);
         let ordered = [
-            (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34), (4, 0x2d),
-            (6, 0x37), (7, 0x35), (8, 0x38), (9, 0x39),
+            (1, 0x26),
+            (2, 0x32),
+            (3, 0x33),
+            (5, 0x34),
+            (4, 0x2d),
+            (6, 0x37),
+            (7, 0x35),
+            (8, 0x38),
+            (9, 0x39),
         ];
         for (index, expected) in ordered {
             let mut bands = [0.0; 10];
@@ -2557,7 +3294,10 @@ mod zprepass_list_tests {
                 "threshold index {index}",
             );
         }
-        assert_eq!(super::static_surface_program_selector(&state, &[0.0; 10]), Ok(0x41));
+        assert_eq!(
+            super::static_surface_program_selector(&state, &[0.0; 10]),
+            Ok(0x41)
+        );
         let mut below_sum = [0.0; 10];
         below_sum[0] = 2.5;
         assert_eq!(
@@ -2579,35 +3319,51 @@ mod zprepass_list_tests {
         let bands = [0.0; 10];
         assert_eq!(
             super::parameterized_surface_program_selector(
-                &selector_state(0, 0, 0, 1, 0.0, 0.0), 5.0, &bands,
+                &selector_state(0, 0, 0, 1, 0.0, 0.0),
+                5.0,
+                &bands,
             ),
             Ok(0x25),
         );
         assert_eq!(
             super::parameterized_surface_program_selector(
-                &selector_state(0x80, 0x10, 0, 1, 0.0, 0.0), 5.0, &bands,
+                &selector_state(0x80, 0x10, 0, 1, 0.0, 0.0),
+                5.0,
+                &bands,
             ),
             Ok(0x2a),
         );
         for (subtype, expected) in [(0, 0x23), (1, 0x37), (2, 0x37), (3, 0x23)] {
             assert_eq!(
                 super::parameterized_surface_program_selector(
-                    &selector_state(0x10, subtype << 2, 0, 0, 0.0, 0.0), 5.0, &bands,
+                    &selector_state(0x10, subtype << 2, 0, 0, 0.0, 0.0),
+                    5.0,
+                    &bands,
                 ),
                 Ok(expected),
                 "material subtype {subtype}",
             );
         }
         let ordered = [
-            (0, 0x23), (1, 0x26), (2, 0x32), (3, 0x33), (5, 0x34),
-            (4, 0x2d), (6, 0x37), (7, 0x35), (8, 0x38), (9, 0x39),
+            (0, 0x23),
+            (1, 0x26),
+            (2, 0x32),
+            (3, 0x33),
+            (5, 0x34),
+            (4, 0x2d),
+            (6, 0x37),
+            (7, 0x35),
+            (8, 0x38),
+            (9, 0x39),
         ];
         for (index, expected) in ordered {
             let mut thresholds = [0.0; 10];
             thresholds[index] = 2.0;
             assert_eq!(
                 super::parameterized_surface_program_selector(
-                    &selector_state(0, 0, 0, 0, 0.0, 0.0), 1.0, &thresholds,
+                    &selector_state(0, 0, 0, 0, 0.0, 0.0),
+                    1.0,
+                    &thresholds,
                 ),
                 Ok(expected),
                 "threshold index {index}",
@@ -2615,13 +3371,17 @@ mod zprepass_list_tests {
         }
         assert_eq!(
             super::parameterized_surface_program_selector(
-                &selector_state(0, 0, 0, 0, 0.0, 0.0), f32::NAN, &[2.0; 10],
+                &selector_state(0, 0, 0, 0, 0.0, 0.0),
+                f32::NAN,
+                &[2.0; 10],
             ),
             Ok(0x41),
         );
         assert_eq!(
             super::parameterized_surface_program_selector(
-                &selector_state(0, 0x10, 0x80, 0, 0.0, 0.0), 1.0, &[2.0; 10],
+                &selector_state(0, 0x10, 0x80, 0, 0.0, 0.0),
+                1.0,
+                &[2.0; 10],
             ),
             Ok(0x37),
         );
@@ -2632,7 +3392,10 @@ mod zprepass_list_tests {
             super::native_surface_parameter_float_lookup(&parameter_object, 0xfeed),
             Ok((0x12d8, 0xfeed, 0)),
         );
-        assert!(super::native_surface_parameter_float_lookup(&parameter_object[..0x17], 0xfeed).is_err());
+        assert!(
+            super::native_surface_parameter_float_lookup(&parameter_object[..0x17], 0xfeed)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2640,8 +3403,15 @@ mod zprepass_list_tests {
         let mut slots = vec![Some(91), Some(92), Some(93), Some(94)];
         let mut count = 4;
         // 2 -> 0 -> 1 -> END. The empty record 0 leaves slot 1 intact.
-        build_zprepass_list(&mut slots, &mut count, &[false, true, true],
-            &[1, u32::MAX, 0], 3, 2, false);
+        build_zprepass_list(
+            &mut slots,
+            &mut count,
+            &[false, true, true],
+            &[1, u32::MAX, 0],
+            3,
+            2,
+            false,
+        );
         assert_eq!(count, 3);
         assert_eq!(slots, [Some(2), Some(92), Some(1), Some(94)]);
     }
@@ -2651,8 +3421,15 @@ mod zprepass_list_tests {
         let mut slots = vec![Some(17)];
         let mut count = 1;
         // Record 4 follows bucket 0, not next[4].
-        build_zprepass_list(&mut slots, &mut count, &[true; 5],
-            &[1, u32::MAX, u32::MAX, u32::MAX], 3, 4, true);
+        build_zprepass_list(
+            &mut slots,
+            &mut count,
+            &[true; 5],
+            &[1, u32::MAX, u32::MAX, u32::MAX],
+            3,
+            4,
+            true,
+        );
         assert_eq!(count, 3);
         assert_eq!(slots, [Some(17), Some(4), Some(1)]);
     }
@@ -2676,30 +3453,60 @@ pub const INITIAL_MODEL_MAX_VISIBLE_RANGE: f32 = 0.0;
 /// FUN_1401095f0: authored axes are stored by basis, not by matrix row.
 pub fn affine_rows(position: [f32; 3], basis: [[f32; 3]; 3], scale: [f32; 3]) -> [[f32; 4]; 4] {
     std::array::from_fn(|row| {
-        if row == 3 { [0.0, 0.0, 0.0, 1.0] } else {
-            [basis[0][row] * scale[0], basis[1][row] * scale[1], basis[2][row] * scale[2], position[row]]
+        if row == 3 {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            [
+                basis[0][row] * scale[0],
+                basis[1][row] * scale[1],
+                basis[2][row] * scale[2],
+                position[row],
+            ]
         }
     })
 }
 
 /// FUN_140235c80 / FUN_1400fb8c0: scaled local-box center and absolute rotated extents.
-pub fn transformed_bounds(local: [[f32; 3]; 2], position: [f32; 3], basis: [[f32; 3]; 3], scale: [f32; 3]) -> [[f32; 3]; 2] {
-    let center = std::array::from_fn::<_, 3, _>(|axis| (local[1][axis] + local[0][axis]) * scale[axis] * 0.5);
+pub fn transformed_bounds(
+    local: [[f32; 3]; 2],
+    position: [f32; 3],
+    basis: [[f32; 3]; 3],
+    scale: [f32; 3],
+) -> [[f32; 3]; 2] {
+    let center = std::array::from_fn::<_, 3, _>(|axis| {
+        (local[1][axis] + local[0][axis]) * scale[axis] * 0.5
+    });
     let extent = std::array::from_fn::<_, 3, _>(|axis| scale[axis] * local[1][axis] - center[axis]);
-    let rotated_extent = std::array::from_fn::<_, 3, _>(|axis| (extent[1] * basis[1][axis]).abs() + (extent[0] * basis[0][axis]).abs() + (extent[2] * basis[2][axis]).abs());
-    let world_center = std::array::from_fn::<_, 3, _>(|axis| center[1] * basis[1][axis] + center[0] * basis[0][axis] + center[2] * basis[2][axis] + position[axis]);
-    [std::array::from_fn(|axis| world_center[axis] - rotated_extent[axis]), std::array::from_fn(|axis| rotated_extent[axis] + world_center[axis])]
+    let rotated_extent = std::array::from_fn::<_, 3, _>(|axis| {
+        (extent[1] * basis[1][axis]).abs()
+            + (extent[0] * basis[0][axis]).abs()
+            + (extent[2] * basis[2][axis]).abs()
+    });
+    let world_center = std::array::from_fn::<_, 3, _>(|axis| {
+        center[1] * basis[1][axis]
+            + center[0] * basis[0][axis]
+            + center[2] * basis[2][axis]
+            + position[axis]
+    });
+    [
+        std::array::from_fn(|axis| world_center[axis] - rotated_extent[axis]),
+        std::array::from_fn(|axis| rotated_extent[axis] + world_center[axis]),
+    ]
 }
 
 /// FUN_140237340: optional range region; nonpositive range uses its constructor region.
 pub fn range_region(bounds: [[f32; 3]; 2], range: f32) -> [f32; 4] {
-    if !(range > 0.0) { return [0.0, 0.0, 0.0, 32768.0]; }
+    if !(range > 0.0) {
+        return [0.0, 0.0, 0.0, 32768.0];
+    }
     let center = std::array::from_fn::<_, 3, _>(|axis| (bounds[1][axis] + bounds[0][axis]) * 0.5);
     let mut extent = 0.0;
     for side in bounds {
         for axis in 0..3 {
             let value = side[axis] - center[axis];
-            if extent <= value { extent = value; }
+            if extent <= value {
+                extent = value;
+            }
         }
     }
     [center[0], center[1], center[2], extent + range]
@@ -2714,7 +3521,9 @@ pub fn static_resource_bounds(resource: Option<&[[f32; 3]; 2]>) -> &[[f32; 3]; 2
 }
 
 /// FUN_14025da70: return the owned resource's bounds without modifying them.
-pub fn resource_bounds(bounds: &[[f32; 3]; 2]) -> &[[f32; 3]; 2] { bounds }
+pub fn resource_bounds(bounds: &[[f32; 3]; 2]) -> &[[f32; 3]; 2] {
+    bounds
+}
 
 /// FUN_14031ad30's finite no-depth selection prefix. The owning model
 /// supplies prepared flags and bounds; they are not inferred from shape names.
@@ -2744,18 +3553,27 @@ pub fn model_visible(
     if !model_eligible(model.frame_flags, model.shape_flags) {
         return Ok(false);
     }
-    if viewport.contains(&0) || camera.iter().chain(model.region.iter()).any(|value| !value.is_finite()) {
+    if viewport.contains(&0)
+        || camera
+            .iter()
+            .chain(model.region.iter())
+            .any(|value| !value.is_finite())
+    {
         return Err("unsupported nonfinite model region or empty viewport".to_owned());
     }
     if !in_model_region(camera, model.region) {
         return Ok(false);
     }
     let (visible, area) = query.visibility_and_area(model.bounds)?;
-    Ok(visible && (model.frame_flags & 0x40 != 0 || !(area < 25.0 / (viewport[0] as f32 * viewport[1] as f32))))
+    Ok(visible
+        && (model.frame_flags & 0x40 != 0
+            || !(area < 25.0 / (viewport[0] as f32 * viewport[1] as f32))))
 }
 
 /// FUN_140399620: the base render-model virtual callback has no side effects.
-pub fn base_callback() -> u8 { 0 }
+pub fn base_callback() -> u8 {
+    0
+}
 
 /// FUN_140234ba0: an overlapping mask does not add its other bits.
 pub fn request_flags(flags: &mut u32, mask: u32) {
@@ -2786,8 +3604,16 @@ pub fn square_patch_bounds(
 ) -> [[f32; 3]; 2] {
     let padding = spacing * 0.25;
     [
-        [patch[0] - padding, patch[1] - padding, height_center - height_extent],
-        [(patch[2] + patch[0]) + padding, (patch[2] + patch[1]) + padding, height_extent + height_center],
+        [
+            patch[0] - padding,
+            patch[1] - padding,
+            height_center - height_extent,
+        ],
+        [
+            (patch[2] + patch[0]) + padding,
+            (patch[2] + patch[1]) + padding,
+            height_extent + height_center,
+        ],
     ]
 }
 
@@ -2798,7 +3624,12 @@ pub fn square_patch_visible(
     height_extent: f32,
     spacing: f32,
 ) -> Result<bool, String> {
-    query.visible(square_patch_bounds(patch, height_center, height_extent, spacing))
+    query.visible(square_patch_bounds(
+        patch,
+        height_center,
+        height_extent,
+        spacing,
+    ))
 }
 
 /// FUN_1402370e0's surface inputs; property handle identity is not guessed.
@@ -2820,11 +3651,17 @@ pub fn parameter_float(
     overrides: &[(u16, [u32; 4])],
 ) -> Result<f32, String> {
     if flags & 0xf != 0 && flags & 0x30 != 0x30 {
-        return Err(format!("idParmBlock::GetFloat: {name} is not a vector parm"));
+        return Err(format!(
+            "idParmBlock::GetFloat: {name} is not a vector parm"
+        ));
     }
-    let mut value = *defaults.get(id as usize).ok_or("parameter registry index out of bounds")?;
+    let mut value = *defaults
+        .get(id as usize)
+        .ok_or("parameter registry index out of bounds")?;
     for &(key, replacement) in overrides {
-        if u32::from(key) == id { value = replacement; }
+        if u32::from(key) == id {
+            value = replacement;
+        }
     }
     Ok(f32::from_bits(value[0]))
 }
@@ -2852,7 +3689,8 @@ impl ParameterBlock {
             return Err("parameter ID count does not match initialized slots".into());
         }
         if self.entries.len() > (self.value_capacity_word >> 8) as usize
-            || self.entries.len() > (self.id_capacity_word >> 8) as usize {
+            || self.entries.len() > (self.id_capacity_word >> 8) as usize
+        {
             return Err("native parameter-array growth is not implemented".into());
         }
         Ok(())
@@ -2873,8 +3711,8 @@ impl ParameterBlock {
         }
         let mut removed = [false; 512];
         for index in (0..self.entries.len()).rev() {
-            removed[index] = (index + 1..self.entries.len()).any(|later|
-                !removed[later] && self.entries[later].0 == self.entries[index].0);
+            removed[index] = (index + 1..self.entries.len())
+                .any(|later| !removed[later] && self.entries[later].0 == self.entries[index].0);
         }
         if removed[..self.entries.len()].contains(&true) {
             let mut index = 0;
@@ -2892,12 +3730,19 @@ impl ParameterBlock {
     /// whitelist removes nothing. Its whitelist count is at +800 decimal.
     pub fn filter(&mut self, whitelist: &[u32]) -> Result<(), String> {
         self.validate_preallocated()?;
-        self.entries.retain(|&(key, _)| whitelist.contains(&u32::from(key)));
+        self.entries
+            .retain(|&(key, _)| whitelist.contains(&u32::from(key)));
         self.set_compacted_counts();
         Ok(())
     }
 
-    pub fn float(&self, name: &str, id: u32, flags: u32, defaults: &[[u32; 4]]) -> Result<f32, String> {
+    pub fn float(
+        &self,
+        name: &str,
+        id: u32,
+        flags: u32,
+        defaults: &[[u32; 4]],
+    ) -> Result<f32, String> {
         self.validate_preallocated()?;
         parameter_float(name, id, flags, defaults, &self.entries)
     }
@@ -2932,7 +3777,9 @@ fn native_parameter_slot_index(id: i32, slot_count: usize) -> Result<usize, Stri
 
 /// FUN_140310720: zero the first qword and write an exact second qword.
 pub fn write_native_parameter_u64(
-    slots: &mut [[u32; 4]], id: i32, value: u64,
+    slots: &mut [[u32; 4]],
+    id: i32,
+    value: u64,
 ) -> Result<(), String> {
     let slot = native_parameter_slot_index(id, slots.len())?;
     slots[slot] = [0, 0, value as u32, (value >> 32) as u32];
@@ -2941,7 +3788,9 @@ pub fn write_native_parameter_u64(
 
 /// FUN_140310780: replicate the exact 32-bit word to all four lanes.
 pub fn write_native_parameter_repeated_u32(
-    slots: &mut [[u32; 4]], id: i32, value: u32,
+    slots: &mut [[u32; 4]],
+    id: i32,
+    value: u32,
 ) -> Result<(), String> {
     let slot = native_parameter_slot_index(id, slots.len())?;
     slots[slot] = [value; 4];
@@ -2950,7 +3799,9 @@ pub fn write_native_parameter_repeated_u32(
 
 /// FUN_140310a80: copy two raw qwords into the parameter slot at ID + 1.
 pub fn write_native_parameter_4_words(
-    slots: &mut [[u32; 4]], id: i32, value: [u32; 4],
+    slots: &mut [[u32; 4]],
+    id: i32,
+    value: [u32; 4],
 ) -> Result<(), String> {
     let slot = native_parameter_slot_index(id, slots.len())?;
     slots[slot] = value;
@@ -2959,7 +3810,9 @@ pub fn write_native_parameter_4_words(
 
 /// FUN_140310920: zero-extend the word into the first qword and clear the second.
 pub fn write_native_parameter_u32(
-    slots: &mut [[u32; 4]], id: i32, value: u32,
+    slots: &mut [[u32; 4]],
+    id: i32,
+    value: u32,
 ) -> Result<(), String> {
     let slot = native_parameter_slot_index(id, slots.len())?;
     slots[slot] = [value, 0, 0, 0];
@@ -2978,7 +3831,9 @@ pub struct NativeOptionalParameterValues {
 /// FUN_1402afbf0's conditional writes, given the original pointer-loaded values
 /// and the three runtime parameter IDs in native call order.
 pub fn write_native_optional_parameter_values(
-    slots: &mut [[u32; 4]], ids: [i32; 3], values: NativeOptionalParameterValues,
+    slots: &mut [[u32; 4]],
+    ids: [i32; 3],
+    values: NativeOptionalParameterValues,
 ) -> Result<bool, String> {
     if values.gate_at_0x38 != 0 || values.indirect_gate_at_0x78 != 0 {
         return Ok(false);
@@ -3018,7 +3873,8 @@ impl MaterialParameterBlocks {
     pub fn selected(&self, selector: i8) -> Result<&ParameterBlock, String> {
         match material_parameter_group(self.flags_49, selector) {
             MaterialParameterGroup::Base => Ok(&self.base),
-            MaterialParameterGroup::Effect(index) => usize::try_from(index).ok()
+            MaterialParameterGroup::Effect(index) => usize::try_from(index)
+                .ok()
                 .and_then(|index| self.effects.get(index))
                 .ok_or_else(|| "material effect selector outside owned block storage".into()),
         }
@@ -3041,6 +3897,135 @@ pub fn reduce_surface_flags(previous: [u8; 2], surfaces: &[SurfaceFlags]) -> [u8
         result[1] |= (surface.byte_4c >> 6) & 1;
     }
     result
+}
+
+/// Values propagated by FUN_14087e0a0 along the entity's ordered child list.
+/// These are resolved actor fields, not values inferred from material names.
+#[derive(Clone, Copy, Debug)]
+pub struct InheritedModelDepthState {
+    /// Zero dispatches vtable +0x98; nonzero dispatches +0x90. This does not
+    /// assign unverified show/hide meaning to those virtual methods.
+    pub dispatch_flags: u8,
+    pub model_mask: u8,
+    pub depth_hack: f32,
+}
+
+/// FUN_14087e040 resolves the actual parent-owner link. An absent parent or
+/// parent model uses the original 0/1/0 input, not replacement actor defaults.
+pub fn parent_model_depth_state(
+    parent: Option<(u8, Option<(u8, f32)>)>,
+) -> InheritedModelDepthState {
+    let (dispatch_flags, model_mask, depth_hack) = match parent {
+        None => (0, 1, 0.0),
+        Some((flags, None)) => ((flags >> 1) & 1, 1, 0.0),
+        Some((flags, Some((model_flags, depth)))) => {
+            ((flags >> 1) & 1, (model_flags >> 3) & 1, depth)
+        }
+    };
+    InheritedModelDepthState {
+        dispatch_flags,
+        model_mask,
+        depth_hack,
+    }
+}
+
+/// FUN_14087b760 writes only on float inequality, then requests the owner's
+/// hierarchy refresh. +0/-0 compare equal; an unchanged NaN still refreshes.
+pub fn set_local_model_depth_hack(local: &mut f32, value: f32) -> bool {
+    if value != *local {
+        *local = value;
+        true
+    } else {
+        false
+    }
+}
+
+/// FUN_14087e0a0's scalar owner resolution. A nonzero local value replaces
+/// its inherited value (including negative/NaN); zero and signed zero inherit.
+/// The model owner stores the result at +0x18b8 and replaces only bit 3 at
+/// +0x18bc. The caller performs the ordered +0x90/+0x98 virtual callback and
+/// walks its actual child list; neither lifecycle nor graph links are guessed.
+pub fn resolve_inherited_model_depth_state(
+    inherited: InheritedModelDepthState,
+    local_depth_hack: f32,
+    actor_flags_d0: u8,
+    actor_mask_100: u8,
+) -> InheritedModelDepthState {
+    let depth_hack = if local_depth_hack != 0.0 {
+        local_depth_hack
+    } else {
+        inherited.depth_hack
+    };
+    let mut model_mask = actor_mask_100 & 1;
+    if depth_hack != 0.0 {
+        model_mask &= inherited.model_mask;
+    }
+    InheritedModelDepthState {
+        dispatch_flags: inherited.dispatch_flags | (actor_flags_d0 & 1),
+        model_mask,
+        depth_hack,
+    }
+}
+
+/// FUN_14087e0a0's model mutation/parameter action. Its parameter predicate
+/// is also used by FUN_140227c70: remove, then override only positive
+/// non-unit depth hacks. 1.0 is the native default (DAT_141f697b0).
+/// Parameter-array allocation and virtual lifecycle remain the actual owner's
+/// responsibility; an action is not permission to fabricate a parameter ID.
+pub fn publish_model_depth_state(
+    model_flags_18bc: &mut u8,
+    model_depth_hack: &mut f32,
+    resolved: InheritedModelDepthState,
+) -> Option<f32> {
+    *model_flags_18bc = (*model_flags_18bc & 0xf7) | (resolved.model_mask << 3);
+    *model_depth_hack = resolved.depth_hack;
+    (resolved.depth_hack > 0.0 && resolved.depth_hack != 1.0).then_some(resolved.depth_hack)
+}
+
+/// FUN_1400596a0: copy the selected 0x50-byte clock record's +0x18 value.
+/// This accessor establishes neither the time unit nor the clock's producer.
+/// An invalid owned record index is unavailable rather than a native out-of-bounds read.
+pub fn game_clock_group_time(records: &[[u8; 0x50]], group: usize) -> Option<f64> {
+    records
+        .get(group)
+        .map(|record| f64::from_le_bytes(record[0x18..0x20].try_into().unwrap()))
+}
+
+/// FUN_140875cf0: reset the entity's group to zero, including model-less entities.
+/// An attached model receives the double-to-float offset and renderer group 3:
+/// DAT_1422952d8 contains the u32 mapping [3, 4, 2, 0], indexed with RAX*4.
+/// Only bits 4..6 change; no offset is subtracted from the model's selected clock.
+pub fn reset_entity_shader_clock(
+    entity_group: &mut u32,
+    entity_clock: f64,
+    model: Option<(&mut f32, &mut u8)>,
+) {
+    *entity_group = 0;
+    if let Some((offset, flags)) = model {
+        *offset = (entity_clock - 0.0) as f32;
+        *flags = (*flags & !0x70) | 0x30;
+    }
+}
+
+/// FUN_140319560, 14031970d..14031975b: the owner's time-group selector.
+/// This is only the model parameter prefix, not that function's complete
+/// matrix/material publication. Clock group initialization belongs to its owner.
+pub fn model_shader_time_group(model_flags_1c31: u8) -> usize {
+    usize::from(model_flags_1c31 >> 4 & 7)
+}
+
+/// FUN_140319560: CVTPS2PD(offset), ADDSD(selected renderer clock),
+/// CVTPD2PS, then the selected clock's unchanged delta. Do not round the clock
+/// to f32 first or replace it with an unrelated elapsed/zero value.
+pub fn model_shader_local_time(
+    model_offset: f32,
+    selected_clock: f64,
+    selected_delta: f32,
+) -> [f32; 2] {
+    [
+        (f64::from(model_offset) + selected_clock) as f32,
+        selected_delta,
+    ]
 }
 
 /// FUN_14087c1f0's owned graph; missing render-model handles are skipped.
@@ -3070,6 +4055,356 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entity_clock_reset_and_getter_match_original_code() {
+        let mut count = 0;
+        for line in include_str!("../analysis/original_model_clock_cases.txt").lines() {
+            let (operation, values) = line.split_once(' ').unwrap();
+            let words: Vec<u64> = values
+                .split_whitespace()
+                .map(|word| u64::from_str_radix(word, 16).unwrap())
+                .collect();
+            match operation {
+                "reset" => {
+                    let mut group = words[3] as u32;
+                    let mut offset = f32::from_bits(words[4] as u32);
+                    let mut flags = words[1] as u8;
+                    let model = (words[0] != 0).then_some((&mut offset, &mut flags));
+                    reset_entity_shader_clock(&mut group, f64::from_bits(words[2]), model);
+                    assert_eq!(
+                        [
+                            u64::from(group),
+                            u64::from(offset.to_bits()),
+                            u64::from(flags)
+                        ],
+                        [words[5], words[6], words[7]],
+                        "{line}"
+                    );
+                    if words[0] != 0 {
+                        assert_eq!(model_shader_time_group(flags), 3);
+                    }
+                }
+                "get" => {
+                    let mut records = [[0xa5; 0x50]; 5];
+                    records[words[0] as usize][0x18..0x20].copy_from_slice(&words[1].to_le_bytes());
+                    assert_eq!(
+                        game_clock_group_time(&records, words[0] as usize)
+                            .unwrap()
+                            .to_bits(),
+                        words[2]
+                    );
+                    assert!(game_clock_group_time(&records, records.len()).is_none());
+                }
+                _ => panic!("unknown native clock case {line}"),
+            }
+            count += 1;
+        }
+        assert_eq!(count, 9306);
+    }
+
+    #[test]
+    fn model_shader_time_preserves_native_group_and_double_addition() {
+        for flags in 0..=u8::MAX {
+            assert_eq!(
+                model_shader_time_group(flags),
+                usize::from((flags & 0x70) >> 4)
+            );
+        }
+        let time = model_shader_local_time(0.5, 16_777_216.75, -0.0);
+        assert_eq!(time[0], 16_777_218.0);
+        assert_ne!(
+            time[0],
+            16_777_216.75f64 as f32 + 0.5,
+            "rounding renderer time before adding the model offset loses the native result"
+        );
+        assert_eq!(time[1].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(model_shader_local_time(-1.0, 0.25, 0.125), [-0.75, 0.125]);
+    }
+
+    #[test]
+    fn shadow_state_uses_published_mvp_winding_not_renderer_enablement() {
+        let mut programs = [0; 22];
+        programs[10] = 0x1234;
+        let surface = DepthAlphaSurface {
+            flags49: 0,
+            default_programs: &programs,
+            override_programs: &[],
+            selector: -1,
+            has_optional_mesh: false,
+            special_vertex_format: false,
+            alternate_program: 0,
+            draw_state: [0; 9],
+        };
+        let mut mvp = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        for (scale, expected) in [(1.0, 1), (-1.0, 0)] {
+            mvp[0][0] = scale;
+            let plan = prepare_shadow_model_draw_for_mvp(&surface, [0.0; 3], 0.0, &mvp)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.program, programs[10]);
+            assert_eq!(plan.draw_state[5] >> 27 & 1, expected);
+        }
+    }
+
+    #[test]
+    fn depth_owner_parent_and_local_refresh_keep_native_rules() {
+        let root = parent_model_depth_state(None);
+        assert_eq!(
+            (root.dispatch_flags, root.model_mask, root.depth_hack),
+            (0, 1, 0.0)
+        );
+        let missing_model = parent_model_depth_state(Some((0xfe, None)));
+        assert_eq!(
+            (
+                missing_model.dispatch_flags,
+                missing_model.model_mask,
+                missing_model.depth_hack
+            ),
+            (1, 1, 0.0)
+        );
+        for flags in 0..=255 {
+            let parent = parent_model_depth_state(Some((flags, Some((flags, -0.125)))));
+            assert_eq!(parent.dispatch_flags, (flags >> 1) & 1);
+            assert_eq!(parent.model_mask, (flags >> 3) & 1);
+            assert_eq!(parent.depth_hack, -0.125);
+        }
+        let mut local = 0.0;
+        assert!(!set_local_model_depth_hack(&mut local, -0.0));
+        assert_eq!(local.to_bits(), 0.0f32.to_bits());
+        assert!(set_local_model_depth_hack(&mut local, 0.5));
+        assert!(!set_local_model_depth_hack(&mut local, 0.5));
+        assert!(set_local_model_depth_hack(&mut local, f32::NAN));
+        assert!(set_local_model_depth_hack(&mut local, f32::NAN));
+    }
+
+    #[test]
+    fn depth_owner_matches_original_three_node_trees() {
+        let mut count = 0;
+        for (row, line) in include_str!("../analysis/native_model_depth_cases.txt")
+            .lines()
+            .enumerate()
+        {
+            let words: Vec<u32> = line
+                .split_whitespace()
+                .map(|word| u32::from_str_radix(word, 16).unwrap())
+                .collect();
+            assert_eq!(words.len(), 36);
+            let mut inherited = InheritedModelDepthState {
+                dispatch_flags: words[0] as u8,
+                model_mask: words[1] as u8,
+                depth_hack: f32::from_bits(words[2]),
+            };
+            for node in 0..3 {
+                let input = &words[3 + node * 5..3 + (node + 1) * 5];
+                let expected = &words[18 + node * 6..18 + (node + 1) * 6];
+                inherited = resolve_inherited_model_depth_state(
+                    inherited,
+                    f32::from_bits(input[0]),
+                    input[1] as u8,
+                    input[2] as u8,
+                );
+                let mut flags = input[4] as u8;
+                let mut published = f32::from_bits(0x42c8_0000);
+                let present = input[3] != 0;
+                let override_value = if present {
+                    publish_model_depth_state(&mut flags, &mut published, inherited)
+                } else {
+                    None
+                };
+                let actual = [
+                    u32::from(inherited.dispatch_flags != 0),
+                    u32::from(present),
+                    u32::from(override_value.is_some()),
+                    override_value.map_or(0, f32::to_bits),
+                    published.to_bits(),
+                    u32::from(flags),
+                ];
+                assert_eq!(
+                    actual.as_slice(),
+                    expected,
+                    "original depth owner row {row} node {node}"
+                );
+                count += 1;
+            }
+        }
+        assert_eq!(count, 768);
+    }
+
+    #[test]
+    fn depth_owner_inheritance_preserves_original_nonzero_and_unit_rules() {
+        for parent in [0.0, -0.0, 1.0, 0.125, -2.0, f32::NAN] {
+            for local in [0.0, -0.0, 1.0, 0.25, -3.0, f32::NAN] {
+                for inherited_mask in [0, 1, 0xff] {
+                    for actor_mask in [0, 1, 0xfe, 0xff] {
+                        let resolved = resolve_inherited_model_depth_state(
+                            InheritedModelDepthState {
+                                dispatch_flags: 0x80,
+                                model_mask: inherited_mask,
+                                depth_hack: parent,
+                            },
+                            local,
+                            0x81,
+                            actor_mask,
+                        );
+                        let depth = if local != 0.0 { local } else { parent };
+                        assert_eq!(resolved.depth_hack.to_bits(), depth.to_bits());
+                        assert_eq!(resolved.dispatch_flags, 0x81);
+                        let expected_mask = if depth == 0.0 {
+                            actor_mask & 1
+                        } else {
+                            actor_mask & inherited_mask & 1
+                        };
+                        assert_eq!(resolved.model_mask, expected_mask);
+                        let mut flags = 0xa5;
+                        let mut published = -100.0;
+                        let override_value =
+                            publish_model_depth_state(&mut flags, &mut published, resolved);
+                        assert_eq!(flags, (0xa5 & !8) | (expected_mask << 3));
+                        assert_eq!(published.to_bits(), depth.to_bits());
+                        assert_eq!(
+                            override_value.map(f32::to_bits),
+                            (depth > 0.0 && depth != 1.0).then_some(depth.to_bits())
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_source_resolves_bank_not_capture_identifier() {
+        let opaque = 2 | 0x800;
+        let blend = (4 << 1) | (5 << 5) | 0x800;
+        use ShadowProgramSource::*;
+        assert_eq!(
+            shadow_program_source(false, false, false, false, false, opaque, false),
+            MainProgram
+        );
+        assert_eq!(
+            shadow_program_source(false, false, false, false, false, blend, false),
+            Disabled
+        );
+        assert_eq!(
+            shadow_program_source(false, false, false, false, true, blend, false),
+            MainProgram
+        );
+        assert_eq!(
+            shadow_program_source(false, false, false, true, false, blend, false),
+            Authored
+        );
+        assert_eq!(
+            shadow_program_source(false, true, false, true, false, opaque, false),
+            Disabled
+        );
+        assert_eq!(
+            shadow_program_source(true, true, false, true, false, opaque, false),
+            Authored
+        );
+        assert_eq!(
+            shadow_program_source(true, false, false, false, false, opaque, false),
+            Disabled
+        );
+        assert_eq!(
+            shadow_program_source(true, false, false, false, false, opaque, true),
+            MainProgram
+        );
+        assert_eq!(
+            shadow_program_source(true, false, true, true, false, opaque, true),
+            Disabled
+        );
+    }
+
+    #[test]
+    fn native_blend_enable_is_independent_of_sort_and_blend_operation() {
+        for source in 0..10u32 {
+            for destination in 0..10u32 {
+                for alpha_source in 0..10u32 {
+                    for alpha_destination in 0..10u32 {
+                        let word = (source << 1)
+                            | (destination << 5)
+                            | (alpha_source << 11)
+                            | (alpha_destination << 15);
+                        let expected = source != 1
+                            || destination != 0
+                            || alpha_source != 1
+                            || alpha_destination != 0;
+                        assert_eq!(native_blend_enabled(word), expected);
+                        assert_eq!(
+                            native_blend_enabled(word | 0xffff_f601 & !0x7ffff),
+                            expected
+                        );
+                        assert_eq!(native_blend_enabled(word | 0x180601), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_model_draw_matches_original_program_state_branches() {
+        // Original 329120 program/state instructions execute unchanged;
+        // bounds/matrix and external renderer callees are intercepted.
+        let default: Vec<u64> = (100..144).collect();
+        let overrides: Vec<u64> = (1000..1330).collect();
+        let mut count = 0;
+        for (case, line) in include_str!("../analysis/original_shadow_model_draw_cases.txt")
+            .lines()
+            .enumerate()
+        {
+            let words: Vec<i64> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            assert_eq!(words.len(), 29);
+            let surface = DepthAlphaSurface {
+                flags49: words[0] as u8,
+                selector: words[1] as i8,
+                has_optional_mesh: words[2] != 0,
+                special_vertex_format: words[3] != 0,
+                alternate_program: 0,
+                default_programs: &default,
+                override_programs: &overrides,
+                draw_state: std::array::from_fn(|i| words[9 + i] as u32),
+            };
+            let actual = prepare_shadow_model_draw(
+                &surface,
+                std::array::from_fn(|i| f32::from_bits(words[6 + i] as u32)),
+                f32::from_bits(words[4] as u32),
+                words[5] != 0,
+            )
+            .unwrap();
+            assert_eq!(actual.is_some(), words[18] != 0, "row {case}");
+            if let Some(actual) = actual {
+                assert_eq!(actual.program, words[19] as u64, "program row {case}");
+                assert_eq!(
+                    actual.draw_state,
+                    std::array::from_fn(|i| words[20 + i] as u32),
+                    "state row {case}"
+                );
+            }
+            count += 1;
+        }
+        assert_eq!(count, 5760);
+        let surface = DepthAlphaSurface {
+            flags49: 0,
+            selector: -1,
+            has_optional_mesh: false,
+            special_vertex_format: false,
+            alternate_program: 1,
+            default_programs: &[0; 44],
+            override_programs: &[],
+            draw_state: [u32::MAX; 9],
+        };
+        assert!(prepare_shadow_model_draw(&surface, [0.0; 3], 0.0, true)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn depth_alpha_draw_matches_original_three_pass_dispatch() {
         // probe_original_depth_alpha_draw.py executes unmodified 321860
         // list/program/state branches with rendering/TLS callees intercepted.
@@ -3078,19 +4413,42 @@ mod tests {
         let fixture = include_str!("../analysis/original_depth_alpha_draw_cases.txt");
         let mut count = 0;
         for (index, line) in fixture.lines().enumerate() {
-            let words: Vec<i64> = line.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            let words: Vec<i64> = line
+                .split_whitespace()
+                .map(|v| v.parse().unwrap())
+                .collect();
             assert_eq!(words.len(), 26);
-            let surface = DepthAlphaSurface {flags49: words[0] as u8,
-                selector: words[1] as i8, has_optional_mesh: words[2] != 0,
-                special_vertex_format: words[3] != 0, alternate_program: 77,
-                default_programs: &default, override_programs: &overrides,
-                draw_state: words[5..14].iter().map(|v|*v as u32).collect::<Vec<_>>().try_into().unwrap()};
+            let surface = DepthAlphaSurface {
+                flags49: words[0] as u8,
+                selector: words[1] as i8,
+                has_optional_mesh: words[2] != 0,
+                special_vertex_format: words[3] != 0,
+                alternate_program: 77,
+                default_programs: &default,
+                override_programs: &overrides,
+                draw_state: words[5..14]
+                    .iter()
+                    .map(|v| *v as u32)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap(),
+            };
             let actual = prepare_depth_alpha_draw(&surface, words[4] as u8).unwrap();
             assert_eq!(actual.is_some(), words[14] != 0, "native row{index}");
             if let Some(actual) = actual {
-                assert_eq!(actual.program, words[15] as u64, "native program row{index}");
-                assert_eq!(actual.stencil_reference, words[16] as u8, "native stencil row{index}");
-                assert_eq!(actual.draw_state.as_slice(), words[17..26].iter().map(|v|*v as u32).collect::<Vec<_>>(), "native state row{index}");
+                assert_eq!(
+                    actual.program, words[15] as u64,
+                    "native program row{index}"
+                );
+                assert_eq!(
+                    actual.stencil_reference, words[16] as u8,
+                    "native stencil row{index}"
+                );
+                assert_eq!(
+                    actual.draw_state.as_slice(),
+                    words[17..26].iter().map(|v| *v as u32).collect::<Vec<_>>(),
+                    "native state row{index}"
+                );
             }
             count += 1;
         }
@@ -3101,47 +4459,100 @@ mod tests {
     fn depth_alpha_draw_selection_and_native_state_masks() {
         let default: Vec<u64> = (100..144).collect();
         let overrides: Vec<u64> = (1000..1330).collect();
-        let mut surface = DepthAlphaSurface {flags49: 0, default_programs: &default,
-            override_programs: &overrides, selector: -1, has_optional_mesh: false,
-            special_vertex_format: false, alternate_program: 77, draw_state: [u32::MAX;9]};
-        for flags in [0,1,0x40,0x41] {for optional in [false,true] {for special in [false,true] {
-            surface.flags49 = flags; surface.has_optional_mesh = optional; surface.special_vertex_format = special;
-            for selector in [-1,0,1,2,3,6,7,-128] {
-                surface.selector = selector;
-                for pass in 0..3 {
-                    let plan = prepare_depth_alpha_draw(&surface, pass).unwrap();
-                    if pass == 2 && flags & 1 == 0 {assert!(plan.is_none()); continue;}
-                    let plan = plan.unwrap();
-                    let slot = match (pass, flags & 1) {(0,1) => 4, _ => 6} + u64::from(special);
-                    let expected_program = if pass == 2 {77} else if selector != -1 && flags & 0x40 != 0 {
-                        let row = match selector {0=>0,1=>1,2=>2,3..=6=>3,_=>4};
-                        1000+(row*3+u64::from(optional))*22+slot
-                    } else {100+u64::from(optional)*22+slot};
-                    assert_eq!(plan.program, expected_program);
-                    assert_eq!(plan.stencil_reference, if pass==2 {0x80} else {2});
-                    assert_eq!(plan.marks_alpha, pass==0 && flags&1!=0);
-                    assert_eq!(plan.draw_state, [if plan.marks_alpha {0xfe5f_fe23} else {0xfe1f_ffff},
-                        0xfe1f_ffff,u32::MAX,u32::MAX,0xe80e_80ff,
-                        if pass==2 {0xff80_80ef} else {0xff02_02ff},u32::MAX,u32::MAX,u32::MAX]);
+        let mut surface = DepthAlphaSurface {
+            flags49: 0,
+            default_programs: &default,
+            override_programs: &overrides,
+            selector: -1,
+            has_optional_mesh: false,
+            special_vertex_format: false,
+            alternate_program: 77,
+            draw_state: [u32::MAX; 9],
+        };
+        for flags in [0, 1, 0x40, 0x41] {
+            for optional in [false, true] {
+                for special in [false, true] {
+                    surface.flags49 = flags;
+                    surface.has_optional_mesh = optional;
+                    surface.special_vertex_format = special;
+                    for selector in [-1, 0, 1, 2, 3, 6, 7, -128] {
+                        surface.selector = selector;
+                        for pass in 0..3 {
+                            let plan = prepare_depth_alpha_draw(&surface, pass).unwrap();
+                            if pass == 2 && flags & 1 == 0 {
+                                assert!(plan.is_none());
+                                continue;
+                            }
+                            let plan = plan.unwrap();
+                            let slot = match (pass, flags & 1) {
+                                (0, 1) => 4,
+                                _ => 6,
+                            } + u64::from(special);
+                            let expected_program = if pass == 2 {
+                                77
+                            } else if selector != -1 && flags & 0x40 != 0 {
+                                let row = match selector {
+                                    0 => 0,
+                                    1 => 1,
+                                    2 => 2,
+                                    3..=6 => 3,
+                                    _ => 4,
+                                };
+                                1000 + (row * 3 + u64::from(optional)) * 22 + slot
+                            } else {
+                                100 + u64::from(optional) * 22 + slot
+                            };
+                            assert_eq!(plan.program, expected_program);
+                            assert_eq!(plan.stencil_reference, if pass == 2 { 0x80 } else { 2 });
+                            assert_eq!(plan.marks_alpha, pass == 0 && flags & 1 != 0);
+                            assert_eq!(
+                                plan.draw_state,
+                                [
+                                    if plan.marks_alpha {
+                                        0xfe5f_fe23
+                                    } else {
+                                        0xfe1f_ffff
+                                    },
+                                    0xfe1f_ffff,
+                                    u32::MAX,
+                                    u32::MAX,
+                                    0xe80e_80ff,
+                                    if pass == 2 { 0xff80_80ef } else { 0xff02_02ff },
+                                    u32::MAX,
+                                    u32::MAX,
+                                    u32::MAX
+                                ]
+                            );
+                        }
+                    }
                 }
             }
-        }}}
-        surface.flags49=1; surface.alternate_program=0;
-        assert!(prepare_depth_alpha_draw(&surface,2).unwrap().is_none());
-        surface.flags49=0; surface.selector=-1; surface.has_optional_mesh=false;
-        surface.default_programs=&[0;44];
-        assert!(prepare_depth_alpha_draw(&surface,0).unwrap().is_none());
-        assert!(prepare_depth_alpha_draw(&surface,3).is_err());
-        surface.default_programs=&[];
-        assert!(prepare_depth_alpha_draw(&surface,0).is_err());
+        }
+        surface.flags49 = 1;
+        surface.alternate_program = 0;
+        assert!(prepare_depth_alpha_draw(&surface, 2).unwrap().is_none());
+        surface.flags49 = 0;
+        surface.selector = -1;
+        surface.has_optional_mesh = false;
+        surface.default_programs = &[0; 44];
+        assert!(prepare_depth_alpha_draw(&surface, 0).unwrap().is_none());
+        assert!(prepare_depth_alpha_draw(&surface, 3).is_err());
+        surface.default_programs = &[];
+        assert!(prepare_depth_alpha_draw(&surface, 0).is_err());
     }
 
     #[test]
     fn native_multisample_getters_match_original() {
-        assert_eq!(original_renderer_sample_count(ORIGINAL_DEFAULT_MULTI_SAMPLES), 1);
+        assert_eq!(
+            original_renderer_sample_count(ORIGINAL_DEFAULT_MULTI_SAMPLES),
+            1
+        );
         let fixture = include_str!("../analysis/native_multisample_cases.txt");
         for line in fixture.lines() {
-            let words = line.split_whitespace().map(|word| word.parse::<i32>().unwrap()).collect::<Vec<_>>();
+            let words = line
+                .split_whitespace()
+                .map(|word| word.parse::<i32>().unwrap())
+                .collect::<Vec<_>>();
             assert_eq!(original_renderer_sample_count(words[0]), words[2] as u32);
             // Entire FUN_14036b620 is integer equality against the raw setting,
             // not the clamped texture count. Rust's existing equality suffices.
@@ -3163,8 +4574,14 @@ mod tests {
     fn native_indirect_pointer_helpers_apply_the_original_addends() {
         let mut object = [0; 0x18];
         object[0x10..0x18].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
-        assert_eq!(native_indirect_pointer_plus_0x58(&object).unwrap(), 0x1234_5678_9abc_df48);
-        assert_eq!(native_indirect_pointer_plus_0x2d8(&object).unwrap(), 0x1234_5678_9abc_e1c8);
+        assert_eq!(
+            native_indirect_pointer_plus_0x58(&object).unwrap(),
+            0x1234_5678_9abc_df48
+        );
+        assert_eq!(
+            native_indirect_pointer_plus_0x2d8(&object).unwrap(),
+            0x1234_5678_9abc_e1c8
+        );
         assert!(native_indirect_pointer_plus_0x58(&object[..0x17]).is_err());
     }
 
@@ -3183,28 +4600,46 @@ mod tests {
         assert_eq!(slots[2], values.words_at_0x94);
         assert_eq!(slots[3], [0xbbbb_cccc, 0, 0, 0]);
         let before = slots;
-        assert!(!write_native_optional_parameter_values(&mut slots, [0, 1, 2], NativeOptionalParameterValues { gate_at_0x38: 1, ..values }).unwrap());
+        assert!(!write_native_optional_parameter_values(
+            &mut slots,
+            [0, 1, 2],
+            NativeOptionalParameterValues {
+                gate_at_0x38: 1,
+                ..values
+            }
+        )
+        .unwrap());
         assert_eq!(slots, before);
-        assert!(!write_native_optional_parameter_values(&mut slots, [0, 1, 2], NativeOptionalParameterValues { indirect_gate_at_0x78: 1, ..values }).unwrap());
+        assert!(!write_native_optional_parameter_values(
+            &mut slots,
+            [0, 1, 2],
+            NativeOptionalParameterValues {
+                indirect_gate_at_0x78: 1,
+                ..values
+            }
+        )
+        .unwrap());
         assert_eq!(slots, before);
     }
 
     #[test]
     fn native_single_resource_bind_wraps_one_value_without_changing_arguments() {
         let mut observed = None;
-        call_native_resource_array_bind_with_one(11, 22, 33, 0x4455, |context, count, values, extra, flags| {
-            observed = Some((context, count, *values, extra, flags));
-        });
+        call_native_resource_array_bind_with_one(
+            11,
+            22,
+            33,
+            0x4455,
+            |context, count, values, extra, flags| {
+                observed = Some((context, count, *values, extra, flags));
+            },
+        );
         assert_eq!(observed, Some((11, 1, [22], 33, 0x4455)));
     }
 
     #[test]
     fn native_parameter_slot_writers_preserve_word_layout_and_order() {
-        let entries = vec![
-            (2, [1, 2, 3, 4]),
-            (1, [5, 6, 7, 8]),
-            (2, [9, 10, 11, 12]),
-        ];
+        let entries = vec![(2, [1, 2, 3, 4]), (1, [5, 6, 7, 8]), (2, [9, 10, 11, 12])];
         let block = ParameterBlock {
             entries,
             value_count_word: 0xa500_0003,
@@ -3223,8 +4658,16 @@ mod tests {
         assert_eq!(slots[2], [0, 0, 0x7654_3210, 0xfedc_ba98]);
         write_native_parameter_repeated_u32(&mut slots, 2, 0x8000_1234).unwrap();
         assert_eq!(slots[3], [0x8000_1234; 4]);
-        write_native_parameter_4_words(&mut slots, 3, [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000]).unwrap();
-        assert_eq!(slots[4], [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000]);
+        write_native_parameter_4_words(
+            &mut slots,
+            3,
+            [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000],
+        )
+        .unwrap();
+        assert_eq!(
+            slots[4],
+            [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000]
+        );
         write_native_parameter_u32(&mut slots, 0, 0xdead_cafe).unwrap();
         assert_eq!(slots[1], [0xdead_cafe, 0, 0, 0]);
         write_native_parameter_u32(&mut slots, -1, 0x1234_5678).unwrap();
@@ -3249,7 +4692,10 @@ mod tests {
         let mut row = [0; 14];
         row[0] = 0x7654_3210;
         row[1] = 0xfedc_ba98;
-        assert_eq!(first_qword_of_native_surface_batch_row(&row), 0xfedc_ba98_7654_3210);
+        assert_eq!(
+            first_qword_of_native_surface_batch_row(&row),
+            0xfedc_ba98_7654_3210
+        );
         let mut rows = NativeSurfaceBatchRowList::with_capacity(1, 0).unwrap();
         let index = rows.push_zeroed_row(false, true).unwrap();
         *rows.row_mut(index).unwrap() = row;
@@ -3264,7 +4710,10 @@ mod tests {
             let fields: Vec<_> = line.split_whitespace().collect();
             assert_eq!(fields.len(), 3);
             assert_eq!(u32::from_str_radix(fields[1], 16).unwrap(), 0x3fff0010);
-            assert_eq!(u32::from_str_radix(fields[2], 16).unwrap(), INITIAL_MODEL_MAX_VISIBLE_RANGE.to_bits());
+            assert_eq!(
+                u32::from_str_radix(fields[2], 16).unwrap(),
+                INITIAL_MODEL_MAX_VISIBLE_RANGE.to_bits()
+            );
             checked += 1;
         }
         assert_eq!(checked, 4);
@@ -3283,13 +4732,24 @@ mod tests {
             } else {
                 let mut defaults = [[0; 4]; 12];
                 defaults[u(1) as usize][0] = u(3);
-                let overrides: Vec<_> = (0..u(4) as usize).map(|i| (u(5 + i * 2) as u16, [u(6 + i * 2), 0, 0, 0])).collect();
-                assert_eq!(parameter_float("emissiveintensity", u(1), u(2), &defaults, &overrides).unwrap().to_bits(), u(fields.len() - 1), "{line}");
+                let overrides: Vec<_> = (0..u(4) as usize)
+                    .map(|i| (u(5 + i * 2) as u16, [u(6 + i * 2), 0, 0, 0]))
+                    .collect();
+                assert_eq!(
+                    parameter_float("emissiveintensity", u(1), u(2), &defaults, &overrides)
+                        .unwrap()
+                        .to_bits(),
+                    u(fields.len() - 1),
+                    "{line}"
+                );
             }
             checked += 1;
         }
         assert_eq!(checked, 305);
-        assert_eq!(parameter_float("bad", 0, 1, &[[0; 4]], &[]).unwrap_err(), "idParmBlock::GetFloat: bad is not a vector parm");
+        assert_eq!(
+            parameter_float("bad", 0, 1, &[[0; 4]], &[]).unwrap_err(),
+            "idParmBlock::GetFloat: bad is not a vector parm"
+        );
         assert!(parameter_float("missing", 1, 0, &[[0; 4]], &[]).is_err());
     }
 
@@ -3297,23 +4757,42 @@ mod tests {
     fn parameter_removal_matches_original_paired_arrays() {
         let mut checked = 0;
         for line in include_str!("../analysis/original_parm_clear_cases.txt").lines() {
-            let fields: Vec<u32> = line.split_whitespace().map(|value| value.parse().unwrap()).collect();
+            let fields: Vec<u32> = line
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
             let id = fields[0];
             let count = fields[2] as usize;
-            let slot = |base: usize| (fields[base] as u16, std::array::from_fn(|lane| fields[base + 1 + lane]));
+            let slot = |base: usize| {
+                (
+                    fields[base] as u16,
+                    std::array::from_fn(|lane| fields[base + 1 + lane]),
+                )
+            };
             let mut overrides: Vec<_> = (0..count).map(|index| slot(3 + index * 5)).collect();
             let capacity = overrides.capacity();
             remove_parameter(&mut overrides, id);
             assert_eq!(overrides.capacity(), capacity, "{line}");
             let base = 3 + count * 5;
             assert_eq!(fields[base] & 0xffffff, overrides.len() as u32, "{line}");
-            assert_eq!(fields[base + 1] & 0xffffff, overrides.len() as u32, "{line}");
-            let expected: Vec<_> = (0..fields[base + 2] as usize).map(|index| slot(base + 3 + index * 5)).collect();
+            assert_eq!(
+                fields[base + 1] & 0xffffff,
+                overrides.len() as u32,
+                "{line}"
+            );
+            let expected: Vec<_> = (0..fields[base + 2] as usize)
+                .map(|index| slot(base + 3 + index * 5))
+                .collect();
             assert_eq!(overrides, expected, "{line}");
             assert_eq!(fields.len(), base + 3 + expected.len() * 5);
             if id < 6 {
                 let defaults = [[0x3e800000, 0, 0, 0]; 6];
-                assert_eq!(parameter_float("test", id, 0, &defaults, &overrides).unwrap().to_bits(), 0x3e800000);
+                assert_eq!(
+                    parameter_float("test", id, 0, &defaults, &overrides)
+                        .unwrap()
+                        .to_bits(),
+                    0x3e800000
+                );
             }
             checked += 1;
         }
@@ -3332,37 +4811,56 @@ mod tests {
                     let whitelist_count = u(5) as usize;
                     let whitelist: Vec<_> = (0..whitelist_count).map(|i| u(6 + i)).collect();
                     let base = 6 + whitelist_count;
-                    let slot = |offset: usize| (u(offset) as u16, std::array::from_fn(|lane| u(offset + 1 + lane)));
+                    let slot = |offset: usize| {
+                        (
+                            u(offset) as u16,
+                            std::array::from_fn(|lane| u(offset + 1 + lane)),
+                        )
+                    };
                     let mut block = ParameterBlock {
                         entries: (0..count).map(|i| slot(base + 5 * i)).collect(),
-                        value_count_word: u(1), id_count_word: u(2),
+                        value_count_word: u(1),
+                        id_count_word: u(2),
                         value_capacity_word: (u(3) << 8) | 0x13,
                         id_capacity_word: (u(3) << 8) | 0x3f,
                     };
                     let capacity = block.entries.capacity();
-                    if fields[0] == "D" { block.deduplicate().unwrap(); }
-                    else { block.filter(&whitelist).unwrap(); }
+                    if fields[0] == "D" {
+                        block.deduplicate().unwrap();
+                    } else {
+                        block.filter(&whitelist).unwrap();
+                    }
                     let expected = base + count * 5;
                     assert_eq!(block.value_count_word, u(expected), "{line}");
                     assert_eq!(block.id_count_word, u(expected + 1), "{line}");
                     let slots: Vec<_> = (0..u(expected + 2) as usize)
-                        .map(|i| slot(expected + 3 + i * 5)).collect();
+                        .map(|i| slot(expected + 3 + i * 5))
+                        .collect();
                     assert_eq!(block.entries, slots, "{line}");
                     assert_eq!(block.entries.capacity(), capacity);
                     assert_eq!(block.value_capacity_word, (u(3) << 8) | 0x13);
                     assert_eq!(block.id_capacity_word, (u(3) << 8) | 0x3f);
                     if let Some(&(id, value)) = block.entries.last() {
                         let defaults = vec![[0; 4]; usize::from(id) + 1];
-                        assert_eq!(block.float("native", u32::from(id), 0, &defaults).unwrap().to_bits(), value[0]);
+                        assert_eq!(
+                            block
+                                .float("native", u32::from(id), 0, &defaults)
+                                .unwrap()
+                                .to_bits(),
+                            value[0]
+                        );
                     }
                     operations[0] += 1;
                 }
                 "S" => {
                     let group = material_parameter_group(u(1) as u8, fields[2].parse().unwrap());
-                    if u(3) != 0 { assert_eq!(group, MaterialParameterGroup::Base); }
-                    else if let MaterialParameterGroup::Effect(selector) = group {
+                    if u(3) != 0 {
+                        assert_eq!(group, MaterialParameterGroup::Base);
+                    } else if let MaterialParameterGroup::Effect(selector) = group {
                         assert_eq!(i32::from(selector) * 32, fields[4].parse::<i32>().unwrap());
-                    } else { panic!("{line}"); }
+                    } else {
+                        panic!("{line}");
+                    }
                     operations[1] += 1;
                 }
                 "P" => operations[2] += 1,
@@ -3374,16 +4872,45 @@ mod tests {
 
     #[test]
     fn prepared_material_groups_feed_the_existing_property_getter() {
-        let block = |word| ParameterBlock { entries: vec![(0, [word, 0, 0, 0])],
-            value_count_word: 1, id_count_word: 1, value_capacity_word: 256, id_capacity_word: 256 };
-        let mut material = MaterialParameterBlocks { base: block(0x3f000000),
-            effects: vec![block(0x3f800000)], flags_49: 0x40 };
-        assert_eq!(material.selected(-1).unwrap().float("value", 0, 0, &[[0; 4]]).unwrap(), 0.5);
-        assert_eq!(material.selected(0).unwrap().float("value", 0, 0, &[[0; 4]]).unwrap(), 1.0);
+        let block = |word| ParameterBlock {
+            entries: vec![(0, [word, 0, 0, 0])],
+            value_count_word: 1,
+            id_count_word: 1,
+            value_capacity_word: 256,
+            id_capacity_word: 256,
+        };
+        let mut material = MaterialParameterBlocks {
+            base: block(0x3f000000),
+            effects: vec![block(0x3f800000)],
+            flags_49: 0x40,
+        };
+        assert_eq!(
+            material
+                .selected(-1)
+                .unwrap()
+                .float("value", 0, 0, &[[0; 4]])
+                .unwrap(),
+            0.5
+        );
+        assert_eq!(
+            material
+                .selected(0)
+                .unwrap()
+                .float("value", 0, 0, &[[0; 4]])
+                .unwrap(),
+            1.0
+        );
         assert!(material.selected(-2).is_err());
         assert!(material.selected(1).is_err());
         material.flags_49 = 0;
-        assert_eq!(material.selected(127).unwrap().float("value", 0, 0, &[[0; 4]]).unwrap(), 0.5);
+        assert_eq!(
+            material
+                .selected(127)
+                .unwrap()
+                .float("value", 0, 0, &[[0; 4]])
+                .unwrap(),
+            0.5
+        );
         let mut unsupported = block(0);
         unsupported.value_capacity_word = 0;
         assert!(unsupported.deduplicate().is_err());
@@ -3397,11 +4924,24 @@ mod tests {
             let fields: Vec<_> = line.split_whitespace().collect();
             let count = fields[0].parse::<usize>().unwrap();
             let f = |index: usize| f32::from_bits(fields[index].parse().unwrap());
-            let previous = std::array::from_fn(|side| std::array::from_fn(|axis| f(1 + side * 3 + axis)));
-            let surfaces: Vec<_> = (0..count).map(|surface| std::array::from_fn(|side| std::array::from_fn(|axis| f(7 + surface * 6 + side * 3 + axis)))).collect();
+            let previous =
+                std::array::from_fn(|side| std::array::from_fn(|axis| f(1 + side * 3 + axis)));
+            let surfaces: Vec<_> = (0..count)
+                .map(|surface| {
+                    std::array::from_fn(|side| {
+                        std::array::from_fn(|axis| f(7 + surface * 6 + side * 3 + axis))
+                    })
+                })
+                .collect();
             let actual = accumulate_resource_bounds(previous, &surfaces);
-            let expected: [[f32; 3]; 2] = std::array::from_fn(|side| std::array::from_fn(|axis| f(7 + count * 6 + side * 3 + axis)));
-            assert_eq!(actual.map(|row| row.map(f32::to_bits)), expected.map(|row| row.map(f32::to_bits)), "{line}");
+            let expected: [[f32; 3]; 2] = std::array::from_fn(|side| {
+                std::array::from_fn(|axis| f(7 + count * 6 + side * 3 + axis))
+            });
+            assert_eq!(
+                actual.map(|row| row.map(f32::to_bits)),
+                expected.map(|row| row.map(f32::to_bits)),
+                "{line}"
+            );
             checked += 1;
         }
         assert_eq!(checked, 73);
@@ -3442,7 +4982,11 @@ mod tests {
                     assert_eq!(flags, u(3), "{line}");
                 }
                 "fade" => {
-                    let result = distance_fade(f32::from_bits(u(1)), f32::from_bits(u(2)), f32::from_bits(u(3)));
+                    let result = distance_fade(
+                        f32::from_bits(u(1)),
+                        f32::from_bits(u(2)),
+                        f32::from_bits(u(3)),
+                    );
                     let expected = f32::from_bits(u(4));
                     if expected.is_nan() {
                         assert!(result.is_nan(), "{line}");
@@ -3455,15 +4999,26 @@ mod tests {
                         model_flags: Some(u(1)),
                         children: vec![VisibilityNode {
                             model_flags: None,
-                            children: vec![VisibilityNode { model_flags: Some(u(1)), children: vec![] }],
+                            children: vec![VisibilityNode {
+                                model_flags: Some(u(1)),
+                                children: vec![],
+                            }],
                         }],
                     };
                     root.set_visible(u(2) != 0);
                     assert_eq!(root.model_flags, Some(u(3)), "{line}");
-                    assert_eq!(root.children[0].children[0].model_flags, Some(u(4)), "{line}");
+                    assert_eq!(
+                        root.children[0].children[0].model_flags,
+                        Some(u(4)),
+                        "{line}"
+                    );
                 }
                 "patch" => {
-                    assert_eq!(square_patch_visible(&query, [f(1), f(2), f(3)], f(4), f(5), f(6)).unwrap(), u(7) != 0, "{line}");
+                    assert_eq!(
+                        square_patch_visible(&query, [f(1), f(2), f(3)], f(4), f(5), f(6)).unwrap(),
+                        u(7) != 0,
+                        "{line}"
+                    );
                 }
                 kind => panic!("unknown native model-helper case {kind}"),
             }
@@ -3479,16 +5034,33 @@ mod tests {
             let fields: Vec<&str> = row.split_whitespace().collect();
             match fields[0] {
                 "resource" | "empty" => {
-                    let bounds = std::array::from_fn(|side| std::array::from_fn(|axis| f32::from_bits(fields[1 + side * 3 + axis].parse().unwrap())));
-                    let actual = if fields[0] == "empty" { static_resource_bounds(None) } else { static_resource_bounds(Some(resource_bounds(&bounds))) };
-                    assert_eq!(actual.map(|side| side.map(f32::to_bits)), bounds.map(|side| side.map(f32::to_bits)));
-                    if fields[0] == "resource" { assert!(std::ptr::eq(actual, &bounds)); }
+                    let bounds = std::array::from_fn(|side| {
+                        std::array::from_fn(|axis| {
+                            f32::from_bits(fields[1 + side * 3 + axis].parse().unwrap())
+                        })
+                    });
+                    let actual = if fields[0] == "empty" {
+                        static_resource_bounds(None)
+                    } else {
+                        static_resource_bounds(Some(resource_bounds(&bounds)))
+                    };
+                    assert_eq!(
+                        actual.map(|side| side.map(f32::to_bits)),
+                        bounds.map(|side| side.map(f32::to_bits))
+                    );
+                    if fields[0] == "resource" {
+                        assert!(std::ptr::eq(actual, &bounds));
+                    }
                 }
                 "prefix" => {
                     let flags = fields[1].parse().unwrap();
                     let shape = fields[2].parse().unwrap();
-                    let region = std::array::from_fn(|axis| f32::from_bits(fields[3 + axis].parse().unwrap()));
-                    let camera = std::array::from_fn(|axis| f32::from_bits(fields[7 + axis].parse().unwrap()));
+                    let region = std::array::from_fn(|axis| {
+                        f32::from_bits(fields[3 + axis].parse().unwrap())
+                    });
+                    let camera = std::array::from_fn(|axis| {
+                        f32::from_bits(fields[7 + axis].parse().unwrap())
+                    });
                     let accepted = model_eligible(flags, shape) && in_model_region(camera, region);
                     assert_eq!(accepted, fields[10] == "1", "native registry case {count}");
                 }
@@ -3512,13 +5084,36 @@ mod tests {
             let vector = |start: usize| std::array::from_fn(|axis| value(start + axis));
             let basis = |start: usize| std::array::from_fn(|axis| vector(start + axis * 3));
             let (actual, expected): (Vec<f32>, Vec<f32>) = match fields[0] {
-                "base" => { assert_eq!(base_callback() as u32, bits(1)); checked += 1; continue; }
-                "matrix" => (affine_rows(vector(1), basis(4), vector(13)).into_iter().flatten().collect(), (16..32).map(value).collect()),
-                "bounds" | "static_bounds" => (transformed_bounds([vector(1), vector(4)], vector(7), basis(10), vector(19)).into_iter().flatten().collect(), (22..28).map(value).collect()),
-                "region" => (range_region([vector(1), vector(4)], value(7)).to_vec(), (8..12).map(value).collect()),
+                "base" => {
+                    assert_eq!(base_callback() as u32, bits(1));
+                    checked += 1;
+                    continue;
+                }
+                "matrix" => (
+                    affine_rows(vector(1), basis(4), vector(13))
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                    (16..32).map(value).collect(),
+                ),
+                "bounds" | "static_bounds" => (
+                    transformed_bounds([vector(1), vector(4)], vector(7), basis(10), vector(19))
+                        .into_iter()
+                        .flatten()
+                        .collect(),
+                    (22..28).map(value).collect(),
+                ),
+                "region" => (
+                    range_region([vector(1), vector(4)], value(7)).to_vec(),
+                    (8..12).map(value).collect(),
+                ),
                 kind => panic!("unknown native model geometry case {kind}"),
             };
-            assert_eq!(actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{line}");
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{line}"
+            );
             checked += 1;
         }
         assert_eq!(checked, 355);
@@ -3539,7 +5134,10 @@ mod tests {
     fn visibility_reaches_children_without_parent_model() {
         let mut root = VisibilityNode {
             model_flags: None,
-            children: vec![VisibilityNode { model_flags: Some(0), children: vec![] }],
+            children: vec![VisibilityNode {
+                model_flags: Some(0),
+                children: vec![],
+            }],
         };
         root.set_visible(true);
         assert_eq!(root.children[0].model_flags, Some(3));
@@ -3557,8 +5155,18 @@ mod tests {
 
     #[test]
     fn surface_reduction_clears_only_derived_bits_and_ors_all_surfaces() {
-        let a = SurfaceFlags { byte_48: 0, byte_4b: 4, byte_4c: 0, parameter_14229d460: 0.0 };
-        let b = SurfaceFlags { byte_48: 1, byte_4b: 0, byte_4c: 0x41, parameter_14229d460: 0.002 };
+        let a = SurfaceFlags {
+            byte_48: 0,
+            byte_4b: 4,
+            byte_4c: 0,
+            parameter_14229d460: 0.0,
+        };
+        let b = SurfaceFlags {
+            byte_48: 1,
+            byte_4b: 0,
+            byte_4c: 0x41,
+            parameter_14229d460: 0.002,
+        };
         assert_eq!(reduce_surface_flags([0xff, 0xff], &[]), [0x0f, 0xfe]);
         assert_eq!(reduce_surface_flags([0xff, 0xff], &[a]), [0x0f, 0xfe]);
         assert_eq!(reduce_surface_flags([0, 4], &[b, a]), [0xf0, 5]);

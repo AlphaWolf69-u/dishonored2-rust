@@ -30,6 +30,21 @@ pub struct Document {
     pub definitions: Vec<Definition>,
 }
 
+/// Authored visuals shadow preset. Missing partial-update overrides stay unresolved;
+/// they must not silently replace the native object's inherited/default value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShadowQualitySettings {
+    pub cull_distance: f32,
+    pub parallel_partial_dynamic_update: Option<bool>,
+    pub local_partial_dynamic_threshold: f32,
+    pub local_partial_squared_distance: f32,
+    pub parallel_resolution_divider: u32,
+    pub local_low_resolution_divider: bool,
+    pub depth_32_bits: bool,
+    pub parallel_slice_count: u32,
+    pub cascade_fars: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentBinding {
     pub entity_id: String,
@@ -210,6 +225,31 @@ pub struct EnvironmentRenderParameters {
     pub layers: Vec<EnvironmentRenderParameterLayer>,
 }
 
+impl EnvironmentRenderParameters {
+    /// Resolve an authored scalar: current layer precedes inherited layers,
+    /// and later assignments within that layer replace earlier ones. Native
+    /// registered names use mixed case while the shipped env keys are lowercase.
+    /// Missing data remains unresolved; vector/texture parms are not scalar floats.
+    pub fn scalar_parameter(&self, name: &str) -> Result<Option<f32>, String> {
+        for layer in &self.layers {
+            if let Some((_, value)) = layer
+                .parameters
+                .iter()
+                .rev()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            {
+                return value.trim().parse().map(Some).map_err(|_| {
+                    format!(
+                        "{}: render parm {name} is not a scalar float",
+                        layer.resource
+                    )
+                });
+            }
+        }
+        Ok(None)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlacedEnvironmentVolume {
     pub id: String,
@@ -235,6 +275,18 @@ impl<'a> Lexer<'a> {
                 while self.at < bytes.len() && bytes[self.at] != b'\n' {
                     self.at += 1;
                 }
+            } else if bytes[self.at] == b'/' && bytes.get(self.at + 1) == Some(&b'*') {
+                // Original renderparm declarations also use block comments
+                // between header tokens (particleParametersInstanceType).
+                let start = self.at;
+                self.at += 2;
+                while self.at + 1 < bytes.len() && &bytes[self.at..self.at + 2] != b"*/" {
+                    self.at += 1;
+                }
+                if self.at + 1 >= bytes.len() {
+                    return Err(format!("unterminated block comment at byte {start}"));
+                }
+                self.at += 2;
             } else {
                 break;
             }
@@ -267,7 +319,10 @@ impl<'a> Lexer<'a> {
                 }
             } else if byte == b'"' || byte == b'\'' {
                 quote = Some(byte);
-            } else if byte.is_ascii_whitespace() || matches!(byte, b'{' | b'}' | b'=' | b';') {
+            } else if byte.is_ascii_whitespace()
+                || matches!(byte, b'{' | b'}' | b'=' | b';')
+                || (byte == b'/' && matches!(bytes.get(self.at + 1), Some(b'/') | Some(b'*')))
+            {
                 break;
             }
             self.at += 1;
@@ -426,6 +481,47 @@ pub fn world_environment(document: &Document) -> Option<String> {
         .iter()
         .find_map(|definition| find_atom(&definition.fields, "m_worldEnvironment"))
         .map(str::to_owned)
+}
+
+/// Authored arkWorld `m_farShadowsArea` (24-byte idBounds at +0x4a8;
+/// registration 1415e0e46/1415e0e6d). FUN_14035f5b0 selects this box or
+/// the static world's query-header box; absence is not a guessed zero box.
+pub fn world_far_shadow_bounds(document: &Document) -> Result<Option<[[f32; 3]; 2]>, String> {
+    fn find<'a>(fields: &'a [(String, Value)], output: &mut Vec<&'a Value>) {
+        for (key, value) in fields {
+            if key == "m_farShadowsArea" || key.ends_with(" m_farShadowsArea") {
+                output.push(value);
+            } else if let Value::Scope(nested) = value {
+                find(nested, output);
+            }
+        }
+    }
+    let mut fields = Vec::new();
+    for definition in &document.definitions {
+        find(&definition.fields, &mut fields);
+    }
+    let value = match fields.as_slice() {
+        [] => return Ok(None),
+        [value] => *value,
+        _ => return Err("multiple world m_farShadowsArea owners".into()),
+    };
+    let Value::Scope(area) = value else {
+        return Err("m_farShadowsArea must be an idBounds scope".into());
+    };
+    let corners = scope(field(area, "b")).ok_or("m_farShadowsArea missing idBounds b")?;
+    let mut bounds = [[0.0; 3]; 2];
+    for (index, corner) in bounds.iter_mut().enumerate() {
+        let key = format!("b[{index}]");
+        let coordinates =
+            scope(field(corners, &key)).ok_or_else(|| format!("m_farShadowsArea missing {key}"))?;
+        for (axis, name) in ["x", "y", "z"].iter().enumerate() {
+            corner[axis] = light_atom(coordinates, name)
+                .ok_or_else(|| format!("m_farShadowsArea {key} missing {name}"))?
+                .parse()
+                .map_err(|_| format!("m_farShadowsArea {key} invalid {name}"))?;
+        }
+    }
+    Ok(Some(bounds))
 }
 
 fn decode_environment_source(source: &str) -> String {
@@ -714,7 +810,14 @@ where
     }
 
     let mut layers = Vec::new();
-    visit(resource, source, &mut resolve, &mut Vec::new(), 0, &mut layers)?;
+    visit(
+        resource,
+        source,
+        &mut resolve,
+        &mut Vec::new(),
+        0,
+        &mut layers,
+    )?;
     Ok(EnvironmentRenderParameters { layers })
 }
 
@@ -766,6 +869,297 @@ fn decl_number(text: &str) -> bool {
     text.trim_end_matches('m').parse::<f32>().is_ok()
 }
 
+/// First declaration body token, using the same lexer as the full parser.
+/// Render-parameter declarations have a positional type header, not key/value fields.
+pub fn declaration_type_name(text: &str) -> Result<&str, String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    let token = parser.atom()?;
+    Ok(token
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(token))
+}
+
+// Shared final conversion in 140342830/140342ce0 and token converter
+// 1401461c0. Kept in this lower-level module: entities is also compiled by
+// archive/analysis binaries which do not contain the render-program module.
+// CVTTSS2SI returns 0x80000000 for NaN/overflow, not Rust's saturation.
+pub(crate) fn native_integer_word(word: u32, declaration_flags: u32) -> u32 {
+    if declaration_flags & 15 != 12 && declaration_flags & 0x30 == 0x30 {
+        let value = f32::from_bits(word);
+        if (-2147483648.0..2147483648.0).contains(&value) {
+            value as i32 as u32
+        } else {
+            0x8000_0000
+        }
+    } else {
+        word
+    }
+}
+
+/// Numeric-token conversion, FUN_1401461c0, for valid lexer token spellings.
+/// Flags are supplied, NOT inferred here. Decimal integers accumulate their
+/// float value one digit at a time; casting the finished u64 is not equivalent.
+/// The decimal float path is original VS2012 atof -> f32. The unmodified native
+/// converter/CRT is exercised by analysis/probe_original_numeric_token.py.
+pub fn numeric_token_value(spelling: &str, flags: u32) -> Result<(u64, u32, u32), String> {
+    let cached = flags | 0x20000;
+    if flags & 0x100 != 0 {
+        let word = if flags & 0x1000 != 0 {
+            0x7f80_0000
+        } else if flags & 0x2000 != 0 {
+            0xffc0_0000
+        } else if flags & 0x4000 != 0 {
+            0x7fc0_0000
+        } else {
+            let text = spelling.trim_end_matches(['f', 'F', 'l', 'L']);
+            (text
+                .parse::<f64>()
+                .map_err(|error| format!("numeric float {spelling:?}: {error}"))?
+                as f32)
+                .to_bits()
+        };
+        let integer = native_integer_word(word, 0x30) as i32 as i64 as u64;
+        return Ok((integer, word, cached));
+    }
+    let mut integer = 0u64;
+    let mut floating = 0.0f32;
+    if flags & 2 != 0 {
+        for digit in spelling.bytes() {
+            if !digit.is_ascii_digit() {
+                return Err(format!("invalid decimal token {spelling:?}"));
+            }
+            let value = digit - b'0';
+            integer = integer.wrapping_mul(10).wrapping_add(u64::from(value));
+            floating = floating * 10.0 + f32::from(value);
+        }
+        return Ok((integer, floating.to_bits(), cached));
+    }
+    if flags & 0x8000 != 0 {
+        // Native address tokens right-pad EACH dotted group to three digits.
+        // Their optional port is not part of this numeric value.
+        for group in spelling.split(':').next().unwrap().split('.') {
+            if group.is_empty() || group.len() > 3 || !group.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("invalid native address token {spelling:?}"));
+            }
+            for digit in group.bytes() {
+                integer = integer
+                    .wrapping_mul(10)
+                    .wrapping_add(u64::from(digit - b'0'));
+            }
+            integer = integer.wrapping_mul(10u64.pow(3 - group.len() as u32));
+        }
+    } else {
+        let (radix, skip) = if flags & 8 != 0 {
+            (8, 1)
+        } else if flags & 4 != 0 {
+            (16, 2)
+        } else if flags & 0x10 != 0 {
+            (2, 2)
+        } else {
+            (0, 0)
+        };
+        if radix != 0 {
+            let digits = spelling
+                .get(skip..)
+                .ok_or_else(|| format!("short numeric token {spelling:?}"))?;
+            for digit in digits.chars() {
+                let value = digit
+                    .to_digit(radix)
+                    .ok_or_else(|| format!("invalid base-{radix} token {spelling:?}"))?;
+                integer = integer
+                    .wrapping_mul(u64::from(radix))
+                    .wrapping_add(u64::from(value));
+            }
+        }
+    }
+    let signed = integer as i64;
+    floating = signed as f32;
+    if signed < 0 {
+        floating += f32::from_bits(0x5f80_0000);
+    }
+    Ok((integer, floating.to_bits(), cached))
+}
+
+/// Decimal floating-vector branch of FUN_1402da730. A single value splats;
+/// two/three values leave the remaining lanes ZERO, not inherited defaults.
+/// Named-color lookup through DAT_14229c5a8 and integer/bool vector kinds are
+/// separate unresolved paths, explicitly not substituted here.
+fn float_vector_literal(parser: &mut Parser<'_>) -> Result<[u32; 4], String> {
+    let braced = parser.ahead == Some(Token::Open);
+    let mut text = String::new();
+    if braced {
+        parser.advance()?;
+        while parser.ahead != Some(Token::Close) {
+            text.push_str(parser.atom()?);
+            text.push(' ');
+        }
+        parser.expect(Token::Close)?;
+    } else {
+        let first = parser.atom()?;
+        text.push_str(first);
+        if first == "-" {
+            text.push_str(parser.atom()?);
+        }
+    }
+    let parts: Vec<_> = text.split(',').collect();
+    if parts.is_empty() || parts.len() > 4 || (!braced && parts.len() != 1) {
+        return Err("unsupported vector constant length".into());
+    }
+    let mut words = [0; 4];
+    for (word, part) in words.iter_mut().zip(&parts) {
+        let part = part.trim();
+        let (negative, number) = part
+            .strip_prefix('-')
+            .map_or((false, part), |rest| (true, rest.trim_start()));
+        if !number
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'.')
+        {
+            return Err(format!("Non numeric term in vector constant: {part:?}"));
+        }
+        let floating = number.contains(['.', 'e', 'E']) || number.ends_with(['f', 'F', 'l', 'L']);
+        if !floating && number.len() > 1 && number.starts_with('0') {
+            return Err(format!("unresolved nondecimal vector token {number:?}"));
+        }
+        *word = numeric_token_value(number, if floating { 0x100 } else { 2 })?.1;
+        if negative {
+            *word ^= 0x8000_0000;
+        }
+    }
+    if parts.len() == 1 {
+        let first = words[0];
+        words.fill(first);
+    }
+    Ok(words)
+}
+
+/// Read the numeric initializer, not the complete range/instance/attribute
+/// declaration. Native metadata does not clamp GetVector's four raw words.
+pub fn declaration_float_vector_default(text: &str) -> Result<[u32; 4], String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    match parser
+        .atom()?
+        .trim_matches('"')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "vec" => (),
+        "uniform" => match parser.atom()?.to_ascii_lowercase().as_str() {
+            "float" | "float2" | "float3" | "float4" => (),
+            kind => return Err(format!("unresolved floating uniform type {kind:?}")),
+        },
+        kind => return Err(format!("not a floating uniform declaration: {kind:?}")),
+    }
+    float_vector_literal(&mut parser)
+}
+
+/// Material-root numeric overrides for declarations the CALLER has identified
+/// as floating Uniforms. Preserve duplicate order; Native GetVector selects the
+/// last entry. Nested options/state/parms cannot override a root uniform.
+pub fn material_float_parameters(
+    text: &str,
+    mut is_parameter: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, [u32; 4])>, String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    let mut values = Vec::new();
+    while parser.ahead != Some(Token::Close) {
+        let name = parser.atom()?.trim_matches('"').to_ascii_lowercase();
+        if is_parameter(&name) {
+            values.push((name, float_vector_literal(&mut parser)?));
+        } else {
+            match parser.advance()? {
+                Some(Token::Open) => {
+                    let mut depth = 1;
+                    while depth != 0 {
+                        match parser.advance()? {
+                            Some(Token::Open) => depth += 1,
+                            Some(Token::Close) => depth -= 1,
+                            None => return Err("unterminated material parameter scope".into()),
+                            _ => (),
+                        }
+                    }
+                }
+                Some(Token::Atom(first)) => {
+                    // Original material files contain nested inline image
+                    // programs, e.g. ipr_constantcolor(0.1, 0.2, 0.3, 1).
+                    // Skip the WHOLE value, not its first whitespace atom.
+                    // This does not evaluate or replace the image program.
+                    let parentheses = |text: &str| -> i32 {
+                        if text.starts_with('"') {
+                            return 0;
+                        }
+                        text.bytes()
+                            .map(|byte| match byte {
+                                b'(' => 1,
+                                b')' => -1,
+                                _ => 0,
+                            })
+                            .sum()
+                    };
+                    let mut depth = parentheses(first);
+                    if depth == 0
+                        && matches!(parser.ahead, Some(Token::Atom(text)) if text.starts_with('('))
+                    {
+                        depth = parentheses(parser.atom()?);
+                    }
+                    while depth > 0 {
+                        depth += parentheses(parser.atom()?);
+                    }
+                    if depth < 0 {
+                        return Err("unbalanced material image-program expression".into());
+                    }
+                }
+                other => return Err(format!("missing material parameter value: {other:?}")),
+            }
+        }
+    }
+    parser.expect(Token::Close)?;
+    if parser.ahead.is_some() {
+        return Err("trailing material parameter data".into());
+    }
+    Ok(values)
+}
+
+/// Decimal option defaults: 1402d9f10 case 12 calls 14013cb90 after the
+/// type/optional NotBakeable token. Other native numeric spellings remain
+/// explicit errors here, never a fabricated zero.
+pub fn declaration_option_default(text: &str) -> Result<i32, String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    if !parser
+        .atom()?
+        .trim_matches('"')
+        .eq_ignore_ascii_case("option")
+    {
+        return Err("not an option declaration".into());
+    }
+    let mut token = parser.atom()?;
+    if token.eq_ignore_ascii_case("NotBakeable") {
+        token = parser.atom()?;
+    }
+    let negative = token == "-";
+    if negative {
+        token = parser.atom()?;
+    }
+    let digits = token.strip_prefix('-').unwrap_or(token);
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(format!("unsupported native option integer {token:?}"));
+    }
+    let value = token
+        .parse::<i32>()
+        .map_err(|error| format!("option integer {token:?}: {error}"))?;
+    Ok(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
+}
+
 /// Parse a declaration's root `{ ... }` body. Unlike level definitions, some
 /// declaration scopes omit `=` after the field name (for example `editorVars`).
 pub fn parse_declaration(text: &str) -> Result<Vec<(String, Value)>, String> {
@@ -777,6 +1171,101 @@ pub fn parse_declaration(text: &str) -> Result<Vec<(String, Value)>, String> {
         return Err("trailing data after declaration".into());
     }
     Ok(fields)
+}
+
+/// arkQualityPresets_t's literal value/name table, initialized by
+/// FUN_141a15b40 at 0x143df48f0. FUN_141a20e70 registers this table at
+/// enum record 0x143e08ed0 (table pointer +0x10); FUN_14050ff40 looks it up
+/// through the "arkQualityPresets_t" key and selects the 0x2c-byte row.
+/// AUTO is an enum member, not permission to invent a missing shadow row.
+pub fn visual_quality_preset_name(preset: u32) -> Option<&'static str> {
+    [
+        "VERY_LOW_QUALITY",
+        "LOW_QUALITY",
+        "MEDIUM_QUALITY",
+        "HIGH_QUALITY",
+        "VERY_HIGH_QUALITY",
+        "ULTRA_QUALITY",
+        "AUTO_QUALITY",
+    ]
+    .get(preset as usize)
+    .copied()
+}
+
+pub fn shadow_quality_settings_for_preset(
+    source: &str,
+    preset: u32,
+) -> Result<Option<ShadowQualitySettings>, String> {
+    match visual_quality_preset_name(preset) {
+        Some(name) => shadow_quality_settings(source, name),
+        None => Ok(None),
+    }
+}
+
+/// Read the selected original visuals declaration row. Uses the existing
+/// declaration grammar and preserves omitted native default/inherited settings.
+/// Metadata: arkShadowsSettings (0x2c-byte rows), FUN_14050ff40.
+pub fn shadow_quality_settings(
+    source: &str,
+    quality: &str,
+) -> Result<Option<ShadowQualitySettings>, String> {
+    let fields = parse_declaration(source)?;
+    let Some(edit) = scope(field(&fields, "edit")) else {
+        return Ok(None);
+    };
+    let Some(table) = scope(field(edit, "m_shadowsSettings")) else {
+        return Ok(None);
+    };
+    let key = format!("enumItem[{quality}]");
+    let Some(selected) = field(table, &key) else {
+        return Ok(None);
+    };
+    let Value::Scope(row) = selected else {
+        return Err(format!("shadow preset {quality}: expected a scope"));
+    };
+    let atom = |name: &str| {
+        light_atom(row, name)
+            .ok_or_else(|| format!("shadow preset {quality}: missing or non-atom {name}"))
+    };
+    let number = |name: &str| -> Result<f32, String> {
+        atom(name)?
+            .parse()
+            .map_err(|_| format!("shadow preset {quality}: invalid {name}"))
+    };
+    let integer = |name: &str| -> Result<u32, String> {
+        atom(name)?
+            .parse()
+            .map_err(|_| format!("shadow preset {quality}: invalid {name}"))
+    };
+    let boolean = |name: &str| -> Result<bool, String> {
+        atom(name)?
+            .parse()
+            .map_err(|_| format!("shadow preset {quality}: invalid {name}"))
+    };
+    let cascade = scope(field(row, "m_shadowCascadeFars"))
+        .ok_or_else(|| format!("shadow preset {quality}: missing m_shadowCascadeFars"))?;
+    let mut cascade_fars = [0.0; 4];
+    for (index, axis) in ["x", "y", "z", "w"].iter().enumerate() {
+        cascade_fars[index] = light_atom(cascade, axis)
+            .ok_or_else(|| format!("shadow preset {quality}: missing cascade {axis}"))?
+            .parse()
+            .map_err(|_| format!("shadow preset {quality}: invalid cascade {axis}"))?;
+    }
+    Ok(Some(ShadowQualitySettings {
+        cull_distance: number("m_shadowCullDistance")?,
+        parallel_partial_dynamic_update: field(row, "m_shadowParallelPartialDynaUpdate")
+            .map(|_| boolean("m_shadowParallelPartialDynaUpdate"))
+            .transpose()?,
+        local_partial_dynamic_threshold: number("m_shadowSpotAndOmniPartUpdateDynaThreshold")?,
+        local_partial_squared_distance: number(
+            "m_shadowSpotAndOmniPartUpdateDynaSqrDistanceThreshold",
+        )?,
+        parallel_resolution_divider: integer("m_shadowParallelResolutionDividerLevel")?,
+        local_low_resolution_divider: boolean("m_shadowSpotAndOmniLowResolutionDividerEnabled")?,
+        depth_32_bits: boolean("m_shadows32Bits")?,
+        parallel_slice_count: integer("m_shadowParallelSliceCnt")?,
+        cascade_fars,
+    }))
 }
 
 pub fn has_key(fields: &[(String, Value)], wanted: &str) -> bool {
@@ -1121,14 +1610,23 @@ pub fn component_bindings(document: &Document) -> Vec<ComponentBinding> {
 
 /// Enum tables initialized by FUN_141a10ca0 and FUN_141a10ea0.
 pub fn rigid_body_shape_kind(name: &str) -> Option<u8> {
-    ["PHYSICS_SHAPE_HKT", "PHYSICS_SHAPE_CONVEX", "PHYSICS_SHAPE_MESH",
-        "PHYSICS_SHAPE_BOX", "PHYSICS_SHAPE_CONVEX_DECOMPOSITION"]
-        .iter().position(|&value| value == name).map(|index| index as u8)
+    [
+        "PHYSICS_SHAPE_HKT",
+        "PHYSICS_SHAPE_CONVEX",
+        "PHYSICS_SHAPE_MESH",
+        "PHYSICS_SHAPE_BOX",
+        "PHYSICS_SHAPE_CONVEX_DECOMPOSITION",
+    ]
+    .iter()
+    .position(|&value| value == name)
+    .map(|index| index as u8)
 }
 
 pub fn rigid_body_behavior_kind(name: &str) -> Option<u8> {
     ["BEHAVIOR_STATIC", "BEHAVIOR_KEYFRAMED", "BEHAVIOR_DYNAMIC"]
-        .iter().position(|&value| value == name).map(|index| index as u8)
+        .iter()
+        .position(|&value| value == name)
+        .map(|index| index as u8)
 }
 
 /// Read every map-local rigid-body binding, including empty declarations.
@@ -1158,13 +1656,18 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
             Some(RigidBodySettings {
                 entity_id: binding.entity_id,
                 declaration_id: binding.declaration_id,
-                shape_type: Some(atom("m_ShapeType").unwrap_or_else(|| "PHYSICS_SHAPE_CONVEX".into())),
-                physics_behavior: Some(atom("m_PhysicsBehavior").unwrap_or_else(|| "BEHAVIOR_DYNAMIC".into())),
+                shape_type: Some(
+                    atom("m_ShapeType").unwrap_or_else(|| "PHYSICS_SHAPE_CONVEX".into()),
+                ),
+                physics_behavior: Some(
+                    atom("m_PhysicsBehavior").unwrap_or_else(|| "BEHAVIOR_DYNAMIC".into()),
+                ),
                 extra_hd_material: atom("m_materialForExtraHDcollision"),
                 collision_layer: atom("m_CollisionLayer"),
                 material: atom("m_MaterialOverride"),
                 mass_override,
-                descriptor_mass_override: mass_override.filter(|&mass| mass > f32::from_bits(0x3c23d70a)),
+                descriptor_mass_override: mass_override
+                    .filter(|&mass| mass > f32::from_bits(0x3c23d70a)),
                 density_override: atom("m_densityOverride").and_then(|value| value.parse().ok()),
                 start_asleep: match atom("m_startAsleep") {
                     Some(value) => value.parse().ok(),
@@ -1173,7 +1676,10 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                 angular_damping: number("m_angularDamping", 0.0),
                 damage: atom("m_damage"),
                 velocity_damage_threshold: number("m_velocityDamageThreshold", 0.1),
-                velocity_damage_threshold_when_dropped: number("m_velocityDamageThresholdWhenDropped", 20.0),
+                velocity_damage_threshold_when_dropped: number(
+                    "m_velocityDamageThresholdWhenDropped",
+                    20.0,
+                ),
                 contact_impulse_max_damage: number("m_contactImpulseMaxDamage", 10.0),
                 min_contact_impulse_for_damage: number("m_minContactImpulseForDamage", 10.0),
                 max_contact_impulse_for_damage: number("m_maxContactImpulseForDamage", 100.0),
@@ -1641,6 +2147,243 @@ mod tests {
     use super::*;
 
     #[test]
+    fn numeric_tokens_match_unmodified_original_converter() {
+        let mut count = 0;
+        for line in include_str!("../analysis/original_numeric_token_cases.txt")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+        {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let flags = u32::from_str_radix(fields[0], 16).unwrap();
+            let bytes: Vec<_> = fields[1]
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            let text = String::from_utf8(bytes).unwrap();
+            let expected = (
+                u64::from_str_radix(fields[2], 16).unwrap(),
+                u32::from_str_radix(fields[3], 16).unwrap(),
+                u32::from_str_radix(fields[4], 16).unwrap(),
+            );
+            assert_eq!(
+                numeric_token_value(&text, flags).unwrap(),
+                expected,
+                "flags={flags:x} token={text}"
+            );
+            count += 1;
+        }
+        assert_eq!(count, 789);
+    }
+
+    #[test]
+    fn vector_initializers_follow_native_splat_zero_tail_and_sign_rules() {
+        let parse = |text| {
+            declaration_float_vector_default(text)
+                .unwrap()
+                .map(f32::from_bits)
+        };
+        assert_eq!(parse("{ Vec 0.06f }"), [0.06; 4]);
+        assert_eq!(
+            parse("{ UNIFORM float4 {1,2} range [{0}, {10}] }"),
+            [1.0, 2.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            parse("{ uniform float3 {1, - 2, 3} }"),
+            [1.0, -2.0, 3.0, 0.0]
+        );
+        assert_eq!(
+            declaration_float_vector_default("{ Vec {- 0.0f} }").unwrap(),
+            [0x8000_0000; 4]
+        );
+        assert_eq!(
+            parse("{ Uniform float4/* no space */{1e-3, .5f, 2, 3} }"),
+            [0.001, 0.5, 2.0, 3.0]
+        );
+        for text in [
+            "{ Vec }",
+            "{ Vec {} }",
+            "{ Vec {1 2} }",
+            "{ Vec {1,} }",
+            "{ Vec {1,2,3,4,5} }",
+            "{ Vec namedColor }",
+            "{ uniform uint4 {1} }",
+            "{ Vec 010 }",
+        ] {
+            assert!(declaration_float_vector_default(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn material_vectors_preserve_root_order_and_do_not_inherit_nested_values() {
+        let text =
+            "{ options { leaf {9} } image \"a/b.tga\" Leaf {1,2} /* body */ leaf - 0.0f leaf{3} }";
+        let values = material_float_parameters(text, |name| name == "leaf").unwrap();
+        assert_eq!(values.len(), 3);
+        assert_eq!(
+            values[0],
+            ("leaf".into(), [1.0f32.to_bits(), 2.0f32.to_bits(), 0, 0])
+        );
+        assert_eq!(values[1].1, [0x8000_0000; 4]);
+        assert_eq!(values[2].1, [3.0f32.to_bits(); 4]);
+        assert!(material_float_parameters("{ leaf { 1, 2 }", |_| true).is_err());
+    }
+
+    #[test]
+    fn material_vectors_skip_complete_inline_image_programs() {
+        let text = r#"{ image ipr_constantcolor(0.1, 0.2, 0.3, 1)
+            image2 ipr_nested ( ipr_constantcolor(1, 0, 0, 1), "path(with parentheses).tga" )
+            image3 "unbalanced(path.tga" leaf { 3, 2, 1, 0 } }"#;
+        let values = material_float_parameters(text, |name| name == "leaf").unwrap();
+        assert_eq!(
+            values,
+            [("leaf".into(), [3.0f32, 2.0, 1.0, 0.0].map(f32::to_bits))]
+        );
+        assert!(material_float_parameters("{ image ipr_color(0, 1 leaf {2} }", |_| false).is_err());
+        assert!(
+            material_float_parameters("{ image ipr_color(0, 1)) leaf {2} }", |_| false).is_err()
+        );
+    }
+
+    #[test]
+    fn option_default_uses_shared_lexer_and_never_guesses_missing_values() {
+        assert_eq!(
+            declaration_option_default("{ option /* value */ 2 }").unwrap(),
+            2
+        );
+        assert_eq!(
+            declaration_option_default("{ OPTION NotBakeable - 3 }").unwrap(),
+            -3
+        );
+        assert_eq!(
+            declaration_option_default("{ option -2147483648 }").unwrap(),
+            i32::MIN
+        );
+        assert!(declaration_option_default("{ option }").is_err());
+        assert!(declaration_option_default("{ uniform int 1 }").is_err());
+        assert!(declaration_option_default("{ option 0x10 }").is_err());
+        assert!(declaration_option_default("{ option 1.5 }").is_err());
+    }
+
+    #[test]
+    fn declaration_header_uses_shared_comment_lexer() {
+        assert_eq!(
+            declaration_type_name("/* leading */ { /* header */ Uniform // tail\n float4 }")
+                .unwrap(),
+            "Uniform"
+        );
+        assert_eq!(
+            declaration_type_name("{\"Texture2D\" float4 _default}").unwrap(),
+            "Texture2D"
+        );
+        assert!(declaration_type_name("{ /* unterminated").is_err());
+        assert!(declaration_type_name("{/*/").is_err());
+        assert!(declaration_type_name("{}").is_err());
+    }
+
+    #[test]
+    fn world_far_shadow_bounds_preserve_authored_idbounds() {
+        let document = parse(
+            r#"Version 1
+            entity { arkWorld world { edit {
+                m_farShadowsArea = { b = {
+                    b[0] = { x = -5; y = -9; z = -3; }
+                    b[1] = { x = 12; y = 21; z = 34; }
+                } }
+            } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            world_far_shadow_bounds(&document).unwrap(),
+            Some([[-5.0, -9.0, -3.0], [12.0, 21.0, 34.0]])
+        );
+        assert_eq!(
+            world_far_shadow_bounds(&parse("Version 1").unwrap()).unwrap(),
+            None
+        );
+        let missing = parse(
+            r#"Version 1 entity { arkWorld world {
+            m_farShadowsArea = { b = { b[0] = { x = 0; y = 0; z = 0; } } }
+        } }"#,
+        )
+        .unwrap();
+        assert!(world_far_shadow_bounds(&missing)
+            .unwrap_err()
+            .contains("missing b[1]"));
+        let duplicate = Document {
+            version: document.version,
+            definitions: vec![
+                Definition {
+                    kind: "entity".into(),
+                    class: "arkWorld".into(),
+                    id: "other".into(),
+                    fields: document.definitions[0].fields.clone(),
+                },
+                Definition {
+                    kind: "entity".into(),
+                    class: "arkWorld".into(),
+                    id: "world".into(),
+                    fields: document.definitions[0].fields.clone(),
+                },
+            ],
+        };
+        assert!(world_far_shadow_bounds(&duplicate)
+            .unwrap_err()
+            .contains("multiple world"));
+    }
+
+    #[test]
+    #[ignore = "requires the user's extracted original level entities"]
+    fn world_far_shadow_bounds_from_installed_level() {
+        let source = std::fs::read_to_string("artifacts/eotw_p_lowchaos.entities").unwrap();
+        let document = parse(&source).unwrap();
+        let bounds = world_far_shadow_bounds(&document).unwrap().unwrap();
+        assert!(bounds.into_iter().flatten().all(f32::is_finite));
+        for axis in 0..3 {
+            assert!(bounds[0][axis] < bounds[1][axis]);
+        }
+    }
+
+    #[test]
+    fn environment_scalar_parameter_uses_native_name_case_and_override_order() {
+        let parameters = environment_render_parameters_with_inheritance(
+            "current",
+            r#"
+            inherit { default }
+            renderParms {
+                env/shadow/hwbiasparallel16 0.03
+                ENV/SHADOW/HWBIASPARALLEL16 0.07
+                other/vector { 1, 2, 3, 4 }
+            }
+        "#,
+            |_| {
+                Ok(Some(
+                    r#"renderParms {
+            env/shadow/hwbiasparallel16 0.02
+            env/shadow/hwbiasparallel32 0.8
+        }"#
+                    .into(),
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            parameters
+                .scalar_parameter("env/shadow/hwBiasParallel16")
+                .unwrap(),
+            Some(0.07)
+        );
+        assert_eq!(
+            parameters
+                .scalar_parameter("env/shadow/hwBiasParallel32")
+                .unwrap(),
+            Some(0.8)
+        );
+        assert_eq!(parameters.scalar_parameter("missing").unwrap(), None);
+        assert!(parameters.scalar_parameter("other/vector").is_err());
+    }
+
+    #[test]
     fn environment_render_parameters_preserve_raw_inherited_layers() {
         let source = r#"inherit {
             default
@@ -1653,10 +2396,8 @@ mod tests {
         audioParms {
             soundAuxBus NULL
         }"#;
-        let parameters = environment_render_parameters_with_inheritance(
-            "eotw/global",
-            source,
-            |parent| {
+        let parameters =
+            environment_render_parameters_with_inheritance("eotw/global", source, |parent| {
                 assert_eq!(parent, "default");
                 Ok(Some(
                     r#"renderParms {
@@ -1666,9 +2407,8 @@ mod tests {
                     audioParms { soundAuxBus parent_only }"#
                         .into(),
                 ))
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(parameters.layers.len(), 2);
         assert_eq!(parameters.layers[0].resource, "eotw/global");
         assert_eq!(parameters.layers[0].parameters.len(), 3);
@@ -1676,14 +2416,8 @@ mod tests {
             parameters.layers[0].parameters[0],
             ("atm/worldfog/enablegodrays".into(), "1".into())
         );
-        assert_eq!(
-            parameters.layers[0].parameters[1].0,
-            "water/watercolor"
-        );
-        assert_eq!(
-            parameters.layers[0].parameters[2].0,
-            "water/watercolor"
-        );
+        assert_eq!(parameters.layers[0].parameters[1].0, "water/watercolor");
+        assert_eq!(parameters.layers[0].parameters[2].0, "water/watercolor");
         assert_eq!(parameters.layers[1].resource, "default");
         assert_eq!(parameters.layers[1].parameters.len(), 2);
         assert_eq!(
@@ -1789,11 +2523,9 @@ entity { entityDef unknown { class = "idLight"; edit = {
         } }"#,
         )
         .unwrap();
-        assert!(
-            placed_lights_with_inheritance(&document, |_| Ok(None))
-                .unwrap_err()
-                .contains("m_lightCulling")
-        );
+        assert!(placed_lights_with_inheritance(&document, |_| Ok(None))
+            .unwrap_err()
+            .contains("m_lightCulling"));
     }
 
     #[test]
@@ -1805,11 +2537,9 @@ entity { entityDef unknown { class = "idLight"; edit = {
         } }"#,
         )
         .unwrap();
-        assert!(
-            placed_lights_with_inheritance(&document, |_| Ok(None))
-                .unwrap_err()
-                .contains("unresolved light declaration inheritance")
-        );
+        assert!(placed_lights_with_inheritance(&document, |_| Ok(None))
+            .unwrap_err()
+            .contains("unresolved light declaration inheritance"));
     }
 
     #[test]
@@ -1863,11 +2593,9 @@ entity { entityDef unknown { class = "idLight"; edit = {
         } }"#,
         )
         .unwrap();
-        assert!(
-            placed_lights_with_inheritance(&document, |_| Ok(None))
-                .unwrap_err()
-                .contains("nonfinite idLight numeric field r")
-        );
+        assert!(placed_lights_with_inheritance(&document, |_| Ok(None))
+            .unwrap_err()
+            .contains("nonfinite idLight numeric field r"));
     }
 
     #[test]
@@ -1955,15 +2683,23 @@ entity { entityDef hanger { edit = { m_componentDecls = {
     #[test]
     fn omitted_rigid_body_fields_use_original_constructor_defaults() {
         for fields in ["", "edit = {}"] {
-            let text = format!(r#"Version 6
+            let text = format!(
+                r#"Version 6
 component {{ cpntRigidBody body {{ {fields} }} }}
 entity {{ entityDef crate {{ edit = {{ m_componentDecls = {{
     item_add["body"] = {{ mapComponentDecl = "body"; }}
-}} }} }} }}"#);
+}} }} }} }}"#
+            );
             let bodies = rigid_body_settings(&parse(&text).unwrap());
             assert_eq!(bodies.len(), 1);
-            assert_eq!(bodies[0].shape_type.as_deref(), Some("PHYSICS_SHAPE_CONVEX"));
-            assert_eq!(bodies[0].physics_behavior.as_deref(), Some("BEHAVIOR_DYNAMIC"));
+            assert_eq!(
+                bodies[0].shape_type.as_deref(),
+                Some("PHYSICS_SHAPE_CONVEX")
+            );
+            assert_eq!(
+                bodies[0].physics_behavior.as_deref(),
+                Some("BEHAVIOR_DYNAMIC")
+            );
             assert_eq!(bodies[0].extra_hd_material, None);
             assert_eq!(bodies[0].material, None);
             assert_eq!(bodies[0].descriptor_mass_override, None);
@@ -1976,11 +2712,20 @@ entity {{ entityDef crate {{ edit = {{ m_componentDecls = {{
             assert_eq!(bodies[0].min_contact_impulse_for_damage, Some(10.0));
             assert_eq!(bodies[0].max_contact_impulse_for_damage, Some(100.0));
         }
-        for (name, value) in [("PHYSICS_SHAPE_HKT", 0), ("PHYSICS_SHAPE_CONVEX", 1),
-            ("PHYSICS_SHAPE_MESH", 2), ("PHYSICS_SHAPE_BOX", 3), ("PHYSICS_SHAPE_CONVEX_DECOMPOSITION", 4)] {
+        for (name, value) in [
+            ("PHYSICS_SHAPE_HKT", 0),
+            ("PHYSICS_SHAPE_CONVEX", 1),
+            ("PHYSICS_SHAPE_MESH", 2),
+            ("PHYSICS_SHAPE_BOX", 3),
+            ("PHYSICS_SHAPE_CONVEX_DECOMPOSITION", 4),
+        ] {
             assert_eq!(rigid_body_shape_kind(name), Some(value));
         }
-        for (name, value) in [("BEHAVIOR_STATIC", 0), ("BEHAVIOR_KEYFRAMED", 1), ("BEHAVIOR_DYNAMIC", 2)] {
+        for (name, value) in [
+            ("BEHAVIOR_STATIC", 0),
+            ("BEHAVIOR_KEYFRAMED", 1),
+            ("BEHAVIOR_DYNAMIC", 2),
+        ] {
             assert_eq!(rigid_body_behavior_kind(name), Some(value));
         }
         assert_eq!(rigid_body_shape_kind("unknown"), None);
@@ -2006,8 +2751,14 @@ entity { entityDef crate { edit = { m_componentDecls = {
         let bodies = rigid_body_settings(&parse(text).unwrap());
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].entity_id, "crate");
-        assert_eq!(bodies[0].physics_behavior.as_deref(), Some("BEHAVIOR_STATIC"));
-        assert_eq!(bodies[0].extra_hd_material.as_deref(), Some("contactsystem/extra"));
+        assert_eq!(
+            bodies[0].physics_behavior.as_deref(),
+            Some("BEHAVIOR_STATIC")
+        );
+        assert_eq!(
+            bodies[0].extra_hd_material.as_deref(),
+            Some("contactsystem/extra")
+        );
         assert_eq!(bodies[0].mass_override, Some(0.5));
         assert_eq!(bodies[0].descriptor_mass_override, Some(0.5));
         assert_eq!(bodies[0].start_asleep, Some(false));
@@ -2022,14 +2773,25 @@ entity { entityDef crate { edit = { m_componentDecls = {
     }
     #[test]
     fn rigid_body_mass_branch_preserves_above_threshold_override_without_guessing_fallback() {
-        for (mass, expected) in [("1", Some(1.0)), ("0.001", None), ("0.01", None),
-            ("0.010000001", Some(f32::from_bits(0x3c23d70b))), ("0", None), ("-0.0", None),
-            ("-2", None), ("NaN", None), ("inf", Some(f32::INFINITY)), ("invalid", None)] {
-            let text = format!(r#"Version 6
+        for (mass, expected) in [
+            ("1", Some(1.0)),
+            ("0.001", None),
+            ("0.01", None),
+            ("0.010000001", Some(f32::from_bits(0x3c23d70b))),
+            ("0", None),
+            ("-0.0", None),
+            ("-2", None),
+            ("NaN", None),
+            ("inf", Some(f32::INFINITY)),
+            ("invalid", None),
+        ] {
+            let text = format!(
+                r#"Version 6
 component {{ cpntRigidBody body {{ edit = {{ m_MassOverride = {mass}; m_densityOverride = 500; }} }} }}
 entity {{ entityDef bucket {{ edit = {{ m_componentDecls = {{
     item_add["body"] = {{ mapComponentDecl = "body"; }}
-}} }} }} }}"#);
+}} }} }} }}"#
+            );
             let bodies = rigid_body_settings(&parse(&text).unwrap());
             assert_eq!(bodies[0].descriptor_mass_override, expected, "{mass}");
             assert_eq!(bodies[0].density_override, Some(500.0));
@@ -2231,6 +2993,100 @@ entity { entityDef pickup { inherit = "entities/child.def"; edit = { spawnPositi
         assert_eq!(children[0].position, [12.0, 22.0, 33.0]);
         assert!((children[0].rotation[0][0] + 2.0).abs() < 1e-5);
         assert!((children[0].rotation[2][2] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shadow_preset_preserves_absent_partial_update_and_rejects_bad_fields() {
+        let source = r#"{ edit = { m_shadowsSettings = { enumItem[HIGH_QUALITY] = {
+            m_shadowCullDistance = 31;
+            m_shadowSpotAndOmniPartUpdateDynaThreshold = 0.375;
+            m_shadowSpotAndOmniPartUpdateDynaSqrDistanceThreshold = 225;
+            m_shadowParallelResolutionDividerLevel = 1;
+            m_shadowSpotAndOmniLowResolutionDividerEnabled = false;
+            m_shadows32Bits = true;
+            m_shadowParallelSliceCnt = 4;
+            m_shadowCascadeFars = { x = 7; y = 9; z = 18; w = 24; }
+        } } } }"#;
+        let preset = shadow_quality_settings(source, "HIGH_QUALITY")
+            .unwrap()
+            .unwrap();
+        assert_eq!(preset.cull_distance, 31.0);
+        assert_eq!(preset.parallel_partial_dynamic_update, None);
+        assert_eq!(preset.local_partial_dynamic_threshold, 0.375);
+        assert_eq!(preset.local_partial_squared_distance, 225.0);
+        assert_eq!(preset.parallel_resolution_divider, 1);
+        assert!(!preset.local_low_resolution_divider);
+        assert!(preset.depth_32_bits);
+        assert_eq!(preset.parallel_slice_count, 4);
+        assert_eq!(preset.cascade_fars, [7.0, 9.0, 18.0, 24.0]);
+        assert!(shadow_quality_settings(source, "ULTRA_QUALITY")
+            .unwrap()
+            .is_none());
+        assert!(
+            shadow_quality_settings(&source.replace("= 31;", "= bad;"), "HIGH_QUALITY").is_err()
+        );
+        assert!(shadow_quality_settings(
+            "{ edit = { m_shadowsSettings = { enumItem[HIGH_QUALITY] = false; } } }",
+            "HIGH_QUALITY"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn visual_quality_values_match_original_enum_initializer() {
+        assert_eq!(visual_quality_preset_name(0), Some("VERY_LOW_QUALITY"));
+        assert_eq!(visual_quality_preset_name(5), Some("ULTRA_QUALITY"));
+        assert_eq!(visual_quality_preset_name(6), Some("AUTO_QUALITY"));
+        assert_eq!(visual_quality_preset_name(7), None);
+        assert_eq!(visual_quality_preset_name(u32::MAX), None);
+        assert!(shadow_quality_settings_for_preset("{ edit = {} }", 5)
+            .unwrap()
+            .is_none());
+        assert!(
+            shadow_quality_settings_for_preset("{ edit = {} }", u32::MAX)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires locally extracted original visuals declaration"]
+    fn shadow_presets_match_installed_visuals_declaration() {
+        let source =
+            std::fs::read_to_string("artifacts/visuals.menusectionoptionvisuals.original.decl")
+                .unwrap();
+        let names = [
+            "VERY_LOW_QUALITY",
+            "LOW_QUALITY",
+            "MEDIUM_QUALITY",
+            "HIGH_QUALITY",
+            "VERY_HIGH_QUALITY",
+            "ULTRA_QUALITY",
+        ];
+        for (index, name) in names.iter().enumerate() {
+            assert_eq!(visual_quality_preset_name(index as u32), Some(*name));
+            let preset = shadow_quality_settings_for_preset(&source, index as u32)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                preset.cull_distance,
+                [15.0, 25.0, 28.0, 32.0, 40.0, 75.0][index]
+            );
+            assert_eq!(
+                preset.parallel_partial_dynamic_update,
+                (index >= 4).then_some(false)
+            );
+            assert_eq!(preset.parallel_slice_count, if index < 4 { 3 } else { 4 });
+            assert_eq!(preset.depth_32_bits, index == 5);
+            assert_eq!(
+                preset.cascade_fars,
+                if index < 4 {
+                    [12.0, 30.0, 75.0, 7000.0]
+                } else {
+                    [4.0, 12.0, 30.0, 75.0]
+                }
+            );
+        }
     }
 
     #[test]
