@@ -107,6 +107,14 @@ def synthetic_cases():
                 f32(thresholds[(index * 3 + layer * 5) % len(thresholds)]),
                 layer,
             ))
+    # Perspective division can produce non-finite coordinates at a light's
+    # projection plane. Capture the actual HLSL saturate/PCF result as well.
+    cases.extend([
+        (float('nan'),.5,.5,0),(.5,float('nan'),.5,1),
+        (float('inf'),.5,.5,0),(float('-inf'),.5,.5,1),
+        (.5,float('inf'),.5,0),(.5,float('-inf'),.5,1),
+        (.5,.5,float('nan'),0),(.5,.5,float('inf'),0),(.5,.5,float('-inf'),1),
+    ])
     return cases
 
 

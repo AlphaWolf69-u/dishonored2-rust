@@ -1,6 +1,49 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
 use std::collections::HashMap;
 
+/// FUN_140135f70 uses SIGNED byte comparisons for unquoted whitespace
+/// (140135ff0/140136028: CMP byte,0x20; JG/JLE). Treating a raw 0xa0 as
+/// invalid UTF-8 instead changes an installed MAIN name into `arkDefault�`.
+/// Preserve quoted content and comment boundaries before decoding the text.
+pub fn native_declaration_text(bytes:&[u8])->std::borrow::Cow<'_,str> {
+    let needs_normalization=|byte:u8|byte>=0x80 || (byte<=32 && !byte.is_ascii_whitespace());
+    if !bytes.iter().copied().any(needs_normalization) {return String::from_utf8_lossy(bytes);}
+    #[derive(Clone,Copy)]
+    enum State { Plain,Quoted(u8),LineComment,BlockComment }
+    let mut state=State::Plain;
+    let mut escaped=false;
+    let mut normalized=bytes.to_vec();
+    let mut at=0;
+    while at<bytes.len() {
+        let byte=bytes[at];
+        match state {
+            State::Quoted(quote)=> {
+                if escaped {escaped=false;}
+                else if byte==b'\\' {escaped=true;}
+                else if byte==quote {state=State::Plain;}
+            }
+            State::LineComment=>if byte==b'\n' {state=State::Plain;},
+            State::BlockComment=>if byte==b'*' && bytes.get(at+1)==Some(&b'/') {
+                state=State::Plain;at+=1;
+            },
+            State::Plain=> {
+                if byte==0 {normalized.truncate(at);break;}
+                if needs_normalization(byte) {normalized[at]=b' ';}
+                else if byte==b'"' || byte==b'\'' {state=State::Quoted(byte);}
+                else if byte==b'/' {
+                    match bytes.get(at+1) {
+                        Some(b'/')=>{state=State::LineComment;at+=1;}
+                        Some(b'*')=>{state=State::BlockComment;at+=1;}
+                        _=>{}
+                    }
+                }
+            }
+        }
+        at+=1;
+    }
+    std::borrow::Cow::Owned(String::from_utf8_lossy(&normalized).into_owned())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token<'a> {
     Atom(&'a str),
@@ -30,8 +73,11 @@ pub struct Document {
     pub definitions: Vec<Definition>,
 }
 
-/// Authored visuals shadow preset. Missing partial-update overrides stay unresolved;
-/// they must not silently replace the native object's inherited/default value.
+/// Authored visuals shadow preset. `cull_distance` is `m_shadowCullDistance`,
+/// loaded into `r_shadowCullDistance` by FUN_14050ff40 (registered default
+/// 25.0f by FUN_141372f00); it is distinct from the per-entry receiver distance
+/// until a producer for `plVar20[1]+0xafc` is proven. Missing partial-update
+/// overrides stay unresolved; never substitute them for inherited settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShadowQualitySettings {
     pub cull_distance: f32,
@@ -44,6 +90,11 @@ pub struct ShadowQualitySettings {
     pub parallel_slice_count: u32,
     pub cascade_fars: [f32; 4],
 }
+
+/// Seven native `arkDeclMenuSectionOptionVisuals` LOD rows initialized by
+/// FUN_140509ae0; the runtime row-ID mapping remains unknown.
+pub const ORIGINAL_DEFAULT_LOD_DISTANCE_ROWS: [[f32; 4]; 7] = [[3.0, 6.0, 12.0, 20.0]; 7];
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentBinding {
@@ -180,6 +231,9 @@ pub struct PlacedLight {
     pub area_shadow_range: f32,
     pub area_energy_conservative: bool,
     pub no_shadows: bool,
+    pub cast_volumetric_shadows:bool,
+    pub dont_alter_volumetric_dynamic_shadow:bool,
+    pub scatter_only:bool,
     pub shadow_near_plane: Option<f32>,
     pub spot_shadow_quality: Option<String>,
     pub visible: bool,
@@ -226,6 +280,10 @@ pub struct EnvironmentRenderParameters {
 }
 
 impl EnvironmentRenderParameters {
+    pub fn parameter(&self,name:&str)->Option<&str> {
+        self.layers.iter().find_map(|layer|layer.parameters.iter().rev()
+            .find(|(key,_)|key.eq_ignore_ascii_case(name)).map(|(_,value)|value.as_str()))
+    }
     /// Resolve an authored scalar: current layer precedes inherited layers,
     /// and later assignments within that layer replace earlier ones. Native
     /// registered names use mixed case while the shipped env keys are lowercase.
@@ -335,6 +393,21 @@ impl<'a> Lexer<'a> {
         }
         Ok(Some(Token::Atom(&self.text[start..self.at])))
     }
+}
+
+/// Shared original-declaration tokenization; keep drawing-state parsing on the
+/// same comment/string rules as material and render-parameter declarations.
+pub(crate) fn declaration_lexemes(text: &str) -> Result<Vec<&str>, String> {
+    let mut lexer = Lexer { text, at: 0 };
+    let mut result = Vec::new();
+    while let Some(token) = lexer.next()? {
+        result.push(match token {
+            Token::Atom(value) => value.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value),
+            Token::Open => "{", Token::Close => "}",
+            Token::Equals => "=", Token::Semicolon => ";",
+        });
+    }
+    Ok(result)
 }
 
 struct Parser<'a> {
@@ -1057,6 +1130,85 @@ pub fn declaration_float_vector_default(text: &str) -> Result<[u32; 4], String> 
     float_vector_literal(&mut parser)
 }
 
+/// Skip one material value with the same lexer used for numeric parameters.
+/// Inline image programs may contain spaces/nested parentheses; scopes may
+/// contain arbitrary nonnumeric values. Neither is an option-key boundary.
+fn skip_material_value(parser: &mut Parser<'_>) -> Result<(), String> {
+    match parser.advance()? {
+        Some(Token::Open) => {
+            let mut depth = 1;
+            while depth != 0 {
+                match parser.advance()? {
+                    Some(Token::Open) => depth += 1,
+                    Some(Token::Close) => depth -= 1,
+                    None => return Err("unterminated material parameter scope".into()),
+                    _ => (),
+                }
+            }
+        }
+        Some(Token::Atom(first)) => {
+            let parentheses = |text: &str| -> i32 {
+                if text.starts_with('"') { return 0; }
+                text.bytes().map(|byte| match byte {
+                    b'(' => 1, b')' => -1, _ => 0,
+                }).sum()
+            };
+            let mut depth = parentheses(first);
+            if depth == 0
+                && matches!(parser.ahead, Some(Token::Atom(text)) if text.starts_with('(')) {
+                depth = parentheses(parser.atom()?);
+            }
+            while depth > 0 { depth += parentheses(parser.atom()?); }
+            if depth < 0 { return Err("unbalanced material image-program expression".into()); }
+        }
+        other => return Err(format!("missing material parameter value: {other:?}")),
+    }
+    Ok(())
+}
+
+/// FUN_1402d5210 sends both options/parms blocks to FUN_1403446d0.
+/// Its type-12 branch reads an INTEGER TOKEN, not a line, then continues at
+/// the next key. Multiple pairs per line and repeated keys are legal.
+/// The caller identifies registered Option names. Textures, uniforms, raster
+/// state and registry error handling remain with their existing owners.
+pub fn material_integer_parameters(
+    text: &str,
+    mut is_parameter: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, i32)>, String> {
+    fn block(parser: &mut Parser<'_>, values: &mut Vec<(String, i32)>,
+        is_parameter: &mut impl FnMut(&str) -> bool, root: bool,
+    ) -> Result<(), String> {
+        while parser.ahead.is_some() && parser.ahead != Some(Token::Close) {
+            let name = parser.atom()?.trim_matches('"').to_ascii_lowercase();
+            if root && matches!(name.as_str(), "options" | "parms") {
+                parser.expect(Token::Open)?;
+                block(parser, values, is_parameter, false)?;
+                parser.expect(Token::Close)?;
+            } else if is_parameter(&name) {
+                let mut token = parser.atom()?;
+                let negative = token == "-";
+                if negative { token = parser.atom()?; }
+                let value = token.parse::<i32>()
+                    .map_err(|_| format!("unsupported numeric shadow option {name}={token}"))?;
+                values.push((name, if negative { value.wrapping_neg() } else { value }));
+            } else {
+                skip_material_value(parser)?;
+            }
+            if parser.ahead == Some(Token::Semicolon) { parser.advance()?; }
+        }
+        Ok(())
+    }
+    let mut parser = Parser::new(text)?;
+    // The caller may already have consumed the enclosing material brace.
+    let wrapped = parser.ahead == Some(Token::Open);
+    if wrapped { parser.advance()?; }
+    let mut values = Vec::new();
+    block(&mut parser, &mut values, &mut is_parameter, true)?;
+    if wrapped { parser.expect(Token::Close)?; }
+    if parser.ahead.is_some() { return Err("trailing material parameter data".into()); }
+    Ok(values)
+}
+
 /// Material-root numeric overrides for declarations the CALLER has identified
 /// as floating Uniforms. Preserve duplicate order; Native GetVector selects the
 /// last entry. Nested options/state/parms cannot override a root uniform.
@@ -1072,50 +1224,7 @@ pub fn material_float_parameters(
         if is_parameter(&name) {
             values.push((name, float_vector_literal(&mut parser)?));
         } else {
-            match parser.advance()? {
-                Some(Token::Open) => {
-                    let mut depth = 1;
-                    while depth != 0 {
-                        match parser.advance()? {
-                            Some(Token::Open) => depth += 1,
-                            Some(Token::Close) => depth -= 1,
-                            None => return Err("unterminated material parameter scope".into()),
-                            _ => (),
-                        }
-                    }
-                }
-                Some(Token::Atom(first)) => {
-                    // Original material files contain nested inline image
-                    // programs, e.g. ipr_constantcolor(0.1, 0.2, 0.3, 1).
-                    // Skip the WHOLE value, not its first whitespace atom.
-                    // This does not evaluate or replace the image program.
-                    let parentheses = |text: &str| -> i32 {
-                        if text.starts_with('"') {
-                            return 0;
-                        }
-                        text.bytes()
-                            .map(|byte| match byte {
-                                b'(' => 1,
-                                b')' => -1,
-                                _ => 0,
-                            })
-                            .sum()
-                    };
-                    let mut depth = parentheses(first);
-                    if depth == 0
-                        && matches!(parser.ahead, Some(Token::Atom(text)) if text.starts_with('('))
-                    {
-                        depth = parentheses(parser.atom()?);
-                    }
-                    while depth > 0 {
-                        depth += parentheses(parser.atom()?);
-                    }
-                    if depth < 0 {
-                        return Err("unbalanced material image-program expression".into());
-                    }
-                }
-                other => return Err(format!("missing material parameter value: {other:?}")),
-            }
+            skip_material_value(&mut parser)?;
         }
     }
     parser.expect(Token::Close)?;
@@ -1542,6 +1651,11 @@ pub fn placed_lights_with_inheritance(
             area_shadow_range: number("m_areaLightShadowRange")?.unwrap_or(40.0),
             area_energy_conservative: flag("m_areaLightEnergyConservative"),
             no_shadows: last("m_NoShadows")? == Some("true"),
+            // 87f310 clears bytes3cc..3cf;881640 maps these three authored
+            // flags to the bits consumed by local shadow prepare/refresh.
+            cast_volumetric_shadows:flag("m_castVolumetricShadows"),
+            dont_alter_volumetric_dynamic_shadow:flag("m_dontAlterVolumetricDynaShadow"),
+            scatter_only:flag("m_scatterOnly"),
             shadow_near_plane: number("m_shadowNearPlane")?,
             spot_shadow_quality: last("m_spotShadowQuality")?.map(str::to_owned),
             visible: last("m_visible")? != Some("false"),
@@ -2144,6 +2258,26 @@ pub fn player_start(document: &Document) -> Option<PlayerStart> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn declaration_whitespace_matches_original_signed_byte_lexer() {
+        let mut count=0;
+        for line in include_str!("../analysis/original_lexer_whitespace_cases.txt").lines() {
+            let parts:Vec<_>=line.split_whitespace().collect();
+            let byte=u8::from_str_radix(parts[0],16).unwrap();
+            let source=[b"alpha".as_slice(),&[byte],b"beta".as_slice()].concat();
+            let text=super::native_declaration_text(&source);
+            let actual=super::declaration_lexemes(&text).unwrap();
+            let expected:Vec<String>=parts[1..].iter().map(|hex|String::from_utf8((0..hex.len())
+                .step_by(2).map(|at|u8::from_str_radix(&hex[at..at+2],16).unwrap()).collect()).unwrap()).collect();
+            assert_eq!(actual,expected,"original whitespace byte {byte:x}");
+            count+=1;
+        }
+        assert_eq!(count,160);
+        let quoted="name \"résumé\" // quote \" in a comment\nmainProgram arkDefault\u{a0}\n";
+        let text=super::native_declaration_text(quoted.as_bytes());
+        assert!(text.contains("\"résumé\""));
+        assert_eq!(super::declaration_lexemes(&text).unwrap(),vec!["name","résumé","mainProgram","arkDefault"]);
+    }
     use super::*;
 
     #[test]
@@ -2243,6 +2377,27 @@ mod tests {
         assert!(
             material_float_parameters("{ image ipr_color(0, 1)) leaf {2} }", |_| false).is_err()
         );
+    }
+
+    #[test]
+    fn material_integer_pairs_are_tokens_not_lines() {
+        let text = r#"{
+            options { alphaTest 1 hasBumpMap 1; alphaTest 0 }
+            diffusemap ipr_color(0, 1, 0, 1)
+            parms { hasBumpMap - 2 }
+            state { alphaTest 99 }
+            alphaTest 1
+        }"#;
+        let values = material_integer_parameters(text, |name|
+            matches!(name, "alphatest" | "hasbumpmap")).unwrap();
+        assert_eq!(values, vec![
+            ("alphatest".into(),1), ("hasbumpmap".into(),1),
+            ("alphatest".into(),0), ("hasbumpmap".into(),-2), ("alphatest".into(),1),
+        ]);
+        assert_eq!(material_integer_parameters("alphaTest 1 hasBumpMap 1", |_|true).unwrap().len(),2);
+        assert!(material_integer_parameters("{ options { alphaTest } }", |_|true).is_err());
+        assert!(material_integer_parameters("{ options { alphaTest 1", |_|true).is_err());
+        assert!(material_integer_parameters("{ alphaTest nope }", |_|true).is_err());
     }
 
     #[test]
@@ -3030,6 +3185,14 @@ entity { entityDef pickup { inherit = "entities/child.def"; edit = { spawnPositi
             "HIGH_QUALITY"
         )
         .is_err());
+    }
+
+    #[test]
+    fn native_lod_declaration_initializer_matches_all_seven_groups() {
+        assert_eq!(
+            ORIGINAL_DEFAULT_LOD_DISTANCE_ROWS,
+            [[3.0, 6.0, 12.0, 20.0]; 7]
+        );
     }
 
     #[test]

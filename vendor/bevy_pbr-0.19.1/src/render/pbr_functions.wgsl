@@ -1,4 +1,7 @@
 #define_import_path bevy_pbr::pbr_functions
+#ifdef DH2_NATIVE_LOCAL_SHADOWS
+#import dh2_local_receiver::native_local_visibility
+#endif
 
 #import bevy_pbr::{
     pbr_types,
@@ -347,6 +350,17 @@ fn apply_pbr_lighting_with_directional_shadow(
     directional_shadow: f32,
     transmitted_directional_shadow: f32,
 ) -> vec4<f32> {
+    return apply_pbr_lighting_with_native_shadows(in,directional_index,directional_shadow,
+        transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u));
+}
+
+fn apply_pbr_lighting_with_native_shadows(
+    in: pbr_types::PbrInput,
+    directional_index: u32,
+    directional_shadow: f32,
+    transmitted_directional_shadow: f32,
+    native_shadow_route: vec4<u32>,
+) -> vec4<f32> {
     var output_color: vec4<f32> = in.material.base_color;
 
     let emissive = in.material.emissive;
@@ -509,6 +523,15 @@ fn apply_pbr_lighting_with_directional_shadow(
 #endif
 
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
+#ifdef DH2_NATIVE_LOCAL_SHADOWS
+        // lightcontext queries its shadow only for contributing attenuation.
+        // The existing light functions return zero before BRDF evaluation
+        // when radial/hemisphere/cone attenuation is absent. Dead direct
+        // lobes need no map query either; avoid 0*undefined PCF coordinates.
+        if any(light_contrib!=vec3<f32>(0.0)) {
+            shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+        }
+#endif
         direct_light += light_contrib * shadow;
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
@@ -529,6 +552,11 @@ fn apply_pbr_lighting_with_directional_shadow(
 
         let transmitted_light_contrib =
             lighting::point_light(light_id, &transmissive_lighting_input, enable_diffuse, true);
+#ifdef DH2_NATIVE_LOCAL_SHADOWS
+        if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
+            transmitted_shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+        }
+#endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
 #endif
     }
@@ -574,6 +602,15 @@ fn apply_pbr_lighting_with_directional_shadow(
 #endif
 
         let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
+#ifdef DH2_NATIVE_LOCAL_SHADOWS
+        // lightcontext queries its shadow only for contributing attenuation.
+        // The existing light functions return zero before BRDF evaluation
+        // when radial/hemisphere/cone attenuation is absent. Dead direct
+        // lobes need no map query either; avoid 0*undefined PCF coordinates.
+        if any(light_contrib!=vec3<f32>(0.0)) {
+            shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+        }
+#endif
         direct_light += light_contrib * shadow;
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
@@ -600,6 +637,11 @@ fn apply_pbr_lighting_with_directional_shadow(
 
         let transmitted_light_contrib =
             lighting::spot_light(light_id, &transmissive_lighting_input, enable_diffuse);
+#ifdef DH2_NATIVE_LOCAL_SHADOWS
+        if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
+            transmitted_shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+        }
+#endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
 #endif
     }

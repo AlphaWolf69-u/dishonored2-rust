@@ -476,7 +476,33 @@ pub struct GameplayViewClocks {
     deltas: [f32; GROUP_COUNT],
 }
 
+/// World/local shader float2 values bound by FUN_1403586a0. A float2 or
+/// generated `Time2` identifier denotes (seconds, delta), NOT clock group2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewShaderTimes {
+    pub world_time: [f32; 2],
+    pub local_time: [f32; 2],
+}
+
+/// FUN_140374730 initializes definition byte+4 to one; 0444c0/374e40
+/// copy it to prepared view+0x39d4. This is only that constructor field,
+/// not a substitute for retaining a live definition's subsequently set byte.
+pub const RESET_VIEW_LOCAL_TIME_FLAG: u8 = 1;
+
 impl GameplayViewClocks {
+    /// 3586a0's time bindings (chunk_000124.c:4679..4695): worldTime uses
+    /// group3. localTime uses group1 if source definition byte4 is zero,
+    /// otherwise group3. No model-local offset, mapping, or clock-group2.
+    /// Preserve subtraction of +0.0 before conversion, including -0.0.
+    pub fn view_shader_times(&self, source_flag_04: u8) -> ViewShaderTimes {
+        let pair = |group: usize| [(self.times[group] - 0.0) as f32, self.deltas[group]];
+        let world_time = pair(3);
+        ViewShaderTimes {
+            world_time,
+            local_time: if source_flag_04 == 0 { pair(1) } else { world_time },
+        }
+    }
+
     pub fn from_clock(clock: &NativeGameClock) -> Self {
         Self {
             times: std::array::from_fn(|group| {
@@ -548,6 +574,39 @@ fn native_truncate_i32(value: f32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_shader_times_preserve_native_groups_conversion_and_signed_zero() {
+        let clocks = GameplayViewClocks {
+            times: [101.0, -0.0, 303.0, 16_777_217.0, 505.0],
+            deltas: [0.01, -0.0, 0.03, 0.04, 0.05],
+        };
+        for flag in 0..=255 {
+            let times = clocks.view_shader_times(flag);
+            let group = if flag == 0 { 1 } else { 3 };
+            assert_eq!(times.world_time.map(f32::to_bits),
+                [16_777_216.0_f32.to_bits(), clocks.deltas[3].to_bits()]);
+            assert_eq!(times.local_time.map(f32::to_bits),
+                [(clocks.times[group] - 0.0) as f32, clocks.deltas[group]].map(f32::to_bits));
+        }
+        assert_eq!(clocks.view_shader_times(0).local_time[0].to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(clocks.view_shader_times(0).local_time[1].to_bits(), (-0.0_f32).to_bits());
+        assert_ne!(clocks.view_shader_times(1).local_time[0], clocks.times[2] as f32);
+    }
+
+    #[test]
+    fn view_local_time_source_byte_matches_original_reset_and_copy_prefix() {
+        let mut count = 0;
+        for line in include_str!("../analysis/original_view_local_time_flag_cases.txt").lines() {
+            let values: Vec<u8> = line.split_whitespace()
+                .map(|word| u8::from_str_radix(word, 16).unwrap()).collect();
+            assert_eq!(values.len(), 3);
+            assert_eq!(values[1], RESET_VIEW_LOCAL_TIME_FLAG);
+            assert_eq!(values[2], values[0]);
+            count += 1;
+        }
+        assert_eq!(count, 256);
+    }
 
     #[test]
     fn gameplay_view_clock_transfer_matches_original_machine_blocks() {

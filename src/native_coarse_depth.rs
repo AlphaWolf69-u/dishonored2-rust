@@ -1,23 +1,98 @@
-//! Native 64x64 R32G32 coarse-depth CPU readback owner.
+//! Native 64x64 R32G32 adaptive coarse-depth production and asynchronous readback.
+//!
+//! It ports FUN_1402fbe40's four-mip pyramid plus FUN_1402fc6a0's separate
+//! 64x64 grid. FUN_1402fc130's 16x16-group 120x68 tile map is a different
+//! resource and is not implemented here.
 //!
 //! FUN_140351780 tries four staging textures newest-to-oldest with nonblocking
 //! Map (FUN_1402eac80). Its later opaque task copies to (current+1)&3 unless
-//! the owner's offscreen flag is set. This module supplies that persistent
-//! ring, not a fabricated depth grid or a synchronous per-frame GPU wait.
-//! The caller must provide the real coarseDepth image and source owner index.
+//! the owner's offscreen flag is set. This module ports the source reduction,
+//! coarse-depth dispatch, persistent staging ring and mapped-frame mailbox; it
+//! never waits synchronously for a GPU copy.
 
-use bevy::render::{
-    render_resource::{
-        Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Extent3d, MapMode,
-        TexelCopyBufferInfo, TexelCopyBufferLayout, Texture, TextureFormat,
+use bevy::{
+    app::{App, Plugin},
+    core_pipeline::{Core3d, Core3dSystems},
+    ecs::prelude::*,
+    render::{
+        extract_component::{ExtractComponent, ExtractComponentPlugin},
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
+        render_resource::{
+            BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer,
+            BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor, Extent3d,
+            MapMode, TexelCopyBufferInfo, TexelCopyBufferLayout, Texture, TextureDescriptor,
+            TextureDimension, TextureFormat, TextureId, TextureUsages, TextureView,
+            TextureViewDescriptor,
+        },
+        renderer::{RenderContext, RenderDevice, RenderQueue},
+        view::{ExtractedView, ViewDepthTexture},
+        GpuResourceAppExt, Render, RenderApp, RenderSystems,
     },
-    renderer::RenderDevice,
 };
 use std::sync::{Arc, Mutex};
 
+pub const NATIVE_COARSE_DEPTH_DIAGNOSTICS_ENV: &str = "DH2_NATIVE_COARSE_DEPTH_DIAGNOSTICS";
 pub const COARSE_DEPTH_SIZE: u32 = 64;
 pub const COARSE_DEPTH_BYTES: u64 = 64 * 64 * 8;
+
+pub fn diagnostics_enabled() -> bool {
+    std::env::var(NATIVE_COARSE_DEPTH_DIAGNOSTICS_ENV).as_deref() == Ok("1")
+}
+/// FUN_14035a0c0 initializes `WndCtx+0x80` to this sentinel before the first
+/// copy. The original first staging destination is `(sentinel + 1) & 3`.
+pub const INITIAL_COARSE_DEPTH_OWNER_INDEX: u32 = 4;
 pub type CoarseDepthPixels = [[f32; 2]; 64 * 64];
+
+/// Mark the one original gameplay view whose completed main-pass depth owns
+/// the directional coarse-depth producer. This is not attached to shadow views.
+#[derive(Component, ExtractComponent, Clone, Copy, Debug, Default)]
+pub struct NativeCoarseDepthSource;
+
+/// Matrices/extent from the exact main-view depth submission copied into a
+/// native four-slot readback entry. Arrays are row-major native matrices.
+#[derive(Clone, Debug)]
+pub struct NativeCoarseDepthFrameMetadata {
+    pub sequence: u64,
+    pub source_extent: [u32; 2],
+    pub projection: crate::render_shadow::ShadowMatrix,
+    pub inverse_projection: crate::render_shadow::ShadowMatrix,
+    pub view_from_world: crate::render_shadow::ShadowMatrix,
+}
+
+/// One mapped native 64×64 grid and the view matrices that produced it.
+#[derive(Clone)]
+pub struct NativeCoarseDepthSnapshot {
+    pub metadata: NativeCoarseDepthFrameMetadata,
+    pub pixels: Arc<CoarseDepthPixels>,
+}
+
+/// Same-process mailbox shared with the render world through extraction. It
+/// carries only an actually mapped GPU result; absent data remains absent.
+#[derive(Resource, Clone, ExtractResource, Default)]
+pub struct NativeCoarseDepthMailbox(Arc<Mutex<Option<Arc<NativeCoarseDepthSnapshot>>>>);
+
+impl NativeCoarseDepthMailbox {
+    pub fn latest(&self) -> Result<Option<Arc<NativeCoarseDepthSnapshot>>, String> {
+        self.0
+            .lock()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| "native coarse-depth mailbox is poisoned".into())
+    }
+
+    fn publish(&self, snapshot: NativeCoarseDepthSnapshot) -> Result<(), String> {
+        let mut latest = self
+            .0
+            .lock()
+            .map_err(|_| "native coarse-depth mailbox is poisoned".to_owned())?;
+        if latest
+            .as_ref()
+            .is_none_or(|old| old.metadata.sequence < snapshot.metadata.sequence)
+        {
+            *latest = Some(Arc::new(snapshot));
+        }
+        Ok(())
+    }
+}
 
 /// FUN_14036d0c0's downsampled image: clamp the framebuffer to at least eight,
 /// then round its half-size up to eight. Exactly four RGBA16F mips are owned.
@@ -293,6 +368,7 @@ struct CpuSlot {
 struct StagingSlot {
     buffer: Buffer,
     cpu: Arc<Mutex<CpuSlot>>,
+    metadata: Option<NativeCoarseDepthFrameMetadata>,
     recorded: bool,
 }
 
@@ -309,8 +385,10 @@ pub fn coarse_depth_read_order(current: u32) -> [usize; 4] {
 
 impl NativeCoarseDepthReadback {
     pub fn new(device: &RenderDevice, initial_owner_index: u32) -> Result<Self, String> {
-        if initial_owner_index > 3 {
-            return Err("native coarse-depth staging owner index is outside four-slot ring".into());
+        if initial_owner_index > INITIAL_COARSE_DEPTH_OWNER_INDEX {
+            return Err(
+                "native coarse-depth staging owner index is outside four-slot ring/sentinel".into(),
+            );
         }
         Ok(Self {
             current: initial_owner_index,
@@ -328,6 +406,7 @@ impl NativeCoarseDepthReadback {
                     pixels: Box::new([[0.0; 2]; 4096]),
                     error: None,
                 })),
+                metadata: None,
                 recorded: false,
             }),
         })
@@ -363,6 +442,36 @@ impl NativeCoarseDepthReadback {
         Ok(None)
     }
 
+    /// Return one real completed slot plus the exact view matrices attached
+    /// when its GPU copy was submitted. The caller tracks `(slot,generation)`
+    /// and sequence to avoid republishing stale asynchronous mappings.
+    pub fn try_read_frame<R>(
+        &self,
+        consume: impl FnOnce(usize, u64, &NativeCoarseDepthFrameMetadata, &CoarseDepthPixels) -> R,
+    ) -> Result<Option<R>, String> {
+        for index in coarse_depth_read_order(self.current) {
+            let cpu = self.slots[index]
+                .cpu
+                .lock()
+                .map_err(|_| "coarse-depth CPU slot poisoned")?;
+            if cpu.ready {
+                if let Some(metadata) = &self.slots[index].metadata {
+                    return Ok(Some(consume(index, cpu.generation, metadata, &cpu.pixels)));
+                }
+            }
+        }
+        for slot in &self.slots {
+            let cpu = slot
+                .cpu
+                .lock()
+                .map_err(|_| "coarse-depth CPU slot poisoned")?;
+            if let Some(error) = &cpu.error {
+                return Err(error.clone());
+            }
+        }
+        Ok(None)
+    }
+
     /// Record the original task's single staging copy in the caller's frame
     /// command encoder. No additional queue submit is introduced. The native
     /// offscreen branch records no copy and does not advance the owner index.
@@ -371,6 +480,16 @@ impl NativeCoarseDepthReadback {
         encoder: &mut CommandEncoder,
         source: &Texture,
         offscreen: bool,
+    ) -> Result<bool, String> {
+        self.record_copy_with_metadata(encoder, source, offscreen, None)
+    }
+
+    pub fn record_copy_with_metadata(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        source: &Texture,
+        offscreen: bool,
+        metadata: Option<NativeCoarseDepthFrameMetadata>,
     ) -> Result<bool, String> {
         if offscreen {
             return Ok(false);
@@ -420,6 +539,7 @@ impl NativeCoarseDepthReadback {
             },
             source.size(),
         );
+        slot.metadata = metadata;
         slot.recorded = true;
         self.current = next;
         Ok(true)
@@ -476,9 +596,415 @@ impl NativeCoarseDepthReadback {
     }
 }
 
+struct NativeCoarseDepthOutput {
+    texture: Texture,
+    _view: TextureView,
+    constants: Buffer,
+    binding: BindGroup,
+}
+
+impl NativeCoarseDepthOutput {
+    fn new(
+        device: &RenderDevice,
+        pipelines: &crate::tiled_lighting_gpu::NativeTlfPipelines,
+        source: &TextureView,
+    ) -> Self {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("native 64x64 coarseDepth owner"),
+            size: Extent3d {
+                width: COARSE_DEPTH_SIZE,
+                height: COARSE_DEPTH_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rg32Float,
+            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        let constants = device.create_buffer(&BufferDescriptor {
+            label: Some("native coarseDepth owner constants"),
+            size: 32,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let binding = device
+            .wgpu_device()
+            .create_bind_group(&BindGroupDescriptor {
+                label: Some("native coarseDepth generator bindings"),
+                layout: &pipelines.coarse_depth.get_bind_group_layout(0),
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(source),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&view),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: constants.as_entire_binding(),
+                    },
+                ],
+            })
+            .into();
+        Self {
+            texture,
+            _view: view,
+            constants,
+            binding,
+        }
+    }
+
+    fn record(
+        &self,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        pipelines: &crate::tiled_lighting_gpu::NativeTlfPipelines,
+        parameters: NativeCoarseDepthParameters,
+    ) {
+        queue.write_buffer(&self.constants, 0, &parameters.to_bytes());
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("native coarseDepthGen 64x64 dispatch"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipelines.coarse_depth);
+        pass.set_bind_group(0, &self.binding, &[]);
+        pass.dispatch_workgroups(COARSE_DEPTH_SIZE, COARSE_DEPTH_SIZE, 1);
+    }
+}
+
+#[derive(Resource, Default)]
+struct NativeCoarseDepthGpu {
+    view_entity: Option<Entity>,
+    source_texture_id: Option<TextureId>,
+    source_extent: Option<[u32; 2]>,
+    pyramid: Option<NativeDepthPyramid>,
+    output: Option<NativeCoarseDepthOutput>,
+    readback: Option<NativeCoarseDepthReadback>,
+    next_sequence: u64,
+    last_published_sequence: u64,
+}
+
+impl NativeCoarseDepthGpu {
+    fn ensure(
+        &mut self,
+        entity: Entity,
+        source_texture_id: TextureId,
+        source: &Texture,
+        device: &RenderDevice,
+        pipelines: &crate::tiled_lighting_gpu::NativeTlfPipelines,
+    ) -> Result<(), String> {
+        let extent = [source.width(), source.height()];
+        let rebuild = self.view_entity != Some(entity)
+            || self.source_texture_id != Some(source_texture_id)
+            || self.source_extent != Some(extent)
+            || self.pyramid.is_none();
+        if !rebuild {
+            return Ok(());
+        }
+        let pyramid = NativeDepthPyramid::new(device, pipelines, source)?;
+        let output = NativeCoarseDepthOutput::new(device, pipelines, pyramid.last_mip());
+        let readback = NativeCoarseDepthReadback::new(device, INITIAL_COARSE_DEPTH_OWNER_INDEX)?;
+        self.view_entity = Some(entity);
+        self.source_texture_id = Some(source_texture_id);
+        self.source_extent = Some(extent);
+        self.pyramid = Some(pyramid);
+        self.output = Some(output);
+        self.readback = Some(readback);
+        self.last_published_sequence = 0;
+        Ok(())
+    }
+}
+
+/// Gameplay-camera producer for FUN_1402fc6a0's adaptive grid. It runs on
+/// cameras marked NativeCoarseDepthSource, including the live cascade owner
+/// when r_tightenParallelShadows is enabled. Captured
+/// `decompressedDepth` is a single-sample R24G8 full-view input;
+/// FUN_1402fbe40 builds its four-mip pyramid and FUN_1402fc6a0 dispatches the
+/// 64x64 RG32 grid. FUN_1402fc130's 16x16-group 120x68 tile map is separate.
+/// This binds Bevy's same-view main-pass `ViewDepthTexture` only when the full
+/// target/viewport and single-sample conditions hold. The CPU cascade owner
+/// consumes the mapped max-depth channel through the original adaptive-far
+/// and persistent prepare sequence, separately from ordinary Tome depth.
+pub struct NativeCoarseDepthPlugin;
+
+impl Plugin for NativeCoarseDepthPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<NativeCoarseDepthMailbox>()
+            .add_plugins(ExtractResourcePlugin::<NativeCoarseDepthMailbox>::default())
+            .add_plugins(ExtractComponentPlugin::<NativeCoarseDepthSource>::default());
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
+            return;
+        };
+        render_app
+            .init_resource::<NativeCoarseDepthGpu>()
+            .init_gpu_resource::<crate::tiled_lighting_gpu::NativeTlfPipelines>()
+            .add_systems(
+                Render,
+                publish_ready_coarse_depth.in_set(RenderSystems::PrepareResources),
+            )
+            .add_systems(
+                Core3d,
+                render_native_coarse_depth
+                    .after(Core3dSystems::MainPass)
+                    .before(Core3dSystems::EarlyPostProcess),
+            )
+            .add_systems(
+                Render,
+                map_native_coarse_depth.in_set(RenderSystems::Cleanup),
+            );
+    }
+}
+
+fn publish_ready_coarse_depth(
+    mut gpu: ResMut<NativeCoarseDepthGpu>,
+    mailbox: Res<NativeCoarseDepthMailbox>,
+    mut last_error: Local<Option<String>>,
+) {
+    let Some(readback) = gpu.readback.as_ref() else {
+        return;
+    };
+    let attempt = readback.try_read_frame(|_slot, _generation, metadata, pixels| {
+        (metadata.clone(), Arc::new(*pixels))
+    });
+    match attempt {
+        Ok(Some((metadata, pixels))) if metadata.sequence > gpu.last_published_sequence => {
+            let sequence = metadata.sequence;
+            let source_extent = metadata.source_extent;
+            let first_mapped_frame = gpu.last_published_sequence == 0;
+            match mailbox.publish(NativeCoarseDepthSnapshot { metadata, pixels }) {
+                Ok(()) => {
+                    if first_mapped_frame {
+                        bevy::log::info!(
+                            target: "dh2::native_coarse_depth",
+                            "Native coarse-depth readback online: sequence={sequence}, source={}x{}, grid=64x64 RG32",
+                            source_extent[0], source_extent[1]
+                        );
+                    }
+                    gpu.last_published_sequence = sequence;
+                    *last_error = None;
+                }
+                Err(error) => report_coarse_depth_error(&mut last_error, error),
+            }
+        }
+        Ok(_) => {}
+        Err(error) => report_coarse_depth_error(&mut last_error, error),
+    }
+}
+
+fn render_native_coarse_depth(
+    views: Query<
+        (
+            Entity,
+            &ViewDepthTexture,
+            &ExtractedView,
+            &bevy::render::camera::ExtractedCamera,
+        ),
+        With<NativeCoarseDepthSource>,
+    >,
+    pipelines: Res<crate::tiled_lighting_gpu::NativeTlfPipelines>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mut gpu: ResMut<NativeCoarseDepthGpu>,
+    mut context: RenderContext,
+    mut last_error: Local<Option<String>>,
+) {
+    let Ok((entity, depth, view, camera)) = views.single() else {
+        return;
+    };
+    let source_extent = [depth.texture.width(), depth.texture.height()];
+    if depth.texture.sample_count() != 1 {
+        report_coarse_depth_error(
+            &mut last_error,
+            format!(
+                "native coarse-depth shader requires the original single-sample depth input; received {} samples",
+                depth.texture.sample_count()
+            ),
+        );
+        return;
+    }
+    let full_target = camera.physical_target_size
+        == Some(bevy::math::UVec2::new(source_extent[0], source_extent[1]))
+        && camera.physical_viewport_size == camera.physical_target_size;
+    let full_rect = camera.viewport.as_ref().is_none_or(|viewport| {
+        viewport.physical_position == bevy::math::UVec2::ZERO
+            && viewport.physical_size == bevy::math::UVec2::new(source_extent[0], source_extent[1])
+    });
+    if !full_target || !full_rect {
+        report_coarse_depth_error(
+            &mut last_error,
+            "native decompressedDepth producer does not match the full gameplay target extent"
+                .into(),
+        );
+        return;
+    }
+    let projection = mat4_to_shadow_rows(view.clip_from_view);
+    let mut inverse_projection = [[0.0;4];4];
+    if !crate::render_shadow::invert_rows(&projection,&mut inverse_projection) {
+        report_coarse_depth_error(&mut last_error,"native depth projection is singular".into());
+        return;
+    }
+    let view_from_world = mat4_to_shadow_rows(view.world_from_view.to_matrix().inverse());
+    let result = (|| -> Result<(), String> {
+        gpu.ensure(
+            entity,
+            depth.texture.id(),
+            &depth.texture,
+            &render_device,
+            &pipelines,
+        )?;
+        let pyramid = gpu
+            .pyramid
+            .as_ref()
+            .ok_or("native depth pyramid was not initialized")?;
+        let coverage = pyramid.record(
+            &render_queue,
+            context.command_encoder(),
+            &pipelines,
+            source_extent,
+            inverse_projection,
+        )?;
+        let parameters =
+            NativeCoarseDepthParameters::from_reduction(coverage, [1.0, 1.0], inverse_projection)?;
+        gpu.output
+            .as_ref()
+            .ok_or("native coarseDepth output was not initialized")?
+            .record(
+                &render_queue,
+                context.command_encoder(),
+                &pipelines,
+                parameters,
+            );
+        let sequence = gpu
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| "native coarse-depth frame sequence overflow".to_owned())?;
+        let metadata = NativeCoarseDepthFrameMetadata {
+            sequence,
+            source_extent,
+            projection,
+            inverse_projection,
+            view_from_world,
+        };
+        let NativeCoarseDepthGpu {
+            output, readback, ..
+        } = &mut *gpu;
+        let output_texture = &output
+            .as_ref()
+            .ok_or("native coarseDepth output was not initialized")?
+            .texture;
+        readback
+            .as_mut()
+            .ok_or("native coarseDepth staging ring was not initialized")?
+            .record_copy_with_metadata(
+                context.command_encoder(),
+                output_texture,
+                false,
+                Some(metadata),
+            )?;
+        gpu.next_sequence = sequence;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            if gpu.next_sequence == 1 {
+                bevy::log::info!(
+                    target: "dh2::native_coarse_depth",
+                    "Native coarse-depth producer submitted: view={entity:?}, texture={:?}, extent={}x{}, depth_samples=1",
+                    depth.texture.id(), source_extent[0], source_extent[1]
+                );
+            }
+            *last_error = None;
+        }
+        Err(error) => report_coarse_depth_error(&mut last_error, error),
+    }
+}
+
+fn map_native_coarse_depth(mut gpu: ResMut<NativeCoarseDepthGpu>) {
+    let Some(readback) = gpu.readback.as_mut() else {
+        return;
+    };
+    if let Err(error) = readback.map_submitted() {
+        bevy::log::warn!(target: "dh2::native_coarse_depth", "Native coarse-depth map unavailable: {error}");
+    }
+}
+
+fn report_coarse_depth_error(last_error: &mut Option<String>, error: String) {
+    if last_error.as_ref() != Some(&error) {
+        bevy::log::warn!(target: "dh2::native_coarse_depth", "Native coarse-depth producer unavailable: {error}");
+        *last_error = Some(error);
+    }
+}
+
+fn mat4_to_shadow_rows(matrix: bevy::math::Mat4) -> crate::render_shadow::ShadowMatrix {
+    let columns = matrix.to_cols_array_2d();
+    std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a graphics adapter; validates captured D24S8 sampled-depth bindings and the native reduction/generator pipelines"]
+    fn d24s8_view_depth_runs_native_coarse_depth_gpu() {
+        use bevy::{
+            app::PluginGroup,
+            prelude::{default, DefaultPlugins},
+            render::render_resource::{TextureDescriptor, TextureUsages},
+            window::{ExitCondition, WindowPlugin},
+        };
+
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: ExitCondition::DontExit,
+                    ..default()
+                })
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        );
+        app.finish();
+        app.cleanup();
+        let render_world = app.sub_app_mut(RenderApp).world_mut();
+        render_world.init_resource::<crate::tiled_lighting_gpu::NativeTlfPipelines>();
+        let device = render_world.resource::<RenderDevice>();
+        let queue = render_world.resource::<RenderQueue>();
+        let pipelines = render_world.resource::<crate::tiled_lighting_gpu::NativeTlfPipelines>();
+        let source = device.create_texture(&TextureDescriptor {
+            label: Some("captured original decompressedDepth view fixture"),
+            size: Extent3d {
+                width: 1920,
+                height: 1080,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth24PlusStencil8,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let pyramid = NativeDepthPyramid::new(device, pipelines, &source)
+            .expect("captured D24S8 source must bind as texture_depth_2d");
+        let output = NativeCoarseDepthOutput::new(device, pipelines, pyramid.last_mip());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let inverse = bevy::math::Mat4::IDENTITY.to_cols_array_2d();
+        let inverse = std::array::from_fn(|row| std::array::from_fn(|column| inverse[column][row]));
+        let coverage = pyramid
+            .record(queue, &mut encoder, pipelines, [1920, 1080], inverse)
+            .expect("captured full-resolution source must reduce");
+        let parameters = NativeCoarseDepthParameters::from_reduction(coverage, [1.0, 1.0], inverse)
+            .expect("full captured viewport must fit the reduction mip");
+        output.record(queue, &mut encoder, pipelines, parameters);
+        queue.submit([encoder.finish()]);
+    }
 
     #[test]
     fn coarse_constants_use_scaled_last_mip_and_original_matrix_slots() {
@@ -553,6 +1079,10 @@ mod tests {
 
     #[test]
     fn staging_read_order_matches_native_four_attempt_loop() {
+        assert_eq!(
+            coarse_depth_read_order(INITIAL_COARSE_DEPTH_OWNER_INDEX),
+            [0, 3, 2, 1]
+        );
         assert_eq!(coarse_depth_read_order(0), [0, 3, 2, 1]);
         assert_eq!(coarse_depth_read_order(1), [1, 0, 3, 2]);
         assert_eq!(coarse_depth_read_order(2), [2, 1, 0, 3]);

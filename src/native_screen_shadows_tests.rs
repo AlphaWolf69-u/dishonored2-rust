@@ -806,7 +806,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     });
     let draw = |binding, x| NativeOpaqueShadowDraw {
         model_state: binding,
-        alpha_material: None,
+        program_resources: None,
         vertex_buffer: &model_vertices,
         index_buffer: &model_indices,
         index_format: IndexFormat::Uint16,
@@ -1167,10 +1167,13 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         64,
         64,
     );
-    let mut history =
-        crate::native_coarse_depth::NativeCoarseDepthReadback::new(device, 0).unwrap();
+    let mut history = crate::native_coarse_depth::NativeCoarseDepthReadback::new(
+        device,
+        crate::native_coarse_depth::INITIAL_COARSE_DEPTH_OWNER_INDEX,
+    )
+    .unwrap();
     assert_eq!(history.try_read(|_| 0u32).unwrap(), None);
-    assert!(crate::native_coarse_depth::NativeCoarseDepthReadback::new(device, 4).is_err());
+    assert!(crate::native_coarse_depth::NativeCoarseDepthReadback::new(device, 5).is_err());
     for generation in 1..=9u32 {
         let raw: Vec<u8> = (0..4096)
             .flat_map(|pixel| {

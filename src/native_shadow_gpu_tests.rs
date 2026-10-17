@@ -324,6 +324,36 @@ fn native_shadow_depth_array_and_sampler_gpu() {
             pass.set_bind_group(0, &bind, &[]);
             pass.draw(0..3, 0..1);
         }
+        // Native topology: slice -> one-layer temporary -> whole static cache;
+        // dynamic changes only the temporary. Next frame restores the static
+        // resource, then transfers its final subresource to the sampled atlas.
+        let static_snapshot = NativeShadowDepthArray::new_with_format(
+            device, Extent3d { depth_or_array_layers: 1, ..size }, format,
+            "native separate static snapshot fixture",
+        ).unwrap();
+        assert!(depths.copy_layer_from(&mut encoder, 2, &wrong_size, 0).is_err());
+        assert!(depths.copy_layer_from(&mut encoder, 0, &wrong_format, 0).is_err());
+        assert!(depths.copy_layer_from(&mut encoder, 0, &image_alias, 1).is_err());
+        wrong_size.copy_layer_from(&mut encoder, 0, &depths, 1).unwrap();
+        static_snapshot.copy_resource_from(&mut encoder, &wrong_size).unwrap();
+        {
+            // Deliberately different dynamic-frame contents; never save these.
+            let _pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("synthetic dynamic-frame cache contamination guard"),
+                color_attachments: &[], timestamp_writes: None,
+                occlusion_query_set: None, multiview_mask: None,
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &wrong_size.layers[0],
+                    depth_ops: Some(Operations { load: LoadOp::Clear(0.9), store: StoreOp::Store }),
+                    stencil_ops: format.has_stencil_aspect().then_some(Operations {
+                        load: LoadOp::Clear(42), store: StoreOp::Store,
+                    }),
+                }),
+            });
+        }
+        depths.copy_layer_from(&mut encoder, 1, &wrong_size, 0).unwrap();
+        wrong_size.copy_resource_from(&mut encoder, &static_snapshot).unwrap();
+        depths.copy_layer_from(&mut encoder, 1, &wrong_size, 0).unwrap();
         copied_cache
             .copy_resource_from(&mut encoder, &depths)
             .unwrap();
@@ -557,7 +587,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .unwrap();
     let draw = NativeOpaqueShadowDraw {
         model_state: &model_state,
-        alpha_material: None,
+        program_resources: None,
         vertex_buffer: &vertices,
         index_buffer: &indices,
         index_format: IndexFormat::Uint16,
@@ -694,7 +724,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     probe_depth(&mut encoder, 16);
     let owner_draw = NativeOpaqueShadowDraw {
         model_state: &owner_model_state,
-        alpha_material: None,
+        program_resources: None,
         vertex_buffer: &owner_vertices,
         index_buffer: &owner_indices,
         index_format: IndexFormat::Uint16,
@@ -807,7 +837,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
             .unwrap();
         let draw = NativeOpaqueShadowDraw {
             model_state: &alpha_model,
-            alpha_material: Some(&material),
+            program_resources: Some(&material),
             vertex_buffer: &owner_vertices,
             index_buffer: &owner_indices,
             index_format: IndexFormat::Uint16,
@@ -866,7 +896,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .unwrap();
     let large_uv_draw = NativeOpaqueShadowDraw {
         model_state: &alpha_model,
-        alpha_material: Some(&large_uv_material),
+        program_resources: Some(&large_uv_material),
         vertex_buffer: &large_uv_vertices,
         index_buffer: &owner_indices,
         index_format: IndexFormat::Uint16,
@@ -962,8 +992,8 @@ fn native_shadow_pcf_original_hlsl_gpu_parity() {
     assert_eq!(depth_layers, 2);
     assert_eq!(
         expected.len(),
-        120,
-        "3 optimized-PCF kernels x 2 layers x 20 positions"
+        147,
+        "3 optimized-PCF kernels x (40 finite and9 non-finite positions)"
     );
 
     let mut app = App::new();

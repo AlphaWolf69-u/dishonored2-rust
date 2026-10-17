@@ -106,6 +106,7 @@ pub struct NativeScreenShadowPipelines {
     pub layout: BindGroupLayout,
     pub visibility: RenderPipeline,
     pub bilateral: RenderPipeline,
+    pub depth_pack: RenderPipeline,
     module: ShaderModule,
 }
 
@@ -219,10 +220,15 @@ impl NativeScreenShadowPipelines {
         };
         let visibility = pipeline("screen_visibility", visibility_target, visibility_depth);
         let bilateral = pipeline("screen_bilateral", bilateral_target, None);
+        let depth_pack = pipeline("screen_pack_depth", ColorTargetState {
+            format:TextureFormat::Rgba8Unorm,blend:None,
+            write_mask:ColorWrites::GREEN|ColorWrites::BLUE|ColorWrites::ALPHA,
+        },None);
         Self {
             layout,
             visibility,
             bilateral,
+            depth_pack,
             module,
         }
     }
@@ -342,6 +348,18 @@ impl NativeScreenShadowPipelines {
             viewport[5],
         );
         pass.draw(0..3, 0..1);
+    }
+
+    /// DWAO's G=1 and packed linear-depth BA transport. R belongs to AO,
+    /// which the shadow consumer never reads or publishes.
+    pub fn pack_depth(&self,encoder:&mut CommandEncoder,bindings:&BindGroup,destination:&TextureView) {
+        let mut pass=encoder.begin_render_pass(&RenderPassDescriptor {
+            label:Some("native shadow linear-depth transport"),
+            color_attachments:&[Some(RenderPassColorAttachment {view:destination,depth_slice:None,
+                resolve_target:None,ops:Operations {load:LoadOp::Clear(Default::default()),store:StoreOp::Store}})],
+            depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None,
+        });
+        pass.set_pipeline(&self.depth_pack);pass.set_bind_group(0,bindings,&[]);pass.draw(0..3,0..1);
     }
 }
 

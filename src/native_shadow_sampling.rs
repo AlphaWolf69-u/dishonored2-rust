@@ -21,8 +21,11 @@ const SHADOW_SHADER: Handle<Shader> =
     bevy::asset::uuid_handle!("1d67e2c0-a515-4bfe-9b55-276e82430c06");
 const RECEIVER_SHADER: Handle<Shader> =
     bevy::asset::uuid_handle!("8351debf-491b-4d7d-ad83-b03a15260af9");
+const LOCAL_RECEIVER_SHADER:Handle<Shader>=bevy::asset::uuid_handle!("833663b0-dcef-4acd-ad9b-399058840ba1");
 
 pub fn register_shaders(app: &mut App) {
+    bevy::asset::load_internal_asset!(app,LOCAL_RECEIVER_SHADER,
+        "../assets/shaders/dh2_local_receiver.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(
         app,
         SHADOW_SHADER,
@@ -68,6 +71,10 @@ pub struct NativeParallelSamplingUniform {
     pub config: UVec4,
     /// original light quality, original shadowFilteringQuality, unused, unused.
     pub quality: IVec4,
+    /// Shared native cloud owner, populated by the same-frame screen pass.
+    pub cloud_motion:Vec4,
+    pub cloud_density:Vec4,
+    pub camera_time:Vec4,
 }
 
 impl Default for NativeParallelSamplingUniform {
@@ -81,11 +88,25 @@ impl Default for NativeParallelSamplingUniform {
             bias: Vec4::ZERO,
             config: UVec4::ZERO,
             quality: IVec4::ZERO,
+            cloud_motion:Vec4::ZERO,cloud_density:Vec4::ZERO,camera_time:Vec4::ZERO,
         }
     }
 }
 
 impl NativeParallelSamplingUniform {
+    /// Atlas production is shared by the original direct and screen-space
+    /// consumers. Route the receiver explicitly; a ScreenSpace frame must not
+    /// enable the direct forward hook or be rejected before producing its atlas.
+    pub fn from_owner_receiver(
+        receiver: &crate::native_shadow_scene::NativeParallelReceiverVars,
+    ) -> Result<Self, String> {
+        match receiver.path {
+            crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace =>
+                Self::from_screen_receiver(receiver),
+            _ => Self::from_receiver(receiver),
+        }
+    }
+
     pub fn from_receiver(
         receiver: &crate::native_shadow_scene::NativeParallelReceiverVars,
     ) -> Result<Self, String> {
@@ -194,9 +215,143 @@ pub struct NativeParallelSamplingBuffer {
     pub unavailable_depth: Handle<Image>,
 }
 
+/// Shared local receiver transport. The light map follows the renderer's
+/// actual entity-to-GPU-index table; shadow records retain the native144-byte
+/// layout. Capacity is allocated from the scene registry, never guessed IDs.
+#[derive(Resource,Clone,ExtractResource)]
+pub struct NativeLocalSamplingBuffer {
+    pub buffer:Handle<ShaderBuffer>,pub light_capacity:u32,
+}
+
+pub fn local_sampling_word_count(light_capacity:u32)->usize {
+    16+light_capacity as usize*16+crate::tiled_lighting::SHADOW_BUFFER_CAPACITY*36
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore="requires GPU and the private live local receiver capture; checks projection-plane non-finite behavior"]
+    fn captured_local_receiver_returns_finite_visibility_gpu() {
+        use bevy::{prelude::*,render::{RenderApp,render_resource::*,renderer::{RenderDevice,RenderQueue}}};
+        let path=std::env::var("DH2_LOCAL_RECEIVER_TEST_CAPTURE")
+            .unwrap_or_else(|_|"artifacts/shadow-resume-local-receiver-words.bin".into());
+        let raw=std::fs::read(path).unwrap();
+        let words=raw.chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap())).collect::<Vec<_>>();
+        let float=|i|f32::from_bits(words[i]);let mut cases=Vec::new();
+        for light in 0..words[1] as usize {
+            let at=16+light*16;if words[at+1]==u32::MAX {continue;}
+            let origin=[float(at+4),float(at+5),float(at+6)];
+            for offset in [[0.0,0.0,0.0],[0.0,0.0,0.001],[1.0,0.0,0.0],[0.0,1.0,0.0],[-10.0,30.0,-10.0],
+                [-1.0,0.0,0.0],[0.0,-1.0,0.0],[0.0,0.0,1.0],[0.0,0.0,-1.0]] {
+                let p:[f32;3]=std::array::from_fn(|i|origin[i]+offset[i]);
+                for flags in 0..16 {for filter in 0..4 {for normal in [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]] {
+                    let mut c=vec![p[0].to_bits(),p[2].to_bits(),(-p[1]).to_bits(),0];
+                    c.extend([normal[0],normal[2],-normal[1]].map(f32::to_bits));c.push(0);
+                    c.extend([0,flags,filter,2,light as u32,0,0,0]);cases.extend(c);
+                }}}
+            }
+        }
+        let count=cases.len()/16;assert!(count>1000);
+        let mut app=App::new();app.add_plugins(DefaultPlugins.set(bevy::window::WindowPlugin {
+            primary_window:None,exit_condition:bevy::window::ExitCondition::DontExit,..default()})
+            .disable::<bevy::winit::WinitPlugin>().disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>());
+        app.finish();app.cleanup();let world=app.sub_app_mut(RenderApp).world_mut();
+        let device=world.resource::<RenderDevice>();let queue=world.resource::<RenderQueue>();
+        let atlas=crate::native_shadow_gpu::NativeShadowDepthArray::new_with_format(device,
+            Extent3d {width:16,height:16,depth_or_array_layers:8},TextureFormat::Depth24PlusStencil8,"captured local receiver diagnostic").unwrap();
+        let source=device.create_buffer_with_data(&BufferInitDescriptor {label:None,contents:&raw,usage:BufferUsages::STORAGE});
+        let input=device.create_buffer_with_data(&BufferInitDescriptor {label:None,contents:&cases.iter().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>(),usage:BufferUsages::STORAGE});
+        let size=count as u64*4;let output=device.create_buffer_with_data(&BufferInitDescriptor {label:None,
+            contents:&(0..count).flat_map(|_|f32::NAN.to_le_bytes()).collect::<Vec<_>>(),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC});
+        let staging=device.create_buffer(&BufferDescriptor {label:None,size,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
+        let local=include_str!("../assets/shaders/dh2_local_receiver.wgsl").lines().filter(|l|!l.starts_with('#')).collect::<Vec<_>>().join("\n").replace("#{MATERIAL_BIND_GROUP}","0");
+        let code=format!("{}\n{}\n{}",include_str!("../assets/shaders/dh2_shadow.wgsl"),local,r#"
+            struct Case {position:vec4<f32>,normal:vec4<f32>,route:vec4<u32>,ids:vec4<u32>}
+            @group(0) @binding(129) var<storage,read> cases:array<Case>;
+            @group(0) @binding(130) var<storage,read_write> results:array<f32>;
+            @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
+                let c=cases[i.x];results[i.x]=native_local_visibility(c.ids.x,c.position.xyz,c.normal.xyz,c.route);
+            }
+        "#);
+        let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(code.into())});
+        let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {label:None,layout:None,module:&shader,entry_point:Some("main"),compilation_options:default(),cache:None});
+        let sampler=crate::native_shadow_gpu::native_shadow_comparison_sampler(device);
+        let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+            BindGroupEntry{binding:126,resource:source.as_entire_binding()},BindGroupEntry{binding:127,resource:BindingResource::TextureView(&atlas.sampled)},
+            BindGroupEntry{binding:128,resource:BindingResource::Sampler(&sampler)},BindGroupEntry{binding:129,resource:input.as_entire_binding()},BindGroupEntry{binding:130,resource:output.as_entire_binding()}]});
+        let mut encoder=device.create_command_encoder(&CommandEncoderDescriptor::default());
+        for view in &atlas.layers {let _pass=encoder.begin_render_pass(&RenderPassDescriptor {label:None,color_attachments:&[],depth_stencil_attachment:Some(RenderPassDepthStencilAttachment {
+            view,depth_ops:Some(Operations {load:LoadOp::Clear(1.0),store:StoreOp::Store}),stencil_ops:Some(Operations {load:LoadOp::Clear(0),store:StoreOp::Store})}),..default()});}
+        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(count as u32,1,1);}
+        encoder.copy_buffer_to_buffer(&output,0,&staging,0,size);queue.submit([encoder.finish()]);
+        let (sender,receiver)=std::sync::mpsc::channel();staging.slice(..).map_async(MapMode::Read,move|r|sender.send(r).unwrap());
+        device.wgpu_device().poll(PollType::Wait{submission_index:None,timeout:None}).unwrap();receiver.recv().unwrap().unwrap();
+        let mapped=staging.slice(..).get_mapped_range();let mut failures=Vec::new();
+        for (i,b) in mapped.chunks_exact(4).enumerate() {
+            let v=f32::from_le_bytes(b.try_into().unwrap());if !v.is_finite() || !(0.0..=1.0).contains(&v) {failures.push((i,v));}
+        }
+        assert!(failures.is_empty(),"{} non-finite/out-of-range local visibility cases, first {:?}",failures.len(),&failures[..failures.len().min(12)]);
+        eprintln!("{count} live local projection-plane/normal/option/filter cases returned finite visibility");drop(mapped);staging.unmap();
+    }
+
+    #[test]
+    #[ignore="requires GPU; compares local shadowCommon structured-matrix coordinates against original HLSL"]
+    fn local_shadow_coordinates_match_original_structured_buffer_gpu() {
+        use bevy::{prelude::*,render::{RenderApp,render_resource::*,renderer::{RenderDevice,RenderQueue}}};
+        let cases=include_str!("../analysis/original_local_shadow_coordinates.txt").lines().map(|line|
+            line.split_whitespace().map(|w|u32::from_str_radix(w,16).unwrap()).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let mut app=App::new();
+        app.add_plugins(DefaultPlugins.set(bevy::window::WindowPlugin {primary_window:None,exit_condition:bevy::window::ExitCondition::DontExit,..default()})
+            .disable::<bevy::winit::WinitPlugin>().disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>());
+        app.finish();app.cleanup();let world=app.sub_app_mut(RenderApp).world_mut();
+        let device=world.resource::<RenderDevice>();let queue=world.resource::<RenderQueue>();
+        let input=device.create_buffer_with_data(&BufferInitDescriptor {label:None,
+            contents:&cases.iter().flatten().flat_map(|v|v.to_le_bytes()).collect::<Vec<_>>(),usage:BufferUsages::STORAGE});
+        let size=cases.len() as u64*16;
+        let output=device.create_buffer(&BufferDescriptor {label:None,size,usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC,mapped_at_creation:false});
+        let staging=device.create_buffer(&BufferDescriptor {label:None,size,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
+        let source=format!("{}\n{}",include_str!("../assets/shaders/dh2_shadow.wgsl"),r#"
+            struct Case { matrix:array<vec4<f32>,4>,position:vec4<f32>,expected:vec4<f32> }
+            @group(0) @binding(0) var<storage,read> cases:array<Case>;
+            @group(0) @binding(1) var<storage,read_write> results:array<vec4<f32>>;
+            @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
+                let c=cases[i.x];let m=mat4x4<f32>(c.matrix[0],c.matrix[1],c.matrix[2],c.matrix[3]);
+                results[i.x]=native_shadow_position(m,c.position.xyz,false);
+            }
+        "#);
+        let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(source.into())});
+        let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {label:None,layout:None,module:&shader,entry_point:Some("main"),compilation_options:default(),cache:None});
+        let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+            BindGroupEntry {binding:0,resource:input.as_entire_binding()},BindGroupEntry {binding:1,resource:output.as_entire_binding()}]});
+        let mut encoder=device.create_command_encoder(&CommandEncoderDescriptor::default());
+        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(cases.len() as u32,1,1);}
+        encoder.copy_buffer_to_buffer(&output,0,&staging,0,size);queue.submit([encoder.finish()]);
+        let (sender,receiver)=std::sync::mpsc::channel();staging.slice(..).map_async(MapMode::Read,move|v|sender.send(v).unwrap());
+        device.wgpu_device().poll(PollType::Wait {submission_index:None,timeout:None}).unwrap();receiver.recv().unwrap().unwrap();
+        let mapped=staging.slice(..).get_mapped_range();
+        for (case,(bytes,expected)) in mapped.chunks_exact(16).zip(&cases).enumerate() {
+            let actual:[u32;4]=std::array::from_fn(|i|u32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap()));
+            assert_eq!(actual,expected[20..],"original local shadow coordinates{case}");
+        }
+        assert_eq!(cases.len(),256);drop(mapped);staging.unmap();
+    }
+
+    #[test]
+    fn owner_transport_preserves_direct_vs_screen_consumer() {
+        let mut vars = receiver();
+        assert_eq!(NativeParallelSamplingUniform::from_owner_receiver(&vars).unwrap().config.x, 1);
+        vars.path = crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace;
+        vars.offset.use_normal_offset = true;
+        let screen = NativeParallelSamplingUniform::from_owner_receiver(&vars).unwrap();
+        assert_eq!(screen.config.x, 2);
+        assert_eq!(screen.config.z & 1, 0, "screen shader uses zero normal");
+        assert!(NativeParallelSamplingUniform::from_receiver(&vars).is_err(),
+            "screen route must never become a direct forward receiver");
+        vars.path = crate::render_shadow::ParallelShadowReceiverPath::DirectWithCasterDistance;
+        assert!(NativeParallelSamplingUniform::from_owner_receiver(&vars).is_err());
+    }
 
     fn receiver() -> crate::native_shadow_scene::NativeParallelReceiverVars {
         crate::native_shadow_scene::NativeParallelReceiverVars {
@@ -238,7 +393,7 @@ mod tests {
         let neutral = NativeParallelSamplingUniform::default();
         assert_eq!(neutral.config.x, 0);
         let buffer = ShaderBuffer::from(neutral);
-        assert_eq!(buffer.data.unwrap().len(), 432);
+        assert_eq!(buffer.data.unwrap().len(), 480);
     }
 
     #[test]

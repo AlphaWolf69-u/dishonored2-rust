@@ -2,12 +2,12 @@
     forward_io::{VertexOutput, FragmentOutput},
     mesh_bindings::mesh,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting_with_directional_shadow, main_pass_post_lighting_processing},
+    pbr_functions::{alpha_discard, apply_pbr_lighting_with_native_shadows, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
     decal::clustered::apply_decals,
 }
 
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_native_shadow}
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse}
 #import dh2_parallel_receiver::{native_parallel_directional_index, native_parallel_depth_visibility}
 
@@ -132,9 +132,10 @@ fn fragment(
         // Original lighting uses wsVertexNormal for the sun's shadow offset,
         // not the normal-map BRDF normal. The same light.m_shadow attenuates
         // both direct lobes; probes/emission/local lights remain untouched.
-        let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal);
-        out.color = apply_pbr_lighting_with_directional_shadow(pbr_input,
-            native_parallel_directional_index(), visibility, visibility);
+        let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
+            vertex_output.position.xy, compiled_native_shadow);
+        out.color = apply_pbr_lighting_with_native_shadows(pbr_input,
+            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow);
     } else {
         out.color = pbr_input.material.base_color;
     }

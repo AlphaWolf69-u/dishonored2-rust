@@ -168,6 +168,12 @@ impl NativeGameplayViewClock {
     pub fn clocks(&self) -> Result<&game_clock::GameplayViewClocks, &str> {
         self.0.as_ref().map_err(String::as_str)
     }
+    /// Actual world/view bindings, distinct from a render model's offset
+    /// and selected clock. Keep the source definition byte4, not Time2->2.
+    pub fn view_shader_times(&self, source_flag_04: u8) -> Result<game_clock::ViewShaderTimes, String> {
+        Ok(self.clocks().map_err(str::to_owned)?.view_shader_times(source_flag_04))
+    }
+
     pub fn model_local_time(&self, offset: f32, model_flags_1c31: u8) -> Result<[f32; 2], String> {
         self.clocks()
             .map_err(str::to_owned)?
@@ -285,6 +291,8 @@ mod tests {
         app.update();
         let view = app.world().resource::<NativeGameplayViewClock>();
         assert_eq!(view.clocks().unwrap_err(), "test unavailable native clock");
+        assert_eq!(view.view_shader_times(game_clock::RESET_VIEW_LOCAL_TIME_FLAG).unwrap_err(),
+            "test unavailable native clock");
         assert_eq!(
             view.model_local_time(0.0, 0x30).unwrap_err(),
             "test unavailable native clock"

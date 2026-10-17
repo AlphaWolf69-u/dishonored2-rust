@@ -17,6 +17,148 @@ pub fn reset_native_render_state(state: &mut NativeRenderState) {
     state[4..].copy_from_slice(&[0xe00e_0000, 0x32ff_ff1e, 0, 0, 0]);
 }
 
+/// Resolve a material's authored `state { ... }` against the actual MAIN
+/// program state (1402d5610/1402d662d). Only root-level state is consumed:
+/// similarly named option/parameter values are not drawing commands. No state
+/// preserves the nine MAIN words exactly. Multiple state blocks are explicitly
+/// unsupported until the original collector's concatenation is verified.
+pub fn material_render_state(
+    source: &str, base: NativeRenderState,
+) -> Result<NativeRenderState, String> {
+    let tokens = crate::entities::declaration_lexemes(source)?;
+    if tokens.first() != Some(&"{") {
+        return Err("native material declaration must start with {".into());
+    }
+    let mut depth = 0usize;
+    let mut index = 0;
+    let mut state = None;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if depth == 1 && token.eq_ignore_ascii_case("state") {
+            if state.is_some() { return Err("multiple native material state blocks are unresolved".into()); }
+            if tokens.get(index + 1) != Some(&"{") {
+                return Err("native material state must start with {".into());
+            }
+            let start = index + 1;
+            let mut end = start + 1;
+            let mut braces = 1;
+            while end < tokens.len() && braces != 0 {
+                match tokens[end] { "{" => braces += 1, "}" => braces -= 1, _ => {} }
+                end += 1;
+            }
+            if braces != 0 { return Err("Unexpected EOF in state block".into()); }
+            state = Some(parse_native_render_state(&tokens[start..end].join(" "), Some(base))?);
+            index = end;
+            continue;
+        }
+        match token {
+            "{" => depth += 1,
+            "}" => depth = depth.checked_sub(1).ok_or("unmatched material closing brace")?,
+            _ => {}
+        }
+        index += 1;
+    }
+    if depth != 0 { return Err("unterminated native material declaration".into()); }
+    Ok(state.unwrap_or(base))
+}
+
+/// Valid drawing-state blocks consumed by FUN_1402c3bc0. The material caller
+/// at 1402d662d supplies MAIN +0x58 in R8: overrides inherit all nine words,
+/// not a freshly reset state. None is the original explicit null-base branch.
+/// Lexer diagnostic/recovery side effects on malformed input are not emulated;
+/// unsupported/malformed blocks return an error instead of publishing a state.
+pub fn parse_native_render_state(
+    source: &str, base: Option<NativeRenderState>,
+) -> Result<NativeRenderState, String> {
+    fn take<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Result<&'a str, String> {
+        tokens.next().ok_or_else(|| "Unexpected EOF in state block".into())
+    }
+    fn named(token: &str, names: &[(&str, u32)], gl_prefix: bool) -> Result<u32, String> {
+        let upper = token.to_ascii_uppercase();
+        let mut token = upper.as_str();
+        if gl_prefix {
+            while let Some(value) = token.strip_prefix("GL_") { token = value; }
+        }
+        names.iter().find(|(name, _)| *name == token).map(|(_, value)| *value)
+            .ok_or_else(|| format!("invalid native drawing-state value {token:?}"))
+    }
+    fn comparison(token: &str) -> Result<u32, String> {
+        named(token, &[("NEVER",0),("LESS",1),("EQUAL",2),("LEQUAL",3),
+            ("GREATER",4),("NOTEQUAL",5),("GEQUAL",6),("ALWAYS",7)], true)
+    }
+    fn operation(token: &str) -> Result<u32, String> {
+        named(token, &[("ADD",0),("SUB",1),("MIN",2),("MAX",3)], true)
+    }
+    fn stencil(token: &str) -> Result<u32, String> {
+        named(token, &[("KEEP",0),("ZERO",1),("REPLACE",2),("INCR_SAT",3),
+            ("DECR_SAT",4),("INVERT",5),("INCR",6),("DECR",7)], true)
+    }
+    let mut tokens = crate::entities::declaration_lexemes(source)?.into_iter();
+    if take(&mut tokens)? != "{" { return Err("native drawing state must start with {".into()); }
+    let mut state = base.unwrap_or_else(|| {
+        let mut value = [0;9]; reset_native_render_state(&mut value); value
+    });
+    loop {
+        let key = take(&mut tokens)?.to_ascii_lowercase();
+        match key.as_str() {
+            "}" => {
+                state[0] = (state[0] & !1) | u32::from(crate::material::native_blend_enabled(state[0]));
+                return Ok(state);
+            }
+            "blend" | "alphablend" => {
+                let mut a = crate::material::parse_blend_factor(take(&mut tokens)?)?;
+                let mut b = crate::material::parse_blend_factor(take(&mut tokens)?)?;
+                let (mask, shift) = if key == "alphablend" {
+                    // 140166830 is a returning diagnostic stub; the following
+                    // original instructions still substitute colour by alpha.
+                    let alpha = |value| match value { 2=>4,3=>5,8=>6,9=>7,_=>value };
+                    a = alpha(a); b = alpha(b); (0x7f800,11)
+                } else { (0x1fe,1) };
+                state[0] = (state[0] & !mask) | ((a | (b << 4)) << shift);
+            }
+            "blendop" | "alphablendop" => {
+                let value = operation(take(&mut tokens)?)?;
+                let shift = if key == "blendop" {9} else {19};
+                state[0] = (state[0] & !(3 << shift)) | (value << shift);
+            }
+            "depthfunc" => {
+                state[5] = (state[5] & !7) | comparison(take(&mut tokens)?)?;
+            }
+            "wireframe" => state[5] |= 0x0400_0000,
+            "alphacoverage" | "depthwrite" | "depthenable" | "colorwrite" | "alphawrite" => {
+                let value = take(&mut tokens)?.parse::<i32>()
+                    .map_err(|_| format!("invalid native integer for {key}"))? != 0;
+                let (word, mask) = match key.as_str() {
+                    "alphacoverage" => (4,1), "depthwrite" => (5,0x10),
+                    "depthenable" => (5,8), "colorwrite" => (0,0x00e0_0000),
+                    _ => (0,0x0100_0000),
+                };
+                state[word] = (state[word] & !mask) | if value {mask} else {0};
+            }
+            "cull" => {
+                let value = named(take(&mut tokens)?, &[("NONE",0),("FRONT",1),("BACK",2)], false)?;
+                state[5] = (state[5] & !0x0300_0000) | (value << 24);
+            }
+            "frontstencilop" | "backstencilop" => {
+                let fail = stencil(take(&mut tokens)?)?;
+                let depth_fail = stencil(take(&mut tokens)?)?;
+                let pass = stencil(take(&mut tokens)?)?;
+                let shift = if key == "frontstencilop" {8} else {20};
+                state[4] = (state[4] & !(0x1ff << shift))
+                    | ((fail | (depth_fail << 3) | (pass << 6)) << shift);
+                state[5] |= 0x20;
+            }
+            "frontstencilfunc" | "backstencilfunc" => {
+                let value = comparison(take(&mut tokens)?)?;
+                let shift = if key == "frontstencilfunc" {17} else {29};
+                state[4] = (state[4] & !(7 << shift)) | (value << shift);
+                state[5] |= 0x20;
+            }
+            _ => return Err(format!("unsupported native drawing-state option {key:?}")),
+        }
+    }
+}
+
 /// FUN_140319900's surface-facing override. Only the surface's low bit
 /// replaces raster FrontCounterClockwise; all other state bits survive.
 pub fn prepared_surface_state(
@@ -24,6 +166,71 @@ pub fn prepared_surface_state(
     surface_flags: u8,
 ) -> NativeRenderState {
     state[5] ^= ((u32::from(surface_flags) << 27) ^ state[5]) & 0x0800_0000;
+    state
+}
+
+/// Original CVTTSS2SI result, including INT_MIN on NaN/out-of-range.
+fn native_cvtt_f32(value: f32) -> u32 {
+    if value >= -2147483648.0 && value < 2147483648.0 {
+        value as i32 as u32
+    } else { 0x8000_0000 }
+}
+
+/// FUN_140293470, used by FUN_1402996f0 when requested shadow bias/clip
+/// differs from the world's cached state. Only these fields are changed;
+/// source blend/stencil/cull bits not in the masks survive. Globals are
+/// explicit owner inputs, not guessed renderer defaults.
+pub fn world_shadow_draw_state(
+    source: NativeRenderState, surface_flags: u8, depth_bias: f32,
+    slope_scale: f32, clamp: f32, depth_clip: u8,
+) -> NativeRenderState {
+    let mut state = prepared_surface_state(source, surface_flags);
+    state[0] &= 0xfe1f_fffe;
+    state[6] = native_cvtt_f32(depth_bias);
+    state[8] = slope_scale.to_bits();
+    state[5] = (state[5] & 0xefff_fff9) | (u32::from(depth_clip & 1) << 28) | 1;
+    state[7] = clamp.to_bits();
+    state
+}
+
+/// Literal state leaves adjacent to the world-shadow override. Keeping their
+/// native addresses avoids assigning an unverified pass/category meaning.
+/// FUN_1402934e0; the two-byte store starts at byte0x15, not a word boundary.
+pub fn world_state_2934e0(mut state: NativeRenderState) -> NativeRenderState {
+    state[5] = (state[5] & 0xfcff_ffea) | 0x22;
+    state[4] = (state[4] & 0xff) | 0xe80e_8000;
+    state[5] = (state[5] & !0x00ff_ff00) | 0x0004_0000;
+    state
+}
+
+/// FUN_140293500. FUN_1402934b0 additionally invokes 3253f0/3253d0;
+/// those callbacks are not covered by this leaf.
+pub fn world_state_293500(mut state: NativeRenderState) -> NativeRenderState {
+    state[5] = (state[5] & 0xffff_ffee) | 6;
+    state
+}
+
+/// FUN_140293510.
+pub fn world_state_293510(mut state: NativeRenderState) -> NativeRenderState {
+    state[5] = (state[5] & 0xffff_ffee) | 0xe;
+    state[4] |= 2;
+    state[0] = (state[0] & 0xffff_f8a9) | 0xa9;
+    state[1] = (state[1] & 0xfe20_8823) | 0x0020_8823;
+    state
+}
+
+/// FUN_140293540; caller supplies actual DAT_1432f8cac.
+pub fn world_state_293540(state: NativeRenderState, clamp: f32) -> NativeRenderState {
+    let mut state = world_state_293500(state);
+    state[6] = 0;
+    state[8] = 0x3ca3_d70a;
+    state[7] = clamp.to_bits();
+    state
+}
+
+/// FUN_140293570.
+pub fn world_state_293570(mut state: NativeRenderState) -> NativeRenderState {
+    state[5] = (state[5] & 0xffff_ffea) | 2;
     state
 }
 
@@ -235,9 +442,134 @@ pub fn screen_shadow_pass_states(source: NativeRenderState) -> [NativeRenderStat
     [first, second]
 }
 
+/// Descriptor arithmetic of FUN_140378280, after a sampler-cache miss.
+/// Input is the original nine-word canonical sampler record; output is the
+/// thirteen-word D3D11_SAMPLER_DESC, preserving all float bits. This does not
+/// implement the function's cache, lock, device creation or disabled-renderer
+/// path. 768 offline original executions verify the reduction independently.
+pub fn native_sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) -> [u32; 13] {
+    let flags = canonical[0];
+    let comparison = (flags >> 12) & 7;
+    let min = (flags >> 2) & 3;
+    let mip = (flags >> 4) & 3;
+    let mut filter = if min == 2 {
+        (u32::from(comparison != 0) << 7) | 0x55
+    } else {
+        ((u32::from(comparison != 0) << 3 | u32::from(flags & 3 == 0)) << 2
+            | u32::from(min == 0)) << 2 | u32::from(mip == 0)
+    };
+    let anisotropy = if mip != 0 || image_anisotropy < 1.0 {
+        let own = f32::from_bits(canonical[8]);
+        if own < 1.0 { 1 } else {
+            filter = 0x55;
+            native_cvtt_f32(own)
+        }
+    } else { native_cvtt_f32(image_anisotropy) };
+    let address = |shift: u32| match (flags >> shift) & 3u32 {
+        0 => 1, // WRAP
+        1 => 3, // CLAMP
+        2 => 4, // BORDER
+        3 => 2, // MIRROR
+        _ => unreachable!(),
+    };
+    [filter, address(6), address(8), address(10), canonical[5], anisotropy,
+        comparison + 1, canonical[1], canonical[2], canonical[3], canonical[4],
+        canonical[6], canonical[7]]
+}
+
+#[cfg(test)]
+mod native_parser_tests {
+    use super::*;
+
+    #[test]
+    fn state_parser_matches_original_token_stream_kernel() {
+        fn words(text: &str) -> [u32; 9] {
+            text.split_whitespace().map(|word| u32::from_str_radix(word,16).unwrap())
+                .collect::<Vec<_>>().try_into().unwrap()
+        }
+        let mut count = 0;
+        for (index,line) in include_str!("../analysis/original_render_state_tokens_cases.txt").lines().enumerate() {
+            let mut columns = line.split('\t');
+            let base = columns.next().unwrap();
+            let base = (base != "-").then(|| words(base));
+            let source = columns.next().unwrap();
+            let expected = words(columns.next().unwrap());
+            assert!(columns.next().is_none());
+            assert_eq!(parse_native_render_state(source, base).unwrap(), expected,
+                "original token-stream kernel case {index}: {source}");
+            count += 1;
+        }
+        assert_eq!(count,768);
+    }
+
+    #[test]
+    fn authored_material_state_is_token_scoped_and_inherits_main() {
+        let base = [0x01e0_0803, 0x1234, 0x5678, 0x9abc, 0xe00e_0000, 0x32ff_ff1e, 17, 23, 29];
+        let source = "{ options { blend ONE state 1 } parms { cull FRONT } state { blend SRC_ALPHA ONE_MINUS_SRC_ALPHA depthWrite 0 cull NONE } mainProgram arkdefault }";
+        let actual = material_render_state(source, base).unwrap();
+        let expected = parse_native_render_state("{ blend SRC_ALPHA ONE_MINUS_SRC_ALPHA depthWrite 0 cull NONE }",Some(base)).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(&actual[1..4], &base[1..4]);
+        assert_eq!(&actual[6..], &base[6..]);
+        assert_eq!(material_render_state("{ options { blend ZERO state 1 } }",base).unwrap(),base);
+        assert!(material_render_state("{ state { } state { } }",base).is_err());
+    }
+
+    #[test]
+    fn state_parser_shares_comment_rules_and_rejects_unresolved_input() {
+        let plain = parse_native_render_state("{ blend ONE ZERO cull FRONT }",None).unwrap();
+        assert_eq!(parse_native_render_state("/* header */ { blend /* a */ ONE ZERO // b\n cull FRONT }", None).unwrap(), plain);
+        for source in ["", "{", "{ cull GL_BACK }", "{ blend ONE }", "{ unsupported 1 }", "{ depthWrite maybe }"] {
+            assert!(parse_native_render_state(source,None).is_err(),"{source}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_state_leaves_match_full_original_execution() {
+        let mut cases=0;
+        for (case,line) in include_str!("../analysis/original_world_shadow_state_cases.txt").lines().enumerate() {
+            let words:Vec<_>=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect();
+            assert_eq!(words.len(),24);
+            let source:[u32;9]=words[1..10].try_into().unwrap();
+            let face=words[10] as u8;
+            let bias=f32::from_bits(words[11]);
+            let slope=f32::from_bits(words[12]);
+            let clamp=f32::from_bits(words[13]);
+            let clip=words[14] as u8;
+            let actual=match words[0] {
+                0x293470=>world_shadow_draw_state(source,face,bias,slope,clamp,clip),
+                0x2934e0=>world_state_2934e0(source),
+                0x293500=>world_state_293500(source),
+                0x293510=>world_state_293510(source),
+                0x293540=>world_state_293540(source,clamp),
+                0x293570=>world_state_293570(source),
+                operation=>panic!("unknown original leaf {operation:x}"),
+            };
+            assert_eq!(&actual, &words[15..24],"original world state case{case}, leaf{:x}",words[0]);
+            cases+=1;
+        }
+        assert_eq!(cases,1536);
+    }
+
+    #[test]
+    fn sampler_descriptors_match_original_executable() {
+        let mut count = 0;
+        for (case, line) in include_str!("../analysis/original_sampler_descriptor_cases.txt").lines().enumerate() {
+            let words: Vec<_> = line.split_whitespace()
+                .map(|word| u32::from_str_radix(word,16).unwrap()).collect();
+            assert_eq!(words.len(),23);
+            let input: [u32;9] = words[1..10].try_into().unwrap();
+            assert_eq!(native_sampler_descriptor(&input,f32::from_bits(words[0])),
+                words[10..], "original sampler case {case}");
+            count += 1;
+        }
+        assert_eq!(count,768);
+    }
 
     #[test]
     fn main_depth_stencil_bit_tracks_actual_depth_hack_not_mesh_type() {

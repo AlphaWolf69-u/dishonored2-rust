@@ -50,7 +50,7 @@ pub struct Surface {
 }
 
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
-    String::from_utf8_lossy(bytes)
+    crate::entities::native_declaration_text(bytes)
         .lines()
         .filter_map(|line| {
             let line = line.split("//").next()?.trim();

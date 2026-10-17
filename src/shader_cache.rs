@@ -280,6 +280,10 @@ impl NativeShaderCache {
 pub struct CachedRigidShadowSource {
     /// Identified shader class, never a substitute opaque fallback.
     pub class: CachedRigidShadowClass,
+    /// Deformation is independent of the fragment class; never use a rigid
+    /// pipeline merely because both fragments are opaque.
+    pub skin_influences:u8,
+    pub alpha_dither:bool,
     pub program: Vec<u8>,
     pub variant_hash: u32,
     pub definition_render_state: [u32; 9],
@@ -290,10 +294,42 @@ pub struct CachedRigidShadowSource {
 pub enum CachedRigidShadowClass {
     Opaque,
     AlphaTested,
+    VistaAlpha,
     Vegetation,
 }
 
+/// Instanced static-world programs are not the rigid-model CB/input class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachedWorldShadowClass { Opaque, AlphaTested, VistaAlpha, Vegetation, VegetationFixed }
+
+impl CachedWorldShadowClass {
+    /// Material UV/wind variables are shared by the installed rigid/world
+    /// banks; their transform/wind GPU ABIs are deliberately NOT shared.
+    pub fn material_parameter_class(self) -> CachedRigidShadowClass {
+        match self {
+            Self::Opaque => CachedRigidShadowClass::Opaque,
+            Self::AlphaTested | Self::VistaAlpha => CachedRigidShadowClass::AlphaTested,
+            Self::Vegetation | Self::VegetationFixed => CachedRigidShadowClass::Vegetation,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CachedWorldShadowSource {
+    pub class: CachedWorldShadowClass,
+    pub program: Vec<u8>,
+    pub variant_hash: u32,
+    pub definition_render_state: [u32; 9],
+    pub variant: crate::render_program::D3dVariantData,
+}
+
 fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
+    // The liquid-container VS has extra unused varyings and a different CB
+    // layout, but its only rasterized output is exactly the same rigid MVP
+    // and depth multiplier.768 native stream-output positions verify the
+    // canonical transport shared with Vista (no liquid pixel stage exists).
+    if bytes.get(..4)==Some(b"DXBC".as_slice()) && bytes.get(4..20)==Some(
+        [0x17,0xfa,0x7d,0x8c,0x1d,0x94,0x16,0xae,0xb8,0x75,0x94,0x3a,0x6c,0x9e,0xe7,0x9a].as_slice()) {return true;}
     // Actual DXBC checksum of captured VS17296, NOT its transient resource ID.
     bytes.get(..4) == Some(b"DXBC".as_slice())
         && bytes.get(4..20)
@@ -318,6 +354,8 @@ pub struct NativeProgramLibrary {
     definitions: HashMap<Vec<u8>, crate::render_program::RenderProgramDefinition>,
     rigid_shadow_sources:
         HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedRigidShadowSource>>>>,
+    world_shadow_sources:
+        HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedWorldShadowSource>>>>,
 }
 
 impl NativeProgramLibrary {
@@ -353,6 +391,7 @@ impl NativeProgramLibrary {
             float_vector_defaults: HashMap::new(),
             definitions: HashMap::new(),
             rigid_shadow_sources: HashMap::new(),
+            world_shadow_sources: HashMap::new(),
         })
     }
 
@@ -583,16 +622,49 @@ impl NativeProgramLibrary {
                 0xee, 0xd2, 0xfa, 0x0b, 0x2d, 0xfe, 0xbc, 0x1a, 0xf1, 0xc1, 0x87, 0xe5, 0xdd, 0x8b,
                 0x45, 0xb6,
             ];
-            let class = if opaque_vertex && pixel.is_none() {
+            let skin4=[0x00,0x05,0x02,0x61,0xd3,0xfb,0x45,0x65,0xe6,0xbc,0x40,0xbe,0xa9,0x40,0xec,0xe7];
+            let skin8=[0x65,0xc7,0xb3,0xa3,0xd4,0x2d,0x7f,0x48,0x7f,0x11,0x05,0xf2,0x25,0x03,0xf3,0x09];
+            let skin4_uv=[0x3a,0xd6,0x27,0x69,0xe0,0x1a,0xf2,0xa2,0x22,0x71,0x77,0x74,0x2d,0xaa,0xbf,0xb1];
+            let skin8_uv=[0x4b,0x77,0x87,0xe3,0x75,0x83,0xb6,0x2a,0xcd,0x71,0x1d,0x88,0x2c,0xfd,0x01,0x37];
+            let skin4_extended=[0xf8,0x96,0x70,0xf6,0xf1,0xa0,0x54,0xe6,0xb7,0x41,0x0d,0xb8,0x3a,0x7f,0x04,0x2e];
+            let skin8_extended=[0xe6,0xf3,0xc8,0x28,0x02,0x41,0xeb,0xe5,0x8e,0xd7,0xc1,0xe8,0x17,0x71,0xf0,0x87];
+            let skin8_dual_uv=[0xfb,0x88,0x0d,0x5d,0x5d,0x1c,0x1e,0xd6,0x1e,0xf9,0xda,0xf3,0xeb,0x4a,0x4c,0x43];
+            let skin4_world_outputs=[0xbc,0x2c,0x56,0x91,0x7a,0x73,0xd5,0xe0,0x97,0xd6,0x9a,0x90,0x49,0x6a,0xe5,0xbe];
+            let skin_alpha=[0x07,0x9f,0x7d,0x69,0x5d,0x3a,0x52,0x8d,0x2e,0x22,0xd1,0x33,0xdb,0x3f,0x29,0x92];
+            let skin_dither=[0x67,0x63,0xe0,0x76,0xad,0x91,0x20,0xa3,0x1a,0xc3,0xe4,0x30,0x4c,0x99,0x18,0x3b];
+            let skin_influences=if [skin4,skin4_uv,skin4_extended,skin4_world_outputs].into_iter().any(|hash|vertex==Some(hash)) {4}
+                else if [skin8,skin8_uv,skin8_extended,skin8_dual_uv].into_iter().any(|hash|vertex==Some(hash)) {8}else{0};
+            let alpha_dither=pixel==Some(skin_dither);
+            let class = if skin_influences!=0 && pixel.is_none() {
+                CachedRigidShadowClass::Opaque
+            } else if skin_influences!=0 && (pixel==Some(skin_alpha)||alpha_dither)
+                && [skin4_uv,skin8_uv,skin4_extended,skin8_extended,skin8_dual_uv].into_iter().any(|hash|vertex==Some(hash)) {
+                CachedRigidShadowClass::AlphaTested
+            } else if opaque_vertex && pixel.is_none() {
                 CachedRigidShadowClass::Opaque
             } else if vertex == Some(alpha_vertex) && pixel == Some(alpha_pixel) {
                 CachedRigidShadowClass::AlphaTested
+            } else if vertex==Some([0x8f,0xb0,0xe7,0xab,0xaf,0x5b,0x64,0xb6,0xcb,0x28,0xd3,0xbd,0x14,0x4e,0x5a,0x99])
+                && pixel==Some([0x1a,0x8e,0xaf,0x20,0x45,0xc7,0x0c,0x56,0x8c,0x1e,0xdb,0x69,0x7b,0x3d,0xd2,0x1b]) {
+                CachedRigidShadowClass::VistaAlpha
             } else if vertex == Some(vegetation_vertex) && pixel == Some(vegetation_pixel) {
                 CachedRigidShadowClass::Vegetation
             } else {
+                if let Some(directory)=std::env::var_os("DH2_EXPORT_UNSUPPORTED_SHADOWS") {
+                    let directory=Path::new(&directory);std::fs::create_dir_all(directory).map_err(|e|e.to_string())?;
+                    for stage in &variant.stages {
+                        let bytes=match &stage.bytecode {
+                            crate::render_program::StageBytecode::Absent=>continue,
+                            crate::render_program::StageBytecode::Inline(bytes)=>bytes.clone(),
+                            crate::render_program::StageBytecode::Cached(id)=>self.cache.stage(*id as usize)?.bytes,
+                        };
+                        let stem=String::from_utf8_lossy(name).replace(['/','\\'],"_");
+                        std::fs::write(directory.join(format!("{stem}-{hash:08x}-{}.dxbc",stage.kind)),bytes).map_err(|e|e.to_string())?;
+                    }
+                }
                 return Err(format!(
-                    "unsupported shadow bytecode pair for {}",
-                    String::from_utf8_lossy(name)
+                    "unsupported shadow bytecode pair for {} signature={hash:08x} VS={vertex:02x?} PS={pixel:02x?}",
+                    String::from_utf8_lossy(name),
                 ));
             };
             let definition = &self.definitions[&name_key(name)];
@@ -604,6 +676,8 @@ impl NativeProgramLibrary {
             let state = definition.native_render_state();
             Ok(Some(std::sync::Arc::new(CachedRigidShadowSource {
                 class,
+                skin_influences,
+                alpha_dither,
                 program: name.to_vec(),
                 variant_hash: hash,
                 definition_render_state: state,
@@ -611,6 +685,87 @@ impl NativeProgramLibrary {
             })))
         })();
         self.rigid_shadow_sources.insert(key, result.clone());
+        result
+    }
+
+    /// Resolve actual world caller overrides. Only the installed, disassembled
+    /// opaque and cutout pairs with their original instance-buffer ABI qualify.
+    /// None remains a resident-cache MISS, never a no-shadow decision.
+    pub fn world_shadow_source(
+        &mut self, name: &[u8],
+        overrides: &crate::render_program::SerializedParameterBlock,
+    ) -> Result<Option<std::sync::Arc<CachedWorldShadowSource>>> {
+        let Some(hash) = self.specialization_hash(name, overrides)? else { return Ok(None); };
+        let key = (name_key(name), hash);
+        if let Some(result) = self.world_shadow_sources.get(&key) { return result.clone(); }
+        let result = (|| {
+            let Some(variant) = self.serialized_variant(name, overrides)? else { return Ok(None); };
+            let mut vertex = None;
+            let mut pixel = None;
+            for stage in &variant.stages {
+                let bytes = match &stage.bytecode {
+                    crate::render_program::StageBytecode::Absent => continue,
+                    crate::render_program::StageBytecode::Inline(bytes) => bytes.clone(),
+                    crate::render_program::StageBytecode::Cached(id) => self.cache.stage(*id as usize)?.bytes,
+                };
+                if bytes.len() < 32 || bytes.get(..4) != Some(b"DXBC".as_slice())
+                    || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
+                { return Err("invalid world shadow DXBC extent/container".into()); }
+                // Explicit offline test capture only; never writes game data
+                // from production. Capture unsupported pairs before rejection
+                // so the next class is ported from its real installed shader.
+                #[cfg(test)]
+                if let Some(directory) = std::env::var_os("DH2_WORLD_SHADER_EVIDENCE") {
+                    let directory = std::path::PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+                    let file = directory.join(format!("{hash:08x}-{}.dxbc",stage.kind));
+                    std::fs::write(&file,&bytes).map_err(|e|e.to_string())?;
+                    eprintln!("WORLD EVIDENCE {} {}",String::from_utf8_lossy(name),file.display());
+                }
+                let checksum: [u8;16] = bytes[4..20].try_into().unwrap();
+                match stage.kind {
+                    0 if vertex.is_none() => vertex = Some(checksum),
+                    1 if pixel.is_none() => pixel = Some(checksum),
+                    _ => return Err(format!("unsupported/duplicate world shadow stage {}",stage.kind)),
+                }
+            }
+            let class = match (vertex, pixel) {
+                (Some([0x65,0x82,0x5b,0x7d,0xdd,0x6c,0x6e,0xc0,0xba,0x7a,0x54,0x34,0x47,0x18,0xc7,0xce]), None) =>
+                    CachedWorldShadowClass::Opaque,
+                (Some([0x63,0xab,0xa4,0xea,0xd9,0xc2,0xc3,0xaa,0xb2,0x63,0xa3,0x6a,0xe8,0xed,0x36,0x2c]),
+                 Some([0x2c,0xdc,0xb1,0x21,0x51,0x4d,0xf8,0x98,0x80,0x79,0x97,0xea,0x08,0xc1,0xd6,0x94])) =>
+                    CachedWorldShadowClass::AlphaTested,
+                // Native arkvista's raw-UV cutout and explicitly declared
+                // anisotropicsampler; not the Layer0/bilinear alpha program.
+                (Some([0xdf,0xf3,0xe1,0xd3,0xec,0xb4,0xd9,0x6f,0x7c,0xe6,0x76,0xa3,0x52,0x63,0x1c,0x44]),
+                 Some([0x1a,0x8e,0xaf,0x20,0x45,0xc7,0x0c,0x56,0x8c,0x1e,0xdb,0x69,0x7b,0x3d,0xd2,0x1b])) =>
+                    CachedWorldShadowClass::VistaAlpha,
+                // Actual installed world-wind VS/PS, not rigid VS14200.
+                // Stream-output verified in original_world_shadow_wind_cases.
+                (Some([0xe5,0xee,0xdb,0x97,0x8c,0xbe,0x4c,0xee,0x3d,0x57,0xcf,0x15,0xf8,0x61,0x9f,0x90]),
+                 Some([0x75,0x42,0x36,0x0b,0x4a,0x74,0xed,0x4a,0x15,0xbf,0x8d,0xf5,0x2e,0xb3,0xd4,0x4b])) =>
+                    CachedWorldShadowClass::Vegetation,
+                // Separately captured 51-slot variant: real fixed local wind,
+                // no wind-buffer reads. Never substituted for the pair above.
+                (Some([0x11,0xd8,0xd0,0xa6,0x07,0x10,0x97,0x61,0xd3,0x2b,0x13,0x47,0x53,0x5c,0xf8,0x3f]),
+                 Some([0x76,0xbf,0x50,0x91,0x0b,0x56,0xd0,0xe0,0xe7,0xd3,0xa9,0xd4,0x35,0x9e,0x6e,0x1c])) |
+                // Same fixed-wind family with hasBumpMap enabled. BOTH stages
+                // have byte-identical SHEX, ISGN, OSGN and STAT to the pair
+                // above; only non-executed RDEF reflection differs. This is
+                // shader-family coverage, never a material-name exception.
+                (Some([0x81,0x04,0x6a,0xaa,0xd8,0x79,0xf0,0x17,0xd1,0x6d,0x2e,0xef,0x4a,0xfc,0xb1,0x67]),
+                 Some([0x75,0x42,0x36,0x0b,0x4a,0x74,0xed,0x4a,0x15,0xbf,0x8d,0xf5,0x2e,0xb3,0xd4,0x4b])) =>
+                    CachedWorldShadowClass::VegetationFixed,
+                _ => return Err(format!("unsupported world shadow bytecode pair for {}: VS={vertex:02x?} PS={pixel:02x?}",String::from_utf8_lossy(name))),
+            };
+            let definition = &self.definitions[&name_key(name)];
+            if variant.header.source_crc != definition.source_crc {
+                return Err("compiled world shadow CRC differs from resident definition".into());
+            }
+            Ok(Some(std::sync::Arc::new(CachedWorldShadowSource { class, program:name.to_vec(),
+                variant_hash:hash, definition_render_state:definition.native_render_state(), variant })))
+        })();
+        self.world_shadow_sources.insert(key,result.clone());
         result
     }
 
@@ -937,6 +1092,59 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires installed original cache; writes local-only exact world-instanced DXBC evidence"]
+    fn installed_world_shadow_stage_evidence() {
+        use crate::render_program::{RenderParameterKind, SerializedParameter,
+            SerializedParameterBlock, SerializedParameterValue, StageBytecode};
+        let base = Path::new("D:/Programs/Steam/steamapps/common/Dishonored2/base");
+        let catalog = crate::archive::Catalog::open(base).unwrap();
+        let mut library = NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+        let directory = Path::new("artifacts/native-world-shadow-source");
+        std::fs::create_dir_all(directory).unwrap();
+        let mut found = 0;
+        for (name, alpha) in [("arkdefault", 0), ("arkdefault", 1),
+            ("arkvegetation", 0), ("arkvegetation", 1), ("arkvista", 0), ("arkvista", 1)] {
+            let overrides = SerializedParameterBlock { flags: 0,
+                parameters: [("isShadow",1), ("isAlpha",0), ("noScreenShadows",0),
+                    ("useMultiInstancing",1), ("alphaTest",alpha), ("forcePixelShader",alpha)]
+                    .into_iter().map(|(name,value)| SerializedParameter {
+                        name: name.as_bytes().to_vec(), kind: RenderParameterKind::Option,
+                        value: SerializedParameterValue::Words([value,0,0,0]),
+                    }).collect(),
+            };
+            let Some(hash) = library.specialization_hash(name.as_bytes(), &overrides).unwrap() else {
+                eprintln!("world shadow {name}: no installed definition");
+                continue;
+            };
+            let Some(variant) = library.serialized_variant(name.as_bytes(), &overrides).unwrap() else {
+                eprintln!("world shadow {name} alpha={alpha} signature={hash:08x}: no resident variant");
+                continue;
+            };
+            if name == "arkdefault" {
+                let source = library.world_shadow_source(name.as_bytes(), &overrides).unwrap().unwrap();
+                assert_eq!(source.class, if alpha == 0 { CachedWorldShadowClass::Opaque }
+                    else { CachedWorldShadowClass::AlphaTested });
+                assert!(std::sync::Arc::ptr_eq(&source,
+                    &library.world_shadow_source(name.as_bytes(), &overrides).unwrap().unwrap()));
+                // An instanced source must never be accepted as a rigid model.
+                assert!(library.rigid_shadow_source(name.as_bytes(), &overrides).is_err());
+            }
+            for stage in variant.stages {
+                let bytes = match stage.bytecode {
+                    StageBytecode::Absent => continue,
+                    StageBytecode::Inline(bytes) => bytes,
+                    StageBytecode::Cached(id) => library.cache.stage(id as usize).unwrap().bytes,
+                };
+                let path = directory.join(format!("{name}-{hash:08x}-{}.dxbc",stage.kind));
+                std::fs::write(&path,&bytes).unwrap();
+                eprintln!("world shadow {} stage={} checksum={:02x?}",path.display(),stage.kind,&bytes[4..20]);
+                found += 1;
+            }
+        }
+        assert!(found > 0, "no resident world-shadow variants for explicit input options");
+    }
+
+    #[test]
     #[ignore = "requires the installed original shader cache and declarations; writes local-only DXBC evidence"]
     fn installed_alpha_shadow_stage_evidence() {
         use crate::render_program::{
@@ -1011,6 +1219,35 @@ mod tests {
             found > 0,
             "no actual resident alpha shadow variants for these explicit fixture inputs"
         );
+    }
+
+    #[test]
+    #[ignore="requires installed original shader cache; writes local-only skin DXBC evidence"]
+    fn installed_skin_shadow_stage_evidence() {
+        use crate::render_program::{RenderParameterKind,SerializedParameter,SerializedParameterBlock,SerializedParameterValue,StageBytecode};
+        let base=Path::new("D:/Programs/Steam/steamapps/common/Dishonored2/base");
+        let catalog=crate::archive::Catalog::open(base).unwrap();
+        let mut library=NativeProgramLibrary::open(base,ShaderCacheBackend::Pc,&catalog).unwrap();
+        let directory=Path::new("artifacts/native-skin-shadow-source");std::fs::create_dir_all(directory).unwrap();
+        let mut found=0;
+        for influences in [4,8] {for alpha in [0,1] {for screen in [0,1] {
+            let overrides=SerializedParameterBlock {flags:0,parameters:[("isShadow",1),("isAlpha",0),
+                ("noScreenShadows",screen),("alphaTest",alpha),("forcePixelShader",alpha),
+                ("useSkinning",u32::from(influences==4)),("useSkinning8",u32::from(influences==8))]
+                .into_iter().map(|(name,value)|SerializedParameter {name:name.as_bytes().to_vec(),kind:RenderParameterKind::Option,
+                    value:SerializedParameterValue::Words([value,0,0,0])}).collect()};
+            let Some(variant)=library.serialized_variant(b"arkdefault",&overrides).unwrap() else {
+                eprintln!("SKIN resident miss: influences={influences} alpha={alpha} noScreen={screen}");continue;
+            };
+            for stage in variant.stages {
+                let bytes=match stage.bytecode {StageBytecode::Absent=>continue,StageBytecode::Inline(bytes)=>bytes,
+                    StageBytecode::Cached(id)=>library.cache.stage(id as usize).unwrap().bytes};
+                let file=directory.join(format!("skin{influences}-alpha{alpha}-screen{screen}-{}.dxbc",stage.kind));
+                std::fs::write(&file,&bytes).unwrap();eprintln!("SKIN {} {:02x?}",file.display(),&bytes[4..20]);
+                found+=1;
+            }
+        }}}
+        assert!(found>0);
     }
 
     #[test]

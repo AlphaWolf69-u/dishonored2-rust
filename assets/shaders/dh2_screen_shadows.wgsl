@@ -68,26 +68,8 @@ fn screen_b8(p: vec2<u32>) -> u32 {
 // intersection::IntersectRaySphere. Its discriminant clamps to zero and
 // near hit clamps to zero; the other overload's SolveQuadratic is different.
 fn screen_cloud_visibility(position: vec3<f32>) -> f32 {
-    let center = vec3(0.0, 0.0, -screen.cloud_motion.x);
-    let radius = screen.cloud_motion.x + 2.0;
-    let origin = 0.001 * position;
-    let direction = screen_parallel.sun_direction.xyz;
-    let diff = origin - center;
-    let a0 = dot(diff, diff) - radius * radius;
-    let a1 = dot(direction, diff);
-    let root = sqrt(max(0.0, a1 * a1 - a0));
-    let near_hit = max(-a1 - root, 0.0);
-    let far_hit = -a1 + root;
-    let hit = origin + direction * select(near_hit, far_hit, far_hit > 0.0);
-    let angle = screen.camera_time.w * screen.cloud_motion.y;
-    let sine = sin(angle);
-    let cosine = cos(angle);
-    var uv = vec2(cosine * hit.x - sine * hit.y, sine * hit.x + cosine * hit.y);
-    uv += screen.camera_time.ww * screen.cloud_motion.zw;
-    uv *= screen.cloud_density.xy;
-    let density = textureSampleLevel(screen_cloud, screen_cloud_sampler, uv, 0.0).x
-        * screen.cloud_density.z;
-    return clamp(exp(-density), 0.0, 1.0);
+    return native_fast_cloud_shadowing(position, screen_parallel.sun_direction.xyz,
+        screen.camera_time.w, screen.cloud_motion, screen.cloud_density, screen_cloud, screen_cloud_sampler);
 }
 
 @fragment fn screen_visibility(input: ScreenVertex) -> @location(0) vec4<f32> {
@@ -128,6 +110,15 @@ fn screen_cloud_visibility(position: vec3<f32>) -> f32 {
 
 fn screen_linear_z(raw_depth: f32) -> f32 {
     return screen.unproject.x / (screen.unproject.y * raw_depth + screen.unproject.z);
+}
+
+// DWAO's depth transport is independent of its AO calculation. Only G/BA
+// are enabled here; no AO value is fabricated for the lighting consumer.
+@fragment fn screen_pack_depth(input: ScreenVertex) -> @location(0) vec4<f32> {
+    let z = screen_linear_z(textureLoad(screen_depth, vec2<i32>(input.position.xy), 0));
+    let value = z * 257.0;
+    let high = trunc(value / 256.0);
+    return vec4(0.0, 1.0, high / 255.0, (value - high * 256.0) / 255.0);
 }
 
 @fragment fn screen_bilateral(input: ScreenVertex) -> @location(0) vec4<f32> {

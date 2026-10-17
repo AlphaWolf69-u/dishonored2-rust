@@ -1,5 +1,6 @@
-//! Structural reader for compiled MD6 models (`MM6B`). Decodes the unskinned
-//! CPU vertex streams; joint transforms and animation are not yet supported.
+//! Structural reader for compiled MD6 models (`MM6B`). Retains original
+//! bind positions, UINT8 joints, UNORM8 weights and per-surface matrix offsets.
+//! Rest skeleton evaluation lives in edge_skeleton; animation is separate.
 //! Field order follows the installed game's idMD6Model loader and BTRI v2
 //! reader (Ghidra functions 0x14025aa00, 0x140259960, 0x14025a040).
 
@@ -8,6 +9,8 @@ pub struct ModelInfo {
     pub surfaces: Vec<SurfaceInfo>,
     pub bytes_after_surfaces: usize,
     pub has_skeleton: bool,
+    pub skeleton_name:String,
+    pub skeleton_reference:Option<u16>,
     pub has_decoded_geometry: bool,
     pub authored_bounds: [[f32; 3]; 2],
 }
@@ -29,6 +32,7 @@ pub struct SurfaceInfo {
     /// Retain original UNORM8 weights and UINT8 indices; no skinning guess.
     pub skin_weights: Vec<[u8; 8]>,
     pub skin_indices: Vec<[u8; 8]>,
+    pub matrix_offset:u32,
     pub indices: Vec<u16>,
 }
 
@@ -91,6 +95,48 @@ pub fn declaration_path(compiled_guess: &str) -> Option<String> {
     Some(format!("generated/decls/md6def/{stem}.md6.decl"))
 }
 
+#[derive(Clone,Debug,PartialEq)]
+pub struct SkeletonBinding {pub name:String,pub offset:Option<[f32;3]>}
+
+/// Resolve independently inherited MD6 init skeleton/offset. A child can
+/// replace its LOD0 mesh while continuing to use the parent's skeleton.
+pub fn resolve_skeleton_binding(compiled_guess:&str,mut read:impl FnMut(&str)->Option<String>)
+    ->Result<Option<SkeletonBinding>,String> {
+    let mut path=declaration_path(compiled_guess).ok_or("not a compiled MD6 model path")?;
+    let mut visited=std::collections::HashSet::new();let mut skeleton=None;let mut offset=None;
+    for _ in 0..16 {
+        if !visited.insert(path.clone()) {return Err("MD6 inheritance cycle".into());}
+        let Some(source)=read(&path) else {break;};
+        let tokens=crate::entities::declaration_lexemes(&source)?;
+        let mut depth=0usize;let mut init=None;let mut parent=None;
+        for (i,&token) in tokens.iter().enumerate() {
+            if token=="{" {depth+=1;continue;}
+            if token=="}" {if init==Some(depth) {init=None;}depth=depth.checked_sub(1).ok_or("unbalanced MD6 declaration")?;continue;}
+            if depth==1 && token=="init" && tokens.get(i+1)==Some(&"{") {init=Some(depth+1);}
+            if depth==1 && token=="inherit" {parent=tokens.get(i+1).copied();}
+            if init!=Some(depth) {continue;}
+            if token=="skeleton" && skeleton.is_none() {skeleton=Some(tokens.get(i+1).ok_or("missing MD6 skeleton name")?.to_string());}
+            if token=="offset" && offset.is_none() {
+                let mut values=Vec::new();let mut closed=false;
+                for text in tokens.iter().skip(i+1) {
+                    for number in text.split(['(',')',',']).filter(|part|!part.is_empty()) {
+                        values.push(number.parse::<f32>().map_err(|_|"invalid MD6 init offset")?);
+                    }
+                    if text.contains(')') {closed=true;break;}
+                }
+                if !closed || values.len()!=3 || values.iter().any(|value|!value.is_finite()) {return Err("invalid MD6 init offset".into());}
+                offset=Some(values.try_into().unwrap());
+            }
+        }
+        if depth!=0 {return Err("unbalanced MD6 declaration".into());}
+        if skeleton.is_some() && offset.is_some() {break;}
+        let Some(parent)=parent else {break;};
+        let stem=parent.strip_suffix(".md6").ok_or("invalid MD6 inherit path")?;
+        path=format!("generated/decls/md6def/{stem}.md6.decl");
+    }
+    Ok(skeleton.map(|name|SkeletonBinding {name,offset}))
+}
+
 impl Reader<'_> {
     fn take(&mut self, count: usize) -> Result<&[u8], String> {
         let end = self.at.checked_add(count).ok_or("MD6 offset overflow")?;
@@ -131,9 +177,9 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
     let source_name = input.string()?;
     // The original loader reads a 16-bit skeleton reference when a source
     // name is present; models without one proceed directly to bounds.
-    if !source_name.is_empty() {
-        input.take(2)?;
-    }
+    let skeleton_reference=if !source_name.is_empty() {
+        Some(u16::from_le_bytes(input.take(2)?.try_into().unwrap()))
+    } else {None};
     let bounds_raw = input.take(24)?;
     let authored_bounds = [
         std::array::from_fn(|axis| {
@@ -295,7 +341,8 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
                 .checked_mul(12)
                 .ok_or("MD6 attachment size overflow")?,
         )?;
-        input.take(48)?; // two fields and 40-byte per-surface state
+        let matrix_offset=input.u32()?; // +5c, published as cb_mtxOffset by 25e4d0.
+        input.take(44)?;
         surfaces.push(SurfaceInfo {
             name,
             material_path,
@@ -310,6 +357,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             skin_influences,
             skin_weights,
             skin_indices,
+            matrix_offset,
             indices,
         });
     }
@@ -336,6 +384,8 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
         surfaces,
         bytes_after_surfaces: bytes.len() - input.at,
         has_skeleton: !source_name.is_empty(),
+        skeleton_name:source_name,
+        skeleton_reference,
         has_decoded_geometry,
         authored_bounds,
     })
@@ -344,6 +394,16 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inherits_skeleton_and_offset_independently_of_lod_mesh() {
+        let binding=resolve_skeleton_binding("generated/basemodel/models/child.bmd6model",|path|match path {
+            "generated/decls/md6def/models/child.md6.decl"=>Some("md6 { inherit \"models/parent.md6\" init { offset (1, -2, 3) } lod 0 { mesh \"models/new.md6mesh\" } }".into()),
+            "generated/decls/md6def/models/parent.md6.decl"=>Some("md6 { init { skeleton \"models/body.md6skl\" offset (4, 5, 6) } }".into()),
+            _=>None,
+        }).unwrap().unwrap();
+        assert_eq!(binding,SkeletonBinding{name:"models/body.md6skl".into(),offset:Some([1.0,-2.0,3.0])});
+        assert!(resolve_skeleton_binding("generated/basemodel/models/child.bmd6model",|_|Some("md6 { inherit \"models/child.md6\" }".into())).is_err());
+    }
     #[test]
     fn rejects_truncated_or_wrong_signature() {
         assert!(inspect(b"MM6B").is_err());
@@ -427,12 +487,14 @@ mod tests {
             }
             bytes.extend_from_slice(&[0; 28]);
             bytes.extend_from_slice(&0u32.to_le_bytes());
-            bytes.extend_from_slice(&[0; 48]);
+            bytes.extend_from_slice(&17u32.to_le_bytes()); // surface matrix offset, in joints
+            bytes.extend_from_slice(&[0; 44]);
             let model = inspect(&bytes).unwrap();
             assert!(model.has_decoded_geometry);
             assert_eq!(model.surfaces[0].positions[1], [2.0, 0.0, 0.0]);
             assert_eq!(model.surfaces[0].uvs[2], [0.0, 1.0]);
             assert_eq!(model.surfaces[0].indices, [0, 1, 2]);
+            assert_eq!(model.surfaces[0].matrix_offset,17);
         }
     }
 }

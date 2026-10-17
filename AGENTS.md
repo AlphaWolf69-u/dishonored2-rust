@@ -22,6 +22,8 @@ Keep this file short and operational. It is not a roadmap or a research log.
 ## Running-game research
 
 - Agents are explicitly authorized to launch, focus, run, examine, and close the user's installed original Dishonored 2 game and the Rust remake whenever needed for research or verification. No additional permission is required for these actions.
+- Launch the original through Steam AppID `403640`, never directly through `Dishonored2.exe`: a direct launch enters the free trial.
+- Original-game keyboard control needs physical scan-code input: `analysis/shadow_research_window.ps1 -VirtualKey` uses verified foreground ownership and `SendInput`; `SendKeys` and zero-scan `keybd_event` can appear successful without controlling the game. From the title use Space, then Enter for Campaign, then Enter for Continue.
 - Use live debugging, breakpoints, memory inspection, and targeted instrumentation to capture function arguments, return values, object layouts, execution paths, and state changes. Combine runtime observations with Ghidra analysis; use the running game when it can resolve an uncertainty more efficiently than further static inspection.
 - Agents may ask the user to load a specific level or save, select a character or difficulty, move to a location, perform an action, or reproduce a sequence when user input or gameplay is needed. State the exact setup and action, what evidence will be captured, and which implementation question it will answer. Do routine setup and captures yourself where available tools allow it.
 - Be not afraid of corrupting the game/save files. Everything is already backed up.
@@ -33,7 +35,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 - Build and run the narrowest relevant tests. Report what was actually verified, including unresolved issues. Do not call a visual fix complete before it's tested by a human.
 - The user provides final visual and play confirmation. Agents may independently launch and inspect either game for runtime research and verification, and request targeted user checks when needed.
 - Keep performance measurable: distinguish startup cost, CPU time, GPU load, frame time, draw calls, and memory rather than guessing from FPS alone.
-- Ghidra Large responses are preserved by the project extension under `artifacts/ghidra-tool-output/`; read the named capture or use a smaller Ghidra window to retrieve omitted text. Preserve exact evidence and record verified findings in `knowledge/dh2.sqlite`.
+- Ghidra Large responses are preserved by the project extension under `artifacts/ghidra-tool-output/`; read the named capture or use a smaller Ghidra window to retrieve omitted text.
 - DH2 Ghidra MCP uses the shared backend in `.pi/mcp.json`; `.pi/tools/ensure-ghidra.py` starts its single project owner automatically. Use `program: "Dishonored2.exe"`; do not switch projects during concurrent research. After an ACP update, run `node analysis/probe_pi_delegate_tools.mjs` to check that read-only delegates retain `codemode`, `tool_search`, and the `dh2_*` register tools.
 - Pi uses SSE transport for this project. If model connection failures recur, inspect the recorded error codes in `artifacts/pi-network-errors.jsonl` before changing network settings or adding retries.
 

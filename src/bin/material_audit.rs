@@ -1,5 +1,11 @@
 #[path = "../archive.rs"]
 mod archive;
+#[allow(dead_code)]
+#[path = "../entities.rs"]
+mod entities;
+#[allow(dead_code)]
+#[path = "../render_state.rs"]
+mod render_state;
 #[path = "../material.rs"]
 mod material;
 #[path = "../texture.rs"]
@@ -18,6 +24,34 @@ fn main() -> Result<(), Box<dyn Error>> {
     let world_path = args
         .next()
         .unwrap_or_else(|| "artifacts/tutorial_p.bwm".into());
+    if world_path=="--read-resource" {
+        for path in args {
+            let bytes=catalog.read(&path)?.ok_or_else(||format!("missing resource {path}"))?;
+            println!("RESOURCE {path}\n{}",entities::native_declaration_text(&bytes));
+        }
+        return Ok(());
+    }
+    if world_path=="--find-resource" {
+        for term in args { for path in catalog.paths_containing(&term) {println!("{path}");} }
+        return Ok(());
+    }
+    if world_path=="--main-program-audit" {
+        let mut missing=0;
+        for path in catalog.paths_containing("generated/decls/material/") {
+            let Some(bytes)=catalog.read(&path)? else {continue;};
+            let text=entities::native_declaration_text(&bytes);
+            let Some(line)=text.lines().find(|line|line.split_whitespace().next()
+                .is_some_and(|key|key.eq_ignore_ascii_case("mainProgram"))) else {continue;};
+            let Some(name)=line.split_whitespace().nth(1) else {continue;};
+            let name=name.trim_matches('"');
+            if !catalog.contains(&format!("generated/decls/renderprog/{}.decl",name.to_ascii_lowercase())) {
+                println!("MISSING_MAIN material={path:?} program={name:?} line_bytes={:02x?}",line.as_bytes());
+                missing+=1;
+            }
+        }
+        println!("Missing MAIN names: {missing}");
+        return Ok(());
+    }
     let filter = args.next();
     let world = world_mesh::parse(&fs::read(&world_path)?)?;
     if filter.as_deref() == Some("--ray") {

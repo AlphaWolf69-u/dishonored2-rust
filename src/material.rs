@@ -1,5 +1,24 @@
 //! Resolve a Void material's base-colour image from its text declaration.
 
+/// Ordinary material constructor's three banks (1402d66a0..1402d66f0).
+/// GetInteger reads the unmodified material block/registered defaults here,
+/// not the later pass-specialized dictionary. Bank2 is the world +0x250 bank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstancingBankOverride { Unchanged, Direct, Multi }
+
+pub fn instancing_bank_override(
+    bank: u8, use_multi: bool, use_direct: bool,
+) -> Result<Option<InstancingBankOverride>, String> {
+    match bank {
+        0 => Ok(Some(InstancingBankOverride::Unchanged)),
+        1 if use_multi => Ok(None),
+        1 => Ok(Some(InstancingBankOverride::Direct)),
+        2 if use_direct => Ok(None),
+        2 => Ok(Some(InstancingBankOverride::Multi)),
+        _ => Err("native material has exactly three instancing banks".into()),
+    }
+}
+
 /// The source of a shadow shader specialization, not an engine pointer or a
 /// RenderDoc resource number. Compile `isShadow` and, when enabled, `isCloth`
 /// against this source before publishing an executable program bank.
@@ -141,7 +160,7 @@ pub fn is_editor_helper(path: &str) -> bool {
 /// is a placeholder for a particle shader with distance fade and fx/diffuse.
 /// The viewer loads the full level, so these impostors must not be drawn over it.
 pub fn is_screen_gate_impostor(path: &str, bytes: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     path.contains("/optim/screen_gates/")
         && text.lines().any(|line| {
             let mut fields = line.split_whitespace();
@@ -159,7 +178,7 @@ pub fn transparency(bytes: &[u8]) -> Transparency {
 /// Render-program declarations contain default options, parms and state before
 /// their HLSL blocks. A material need not repeat the program's blend state.
 fn render_fields(bytes: &[u8]) -> std::collections::HashMap<String, String> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     let mut values = std::collections::HashMap::new();
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
@@ -180,21 +199,12 @@ fn render_fields(bytes: &[u8]) -> std::collections::HashMap<String, String> {
 /// The declaration registry, not spelling or texture values, determines kind.
 pub fn material_option_parameters(
     bytes: &[u8],
-    mut is_option: impl FnMut(&str) -> bool,
+    is_option: impl FnMut(&str) -> bool,
 ) -> Result<Vec<(String, i32)>, String> {
-    let values = render_fields(bytes);
-    let mut options = Vec::new();
-    for (name, value) in &values {
-        if is_option(name) {
-            options.push((
-                name.clone(),
-                value
-                    .parse::<i32>()
-                    .map_err(|_| format!("unsupported numeric shadow option {name}={value}"))?,
-            ));
-        }
-    }
-    Ok(options)
+    // Native FUN_1403446d0 reads tokens, not lines. In real materials an
+    // alphaTest pair may share a line with hasBumpMap; dropping the latter
+    // selects a nonexistent specialization and blocks the whole shadow bank.
+    crate::entities::material_integer_parameters(&crate::entities::native_declaration_text(bytes), is_option)
 }
 
 /// Slot 10's numeric overrides, after reading the UNMODIFIED material block.
@@ -307,7 +317,7 @@ pub fn shadow_blend_factor_state(bytes: &[u8], program: &[u8]) -> Result<u32, St
 /// The source-text wrapper above is useful without a resident library, but
 /// production must not replace the serialized program's state with defaults.
 pub fn shadow_blend_factor_overrides(mut word: u32, source: &[u8]) -> Result<u32, String> {
-    let text = String::from_utf8_lossy(source);
+    let text = crate::entities::native_declaration_text(source);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut tokens = line.split_whitespace();
@@ -379,11 +389,18 @@ pub struct ShadowSourceInputs {
     pub override_program: Option<String>,
     pub cloth_override_program: Option<String>,
     pub main_blend_state: u32,
+    /// Actual MAIN definition inherited by the material's drawing-state block
+    /// (1402d662d -> 1402c3bc0, material +0x2c8). A textual source-only parse
+    /// cannot supply the registered program's other eight words.
+    pub main_render_state: Option<crate::render_state::NativeRenderState>,
     pub hair_type: bool,
     pub sky_type: u32,
     pub is_cloth: bool,
     pub use_skinning: bool,
     pub use_skinning8: bool,
+    /// MAIN-fallback needsWind, handle14229d220/node14229d210; +0x48 bit6.
+    /// This controls world auxiliary records, not an inferred shader family.
+    pub needs_wind: bool,
 }
 
 pub fn shadow_source_inputs(bytes: &[u8], program: &[u8]) -> Result<ShadowSourceInputs, String> {
@@ -432,15 +449,46 @@ pub fn shadow_source_inputs(bytes: &[u8], program: &[u8]) -> Result<ShadowSource
         override_program,
         cloth_override_program,
         main_blend_state,
+        main_render_state: None,
         hair_type,
         sky_type,
         is_cloth,
         use_skinning: integer("useskinning")? != 0,
         use_skinning8: integer("useskinning8")? != 0,
+        needs_wind: integer("needswind")? & 1 != 0,
     })
 }
 
 impl ShadowSourceInputs {
+    /// FUN_1402996f0 copies material +0x2c8's nine words, changes winding from
+    /// object +0x10, then calls 140293470. Do not replace inherited cull,
+    /// stencil or depth fields with the shadow program's/default state.
+    pub fn world_draw_state(
+        &self,
+        surface_flags: u8,
+        depth_bias: f32,
+        slope_scale: f32,
+        clamp: f32,
+        depth_clip: u8,
+    ) -> Result<crate::render_state::NativeRenderState, String> {
+        let state = self.main_render_state
+            .ok_or("native world shadow material has no resolved MAIN drawing state")?;
+        Ok(crate::render_state::world_shadow_draw_state(
+            state, surface_flags, depth_bias, slope_scale, clamp, depth_clip,
+        ))
+    }
+
+    /// The two +0x48 bits read by FUN_1402996f0's world gather. The parser
+    /// sets bit 6 from the low bit of needsWind (FUN_1402d5210;
+    /// analysis/decompiled/chunk_000113.c:2021–2022),
+    /// and finalization sets bit 0 from the ACTUAL base shadow program pointer
+    /// at material +0xf0 (not the world bank +0x250 or a resident-cache hit).
+    /// The owner supplies pointer existence; missing serialized bytecode is
+    /// not evidence of a null pointer. All unrelated material bits survive.
+    pub fn shadow_gather_flags48(&self, existing: u8, base_shadow_program_exists: bool) -> u8 {
+        (existing & !0x41) | u8::from(base_shadow_program_exists) | (u8::from(self.needs_wind) << 6)
+    }
+
     /// The three material +0x49 bits consumed by the native depth/shadow draw
     /// selectors. 1402d5210 reads Alpha/EnableRefraction in slot 4 via
     /// handle 14229d580, translucency_hq/enable via 14229d700, and
@@ -565,7 +613,7 @@ pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Opt
 }
 
 pub fn diffuse_image(bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut fields = line.split_whitespace();
@@ -592,7 +640,7 @@ pub fn diffuse_image(bytes: &[u8]) -> Option<String> {
 
 /// Void's explicit layer-zero tint, expressed in linear colour space.
 pub fn layer0_color_constant(bytes: &[u8]) -> Option<[f32; 4]> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     let mut enabled = false;
     let mut color = None;
     for line in text.lines() {
@@ -624,7 +672,7 @@ pub fn layer0_color_constant(bytes: &[u8]) -> Option<[f32; 4]> {
 
 /// Which packed vertex-colour channel masks layer zero, if the material uses one.
 pub fn layer0_vertex_mask_channel(bytes: &[u8]) -> Option<usize> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut fields = line.split_whitespace();
@@ -643,7 +691,7 @@ pub fn layer0_vertex_mask_channel(bytes: &[u8]) -> Option<usize> {
 }
 
 pub fn decal_depth_bias(bytes: &[u8]) -> Option<f32> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = crate::entities::native_declaration_text(bytes);
     let mut decal = false;
     let mut original = None;
     for line in text.lines() {
@@ -671,6 +719,38 @@ pub fn decal_depth_bias(bytes: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_material_bank_overrides_preserve_skip_and_set_order() {
+        use InstancingBankOverride::*;
+        for (multi,direct,expected) in [
+            (false,false,[Some(Unchanged),Some(Direct),Some(Multi)]),
+            (true,false,[Some(Unchanged),None,Some(Multi)]),
+            (false,true,[Some(Unchanged),Some(Direct),None]),
+            (true,true,[Some(Unchanged),None,None]),
+        ] {
+            for bank in 0..3 {
+                assert_eq!(instancing_bank_override(bank,multi,direct).unwrap(),expected[bank as usize]);
+            }
+        }
+        assert!(instancing_bank_override(3,false,false).is_err());
+        assert!(!shadow_source_inputs(b"needsWind 2\n", b"").unwrap().needs_wind);
+        assert!(shadow_source_inputs(b"needsWind 3\n", b"").unwrap().needs_wind);
+        assert!(shadow_source_inputs(b"", b"needsWind 1\n").unwrap().needs_wind);
+        assert!(!shadow_source_inputs(b"needsWind 0\n", b"needsWind 1\n").unwrap().needs_wind);
+        for wind in [false, true] {
+            let mut inputs = shadow_source_inputs(b"", b"").unwrap();
+            inputs.needs_wind = wind;
+            for existing in 0..=u8::MAX {
+                for base_program_exists in [false, true] {
+                    let flags = inputs.shadow_gather_flags48(existing, base_program_exists);
+                    assert_eq!(flags & !0x41, existing & !0x41);
+                    assert_eq!(flags & 1 != 0, base_program_exists);
+                    assert_eq!(flags & 0x40 != 0, wind);
+                }
+            }
+        }
+    }
 
     #[test]
     fn shadow_alpha_decal_suppression_matches_original_instructions() {
@@ -875,6 +955,26 @@ mod tests {
             shadow_blend_factor_overrides(0x01e0_0802, b"blendOp ADD\n").unwrap(),
             0x01e0_0802
         );
+    }
+
+    #[test]
+    fn world_shadow_draw_requires_complete_main_state_and_preserves_unmodified_words() {
+        let mut source = shadow_source_inputs(b"{}", b"{}").unwrap();
+        assert!(source.world_draw_state(1, 2.5, 3.0, 0.25, 1).is_err());
+        let state = [0xffff_ffff, 0x1234_5678, 0x8765_4321, 0x1122_3344,
+            0x5566_7788, 0xa755_abff, 0xdead_beef, 0xaaaa_aaaa, 0xbbbb_bbbb];
+        source.main_render_state = Some(state);
+        let actual = source.world_draw_state(1, 2.5, 3.0, 0.25, 1).unwrap();
+        let mut expected = state;
+        expected[0] &= 0xfe1f_fffe;
+        expected[5] = (((state[5] & !0x0800_0000) | 0x0800_0000) & 0xefff_fff9)
+            | 0x1000_0001;
+        expected[6] = 2; // Original CVTT truncation, not rounding.
+        expected[7] = 0.25f32.to_bits();
+        expected[8] = 3.0f32.to_bits();
+        assert_eq!(actual, expected);
+        assert_eq!(source.main_render_state, Some(state));
+        assert_eq!(&actual[1..5], &state[1..5]);
     }
 
     #[test]

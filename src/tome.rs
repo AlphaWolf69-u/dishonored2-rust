@@ -539,6 +539,8 @@ pub struct CellObjectVisibilityQuery<'a> {
     pub viewport_tile_bounds: [u8; 4],
     pub portal: &'a PortalTileMask,
     pub depth_grid: Option<(&'a [f32], f32)>,
+    ///Some only when the native perspective baked-occlusion stage is enabled.
+    pub point_occlusion_near_offset:Option<f32>,
 }
 
 /// Immutable direct-Tome resource views shared by camera queries. The original
@@ -857,114 +859,6 @@ pub fn expand_object_bounds_for_camera_imprecision(
         bounds[0].map(|value| value - camera_translation_imprecision),
         bounds[1].map(|value| value + camera_translation_imprecision),
     ]
-}
-
-/// Project an expanded Tome-object AABB through the query matrix, clipping
-/// the box to the positive-W half-space as FUN_140a82710 does. The original
-/// SIMD crossing branch evaluates the box corners and W=0 intersections on
-/// its twelve edges, then forms the projected rectangle. A rectangle can be
-/// unbounded when a nonzero X or Y coordinate reaches W=0; the later screen
-/// clamp handles those infinities.
-pub fn project_object_bounds_clipped_w(
-    bounds: [[f32; 3]; 2],
-    matrix: [[f32; 4]; 4],
-) -> Result<Option<[f32; 4]>, String> {
-    if bounds.iter().flatten().any(|value| !value.is_finite())
-        || matrix.iter().flatten().any(|value| !value.is_finite())
-        || (0..3).any(|axis| bounds[0][axis] > bounds[1][axis])
-    {
-        return Err("invalid Tome object bounds or query matrix".into());
-    }
-    let mut clips = [[0.0f32; 4]; 8];
-    for corner in 0..8 {
-        let point = [
-            bounds[(corner >> 0) & 1][0],
-            bounds[(corner >> 1) & 1][1],
-            bounds[(corner >> 2) & 1][2],
-            1.0,
-        ];
-        // The original SSE path scales the four stored matrix rows by x, y,
-        // z, and 1, then sums those vectors. Keep the stored row order here;
-        // transposing this multiply changes clip W and the camera-plane branch.
-        clips[corner] = std::array::from_fn(|component| {
-            (0..4)
-                .map(|axis| matrix[axis][component] * point[axis])
-                .sum::<f32>()
-        });
-        if clips[corner].iter().any(|value| !value.is_finite()) {
-            return Err("nonfinite Tome object clip coordinate".into());
-        }
-    }
-
-    let mut rectangle = [
-        f32::INFINITY,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::NEG_INFINITY,
-    ];
-    let mut has_positive_w = false;
-    for clip in clips {
-        if clip[3] > 0.0 {
-            has_positive_w = true;
-            include_projected_point(&mut rectangle, clip[0] / clip[3], clip[1] / clip[3]);
-        }
-    }
-    if !has_positive_w {
-        return Ok(None);
-    }
-
-    // The original SIMD branch computes the same edge crossings in parallel.
-    // A linear-fractional coordinate along an edge is monotone while W > 0;
-    // its limit at W=0 is unbounded unless that coordinate is also zero.
-    for corner in 0..8 {
-        for axis in 0..3 {
-            if corner & (1 << axis) != 0 {
-                continue;
-            }
-            let other = corner | (1 << axis);
-            let a = clips[corner];
-            let b = clips[other];
-            let wa = a[3];
-            let wb = b[3];
-            let crosses_into_positive = (wa < 0.0 && wb > 0.0)
-                || (wb < 0.0 && wa > 0.0)
-                || (wa == 0.0 && wb > 0.0)
-                || (wb == 0.0 && wa > 0.0);
-            if !crosses_into_positive {
-                continue;
-            }
-            let delta_w = wb - wa;
-            if delta_w == 0.0 {
-                continue;
-            }
-            let t = -wa / delta_w;
-            let x = a[0] + (b[0] - a[0]) * t;
-            let y = a[1] + (b[1] - a[1]) * t;
-            include_w_zero_limit(&mut rectangle, x, (b[0] - a[0]) / delta_w, 0);
-            include_w_zero_limit(&mut rectangle, y, (b[1] - a[1]) / delta_w, 1);
-        }
-    }
-
-    Ok(Some(rectangle))
-}
-
-fn include_projected_point(rectangle: &mut [f32; 4], x: f32, y: f32) {
-    rectangle[0] = rectangle[0].min(x);
-    rectangle[1] = rectangle[1].min(y);
-    rectangle[2] = rectangle[2].max(x);
-    rectangle[3] = rectangle[3].max(y);
-}
-
-fn include_w_zero_limit(rectangle: &mut [f32; 4], coordinate: f32, edge_limit: f32, axis: usize) {
-    let (min_index, max_index) = if axis == 0 { (0, 2) } else { (1, 3) };
-    if coordinate > 0.0 {
-        rectangle[max_index] = f32::INFINITY;
-    } else if coordinate < 0.0 {
-        rectangle[min_index] = f32::NEG_INFINITY;
-    } else {
-        rectangle[min_index] = rectangle[min_index].min(edge_limit);
-        rectangle[max_index] = rectangle[max_index].max(edge_limit);
-    }
 }
 
 /// Convert an NDC rectangle into FUN_140a82710's query-pixel rectangle and
@@ -4430,7 +4324,9 @@ pub fn projected_link_portal_transition(
     viewport: [i32; 4],
     incoming: &PortalTileMask,
 ) -> Result<Option<([i32; 4], PortalCoveragePath)>, String> {
-    let Some(face_code) = face_code else {
+    //a86319 jumps directly to a867ab for sentinel-1, bypassing
+    //corner construction and the paired depth predicate entirely.
+    let Some(face_code)=face_code else {
         let rect = incoming.rect;
         return Ok(Some((
             [
@@ -4448,23 +4344,8 @@ pub fn projected_link_portal_transition(
         gated_link_query_bounds(bytes, record_offset, link)?
             .ok_or("missing gated Tome portal bounds")?
     };
-    let (projected, face) =
-        portal_raster_inputs_from_bounds(bounds, face_code, query_matrix, winding_flip)?;
-    let mut box_corners = [[0.0; 4]; 8];
-    for corner in 0..4 {
-        box_corners[corner] = [
-            projected[0][corner],
-            projected[1][corner],
-            0.0,
-            projected[2][corner],
-        ];
-        box_corners[corner + 4] = [
-            projected[0][corner] + projected[3][0],
-            projected[1][corner] + projected[3][1],
-            0.0,
-            projected[2][corner] + projected[3][3],
-        ];
-    }
+    let (projected, face,box_corners) =
+        portal_raster_and_clip_inputs_from_bounds(bounds, face_code, query_matrix, winding_flip)?;
     let (pixels, _) = projected_portal_box_pixel_rect(box_corners, active_planes, viewport)?;
     Ok(pixels.map(|pixels| (pixels, PortalCoveragePath::Clipped { projected, face })))
 }
@@ -4918,6 +4799,8 @@ pub struct OrdinaryQueryDiagnostics {
     pub current_object_cell: Option<usize>,
     pub active_planes: Vec<usize>,
     pub portal_rect: Option<[u8; 4]>,
+    #[cfg(test)]
+    pub processed_object_cells:Vec<[usize;2]>,
 }
 
 /// Assemble the ordinary camera-point query for a direct single Tome. This
@@ -4937,9 +4820,23 @@ pub struct OrdinaryDirectQueryInput<'a> {
     /// Original `umbra_accurateOcclusionThreshold` value passed to the
     /// global point-tree walk. The installed game's default is 70.0.
     pub global_distance_threshold: f32,
+    /// FUN_140351780's FOV/LOD scale, passed through the ordinary query's
+    /// distance descriptor. Separate from the accurate-occlusion threshold.
+    pub object_distance_scale: f32,
     pub winding_flip: bool,
     pub gate_states: Option<&'a [u32]>,
     pub output_capacity: usize,
+}
+
+///a81500 floors the configured accurate-occlusion threshold against the
+///Tome's +0xc distance divided by min(radius,1). The local shadow query
+///supplies MIN_POSITIVE radius, so this can overflow to infinity; retaining
+///the ordinary camera's raw CVar changes its spatial-node traversal.
+pub fn render_query_global_distance_threshold(bytes:&[u8],configured:f32,radius:f32)->Result<f32,String> {
+    let radius=if radius<=0.0 {1.0}else{radius};
+    let denominator=if !(radius<=1.0) {1.0}else{radius};
+    let floor=float(bytes,0xc)?/denominator;
+    Ok(if floor<=configured {configured}else{floor})
 }
 
 impl<'a> OrdinaryDirectQueryInput<'a> {
@@ -5257,6 +5154,12 @@ fn project_clipped_query_aabb(
         })
     };
     let crossing = handle_w_crossing && corners.iter().any(|corner| corner[3] < 0.0);
+    native_projected_corner_bounds(corners,crossing)
+}
+
+#[cfg(target_arch="x86_64")]
+fn native_projected_corner_bounds(corners:[[f32;4];8],crossing:bool)->[f32;4] {
+    use std::arch::x86_64::*;
     let minps = |a: f32, b: f32| if a < b { a } else { b };
     let maxps = |a: f32, b: f32| if a > b { a } else { b };
     let mut low = [f32::INFINITY; 2];
@@ -5702,7 +5605,10 @@ fn ordinary_direct_tome_visible_objects_inner(
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
     *diagnostics = OrdinaryQueryDiagnostics::default();
     diagnostics.stage = "setup";
-    let planes = query_planes_from_rows(input.render_rows, input.cropped_rows);
+    //a77560 normalizes the first depth plane before either the global
+    //selection or cell-object clipping. Keep the same prepared planes used
+    //by the descriptor; unnormalized arithmetic changes near-plane edges.
+    let (planes,object_query_bounds) = query_plane_geometry_from_rows(input.render_rows,input.cropped_rows,input.camera_imprecision)?;
     let stored_matrix = stored_query_matrix_from_render_rows(input.render_rows);
     let initial_mask = PortalTileMask::full(input.initial_tile_rect)?;
     let depth_query = output_state
@@ -5732,7 +5638,7 @@ fn ordinary_direct_tome_visible_objects_inner(
         input.camera_point,
         &planes,
         input.camera_imprecision,
-        input.global_distance_threshold,
+        render_query_global_distance_threshold(bytes,input.global_distance_threshold,input.object_distance_scale)?,
         &mut worklists,
         &mut pool,
         &mut coverage,
@@ -5826,18 +5732,29 @@ fn ordinary_direct_tome_visible_objects_inner(
             diagnostics.current_object_cell = Some(item.cell_index as usize);
             diagnostics.portal_rect = Some(portal.rect);
             diagnostics.object_passes += 1;
+            #[cfg(test)]
+            diagnostics.processed_object_cells.push([owner.spatial_index,item.cell_index as usize]);
             let query = CellObjectVisibilityQuery {
-                record_query_bounds: setup.bounds,
+                //a82710 reads descriptor+530/+540, the finite frustum box.
+                //The spatial-record box selects active planes only.
+                record_query_bounds: object_query_bounds,
                 query_planes: &planes,
                 active_planes: &setup.active_planes,
                 projection_rows: stored_matrix,
                 camera_translation_imprecision: input.object_imprecision,
                 object_distance_point: input.camera_point,
-                object_distance_scale_squared: [ORIGINAL_DEFAULT_OBJECT_DISTANCE_SCALE_SQUARED; 4],
+                object_distance_scale_squared: [
+                    if input.object_distance_scale<=0.0 { 1.0 }
+                    else { input.object_distance_scale*input.object_distance_scale }; 4
+                ],
                 minimum_area_metric: input.minimum_area_metric,
                 viewport_tile_bounds: portal.rect,
                 portal,
                 depth_grid: None,
+                //a81500 initializes+1c84 to0; a85090 only derives a
+                //perspective near offset when query flags bit1 is set.
+                //The ordinary37e1d0/a73820 caller passes flags0.
+                point_occlusion_near_offset:Some(0.0),
             };
             let result = cells
                 .append_visible_object_candidates(
@@ -5993,6 +5910,14 @@ pub fn portal_raster_inputs_from_bounds(
     matrix: [[f32; 4]; 4],
     winding_flip: bool,
 ) -> Result<([[f32; 4]; 4], [[f32; 4]; 3]), String> {
+    if face_code>=6 {return Err("invalid Tome portal raster face".into());}
+    let (projected,face,_)=portal_raster_and_clip_inputs_from_bounds(bounds,face_code,matrix,winding_flip)?;
+    Ok((projected,face))
+}
+
+fn portal_raster_and_clip_inputs_from_bounds(
+    bounds:[[f32;3];2],face_code:u8,matrix:[[f32;4];4],winding_flip:bool,
+) -> Result<([[f32;4];4],[[f32;4];3],[[f32;4];8]),String> {
     if face_code >= 6
         || bounds
             .iter()
@@ -6040,7 +5965,10 @@ pub fn portal_raster_inputs_from_bounds(
     if projected.iter().flatten().any(|v| !v.is_finite()) {
         return Err("nonfinite projected Tome portal corner".into());
     }
-    Ok((projected, face))
+    let clip_corners=std::array::from_fn(|corner| {
+        if corner<4 {corners[corner]}else{std::array::from_fn(|axis|normal[axis]+corners[corner-4][axis])}
+    });
+    Ok((projected, face,clip_corners))
 }
 
 /// Build FUN_140a81500's six query-face vector rows from the matrix stored at
@@ -6229,12 +6157,9 @@ pub fn projected_portal_box_fallback_bounds(corners: [[f32; 4]; 8]) -> Result<[f
     Ok(bounds)
 }
 
-/// The edge-derived branch of FUN_140a85bd0 clips the projected box against
-/// the four homogeneous viewport side planes (x+w, w-x, y+w, w-y) before
-/// reducing its bounds. `corners` must use the two face cycles emitted by the
-/// original axis-vector construction: 0..4 are the query-facing face and
-/// 4..8 its parallel opposite face. This is selected only when active plane
-/// zero is first and at least one projected W lane is negative.
+/// FUN_140a85bd0 uses conservative per-corner homogeneous masks when W
+/// crosses zero. Preserve RCPPS and the native +/-1 mask substitutions;
+/// geometric polygon clipping would discard coverage retained by the game.
 pub fn projected_portal_box_crossing_bounds(
     corners: [[f32; 4]; 8],
 ) -> Result<Option<[f32; 4]>, String> {
@@ -6242,85 +6167,7 @@ pub fn projected_portal_box_crossing_bounds(
         return Err("nonfinite homogeneous Tome portal box corner".into());
     }
 
-    const FACES: [[usize; 4]; 6] = [
-        [0, 1, 2, 3],
-        [4, 5, 6, 7],
-        [0, 1, 5, 4],
-        [1, 2, 6, 5],
-        [2, 3, 7, 6],
-        [3, 0, 4, 7],
-    ];
-    let distances = |point: [f32; 4]| {
-        [
-            point[0] + point[3],
-            point[3] - point[0],
-            point[1] + point[3],
-            point[3] - point[1],
-        ]
-    };
-    // Four clipping planes emit at most two vertices per input edge:
-    // 4 * 2^4 slots also cover arbitrary finite, nonconvex caller inputs.
-    let mut first = [[0.0f32; 4]; 64];
-    let mut second = [[0.0f32; 4]; 64];
-    let mut polygon = &mut first;
-    let mut clipped = &mut second;
-    let mut bounds = [
-        f32::INFINITY,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::NEG_INFINITY,
-    ];
-    for face in FACES {
-        polygon[..4].copy_from_slice(&face.map(|index| corners[index]));
-        let mut polygon_len = 4;
-        for plane in 0..4 {
-            if polygon_len == 0 {
-                break;
-            }
-            let mut clipped_len = 0;
-            let mut previous = polygon[polygon_len - 1];
-            let mut previous_distance = distances(previous)[plane];
-            for current in polygon[..polygon_len].iter().copied() {
-                let current_distance = distances(current)[plane];
-                let previous_inside = previous_distance >= 0.0;
-                let current_inside = current_distance >= 0.0;
-                if previous_inside != current_inside {
-                    let denominator = previous_distance - current_distance;
-                    if denominator != 0.0 {
-                        let t = previous_distance / denominator;
-                        clipped[clipped_len] = std::array::from_fn(|lane| {
-                            previous[lane] + (current[lane] - previous[lane]) * t
-                        });
-                        clipped_len += 1;
-                    }
-                }
-                if current_inside {
-                    clipped[clipped_len] = current;
-                    clipped_len += 1;
-                }
-                previous = current;
-                previous_distance = current_distance;
-            }
-            std::mem::swap(&mut polygon, &mut clipped);
-            polygon_len = clipped_len;
-        }
-        for point in &polygon[..polygon_len] {
-            if point[3] <= 0.0 {
-                continue;
-            }
-            let x = point[0] / point[3];
-            let y = point[1] / point[3];
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(y);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(y);
-        }
-    }
-    if bounds.iter().all(|value| value.is_finite()) {
-        Ok(Some(bounds))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(native_projected_corner_bounds(corners,true)))
 }
 
 /// Select the two FUN_140a85bd0 projected-bound paths from the record's
@@ -6329,6 +6176,9 @@ pub fn projected_portal_box_bounds(
     corners: [[f32; 4]; 8],
     active_planes: &[usize],
 ) -> Result<Option<([f32; 4], bool)>, String> {
+    //a85bd0 pairs corresponding low/high-face corners. At least one
+    //pair must reach Z<=W with nonnegative maximum W before projection.
+    if portal_box_depth_mask(corners)==0 {return Ok(None);}
     let crossing_path =
         active_planes.first() == Some(&0) && corners.iter().any(|corner| corner[3] < 0.0);
     if crossing_path {
@@ -6336,6 +6186,14 @@ pub fn projected_portal_box_bounds(
     } else {
         projected_portal_box_fallback_bounds(corners).map(|bounds| Some((bounds, false)))
     }
+}
+
+pub fn portal_box_depth_mask(corners:[[f32;4];8])->u32 {
+    (0..4).fold(0,|mask,i| {
+        let low=corners[i];let high=corners[i+4];
+        let maximum_w=if low[3]>high[3] {low[3]}else{high[3]};
+        mask|if (low[2]<=low[3] || high[2]<=high[3]) && 0.0<=maximum_w {1<<i}else{0}
+    })
 }
 
 /// Compose FUN_140a85bd0's selected portal-bound branch with its NDC-to-pixel
@@ -6955,6 +6813,12 @@ pub fn set_gate_state(
     Ok(())
 }
 
+/// Original global Tome header bounds consumed by receiver initialization.
+/// These include the full level, independently of the current visible cells.
+pub fn global_bounds(bytes: &[u8]) -> Result<[[f32; 3]; 2], String> {
+    recorded_bounds(bytes,0x14)
+}
+
 fn recorded_bounds(bytes: &[u8], at: usize) -> Result<[[f32; 3]; 2], String> {
     let end = at.checked_add(24).ok_or("Tome bounds offset overflow")?;
     if bytes.get(at..end).is_none() {
@@ -7186,7 +7050,7 @@ impl SpatialTree {
                 .flatten()
                 .any(|value| !value.is_finite())
             || camera_imprecision.iter().any(|value| !value.is_finite())
-            || !global_distance_threshold.is_finite()
+            || global_distance_threshold.is_nan()
         {
             return Err("invalid ordinary Tome global query planes or imprecision".into());
         }
@@ -8138,24 +8002,21 @@ impl CellTree {
                     [expanded[0][0], expanded[0][1], expanded[0][2], 1.0],
                     [expanded[1][0], expanded[1][1], expanded[1][2], 1.0],
                 ];
-                let clipped = clip_box_to_active_query_planes(
-                    query.record_query_bounds,
-                    input_bounds,
-                    query.query_planes,
-                    query.active_planes,
-                )?;
-                if (0..3).any(|axis| clipped[0][axis] > clipped[1][axis]) {
+                //a82710 rejects against active planes, then projects the
+                //expanded authored box unchanged. Receiver-box clipping is
+                //a separate path and would shrink valid object coverage.
+                if !query_bounds_accepts_aabb(query.record_query_bounds,input_bounds,query.query_planes,query.active_planes)? {
                     continue;
                 }
-                let projected_bounds = [
-                    [clipped[0][0], clipped[0][1], clipped[0][2]],
-                    [clipped[1][0], clipped[1][1], clipped[1][2]],
-                ];
-                let Some(projected) =
-                    project_object_bounds_clipped_w(projected_bounds, query.projection_rows)?
-                else {
-                    continue;
-                };
+                if let Some(near_offset)=query.point_occlusion_near_offset {
+                    if !shadow_caster::native_point_occlusion_visible(bytes,object_index,query.object_distance_point,near_offset)? {
+                        output.seen[object_index as usize/32]|=1<<(object_index%32);
+                        continue;
+                    }
+                }
+                //a82710 uses the same reciprocal/corner mask projection as
+                //a79460's no-grid branch, including boxes crossing W=0.
+                let projected=project_clipped_query_aabb(input_bounds,query.projection_rows,true);
                 output.push_if_projected_object_visible(
                     object_index,
                     projected,
@@ -8456,7 +8317,32 @@ impl CellTree {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn portal_depth_admission_matches_original_pair_masks() {
+        let mut count=0;
+        for line in include_str!("../analysis/original_portal_depth_admission_cases.txt").lines() {
+            let words=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let corners=std::array::from_fn(|i| {
+                let pair=i%4;let upper=i>=4;
+                [0.,0.,f32::from_bits(words[usize::from(upper)*8+pair]),f32::from_bits(words[usize::from(upper)*8+4+pair])]
+            });
+            assert_eq!(portal_box_depth_mask(corners),words[16],"native portal depth case{count}");count+=1;
+        }
+        assert_eq!(count,512);
+    }
     use super::*;
+
+    #[test]
+    fn query_distance_threshold_matches_original_radius_overflow_and_unordered_cases() {
+        let mut count=0;
+        for line in include_str!("../analysis/original_query_distance_threshold_cases.txt").lines() {
+            let w=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let mut bytes=[0u8;16];bytes[12..16].copy_from_slice(&w[2].to_le_bytes());
+            let radius=if w[0]==0 {1.0}else{f32::from_bits(w[1])};
+            assert_eq!(render_query_global_distance_threshold(&bytes,f32::from_bits(w[3]),radius).unwrap().to_bits(),w[4],"native query distance case{count}");count+=1;
+        }
+        assert_eq!(count,440);
+    }
 
     #[test]
     #[ignore = "requires local original-game EOTW Tome fixture"]
@@ -8628,6 +8514,7 @@ mod tests {
             viewport_tile_bounds: portal.rect,
             portal: &portal,
             depth_grid: None,
+            point_occlusion_near_offset:None,
         };
         let mut output = VisibleObjectIndexOutput::new(object_ids(&bytes).unwrap().len(), 32768);
         cells
@@ -8882,6 +8769,7 @@ mod tests {
                         viewport_tile_bounds: portal.rect,
                         portal,
                         depth_grid: None,
+                        point_occlusion_near_offset:None,
                     };
                     cells.append_visible_object_candidates(
                         &bytes,
@@ -8918,6 +8806,7 @@ mod tests {
             initial_tile_rect: [0, 0, 8, 16],
             camera_imprecision: [0.6; 3],
             global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            object_distance_scale: 1.0,
             object_imprecision: 0.6,
             minimum_area_metric: 25.0 / (1920.0 * 1080.0),
             winding_flip: false,
@@ -8985,6 +8874,7 @@ mod tests {
             object_imprecision: 0.6,
             minimum_area_metric: 25.0 / (1920.0 * 1080.0),
             global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            object_distance_scale: 1.0,
             winding_flip: query_matrix_winding_flip(rows),
             gate_states: Some(&gates),
             output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
@@ -10680,6 +10570,7 @@ mod tests {
             object_imprecision: 0.6,
             minimum_area_metric: 0.1,
             global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            object_distance_scale: 1.0,
             winding_flip: false,
             gate_states: None,
             output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
@@ -10839,6 +10730,7 @@ mod tests {
                     object_imprecision: 0.6,
                     minimum_area_metric: 25.0 / (1920.0 * 1080.0),
                     global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+                    object_distance_scale: 1.0,
                     winding_flip: query_matrix_winding_flip(rows),
                     gate_states: Some(&gates),
                     output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
@@ -11795,13 +11687,16 @@ mod tests {
             viewport_tile_bounds: [0, 0, 8, 16],
             portal: &portal,
             depth_grid: None,
+            point_occlusion_near_offset:None,
         };
         let mut output = VisibleObjectIndexOutput::new(1, 1);
         cells
             .append_visible_object_candidates(&bytes, 0, &query, &mut output)
             .unwrap();
         assert_eq!(output.indices(), &[0]);
-        assert!((output.area_metrics()[0].unwrap() - 0.25).abs() < 1e-6);
+        //Native RCPPS(1) is0x3f7ff000, so this half-unit box's
+        //projected area retains the executable's reciprocal error.
+        assert_eq!(output.area_metrics()[0].unwrap().to_bits(),0x3e7fe001);
 
         bytes[0x80..0x84].copy_from_slice(&f32::NAN.to_le_bytes());
         cells
@@ -12089,7 +11984,7 @@ mod tests {
         let bounds = projected_portal_box_crossing_bounds(partially_visible)
             .unwrap()
             .unwrap();
-        for (actual, expected) in bounds.into_iter().zip([0.0, 0.0, 1.0, 1.0]) {
+        for (actual, expected) in bounds.into_iter().zip([-1.0, -1.0, 1.0, 1.0]) {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
         }
 
@@ -12097,7 +11992,7 @@ mod tests {
             corner[0] = 2.5;
             corner
         });
-        assert_eq!(projected_portal_box_crossing_bounds(outside).unwrap(), None);
+        assert_eq!(projected_portal_box_crossing_bounds(outside).unwrap(), Some([1.0,-1.0,1.0,1.0]));
         assert_eq!(
             projected_portal_box_pixel_rect(outside, &[0], [0, 0, 64, 64]).unwrap(),
             (None, true)
@@ -12118,95 +12013,20 @@ mod tests {
         assert!(!used_crossing_path);
     }
 
-    // Frozen pre-optimization implementation, including vertex/reduction order.
-    fn portal_crossing_bounds_heap_reference(corners: [[f32; 4]; 8]) -> Option<[f32; 4]> {
-        const FACES: [[usize; 4]; 6] = [
-            [0, 1, 2, 3],
-            [4, 5, 6, 7],
-            [0, 1, 5, 4],
-            [1, 2, 6, 5],
-            [2, 3, 7, 6],
-            [3, 0, 4, 7],
-        ];
-        let distance =
-            |p: [f32; 4], plane| [p[0] + p[3], p[3] - p[0], p[1] + p[3], p[3] - p[1]][plane];
-        let mut projected = Vec::with_capacity(48);
-        for face in FACES {
-            let mut polygon = face.map(|i| corners[i]).to_vec();
-            for plane in 0..4 {
-                if polygon.is_empty() {
-                    break;
-                }
-                let mut clipped = Vec::with_capacity(polygon.len() + 1);
-                let mut previous = *polygon.last().unwrap();
-                let mut previous_distance = distance(previous, plane);
-                for current in polygon {
-                    let current_distance = distance(current, plane);
-                    if (previous_distance >= 0.0) != (current_distance >= 0.0) {
-                        let denominator = previous_distance - current_distance;
-                        if denominator != 0.0 {
-                            let t = previous_distance / denominator;
-                            clipped.push(std::array::from_fn(|lane| {
-                                previous[lane] + (current[lane] - previous[lane]) * t
-                            }));
-                        }
-                    }
-                    if current_distance >= 0.0 {
-                        clipped.push(current);
-                    }
-                    previous = current;
-                    previous_distance = current_distance;
-                }
-                polygon = clipped;
-            }
-            projected.extend(polygon);
-        }
-        let mut bounds = [
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        ];
-        for p in projected {
-            if p[3] <= 0.0 {
-                continue;
-            }
-            let x = p[0] / p[3];
-            let y = p[1] / p[3];
-            bounds[0] = bounds[0].min(x);
-            bounds[1] = bounds[1].min(y);
-            bounds[2] = bounds[2].max(x);
-            bounds[3] = bounds[3].max(y);
-        }
-        bounds.iter().all(|v| v.is_finite()).then_some(bounds)
-    }
-
     #[test]
-    fn portal_crossing_stack_buffers_preserve_heap_results_bit_exactly() {
-        let mut seed = 0x4448_3201u32;
-        for case in 0..4096 {
-            let corners = std::array::from_fn(|_| {
-                std::array::from_fn(|_| {
-                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                    let value = (seed >> 8) as f32 / (1u32 << 24) as f32 * 16.0 - 8.0;
-                    match case % 16 {
-                        0 => 0.0,
-                        1 => -0.0,
-                        2 => value * 3.0e37,
-                        3 => value * 1.0e-37,
-                        _ => value,
-                    }
-                })
+    fn portal_crossing_bounds_match_original_conservative_masks() {
+        let mut count=0;
+        for line in include_str!("../analysis/original_portal_crossing_bounds_cases.txt").lines() {
+            let words=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let corners=std::array::from_fn(|i| {
+                let pair=i%4;let offset=if i>=4 {12}else{0};
+                [f32::from_bits(words[offset+pair]),f32::from_bits(words[offset+4+pair]),0.,f32::from_bits(words[offset+8+pair])]
             });
-            let expected =
-                portal_crossing_bounds_heap_reference(corners).map(|b| b.map(f32::to_bits));
-            let actual = projected_portal_box_crossing_bounds(corners)
-                .unwrap()
-                .map(|b| b.map(f32::to_bits));
-            assert_eq!(actual, expected, "portal case {case}: {corners:?}");
+            let actual=projected_portal_box_crossing_bounds(corners).unwrap().unwrap().map(f32::to_bits);
+            assert_eq!(actual,words[24..],"native portal crossing case{count}");count+=1;
         }
-        assert!(projected_portal_box_crossing_bounds([[f32::NAN; 4]; 8]).is_err());
-        assert!(projected_portal_box_crossing_bounds([[f32::INFINITY; 4]; 8]).is_err());
+        assert_eq!(count,512);
+        assert!(projected_portal_box_crossing_bounds([[f32::NAN;4];8]).is_err());
     }
 
     #[test]
@@ -12221,83 +12041,6 @@ mod tests {
             expand_object_bounds_for_camera_imprecision(bounds, 0.0),
             bounds
         );
-    }
-
-    #[test]
-    fn projects_all_object_box_corners_when_clip_w_is_positive() {
-        let bounds = [[-2.0, -1.0, 2.0], [3.0, 4.0, 5.0]];
-        let matrix = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-        assert_eq!(
-            project_object_bounds_clipped_w(bounds, matrix).unwrap(),
-            Some([-2.0, -1.0, 3.0, 4.0])
-        );
-
-        let perspective = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0, 0.0],
-        ];
-        assert_eq!(
-            project_object_bounds_clipped_w(bounds, perspective).unwrap(),
-            Some([-1.0, -0.5, 1.5, 2.0])
-        );
-    }
-
-    #[test]
-    fn clips_object_box_crossing_w_zero_and_clamps_unbounded_projection() {
-        let matrix = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0, 0.0],
-        ];
-        let rectangle =
-            project_object_bounds_clipped_w([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]], matrix)
-                .unwrap()
-                .unwrap();
-        assert_eq!(
-            rectangle,
-            [
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::INFINITY
-            ]
-        );
-        assert_eq!(
-            projected_object_pixel_rect(rectangle, [0, 0, 8, 16]).unwrap(),
-            [0, 0, 64, 64]
-        );
-
-        assert_eq!(
-            project_object_bounds_clipped_w([[-1.0, -1.0, -2.0], [1.0, 1.0, -1.0]], matrix)
-                .unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn w_zero_crossing_keeps_finite_axis_limit_when_its_numerator_is_zero() {
-        let matrix = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0, 0.0],
-        ];
-        let rectangle =
-            project_object_bounds_clipped_w([[0.0, -1.0, -1.0], [0.0, 1.0, 1.0]], matrix)
-                .unwrap()
-                .unwrap();
-        assert_eq!(rectangle[0], 0.0);
-        assert_eq!(rectangle[2], 0.0);
-        assert_eq!(rectangle[1], f32::NEG_INFINITY);
-        assert_eq!(rectangle[3], f32::INFINITY);
     }
 
     #[test]

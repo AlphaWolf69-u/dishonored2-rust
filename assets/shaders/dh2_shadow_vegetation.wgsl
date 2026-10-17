@@ -24,28 +24,13 @@ struct VegetationShadowCB {
 fn vegetation_shadow_position(p: VegetationShadowCB, position: vec3<f32>,
     normal_xy: vec2<f32>, color: vec3<f32>) -> vec3<f32>
 {
-    let phase = dot(position, vec3<f32>(color.y + 1.0));
-    let time = p.local_time_depth_hack.x;
-    let wave0 = fract((vec4<f32>(phase, phase, color.y, color.y) + vec4<f32>(time))
-        * vec4<f32>(1.975, 0.793, 0.375, 0.193));
-    let wave1 = fma(wave0, vec4<f32>(2.0), vec4<f32>(-1.0));
-    let wave2 = fract(fma(wave1, vec4<f32>(p.leaf_frequency.x), vec4<f32>(0.5)));
-    let wave3 = abs(fma(wave2, vec4<f32>(2.0), vec4<f32>(-1.0)));
-    let smooth_wave = fma(-wave3, vec4<f32>(2.0), vec4<f32>(3.0)) * (wave3 * wave3);
-    let summed_wave = vec2<f32>(smooth_wave.x + smooth_wave.y, smooth_wave.z + smooth_wave.w);
-    let leaf = (max(p.leaf_min_wind_strength.x, 0.0) * p.leaf_amplitude.x) * color.z;
-    let amplitudes = vec3<f32>(leaf * normal_xy.x,
-        color.x * p.branch_amplitude.x, leaf * normal_xy.y);
-    let bent = fma(vec3<f32>(summed_wave.x - 1.0, summed_wave.y, summed_wave.x - 1.0),
-        amplitudes, position);
-    let main_wave = sin(p.main_bending_frequency.x * time);
-    let main_amplitude = fma(main_wave, p.main_bending_variance.x, p.main_bending_amplitude.x);
-    let main_weight = fma(bent.z, main_amplitude, 1.0);
-    let squared_weight = main_weight * main_weight;
-    let main_bend = fma(squared_weight, squared_weight, -squared_weight);
-    let displaced = vec3<f32>(fma(vec2<f32>(main_bend), vec2<f32>(0.0, 0.01), bent.xy), bent.z);
-    // The native VS preserves the post-leaf-bending length, with no zero guard.
-    return sqrt(dot(bent, bent)) * (inverseSqrt(dot(displaced, displaced)) * displaced);
+    let parameters = NativeShadowWindParameters(p.main_bending_variance,
+        p.main_bending_frequency, p.main_bending_amplitude, p.leaf_min_wind_strength,
+        p.leaf_frequency, p.leaf_amplitude, p.branch_amplitude);
+    // This rigid ABI's actual VS has fixed local wind, unlike world instances.
+    return native_shadow_wind_position(parameters, p.local_time_depth_hack.x,
+        vec2<f32>(0.0, 0.01), max(p.leaf_min_wind_strength.x, 0.0),
+        position, normal_xy, color);
 }
 
 fn vegetation_shadow_clip(p: VegetationShadowCB, position: vec3<f32>,

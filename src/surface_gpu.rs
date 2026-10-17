@@ -16,16 +16,18 @@ pub struct SurfaceUniform {
     pub alpha: Vec4,
     pub flags: UVec4,
     pub misc: UVec4,
+    /// Original forward receiver route, offset compile flags, filtering, light quality.
+    pub native_shadow: UVec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
 /// HLSL are #if parameters, not per-fragment uniform branches. Values must
 /// participate in the pipeline cache key; image handles and tints must not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceKey(pub [u32; 9]);
+pub struct SurfaceKey(pub [u32; 13]);
 
 impl SurfaceKey {
-    pub const NAMES: [&'static str; 9] = [
+    pub const NAMES: [&'static str; 13] = [
         "DH2_EXTRA_LAYERS",
         "DH2_HAS_GLOSS",
         "DH2_GLOSS_ALPHA",
@@ -35,6 +37,10 @@ impl SurfaceKey {
         "DH2_SURFACE_ENABLED",
         "DH2_ALPHA_FLAGS",
         "DH2_HAS_OCCLUSION",
+        "DH2_SHADOW_ROUTE",
+        "DH2_SHADOW_OFFSET_FLAGS",
+        "DH2_SHADOW_FILTER",
+        "DH2_SHADOW_LIGHT_QUALITY",
     ];
 }
 
@@ -50,6 +56,10 @@ impl From<&SurfaceUniform> for SurfaceKey {
             surface.misc.z,
             surface.misc.w,
             u32::from(surface.alpha.y != 0.0),
+            surface.native_shadow.x,
+            surface.native_shadow.y,
+            surface.native_shadow.z,
+            surface.native_shadow.w,
         ])
     }
 }
@@ -109,6 +119,7 @@ impl From<&Surface> for SurfaceUniform {
                 s.program() as u32,
                 u32::from(s.alpha_test),
             ),
+            native_shadow:UVec4::new(3,0,0,0),
         }
     }
 }
@@ -188,5 +199,15 @@ mod tests {
         uniform.misc.w ^= 1;
         uniform.alpha.y = 1.0 - uniform.alpha.y;
         assert_ne!(SurfaceKey::from(&uniform), key);
+    }
+
+    #[test]
+    fn original_shadow_compile_options_select_distinct_pipelines() {
+        let uniform=SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\n"));
+        let key=SurfaceKey::from(&uniform);
+        for component in 0..4 {
+            let mut changed=uniform.clone();changed.native_shadow[component]^=1;
+            assert_ne!(SurfaceKey::from(&changed),key,"shadow compile option {component}");
+        }
     }
 }

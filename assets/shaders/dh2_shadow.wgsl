@@ -11,6 +11,21 @@ struct NativeShadowInfo {
     unused_tail_c: u32,
 }
 
+// HLSL saturate's _sat modifier returns zero for NaN. WGSL clamp alone
+// does not retain that contract, which matters at perspective W=0 planes.
+fn native_shadow_saturate(value:f32)->f32 {
+    if (bitcast<u32>(value)&0x7fffffffu)>0x7f800000u {return 0.0;}
+    return clamp(value,0.0,1.0);
+}
+
+// The original D3D11 normalized-depth comparison treats a NaN reference as
+// zero. The WGPU comparison call does not; native non-finite PCF cases verify
+// this transport conversion independently of the filter's final saturate.
+fn native_shadow_depth_reference(value:f32)->f32 {
+    if (bitcast<u32>(value)&0x7fffffffu)>0x7f800000u {return 0.0;}
+    return value;
+}
+
 fn native_shadow_slice(info: u32) -> i32 { return i32(info & 31u); }
 
 fn native_omni_shadow_side(direction: vec3<f32>) -> u32 {
@@ -31,10 +46,37 @@ fn native_parallel_shadow_slice(position: vec3<f32>, view_row2: vec4<f32>, fars:
     return u32(mask.x + mask.y + mask.z + mask.w);
 }
 
+// shadowCommon::GetFastCloudShadowing and the float-output ray/sphere overload.
+fn native_fast_cloud_shadowing(position: vec3<f32>, direction: vec3<f32>, world_time: f32,
+    motion: vec4<f32>, density_parameters: vec4<f32>, cloud: texture_2d<f32>, cloud_sampler: sampler) -> f32 {
+    let center = vec3(0.0, 0.0, -motion.x);
+    let radius = motion.x + 2.0;
+    let origin = 0.001 * position;
+    let diff = origin - center;
+    let a0 = dot(diff, diff) - radius * radius;
+    let a1 = dot(direction, diff);
+    let root = sqrt(max(0.0, a1 * a1 - a0));
+    let near_hit = max(-a1 - root, 0.0);
+    let far_hit = -a1 + root;
+    let hit = origin + direction * select(near_hit, far_hit, far_hit > 0.0);
+    let angle = world_time * motion.y;
+    let sine = sin(angle);
+    let cosine = cos(angle);
+    var uv = vec2(cosine * hit.x - sine * hit.y, sine * hit.x + cosine * hit.y);
+    uv += vec2(world_time) * motion.zw;
+    uv *= density_parameters.xy;
+    let density = textureSampleLevel(cloud, cloud_sampler, uv, 0.0).x * density_parameters.z;
+    return clamp(exp(-density), 0.0, 1.0);
+}
+
 fn native_shadow_position(matrix: mat4x4<f32>, position: vec3<f32>, directional: bool) -> vec4<f32> {
     let p = vec4(position, 1.0);
     if directional { return vec4(dot(matrix[0], p), dot(matrix[1], p), dot(matrix[2], p), 1.0); }
-    return matrix * p;
+    // shadowCommon uses mul(position, mWorldToShadowMat). Native structured
+    // records store the CPU rows as HLSL's column-major float4 columns; the
+    // row-vector product dots those columns. Our transport retains those
+    // same four vectors as WGSL columns.
+    return vec4(dot(matrix[0], p), dot(matrix[1], p), dot(matrix[2], p), dot(matrix[3], p));
 }
 
 fn native_uv_normal_offset(matrix: mat4x4<f32>, position: vec3<f32>, offset: vec4<f32>, directional: bool) -> vec4<f32> {
@@ -47,7 +89,7 @@ fn native_uv_normal_offset(matrix: mat4x4<f32>, position: vec3<f32>, offset: vec
 fn native_shadow_normal_scale(normal: vec3<f32>, light_dir: vec3<f32>, slope_scale: bool) -> vec2<f32> {
     if slope_scale {
         let cosine = dot(normalize(light_dir), normal);
-        return vec2(cosine, clamp(1.0 - cosine, 0.0, 1.0));
+        return vec2(cosine, native_shadow_saturate(1.0 - cosine));
     }
     return vec2(0.0, 1.0);
 }
@@ -82,13 +124,13 @@ fn native_shadow_offset(matrix: mat4x4<f32>, position: vec3<f32>, normal: vec3<f
 }
 
 fn native_shadow_tap(map: texture_depth_2d_array, comparison: sampler_comparison, base: vec2<f32>, offset: vec2<f32>, inv_size: vec2<f32>, slice: i32, depth: f32) -> f32 {
-    return textureSampleCompareLevel(map, comparison, base + offset * inv_size, slice, depth);
+    return textureSampleCompareLevel(map, comparison, base + offset * inv_size, slice, native_shadow_depth_reference(depth));
 }
 
 // Original optimized 2x2/3x3/5x5 PCF uses 1/4/9 hardware-comparison samples.
 // Keep accumulation order and normalizations; don't replace with a generic grid.
 fn native_shadow_pcf(map: texture_depth_2d_array, comparison: sampler_comparison, position: vec3<f32>, slice: i32, size: vec2<f32>, quality: i32) -> f32 {
-    if quality == 0 { return clamp(textureSampleCompareLevel(map, comparison, position.xy, slice, position.z), 0.0, 1.0); }
+    if quality == 0 { return native_shadow_saturate(textureSampleCompareLevel(map, comparison, position.xy, slice, native_shadow_depth_reference(position.z))); }
     let uv = position.xy * size;
     let inv_size = 1.0 / size;
     let base = floor(uv + 0.5);
@@ -105,7 +147,7 @@ fn native_shadow_pcf(map: texture_depth_2d_array, comparison: sampler_comparison
         sum += uw1 * vw0 * native_shadow_tap(map, comparison, base_uv, vec2(u1, v0), inv_size, slice, position.z);
         sum += uw0 * vw1 * native_shadow_tap(map, comparison, base_uv, vec2(u0, v1), inv_size, slice, position.z);
         sum += uw1 * vw1 * native_shadow_tap(map, comparison, base_uv, vec2(u1, v1), inv_size, slice, position.z);
-        return clamp(sum * (1.0 / 16.0), 0.0, 1.0);
+        return native_shadow_saturate(sum * (1.0 / 16.0));
     }
     let uw0 = 4.0 - 3.0 * s; let uw1 = 7.0; let uw2 = 1.0 + 3.0 * s;
     let u0 = (3.0 - 2.0 * s) / uw0 - 2.0; let u1 = (3.0 + s) / uw1; let u2 = s / uw2 + 2.0;
@@ -120,7 +162,7 @@ fn native_shadow_pcf(map: texture_depth_2d_array, comparison: sampler_comparison
     sum += uw0 * vw2 * native_shadow_tap(map, comparison, base_uv, vec2(u0, v2), inv_size, slice, position.z);
     sum += uw1 * vw2 * native_shadow_tap(map, comparison, base_uv, vec2(u1, v2), inv_size, slice, position.z);
     sum += uw2 * vw2 * native_shadow_tap(map, comparison, base_uv, vec2(u2, v2), inv_size, slice, position.z);
-    return clamp(sum * (1.0 / 144.0), 0.0, 1.0);
+    return native_shadow_saturate(sum * (1.0 / 144.0));
 }
 
 // global: HIGH_QUALITY=2, AVERAGE_QUALITY=1, LOW_QUALITY=0.

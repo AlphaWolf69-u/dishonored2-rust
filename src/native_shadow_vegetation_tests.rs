@@ -76,7 +76,8 @@ fn native_vegetation_shadow_vs_matches_original_stream_output_gpu() {
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
     let source = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
+        include_str!("../assets/shaders/dh2_shadow_wind.wgsl"),
         include_str!("../assets/shaders/dh2_shadow_vegetation.wgsl"),
         r#"
         @group(0) @binding(3) var<storage, read> cases: array<u32>;
@@ -407,7 +408,7 @@ fn draw_vegetation_cutout(
                 None,
                 &[NativeOpaqueShadowDraw {
                     model_state: &binding,
-                    alpha_material: Some(material),
+                    program_resources: Some(material),
                     vertex_buffer: &vertices,
                     index_buffer: &indices,
                     index_format: IndexFormat::Uint16,

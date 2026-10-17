@@ -191,6 +191,8 @@ mod tests {
             resource_hash_bytes(&[0x80]),
             (0x811c9dc5u32 ^ 0x80).wrapping_mul(0x1000193)
         );
+        assert_eq!(resource_hash_bytes(b"decompressed"), 0x02637cb3);
+        assert_eq!(resource_name_key("decompressedDepth"), 0x21181874);
         for name in [
             "lightNodePool",
             "lightNodePoolNextFreeEntry",

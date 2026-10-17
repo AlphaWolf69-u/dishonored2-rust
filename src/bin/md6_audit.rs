@@ -3,6 +3,10 @@
 mod archive;
 #[path = "../bmd6.rs"]
 mod bmd6;
+#[path = "../edge_skeleton.rs"]
+mod edge_skeleton;
+#[path = "../entities.rs"]
+mod entities;
 
 use std::{collections::BTreeMap, env, path::Path};
 
@@ -12,6 +16,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
     let filter = env::args().nth(2).unwrap_or_default().to_ascii_lowercase();
     let catalog = archive::Catalog::open(Path::new(&base))?;
+    if filter=="--skeleton-audit" {
+        let mut count=0;let mut joints=0;let mut failures=0;
+        for path in catalog.paths_with_suffix(".edgeskl") {
+            let bytes=catalog.read(&path)?.ok_or_else(||format!("missing {path}"))?;
+            match edge_skeleton::parse(&bytes) {
+                Ok(skeleton)=> {
+                    let root=edge_skeleton::JointRestPose {rotation:[0.0,0.0,0.0,1.0],translation:[0.0;3],scale:[1.0;3]};
+                    match edge_skeleton::native_pose_matrices(&skeleton.rest,&skeleton.hierarchy,&root) {
+                        Ok(current)=> {
+                            let palette=edge_skeleton::native_skin_palette(&current,&skeleton.inverse_bind[..current.len()])?;
+                            let error=palette.iter().flat_map(|matrix|matrix.iter().enumerate().flat_map(|(row,values)|
+                                values.iter().enumerate().map(move |(col,value)|(value-if row==col {1.0}else{0.0}).abs())))
+                                .fold(0.0f32,f32::max);
+                            if error>0.001 {println!("REST_BIND_DELTA {error}: {path}");}
+                            count+=1;joints+=skeleton.rest.len();
+                        }
+                        Err(error)=> {println!("{path}: {error}");failures+=1;}
+                    }
+                }
+                Err(error)=> {println!("{path}: {error}");failures+=1;}
+            }
+        }
+        println!("Edge skeletons: {count} decoded, {joints} rest joints, {failures} failed");
+        if failures!=0 {return Err("Edge skeleton audit failed".into());}
+        return Ok(());
+    }
     let paths = catalog.paths_with_suffix(".bmd6model");
     let mut total = 0usize;
     let mut decoded = 0usize;
@@ -58,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if !filter.is_empty() {
+                    println!("  skeleton={:?}, reference={:?}",info.skeleton_name,info.skeleton_reference);
                     println!(
                         "{path}: {} surfaces, {} trailing bytes, geometry={}",
                         info.surfaces.len(),

@@ -343,6 +343,406 @@ pub struct ShadowModelDrawPlan {
     pub draw_state: [u32; 9],
 }
 
+/// FUN_140268b10 selects `m_staticModelPerLOD[slot]`: values at least 2 use
+/// slot 2, while negative values are left unchanged by the original branch.
+/// Callers must prove the returned slot is nonnegative before indexing.
+pub const fn native_static_model_lod_slot(slot: i32) -> i32 {
+    if slot < 2 { slot } else { 2 }
+}
+
+/// Port of FUN_140268780: slots 1 and 2 at native offsets `+0x1c70` and
+/// `+0x1c78` are tested for non-null; slot 0 is deliberately not considered.
+pub fn native_static_model_has_lod1_or_2<T>(model_per_lod: &[Option<T>; 3]) -> bool {
+    model_per_lod[1].is_some() || model_per_lod[2].is_some()
+}
+
+/// State change requested by FUN_140268b10. `surface_list_byte_offset` is
+/// relative to the native per-LOD surface-list base at `+0x1c90`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeStaticModelLodSwitch<T> {
+    pub slot: usize,
+    pub selected_model: T,
+    pub surface_list_byte_offset: usize,
+    pub rebuild_surfaces: bool,
+    pub callback_vtable_offset: usize,
+    pub callback_argument: i32,
+}
+
+/// Port of FUN_140268b10's model-pointer change decision. The native function
+/// updates active model `+0x1c50`, selects the matching surface list at
+/// `+0x1c90 + slot*0x10`, rebuilds surface/bounds records, then calls vtable
+/// `+0x28` with argument 0. This returns that source-backed action; the owner
+/// still applies pointers and invokes the callbacks. Invalid negative slots
+/// are declined instead of performing native unchecked pointer arithmetic.
+pub fn native_static_model_lod_switch<T: Copy + Eq>(
+    requested_slot: i32,
+    model_per_lod: &[Option<T>; 3],
+    active_model: Option<T>,
+) -> Option<NativeStaticModelLodSwitch<T>> {
+    let slot = usize::try_from(native_static_model_lod_slot(requested_slot)).ok()?;
+    let selected_model = model_per_lod[slot]?;
+    if active_model == Some(selected_model) {
+        return None;
+    }
+    Some(NativeStaticModelLodSwitch {
+        slot,
+        selected_model,
+        surface_list_byte_offset: slot * 0x10,
+        rebuild_surfaces: true,
+        callback_vtable_offset: 0x28,
+        callback_argument: 0,
+    })
+}
+
+/// FUN_14087c730 refreshes static-model LOD only when `+0xd4 & 1` and
+/// `+0x294 != 0`.
+pub const fn native_static_model_lod_refresh_required(flags_d4: u8, actual_level: i32) -> bool {
+    flags_d4 & 1 != 0 && actual_level != 0
+}
+
+/// FUN_14087c730 registers with the dynamic LOD manager only when all three
+/// native gates are clear: `+0xd2 & 0x40`, `+0xd4 & 1`, and `+0xd1 & 1`.
+pub const fn native_lod_manager_registration_allowed(
+    flags_d2: u8,
+    flags_d4: u8,
+    flags_d1: u8,
+) -> bool {
+    flags_d2 & 0x40 == 0 && flags_d4 & 1 == 0 && flags_d1 & 1 == 0
+}
+
+/// Destination/action after FUN_14064cd70 has evaluated model and child gates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeLodRegistrationAction {
+    PositionList,
+    BoundsList,
+    SetLevel8,
+    NoAction,
+}
+
+/// Ports FUN_14064cd70's final classification branch. The caller must provide
+/// the outcomes of its native model/child eligibility checks; this does not
+/// perform those checks or push into the manager's lists.
+pub const fn native_lod_registration_action(
+    has_model_pointer: bool,
+    model_variant_eligible: bool,
+    child_eligible: bool,
+) -> NativeLodRegistrationAction {
+    let model_eligible = has_model_pointer && model_variant_eligible;
+    if model_eligible || child_eligible {
+        if has_model_pointer {
+            NativeLodRegistrationAction::BoundsList
+        } else {
+            NativeLodRegistrationAction::PositionList
+        }
+    } else if !has_model_pointer {
+        NativeLodRegistrationAction::SetLevel8
+    } else {
+        NativeLodRegistrationAction::NoAction
+    }
+}
+
+/// FUN_1408792e0 subtracts the integer at object offset +0x17c, clamps to
+/// 0..4, then FUN_140268b10 caps the static-model array slot at 2.
+pub fn native_relative_static_model_lod_slot(actual_level: i32, field_0x17c: i32) -> i32 {
+    native_static_model_lod_slot(actual_level.wrapping_sub(field_0x17c).clamp(0, 4))
+}
+
+/// Results of FUN_1408792e0's three virtual render-model predicates. These
+/// labels mirror the native predicate arguments, not inferred C++ class names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeLodModelPredicate {
+    Predicate2,
+    Predicate3,
+    Predicate7,
+    Other,
+}
+
+/// Model-side candidate gate in FUN_14064cd70. Predicate 2 uses the low-24-bit
+/// count at `[model + 0x1fe8] + 0x70`; predicate 3 checks this model's LOD slots
+/// 1/2, and predicate 7 accepts any listed model with either slot present.
+/// The caller resolves the native virtual predicate and list into these inputs.
+pub fn native_lod_model_variant_eligible<T>(
+    predicate: NativeLodModelPredicate,
+    predicate2_raw_count: u32,
+    predicate3_model_per_lod: &[Option<T>; 3],
+    predicate7_models_per_lod: &[[Option<T>; 3]],
+) -> bool {
+    match predicate {
+        NativeLodModelPredicate::Predicate2 => predicate2_raw_count & 0x00ff_ffff > 1,
+        NativeLodModelPredicate::Predicate3 => {
+            native_static_model_has_lod1_or_2(predicate3_model_per_lod)
+        }
+        NativeLodModelPredicate::Predicate7 => predicate7_models_per_lod
+            .iter()
+            .any(native_static_model_has_lod1_or_2),
+        NativeLodModelPredicate::Other => false,
+    }
+}
+
+/// Child-side gate in FUN_14064cd70. The flag path requires both low bits
+/// encoded in mask 0x0c and a negative signed value; otherwise native falls
+/// back to the child's vtable +0x60 result.
+pub const fn native_lod_child_registration_eligible(
+    field_0x1c: i32,
+    vtable_0x60_returns_nonzero: bool,
+) -> bool {
+    (((field_0x1c as u8) & 0x0c) == 0x0c && field_0x1c < 0) || vtable_0x60_returns_nonzero
+}
+
+/// Observable model-selection action from FUN_1408792e0. Applying model
+/// pointers, surfaces, and virtual callbacks remains the native owner's job.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeLodModelAction {
+    None,
+    Predicate2 {
+        selected_index: i32,
+        callback_argument: i32,
+    },
+    Predicate3 {
+        static_model_slot: i32,
+    },
+    Predicate7 {
+        static_model_slot: i32,
+        model_count: u32,
+    },
+}
+
+/// Exact source-level dispatch in FUN_1408792e0. `has_active_model` models its
+/// null check; counts are the native low-24-bit list counts. Predicate2 stores
+/// an index capped to count-1 and calls vtable +0x28 with argument 4; Predicate3
+/// selects one static-model slot; Predicate7 applies the slot to every entry.
+pub fn native_lod_model_action(
+    actual_level: i32,
+    field_0x17c: i32,
+    has_active_model: bool,
+    predicate: NativeLodModelPredicate,
+    predicate2_model_count: u32,
+    predicate7_model_count: u32,
+) -> NativeLodModelAction {
+    if actual_level >= 6 || !has_active_model {
+        return NativeLodModelAction::None;
+    }
+    let requested_index = actual_level.wrapping_sub(field_0x17c).clamp(0, 4);
+    match predicate {
+        NativeLodModelPredicate::Predicate2 => {
+            let last_index = ((predicate2_model_count & 0x00ff_ffff) as i32).wrapping_sub(1);
+            NativeLodModelAction::Predicate2 {
+                selected_index: requested_index.min(last_index),
+                callback_argument: 4,
+            }
+        }
+        NativeLodModelPredicate::Predicate3 => NativeLodModelAction::Predicate3 {
+            static_model_slot: native_static_model_lod_slot(requested_index),
+        },
+        NativeLodModelPredicate::Predicate7 => {
+            let model_count = predicate7_model_count & 0x00ff_ffff;
+            if model_count == 0 {
+                NativeLodModelAction::None
+            } else {
+                NativeLodModelAction::Predicate7 {
+                    static_model_slot: native_static_model_lod_slot(requested_index),
+                    model_count,
+                }
+            }
+        }
+        NativeLodModelPredicate::Other => NativeLodModelAction::None,
+    }
+}
+
+const NATIVE_LOD_MASK_TO_LEVEL: [u8; 16] = [0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0];
+
+/// Per-view values prepared by FUN_14064cff0. Distance fields are already
+/// squared exactly as in the native batch input; the native CVar defaults and
+/// selected preset are owned by a different path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeLodViewParameters {
+    pub primary_position: [f32; 3],
+    pub alternate_position: [f32; 3],
+    pub use_alternate_position: bool,
+    pub fov_sin_half_squared: f32,
+    pub level_distances_squared: [f32; 4],
+    pub far_distance_squared: f32,
+    pub force_visible_distance_squared: f32,
+}
+
+/// Numeric fields read by FUN_14064c1a0. This is a value snapshot, not a claim
+/// about the native object's type or layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeLodBoundsInput {
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
+    pub flags_1c30: u8,
+    pub flags_1c31: u8,
+    pub bit_1_at_0xd0: bool,
+    pub current_optimal_level: i32,
+}
+
+/// Numeric fields read by FUN_14064c3a0 from its position-list entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeLodPositionInput {
+    pub position: [f32; 3],
+    pub current_optimal_level: i32,
+}
+
+/// One evaluator result. The native caller ORs `needs_update` into its batch
+/// dirty byte; it later publishes the new optimal level through FUN_14087bb70.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeLodDecision {
+    pub optimal_level: i32,
+    pub needs_update: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeLodLevelUpdate {
+    pub optimal_level: i32,
+    pub actual_level: i32,
+    pub actual_changed: bool,
+}
+
+/// FUN_14087bb70 calls each child's virtual +0x68 only when its +0x1c field
+/// satisfies `(byte_field & 0x0c) > 7 && signed_field < 0`, and actual changes.
+pub const fn native_lod_child_update_args(
+    previous_actual: i32,
+    actual: i32,
+    child_field_1c: i32,
+) -> Option<NativeLodChildUpdate> {
+    if previous_actual != actual && child_field_1c < 0 && (child_field_1c as u8 & 0x0c) > 7 {
+        Some(NativeLodChildUpdate {
+            previous_actual,
+            actual,
+        })
+    } else {
+        None
+    }
+}
+
+/// Previous/current actual LOD levels passed to the child's virtual +0x68.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeLodChildUpdate {
+    pub previous_actual: i32,
+    pub actual: i32,
+}
+
+/// Pure state update from FUN_14087bb70: store `optimal` and set actual to
+/// min(optimal, requested_max); object rebuilds/notifications are separate.
+pub const fn native_lod_level_update(
+    previous_actual: i32,
+    optimal: i32,
+    requested_max: i32,
+) -> NativeLodLevelUpdate {
+    let actual_level = if optimal < requested_max {
+        optimal
+    } else {
+        requested_max
+    };
+    NativeLodLevelUpdate {
+        optimal_level: optimal,
+        actual_level,
+        actual_changed: previous_actual != actual_level,
+    }
+}
+
+/// FUN_14064cff0 computes this from its view FOV before launching either batch.
+pub fn native_lod_fov_sin_half_squared(fov_radians: f32) -> f32 {
+    let sine = ((fov_radians * 0.5) as f64).sin() as f32;
+    sine * sine
+}
+
+fn native_lod_distance_squared(point: [f32; 3], camera: [f32; 3]) -> f32 {
+    let dy = point[1] - camera[1];
+    let dx = point[0] - camera[0];
+    let dz = point[2] - camera[2];
+    dy * dy + dx * dx + dz * dz
+}
+
+fn native_lod_min_view_distance_squared(point: [f32; 3], view: &NativeLodViewParameters) -> f32 {
+    let primary = native_lod_distance_squared(point, view.primary_position);
+    if view.use_alternate_position {
+        let alternate = native_lod_distance_squared(point, view.alternate_position);
+        if alternate <= primary {
+            return alternate;
+        }
+    }
+    primary
+}
+
+fn native_lod_select_level(
+    fov_scaled_distance_squared: f32,
+    level_distances_squared: [f32; 4],
+    far_distance_squared: f32,
+) -> i32 {
+    let mut mask = 0usize;
+    for (index, threshold) in level_distances_squared.into_iter().enumerate() {
+        mask |= usize::from(fov_scaled_distance_squared < threshold) << index;
+    }
+    if mask != 0 {
+        NATIVE_LOD_MASK_TO_LEVEL[mask] as i32
+    } else if far_distance_squared < fov_scaled_distance_squared {
+        5
+    } else {
+        4
+    }
+}
+
+/// FUN_14064c1a0: bounds-aware camera-distance evaluator. Native bounds and
+/// flag names are unresolved; the fields deliberately retain source offsets.
+pub fn native_lod_level_for_bounds(
+    view: &NativeLodViewParameters,
+    input: NativeLodBoundsInput,
+) -> NativeLodDecision {
+    let center = [
+        (input.minimum[0] + input.maximum[0]) * 0.5,
+        (input.minimum[1] + input.maximum[1]) * 0.5,
+        (input.minimum[2] + input.maximum[2]) * 0.5,
+    ];
+    let mut distance_squared = native_lod_min_view_distance_squared(center, view);
+    let extent_y = input.maximum[1] - input.minimum[1];
+    let extent_x = input.maximum[0] - input.minimum[0];
+    let largest_horizontal_extent = if extent_x <= extent_y {
+        extent_y
+    } else {
+        extent_x
+    };
+    let half_extent = largest_horizontal_extent * 0.5;
+    distance_squared = distance_squared - half_extent * largest_horizontal_extent * 0.5;
+
+    let special_flags = input.flags_1c30 & 1 == 0 && input.flags_1c31 & 0x0c != 0;
+    let normal_path = (special_flags || distance_squared <= view.force_visible_distance_squared)
+        && !input.bit_1_at_0xd0;
+    let optimal_level = if normal_path {
+        native_lod_select_level(
+            distance_squared * view.fov_sin_half_squared,
+            view.level_distances_squared,
+            view.far_distance_squared,
+        )
+    } else if view.far_distance_squared < distance_squared {
+        7
+    } else {
+        6
+    };
+    NativeLodDecision {
+        optimal_level,
+        needs_update: optimal_level != input.current_optimal_level,
+    }
+}
+
+/// FUN_14064c3a0: direct-position camera-distance evaluator.
+pub fn native_lod_level_for_position(
+    view: &NativeLodViewParameters,
+    input: NativeLodPositionInput,
+) -> NativeLodDecision {
+    let distance_squared = native_lod_min_view_distance_squared(input.position, view);
+    let optimal_level = native_lod_select_level(
+        distance_squared * view.fov_sin_half_squared,
+        view.level_distances_squared,
+        view.far_distance_squared,
+    );
+    NativeLodDecision {
+        optimal_level,
+        needs_update: optimal_level != input.current_optimal_level,
+    }
+}
+
 pub fn prepare_shadow_model_draw(
     surface: &DepthAlphaSurface<'_>,
     bias: [f32; 3],
@@ -360,7 +760,16 @@ pub fn prepare_shadow_model_draw(
     if program == 0 {
         return Ok(None);
     }
-    let mut state = surface.draw_state;
+    let state=selected_shadow_model_draw_state(surface.flags49,surface.draw_state,bias,frustum_margin,model_mvp_flipped);
+    Ok(Some(ShadowModelDrawPlan {program,draw_state:state}))
+}
+
+/// The state half of FUN_140329120, after its actual pointer-bank lookup.
+/// Callers with an independently resolved cached program use the same state
+/// encoder without inventing native executable program pointers.
+pub fn selected_shadow_model_draw_state(
+    flags49:u8,mut state:[u32;9],bias:[f32;3],frustum_margin:f32,model_mvp_flipped:bool,
+)->[u32;9] {
     state[0] = state[0] & 0xfe1f_f802 | 2;
     // COMISS 0,margin / SETA: NaN is NOT negative. The decompiler's
     // `0 <= margin` expression loses this unordered branch.
@@ -369,7 +778,7 @@ pub fn prepare_shadow_model_draw(
         | (u32::from(!(frustum_margin < 0.0)) << 28)
         | (u32::from(!model_mvp_flipped) << 27);
     state[6..].fill(0);
-    if surface.flags49 & 2 == 0 {
+    if flags49 & 2 == 0 {
         // CVTTSS2SI returns integer-indefinite, not Rust's saturating cast,
         // for NaN/overflow. The original reorders clamp and slope words.
         state[6] = if (-2147483648.0..2147483648.0).contains(&bias[0]) {
@@ -380,10 +789,7 @@ pub fn prepare_shadow_model_draw(
         state[7] = bias[2].to_bits();
         state[8] = bias[1].to_bits();
     }
-    Ok(Some(ShadowModelDrawPlan {
-        program,
-        draw_state: state,
-    }))
+    state
 }
 
 /// The native 329120 call sequence publishes the MVP rows/handedness before
@@ -1262,6 +1668,26 @@ pub fn native_transformed_aabb_clip_cull(
     minimum: [f32; 3],
     maximum: [f32; 3],
 ) -> NativeAabbClipCullResult {
+    native_transformed_aabb_clip_cull_at_depth(matrix,minimum,maximum,0.0)
+}
+
+/// FUN_140109e40's explicit near-depth threshold. Directional model draws
+/// use this when their retained projection depth offset is negative.
+pub fn native_transformed_aabb_clip_cull_at_depth(
+    matrix:&[f32;16],minimum:[f32;3],maximum:[f32;3],near_depth:f32,
+) -> NativeAabbClipCullResult {
+    native_transformed_aabb_clip_cull_bounds(matrix,minimum,maximum,near_depth,false)
+}
+
+///10a0d0 mode1 uses zero, rather than -W, for the X/Y lower planes.
+///Local model collection tests the light's unit-volume matrix in this mode.
+pub fn native_unit_aabb_clip_cull(matrix:&[f32;16],minimum:[f32;3],maximum:[f32;3])->NativeAabbClipCullResult {
+    native_transformed_aabb_clip_cull_bounds(matrix,minimum,maximum,0.0,true)
+}
+
+fn native_transformed_aabb_clip_cull_bounds(
+    matrix:&[f32;16],minimum:[f32;3],maximum:[f32;3],near_depth:f32,unit_xy:bool,
+) -> NativeAabbClipCullResult {
     let mut corners = [[0.0_f32; 4]; 8];
     for (index, corner) in corners.iter_mut().enumerate() {
         let x = if index & 1 == 0 {
@@ -1291,11 +1717,11 @@ pub fn native_transformed_aabb_clip_cull(
         ];
     }
     let plane_inside = [
-        corners.iter().any(|corner| -corner[3] < corner[0]),
+        corners.iter().any(|corner| (if unit_xy {0.0}else{-corner[3]}) < corner[0]),
         corners.iter().any(|corner| corner[0] < corner[3]),
-        corners.iter().any(|corner| -corner[3] < corner[1]),
+        corners.iter().any(|corner| (if unit_xy {0.0}else{-corner[3]}) < corner[1]),
         corners.iter().any(|corner| corner[1] < corner[3]),
-        corners.iter().any(|corner| 0.0 < corner[2]),
+        corners.iter().any(|corner| near_depth < corner[2]),
         corners.iter().any(|corner| corner[2] < corner[3]),
     ];
     let mut inside_mask = 0_u8;
@@ -3450,6 +3876,18 @@ mod zprepass_list_tests {
 /// maxVisibleRange at +0xac. This is the constructor default, not a cutoff.
 pub const INITIAL_MODEL_MAX_VISIBLE_RANGE: f32 = 0.0;
 
+#[path = "render_model/owner_flags.rs"]
+mod owner_flags;
+pub use owner_flags::{
+    model_is_dynamic_caster, set_actor_dynamic_caster, set_model_dynamic_caster_flag,
+    set_model_dynamic_caster_with_children, ActorCasterAccess, INITIAL_MODEL_CONTEXT_FLAGS_18BC,
+    NativeModelCasterInfo, prepare_model_caster_info, model_caster_sort_distance,
+    model_shadow_radial_sort_key, sort_model_shadow_records,
+    native_point_clip_mask,LocalModelCasterRecord,collect_local_model_casters,
+    LocalShadowCacheControls,set_actors_dynamic_caster_for_view,
+    ModelOwnerDirtyQueues,mark_model_owner_dirty,model_owner_bounds_flags,
+};
+
 /// FUN_1401095f0: authored axes are stored by basis, not by matrix row.
 pub fn affine_rows(position: [f32; 3], basis: [[f32; 3]; 3], scale: [f32; 3]) -> [[f32; 4]; 4] {
     std::array::from_fn(|row| {
@@ -4915,6 +5353,430 @@ mod tests {
         unsupported.value_capacity_word = 0;
         assert!(unsupported.deduplicate().is_err());
         assert!(unsupported.filter(&[]).is_err());
+    }
+
+    fn lod_view() -> NativeLodViewParameters {
+        NativeLodViewParameters {
+            primary_position: [0.0; 3],
+            alternate_position: [0.0; 3],
+            use_alternate_position: false,
+            fov_sin_half_squared: 1.0,
+            level_distances_squared: [9.0, 36.0, 144.0, 400.0],
+            far_distance_squared: 900.0,
+            force_visible_distance_squared: 10_000.0,
+        }
+    }
+
+    #[test]
+    fn native_lod_fov_scale_uses_original_sine_of_half_fov() {
+        assert!(
+            (super::native_lod_fov_sin_half_squared(std::f32::consts::FRAC_PI_2) - 0.5).abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn native_lod_mask_table_matches_all_sixteen_original_indices() {
+        let expected = [0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0];
+        for mask in 0u32..16 {
+            let thresholds =
+                std::array::from_fn(|bit| if mask & (1 << bit) != 0 { 2.0 } else { 0.0 });
+            let selected = super::native_lod_select_level(1.0, thresholds, 100.0);
+            let expected = if mask == 0 {
+                4
+            } else {
+                expected[mask as usize]
+            };
+            assert_eq!(selected, expected, "mask={mask:04b}");
+        }
+    }
+
+    #[test]
+    fn native_lod_position_levels_match_mask_and_far_boundaries() {
+        let view = lod_view();
+        for (x, expected) in [
+            (2.0, 0),
+            (3.0, 1),
+            (6.0, 2),
+            (12.0, 3),
+            (20.0, 4),
+            (30.0, 4),
+            (31.0, 5),
+        ] {
+            let decision = super::native_lod_level_for_position(
+                &view,
+                NativeLodPositionInput {
+                    position: [x, 0.0, 0.0],
+                    current_optimal_level: expected,
+                },
+            );
+            assert_eq!(decision.optimal_level, expected, "x={x}");
+            assert!(!decision.needs_update);
+        }
+        let changed = super::native_lod_level_for_position(
+            &view,
+            NativeLodPositionInput {
+                position: [2.0, 0.0, 0.0],
+                current_optimal_level: 5,
+            },
+        );
+        assert_eq!(
+            changed,
+            NativeLodDecision {
+                optimal_level: 0,
+                needs_update: true,
+            }
+        );
+    }
+
+    #[test]
+    fn native_lod_bounds_uses_largest_horizontal_half_extent() {
+        let mut view = lod_view();
+        view.primary_position = [5.0, 0.0, 0.0];
+        view.level_distances_squared = [3.0, 6.0, 12.0, 20.0];
+        view.far_distance_squared = 21.0;
+        view.force_visible_distance_squared = 100.0;
+        let decision = super::native_lod_level_for_bounds(
+            &view,
+            NativeLodBoundsInput {
+                minimum: [-2.0, -1.0, 0.0],
+                maximum: [2.0, 1.0, 0.0],
+                flags_1c30: 1,
+                flags_1c31: 0,
+                bit_1_at_0xd0: false,
+                current_optimal_level: 4,
+            },
+        );
+        // Center distance² 25 minus radius² 4 => far² 21 exactly. Native
+        // equality stays at level 4; without the extent adjustment it would be 5.
+        assert_eq!(decision.optimal_level, 4);
+        assert!(!decision.needs_update);
+    }
+
+    #[test]
+    fn native_lod_bounds_matches_force_visible_and_far_skip_tiers() {
+        let mut view = lod_view();
+        view.primary_position = [10.0, 0.0, 0.0];
+        view.force_visible_distance_squared = 10.0;
+        view.level_distances_squared = [1.0, 2.0, 3.0, 4.0];
+        view.far_distance_squared = 80.0;
+        let bounds = |flags_1c30, flags_1c31, bit_1_at_0xd0| NativeLodBoundsInput {
+            minimum: [0.0; 3],
+            maximum: [0.0; 3],
+            flags_1c30,
+            flags_1c31,
+            bit_1_at_0xd0,
+            current_optimal_level: 0,
+        };
+        let mut force_boundary_view = lod_view();
+        force_boundary_view.primary_position = [2.0, 0.0, 0.0];
+        force_boundary_view.force_visible_distance_squared = 4.0;
+        force_boundary_view.far_distance_squared = 100.0;
+        let at_force_boundary =
+            super::native_lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
+        assert_eq!(at_force_boundary.optimal_level, 0);
+        force_boundary_view.primary_position[0] = 2.01;
+        let beyond_force_boundary =
+            super::native_lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
+        assert_eq!(beyond_force_boundary.optimal_level, 6);
+        assert_eq!(
+            super::native_lod_level_for_bounds(&view, bounds(1, 0, false)).optimal_level,
+            7
+        );
+        // The special flag bypasses the force-visible distance gate.
+        assert_eq!(
+            super::native_lod_level_for_bounds(&view, bounds(0, 4, false)).optimal_level,
+            5
+        );
+        assert_eq!(
+            super::native_lod_level_for_bounds(&view, bounds(0, 8, false)).optimal_level,
+            5
+        );
+        assert_eq!(
+            super::native_lod_level_for_bounds(&view, bounds(1, 4, false)).optimal_level,
+            7
+        );
+        // FUN_140878d10's bit forces far tiers; equality at far² selects 6.
+        view.far_distance_squared = 100.0;
+        assert_eq!(
+            super::native_lod_level_for_bounds(&view, bounds(1, 0, true)).optimal_level,
+            6
+        );
+    }
+
+    #[test]
+    fn native_lod_uses_nearest_of_two_camera_positions() {
+        let mut view = lod_view();
+        view.primary_position = [100.0, 0.0, 0.0];
+        view.alternate_position = [1.0, 0.0, 0.0];
+        view.use_alternate_position = true;
+        let decision = super::native_lod_level_for_position(
+            &view,
+            NativeLodPositionInput {
+                position: [0.0, 0.0, 0.0],
+                current_optimal_level: 0,
+            },
+        );
+        assert_eq!(decision.optimal_level, 0);
+    }
+
+    #[test]
+    fn native_lod_child_update_args_matches_original_flags() {
+        assert_eq!(
+            super::native_lod_child_update_args(2, 4, -8),
+            Some(super::NativeLodChildUpdate {
+                previous_actual: 2,
+                actual: 4,
+            })
+        );
+        assert_eq!(super::native_lod_child_update_args(2, 2, -8), None);
+        assert_eq!(super::native_lod_child_update_args(2, 4, 8), None);
+        assert_eq!(super::native_lod_child_update_args(2, 4, -12), None);
+    }
+
+    #[test]
+    fn native_lod_state_update_matches_requested_max_clamp() {
+        for (previous, optimal, requested_max, expected_actual, changed) in [
+            (3, 4, 8, 4, true),
+            (4, 7, 4, 4, false),
+            (6, 2, 8, 2, true),
+            (0, -1, 5, -1, true),
+        ] {
+            assert_eq!(
+                super::native_lod_level_update(previous, optimal, requested_max),
+                super::NativeLodLevelUpdate {
+                    optimal_level: optimal,
+                    actual_level: expected_actual,
+                    actual_changed: changed,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn native_static_model_lod_slot_matches_original_upper_cap() {
+        for (requested, selected) in [(-1, -1), (0, 0), (1, 1), (2, 2), (7, 2)] {
+            assert_eq!(super::native_static_model_lod_slot(requested), selected);
+        }
+    }
+
+    #[test]
+    fn native_static_lod_refresh_branch_matches_original() {
+        for (flags_d4, actual_level, expected) in [
+            (0, 0, false),
+            (0, 2, false),
+            (1, 0, false),
+            (1, 2, true),
+            (0x81, -1, true),
+        ] {
+            assert_eq!(
+                super::native_static_model_lod_refresh_required(flags_d4, actual_level),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_lod_manager_registration_gates_match_original() {
+        for flags_d2 in [0, 0x40] {
+            for flags_d4 in [0, 1] {
+                for flags_d1 in [0, 1] {
+                    assert_eq!(
+                        super::native_lod_manager_registration_allowed(
+                            flags_d2, flags_d4, flags_d1
+                        ),
+                        flags_d2 == 0 && flags_d4 == 0 && flags_d1 == 0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_lod_model_variant_eligibility_matches_type2_type3_type7_gates() {
+        use super::NativeLodModelPredicate as Predicate;
+        let no_variants = [None::<u32>, None, None];
+        let only_lod0 = [Some(10_u32), None, None];
+        let lod2 = [None, None, Some(30_u32)];
+        for (predicate, count, single, grouped, expected) in [
+            (
+                Predicate::Predicate2,
+                1,
+                &only_lod0,
+                &[no_variants][..],
+                false,
+            ),
+            (
+                Predicate::Predicate2,
+                0x0100_0002,
+                &only_lod0,
+                &[no_variants][..],
+                true,
+            ),
+            (
+                Predicate::Predicate2,
+                0x0100_0000,
+                &only_lod0,
+                &[no_variants][..],
+                false,
+            ),
+            (
+                Predicate::Predicate3,
+                0,
+                &only_lod0,
+                &[no_variants][..],
+                false,
+            ),
+            (Predicate::Predicate3, 0, &lod2, &[no_variants][..], true),
+            (
+                Predicate::Predicate7,
+                0,
+                &only_lod0,
+                &[only_lod0, lod2][..],
+                true,
+            ),
+            (
+                Predicate::Predicate7,
+                0,
+                &only_lod0,
+                &[no_variants][..],
+                false,
+            ),
+            (Predicate::Other, 0, &lod2, &[lod2][..], false),
+        ] {
+            assert_eq!(
+                super::native_lod_model_variant_eligible(predicate, count, single, grouped),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_lod_child_registration_eligibility_matches_flags_and_callback() {
+        assert!(super::native_lod_child_registration_eligible(-4, false));
+        assert!(!super::native_lod_child_registration_eligible(12, false));
+        assert!(!super::native_lod_child_registration_eligible(-8, false));
+        assert!(super::native_lod_child_registration_eligible(0, true));
+    }
+
+    #[test]
+    fn native_lod_registration_action_matches_model_and_child_branch() {
+        use super::NativeLodRegistrationAction as Action;
+        for (has_model, model_variant, child, expected) in [
+            (true, true, false, Action::BoundsList),
+            (true, false, true, Action::BoundsList),
+            (false, false, true, Action::PositionList),
+            (false, false, false, Action::SetLevel8),
+            (true, false, false, Action::NoAction),
+            (false, true, false, Action::SetLevel8),
+        ] {
+            assert_eq!(
+                super::native_lod_registration_action(has_model, model_variant, child),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_relative_static_model_lod_slot_matches_original_clamps() {
+        for (actual, field_0x17c, selected) in [(3, 1, 2), (3, 4, 0), (8, 0, 2), (2, 2, 0)] {
+            assert_eq!(
+                super::native_relative_static_model_lod_slot(actual, field_0x17c),
+                selected
+            );
+        }
+    }
+
+    #[test]
+    fn native_lod_model_action_matches_selector_dispatch() {
+        use super::{NativeLodModelAction as Action, NativeLodModelPredicate as Predicate};
+        assert_eq!(
+            super::native_lod_model_action(3, 1, true, Predicate::Predicate2, 2, 0),
+            Action::Predicate2 {
+                selected_index: 1,
+                callback_argument: 4,
+            }
+        );
+        assert_eq!(
+            super::native_lod_model_action(3, 1, true, Predicate::Predicate2, 0, 0),
+            Action::Predicate2 {
+                selected_index: -1,
+                callback_argument: 4,
+            }
+        );
+        assert_eq!(
+            super::native_lod_model_action(3, 1, true, Predicate::Predicate3, 0, 0),
+            Action::Predicate3 {
+                static_model_slot: 2,
+            }
+        );
+        assert_eq!(
+            super::native_lod_model_action(3, 1, true, Predicate::Predicate7, 0, 4),
+            Action::Predicate7 {
+                static_model_slot: 2,
+                model_count: 4,
+            }
+        );
+        assert_eq!(
+            super::native_lod_model_action(3, 1, true, Predicate::Predicate7, 0, 0),
+            Action::None
+        );
+        assert_eq!(
+            super::native_lod_model_action(6, 0, true, Predicate::Predicate3, 0, 0),
+            Action::None
+        );
+        assert_eq!(
+            super::native_lod_model_action(3, 1, false, Predicate::Predicate3, 0, 0),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn native_static_model_has_lod1_or_2_checks_only_nonzero_slots() {
+        assert!(!super::native_static_model_has_lod1_or_2(&[
+            Some(10_u32),
+            None,
+            None,
+        ]));
+        assert!(super::native_static_model_has_lod1_or_2(&[
+            None,
+            Some(20_u32),
+            None,
+        ]));
+        assert!(super::native_static_model_has_lod1_or_2(&[
+            None,
+            None,
+            Some(30_u32),
+        ]));
+    }
+
+    #[test]
+    fn native_static_model_lod_switch_matches_pointer_and_surface_selection() {
+        use super::NativeStaticModelLodSwitch as Switch;
+        let model_per_lod = [Some(10_u32), Some(20), Some(30)];
+        assert_eq!(
+            super::native_static_model_lod_switch(4, &model_per_lod, Some(10)),
+            Some(Switch {
+                slot: 2,
+                selected_model: 30,
+                surface_list_byte_offset: 0x20,
+                rebuild_surfaces: true,
+                callback_vtable_offset: 0x28,
+                callback_argument: 0,
+            })
+        );
+        assert_eq!(
+            super::native_static_model_lod_switch(1, &model_per_lod, Some(20)),
+            None
+        );
+        assert_eq!(
+            super::native_static_model_lod_switch(2, &[Some(10), Some(20), None], Some(10)),
+            None
+        );
+        assert_eq!(
+            super::native_static_model_lod_switch(-1, &model_per_lod, Some(10)),
+            None
+        );
     }
 
     #[test]

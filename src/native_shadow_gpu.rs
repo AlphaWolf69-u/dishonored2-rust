@@ -149,6 +149,43 @@ impl NativeShadowDepthArray {
         Ok(())
     }
 
+    /// Full-rectangle subresource transfer used by FUN_14032db10's native
+    /// fast copy branch (+0x170 = ID3D11DeviceContext::CopySubresourceRegion).
+    /// Only equal-size, equal-format layers are supported here; cropped or
+    /// shader-transformed transfers must use their original depth-copy draw.
+    pub fn copy_layer_from(
+        &self,
+        encoder: &mut CommandEncoder,
+        destination_layer: u32,
+        source: &Self,
+        source_layer: u32,
+    ) -> Result<(), String> {
+        if destination_layer >= self.size.depth_or_array_layers
+            || source_layer >= source.size.depth_or_array_layers
+            || self.size.width != source.size.width
+            || self.size.height != source.size.height
+            || self.texture.format() != source.texture.format()
+        {
+            return Err("native full-layer copy requires matching in-range subresources".into());
+        }
+        if self.texture.id() == source.texture.id() {
+            return Err("native layer copy requires distinct owner resources".into());
+        }
+        if !source.texture.usage().contains(TextureUsages::COPY_SRC)
+            || !self.texture.usage().contains(TextureUsages::COPY_DST)
+        {
+            return Err("native layer copy owner did not allocate copy usage".into());
+        }
+        let mut input = source.texture.as_image_copy();
+        input.origin.z = source_layer;
+        let mut output = self.texture.as_image_copy();
+        output.origin.z = destination_layer;
+        encoder.copy_texture_to_texture(input, output, Extent3d {
+            width: self.size.width, height: self.size.height, depth_or_array_layers: 1,
+        });
+        Ok(())
+    }
+
     /// Attach views to the renderer's existing image allocation. Rendering and
     /// material sampling must alias this SAME texture, not two lookalike arrays.
     pub fn from_owned_texture(texture: Texture, label: &str) -> Result<Self, String> {
@@ -263,6 +300,25 @@ pub fn native_shadow_alpha_sampler(device: &RenderDevice) -> Sampler {
     })
 }
 
+/// Installed renderparm/anisotropicsampler.decl explicitly requests all three
+/// filters ANISO, WRAP U/V/W and MaxAnisotropy 4. FUN_140378280 uses that own
+/// value when mip-filter code is 2; it is NOT inferred from a capture or the
+/// user's image_anisotropy. Original default LOD range is 0..13, no compare.
+pub fn native_shadow_vista_sampler(device: &RenderDevice) -> Sampler {
+    device.create_sampler(&SamplerDescriptor {
+        label: Some("native Vista diffuse explicit anisotropicsampler"),
+        address_mode_u: AddressMode::Repeat,
+        address_mode_v: AddressMode::Repeat,
+        address_mode_w: AddressMode::Repeat,
+        min_filter: FilterMode::Linear,
+        mag_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Linear,
+        anisotropy_clamp: 4,
+        lod_max_clamp: 13.0,
+        ..Default::default()
+    })
+}
+
 use bevy::render::{
     render_resource::{
         BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer, BufferBinding,
@@ -281,6 +337,31 @@ use std::{num::NonZeroU64, ops::Range};
 /// native program can use the existing rewrite mesh owner's layout unchanged.
 pub const NATIVE_SHADOW_OPAQUE_VERTEX_STRIDE: u64 = 32;
 const NATIVE_SHADOW_PER_INSTANCE_BYTES: u64 = 80;
+
+/// Translate the original D3D raster faces to the caller's actual index data.
+/// Native front-CCW/cull values are decoded by the executable-verified state
+/// decoder. Swapping two indices reverses front classification; invert the
+/// front convention exactly once, without changing which native face is culled.
+/// World callers must use the FINAL state after the object's +0x10 surface
+/// flag, not the material's unmodified cull convention.
+pub fn native_shadow_mesh_raster(
+    state: &crate::render_state::NativeRenderState,
+    indices_reversed: bool,
+) -> (FrontFace, Option<Face>) {
+    let raster = crate::render_state::native_raster_state(state);
+    let front = if raster.front_counter_clockwise ^ indices_reversed {
+        FrontFace::Ccw
+    } else {
+        FrontFace::Cw
+    };
+    let cull = match raster.cull_mode {
+        1 => None,
+        2 => Some(Face::Front),
+        3 => Some(Face::Back),
+        _ => unreachable!("native raster decoder returns D3D cull modes 1..3"),
+    };
+    (front, cull)
+}
 
 /// Translate the verified native descriptor into the platform's equivalent
 /// depth/stencil operations. Disabled native tests must not start writing depth
@@ -351,10 +432,9 @@ pub fn native_depth_stencil_gpu(
 /// verified vegetation program are supported; skin/paraboloid remain unmapped.
 pub struct NativeOpaqueShadowDraw<'a> {
     pub model_state: &'a BindGroup,
-    /// Required for cutout variants, using the ORIGINAL diffuse and sampler.
-    /// Rigid alpha additionally binds layer-zero UV scale/bias here; vegetation
-    /// stores that transform in the model CB instead.
-    pub alpha_material: Option<&'a BindGroup>,
+    /// Program-specific group 1: original diffuse/sampler/UV for cutouts;
+    /// remapped instance IDs and 48-byte matrix records for WorldOpaque.
+    pub program_resources: Option<&'a BindGroup>,
     pub vertex_buffer: &'a Buffer,
     pub index_buffer: &'a Buffer,
     pub index_format: IndexFormat,
@@ -376,7 +456,15 @@ pub struct NativeShadowScissor {
 /// Verified native vertex/fragment pairs; layout is part of each program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeShadowDepthProgram {
+    Skinned { influences:u8, alpha:bool, dither:bool },
     Opaque,
+    /// vertex.decl useMultiInstancing=1, no skinning/look-at/wind/alpha branch.
+    WorldOpaque,
+    WorldAlpha,
+    WorldVistaAlpha,
+    /// Installed dfe9d6cb: real per-instance current wind, remap and matrix rows.
+    WorldVegetation,
+    WorldVegetationFixed,
     RigidAlpha,
     /// Installed VS14200/PS14201: raw color.xyz/normal.xy and 208-byte CB.
     Vegetation,
@@ -385,8 +473,10 @@ pub enum NativeShadowDepthProgram {
 impl NativeShadowDepthProgram {
     pub fn model_uniform_bytes(self) -> u64 {
         match self {
+            Self::Skinned{..}=>112,
             Self::Opaque | Self::RigidAlpha => NATIVE_SHADOW_PER_INSTANCE_BYTES,
-            Self::Vegetation => 208,
+            Self::WorldOpaque | Self::WorldAlpha | Self::WorldVistaAlpha => 96,
+            Self::Vegetation | Self::WorldVegetation | Self::WorldVegetationFixed => 208,
         }
     }
 }
@@ -467,6 +557,62 @@ impl NativeOpaqueShadowPipeline {
         )
     }
 
+    /// Original world instancing: the owner provides original VP rows, remap
+    /// offset, visible-ID buffer and the MatrixInstanceType array. Host positions
+    /// use game.rs's exact game_to_view signed-axis permutation.
+    pub fn new_world_with_raster_state(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        bias: DepthBiasState,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(device, adapter, vertex_layout, bias, format,
+            front_face, cull_mode, NativeShadowDepthProgram::WorldOpaque, None)
+    }
+
+    /// Installed world cutout VS/PS: original instanced positions and raw UV,
+    /// followed by layer0 scale/bias and the raw diffuse alpha test.
+    pub fn new_world_alpha_with_raster_state(
+        device: &RenderDevice, adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>, bias: DepthBiasState,
+        format: TextureFormat, front_face: FrontFace, cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(device, adapter, vertex_layout, bias, format,
+            front_face, cull_mode, NativeShadowDepthProgram::WorldAlpha, None)
+    }
+
+    /// Installed dff3e1d3/1a8eaf20 pair: raw UV (no Layer0 MAD),
+    /// anisotropicsampler, strict alpha < 0.5 discard.
+    pub fn new_world_vista_with_raster_state(
+        device: &RenderDevice, adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>, bias: DepthBiasState,
+        format: TextureFormat, front_face: FrontFace, cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(device, adapter, vertex_layout, bias, format,
+            front_face, cull_mode, NativeShadowDepthProgram::WorldVistaAlpha, None)
+    }
+
+    pub fn new_world_vegetation_with_raster_state(
+        device: &RenderDevice, adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>, bias: DepthBiasState,
+        format: TextureFormat, front_face: FrontFace, cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(device, adapter, vertex_layout, bias, format,
+            front_face, cull_mode, NativeShadowDepthProgram::WorldVegetation, None)
+    }
+
+    pub fn new_world_fixed_vegetation_with_raster_state(
+        device: &RenderDevice, adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>, bias: DepthBiasState,
+        format: TextureFormat, front_face: FrontFace, cull_mode: Option<Face>,
+    ) -> Result<Self, String> {
+        Self::with_program(device,adapter,vertex_layout,bias,format,
+            front_face,cull_mode,NativeShadowDepthProgram::WorldVegetationFixed,None)
+    }
+
     /// arkDefault's rigid alpha-test shadow path. The layout's location 1 is
     /// the owner's selected layer-zero UV stream; it is not always UV0.
     pub fn new_alpha_with_raster_state(
@@ -529,10 +675,35 @@ impl NativeOpaqueShadowPipeline {
         front_face: FrontFace,
         cull_mode: Option<Face>,
     ) -> Result<Self, String> {
+        Self::new_prepared_shadow_depth(
+            device, adapter, vertex_layout, state, stencil_reference,
+            TextureFormat::Depth32FloatStencil8, front_face, cull_mode,
+            NativeShadowDepthProgram::Opaque,
+        )
+    }
+
+    /// Submit the owner's complete native prepared state, not a reconstructed
+    /// LESS/write-enabled shadow preset. FUN_1402996f0 retains material+0x2c8
+    /// depth/stencil fields; FUN_140293470 also controls depth clipping.
+    /// Winding/culling remain explicit because imported mesh representation
+    /// can differ from native index winding. Unsupported platform state fails.
+    pub fn new_prepared_shadow_depth(
+        device: &RenderDevice,
+        adapter: &RenderAdapter,
+        vertex_layout: &RawVertexBufferLayout<'_>,
+        state: &crate::render_state::NativeRenderState,
+        stencil_reference: u32,
+        format: TextureFormat,
+        front_face: FrontFace,
+        cull_mode: Option<Face>,
+        program: NativeShadowDepthProgram,
+    ) -> Result<Self, String> {
         use bevy::render::settings::WgpuFeatures;
         let features = device.wgpu_device().features();
-        if !features.contains(WgpuFeatures::DEPTH32FLOAT_STENCIL8) {
-            return Err("native main-Z requires enabled DEPTH32FLOAT_STENCIL8".into());
+        if format == TextureFormat::Depth32FloatStencil8
+            && !features.contains(WgpuFeatures::DEPTH32FLOAT_STENCIL8)
+        {
+            return Err("native depth requires enabled DEPTH32FLOAT_STENCIL8".into());
         }
         let raster = crate::render_state::native_raster_state(state);
         let polygon_mode = if raster.fill_mode == 2 {
@@ -542,13 +713,13 @@ impl NativeOpaqueShadowPipeline {
         };
         if polygon_mode == PolygonMode::Line && !features.contains(WgpuFeatures::POLYGON_MODE_LINE)
         {
-            return Err("native wireframe main-Z requires enabled POLYGON_MODE_LINE".into());
+            return Err("native wireframe depth requires enabled POLYGON_MODE_LINE".into());
         }
         if !raster.depth_clip && !features.contains(WgpuFeatures::DEPTH_CLIP_CONTROL) {
-            return Err("native unclipped main-Z requires enabled DEPTH_CLIP_CONTROL".into());
+            return Err("native unclipped depth requires enabled DEPTH_CLIP_CONTROL".into());
         }
         if raster.antialiased_line {
-            return Err("native antialiased-line main-Z rasterization is not mapped".into());
+            return Err("native antialiased-line depth rasterization is not mapped".into());
         }
         let primitive = PrimitiveState {
             front_face,
@@ -557,7 +728,7 @@ impl NativeOpaqueShadowPipeline {
             unclipped_depth: !raster.depth_clip,
             ..Default::default()
         };
-        let depth = native_depth_stencil_gpu(state, TextureFormat::Depth32FloatStencil8)?;
+        let depth = native_depth_stencil_gpu(state, format)?;
         let mut pipeline = Self::with_program(
             device,
             adapter,
@@ -566,7 +737,7 @@ impl NativeOpaqueShadowPipeline {
             depth.format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::Opaque,
+            program,
             Some((depth, primitive)),
         )?;
         pipeline.stencil_reference = stencil_reference;
@@ -591,13 +762,25 @@ impl NativeOpaqueShadowPipeline {
         {
             return Err("unsupported native rigid depth format".into());
         }
-        let alpha_test = program != NativeShadowDepthProgram::Opaque;
-        if program == NativeShadowDepthProgram::Vegetation {
+        let alpha_test = matches!(program, NativeShadowDepthProgram::Skinned{alpha:true,..} |
+            NativeShadowDepthProgram::RigidAlpha | NativeShadowDepthProgram::Vegetation
+                | NativeShadowDepthProgram::WorldAlpha | NativeShadowDepthProgram::WorldVegetation
+                | NativeShadowDepthProgram::WorldVegetationFixed | NativeShadowDepthProgram::WorldVistaAlpha);
+        if matches!(program, NativeShadowDepthProgram::Vegetation | NativeShadowDepthProgram::WorldVegetation
+            | NativeShadowDepthProgram::WorldVegetationFixed) {
             validate_vegetation_vertex_layout(vertex_layout)?;
         } else {
             validate_opaque_vertex_layout(vertex_layout)?;
             if alpha_test {
                 validate_alpha_vertex_layout(vertex_layout)?;
+            }
+        }
+        if let NativeShadowDepthProgram::Skinned{influences,alpha,dither}=program {
+            if !matches!(influences,4|8) || (dither && !alpha) {return Err("unsupported native skin shader inputs".into());}
+            for (location,format) in [(2,VertexFormat::Uint8x4),(3,VertexFormat::Unorm8x4),(4,VertexFormat::Uint8x4),(5,VertexFormat::Unorm8x4)] {
+                if !vertex_layout.attributes.iter().any(|a|a.shader_location==location && a.format==format) {
+                    return Err("native skin shader requires original UINT8 joints and UNORM8 weights".into());
+                }
             }
         }
         validate_opaque_depth_bias(bias, adapter.get_downlevel_capabilities().flags)?;
@@ -615,12 +798,32 @@ impl NativeOpaqueShadowPipeline {
                 ..Default::default()
             },
         ));
-        let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("native resolved shadow vertex program"),
-            source: ShaderSource::Wgsl(
-                match program {
+        let world_wind_helpers = concat!(
+            include_str!("../assets/shaders/dh2_shadow_wind.wgsl"), "\n",
+            include_str!("../assets/shaders/dh2_shadow_world_project.wgsl"));
+        let helpers = match program {
+            NativeShadowDepthProgram::WorldVegetation | NativeShadowDepthProgram::WorldVegetationFixed => world_wind_helpers,
+            NativeShadowDepthProgram::WorldOpaque | NativeShadowDepthProgram::WorldAlpha
+                | NativeShadowDepthProgram::WorldVistaAlpha =>
+                include_str!("../assets/shaders/dh2_shadow_world_project.wgsl"),
+            NativeShadowDepthProgram::Vegetation =>
+                include_str!("../assets/shaders/dh2_shadow_wind.wgsl"),
+            _ => "",
+        };
+        let skin_defines=if let NativeShadowDepthProgram::Skinned{influences,dither,..}=program {
+            format!("const SKIN_INFLUENCES:u32={influences}u;\nconst SKIN_DITHER:bool={dither};\n")
+        } else {String::new()};
+        let shader_source = format!("{skin_defines}{helpers}\n{}", match program {
+                    NativeShadowDepthProgram::Skinned{..}=>include_str!("../assets/shaders/dh2_shadow_skin.wgsl"),
                     NativeShadowDepthProgram::Opaque => {
                         include_str!("../assets/shaders/dh2_shadow_opaque.wgsl")
+                    }
+                    NativeShadowDepthProgram::WorldOpaque | NativeShadowDepthProgram::WorldAlpha
+                        | NativeShadowDepthProgram::WorldVistaAlpha => {
+                        include_str!("../assets/shaders/dh2_shadow_world.wgsl")
+                    }
+                    NativeShadowDepthProgram::WorldVegetation | NativeShadowDepthProgram::WorldVegetationFixed => {
+                        include_str!("../assets/shaders/dh2_shadow_world_vegetation.wgsl")
                     }
                     NativeShadowDepthProgram::RigidAlpha => {
                         include_str!("../assets/shaders/dh2_shadow_alpha.wgsl")
@@ -628,22 +831,30 @@ impl NativeOpaqueShadowPipeline {
                     NativeShadowDepthProgram::Vegetation => {
                         include_str!("../assets/shaders/dh2_shadow_vegetation.wgsl")
                     }
-                }
-                .into(),
-            ),
+                });
+        let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("native resolved shadow vertex program"),
+            source: ShaderSource::Wgsl(shader_source.into()),
         });
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("native resolved rigid depth pipeline"),
             layout: None,
             vertex: RawVertexState {
                 module: &shader,
-                entry_point: Some("vertex"),
+                entry_point: Some(if matches!(program, NativeShadowDepthProgram::WorldAlpha
+                    | NativeShadowDepthProgram::WorldVistaAlpha) {
+                    "vertex_alpha"
+                } else if program == NativeShadowDepthProgram::WorldVegetationFixed {
+                    "vertex_fixed"
+                } else { "vertex" }),
                 compilation_options: Default::default(),
                 buffers: std::slice::from_ref(vertex_layout),
             },
             fragment: alpha_test.then_some(RawFragmentState {
                 module: &shader,
-                entry_point: Some("fragment"),
+                entry_point: Some(if program == NativeShadowDepthProgram::WorldVistaAlpha {
+                    "fragment_vista"
+                } else { "fragment" }),
                 compilation_options: Default::default(),
                 targets: &[],
             }),
@@ -664,6 +875,103 @@ impl NativeOpaqueShadowPipeline {
             program,
             stencil_reference: 0,
         })
+    }
+
+    /// Full installed world-wind ABI, including CURRENT wind in each 32-byte
+    /// previous/current record. No zero/fixed-wind fallback is permitted.
+    pub fn bind_skinned_instances(&self,device:&RenderDevice,palette:&Buffer,diffuse:Option<(&TextureView,&Sampler)>)->Result<BindGroup,String> {
+        let NativeShadowDepthProgram::Skinned{alpha,..}=self.program else {return Err("skin palette needs a skin program".into());};
+        if alpha!=diffuse.is_some() || palette.size()==0 || palette.size()%48!=0 || !palette.usage().contains(BufferUsages::STORAGE) {
+            return Err("native skin palette/material layout mismatch".into());
+        }
+        let mut entries=vec![BindGroupEntry{binding:0,resource:palette.as_entire_binding()}];
+        if let Some((image,sampler))=diffuse {
+            entries.push(BindGroupEntry{binding:1,resource:BindingResource::TextureView(image)});
+            entries.push(BindGroupEntry{binding:2,resource:BindingResource::Sampler(sampler)});
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label:Some("native skeletal shadow palette/material"),layout:&self.pipeline.get_bind_group_layout(1),entries:&entries,
+        })))
+    }
+
+    pub fn bind_world_vegetation_instances(
+        &self, device: &RenderDevice, visible_indices: &Buffer, matrices: &Buffer,
+        winds: &Buffer, diffuse: &TextureView, sampler: &Sampler,
+    ) -> Result<BindGroup, String> {
+        if self.program != NativeShadowDepthProgram::WorldVegetation {
+            return Err("world wind buffers require the installed world vegetation program".into());
+        }
+        for (buffer, stride) in [(visible_indices,4),(matrices,48),(winds,32)] {
+            if buffer.size() == 0 || buffer.size() % stride != 0
+                || !buffer.usage().contains(BufferUsages::STORAGE) {
+                return Err("world vegetation buffer size/usage differs from native ABI".into());
+            }
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label: Some("native world vegetation remap/matrices/current-wind/diffuse"),
+            layout: &self.pipeline.get_bind_group_layout(1),
+            entries: &[
+                BindGroupEntry { binding: 0, resource: visible_indices.as_entire_binding() },
+                BindGroupEntry { binding: 1, resource: matrices.as_entire_binding() },
+                BindGroupEntry { binding: 2, resource: BindingResource::TextureView(diffuse) },
+                BindGroupEntry { binding: 3, resource: BindingResource::Sampler(sampler) },
+                BindGroupEntry { binding: 4, resource: winds.as_entire_binding() },
+            ],
+        })))
+    }
+
+    pub fn bind_world_instances(
+        &self,
+        device: &RenderDevice,
+        visible_indices: &Buffer,
+        matrices: &Buffer,
+    ) -> Result<BindGroup, String> {
+        if self.program != NativeShadowDepthProgram::WorldOpaque {
+            return Err("world instance buffers require the native multi-instancing program".into());
+        }
+        if visible_indices.size() == 0 || visible_indices.size() % 4 != 0
+            || matrices.size() == 0 || matrices.size() % 48 != 0
+            || !visible_indices.usage().contains(BufferUsages::STORAGE)
+            || !matrices.usage().contains(BufferUsages::STORAGE)
+        {
+            return Err("native world shadows need uint32 IDs and 48-byte MatrixInstanceType storage records".into());
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label: Some("native world shadow visible IDs and matrices"),
+            layout: &self.pipeline.get_bind_group_layout(1),
+            entries: &[
+                BindGroupEntry { binding: 0, resource: visible_indices.as_entire_binding() },
+                BindGroupEntry { binding: 1, resource: matrices.as_entire_binding() },
+            ],
+        })))
+    }
+
+    /// The same actual world buffers plus the installed cutout material.
+    pub fn bind_world_alpha_instances(
+        &self, device: &RenderDevice, visible_indices: &Buffer, matrices: &Buffer,
+        diffuse: &TextureView, sampler: &Sampler,
+    ) -> Result<BindGroup, String> {
+        if !matches!(self.program,NativeShadowDepthProgram::WorldAlpha | NativeShadowDepthProgram::WorldVegetationFixed
+            | NativeShadowDepthProgram::WorldVistaAlpha) {
+            return Err("world alpha resources require a compatible installed world program".into());
+        }
+        if visible_indices.size() == 0 || visible_indices.size() % 4 != 0
+            || matrices.size() == 0 || matrices.size() % 48 != 0
+            || !visible_indices.usage().contains(BufferUsages::STORAGE)
+            || !matrices.usage().contains(BufferUsages::STORAGE)
+        {
+            return Err("invalid native world cutout instance/UV buffers".into());
+        }
+        Ok(BindGroup::from(device.wgpu_device().create_bind_group(&BindGroupDescriptor {
+            label: Some("native world cutout IDs/matrices/diffuse/UV"),
+            layout: &self.pipeline.get_bind_group_layout(1),
+            entries: &[
+                BindGroupEntry { binding: 0, resource: visible_indices.as_entire_binding() },
+                BindGroupEntry { binding: 1, resource: matrices.as_entire_binding() },
+                BindGroupEntry { binding: 2, resource: BindingResource::TextureView(diffuse) },
+                BindGroupEntry { binding: 3, resource: BindingResource::Sampler(sampler) },
+            ],
+        })))
     }
 
     /// The caller supplies the resolved original $diffusemap/$bilinearSampler
@@ -847,9 +1155,60 @@ impl NativeOpaqueShadowPipeline {
         stencil_ops: Option<Operations<u32>>,
         draws: &[NativeOpaqueShadowDraw<'_>],
     ) -> Result<(), String> {
-        for draw in draws {
-            if self.alpha_test != draw.alpha_material.is_some() {
-                return Err("native shadow draw and alpha material variant differ".into());
+        let sequence:Vec<_>=draws.iter().map(|draw|(self,draw)).collect();
+        Self::draw_depth_sequence(encoder,view,dimensions,None,depth_ops,stencil_ops,&sequence)
+    }
+
+    /// D3D's ordered pipeline changes do not require separate attachment
+    /// passes. Keep one attachment open until the native cache/copy boundary.
+    pub fn draw_layer_sequence(
+        encoder:&mut CommandEncoder, depths:&NativeShadowDepthArray, layer:u32,
+        depth_ops:Operations<f32>, stencil_ops:Option<Operations<u32>>,
+        draws:&[(&Self,&NativeOpaqueShadowDraw<'_>)],
+    )->Result<(),String> {
+        if draws.iter().any(|(pipeline,_)|pipeline.format!=depths.texture.format()) {
+            return Err("native shadow pipeline and depth-array formats differ".into());
+        }
+        if depths.texture.format()==TextureFormat::Depth16Unorm && stencil_ops.is_some() {
+            return Err("native D16 parallel shadow target has no stencil aspect".into());
+        }
+        let view=depths.layers.get(layer as usize).ok_or("native shadow sequence layer is absent")?;
+        Self::draw_depth_sequence(encoder,view,[depths.size.width,depths.size.height],None,depth_ops,stencil_ops,draws)
+    }
+
+    ///32cea0 installs the allocated inclusive rectangle as both viewport
+    ///and scissor before drawing a local side. Attachment clearing belongs
+    ///to32d6e0's whole-atlas boundary; a region draw must retain its peers.
+    pub fn draw_layer_region_sequence(
+        encoder:&mut CommandEncoder,depths:&NativeShadowDepthArray,layer:u32,viewport:NativeShadowScissor,
+        draws:&[(&Self,&NativeOpaqueShadowDraw<'_>)],
+    )->Result<(),String> {
+        if draws.iter().any(|(pipeline,_)|pipeline.format!=depths.texture.format()) {
+            return Err("native local shadow pipeline and atlas formats differ".into());
+        }
+        let view=depths.layers.get(layer as usize).ok_or("native local shadow atlas layer is absent")?;
+        Self::draw_depth_sequence(encoder,view,[depths.size.width,depths.size.height],Some(viewport),
+            Operations {load:LoadOp::Load,store:StoreOp::Store},
+            (depths.texture.format()==TextureFormat::Depth24PlusStencil8).then_some(Operations {load:LoadOp::Load,store:StoreOp::Store}),draws)
+    }
+
+    fn draw_depth_sequence(
+        encoder:&mut CommandEncoder, view:&TextureView, dimensions:[u32;2],
+        viewport:Option<NativeShadowScissor>,
+        depth_ops:Operations<f32>, stencil_ops:Option<Operations<u32>>,
+        draws:&[(&Self,&NativeOpaqueShadowDraw<'_>)],
+    )->Result<(),String> {
+        if let Some(region)=viewport {
+            if region.width==0 || region.height==0
+                || region.x.checked_add(region.width).is_none_or(|v|v>dimensions[0])
+                || region.y.checked_add(region.height).is_none_or(|v|v>dimensions[1]) {
+                return Err("native local shadow viewport is outside its atlas layer".into());
+            }
+        }
+        for (pipeline,draw) in draws {
+            let needs_resources = pipeline.alpha_test || pipeline.program == NativeShadowDepthProgram::WorldOpaque || matches!(pipeline.program,NativeShadowDepthProgram::Skinned{..});
+            if needs_resources != draw.program_resources.is_some() {
+                return Err("native shadow draw and program resource bindings differ".into());
             }
             let scissor = draw.scissor;
             let right = scissor.x.checked_add(scissor.width);
@@ -894,9 +1253,16 @@ impl NativeOpaqueShadowPipeline {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_stencil_reference(self.stencil_reference);
-        for draw in draws {
+        let mut previous:Option<&Self>=None;
+        if let Some(region)=viewport {
+            pass.set_viewport(region.x as f32,region.y as f32,region.width as f32,region.height as f32,0.0,1.0);
+        }
+        for &(pipeline,draw) in draws {
+            if previous.is_none_or(|old|!std::ptr::eq(old,pipeline)) {
+                pass.set_pipeline(&pipeline.pipeline);
+                pass.set_stencil_reference(pipeline.stencil_reference);
+                previous=Some(pipeline);
+            }
             pass.set_scissor_rect(
                 draw.scissor.x,
                 draw.scissor.y,
@@ -904,8 +1270,8 @@ impl NativeOpaqueShadowPipeline {
                 draw.scissor.height,
             );
             pass.set_bind_group(0, draw.model_state, &[]);
-            if let Some(material) = draw.alpha_material {
-                pass.set_bind_group(1, material, &[]);
+            if let Some(resources) = draw.program_resources {
+                pass.set_bind_group(1, resources, &[]);
             }
             pass.set_vertex_buffer(0, *draw.vertex_buffer.slice(..));
             pass.set_index_buffer(*draw.index_buffer.slice(..), draw.index_format);
@@ -1023,5 +1389,25 @@ fn validate_vegetation_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Resu
 mod tests;
 
 #[cfg(test)]
+#[path = "native_shadow_prepared_state_tests.rs"]
+mod prepared_state_tests;
+
+#[cfg(test)]
 #[path = "native_shadow_vegetation_tests.rs"]
 mod vegetation_tests;
+
+#[cfg(test)]
+#[path = "native_shadow_world_tests.rs"]
+mod world_tests;
+
+#[cfg(test)]
+#[path = "native_shadow_world_wind_tests.rs"]
+mod world_wind_tests;
+
+#[cfg(test)]
+#[path = "native_shadow_vista_tests.rs"]
+mod vista_tests;
+
+#[cfg(test)]
+#[path = "native_shadow_skin_tests.rs"]
+mod skin_tests;

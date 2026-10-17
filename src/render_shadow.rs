@@ -1,53 +1,18 @@
-//! Original shadow refresh and split predicates, separate from atlas allocation.
+//! Native shadow preparation, projection fitting, atlas allocation and refresh.
 //!
-//! Executable evidence: FUN_14032cea0's dynamic tail and FUN_140330630's
-//! post-CVar-update split loop. The render-side dirty keys, cascade projection
-//! builder FUN_14032b280, and atlas submission remain external; these predicates
-//! are not permission to replace them with Bevy's shadow renderer.
+//! The live directional owner is src/bin/native_shadow_live.rs: actual ordinary
+//! Tome receiver state, adaptive coarseDepth G, eight caster jobs, retained
+//! static WORLD caches, both model buckets and the independent whole-view side.
+//! native_shadow_scene submits verified program classes; native_screen_shadow_scene
+//! consumes the real main depth and publishes the blurred screen visibility.
 //!
-//! Remaining native integration: FUN_140330c10 is the Umbra caster-mask
-//! producer, not just a dirty-key callback: it initializes FUN_140a70710 with
-//! instance AABBs (+0x1840/+0x1850), runs eight gatherCaster jobs, then applies
-//! parent suppression to the per-cascade byte masks. FUN_14032b280 also fits
-//! and stabilizes projection bounds; its typed view/side inputs still need
-//! runtime verification before any live atlas rendering is enabled.
-//! FUN_140331250/FUN_140331300 are TLS allocation/registration wrappers; the
-//! called FUN_140500c30/FUN_1402cdba0 constructors remain untraced.
-//! FUN_14032cea0's static branch uses a per-side +0x1b8/+0x1c0 index list
-//! (spot always slot zero), or FUN_1402956e0 when empty, and copies the cached
-//! atlas rectangle with FUN_14032db10 when side+0xf0 is clear. Provider/draw
-//! submission and cache allocation are not yet mapped to live Rust ownership.
-//! Do not conflate the directional +0x2060 gate with an allocated shadow texture:
-//! level initialization at 14023a99e assigns an arkStaticWorldModelLocal created
-//! by 140295690 -> 140293e80. It is static-world model availability, not proof
-//! that a previous frame's depth-cache pixels exist.
-//! FUN_140332900's numeric adaptive far is implemented below. Its real task
-//! input 0xe38f1647 is the owner's 64x64 R32G32 image, not the Tome software
-//! grid: input publication and DAT_1422b3c98/1422b3c9c reference-bank ownership
-//! still need mapping. NativeCoarseDepthReadback implements the four-slot
-//! nonblocking staging policy but is not yet attached to a live frame owner.
-//! Inspected FUN_14036d0c0 lines 1..150 of 1113: owner+0x28==0 allocates optional
-//! _sRGB_offscreenBackBuffer_%p at +0x40, _offscreenDepthStencil_%p at +0x48,
-//! _offscreenDecompressedDepthStencil_%p at +0x50; option bits 0x58a/0x1856
-//! pass through FUN_1402c2ef0 (not asserted to be raw DXGI format numbers).
-//! The other branch compares owner+0x28 to view virtual +0x1f8, derives a
-//! _frameCapture descriptor from the existing image and stores view[0x1afd].
-//! Further inspected allocations: +0x1e0 is four-mip RGBA16F
-//! _DownsampledLinearDepth, with half extent rounded up to eight; +0x58 is
-//! the 64x64 R32G32 _coarseDepth. NativeDepthPyramid now owns that four-mip
-//! allocation and FUN_1402fbe40's single-dispatch depthreduction shader.
-//! ComputeLinearZ uses the installed global.decl inverse-projection fields;
-//! each mip stores average/min/max/zero, with f32 shared values between levels.
-//! The coarseDepthGen shader consumes average/max (X/Z), not min/max (Y/Z).
-//! GPU fixtures cover every half-float mip on odd source dimensions; they do
-//! not establish original-executable parity or a live frame-time improvement.
-//! Still unresolved: live frame publication, the intervening FUN_1402fc6a0
-//! raster task and remaining resource/pass graph. Never replace its real input
-//! with current visibility bounds, software depth, or captured pixels.
-//! FUN_14032ad70's fitted/split spot branches depend on
-//! FUN_14032e260/14032e7c0; the apparent float side-count is a decompiler
-//! type error (2.8026e-45 represents integer two), not a runtime float input.
-
+//! Local-light integration is unfinished. Native sizing, priority sorting,
+//! fitted spot/omni projections, coarseDepth R tightening, side culling and
+//! atlas/cache metadata ownership are verified and called by the live CPU
+//! owner. Local caster lists, GPU region draws/cache copies and local receivers
+//! must be connected from original evidence before enabling them. The existing
+//! DH2_SHADOWS Bevy diagnostic path is not that native implementation.
+//! Research and current verification: analysis/native_shadow_production_blockers.md.
 /// FUN_14032d4b0's parallel hardware-bias pair. The registered names differ
 /// only in the selected 16/32-total-bit bank. Constant bias is multiplied by
 /// DAT_141ac8ffc (100); slope is not. Clamp remains the actual caller's CVar.
@@ -68,6 +33,25 @@ pub fn parallel_hardware_bias(
             "env/shadow/hwSlopeScaleBiasParallel16",
         )
     };
+    hardware_bias_pair(parameters,constant_name,slope_name,depth_bias_clamp)
+}
+
+///2936a0/293750 select spot versus point/half-point banks. Their enable
+///byte is always1; the actual caller supplies the depth-bias clamp.
+pub fn local_hardware_bias(parameters:&crate::entities::EnvironmentRenderParameters,
+    kind:i32,depth_32_bits:bool,depth_bias_clamp:f32)->Result<[f32;3],String> {
+    let names=match (kind,depth_32_bits) {
+        (0|1,false)=>("env/shadow/hwBiasPoint16","env/shadow/hwSlopeScaleBiasPoint16"),
+        (0|1,true)=>("env/shadow/hwBiasPoint32","env/shadow/hwSlopeScaleBiasPoint32"),
+        (2,false)=>("env/shadow/hwBiasSpot16","env/shadow/hwSlopeScaleBiasSpot16"),
+        (2,true)=>("env/shadow/hwBiasSpot32","env/shadow/hwSlopeScaleBiasSpot32"),
+        _=>return Err("local shadow hardware bias requires a point, half-point or spot light".into()),
+    };
+    hardware_bias_pair(parameters,names.0,names.1,depth_bias_clamp)
+}
+
+fn hardware_bias_pair(parameters:&crate::entities::EnvironmentRenderParameters,
+    constant_name:&str,slope_name:&str,depth_bias_clamp:f32)->Result<[f32;3],String> {
     let read = |name| {
         parameters
             .scalar_parameter(name)?
@@ -126,7 +110,8 @@ pub struct ParallelShadowSliceInput {
     pub count: usize,
     pub camera_near: f32,
     pub fars: [f32; 4],
-    /// The biased bank reads at count-2, including its prefix when count==1.
+    /// The POST-PREPARE effective bank's count-2 entry (preceding cascade,
+    /// not preceding frame). Its native prefix is unused for count==1.
     pub previous_penultimate: f32,
     pub authored_penultimate: f32,
     pub partial_dynamic: bool,
@@ -151,6 +136,17 @@ pub struct ParallelShadowSlicePlan {
     pub clear_depth: bool,
 }
 
+/// shadow::ComputeParallelShadow selects sum(step(fars, viewZ)). Equal
+/// thresholds advance that sum together, so the intervening atlas layers
+/// cannot be sampled. This remains true for an unsorted finite bank: selection
+/// depends on threshold multiplicity, not their original lane order.
+pub fn parallel_shadow_layer_can_be_selected(fars:[f32;4],layer:usize)->bool {
+    assert!(layer<=4 && fars.iter().all(|value|value.is_finite()));
+    if layer==0 || layer==4 {return true;}
+    let mut sorted=fars;sorted.sort_by(f32::total_cmp);
+    sorted[layer-1]!=sorted[layer]
+}
+
 pub fn parallel_shadow_slice_plan(input: &ParallelShadowSliceInput) -> ParallelShadowSlicePlan {
     assert!(
         (1..=4).contains(&input.count) && input.layer < input.count,
@@ -166,6 +162,16 @@ pub fn parallel_shadow_slice_plan(input: &ParallelShadowSliceInput) -> ParallelS
         return ParallelShadowSlicePlan {
             skip: true,
             ..Default::default()
+        };
+    }
+    // With one cascade layer0 always updates and can never use a static
+    // cache. The native count-2 prefix comparison has no effect on any
+    // returned decision; its pointer-adjacent words need no fabricated owner.
+    if input.count==1 {
+        return ParallelShadowSlicePlan {
+            skip:false,update_slice:true,write_static_cache:false,
+            reuse_static_cache:false,copy_static_cache:false,
+            clear_depth:!input.preserve_depth_pass,
         };
     }
     let last = input.count - 1;
@@ -226,8 +232,9 @@ pub fn refresh_local_dynamic(
     (flags & 0x40 != 0 || !beyond_distance) && dynamic_count_header & 0x00ff_ffff != 0
 }
 
-/// Mutable globals written by FUN_140330630. The published previous split
-/// bank is an input, not owned here: this function does not write that bank.
+/// Mutable authored-CVar state written by FUN_140330630. The previous effective
+/// far bank remains caller-owned: DAT_143309920 is DAT_143308e20 + 0xb00.
+/// FUN_140310a80 publishes that bank to the shader; it does not read it back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CascadeFarState {
     pub authored_fars: [f32; 4],
@@ -238,29 +245,86 @@ pub struct CascadeFarState {
     pub previous_view_translation: [f32; 3],
 }
 
+/// The shadow-relevant byte initialized by FUN_140374730 at view-definition
+/// +0x99 (the word at +0x98 is cleared). This is NOT a fabricated default for
+/// an unavailable runtime view: the owner must retain its real source byte.
+pub const RESET_VIEW_SHADOW_FLAG: u8 = 0;
+
+/// FUN_140374e40 first copies the source definition through FUN_1400444c0:
+/// source +0x99 becomes prepared-view +0x39d0+0x99 = +0x3a69 EACH frame.
+/// FUN_140351780 then forces that byte to one while the wrapping 32-bit frame
+/// subtraction is signed-less-than two (3519de SUB, 3519e3 JGE). In particular,
+/// the forced value must not leak into later frames as a sticky cached flag.
+/// Reset/copy scalar prefixes and the original SUB/CMP/JGE are verified by
+/// analysis/probe_original_shadow_view_flag.py; full view lifecycle is outside
+/// that executable fixture's scope.
+pub fn prepared_shadow_view_flag(source_flag_99: u8, frame: u32, reset_frame: u32) -> u8 {
+    if (frame.wrapping_sub(reset_frame) as i32) < 2 {
+        1
+    } else {
+        source_flag_99
+    }
+}
+
+/// FUN_140351780: ordinary-query +0x38 is copied to gather-results +0x10
+/// and then to the optional distance descriptor's radius. Preserve native
+/// radians conversion, upper clamp and near-one snap; it is not always 1.
+pub fn caster_distance_scale(horizontal_fov_radians: f32, reference_degrees: f32, zoom: f32) -> f32 {
+    let ratio = horizontal_fov_radians/(reference_degrees*f32::from_bits(0x3c8e_fa35));
+    let ratio = if 1.0<=ratio { 1.0 } else { ratio };
+    let scale = ratio*zoom;
+    if (scale-1.0).abs()<f32::from_bits(0x3400_0000) { 1.0 } else { scale }
+}
+
 /// Live owner inputs for FUN_140330630. `parsed_authored_fars` is the result
 /// of the owner's four-float CVar parse; an unsuccessful parse is `None`.
 /// No CVar, camera flag, or cache-bank value is inferred from scene defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct CascadeFarInput {
+    /// Reloaded `r_shadowCascadeFars` value; None means sscanf did not parse four values.
     pub parsed_authored_fars: Option<[f32; 4]>,
+    /// View projection near/far used by the original CVar-rescale gate.
     pub camera_near: f32,
     pub camera_far: f32,
+    /// FUN_140330630 param_2 position at offsets +0x745c/+0x746c/+0x747c.
     pub view_translation: [f32; 3],
+    /// FUN_140330630 param_2 byte +0x3a69.
     pub view_flag_3a69: u8,
-    pub previous_fars: [f32; 4],
+    /// Previous effective fars at DAT_143309920 (prepare-results +0xb00).
+    /// The shader calls this bank `parallelLightSliceNears`; its CPU producer
+    /// is FUN_140332900, not the shader-parameter setter FUN_140310a80.
+    pub slice_nears: [f32; 4],
+    /// Runtime `r_shadowParallelSliceCnt` value stored at `DAT_14397a2f8`
+    /// (CVar object +0x28), set from the selected preset; the capture reads
+    /// 4. `update_cascade_fars` needs the active value 1..=4.
     pub count: usize,
+    /// FUN_140330630 param_3: adaptive candidate from the depth grid, or -1.0 sentinel.
     pub effective_far: f32,
+    /// DAT_1432f8b18: `r_shadowParallelPartialDynaUpdate`.
     pub adaptive: bool,
+    /// DAT_1432f8b98: `r_shadowParallelPartialSliceUpdate`.
     pub partial_slice_updates: bool,
+    /// FUN_140330630 param_4. FUN_140332900 derives it from the resolved
+    /// auxiliary payload's +0x2060 qword; that field's type/owner is unresolved.
     pub partial_pass: bool,
+    /// DAT_1432fc64c selector used by the original split-update branch.
     pub frame: u32,
 }
 
+impl CascadeFarInput {
+    /// Caller preparation from the actual source view definition and renderer
+    /// reset counter. Do not feed the preceding prepared +0x3a69 byte back as
+    /// `source_flag_99`; FUN_140374e40 refreshes it from the source definition.
+    pub fn prepare_view_refresh(&mut self, source_flag_99: u8, reset_frame: u32) {
+        self.view_flag_3a69 = prepared_shadow_view_flag(source_flag_99, self.frame, reset_frame);
+    }
+}
+
 /// FUN_140330630's reload, authored rescaling, movement/dirty gate and split
-/// update. The biased pointer `DAT_14330991c + count*4` is the last element
-/// of the four-float bank starting at DAT_143309920, not a separate cache.
-/// Its physical publication remains the render owner's responsibility.
+/// update. `DAT_143309920` is prepare-results +0xb00, written by
+/// FUN_140332900 after each update. FUN_14032fd40/FUN_140310a80 copy it TO
+/// the `parallelLightSliceNears` shader parameter. The biased pointer
+/// `DAT_14330991c + count*4` selects the last preceding effective far.
 pub fn update_cascade_fars(state: &mut CascadeFarState, input: &CascadeFarInput) -> [f32; 4] {
     assert!(
         (1..=4).contains(&input.count),
@@ -291,14 +355,14 @@ pub fn update_cascade_fars(state: &mut CascadeFarState, input: &CascadeFarInput)
             && input.view_flag_3a69 == 0
             && !reloaded
         {
-            far = input.previous_fars[input.count - 1];
+            far = input.slice_nears[input.count - 1];
         }
         state.adaptation_cvar_flags &= !MODIFIED;
         state.previous_view_translation = input.view_translation;
     }
     cascade_fars(
         state.authored_fars,
-        input.previous_fars,
+        input.slice_nears,
         input.count,
         far,
         input.adaptive,
@@ -309,11 +373,11 @@ pub fn update_cascade_fars(state: &mut CascadeFarState, input: &CascadeFarInput)
 }
 
 /// Scalar split loop of FUN_140330630. `update_cascade_fars` supplies its
-/// original reload and movement prelude; the owner supplies the cache bank.
+/// original reload and movement prelude; the owner supplies the preceding far bank.
 /// Constants verified from original data: -1 sentinel, bases 2/3/5, threshold30.
 pub fn cascade_fars(
     authored: [f32; 4],
-    previous: [f32; 4],
+    slice_nears: [f32; 4],
     count: usize,
     far: f32,
     adaptive: bool,
@@ -345,7 +409,7 @@ pub fn cascade_fars(
             } else {
                 authored[i]
             };
-            let keep_previous = if previous[i] <= desired {
+            let retain_slice_near = if slice_nears[i] <= desired {
                 i != 0
                     && partial_slice_updates
                     && partial_pass
@@ -356,7 +420,11 @@ pub fn cascade_fars(
                     && partial_pass
                     && if odd { i + 1 == last } else { i + 1 != last }
             };
-            let mut selected = if keep_previous { previous[i] } else { desired };
+            let mut selected = if retain_slice_near {
+                slice_nears[i]
+            } else {
+                desired
+            };
             if i != 0 && selected <= result[i - 1] {
                 selected = result[i - 1];
             }
@@ -487,8 +555,30 @@ pub fn parallel_shadow_depth_format(
 
 pub type ShadowMatrix = [[f32; 4]; 4];
 
+/// FUN_140359990: the whole-light unit-box projection, distinct from the
+/// perspective shadow face. Both inversions retain FUN_14010a920's order.
+pub fn local_light_volume_projection(position:[f32;3],basis:[[f32;3];3],kind:u32,
+    range:f32,cutoff_cosine:f32)->Result<(ShadowMatrix,ShadowMatrix),String> {
+    let longitudinal=if kind==2 {1.0/range} else {0.5/range};
+    let lateral=if kind==2 {0.5/(range*((1.0-cutoff_cosine*cutoff_cosine).sqrt()/cutoff_cosine))} else {longitudinal};
+    let projection=[[longitudinal,0.0,0.0,if kind==2 {0.0}else{0.5}],[0.0,lateral,0.0,0.5],
+        [0.0,0.0,lateral,0.5],[0.0,0.0,0.0,1.0]];
+    //109580 transposes the three serialized basis vectors into affine rows.
+    let affine=std::array::from_fn(|r|std::array::from_fn(|c|if r==3 {
+        if c==3 {1.0}else{0.0}
+    } else if c==3 {position[r]} else {basis[c][r]}));
+    let mut view=[[0.0;4];4];
+    if !invert_rows(&affine,&mut view) {return Err("lightMatrix invert failed".into());}
+    let clip=multiply_rows(projection,view);let mut inverse=[[0.0;4];4];
+    if !invert_rows(&clip,&mut inverse) {return Err("baseLightProject invert failed".into());}
+    Ok((clip,inverse))
+}
+
 /// FUN_140332900's adaptive-far input to FUN_140330630, excluding resource
-/// lookup/publication. `depth_maxima` is G of the owner's 64x64 R32G32 grid;
+/// lookup/publication. `enabled` mirrors `r_tightenParallelShadows` (`DAT_1432f8c18`,
+/// native default 1); the original config parser captures it in
+/// `ShadowCascadeControls`, but this function has no live update caller.
+/// `depth_maxima` is G of the owner's 64x64 R32G32 grid;
 /// reference_interval is [previous, last] from the native reference-far bank.
 /// Disassembly is essential: the decompiler drops the selected pixel's X/Y
 /// and the inverse-projection division, incorrectly showing only depth*scale.
@@ -1141,6 +1231,281 @@ pub fn unfitted_spot_projection(
     )
 }
 
+/// FUN_14032e7c0. Spot fit mode2 tightens the camera receiver frustum from
+/// the actual coarseDepth R channel; directional far fitting uses G instead.
+/// The caller retains its previous planes when no accepted depth is below1.
+/// camera_far is the live view owner's DAT_14393740c value, not a default.
+pub fn spot_receiver_planes(
+    shadow_clip:ShadowMatrix,camera_view:ShadowMatrix,camera_projection:ShadowMatrix,
+    inverse_projection:ShadowMatrix,inverse_view_projection:ShadowMatrix,
+    camera_far:f32,coarse:&[[f32;2];4096],
+)->Option<[[f32;4];6]> {
+    let clip=multiply_rows(shadow_clip,inverse_view_projection);
+    let mut minimum=f32::MAX;let mut selected=[0.0;2];
+    for y in 0..64 {
+        let v=-(y as f32*0.03125-1.0);
+        let y_product=clip.map(|row|row[1]*v);
+        for x in 0..64 {
+            let u=x as f32*0.03125-1.0;let depth=coarse[y*64+x][0];
+            let p=std::array::from_fn::<_,4,_>(|r|((clip[r][0]*u+y_product[r])+clip[r][2]*depth)+clip[r][3]);
+            if -p[3]<=p[0] && p[0]<=p[3] && -p[3]<=p[1] && p[1]<=p[3]
+                && 0.0<=p[2] && p[2]<=p[3] && depth<minimum {
+                minimum=depth;selected=[u,v];
+            }
+        }
+    }
+    if !(minimum<1.0) {return None;}
+    let [u,v]=selected;
+    let z=((u*inverse_projection[2][0]+v*inverse_projection[2][1])+minimum*inverse_projection[2][2])+inverse_projection[2][3]*1.0;
+    let w=((u*inverse_projection[3][0]+v*inverse_projection[3][1])+minimum*inverse_projection[3][2])+inverse_projection[3][3]*1.0;
+    let near=-(z/w);let denominator=camera_far-near;
+    let mut projection=camera_projection;
+    projection[2][2]=-(camera_far/denominator);
+    projection[2][3]=-((camera_far*near)/denominator);
+    Some(frustum_planes(multiply_rows(projection,camera_view),false,true))
+}
+
+/// FUN_140330ac0: apparent projected radius, nearest-power-of-two resolution
+/// (ties choose the upper power), and the selected native resolution cap.
+/// This is independent of the atlas admission minimum and later upgrades.
+pub fn local_shadow_resolution(camera:[f32;3],horizontal_fov:f32,position:[f32;3],range:f32,
+    kind:i32,quality:i32,normal_resolution:i32,high_resolution:i32,half_resolution:bool)->(i32,f32) {
+    let [x,y,z]=std::array::from_fn(|i|position[i]-camera[i]);
+    let priority=((1.0/(horizontal_fov*0.5).tan())*range)/((y*y+x*x)+z*z).sqrt();
+    let mut cap=if kind==2 && quality==2 {high_resolution}else{normal_resolution};
+    if half_resolution {cap>>=1;}
+    let value=cap as f32*priority;
+    // CVTTSS2SI returns the integer-indefinite sentinel on invalid conversion;
+    // Rust's saturating float cast has different overflow/NaN semantics.
+    let integer=if value>=-2147483648.0 && value<2147483648.0 {value as i32}else{i32::MIN};
+    let spread=|mut value:i32| {for shift in [1,2,4,8,16] {value|=value>>shift;}value};
+    let lower=spread(integer).wrapping_add(1)>>1;
+    let upper=spread(integer.wrapping_sub(1)).wrapping_add(1);
+    let distance=|v:i32| {let delta=v.wrapping_sub(integer);let sign=delta>>31;(delta^sign).wrapping_sub(sign)};
+    let nearest=if distance(lower)<distance(upper) {lower}else{upper};
+    (cap.min(nearest),priority)
+}
+
+/// FUN_1403348e0 sorts the selected light wrappers by descending priority,
+/// preserving original equal/unordered permutations. Difference comparison
+/// matters: infinity minus itself is unordered, unlike comparing infinities.
+pub fn sort_local_shadow_priorities<T>(records:&mut [T],priority:impl Fn(&T)->f32) {
+    crate::world_mesh::sort_native_shadow_records(records,|a,b|(priority(a)-priority(b)).partial_cmp(&0.0));
+}
+
+#[derive(Clone,Copy,Debug)]
+pub struct LocalShadowCandidate {
+    pub source:usize,pub flags:[u8;2],pub kind:i32,pub quality:i32,
+    pub position:[f32;3],pub range:f32,
+}
+
+#[derive(Clone,Debug)]
+pub struct LocalShadowRequest {
+    pub candidate:LocalShadowCandidate,pub resolution:[i32;2],pub priority:f32,pub side_count:usize,
+}
+
+/// FUN_140331cc0 through its final atlas reset, before per-light projection,
+/// face cull and cache lookup. Temporary allocation tests govern extra-size
+/// upgrades; they are never published as drawn or valid shadow sides.
+/// The actual view caller34fbf0 starts this atlas empty too.
+pub fn size_local_shadow_requests(candidates:&[LocalShadowCandidate],camera:[f32;3],horizontal_fov:f32,
+    settings:&crate::original_settings::LocalShadowSettings,half_resolution:bool,
+    additional_view:bool,accumulated_pixels:i32,atlas:&mut ShadowAtlasAllocator)->(Vec<LocalShadowRequest>,i32) {
+    atlas.reset();
+    let minimum=if half_resolution {settings.minimum_resolution>>1}else{settings.minimum_resolution};
+    let mut requests=Vec::new();let mut pixels=0i32;
+    for &candidate in candidates {
+        if candidate.flags[0]&2==0 || (candidate.flags[1]&1!=0 && candidate.flags[0]&0x20==0)
+            || !(0..=2).contains(&candidate.kind) {continue;}
+        let (size,priority)=local_shadow_resolution(camera,horizontal_fov,candidate.position,candidate.range,
+            candidate.kind,candidate.quality,settings.normal_resolution,settings.extra_resolution,half_resolution);
+        if (size as u32)<(minimum as u32) {continue;}
+        let side_count=if candidate.kind<2 {6}else{usize::from(candidate.quality==1)+1};
+        pixels=pixels.wrapping_add(size.wrapping_mul(size).wrapping_mul(side_count as i32));
+        requests.push(LocalShadowRequest {candidate,resolution:[size;2],priority,side_count});
+    }
+    sort_local_shadow_priorities(&mut requests,|request|request.priority);
+    let mut accumulated=accumulated_pixels;
+    if additional_view {accumulated=accumulated.wrapping_add(pixels);}
+    else {
+        pixels=pixels.wrapping_add(accumulated);
+        let total=(settings.atlas[0] as i32).wrapping_mul(settings.atlas[1] as i32).wrapping_mul(settings.atlas[2] as i32);
+        // Native85-percent gate controls only the temporary upgrade search.
+        if (pixels as f32/total as f32)*100.0<=85.0 {
+            let mut temporary=requests.iter().map(|request|(0..request.side_count)
+                .map(|_|atlas.allocate(request.resolution[0] as u32,request.resolution[1] as u32)).collect::<Vec<_>>()).collect::<Vec<_>>();
+            let normal=if half_resolution {settings.normal_resolution>>1}else{settings.normal_resolution};
+            let extra=if half_resolution {settings.extra_resolution>>1}else{settings.extra_resolution};
+            let difference=extra.wrapping_mul(extra).wrapping_sub(normal.wrapping_mul(normal));
+            for (request,sides) in requests.iter_mut().zip(&mut temporary) {
+                if pixels.wrapping_add(difference)>total || 1.0>request.priority {break;}
+                if request.candidate.kind==2 && request.candidate.quality==2 {continue;}
+                let next=pixels.wrapping_add((request.side_count as i32).wrapping_mul(difference));
+                if next>total {continue;}
+                for side in sides.iter_mut() {
+                    if let Some(allocation)=side.take() {atlas.release(allocation.id);}
+                    *side=atlas.allocate(extra as u32,extra as u32);
+                }
+                if sides.iter().any(Option::is_none) {
+                    for side in sides.iter_mut() {
+                        if let Some(allocation)=side.take() {atlas.release(allocation.id);}
+                        *side=atlas.allocate(request.resolution[0] as u32,request.resolution[1] as u32);
+                    }
+                } else {request.resolution=[extra;2];pixels=next;}
+            }
+        }
+    }
+    atlas.reset();
+    (requests,accumulated)
+}
+
+/// FUN_14010e6a0's three principal-axis matrices. Unsupported axes leave the
+/// caller's matrix untouched, represented here by None.
+pub fn native_axis_rotation(axis:i32,angle:f32)->Option<[[f32;3];3]> {
+    let sine=angle.sin();let cosine=angle.cos();
+    Some(match axis {
+        0=>[[1.0,0.0,0.0],[0.0,cosine,sine],[0.0,-sine,cosine]],
+        1=>[[cosine,0.0,-sine],[0.0,1.0,0.0],[sine,0.0,cosine]],
+        2=>[[cosine,sine,0.0],[-sine,cosine,0.0],[0.0,0.0,1.0]],
+        _=>return None,
+    })
+}
+
+/// FUN_14000dce0's explicit three-term row product, used by split spots.
+pub fn native_basis_product(left:[[f32;3];3],right:[[f32;3];3])->[[f32;3];3] {
+    std::array::from_fn(|r|std::array::from_fn(|c|
+        (left[r][1]*right[1][c]+left[r][0]*right[0][c])+left[r][2]*right[2][c]))
+}
+
+pub struct SpotProjectionInput {
+    pub position:[f32;3],pub basis:[[f32;3];3],pub cutoff_cosine:f32,
+    pub near:f32,pub far:f32,pub side_count:usize,pub fit_mode:i32,
+}
+
+pub struct SpotFitCamera<'a> {
+    pub planes:[[f32;4];6],pub view:ShadowMatrix,pub projection:ShadowMatrix,
+    pub inverse_projection:ShadowMatrix,pub inverse_view_projection:ShadowMatrix,
+    pub far:f32,pub coarse:Option<&'a [[f32;2];4096]>,
+}
+
+/// FUN_14032ad70, both split and fitted paths. Caller-owned crop rectangles
+/// retain their old values when the original intersection finds no points.
+pub fn prepare_spot_projections(input:&SpotProjectionInput,camera:Option<&SpotFitCamera<'_>>,
+    rectangles:&mut [[f32;4]],scratch:&mut ProjectionFitScratch)->Result<Vec<ShadowMatrix>,String> {
+    if !matches!(input.side_count,1|2) || rectangles.len()!=input.side_count {
+        return Err("native spot projection requires its actual one/two side crop bank".into());
+    }
+    let cosine=input.cutoff_cosine;
+    let vertical=(1.0-cosine*cosine).sqrt()/cosine;
+    let (horizontal,bases)=if input.side_count==2 {
+        let angle=if -1.0<cosine {if cosine<1.0 {cosine.acos()}else{0.0}}else{std::f32::consts::PI}*0.5;
+        let half_cosine=angle.cos();let tangent=(1.0-half_cosine*half_cosine).sqrt()/half_cosine;
+        (tangent,vec![native_basis_product(native_axis_rotation(2,-angle).unwrap(),input.basis),
+            native_basis_product(native_axis_rotation(2,angle).unwrap(),input.basis)])
+    } else {(vertical,vec![input.basis])};
+    let projection=perspective([horizontal,vertical],input.near,input.far,[0.0;2]);
+    let mut output=Vec::with_capacity(input.side_count);
+    for (side,basis) in bases.into_iter().enumerate() {
+        output.push(fit_local_shadow_projection(projection,light_view(input.position,basis),input.fit_mode,camera,
+            &mut rectangles[side],scratch)?);
+    }
+    Ok(output)
+}
+
+fn fit_local_shadow_projection(projection:ShadowMatrix,view:ShadowMatrix,mode:i32,camera:Option<&SpotFitCamera<'_>>,
+    rectangle:&mut [f32;4],scratch:&mut ProjectionFitScratch)->Result<ShadowMatrix,String> {
+    let clip=multiply_rows(projection,view);
+    if mode<1 {return Ok(clip);}
+    let camera=camera.ok_or("native fitted local shadow has no matching camera owner")?;
+    let planes=if mode==2 {
+        spot_receiver_planes(clip,camera.view,camera.projection,camera.inverse_projection,
+            camera.inverse_view_projection,camera.far,camera.coarse.ok_or("native local fit mode2 has no coarseDepth source")?)
+            .unwrap_or(camera.planes)
+    } else {camera.planes};
+    let mut fitted=projection;
+    if let Some(crop)=scratch.fit(planes,clip,&mut fitted) {*rectangle=crop;}
+    Ok(multiply_rows(fitted,view))
+}
+
+/// FUN_140331640's six initialized forward/left/up bases, passed through the
+/// same FUN_140109cc0 view builder as spots. Native side order is retained.
+pub fn native_omni_face_view(position:[f32;3],face:usize)->Result<ShadowMatrix,String> {
+    const BASES:[[[f32;3];3];6]=[
+        [[0.0,1.0,0.0],[-1.0,0.0,0.0],[0.0,0.0,1.0]],
+        [[0.0,-1.0,0.0],[1.0,0.0,0.0],[0.0,0.0,1.0]],
+        [[0.0,0.0,1.0],[1.0,0.0,0.0],[0.0,1.0,0.0]],
+        [[0.0,0.0,-1.0],[-1.0,0.0,0.0],[0.0,1.0,0.0]],
+        [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]],
+        [[-1.0,0.0,0.0],[0.0,-1.0,0.0],[0.0,0.0,1.0]],
+    ];
+    Ok(light_view(position,*BASES.get(face).ok_or("native omni face is outside its six-side bank")?))
+}
+
+/// FUN_14032ab80 uses conventional 90-degree faces and the same native
+/// per-side receiver tightening/crop as the spot path.
+pub fn prepare_omni_projections(position:[f32;3],near:f32,far:f32,fit_mode:i32,
+    camera:Option<&SpotFitCamera<'_>>,rectangles:&mut [[f32;4];6],scratch:&mut ProjectionFitScratch)
+    ->Result<[ShadowMatrix;6],String> {
+    let projection=perspective([1.0;2],near,far,[0.0;2]);let mut output=[[[0.0;4];4];6];
+    for face in 0..6 {
+        output[face]=fit_local_shadow_projection(projection,native_omni_face_view(position,face)?,fit_mode,camera,
+            &mut rectangles[face],scratch)?;
+    }
+    Ok(output)
+}
+
+/// 333570 chooses two actual spot sides only at priority>=1. The earlier
+/// 331cc0 sizing estimate reserves both before this per-light decision.
+pub fn local_shadow_side_count(kind:i32,quality:i32,priority:f32)->usize {
+    if kind<2 {6}else if kind==2 {if quality==1 && priority>=1.0 {2}else{1}}else{0}
+}
+
+pub fn local_shadow_fit_mode(priority:f32,flags:u8,view_flags:u16,requested:i32)->i32 {
+    if priority>=1.0 && flags&0x20==0 && view_flags&1==0 {requested}else{0}
+}
+
+/// Native spot cache slots distinguish the one-side projection (slot1)
+/// from the dual projection (slots2/3). Omni slots are physical faces0..5.
+pub fn local_shadow_cache_slot(kind:i32,count:usize,side:usize)->u32 {
+    (if kind==2 {count+side}else{side}) as u32
+}
+
+#[derive(Clone,Debug)]
+pub struct LocalShadowSideGeometry {
+    pub clip:ShadowMatrix,pub atlas:ShadowMatrix,pub inverse_atlas:ShadowMatrix,pub bounds:[[f32;3];2],
+}
+
+/// 333570/332f20 write this forward matrix for every allocated side before
+/// camera culling. Culled sides retain it and their slice for TLF publication.
+pub fn local_shadow_side_atlas(clip:ShadowMatrix,allocation:AtlasAllocation,atlas_extent:[u32;2])->ShadowMatrix {
+    multiply_rows(atlas_projection(allocation.rect,atlas_extent[0],atlas_extent[1]),clip)
+}
+
+/// Common surviving-side path in333570/332f20. The same canonical shadow
+/// cube is tested through10a0d0 (109df0 only unpacks its six-float bounds).
+pub fn local_shadow_side_geometry(clip:ShadowMatrix,camera_clip:ShadowMatrix,allocation:AtlasAllocation,
+    atlas_extent:[u32;2])->Result<Option<LocalShadowSideGeometry>,String> {
+    let mut inverse=[[0.0;4];4];
+    if !invert_rows(&clip,&mut inverse) {return Err("native local shadow side projection is singular".into());}
+    let camera= multiply_rows(camera_clip,inverse);
+    if crate::render_model::native_transformed_aabb_clip_cull(&std::array::from_fn(|i|camera[i/4][i%4]),[-1.0,-1.0,0.0],[1.0;3]).culled {return Ok(None);}
+    let atlas=local_shadow_side_atlas(clip,allocation,atlas_extent);
+    let mut inverse_atlas=[[0.0;4];4];
+    if !invert_rows(&atlas,&mut inverse_atlas) {return Err("native local shadow atlas projection is singular".into());}
+    let mut bounds=[[f32::from_bits(0x7149_f2ca);3],[f32::from_bits(0xf149_f2ca);3]];
+    for corner in 0..8 {
+        let p=[if corner&1==0 {-1.0}else{1.0},if corner&2==0 {-1.0}else{1.0},if corner&4==0 {0.0}else{1.0}];
+        let transform=|row:[f32;4]|((row[0]*p[0]+row[1]*p[1])+row[2]*p[2])+row[3];
+        let reciprocal=1.0/transform(inverse[3]);
+        for axis in 0..3 {
+            let value=transform(inverse[axis])*reciprocal;
+            bounds[0][axis]=if bounds[0][axis]<value {bounds[0][axis]}else{value};
+            bounds[1][axis]=if bounds[1][axis]>value {bounds[1][axis]}else{value};
+        }
+    }
+    Ok(Some(LocalShadowSideGeometry{clip,atlas,inverse_atlas,bounds}))
+}
+
 /// FUN_14010a710. Shadow extraction uses normalize=true and positive_xy=false.
 /// The alternate XY mode is retained because the original helper exposes it.
 pub fn frustum_planes(matrix: ShadowMatrix, positive_xy: bool, normalize: bool) -> [[f32; 4]; 6] {
@@ -1166,7 +1531,9 @@ pub fn frustum_planes(matrix: ShadowMatrix, positive_xy: bool, normalize: bool) 
     if normalize {
         for p in &mut planes {
             let mut squared = (p[0] * p[0] + p[1] * p[1]) + p[2] * p[2];
-            if squared <= f32::MIN_POSITIVE {
+            // Native MAXSS returns its second operand for NaN as well as
+            // smaller/equal values. A plain <= guard loses that behavior.
+            if !(squared > f32::MIN_POSITIVE) {
                 squared = f32::MIN_POSITIVE;
             }
             let reciprocal = 1.0 / squared.sqrt();
@@ -1331,6 +1698,21 @@ pub struct ShadowAtlasAllocator {
 }
 
 impl ShadowAtlasAllocator {
+    /// FUN_1402ce970 returns every descendant to the pool, preserves root
+    /// rectangles/banks, and restarts the allocation counter at zero.
+    pub fn reset(&mut self) {
+        let roots=self.roots.iter().flatten().copied().collect::<Vec<_>>();
+        for root in roots {
+            let mut pending=Vec::new();
+            if let Some(children)=self.nodes[root].children.take() {pending.extend(children);}
+            self.nodes[root].id=-1;
+            while let Some(index)=pending.pop() {
+                if let Some(children)=self.nodes[index].children.take() {pending.extend(children);}
+                self.nodes[index].id=-1;self.spare.push(index);
+            }
+        }
+        self.next_id=0;
+    }
     pub fn new(slice_rectangles: &[[i32; 4]], first_id: u32) -> Self {
         Self::new_banks(&[slice_rectangles], first_id)
     }
@@ -1482,6 +1864,7 @@ pub struct DirectionalCascade {
 
 /// Typed inputs to FUN_14032b280; settings come from the view/environment owner,
 /// not inferred from the current color visibility or replacement quality defaults.
+#[derive(Clone, Copy)]
 pub struct DirectionalProjectionInput {
     pub camera_projection: ShadowMatrix,
     pub camera_view: ShadowMatrix,
@@ -1489,6 +1872,9 @@ pub struct DirectionalProjectionInput {
     pub camera_near: f32,
     pub shadow_near: f32,
     pub fars: [f32; 4],
+    /// Current parsed/rescaled r_shadowCascadeFars bank at DAT_1422b3ca0.
+    /// FUN_140330630 may change it before this projection update.
+    pub authored_fars: [f32; 4],
     pub count: usize,
     pub resolution: i32,
     /// Owner +0x2060, assigned an arkStaticWorldModelLocal at 14023a99e.
@@ -1497,6 +1883,78 @@ pub struct DirectionalProjectionInput {
     pub alternating: bool,
     pub frame_counter: i32,
     pub force_first: bool,
+}
+
+/// Persistent arkParallelShadowPepareResults fields used by FUN_140332900.
+/// The shader's misleadingly named `parallelLightSliceNears` is this owner's
+/// PREVIOUS effective far bank, not an independently supplied render parameter.
+/// FUN_140351780 binds &DAT_143308e20 to preparation (140353668) and stores
+/// that same address in gather-results slot1 (1403537c2). Its +0xb00 bank is
+/// therefore DAT_143309920, and gather's +0xafc+count*4 reads its last far.
+#[derive(Clone, Debug)]
+pub struct ParallelShadowPrepareState {
+    pub far_state: CascadeFarState,
+    pub fars: [f32; 4],
+    pub centers: [[f32; 3]; 4],
+    pub cascades: [DirectionalCascade; 4],
+}
+
+impl ParallelShadowPrepareState {
+    /// The original global output/center banks start zeroed. Mark the CVar
+    /// modified so its first update performs the native parse/rescale branch.
+    pub fn new() -> Self {
+        Self {
+            far_state: CascadeFarState {
+                authored_fars: [4.0, 12.0, 30.0, 75.0],
+                authored_cvar_flags: 1 << 18,
+                adaptation_cvar_flags: 0,
+                previous_view_translation: [0.0; 3],
+            },
+            fars: [0.0; 4],
+            centers: [[0.0; 3]; 4],
+            cascades: std::array::from_fn(|_| DirectionalCascade {
+                clip: [[0.0; 4]; 4],
+                atlas: [[0.0; 4]; 4],
+                inverse_atlas: [[0.0; 4]; 4],
+                caster_clip: [[0.0; 4]; 4],
+                camera: [0.0; 3],
+                depth_offset: 0.0,
+                near_far: [0.0; 2],
+            }),
+        }
+    }
+
+    /// FUN_140332900's split -> projection -> publication sequence. The caller
+    /// resolves the actual GPU adaptive-far candidate before entering here.
+    /// Retained cascade matrices and the preceding far bank survive frames.
+    /// Return the projection refresh bits; these do not mean a GPU cache exists.
+    pub fn prepare(
+        &mut self,
+        far_input: &CascadeFarInput,
+        projection_input: &DirectionalProjectionInput,
+    ) -> Result<[bool; 4], String> {
+        if far_input.count != projection_input.count
+            || !(1..=4).contains(&far_input.count)
+        {
+            return Err("native parallel prepare split/projection counts disagree".into());
+        }
+        let mut far_input = *far_input;
+        far_input.slice_nears = self.fars;
+        let fars = update_cascade_fars(&mut self.far_state, &far_input);
+        let mut projection_input = *projection_input;
+        projection_input.fars = fars;
+        projection_input.authored_fars = self.far_state.authored_fars;
+        let refreshed = update_directional_projections(
+            &projection_input, &mut self.centers, &mut self.cascades,
+        )?;
+        self.fars = fars;
+        Ok(refreshed)
+    }
+
+    pub fn receiver_maximum_distance(&self, count: usize) -> Result<f32, String> {
+        count.checked_sub(1).and_then(|index| self.fars.get(index)).copied()
+            .ok_or_else(|| "native receiver cascade count must be 1..=4".into())
+    }
 }
 
 /// Native directional snapping, center-distance refresh and alternating policy.
@@ -1523,8 +1981,8 @@ pub fn update_directional_projections(
         return Err("singular directional light view".into());
     }
     let corners = shadow_box_corners([-1.0, -1.0, 0.0, 1.0, 1.0, 1.0]);
-    let reference_fars = [4.0, 12.0, 30.0, 75.0]; // DAT_1422b3ca0
-    let further_threshold = (input.fars[input.count - 1] / reference_fars[input.count - 1]) * 0.05;
+    let further_threshold =
+        (input.fars[input.count - 1] / input.authored_fars[input.count - 1]) * 0.05;
     let mut updated = [false; 4];
     for index in 0..input.count {
         let mut view = shadow_view;
@@ -1667,16 +2125,22 @@ pub fn select_whole_view_shadow_bounds(
     authored: [[f32; 3]; 2],
     world_bounds: [[f32; 3]; 2],
 ) -> [[f32; 3]; 2] {
+    if whole_view_shadow_uses_world_bounds(authored) {
+        world_bounds
+    } else {
+        authored
+    }
+}
+
+/// FUN_14035f5b0 does not require/read the world-query root when the
+/// authored area is usable. Keep this predicate shared with its selector.
+pub fn whole_view_shadow_uses_world_bounds(authored: [[f32; 3]; 2]) -> bool {
     let all_zero = authored.iter().flatten().all(|&value| value == 0.0);
     let point = authored[0]
         .iter()
         .zip(authored[1])
         .all(|(&low, high)| low == high);
-    if all_zero || authored[1][0] < authored[0][0] || point {
-        world_bounds
-    } else {
-        authored
-    }
+    all_zero || authored[1][0] < authored[0][0] || point
 }
 
 /// FUN_140334170's numeric whole-view shadow preparation. 14032de00 submits
@@ -1740,6 +2204,190 @@ pub fn whole_view_shadow_projection(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn whole_local_light_volume_matches_original_projection_and_inverse() {
+        let mut count=0;
+        for line in include_str!("../analysis/original_local_light_volume_cases.txt").lines() {
+            let w=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let f=|at|f32::from_bits(w[at]);
+            let basis=std::array::from_fn(|r|std::array::from_fn(|c|f(1+r*3+c)));
+            let position=std::array::from_fn(|i|f(10+i));
+            let (clip,inverse)=super::local_light_volume_projection(position,basis,w[0],f(13),f(14)).unwrap();
+            assert_eq!(clip.iter().chain(inverse.iter()).flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),w[15..],"native whole-light volume case{count}");
+            count+=1;
+        }
+        assert_eq!(count,256);
+    }
+    #[test]
+    fn local_side_preparation_matches_original_culls_cache_slots_and_bounds() {
+        let mut scratch=super::ProjectionFitScratch::default();let mut survivors=0;let mut failures=0;
+        for (case,line) in include_str!("../analysis/original_local_shadow_side_cases.txt").lines().enumerate() {
+            let w=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            assert_eq!(w[0] as usize,case);
+            let value=|i|f32::from_bits(w[i]);let matrix=|at|std::array::from_fn(|r|std::array::from_fn(|c|value(at+r*4+c)));
+            let kind=w[5] as i32;let quality=w[6] as i32;let priority=value(4);
+            let count=super::local_shadow_side_count(kind,quality,priority);assert_eq!(count,w[2] as usize);
+            let layers=if case%9==0{1}else{2};let roots=vec![[0,0,511,511];layers];let mut atlas=super::ShadowAtlasAllocator::new(&roots,0);
+            let mut allocated=Vec::new();let mut failed=false;
+            for _ in 0..count {
+                if let Some(allocation)=atlas.allocate(w[7],w[8]) {allocated.push(allocation);}else{failed=true;break;}
+            }
+            assert_eq!(!failed,w[1]!=0,"original local side allocation case{case}");
+            if failed {
+                for allocation in allocated {atlas.release(allocation.id);}
+                let whole=atlas.allocate(512,512).unwrap();assert_eq!(whole.rect,roots[0]);
+                failures+=1;continue;
+            }
+            assert_eq!(w.len(),113+count*58);
+            let coarse=std::array::from_fn(|i|[match case%8 {0=>1.0,1=>0.0,_=>(((i%64)*37+(i/64)*53+case*19)%997) as f32/1024.0},-0.375]);
+            let camera=super::SpotFitCamera {planes:super::frustum_planes(matrix(90),false,true),view:matrix(26),projection:matrix(42),inverse_projection:matrix(58),inverse_view_projection:matrix(74),far:value(106),coarse:Some(&coarse)};
+            let position=std::array::from_fn(|i|value(11+i));let basis=std::array::from_fn(|r|std::array::from_fn(|c|value(14+r*3+c)));
+            let mode=super::local_shadow_fit_mode(priority,w[9] as u8,w[10] as u16,2);
+            let mut crops=vec![[-1.0,-1.0,1.0,1.0];count];
+            let clips=if kind==2 {super::prepare_spot_projections(&super::SpotProjectionInput {position,basis,cutoff_cosine:value(23),near:value(24),far:value(25),side_count:count,fit_mode:mode},Some(&camera),&mut crops,&mut scratch).unwrap()}
+            else {let mut bank=crops.as_slice().try_into().unwrap();let output=super::prepare_omni_projections(position,value(24),value(25),mode,Some(&camera),&mut bank,&mut scratch).unwrap();crops.copy_from_slice(&bank);output.to_vec()};
+            let mut bounds=[[f32::from_bits(0x7149_f2ca);3],[f32::from_bits(0xf149_f2ca);3]];let mut any=false;
+            for side in 0..count {
+                let at=113+side*58;let geometry=super::local_shadow_side_geometry(clips[side],matrix(90),allocated[side],[512;2]).unwrap();
+                assert_eq!(geometry.is_some(),w[at]!=0,"original local face cull case{case} side{side}");
+                let expected_clip=&w[at+10..at+26];
+                assert_eq!(clips[side].iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),expected_clip,"original local clip case{case} side{side}");
+                assert_eq!(super::local_shadow_side_atlas(clips[side],allocated[side],[512;2]).iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),w[at+26..at+42],"native forward atlas matrix including culled face case{case} side{side}");
+                if let Some(geometry)=geometry {
+                    any=true;survivors+=1;assert_eq!(super::local_shadow_cache_slot(kind,count,side),w[at+1],"native local cache slot case{case} side{side}");
+                    assert_eq!([allocated[side].id,allocated[side].slice as u32,allocated[side].rect[0] as u32,allocated[side].rect[1] as u32,allocated[side].rect[2] as u32,allocated[side].rect[3] as u32],w[at+2..at+8]);
+                    assert_eq!(geometry.atlas.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),w[at+26..at+42],"native local atlas matrix case{case} side{side}");
+                    assert_eq!(geometry.inverse_atlas.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),w[at+42..at+58],"native local inverse atlas case{case} side{side}");
+                    for i in 0..3 {
+                        bounds[0][i]=if bounds[0][i]<geometry.bounds[0][i] {bounds[0][i]}else{geometry.bounds[0][i]};
+                        bounds[1][i]=if bounds[1][i]>geometry.bounds[1][i] {bounds[1][i]}else{geometry.bounds[1][i]};
+                    }
+                } else {atlas.release(allocated[side].id);}
+            }
+            assert_eq!(u32::from(!any),w[3],"native all-cache-hit result with no cache allocator case{case}");
+            assert_eq!(bounds.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),w[107..113],"native local surviving frustum bounds case{case}");
+        }
+        assert!(survivors>500 && failures>50);
+    }
+    #[test]
+    fn local_shadow_sizing_matches_original_atlas_trials_and_upgrades() {
+        for (case,line) in include_str!("../analysis/original_local_shadow_sizing_cases.txt").lines().enumerate() {
+            let words=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let (count,selected)=(words[0] as usize,words[1] as usize);
+            assert_eq!(words.len(),16+count*8+selected*4);
+            let settings=crate::original_settings::LocalShadowSettings {atlas:[words[6],words[7],words[8]],cache:[2048,2048,12],
+                minimum_resolution:words[9] as i32,normal_resolution:words[10] as i32,extra_resolution:words[11] as i32};
+            let candidates=(0..count).map(|i| {
+                let at=16+i*8;
+                super::LocalShadowCandidate{source:i,flags:[words[at] as u8,words[at+1] as u8],kind:words[at+2] as i32,quality:words[at+3] as i32,
+                    position:std::array::from_fn(|j|f32::from_bits(words[at+4+j])),range:f32::from_bits(words[at+7])}
+            }).collect::<Vec<_>>();
+            let roots=vec![[0,0,settings.atlas[0] as i32-1,settings.atlas[1] as i32-1];settings.atlas[2] as usize];
+            let mut atlas=super::ShadowAtlasAllocator::new(&roots,0);
+            let (requests,accumulated)=super::size_local_shadow_requests(&candidates,std::array::from_fn(|i|f32::from_bits(words[12+i])),f32::from_bits(words[15]),
+                &settings,words[2]!=0,words[3]!=0,words[4] as i32,&mut atlas);
+            assert_eq!(accumulated as u32,words[5],"original local sizing accumulated area case{case}");
+            assert_eq!(requests.len(),selected,"original local sizing request count case{case}");
+            let actual=requests.iter().flat_map(|request|[request.candidate.source as u32,request.resolution[0] as u32,request.resolution[1] as u32,request.priority.to_bits()]).collect::<Vec<_>>();
+            assert_eq!(actual,words[16+count*8..],"original local sizing request/order/upgrades case{case}");
+            let first=atlas.allocate(settings.atlas[0],settings.atlas[1]).unwrap();
+            assert_eq!((first.id,first.slice,first.rect),(0,0,roots[0]),"temporary allocations must be reset before actual side work");
+        }
+    }
+    #[test]
+    fn local_shadow_helpers_match_original_resolution_and_fitted_sides() {
+        let mut counts=[0;7];let mut fit_scratch=super::ProjectionFitScratch::default();
+        for (case,line) in include_str!("../analysis/original_local_shadow_helper_cases.txt").lines().enumerate() {
+            let mut tokens=line.split_whitespace();let tag=tokens.next().unwrap();
+            let words=tokens.map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            let value=|at|f32::from_bits(words[at]);
+            let vector=|at|std::array::from_fn(|i|value(at+i));
+            let basis=|at|std::array::from_fn(|r|std::array::from_fn(|c|value(at+r*3+c)));
+            let matrix=|at|std::array::from_fn(|r|std::array::from_fn(|c|value(at+r*4+c)));
+            match tag {
+                "RES"=> {
+                    let (size,priority)=super::local_shadow_resolution(vector(0),value(3),vector(4),value(7),words[8] as i32,words[9] as i32,words[10] as i32,words[11] as i32,words[12]!=0);
+                    assert_eq!(size as u32,words[13],"original local resolution case{case}");
+                    assert_eq!(priority.to_bits(),words[14],"original local priority case{case}");counts[0]+=1;
+                }
+                "AXIS"=> {
+                    let actual=super::native_axis_rotation(words[0] as i32,value(1)).unwrap_or([[12.25;3];3]);
+                    assert_eq!(actual.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),words[2..],"original axis rotation case{case}");counts[1]+=1;
+                }
+                "BASIS"=> {
+                    let actual=super::native_basis_product(basis(0),basis(9));
+                    assert_eq!(actual.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),words[18..],"original basis product case{case}");counts[2]+=1;
+                }
+                "CUBE"=> {
+                    let output=super::native_omni_face_view(vector(0),words[3] as usize).unwrap();
+                    assert_eq!(output.iter().flatten().map(|v|v.to_bits()).collect::<Vec<_>>(),words[4..],"original cube face case{case}");counts[4]+=1;
+                }
+                "SORT"=> {
+                    let count=words[0] as usize;assert_eq!(words.len(),1+count*2);
+                    let mut records=(0..count as u32).collect::<Vec<_>>();
+                    super::sort_local_shadow_priorities(&mut records,|&index|value(index as usize+1));
+                    assert_eq!(records,words[1+count..],"native local priority tie/unordered order case{case}");counts[6]+=1;
+                }
+                "SPOT" | "OMNI"=> {
+                    let count=words[0] as usize;let mode=words[1] as i32;let grid_case=words[2] as usize;
+                    assert_eq!(words.len(),123+count*24);
+                    let coarse=std::array::from_fn(|i|[match grid_case%8 {
+                        0=>1.0,1=>0.0,_=>(((i%64)*37+(i/64)*53+grid_case*19)%997) as f32/1024.0,
+                    },-0.375]);
+                    let camera=super::SpotFitCamera {planes:std::array::from_fn(|r|std::array::from_fn(|c|value(98+r*4+c))),
+                        view:matrix(18),projection:matrix(34),inverse_projection:matrix(50),inverse_view_projection:matrix(66),far:value(122),coarse:Some(&coarse)};
+                    let input=super::SpotProjectionInput {position:vector(3),basis:basis(6),cutoff_cosine:value(15),near:value(16),far:value(17),side_count:count,fit_mode:mode};
+                    let mut rectangles=(0..count).map(|r|std::array::from_fn(|c|value(123+r*4+c))).collect::<Vec<_>>();
+                    let output=if tag=="OMNI" {
+                        let mut bank: [[f32;4];6]=rectangles.as_slice().try_into().unwrap();
+                        let output=super::prepare_omni_projections(input.position,input.near,input.far,mode,Some(&camera),&mut bank,&mut fit_scratch).unwrap();
+                        rectangles.copy_from_slice(&bank);output.to_vec()
+                    } else {super::prepare_spot_projections(&input,Some(&camera),&mut rectangles,&mut fit_scratch).unwrap()};
+                    let actual=output.iter().flatten().flatten().chain(rectangles.iter().flatten()).map(|v|v.to_bits()).collect::<Vec<_>>();
+                    for (i,(&actual,&expected)) in actual.iter().zip(&words[123+count*4..]).enumerate() {
+                        assert_eq!(actual,expected,"original split/fitted spot case{case} mode{mode} word{i}");
+                    }
+                    counts[if tag=="SPOT"{3}else{5}]+=1;
+                }
+                _=>panic!("unknown local shadow fixture {tag}"),
+            }
+        }
+        assert_eq!(counts,[512,512,512,192,768,96,512]);
+    }
+    #[test]
+    fn spot_receiver_planes_match_original_coarse_r_selection() {
+        for (case,line) in include_str!("../analysis/original_spot_receiver_planes_cases.txt").lines().enumerate() {
+            let words=line.split_whitespace().map(|v|u32::from_str_radix(v,16).unwrap()).collect::<Vec<_>>();
+            assert_eq!(words.len(),129);
+            let matrix=|at|std::array::from_fn(|r|std::array::from_fn(|c|f32::from_bits(words[at+r*4+c])));
+            let coarse=std::array::from_fn(|i|[match case%8 {
+                0=>1.0,1=>0.0,_=>(((i%64)*37+(i/64)*53+case*19)%997) as f32/1024.0,
+            },-0.375]);
+            let initial=std::array::from_fn(|r|std::array::from_fn(|c|f32::from_bits(words[81+r*4+c])));
+            let actual=super::spot_receiver_planes(matrix(0),matrix(16),matrix(32),matrix(48),matrix(64),f32::from_bits(words[80]),&coarse).unwrap_or(initial);
+            for (i,value) in actual.iter().flatten().enumerate() {
+                assert_eq!(value.to_bits(),words[105+i],"original spot fit mode2 case{case} plane{} component{}",i/4,i%4);
+            }
+        }
+    }
+    #[test]
+    fn shadow_view_flag_matches_original_scalar_prefixes_and_signed_predicate() {
+        let mut cases = 0;
+        for line in include_str!("../analysis/original_shadow_view_flag_cases.txt").lines() {
+            let words: Vec<_> = line.split_whitespace()
+                .map(|word| u32::from_str_radix(word, 16).unwrap()).collect();
+            assert_eq!(words.len(), 6);
+            let [source, frame, baseline, reset, copied, forced] = words[..] else { unreachable!() };
+            assert_eq!(reset, u32::from(RESET_VIEW_SHADOW_FLAG));
+            assert_eq!(copied, source, "native copy must preserve all eight bits");
+            let expected = if forced != 0 { 1 } else { copied as u8 };
+            assert_eq!(prepared_shadow_view_flag(source as u8, frame, baseline), expected,
+                "native source={source:x}, frame={frame:x}, baseline={baseline:x}");
+            cases += 1;
+        }
+        assert_eq!(cases, 3072);
+    }
+
     use super::*;
 
     #[test]
@@ -1893,7 +2541,7 @@ mod tests {
             );
             cases += 1;
         }
-        assert_eq!(cases, 156);
+        assert_eq!(cases, 234);
         let identity = std::array::from_fn(|row| {
             std::array::from_fn(|col| if row == col { 1.0 } else { 0.0 })
         });
@@ -1902,6 +2550,23 @@ mod tests {
             -1.0
         );
         assert!(adaptive_directional_far(true, &identity, &identity, [30.0, 75.0], None).is_err());
+    }
+
+    #[test]
+    fn collapsed_atlas_layers_match_every_step_sum_including_unsorted_banks() {
+        for encoded in 0..81 {
+            let mut digits=encoded;
+            let fars=std::array::from_fn(|_| {let value=(digits%3) as f32;digits/=3;value});
+            let mut observed=[false;5];
+            for depth in [-1.0,0.0,0.5,1.0,1.5,2.0,3.0] {
+                let layer=fars.iter().filter(|&&far|depth>=far).count();
+                observed[layer]=true;
+            }
+            for (layer,observed) in observed.into_iter().enumerate() {
+                assert_eq!(parallel_shadow_layer_can_be_selected(fars,layer),observed,"{fars:?} layer{layer}");
+            }
+        }
+        assert!(!parallel_shadow_layer_can_be_selected([-0.0,0.0,1.0,2.0],1));
     }
 
     #[test]
@@ -2110,6 +2775,7 @@ mod tests {
             let operation = fields.next().unwrap();
             let v: Vec<i64> = fields.map(|v| v.parse().unwrap()).collect();
             match operation {
+                "R"=>atlas.reset(),
                 "A" => {
                     let result = atlas.allocate_in(v[0] as usize, v[1] as u32, v[2] as u32);
                     assert_eq!(result.is_some(), v[3] != 0, "allocation {case}");
@@ -2320,6 +2986,7 @@ mod tests {
                 camera_near: floats[35],
                 shadow_near: floats[36],
                 fars: floats[37..41].try_into().unwrap(),
+                authored_fars: floats[47..51].try_into().unwrap(),
                 count: floats[41] as usize,
                 resolution: floats[42] as i32,
                 static_world_model_present: floats[43] != 0.0,
@@ -2328,9 +2995,9 @@ mod tests {
                 force_first: floats[46] != 0.0,
             };
             let mut centers =
-                std::array::from_fn(|r| std::array::from_fn(|c| floats[47 + r * 3 + c]));
+                std::array::from_fn(|r| std::array::from_fn(|c| floats[51 + r * 3 + c]));
             let mut cascades = std::array::from_fn(|i| {
-                let at = 59 + i * 70;
+                let at = 63 + i * 70;
                 DirectionalCascade {
                     clip: rows(at),
                     atlas: rows(at + 16),
@@ -2360,8 +3027,8 @@ mod tests {
                 actual.push(cascade.depth_offset.to_bits());
                 actual.extend(cascade.near_far.map(f32::to_bits));
             }
-            assert_eq!(actual.len(), words.len() - 339);
-            for (index, (&value, &expected)) in actual.iter().zip(&words[339..]).enumerate() {
+            assert_eq!(actual.len(), words.len() - 343);
+            for (index, (&value, &expected)) in actual.iter().zip(&words[343..]).enumerate() {
                 assert_eq!(
                     value,
                     expected,
@@ -2373,6 +3040,99 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 256);
+    }
+
+    #[test]
+    fn persistent_parallel_prepare_handoff_matches_original_executable() {
+        let mut cases = 0;
+        for line in include_str!("../analysis/original_parallel_prepare_cases.txt").lines() {
+            assert_original_parallel_prepare_case(line,cases);
+            cases += 1;
+        }
+        assert_eq!(cases,384);
+    }
+
+    #[test]
+    #[ignore = "requires the verified full-game prepare capture converted under artifacts/"]
+    fn live_parallel_prepare_matches_full_game_depth_and_state() {
+        let source = std::fs::read_to_string("artifacts/shadow-resume-original-prepare-replay.txt").unwrap();
+        assert_original_parallel_prepare_case(source.trim(),0);
+        let words: Vec<f32> = source.split_whitespace()
+            .map(|word| f32::from_bits(u32::from_str_radix(word,16).unwrap())).collect();
+        let rows = |at| std::array::from_fn(|r| std::array::from_fn(|c| words[at+r*4+c]));
+        let count = words[41] as usize;
+        let depth = Box::new(std::array::from_fn(|i| words[679+i*2+1]));
+        let far = adaptive_directional_far(words[46]!=0.0,&rows(0),&rows(663),
+            [words[47+count-2],words[47+count-1]],Some(&depth)).unwrap();
+        assert_eq!(far.to_bits(),words[51].to_bits(),"actual adaptive far passed to FUN_140330630");
+    }
+
+    fn assert_original_parallel_prepare_case(line: &str,cases: usize) {
+            let words: Vec<u32> = line.split_whitespace()
+                .map(|word| u32::from_str_radix(word,16).unwrap()).collect();
+            let values: Vec<f32> = words.iter().copied().map(f32::from_bits).collect();
+            let rows = |at: usize| std::array::from_fn(|r| std::array::from_fn(|c| values[at+r*4+c]));
+            let before = 53;
+            let mut state = ParallelShadowPrepareState {
+                far_state: CascadeFarState {
+                    authored_fars: values[before..before+4].try_into().unwrap(),
+                    authored_cvar_flags: words[before+4],
+                    adaptation_cvar_flags: words[before+5],
+                    previous_view_translation: values[before+6..before+9].try_into().unwrap(),
+                },
+                fars: values[before+9..before+13].try_into().unwrap(),
+                centers: std::array::from_fn(|r| std::array::from_fn(|c| values[before+13+r*3+c])),
+                cascades: std::array::from_fn(|i| {
+                    let at = before+25+i*70;
+                    DirectionalCascade {
+                        clip: rows(at), atlas: rows(at+16), inverse_atlas: rows(at+32),
+                        caster_clip: rows(at+48), camera: values[at+64..at+67].try_into().unwrap(),
+                        depth_offset: values[at+67], near_far: values[at+68..at+70].try_into().unwrap(),
+                    }
+                }),
+            };
+            let projection = DirectionalProjectionInput {
+                camera_projection: rows(0), camera_view: rows(16),
+                renderer_sun_direction: values[32..35].try_into().unwrap(),
+                camera_near: values[35], shadow_near: values[36],
+                fars: values[37..41].try_into().unwrap(),
+                count: values[41] as usize, resolution: values[42] as i32,
+                static_world_model_present: values[43] != 0.0,
+                alternating: values[44] != 0.0, frame_counter: values[45] as i32,
+                force_first: values[46] != 0.0,
+                authored_fars: values[47..51].try_into().unwrap(),
+            };
+            let far = CascadeFarInput {
+                parsed_authored_fars: None, camera_near: values[35], camera_far: 7000.0,
+                view_translation: [values[19],values[23],values[27]],
+                view_flag_3a69: values[52] as u8,
+                // Deliberately unrelated: the owner must supply its own bank.
+                slice_nears: [f32::NAN;4], count: projection.count,
+                effective_far: values[51], adaptive: values[37]!=0.0,
+                partial_slice_updates: projection.alternating,
+                partial_pass: projection.static_world_model_present,
+                frame: projection.frame_counter as u32,
+            };
+            state.prepare(&far,&projection).unwrap();
+            let mut actual: Vec<u32> = state.far_state.authored_fars.map(f32::to_bits).into();
+            actual.extend([state.far_state.authored_cvar_flags,state.far_state.adaptation_cvar_flags]);
+            actual.extend(state.far_state.previous_view_translation.map(f32::to_bits));
+            actual.extend(state.fars.map(f32::to_bits));
+            actual.extend(state.centers.into_iter().flatten().map(f32::to_bits));
+            for cascade in &state.cascades {
+                for matrix in [cascade.clip,cascade.atlas,cascade.inverse_atlas,cascade.caster_clip] {
+                    actual.extend(matrix.into_iter().flatten().map(f32::to_bits));
+                }
+                actual.extend(cascade.camera.map(f32::to_bits));
+                actual.push(cascade.depth_offset.to_bits());
+                actual.extend(cascade.near_far.map(f32::to_bits));
+            }
+            assert_eq!(actual.len(),305);
+            for (index,(&got,&expected)) in actual.iter().zip(&words[before+305..]).enumerate() {
+                assert_eq!(got,expected,"prepare case {cases}, state word {index}");
+            }
+            assert_eq!(state.receiver_maximum_distance(projection.count).unwrap().to_bits(),
+                state.fars[projection.count-1].to_bits());
     }
 
     #[test]
@@ -2530,7 +3290,7 @@ mod tests {
             camera_far: 37.5,
             view_translation: [7.0; 3],
             view_flag_3a69: 0,
-            previous_fars: [1.0; 4],
+            slice_nears: [1.0; 4],
             count: 3,
             effective_far: -1.0,
             adaptive: true,
@@ -2560,6 +3320,33 @@ mod tests {
     }
 
     #[test]
+    fn prepared_view_flag_does_not_stick_after_two_frame_reset_window() {
+        let mut input = CascadeFarInput {
+            parsed_authored_fars: None,
+            camera_near: 0.01,
+            camera_far: 1000.0,
+            view_translation: [0.0; 3],
+            view_flag_3a69: 0xff,
+            slice_nears: [4.0, 12.0, 30.0, 75.0],
+            count: 4,
+            effective_far: 75.0,
+            adaptive: true,
+            partial_slice_updates: true,
+            partial_pass: false,
+            frame: 0,
+        };
+        for (frame, expected) in [1, 1, 0, 0].into_iter().enumerate() {
+            input.frame = frame as u32;
+            input.prepare_view_refresh(RESET_VIEW_SHADOW_FLAG, 0);
+            assert_eq!(input.view_flag_3a69, expected);
+        }
+        input.prepare_view_refresh(0x80, 0);
+        assert_eq!(input.view_flag_3a69, 0x80, "copy the source byte, not the old forced value");
+        input.prepare_view_refresh(0x80, 3);
+        assert_eq!(input.view_flag_3a69, 1, "a new reset restarts the native window");
+    }
+
+    #[test]
     fn cascade_reload_forces_effective_far_instead_of_cached_far() {
         let mut state = CascadeFarState {
             authored_fars: [4.0, 12.0, 30.0, 75.0],
@@ -2573,7 +3360,7 @@ mod tests {
             camera_far: 7000.0,
             view_translation: [0.0; 3],
             view_flag_3a69: 0,
-            previous_fars: [100.0; 4],
+            slice_nears: [100.0; 4],
             count: 4,
             effective_far: 75.0,
             adaptive: true,
@@ -2617,7 +3404,7 @@ mod tests {
                 camera_far: 7000.0,
                 view_translation: floats(11, 3).try_into().unwrap(),
                 view_flag_3a69: w[21] as u8,
-                previous_fars: floats(4, 4).try_into().unwrap(),
+                slice_nears: floats(4, 4).try_into().unwrap(),
                 count: w[15] as usize,
                 effective_far: f32::from_bits(w[14]),
                 adaptive: w[16] != 0,
@@ -2678,9 +3465,9 @@ mod tests {
     #[test]
     fn partial_pass_alternates_far_slice_growth_without_reordering() {
         let authored = [4.0, 12.0, 30.0, 75.0];
-        let previous = [2.0, 3.0, 4.0, 5.0];
-        let even = cascade_fars(authored, previous, 4, 75.0, false, true, true, 0);
-        let odd = cascade_fars(authored, previous, 4, 75.0, false, true, true, 1);
+        let slice_nears = [2.0, 3.0, 4.0, 5.0];
+        let even = cascade_fars(authored, slice_nears, 4, 75.0, false, true, true, 0);
+        let odd = cascade_fars(authored, slice_nears, 4, 75.0, false, true, true, 1);
         assert_eq!(even[1], even[0]);
         assert_eq!(even[2], even[0]);
         assert_eq!(even[3], 75.0);

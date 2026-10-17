@@ -1,10 +1,6 @@
 //! Replay the live client's Tome query without creating a window or GPU device.
 //! Multiple jobs run serially here: timings are query CPU work, not GPU/frame time.
 use std::{env, fs, time::Instant};
-#[path = "../bmodel.rs"]
-mod bmodel;
-#[path = "../render_model.rs"]
-mod render_model;
 #[path = "../tome.rs"]
 mod tome;
 
@@ -136,6 +132,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             object_imprecision: 0.6,
             minimum_area_metric: 25.0 / (viewport[0] as f32 * viewport[1] as f32),
             global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            object_distance_scale: 1.0,
             winding_flip: tome::query_matrix_winding_flip(rows),
             gate_states: Some(&gates),
             output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,

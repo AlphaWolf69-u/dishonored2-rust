@@ -9,7 +9,7 @@
 use super::{
     active_query_planes_into, append_object_ids_for_index, classify_native_receiver_bounds,
     object_bounds, object_count, object_distance_bounds, object_distance_rejection_mask,
-    query_bounds_accepts_aabb, recorded_bounds, word, NativeReceiverBoundsClass,
+    query_bounds_accepts_aabb, recorded_bounds, word, float, NativeReceiverBoundsClass,
     VisibleObjectIndexOutput,
 };
 use std::ops::Range;
@@ -204,8 +204,11 @@ pub fn receiver_depth_allows_aabb(
 }
 
 /// FUN_140a6f640: reduce the native tiled 64x64 visibility depth to 16x16.
-/// A tile is 16 contiguous samples. Ignore the exact 1.0 sky sentinel and
-/// retain the greatest positive depth; unordered/negative values retain zero.
+/// Its decompiled signature omits a fifth stack argument: machine code shows
+/// the caller passes the state/context there, and the native helper loads the
+/// source pointer from `context+0x590` (valid byte `+0x598`). This Rust helper
+/// takes the extracted 4096 samples directly. A tile is 16 contiguous samples;
+/// ignore exact 1.0 sky sentinel and retain the greatest positive depth.
 pub fn coarse_receiver_depth(depths: &[f32; 4096]) -> [f32; 256] {
     std::array::from_fn(|tile| {
         let mut maximum = 0.0;
@@ -505,6 +508,38 @@ impl NativeCasterDirection {
             .ok_or("truncated native caster direction palette")?;
         Ok(u16::from_le_bytes(value.try_into().unwrap()) == 0x7f7f)
     }
+}
+
+///a82710's perspective baked-occlusion test, using the same64-byte
+///direction records/palette as a73bf0. Unlike directional caster admission,
+///the palette word is a truncated float distance (bits shifted left16).
+///The query's near-plane displacement is added before the radial test.
+pub fn native_point_occlusion_visible(bytes:&[u8],index:u32,point:[f32;3],near_offset:f32)->Result<bool,String> {
+    if word(bytes,0x10)?&1==0 {return Ok(true);}
+    if index as usize>=object_count(bytes)? {return Err("native point occlusion object is outside the Tome".into());}
+    let records=word(bytes,0x13c)? as usize;
+    if records==0 {return Err("native point occlusion record table is absent".into());}
+    let record=records.checked_add(index as usize*64).ok_or("native point occlusion record overflow")?;
+    let origin=[float(bytes,record+48)?,float(bytes,record+52)?,float(bytes,record+56)?];
+    let delta:[f32;3]=std::array::from_fn(|axis|point[axis]-origin[axis]);
+    let absolute=delta.map(|value|value.to_bits()&0x7fffffff);
+    let axis=if absolute[0]<absolute[1] {if absolute[1]<absolute[2] {2}else{1}}
+        else {if absolute[2]<=absolute[0] {0}else{2}};
+    let direction=NativeCasterDirection::from_receiver_direction(delta.map(|value|f32::from_bits(value.to_bits()^0x80000000)))?;
+    let face_record=record+direction.face as usize*8;
+    let bin=i64::from(direction.y)*16+i64::from(direction.x);
+    let bit=(bin*i64::from(word(bytes,0x148)?)+i64::from(word(bytes,face_record)? as i32))*4;
+    let bit=usize::try_from(bit).map_err(|_|"negative native point occlusion bit offset")?;
+    let bits=word(bytes,0x140)? as usize;
+    let palette=word(bytes,0x144)? as usize;
+    if bits==0 || palette==0 {return Err("native point occlusion bit/palette table is absent".into());}
+    let nibble=(word(bytes,bits+(bit>>5)*4)?>>(bit&31))&15;
+    let entry=u64::from(word(bytes,face_record+4)?)+u64::from(nibble);
+    let at=palette.checked_add(usize::try_from(entry*2).map_err(|_|"native point occlusion palette offset overflow")?).ok_or("native point occlusion palette overflow")?;
+    let value=bytes.get(at..at+2).ok_or("truncated native point occlusion palette")?;
+    let distance=f32::from_bits(u32::from(u16::from_le_bytes(value.try_into().unwrap()))<<16);
+    //COMISS/JBE also rejects an unordered palette distance.
+    Ok(distance+near_offset>f32::from_bits(absolute[axis]))
 }
 
 /// FUN_140a70620: distribute aligned blocks, then assign the unaligned tail

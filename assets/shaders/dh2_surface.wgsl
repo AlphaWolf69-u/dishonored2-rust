@@ -14,6 +14,7 @@ struct SurfaceUniform {
     alpha: vec4<f32>,
     flags: vec4<u32>,
     misc: vec4<u32>,
+    native_shadow: vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -22,6 +23,11 @@ struct SurfaceUniform {
 const compiled_flags = vec4<u32>(#{DH2_EXTRA_LAYERS}u, #{DH2_HAS_GLOSS}u, #{DH2_GLOSS_ALPHA}u, #{DH2_HAS_METALLIC}u);
 const compiled_misc = vec4<u32>(#{DH2_HAS_BUMP}u, #{DH2_VERTEX_COLOR_MULTIPLY}u, #{DH2_SURFACE_ENABLED}u, #{DH2_ALPHA_FLAGS}u);
 const compiled_occlusion = #{DH2_HAS_OCCLUSION}u;
+// Original shadowCommon offset flags and shadowFilteringQuality are shader
+// options. Preserve specialization instead of evaluating their branches for
+// every local light in every fragment.
+const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAGS}u,
+    #{DH2_SHADOW_FILTER}u, #{DH2_SHADOW_LIGHT_QUALITY}u);
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var diffuse0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var diffuse1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var diffuse2: texture_2d<f32>;

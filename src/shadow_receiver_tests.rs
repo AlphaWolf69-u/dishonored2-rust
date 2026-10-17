@@ -1,5 +1,60 @@
 use super::*;
 
+fn auxiliary_input() -> NativeAuxiliaryReceiverInput {
+    NativeAuxiliaryReceiverInput {
+        camera_clip_rows: [
+            [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        ],
+        camera_position: [0.0; 3],
+        ray_direction: [0.3, -0.7, -1.0],
+        maximum_distance: 0.25,
+    }
+}
+
+#[test]
+fn auxiliary_and_ordinary_share_original_plane_setup() {
+    let input = auxiliary_input();
+    let auxiliary = initialize_auxiliary_receiver(input).unwrap().unwrap();
+    let mut projection = NativeReceiverDepthProjection {
+        receiver_rows: [[0.0; 4]; 4], transposed_rows: [[0.0; 4]; 4],
+        mask: Box::new([0; 128 * 128]),
+    };
+    let depth = [1.0; 4096];
+    let ordinary = initialize_native_receiver(NativeReceiverInput {
+        flags: 0,
+        camera_clip_rows: input.camera_clip_rows, camera_position: input.camera_position,
+        ray_direction: input.ray_direction,
+        maximum_depth: Some(1.0), maximum_distance: input.maximum_distance,
+        world_bounds: [[-2.0, -2.0, 0.1], [2.0, 2.0, 1.0]],
+        dynamic_bounds: &[], ordinary_depth: &depth,
+    }, &mut projection).unwrap();
+    assert_eq!(auxiliary.distance.to_bits(), ordinary.distance.to_bits());
+    assert_eq!(auxiliary.finite_far, ordinary.finite_far);
+    assert_eq!(auxiliary.cutoff.to_bits(), ordinary.cutoff.to_bits());
+    assert_eq!(auxiliary.plane_count, ordinary.plane_count);
+    for (a, b) in auxiliary.planes.iter().zip(ordinary.planes) {
+        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+    }
+    assert_eq!(auxiliary.far_plane.map(f32::to_bits), ordinary.far_plane.map(f32::to_bits));
+    assert_eq!(auxiliary.far_plane_signs, ordinary.far_plane_signs);
+}
+
+#[test]
+fn auxiliary_infinite_far_requires_finite_distance() {
+    let mut input = auxiliary_input();
+    input.camera_clip_rows = [
+        [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, -0.1], [0.0, 0.0, -1.0, 0.0],
+    ];
+    input.maximum_distance = f32::MAX;
+    assert!(initialize_auxiliary_receiver(input).unwrap().is_none());
+    input.maximum_distance = 100.0;
+    let output = initialize_auxiliary_receiver(input).unwrap().unwrap();
+    assert!(!output.finite_far);
+    assert!(output.plane_count > 0);
+}
+
 fn word(bytes: &[u8], cursor: &mut usize) -> u32 {
     let value = u32::from_le_bytes(bytes[*cursor..*cursor + 4].try_into().unwrap());
     *cursor += 4;
