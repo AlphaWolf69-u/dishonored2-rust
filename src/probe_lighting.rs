@@ -3,6 +3,10 @@
 use crate::{archive, bprobe, pnetwork};
 use std::collections::HashMap;
 
+#[path="probe_lighting/update.rs"]
+mod update;
+pub use update::{ProbeLightingParameters,sky_zh};
+
 const TETRA_GRID_CELL_SIZE: f32 = 16.0;
 const MAX_TETRA_GRID_CELLS: usize = 512;
 
@@ -172,6 +176,8 @@ pub struct ProbeLighting {
     pub sun_irradiance_factor: f32,
     pub illuminance_estimate: [f32; 3],
     pub cubemap_name: String,
+    pub sources:bprobe::ProbeSources,
+    pub render_lighting_sh:[[f32;3];9],
     pub static_lighting_sh: [[f32; 3]; 9],
     pub sun_factor_sh: [[f32; 3]; 9],
     pub filtered_sun_factor_sh: [[f32; 3]; 9],
@@ -263,13 +269,14 @@ pub struct InterpolatedProbeLighting {
     //             + factorDynamic*dynamicSH[i],
     // then adds parmsFloat.y * 3.5449077 * probeAmbientFactor * envAmbient
     // to coefficient 0. These serialized fields are exposed for the audit;
-    // their exact mapping into ProbeInfo, the runtime sky-ZH inputs, and
-    // the required source factors remain open. Do not add raw sky SH to the
-    // material: it is an input to the ZH/SH product, not the final result.
+    // update.rs now implements the verified static/sun/sky/ambient assembly.
+    // Runtime dynamic-light SH generation remains separate. Raw sky SH is
+    // an input to the ZH/SH product, not material irradiance.
     pub static_lights_illuminance: [f32; 3],
     pub sky_occlusion_factor: f32,
     pub sun_irradiance_factor: f32,
     pub illuminance_estimate: [f32; 3],
+    pub render_lighting_sh:[[f32;3];9],
     pub static_lighting_sh: [[f32; 3]; 9],
     pub sun_factor_sh: [[f32; 3]; 9],
     pub filtered_sun_factor_sh: [[f32; 3]; 9],
@@ -332,6 +339,8 @@ pub fn load_for_world(
                 sun_irradiance_factor: probe.sun_irradiance_factor,
                 illuminance_estimate: probe.illuminance_estimate,
                 cubemap_name: probe.cubemap_name,
+                sources:probe.sources,
+                render_lighting_sh:probe.static_lighting_sh,
                 static_lighting_sh: probe.static_lighting_sh,
                 sun_factor_sh: probe.sun_factor_sh,
                 filtered_sun_factor_sh: probe.filtered_sun_factor_sh,
@@ -357,6 +366,10 @@ pub fn load_for_world(
 }
 
 impl ProbeLightingSet {
+    pub fn initialize_indirect_lighting(&mut self,parameters:&ProbeLightingParameters) {
+        for probe in &mut self.probes {probe.render_lighting_sh=update::accumulate(probe,parameters);}
+    }
+
     /// Repack the native typed SRVs into one read-only WGSL word buffer.
     /// The layout changes; the indices and 24/16/4-byte native records do not.
     pub fn vertex_shader_words(&self) -> Vec<u32> {
@@ -452,6 +465,7 @@ impl ProbeLightingSet {
                     probe_weights[probe] += barycentric * (packed[probe] as f32 / 255.0);
                 }
             }
+            let mut render_lighting_sh=[[0.0;3];9];
             let mut static_lighting_sh = [[0.0; 3]; 9];
             let mut sun_factor_sh = [[0.0; 3]; 9];
             let mut filtered_sun_factor_sh = [[0.0; 3]; 9];
@@ -487,6 +501,7 @@ impl ProbeLightingSet {
                     sky_occlusion_sh[coefficient] +=
                         probe_weights[probe_slot] * probe.sky_occlusion_sh[coefficient];
                     for channel in 0..3 {
+                        render_lighting_sh[coefficient][channel]+=probe_weights[probe_slot]*probe.render_lighting_sh[coefficient][channel];
                         static_lighting_sh[coefficient][channel] +=
                             probe_weights[probe_slot] * probe_sh[coefficient][channel];
                     }
@@ -512,6 +527,7 @@ impl ProbeLightingSet {
                 sky_occlusion_factor,
                 sun_irradiance_factor,
                 illuminance_estimate,
+                render_lighting_sh,
                 static_lighting_sh,
                 sun_factor_sh,
                 filtered_sun_factor_sh,

@@ -3802,8 +3802,13 @@ fn light_backend_intensity(
         // Cancel Bevy's extra emitter-area divisor; the native preset already
         // handles conservative area energy. Absolute photometry is unverified.
         (normalized_intensity as f64 * area as f64 * 2_000.0) as f32
+    } else if kind == entities::LightType::Parallel {
+        normalized_intensity * render_light::ARKANE_TO_WORLD_LUMINANCE
     } else {
-        10_000.0 * (normalized_intensity / 5.0)
+        // Original HDR -> world units, then cancel Bevy's lumen-to-candela
+        // division shared by point, half-point and spot extraction.
+        normalized_intensity * render_light::ARKANE_TO_WORLD_LUMINANCE
+            * (4.0 * std::f32::consts::PI)
     };
     (intensity.is_finite() && intensity >= 0.0).then_some(intensity)
 }
@@ -4785,7 +4790,7 @@ impl MaterialResolver<'_> {
             {
                 Some(lighting) => {
                     self.probe_samples += 1;
-                    lighting.static_lighting_sh
+                    lighting.render_lighting_sh
                 }
                 None => {
                     if self.probes.is_some() {
@@ -4910,6 +4915,9 @@ impl MaterialResolver<'_> {
         uniform.misc.w = u32::from(alpha_test)
             | (u32::from(program_is_decal) << 1)
             | (u32::from(two_sided_lighting) << 2);
+        if env::var("DH2_TRACE_MATERIAL").ok().as_deref()==Some(path) {
+            println!("NATIVE_MATERIAL {path}: {uniform:#?}");
+        }
         let decal_bias = material::decal_depth_bias(bytes);
         let mut images = Vec::new();
         for index in 0..=surface.extra_layers {
@@ -5270,7 +5278,7 @@ fn setup(
             set.probes
                 .iter()
                 .map(|probe| {
-                    probe.static_lighting_sh.map(|v| {
+                    probe.render_lighting_sh.map(|v| {
                         if lit {
                             Vec4::new(v[0], v[1], v[2], 0.0)
                         } else {
@@ -6238,9 +6246,9 @@ fn setup(
                 );
                 let falloff_start = preset.falloff;
                 let is_sun = light.preset.as_deref() == Some("LIGHT_PRESET_SUN");
-                // Native normalized RGB is clamped before scaling. Retain the
-                // existing 10,000-lumen/100W backend calibration (native 100W
-                // intensity is 5); absolute Bevy photometry remains unverified.
+                // Native normalized RGB is clamped before scaling. Point/spot
+                // and parallel paths convert native HDR with the original
+                // world-luminance factor; area profile photometry is separate.
                 let color = Color::linear_rgb(
                     linear_color.red.clamp(0.0, 1.0),
                     linear_color.green.clamp(0.0, 1.0),
@@ -6412,15 +6420,13 @@ fn setup(
                         spawned += 1;
                     }
                     entities::LightType::Parallel => {
-                        let sun_color = if light.preset.as_deref() == Some("LIGHT_PRESET_SUN") {
-                            scene
-                                .environment_lighting
-                                .and_then(|environment| environment.sun_color)
-                                .map(|rgb| Color::linear_rgb(rgb[0], rgb[1], rgb[2]))
-                                .unwrap_or(color)
-                        } else {
-                            color
-                        };
+                        let native_parallel_color = if is_sun {
+                            render_light::sun_ground_color(scene.environment_lighting
+                                .and_then(|environment|environment.sun_color)
+                                .unwrap_or([0.215861;3]))
+                        } else { preset.color };
+                        let sun_color=Color::linear_rgb(native_parallel_color[0],
+                            native_parallel_color[1],native_parallel_color[2]);
                         let authored_direction =
                             game_to_view(light.rotation[0]).normalize_or_zero();
                         let direction = if light.preset.as_deref() == Some("LIGHT_PRESET_SUN") {
@@ -6457,11 +6463,9 @@ fn setup(
                         commands.spawn((
                             DirectionalLight {
                                 color: sun_color,
-                                // Runtime normalization is now recovered. The
-                                // absolute directional Bevy-lux conversion is
-                                // still unverified; preserve its existing SUN
-                                // calibration, not an inferred native unit.
-                                illuminance: if is_sun { 8_000.0 } else { intensity },
+                                // Native lighting uses normalized HDR radiance;
+                                // PostFX/Luminance/common supplies world units.
+                                illuminance: render_light::ARKANE_TO_WORLD_LUMINANCE,
                                 shadow_maps_enabled: authored_shadows && !light.no_shadows,
                                 ..default()
                             },
@@ -8756,12 +8760,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|(lighting, parameters)| (Some(lighting), Some(parameters)))
         .unwrap_or((None, None));
     let probe_start = Instant::now();
-    let environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str())) {
+    let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str())) {
         (Some(catalog), Some(stem)) => {
             probe_lighting::load_for_world(catalog, stem).map_err(std::io::Error::other)?
         }
         _ => None,
     };
+    if let (Some(probes),Some(environment))=(&mut environment_probes,environment_lighting) {
+        let parameters=probe_lighting::ProbeLightingParameters {
+            static_factor:environment.bounce_static.unwrap_or([1.0;3]),
+            sun_factor:environment.bounce_sun.unwrap_or([1.0;3]),
+            sun_ground_color:render_light::sun_ground_color(environment.sun_color.unwrap_or([0.215861;3])),
+            sky_zenith:environment.bounce_sky_zenith.unwrap_or([3.88954449,8.88057613,20.3924446]),
+            sky_horizon:environment.bounce_sky_horizon.unwrap_or([33.8765373,44.5004768,50.7929688]),
+            ambient:environment.indirect_ambient.unwrap_or([0.0;3]),
+            // Original r_ILProbeUpdate_ContributionFactorMultiBounces default3,
+            // r_ILProbeUpdate_MultiBouncesDebugFlags default7 (all sources).
+            multi_bounce:3.0,multi_bounce_flags:7,
+        };
+        probes.initialize_indirect_lighting(&parameters);
+        println!("Native probe accumulation: {} probes, source-backed static/sun/occluded sky/per-probe ambient; sun_ground={:?}",probes.probes.len(),parameters.sun_ground_color);
+    }
     if let Some(probes) = &environment_probes {
         println!(
             "Loaded authored probe lighting from {}: {} probes, {} secondary network entries, {} rejected PRB resources ({:.2}s)",
@@ -11472,6 +11491,47 @@ mod game_control_tests {
         for _ in 0..6 {app.update();}
         let specular_dark=forward_center(&mut app,&target);
         assert!(energy(specular_dark)*5<energy(lit),"specular-map decal must retain shadow receiving: {specular_dark:?}");
+        // Native arkDefault writes finalized lighting RGB independently of
+        // diffuse alpha. arkDecal applies coverage once, in hardware blending.
+        // Exercise both through the real material draw with no direct light.
+        app.world_mut().entity_mut(camera).insert((
+            bevy::camera::Exposure { ev100: 0.0 },
+            bevy::core_pipeline::tonemapping::Tonemapping::None,
+        ));
+        let probe_buffer=app.world().resource::<Assets<DecalMaterial>>()
+            .get(&receiving).unwrap().extension.sh.clone();
+        let mut coefficients=[Vec4::ZERO;9];coefficients[0]=Vec4::splat(0.25/render_light::ARKANE_TO_WORLD_LUMINANCE);
+        *app.world_mut().resource_mut::<Assets<ShaderBuffer>>()
+            .get_mut(&probe_buffer).unwrap()=ShaderBuffer::from(vec![coefficients]);
+        let mut pixels=Vec::new();
+        for (mode,alpha) in [(AlphaMode::Opaque,1.0),(AlphaMode::Opaque,0.0),
+            (AlphaMode::Blend,1.0),(AlphaMode::Blend,0.5),(AlphaMode::Blend,0.0)] {
+            {
+                let mut materials=app.world_mut().resource_mut::<Assets<DecalMaterial>>();
+                let mut material=materials.get_mut(&receiving).unwrap();
+                material.base.alpha_mode=mode;
+                material.extension.surface=surface_gpu::SurfaceUniform::from(
+                    &material_surface::Surface::parse(b"mainProgram arkDecal\n"));
+                material.extension.surface.native_shadow=UVec4::new(1,0,1,2);
+                material.extension.surface.colors[0].w=alpha;
+                material.extension.surface.mask_settings[0]=UVec4::new(0,3,1,0);
+                material.extension.specular0=None;
+            }
+            for _ in 0..12 {app.update();}
+            pixels.push(forward_center(&mut app,&target));
+        }
+        assert!(energy(pixels[0])>30,"probe lighting must be visible: {pixels:?}");
+        for c in 0..3 {assert!((i32::from(pixels[0][c])-[52,51,51][c]).abs()<=2,
+            "native HDR must convert to world luminance once: {pixels:?}");}
+        for c in 0..3 {assert!((i32::from(pixels[0][c])-i32::from(pixels[1][c])).abs()<=2,
+            "opaque indirect light must ignore coverage alpha: {pixels:?}");}
+        let linear=|v:u8|{let x=f32::from(v)/255.0;if x<=0.04045 {x/12.92}else{((x+0.055)/1.055).powf(2.4)}};
+        for c in 0..3 {
+            assert!((linear(pixels[3][c])/linear(pixels[2][c])-0.5).abs()<0.06,
+                "decal indirect light must blend alpha once: {pixels:?}");
+        }
+        assert!(energy(pixels[4])<10,"zero-coverage decal must remain transparent: {pixels:?}");
+        eprintln!("GPU native indirect coverage: opaque alpha1/0, blended alpha1/0.5/0 = {pixels:?}");
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
     }
@@ -13845,7 +13905,9 @@ entity { entityDef lamp { class = "idLight"; edit = {
         ] {
             assert!(light_backend_intensity(f32::MAX, kind, [1.0; 2]).is_none());
             assert!(light_backend_intensity(f32::NAN, kind, [1.0; 2]).is_none());
-            assert_eq!(light_backend_intensity(5.0, kind, [1.0; 2]), Some(10_000.0));
+            let backend=light_backend_intensity(5.0, kind, [1.0;2]).unwrap();
+            let world=if kind==LightType::Parallel {backend}else{backend/(4.0*std::f32::consts::PI)};
+            assert!((world-696.3).abs()<0.0001,"native preset intensity5 in world units: {world}");
         }
         assert!(light_backend_intensity(f32::MAX, LightType::Area, [1.0; 2]).is_none());
         assert!(light_backend_intensity(1.0, LightType::Area, [f32::MAX; 2]).is_none());

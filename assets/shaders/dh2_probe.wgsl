@@ -18,6 +18,7 @@ fn fragment(
 ) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
     var diffuse_response=pbr_input.material.base_color.rgb;
+    var native_indirect=vec3<f32>(0.0);
     // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
     // Original arkWater requires a separate depth/HDR-dependent shader; do not
     // feed it through the default layered-material equations.
@@ -76,18 +77,30 @@ fn fragment(
             vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
             pbr_input.N, vertex_output.world_tangent.xyz, bitangent,
             vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
-        pbr_input.material.emissive = vec4(pbr_input.material.emissive.rgb
-            + indirect * diffuse_response, pbr_input.material.emissive.a);
+        native_indirect = indirect * diffuse_response;
 #else
-        pbr_input.material.emissive = vec4<f32>(
-            pbr_input.material.emissive.rgb
-                + probe_diffuse(pbr_input.N, probe_index) * diffuse_response * pbr_input.diffuse_occlusion,
-            pbr_input.material.emissive.a,
-        );
+        native_indirect = probe_diffuse(pbr_input.N, probe_index)
+            * diffuse_response * pbr_input.diffuse_occlusion;
 #endif
     }
 
     var out: FragmentOutput;
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+#ifdef DH2_VERTEX_PROBE
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 6u {
+        out.color = vec4(vec3(vertex_output.probe_luminance), 1.0);
+        return out;
+    }
+#endif
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 7u {
+        out.color = vec4(pbr_input.diffuse_occlusion, 1.0);
+        return out;
+    }
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 8u {
+        out.color = vec4(native_indirect, 1.0);
+        return out;
+    }
+#endif
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         // Original lighting uses wsVertexNormal for the sun's shadow offset,
         // not the normal-map BRDF normal. The same light.m_shadow attenuates
@@ -95,7 +108,7 @@ fn fragment(
         let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
             vertex_output.position.xy, compiled_native_shadow);
         out.color = apply_pbr_lighting_with_native_shadows(pbr_input,
-            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow);
+            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow, native_indirect);
     } else {
         out.color = pbr_input.material.base_color;
     }

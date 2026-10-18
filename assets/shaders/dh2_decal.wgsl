@@ -13,6 +13,7 @@
 fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
     var diffuse_response=pbr_input.material.base_color.rgb;
+    var native_indirect=vec3<f32>(0.0);
     if compiled_misc.z != 0u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
@@ -64,14 +65,10 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
             vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
             pbr_input.N, vertex_output.world_tangent.xyz, bitangent,
             vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
-        pbr_input.material.emissive = vec4(pbr_input.material.emissive.rgb
-            + indirect * diffuse_response, pbr_input.material.emissive.a);
+        native_indirect = indirect * diffuse_response;
 #else
-        pbr_input.material.emissive = vec4<f32>(
-            pbr_input.material.emissive.rgb
-                + probe_diffuse(pbr_input.N, probe_index) * diffuse_response * pbr_input.diffuse_occlusion,
-            pbr_input.material.emissive.a,
-        );
+        native_indirect = probe_diffuse(pbr_input.N, probe_index)
+            * diffuse_response * pbr_input.diffuse_occlusion;
 #endif
     }
 
@@ -82,7 +79,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz,
             vertex_output.world_normal, vertex_output.position.xy, compiled_native_shadow);
         out.color = apply_pbr_lighting_with_native_shadows(pbr_input,
-            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow);
+            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow, native_indirect);
     } else { out.color = pbr_input.material.base_color; }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

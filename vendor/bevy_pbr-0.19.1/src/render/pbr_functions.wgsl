@@ -351,7 +351,7 @@ fn apply_pbr_lighting_with_directional_shadow(
     transmitted_directional_shadow: f32,
 ) -> vec4<f32> {
     return apply_pbr_lighting_with_native_shadows(in,directional_index,directional_shadow,
-        transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u));
+        transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u),vec3<f32>(0.0));
 }
 
 fn apply_pbr_lighting_with_native_shadows(
@@ -360,7 +360,11 @@ fn apply_pbr_lighting_with_native_shadows(
     directional_shadow: f32,
     transmitted_directional_shadow: f32,
     native_shadow_route: vec4<u32>,
+    native_indirect: vec3<f32>,
 ) -> vec4<f32> {
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 5u { return in.material.base_color; }
+#endif
     var output_color: vec4<f32> = in.material.base_color;
 
     let emissive = in.material.emissive;
@@ -921,6 +925,13 @@ fn apply_pbr_lighting_with_native_shadows(
         ).rgb;
     }
 #endif
+
+    // Native IntegrateLighting combines reflected probe radiance with the
+    // other lighting before exposure. Coverage alpha belongs to output/blend;
+    // routing probe light through emission would multiply it by alpha again.
+    // PostFX/Luminance/common declares ARKANE_TO_WORLD_LUMINANCE = 139.26.
+    // Bevy exposes world radiance; native probe SH is in Arkane HDR units.
+    indirect_light += native_indirect * 139.26;
 
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     // Source-component attribution for numerical receiver probes only.

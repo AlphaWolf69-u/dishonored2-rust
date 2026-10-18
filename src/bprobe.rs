@@ -27,6 +27,7 @@ pub struct Probe {
     pub sky_occlusion_factor: f32,
     pub sun_irradiance_factor: f32,
     pub illuminance_estimate: [f32; 3],
+    pub sources:ProbeSources,
     pub static_lighting_sh: [[f32; 3]; 9],
     pub sun_factor_sh: [[f32; 3]; 9],
     pub filtered_sun_factor_sh: [[f32; 3]; 9],
@@ -36,6 +37,18 @@ pub struct Probe {
     pub cubemap_name: String,
     pub has_additional_results: bool,
     pub bytes_consumed: usize,
+}
+
+#[derive(Clone,Debug)]
+pub struct ProbeSources {
+    /// Header vectors at +44/+50/+5c/+68: sun, sky, dynamic, static.
+    pub bounce_factors: [[f32;3];4],
+    pub sky_scale:f32,
+    pub lighting_scale:f32,
+    pub ambient_factor:[f32;3],
+    pub multi_bounce_static_sh:[[f32;3];9],
+    pub multi_bounce_sun_sh:[[f32;3];9],
+    pub multi_bounce_sky_sh:[[f32;3];9],
 }
 
 struct Reader<'a> {
@@ -141,7 +154,12 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
 
     // FUN_1402b99a0's environment-probe header fields before results_t.
     let position = [reader.f32()?, reader.f32()?, reader.f32()?];
-    reader.skip(4 + 1 + 48 + 8 + 12 + 2 + 4)?;
+    reader.skip(4+1)?;
+    let mut bounce_factors=[[0.0;3];4];
+    for factor in &mut bounce_factors {for v in factor {*v=reader.f32()?;}}
+    let sky_scale=reader.f32()?;let lighting_scale=reader.f32()?;
+    let ambient_factor=[reader.f32()?,reader.f32()?,reader.f32()?];
+    reader.skip(2+4)?;
 
     // FUN_1402b8b30 reads results_t metadata preceding its SH arrays and
     // m_samples at +0x750. Reflection metadata names the 32 bytes at +0x30:
@@ -160,7 +178,9 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
     let sky_occlusion_sh = read_sh1(&mut reader)?;
     let filtered_sky_occlusion_sh = read_sh1(&mut reader)?;
     reader.skip(0x400)?; // Environment-distance SH table.
-    reader.skip(0x6c * 3)?; // Initial static, sun and sky-occlusion SH.
+    let multi_bounce_static_sh=read_sh3(&mut reader)?;
+    let multi_bounce_sun_sh=read_sh3(&mut reader)?;
+    let multi_bounce_sky_sh=read_sh3(&mut reader)?;
     reader.skip(12)?; // Distance sample min/max/mean.
 
     let sample_count = reader.u32()?;
@@ -237,6 +257,8 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
         sky_occlusion_factor,
         sun_irradiance_factor,
         illuminance_estimate,
+        sources:ProbeSources {bounce_factors,sky_scale,lighting_scale,ambient_factor,
+        multi_bounce_static_sh,multi_bounce_sun_sh,multi_bounce_sky_sh},
         static_lighting_sh,
         sun_factor_sh,
         filtered_sun_factor_sh,

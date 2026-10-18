@@ -686,13 +686,13 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
                 result.ambient_low = parse_env_vector(value);
                 result.ambient_low_scalar = value.parse().ok();
             }
-            "env/indirectlighting/ambient" => result.indirect_ambient = parse_env_vector(value),
+            "env/indirectlighting/ambient" => result.indirect_ambient = parse_env_rgb(value),
             "env/indirectlighting/bouncefactor/static" => {
-                result.bounce_static = parse_env_vector(value)
+                result.bounce_static = parse_env_rgb(value)
             }
-            "env/indirectlighting/bouncefactor/sun" => result.bounce_sun = parse_env_vector(value),
+            "env/indirectlighting/bouncefactor/sun" => result.bounce_sun = parse_env_rgb(value),
             "env/indirectlighting/bouncefactor/skyhorizon" => {
-                result.bounce_sky_horizon = parse_env_vector(value)
+                result.bounce_sky_horizon = parse_env_rgb(value)
             }
             "env/indirectlighting/bouncefactor/skyzenith" => {
                 // Env declarations use both a scalar shorthand (broadcast to
@@ -700,7 +700,7 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
                 result.bounce_sky_zenith = parse_env_rgb(value)
             }
             "env/indirectlighting/bouncefactor/dynamic" => {
-                result.bounce_dynamic = parse_env_vector(value)
+                result.bounce_dynamic = parse_env_rgb(value)
             }
             "env/shadow/parallellightextend" => result.parallel_light_extend = value.parse().ok(),
             "env/atm/sky/suncolor" => result.sun_color = parse_env_vector(value),

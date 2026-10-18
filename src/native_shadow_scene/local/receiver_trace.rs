@@ -12,7 +12,10 @@ struct Trace { tick:u32, staging:Option<Buffer>, mapped:bool, path:Option<std::p
 
 pub(super) fn install(app:&mut bevy::app::SubApp) {
     app.init_resource::<Trace>()
-        .add_systems(Core3d, sample.after(Core3dSystems::MainPass).before(Core3dSystems::PostProcess))
+        .add_systems(Core3d, sample.after(Core3dSystems::MainPass).before(Core3dSystems::PostProcess)
+            .run_if(||std::env::var_os("DH2_TRACE_FINAL_COLOR").is_none()))
+        .add_systems(Core3d, sample.after(Core3dSystems::PostProcess)
+            .run_if(||std::env::var_os("DH2_TRACE_FINAL_COLOR").is_some()))
         .add_systems(Render, map.in_set(RenderSystems::Cleanup));
 }
 

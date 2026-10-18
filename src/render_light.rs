@@ -72,6 +72,15 @@ pub fn normalization() -> f32 {
     f32::from_bits(0x3da2_f983) * 1750.0
 }
 
+/// PostFX/Luminance/common: original HDR radiance -> world cd/m^2.
+pub const ARKANE_TO_WORLD_LUMINANCE:f32=139.26;
+
+/// FUN_140017d30: normalized outer-space irradiance, then 0.889 ground factor.
+pub fn sun_ground_color(authored:[f32;3])->[f32;3] {
+    let scale=89939.7265625_f32/normalization();
+    authored.map(|c|(c*scale)*0.889_f32)
+}
+
 fn write_word(record: &mut [u8], offset: usize, value: u32) {
     record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -438,6 +447,15 @@ pub fn convert(input: PresetInput) -> Option<PresetOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sun_ground_color_matches_original_gpu_constants() {
+        // Original EOTW event423 accumulatesh constant buffer, compared with
+        // FUN_140017d30's authored-color conversion and CRT normalization.
+        let actual=sun_ground_color([0.215861,0.171441,0.116971]);
+        let expected=[123.9365234375_f32,98.43280792236328,67.15886688232422];
+        for c in 0..3 {assert!((actual[c]-expected[c]).abs()<0.00002);}
+    }
 
     #[test]
     fn tlf_caller_copies_position_and_admits_only_native_shadow_ranges() {
