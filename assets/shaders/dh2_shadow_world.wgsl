@@ -2,8 +2,8 @@
 // remap (instanceBufferOffset + SV_InstanceID) through the low 24 bits,
 // read MatrixInstanceType's three float4 rows, then use viewProjectionMatrix.
 // No rigid-model depth hack belongs to this branch.
-// The host Mesh::ATTRIBUTE_POSITION has game_to_view applied; undo only that
-// exact signed-axis permutation before the original local-to-world transform.
+// NativeVegetationPosition retains the original game-local coordinates even
+// when the forward mesh is axis-converted or baked for affine shear.
 struct ViewState {
     w: vec4<f32>,
     z: vec4<f32>,
@@ -24,8 +24,8 @@ struct MatrixInstance {
 @group(1) @binding(0) var<storage, read> visible_indices: array<u32>;
 @group(1) @binding(1) var<storage, read> matrices: array<MatrixInstance>;
 
-fn world_shadow_position(host_position: vec3<f32>, instance_id: u32) -> vec4<f32> {
-    let local = vec4<f32>(host_position.x, -host_position.z, host_position.y, 1.0);
+fn world_shadow_position(position: vec3<f32>, instance_id: u32) -> vec4<f32> {
+    let local = vec4<f32>(position, 1.0);
     let index = visible_indices[state.instance_buffer_offset + instance_id] & 0x00ffffffu;
     let model = matrices[index];
     let world = vec4<f32>(dot(local, model.x), dot(local, model.y), dot(local, model.z), 1.0);

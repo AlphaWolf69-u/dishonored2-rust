@@ -646,6 +646,9 @@ fn apply_pbr_lighting_with_native_shadows(
 #endif
     }
 
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    let trace_local_light = direct_light;
+#endif
     // directional lights (direct)
     let n_directional_lights = view_bindings::lights.n_directional_lights;
     for (var i: u32 = 0u; i < n_directional_lights; i = i + 1u) {
@@ -714,6 +717,9 @@ fn apply_pbr_lighting_with_native_shadows(
 #endif
     }
 
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    let trace_directional_light = direct_light - trace_local_light;
+#endif
 #ifdef AREA_LIGHT_LUTS
     // Rect lights
     let n_rect_lights = view_bindings::lights.n_rect_lights;
@@ -916,11 +922,21 @@ fn apply_pbr_lighting_with_native_shadows(
     }
 #endif
 
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    // Source-component attribution for numerical receiver probes only.
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 1u { direct_light = trace_local_light; indirect_light = vec3(0.0); }
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 2u { direct_light = trace_directional_light; indirect_light = vec3(0.0); }
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 3u { direct_light -= trace_local_light + trace_directional_light; indirect_light = vec3(0.0); }
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 4u { direct_light = vec3(0.0); }
+#endif
     // Total light
     output_color = vec4<f32>(
         (view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light,
         output_color.a
     );
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    if #{DH2_TRACE_LIGHT_COMPONENT} != 4u { output_color -= vec4(emissive_light,0.0); }
+#endif
 
     output_color = clustering::cluster_debug_visualization(
         output_color,

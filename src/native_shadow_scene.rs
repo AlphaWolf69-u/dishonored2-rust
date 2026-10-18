@@ -9,6 +9,7 @@ use crate::native_shadow_gpu::{
     native_shadow_alpha_sampler, native_shadow_vista_sampler, NativeOpaqueShadowDraw, NativeOpaqueShadowPipeline,
     NativeShadowDepthArray, NativeShadowDepthProgram, NativeShadowScissor,
 };
+use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::{
     app::{App, Plugin},
     asset::{AssetId, Handle},
@@ -684,7 +685,9 @@ fn render_native_shadow_scene(
     queue: Res<RenderQueue>,
     adapter: Res<RenderAdapter>,
     mut context: RenderContext,
+    profile:Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(27));
     let sampling = sampling_handle
         .as_ref()
         .and_then(|handle| sampling_buffers.get(handle.buffer.id()));
@@ -799,6 +802,9 @@ fn render_native_shadow_scene(
 
     let NativeShadowSceneGpu { targets, pipelines, .. } = &mut *gpu;
     let target = targets.get_mut(&target_id).expect("target prepared before draws");
+    let diagnostics=context.diagnostic_recorder();
+    let diagnostics=diagnostics.as_deref();
+    let span=diagnostics.time_span(context.command_encoder(),"native_directional_shadows");
     let mut complete=true;
     for (layer_index, layer) in layers.iter().enumerate() {
         let physical_layer = first_layer as usize + layer_index;
@@ -879,10 +885,12 @@ fn render_native_shadow_scene(
         })();
         if let Err(error) = result {
             bevy::log::error!("native directional cache/draw submission failed: {error}");
+            span.end(context.command_encoder());
             return;
         }
         target.layer_valid[physical_layer]=true;
     }
+    span.end(context.command_encoder());
     if matches!(frame.state,NativeShadowSceneState::WholeViewDepth{..}) {
         if let Ok(mut done)=completion.0.lock() {*done=Some((target_id,*dimensions));}
     }

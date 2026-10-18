@@ -30,12 +30,12 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
     let buffer = |label, bytes: &[u8], usage| device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some(label), contents: bytes, usage,
     });
-    // Native full-screen triangle at conventional depth .25. Host positions
-    // have the actual game_to_view permutation; UV is one wrap beyond [0,1].
+    // Original local POSITION at conventional depth .25, as retained by the
+    // live shadow attribute; UV is one wrap beyond [0,1].
     let vertices = buffer("Vista native source vertices", &floats(&[
-        -1.,0.25,1., 1.,2.,
-        -1.,0.25,-3., 1.,0.,
-        3.,0.25,1., 3.,2.,
+        -1.,-1.,0.25, 1.,2.,
+        -1.,3.,0.25, 1.,0.,
+        3.,-1.,0.25, 3.,2.,
     ]),BufferUsages::VERTEX);
     let triangles = buffer("Vista triangle",&[0u32,1,2].into_iter()
         .flat_map(u32::to_le_bytes).collect::<Vec<_>>(),BufferUsages::INDEX);

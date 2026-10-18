@@ -5,8 +5,9 @@
 struct CoarseDepthParameters {
     source_max: vec2<u32>,
     source_per_destination: vec2<f32>,
-    // inverseProjection[3].z, inverseProjection[3].w,
-    // inverseProjection[2].w; W is unused.
+    // Logical inverseProjection[2].w, inverseProjection[3].w,
+    // inverseProjection[3].z; W is unused. DXBC CB register indices are
+    // column-major and must not be mistaken for these logical CPU rows.
     inverse_projection: vec4<f32>,
 }
 @group(0) @binding(0) var source_depth: texture_2d<f32>;

@@ -60,7 +60,43 @@ pub(super) struct NativeLocalShadowSide {
 pub(super) struct NativeLocalShadowCpu {
     pub current:Option<(u32,Vec<NativeLocalProjectedLight>)>,
     error:Option<String>,reported:bool,
-    fit:render_shadow::ProjectionFitScratch,
+    verified_parallel:bool,
+}
+
+type LocalProjection=(Vec<render_shadow::ShadowMatrix>,Vec<[f32;4]>);
+type LocalModelBuckets=[Vec<(usize,usize)>;2];
+type LocalModelInputs=[(Vec<render_model::LocalModelCasterRecord>,Vec<(usize,usize)>);2];
+
+fn collect_local_light_models(request:&render_shadow::LocalShadowRequest,light:&entities::PlacedLight,
+    view_flags:u16,camera_clip:&render_shadow::ShadowMatrix,inputs:&LocalModelInputs,
+)->Result<LocalModelBuckets,String> {
+    let (volume_clip,_)=render_shadow::local_light_volume_projection(light.position,light.rotation,
+        request.candidate.kind as u32,request.candidate.range,authored_light_cosines(light.angular_cutoff,light.angular_falloff).0)?;
+    Ok(std::array::from_fn(|bucket| {
+        let (records,keys)=&inputs[bucket];
+        //32d4b0 initializes definition+20 to zero for both model passes;
+        //3285a0/328900 therefore retain their original radial sorting.
+        render_model::collect_local_model_casters(records,&volume_clip,camera_clip,light.position,
+            bucket!=0,view_flags,false).into_iter().map(|index|keys[index]).collect()
+    }))
+}
+
+fn project_local_shadow(request:&render_shadow::LocalShadowRequest,light:&entities::PlacedLight,
+    view_flags:u16,camera:&render_shadow::SpotFitCamera<'_>,scratch:&mut render_shadow::ProjectionFitScratch,
+)->Result<LocalProjection,String> {
+    let near=light.shadow_near_plane.unwrap_or(0.1);
+    let mode=render_shadow::local_shadow_fit_mode(request.priority,request.candidate.flags[0],view_flags,2);
+    let mut crops=vec![[-1.0,-1.0,1.0,1.0];request.side_count];
+    let clips=if request.candidate.kind==2 {
+        render_shadow::prepare_spot_projections(&render_shadow::SpotProjectionInput {position:light.position,basis:light.rotation,
+            cutoff_cosine:authored_light_cosines(light.angular_cutoff,light.angular_falloff).0,near,far:request.candidate.range,
+            side_count:request.side_count,fit_mode:mode},Some(camera),&mut crops,scratch)?
+    } else {
+        let mut bank:[[_;4];6]=crops.as_slice().try_into().unwrap();
+        let clips=render_shadow::prepare_omni_projections(light.position,near,request.candidate.range,mode,Some(camera),&mut bank,scratch)?;
+        crops.copy_from_slice(&bank);clips.to_vec()
+    };
+    Ok((clips,crops))
 }
 
 struct LocalStaticInputs {
@@ -93,8 +129,9 @@ pub(super) fn publish_native_local_shadow_draws(
     clocks:Res<game_clock_runtime::NativeGameplayViewClock>,mut queue:ResMut<SceneRenderQueue>,
     mut buffers:ResMut<Assets<ShaderBuffer>>,mut draws:ResMut<NativeLocalShadowDraws>,
     mut output:ResMut<native_shadow_scene::NativeLocalShadowSceneFrame>,
-    completion:Res<native_shadow_scene::NativeLocalShadowCompletion>,
+    (completion,profile):(Res<native_shadow_scene::NativeLocalShadowCompletion>,Option<Res<frame_profile::CpuFrameProfile>>),
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(25));
     output.0=None;
     let (Some(owner),Some((frame,lights)))=(owner,cpu.current.as_ref()) else {return;};
     let result=(||->Result<native_shadow_scene::NativeLocalShadowSubmission,String>{
@@ -273,7 +310,9 @@ pub(super) fn prepare_native_local_shadow_cpu(
     model_sources:Res<native_shadow_live::NativeModelShadowSources>,
     completion:Res<native_shadow_scene::NativeLocalShadowCompletion>,
     mut view_controls:ResMut<NativeLocalShadowViewControls>,
+    profile:Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(24));
     cpu.current=None;
     let Some(mut owner)=owner else {return;};
     if let Ok(done)=completion.0.lock() {
@@ -302,7 +341,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
         let snapshot=coarse.latest()?;
         let pixels=snapshot.as_ref().filter(|v|v.metadata.source_extent==[extent.x,extent.y]).map(|v|v.pixels.as_ref());
         let camera_fit=render_shadow::SpotFitCamera {planes:render_shadow::frustum_planes(vp,false,true),
-            view,projection:matrix,inverse_projection,inverse_view_projection:inverse_vp,far:projection.far,coarse:pixels};
+            view,projection:matrix,inverse_projection,inverse_view_projection:inverse_vp,near:projection.near,coarse:pixels};
         let mut sources=HashMap::new();let mut candidates=Vec::new();
         for (entity,source,visibility) in &lights {
             if *visibility==Visibility::Hidden {continue;}
@@ -326,12 +365,56 @@ pub(super) fn prepare_native_local_shadow_cpu(
         candidates.sort_by_key(|candidate|candidate.source);
         let settings=owner.settings;let additional_view=owner.view_flags&1!=0;
         let quality=scene.shadow_quality.as_ref().ok_or("native local shadow quality is absent")?;
-        let (requests,_)=render_shadow::size_local_shadow_requests(&candidates,camera_position,horizontal_fov,&settings,
+        let (mut requests,_)=render_shadow::size_local_shadow_requests(&candidates,camera_position,horizontal_fov,&settings,
             quality.local_low_resolution_divider,additional_view,0,&mut owner.atlas);
-        let mut output=Vec::with_capacity(requests.len());
-        for mut request in requests {
-            let light=&scene.placed_lights[request.candidate.source];let near=light.shadow_near_plane.unwrap_or(0.1);
+        for request in &mut requests {
             request.side_count=render_shadow::local_shadow_side_count(request.candidate.kind,request.candidate.quality,request.priority);
+        }
+        let model_inputs:LocalModelInputs=std::array::from_fn(|bucket| {
+            let mut records=Vec::new();let mut inputs=Vec::new();
+            if requests.is_empty() {return (records,inputs);}
+            for caster in model_casters.iter().filter(|caster|caster.dynamic==(bucket!=0)) {
+                for &instance in &caster.instances {
+                    records.push(render_model::LocalModelCasterRecord {bounds:model_sources.0[caster.source].bounds,
+                        camera_clip_mask:caster.camera_clip_mask});
+                    inputs.push((caster.source,instance));
+                }
+            }
+            (records,inputs)
+        });
+        // Fitting and model selection have no atlas/cache side effects. Run the same
+        // original numeric helpers on independent light banks, then restore
+        // request order before the native allocator and cache are touched.
+        let chunk_size=requests.len().div_ceil(owner.query_job_count as usize).max(1);
+        let mut projected=bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            for (chunk,requests) in requests.chunks(chunk_size).enumerate() {
+                let scene=&*scene;let camera=&camera_fit;let view_flags=owner.view_flags;let model_inputs=&model_inputs;
+                scope.spawn(async move {
+                    let mut scratch=render_shadow::ProjectionFitScratch::default();
+                    (chunk,requests.iter().map(|request| {
+                        let light=&scene.placed_lights[request.candidate.source];
+                        (project_local_shadow(request,light,view_flags,camera,&mut scratch),
+                            collect_local_light_models(request,light,view_flags,&vp,model_inputs))
+                    }).collect::<Vec<_>>())
+                });
+            }
+        });
+        projected.sort_by_key(|(chunk,_)|*chunk);
+        if !cpu.verified_parallel && !requests.is_empty() && pixels.is_some() && env::var_os("DH2_VERIFY_LOCAL_PROJECTION_PARALLEL").is_some() {
+            let bits=|result:&Result<LocalProjection,String>|result.as_ref().map(|(clips,crops)|
+                clips.iter().flatten().flatten().chain(crops.iter().flatten()).map(|v|v.to_bits()).collect::<Vec<_>>()).map_err(Clone::clone);
+            let mut scratch=render_shadow::ProjectionFitScratch::default();
+            for (request,result) in requests.iter().zip(projected.iter().flat_map(|(_,results)|results)) {
+                let serial=project_local_shadow(request,&scene.placed_lights[request.candidate.source],owner.view_flags,&camera_fit,&mut scratch);
+                let serial_models=collect_local_light_models(request,&scene.placed_lights[request.candidate.source],owner.view_flags,&vp,&model_inputs);
+                if bits(&serial)!=bits(&result.0) || serial_models!=result.1 {return Err(format!("parallel local preparation differs from serial source helpers for light{}",request.candidate.source));}
+            }
+            println!("Native local preparation parallel verification: {} projections and caster lists bitwise equal to serial original helpers",requests.len());
+            cpu.verified_parallel=true;
+        }
+        let mut output=Vec::with_capacity(requests.len());
+        for (request,(projected,model_casters)) in requests.into_iter().zip(projected.into_iter().flat_map(|(_,results)|results)) {
+            let light=&scene.placed_lights[request.candidate.source];
             //333570/332f20 reserve every face before doing any projection.
             //One failed reservation releases the entire light's partial bank.
             let mut allocations=Vec::with_capacity(request.side_count);
@@ -343,17 +426,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
                 for allocation in allocations {owner.atlas.release(allocation.id);}
                 continue;
             }
-            let mode=render_shadow::local_shadow_fit_mode(request.priority,request.candidate.flags[0],owner.view_flags,2);
-            let mut crops=vec![[-1.0,-1.0,1.0,1.0];request.side_count];
-            let clips=if request.candidate.kind==2 {
-                render_shadow::prepare_spot_projections(&render_shadow::SpotProjectionInput {position:light.position,basis:light.rotation,
-                    cutoff_cosine:authored_light_cosines(light.angular_cutoff,light.angular_falloff).0,near,far:request.candidate.range,
-                    side_count:request.side_count,fit_mode:mode},Some(&camera_fit),&mut crops,&mut cpu.fit)?
-            } else {
-                let mut bank:[[_;4];6]=crops.as_slice().try_into().unwrap();
-                let result=render_shadow::prepare_omni_projections(light.position,near,request.candidate.range,mode,Some(&camera_fit),&mut bank,&mut cpu.fit)?;
-                crops.copy_from_slice(&bank);result.to_vec()
-            };
+            let (clips,crops)=projected?;
             let id=u16::try_from(request.candidate.source).map_err(|_|"native local light registry exceeds16-bit identities")?;
             let mut bounds=[[f32::from_bits(0x7149f2ca);3],[f32::from_bits(0xf149f2ca);3]];
             let mut sides=Vec::with_capacity(request.side_count);
@@ -389,22 +462,9 @@ pub(super) fn prepare_native_local_shadow_cpu(
                     owner.world_query.query(bounds,&clips[side]).iter().enumerate().filter_map(|(id,&value)|(value!=0).then_some(id as u32)).collect()
                 }
             }).collect();
-            let (volume_clip,_)=render_shadow::local_light_volume_projection(light.position,light.rotation,
-                request.candidate.kind as u32,request.candidate.range,authored_light_cosines(light.angular_cutoff,light.angular_falloff).0)?;
-            let model_casters=std::array::from_fn(|bucket| {
-                let mut records=Vec::new();let mut inputs=Vec::new();
-                for caster in model_casters.iter().filter(|caster|caster.dynamic==(bucket!=0)) {
-                    for &instance in &caster.instances {
-                        records.push(render_model::LocalModelCasterRecord {bounds:model_sources.0[caster.source].bounds,
-                            camera_clip_mask:caster.camera_clip_mask});
-                        inputs.push((caster.source,instance));
-                    }
-                }
-                //32d4b0 initializes the pass definition+20 to zero for both
-                //passes;3285a0/328900 therefore retain native radial sorting.
-                render_model::collect_local_model_casters(&records,&volume_clip,&vp,light.position,
-                    bucket!=0,owner.view_flags,false).into_iter().map(|index|inputs[index]).collect()
-            });
+            // Allocation/cache side effects retain native order, including
+            // deferring a failed whole-light model query until this boundary.
+            let model_casters=model_casters?;
             let delta:[f32;3]=std::array::from_fn(|i|light.position[i]-camera_position[i]);
             let squared=(delta[1]*delta[1]+delta[0]*delta[0])+delta[2]*delta[2];
             let skip_dynamic=request.priority<=quality.local_partial_dynamic_threshold

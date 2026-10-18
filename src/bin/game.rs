@@ -1814,13 +1814,13 @@ fn native_shadow_target_dimensions(
 
 /// Changing the atlas association is rare; moving the camera only updates the
 /// shared receiver buffer, not every material or its bind group.
-fn sync_native_shadow_target(
+fn sync_native_shadow_target<E: MaterialExtension + NativeShadowImageAccess>(
     frame: Res<native_shadow_scene::NativeShadowSceneFrame>,
     local_owner:Option<Res<native_local_shadow_live::NativeLocalShadowOwner>>,
     sampling: Option<Res<native_shadow_sampling::NativeParallelSamplingBuffer>>,
     screen:Option<Res<native_screen_shadow_scene::NativeScreenShadowFrame>>,
-    mut materials: ResMut<Assets<ProbeMaterial>>,
-    mut added_materials: MessageReader<bevy::asset::AssetEvent<ProbeMaterial>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial,E>>>,
+    mut added_materials: MessageReader<bevy::asset::AssetEvent<ExtendedMaterial<StandardMaterial,E>>>,
     mut current: Local<Option<(Option<Handle<Image>>,Option<Handle<Image>>,Option<Handle<Image>>,Option<Handle<Image>>)>>,
 ) {
     let Some(sampling) = sampling else {
@@ -1842,12 +1842,7 @@ fn sync_native_shadow_target(
         for event in added_materials.read() {
             if let bevy::asset::AssetEvent::Added { id } = event {
                 if let Some(mut material) = materials.get_mut(*id) {
-                    if material.extension.native_shadow_map != target {
-                        material.extension.native_shadow_map = target.clone();
-                    }
-                    if material.extension.native_local_shadow_map!=local_target {material.extension.native_local_shadow_map=local_target.clone();}
-                    if material.extension.native_screen_map!=screen {material.extension.native_screen_map=screen.clone();}
-                    if material.extension.native_cloud_map!=cloud {material.extension.native_cloud_map=cloud.clone();}
+                    material.extension.sync_shadow_images(&target,&screen,&cloud,&local_target);
                 }
             }
         }
@@ -1855,12 +1850,7 @@ fn sync_native_shadow_target(
     }
     added_materials.clear();
     for (_, material) in materials.iter_mut() {
-        if material.extension.native_shadow_map != target {
-            material.extension.native_shadow_map = target.clone();
-        }
-        if material.extension.native_local_shadow_map!=local_target {material.extension.native_local_shadow_map=local_target.clone();}
-        if material.extension.native_screen_map!=screen {material.extension.native_screen_map=screen.clone();}
-        if material.extension.native_cloud_map!=cloud {material.extension.native_cloud_map=cloud.clone();}
+        material.extension.sync_shadow_images(&target,&screen,&cloud,&local_target);
     }
     *current = association;
 }
@@ -1921,6 +1911,12 @@ struct ProbeExtension {
     mask1: Option<Handle<Image>>,
     #[texture(116)]
     mask2: Option<Handle<Image>>,
+    #[texture(134)]
+    specular0: Option<Handle<Image>>,
+    #[texture(135)]
+    specular1: Option<Handle<Image>>,
+    #[texture(136)]
+    specular2: Option<Handle<Image>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -1939,6 +1935,10 @@ impl From<&ProbeExtension> for SurfaceKey {
 
 fn specialize_surface(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::SurfaceKey) {
     if let Some(fragment) = descriptor.fragment.as_mut() {
+        // Optional numerical light attribution; normal rendering has no branch.
+        if let Ok(component)=std::env::var("DH2_TRACE_LIGHT_COMPONENT").unwrap_or_default().parse::<u32>() {
+            fragment.shader_defs.push(bevy::shader::ShaderDefVal::UInt("DH2_TRACE_LIGHT_COMPONENT".into(),component));
+        }
         for (name, value) in surface_gpu::SurfaceKey::NAMES.into_iter().zip(key.0) {
             fragment
                 .shader_defs
@@ -1969,6 +1969,34 @@ fn authored_basis_pipeline(
     Ok(())
 }
 
+fn specialize_native_vertex_lighting(descriptor:&mut RenderPipelineDescriptor,layout:&MeshVertexBufferLayoutRef,key:surface_gpu::SurfaceKey) {
+        let native_lighting = matches!(key.0[6], 1 | 2)
+            && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
+            && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
+            && descriptor
+                .fragment
+                .as_ref()
+                .is_some_and(|fragment| (fragment.shader == PROBE_SHADER_HANDLE || fragment.shader == DECAL_SHADER_HANDLE));
+        if native_lighting {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("DH2_VERTEX_PROBE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("DH2_VERTEX_PROBE".into());
+            }
+            for (name, value) in surface_gpu::SurfaceKey::NAMES
+                .into_iter()
+                .zip(key.0)
+            {
+                descriptor
+                    .vertex
+                    .shader_defs
+                    .push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
+            }
+        }
+}
+
 impl MaterialExtension for ProbeExtension {
     fn fragment_shader() -> ShaderRef {
         PROBE_SHADER_HANDLE.into()
@@ -1987,31 +2015,7 @@ impl MaterialExtension for ProbeExtension {
         if let Some(fragment)=descriptor.fragment.as_mut() {
             fragment.shader_defs.push("DH2_NATIVE_LOCAL_SHADOWS".into());
         }
-        let native_lighting = matches!(key.bind_group_data.0[6], 1 | 2)
-            && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
-            && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
-            && descriptor
-                .fragment
-                .as_ref()
-                .is_some_and(|fragment| fragment.shader == PROBE_SHADER_HANDLE);
-        if native_lighting {
-            descriptor
-                .vertex
-                .shader_defs
-                .push("DH2_VERTEX_PROBE".into());
-            if let Some(fragment) = descriptor.fragment.as_mut() {
-                fragment.shader_defs.push("DH2_VERTEX_PROBE".into());
-            }
-            for (name, value) in surface_gpu::SurfaceKey::NAMES
-                .into_iter()
-                .zip(key.bind_group_data.0)
-            {
-                descriptor
-                    .vertex
-                    .shader_defs
-                    .push(bevy::shader::ShaderDefVal::UInt(name.into(), value));
-            }
-        }
+        specialize_native_vertex_lighting(descriptor,layout,key.bind_group_data);
         specialize_surface(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)
     }
@@ -2025,6 +2029,25 @@ impl MaterialExtension for ProbeExtension {
 #[bind_group_data(DecalKey)]
 struct DecalExtension {
     bias: i32,
+    #[storage(100,read_only)]
+    sh:Handle<ShaderBuffer>,
+    #[storage(119,read_only)]
+    vertex_probes:Handle<ShaderBuffer>,
+    #[storage(120, read_only)]
+    native_shadow: Handle<ShaderBuffer>,
+    #[storage(126, read_only)]
+    native_local_shadow: Handle<ShaderBuffer>,
+    #[texture(127, dimension = "2d_array", sample_type = "depth")]
+    #[sampler(128, sampler_type = "comparison")]
+    native_local_shadow_map: Option<Handle<Image>>,
+    #[texture(121, dimension = "2d_array", sample_type = "depth")]
+    #[sampler(122, sampler_type = "comparison")]
+    native_shadow_map: Option<Handle<Image>>,
+    #[texture(123)]
+    native_screen_map: Option<Handle<Image>>,
+    #[texture(124)]
+    #[sampler(125)]
+    native_cloud_map: Option<Handle<Image>>,
     #[uniform(101)]
     surface: surface_gpu::SurfaceUniform,
     #[texture(102)]
@@ -2059,6 +2082,12 @@ struct DecalExtension {
     mask1: Option<Handle<Image>>,
     #[texture(116)]
     mask2: Option<Handle<Image>>,
+    #[texture(134)]
+    specular0: Option<Handle<Image>>,
+    #[texture(135)]
+    specular1: Option<Handle<Image>>,
+    #[texture(136)]
+    specular2: Option<Handle<Image>>,
 }
 
 trait NativeImageAccess {
@@ -2084,6 +2113,9 @@ macro_rules! native_image_access {
                     12 => &mut self.mask0,
                     13 => &mut self.mask1,
                     14 => &mut self.mask2,
+                    16 => &mut self.specular0,
+                    17 => &mut self.specular1,
+                    18 => &mut self.specular2,
                     _ => panic!("invalid authored image role"),
                 }
             }
@@ -2092,6 +2124,26 @@ macro_rules! native_image_access {
 }
 native_image_access!(ProbeExtension);
 native_image_access!(DecalExtension);
+
+trait NativeShadowImageAccess {
+    fn sync_shadow_images(&mut self,target:&Option<Handle<Image>>,screen:&Option<Handle<Image>>,
+        cloud:&Option<Handle<Image>>,local:&Option<Handle<Image>>);
+}
+macro_rules! native_shadow_image_access {
+    ($ty:ty) => {
+        impl NativeShadowImageAccess for $ty {
+            fn sync_shadow_images(&mut self,target:&Option<Handle<Image>>,screen:&Option<Handle<Image>>,
+                cloud:&Option<Handle<Image>>,local:&Option<Handle<Image>>) {
+                if &self.native_shadow_map!=target {self.native_shadow_map=target.clone();}
+                if &self.native_screen_map!=screen {self.native_screen_map=screen.clone();}
+                if &self.native_cloud_map!=cloud {self.native_cloud_map=cloud.clone();}
+                if &self.native_local_shadow_map!=local {self.native_local_shadow_map=local.clone();}
+            }
+        }
+    };
+}
+native_shadow_image_access!(ProbeExtension);
+native_shadow_image_access!(DecalExtension);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 struct DecalKey {
@@ -2130,6 +2182,10 @@ impl MaterialExtension for DecalExtension {
             // the Void arkDecal z-bias needs an actual GPU depth offset.
             depth.bias.constant = key.bind_group_data.bias;
         }
+        if let Some(fragment)=descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("DH2_NATIVE_LOCAL_SHADOWS".into());
+        }
+        specialize_native_vertex_lighting(descriptor,layout,key.bind_group_data.surface);
         specialize_surface(descriptor, key.bind_group_data.surface);
         authored_basis_pipeline(descriptor, layout)
     }
@@ -3720,6 +3776,16 @@ fn original_light_preset(
     })
 }
 
+fn authored_area_light_transform(position:Vec3,rotation:[[f32;3];3])->Option<Transform> {
+    // arealight::CreateAreaLightContext: Z=SpotDir, X=AreaLightX,
+    // Y=cross(Z,X). Bevy's right is -X for this emitting normal;
+    // the rectangle's corner set and emitting side are unchanged by that sign.
+    let direction=game_to_view(rotation[0]).normalize_or_zero();
+    let up=direction.cross(game_to_view(rotation[1])).normalize_or_zero();
+    if direction==Vec3::ZERO || up==Vec3::ZERO {return None;}
+    Some(Transform::from_translation(position).looking_to(direction,up))
+}
+
 fn light_backend_intensity(
     normalized_intensity: f32,
     kind: entities::LightType,
@@ -4871,6 +4937,8 @@ impl MaterialResolver<'_> {
                     layer.metallic.as_deref(),
                     surface.has_metallic && (index == 0 || layer.reuse[3] == 0),
                 ),
+                (surface_gpu::ImageRole::specular(index),layer.specular.as_deref(),
+                    surface.has_specular && (index==0 || layer.specular_reuse==0)),
                 (
                     surface_gpu::ImageRole::mask(index),
                     layer.mask.as_deref(),
@@ -4961,6 +5029,14 @@ impl MaterialResolver<'_> {
                 base,
                 extension: DecalExtension {
                     bias: decal_bias.unwrap_or(1678.0).round() as i32,
+                    sh:self.probe_sh_buffer.clone(),
+                    vertex_probes:self.vertex_probe_buffer.clone(),
+                    native_shadow: self.native_shadow_buffer.clone(),
+                    native_local_shadow: self.native_local_shadow_buffer.clone(),
+                    native_shadow_map: Some(self.native_shadow_map.clone()),
+                    native_local_shadow_map: Some(self.native_shadow_map.clone()),
+                    native_screen_map: None,
+                    native_cloud_map: None,
                     surface: uniform,
                     diffuse0: None,
                     diffuse1: None,
@@ -4977,6 +5053,7 @@ impl MaterialResolver<'_> {
                     mask0: None,
                     mask1: None,
                     mask2: None,
+                    specular0:None,specular1:None,specular2:None,
                 },
             }))
         } else {
@@ -5007,6 +5084,7 @@ impl MaterialResolver<'_> {
                     mask0: None,
                     mask1: None,
                     mask2: None,
+                    specular0:None,specular1:None,specular2:None,
                 },
             }))
         };
@@ -6066,10 +6144,8 @@ fn setup(
     if env::var("DH2_DIRECT_MESH_DRAWS").as_deref() != Ok("0") {
         camera_entity.insert(bevy::render::view::NoIndirectDrawing);
     }
-    // The installed arkDefault/arkVegetation shaders have a depth-only Z path.
-    // This broad Bevy approximation is opt-in: same-view profiling reduced fragment work
-    // but did not improve frame time. Enable with DH2_ZPREPASS=1 while the
-    // native list/eligibility path is being integrated.
+    // Standalone depth profiling remains explicit. The native screen-shadow
+    // owner separately enables its required same-view depth source.
     if env::var("DH2_ZPREPASS").as_deref() == Ok("1") {
         camera_entity.insert(DepthPrepass);
     }
@@ -6118,29 +6194,10 @@ fn setup(
             .expect("level contains invalid or duplicate pickup definitions"),
     });
     if lit {
-        let ambient = scene.environment_lighting.and_then(|environment| {
-            let high = environment
-                .ambient_high
-                .or_else(|| environment.ambient_high_scalar.map(|value| [value; 3]))?;
-            let low = environment
-                .ambient_low
-                .or_else(|| environment.ambient_low_scalar.map(|value| [value; 3]))?;
-            Some((high, low))
-        });
-        if let Some((high, low)) = ambient {
-            commands.insert_resource(GlobalAmbientLight {
-                // Void render parameters are authored as linear float values;
-                // interpreting them as sRGB would gamma-decode and dim them.
-                color: Color::linear_rgb(
-                    (high[0] + low[0]) * 0.5,
-                    (high[1] + low[1]) * 0.5,
-                    (high[2] + low[2]) * 0.5,
-                ),
-                ..default()
-            });
-        } else {
-            commands.insert_resource(GlobalAmbientLight::NONE);
-        }
+        // lightcontext HQ/AQ/LQ_ComputeAmbientLighting explicitly disable
+        // the old env/ambient high/low term. Probe irradiance owns ambient;
+        // adding Bevy's global ambient would illuminate every shadow again.
+        commands.insert_resource(GlobalAmbientLight::NONE);
         let mut spawned = 0;
         let mut unsupported = 0;
         let mut energy_shortened_ranges = 0;
@@ -6189,7 +6246,9 @@ fn setup(
                     linear_color.green.clamp(0.0, 1.0),
                     linear_color.blue.clamp(0.0, 1.0),
                 );
-                let rect_size = light.area_size.map(|size| size.max(0.01));
+                // Native area SizeX/Y are half extents (arealight's clipping
+                // corners are +/-SizeX/Y); RectLight takes full dimensions.
+                let rect_size = light.area_size.map(|size| 2.0 * size.max(0.01));
                 let Some(intensity) =
                     light_backend_intensity(preset.normalized_intensity, light.kind, rect_size)
                 else {
@@ -6334,15 +6393,10 @@ fn setup(
                         // renderprog/lighting.decl; Bevy RectLight has no matching
                         // shadow path. The authored area profile/projection and
                         // area-specific shadow controls remain unported.
-                        let direction = game_to_view(light.rotation[0]).normalize_or_zero();
-                        let up = game_to_view(light.rotation[1]).normalize_or_zero();
-                        if direction == Vec3::ZERO
-                            || up == Vec3::ZERO
-                            || up.cross(direction).length_squared() < 0.0001
-                        {
+                        let Some(transform)=authored_area_light_transform(position,light.rotation) else {
                             unsupported += 1;
                             continue;
-                        }
+                        };
                         commands.spawn((
                             RectLight {
                                 color,
@@ -6351,7 +6405,7 @@ fn setup(
                                 width: rect_size[0],
                                 height: rect_size[1],
                             },
-                            Transform::from_translation(position).looking_to(direction, up),
+                            transform,
                             cull.expect("local light cull data"),
                             native_local_shadow_live::NativeLocalLightSource(light_index),
                         ));
@@ -9232,7 +9286,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     native_shadow_sampling::register_shaders(&mut app);
     app.add_systems(
         PostUpdate,
-        sync_native_shadow_target.after(bevy::asset::AssetEventSystems)
+        (sync_native_shadow_target::<ProbeExtension>,sync_native_shadow_target::<DecalExtension>).after(bevy::asset::AssetEventSystems)
             .after(native_shadow_live::publish_native_parallel_shadow_frame),
     );
     let prepared_images = PreparedImageMailbox::default();
@@ -10762,7 +10816,7 @@ mod game_control_tests {
             });
         app.add_systems(
             PostUpdate,
-            sync_native_shadow_target.after(bevy::asset::AssetEventSystems),
+            (sync_native_shadow_target::<ProbeExtension>,sync_native_shadow_target::<DecalExtension>).after(bevy::asset::AssetEventSystems),
         );
         let mut surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[]));
         surface.misc = UVec4::new(1, 1, 1, 2);
@@ -10775,7 +10829,7 @@ mod game_control_tests {
                 extension: ProbeExtension {
                     sh,
                     vertex_probes,
-                    native_shadow,
+                    native_shadow: native_shadow.clone(),
                     native_local_shadow: native_local_shadow.clone(),
                     native_local_shadow_map: Some(native_shadow_map.clone()),
                     native_shadow_map: Some(native_shadow_map.clone()),
@@ -10797,6 +10851,7 @@ mod game_control_tests {
                     mask0: None,
                     mask1: None,
                     mask2: None,
+                    specular0:None,specular1:None,specular2:None,
                 },
             });
         // Establish the target, then add a material without a binding while the
@@ -10848,6 +10903,7 @@ mod game_control_tests {
             .world_mut()
             .resource_mut::<Assets<ProbeMaterial>>()
             .add(vegetation);
+        let decal_probe_buffers={let p=app.world().resource::<Assets<ProbeMaterial>>().get(&probe).unwrap();(p.extension.sh.clone(),p.extension.vertex_probes.clone())};
         let decal = app
             .world_mut()
             .resource_mut::<Assets<DecalMaterial>>()
@@ -10858,6 +10914,14 @@ mod game_control_tests {
                 },
                 extension: DecalExtension {
                     bias: 0,
+                    sh:decal_probe_buffers.0,
+                    vertex_probes:decal_probe_buffers.1,
+                    native_shadow,
+                    native_local_shadow,
+                    native_shadow_map: Some(native_shadow_map.clone()),
+                    native_local_shadow_map: Some(native_shadow_map.clone()),
+                    native_screen_map: None,
+                    native_cloud_map: None,
                     surface,
                     diffuse0: None,
                     diffuse1: None,
@@ -10874,6 +10938,7 @@ mod game_control_tests {
                     mask0: None,
                     mask1: None,
                     mask2: None,
+                    specular0:None,specular1:None,specular2:None,
                 },
             });
         app.world_mut().spawn((
@@ -10883,7 +10948,7 @@ mod game_control_tests {
         ));
         app.world_mut().spawn((
             Mesh3d(mesh.clone()),
-            MeshMaterial3d(decal),
+            MeshMaterial3d(decal.clone()),
             Transform::from_xyz(0.6, 0.0, 0.0),
         ));
         app.world_mut().spawn((
@@ -11270,6 +11335,19 @@ mod game_control_tests {
         front_cull.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
         let mut no_cull = forward.clone();
         no_cull.base.cull_mode = None;
+        fn forward_center(app:&mut App,target:&Handle<Image>)->[u8;4] {
+            let (tx,rx)=std::sync::mpsc::channel();
+            app.world_mut().spawn(Screenshot::image(target.clone())).observe(
+                move |event:On<bevy::render::view::screenshot::ScreenshotCaptured>| {
+                    let bytes=event.image.data.as_ref().unwrap();
+                    tx.send(<[u8;4]>::try_from(&bytes[(32*64+32)*4..(32*64+32)*4+4]).unwrap()).unwrap();
+                });
+            for _ in 0..200 {
+                app.update();if let Ok(pixel)=rx.try_recv() {return pixel;}
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("forward pixel readback did not complete");
+        }
         for (label, material, mesh, expected) in [
             ("raw diffuse solid", forward, mesh.clone(), true),
             ("raw diffuse hole", hole, mesh.clone(), false),
@@ -11324,7 +11402,7 @@ mod game_control_tests {
             (
                 "native NONE keeps front-facing triangles",
                 no_cull.clone(),
-                face,
+                face.clone(),
                 true,
             ),
             (
@@ -11342,31 +11420,58 @@ mod game_control_tests {
             for _ in 0..6 {
                 app.update();
             }
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.world_mut()
-                .spawn(Screenshot::image(target.clone()))
-                .observe(
-                    move |event: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
-                        let data = event.image.data.as_ref().unwrap();
-                        tx.send(
-                            <[u8; 4]>::try_from(&data[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 4])
-                                .unwrap(),
-                        )
-                        .unwrap();
-                    },
-                );
-            let mut pixel = None;
-            for _ in 0..200 {
-                app.update();
-                if let Ok(value) = rx.try_recv() {
-                    pixel = Some(value);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            let pixel = pixel.expect("forward screenshot did not complete");
+            let pixel = forward_center(&mut app,&target);
             assert_eq!(pixel[0] > 20, expected, "{label}: forward pixel {pixel:?}");
         }
+        // Exercise the actual alpha-blended decal fragment path. A late
+        // streamed decal must bind the same sun map as opaque materials, and
+        // sun visibility must attenuate its direct lighting before blending.
+        let mut receiving=app.world().resource::<Assets<DecalMaterial>>().get(&decal).unwrap().clone();
+        receiving.base=StandardMaterial {alpha_mode:AlphaMode::Blend,cull_mode:None,..default()};
+        receiving.extension.surface=surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(b"mainProgram arkDecal\n"));
+        receiving.extension.diffuse0=app.world().resource::<Assets<ProbeMaterial>>().get(&handle).unwrap().extension.diffuse0.clone();
+        receiving.extension.surface.native_shadow=UVec4::new(1,0,1,2);
+        receiving.extension.native_shadow_map=None;
+        let shadow_buffer=receiving.extension.native_shadow.clone();
+        let receiving=app.world_mut().resource_mut::<Assets<DecalMaterial>>().add(receiving);
+        app.world_mut().despawn(entity);
+        app.world_mut().spawn((MeshMaterial3d(receiving.clone()),Mesh3d(face),Transform::default()));
+        app.world_mut().insert_resource(GlobalAmbientLight::NONE);
+        app.world_mut().spawn((DirectionalLight {illuminance:8000.0,shadow_maps_enabled:false,..default()},Transform::default()));
+        for _ in 0..6 {app.update();}
+        for _ in 0..100 {
+            app.update();
+            let cache=app.sub_app(bevy::render::RenderApp).world().resource::<bevy::render::render_resource::PipelineCache>();
+            if cache.pipelines().all(|p|matches!(p.state,CachedPipelineState::Ok(_))) {break;}
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(app.world().resource::<Assets<DecalMaterial>>().get(&receiving).unwrap().extension.native_shadow_map.as_ref(),Some(&native_shadow_map));
+        for _ in 0..6 {app.update();}
+        let lit=forward_center(&mut app,&target);
+        let mut shadowed=native_shadow_sampling::NativeParallelSamplingUniform::default();
+        // LESS against depth>=1 cannot pass at reference2, independent of the
+        // unavailable texture's contents. The source-backed PCF is still used.
+        shadowed.world_to_shadow=[Mat4::from_cols_array_2d(&[[0.,0.,0.,0.5],[0.,0.,0.,0.5],[0.,0.,0.,2.],[0.,0.,0.,1.]]);5];
+        shadowed.cascade_fars=Vec4::splat(10.0);shadowed.shadow_size=Vec4::new(1.,1.,0.,0.);
+        shadowed.config=UVec4::new(1,0,0,1);shadowed.quality=IVec4::new(2,1,0,0);
+        *app.world_mut().resource_mut::<Assets<ShaderBuffer>>().get_mut(&shadow_buffer).unwrap()=ShaderBuffer::from(shadowed);
+        for _ in 0..6 {app.update();}
+        let dark=forward_center(&mut app,&target);
+        let energy=|p:[u8;4]|p[..3].iter().map(|&v|u32::from(v)).sum::<u32>();
+        assert!(energy(lit)>50 && energy(dark)*5<energy(lit),"decal must receive native sun visibility: lit={lit:?} shadowed={dark:?}");
+        eprintln!("GPU decal native shadow attenuation: lit={lit:?}, shadowed={dark:?}; late material atlas association passed");
+        // Compile the separate native specular-map branch, including layered
+        // reuse. A valid shadow remains required after this material change.
+        {
+            let mut materials=app.world_mut().resource_mut::<Assets<DecalMaterial>>();
+            let extension=&mut materials.get_mut(&receiving).unwrap().extension;
+            extension.surface.specular_reuse=UVec4::new(0,1,2,1);
+            extension.surface.flags.x=2;
+            extension.specular0=extension.diffuse0.clone();
+        }
+        for _ in 0..6 {app.update();}
+        let specular_dark=forward_center(&mut app,&target);
+        assert!(energy(specular_dark)*5<energy(lit),"specular-map decal must retain shadow receiving: {specular_dark:?}");
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
     }
@@ -12530,6 +12635,9 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
     result[at+5u] = vec4(two.luminance,0.0,0.0,0.0);
     result[at+6u] = two.chroma_a; result[at+7u] = two.chroma_b;
     result[at+8u] = vec4(unpack_diffuse(two,view_vector(d),view_vector(t),view_vector(b),view_vector(n),ao,true),0.0);
+    let albedo=vec3(f32(id%17u),f32((id*3u)%17u),f32((id*7u)%17u))/16.0;
+    result[64u*9u+4u*9u+id]=vec4(native_diffuse_response(albedo,f32(id%9u)/8.0,
+        f32((id/3u)%5u)/4.0,vec3(.3,.5,.7),(id&1u)==0u,vec3(.04,.02,.08),vec3(.01,.02,.03)),0.0);
     if id < 4u {
         var p = vec3(0.25);
         if id == 1u { p = vec3(1.0,0.0,0.0); }
@@ -12592,7 +12700,7 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
             contents: &word_bytes,
             usage: BufferUsages::STORAGE,
         });
-        let size = (64 * 9 + 4 * 9) * 16;
+        let size = (64 * 9 + 4 * 9 + 64) * 16;
         let output = device.create_buffer(&BufferDescriptor {
             label: None,
             size,
@@ -12696,6 +12804,14 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
                 }
             }
         }
+        for(id,line) in include_str!("../../analysis/native_diffuse_response_cases.txt").lines().enumerate() {
+            for(c,word) in line.split_whitespace().enumerate() {
+                let expected=f32::from_bits(u32::from_str_radix(word,16).unwrap());
+                let result=actual[(64*9+4*9+id)*4+c];
+                assert!((result-expected).abs()<0.000003,"native diffuse response case{id} channel{c}: {result} != {expected}");
+            }
+        }
+        eprintln!("GPU native diffuse radiance response: 64 installed-HLSL cases passed");
         eprintln!(
             "GPU native SH parity:64 original HLSL packed one/two-sided cases +4 PNW reference/interpolation cases passed"
         );
@@ -13637,6 +13753,28 @@ entity { entityDef lamp { class = "idLight"; edit = {
     }
 
     #[test]
+    fn area_rectangle_preserves_native_corners_and_emitting_side() {
+        // Real balcony light plus identity: compare native +/- half-extent
+        // corners with the backend rectangle, including its one-sided normal.
+        for rotation in [
+            [[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]],
+            [[-0.55556643,0.8314722,0.],[-0.8314722,-0.55556643,0.],[0.,0.,1.]],
+        ] {
+            let center=Vec3::new(-41.088326,23.700006,-83.30427);
+            let transform=authored_area_light_transform(center,rotation).unwrap();
+            let z=game_to_view(rotation[0]).normalize();
+            let x=game_to_view(rotation[1]);let y=z.cross(x);
+            let half=[0.7587613,1.5461122];
+            let native=[-1.,1.].into_iter().flat_map(|sx|[-1.,1.].map(|sy|center+sx*half[0]*x+sy*half[1]*y)).collect::<Vec<_>>();
+            for sx in [-1.,1.] {for sy in [-1.,1.] {
+                let corner=center+sx*half[0]*transform.right()+sy*half[1]*transform.up();
+                assert!(native.iter().any(|p|p.distance(corner)<0.00001));
+            }}
+            assert!(transform.up().cross(*transform.right()).dot(z)>0.99999);
+        }
+    }
+
+    #[test]
     fn area_preset_energy_reaches_actual_bevy_extraction_without_double_normalization() {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::pbr::{ExtractedRectLight, extract_lights};
@@ -13664,6 +13802,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
                         color: [1.0; 3],
                     })
                     .unwrap();
+                    let full_size=size.map(|half|2.0*half);
                     let render_entity = render_world.spawn_empty().id();
                     main_world.spawn((
                         RectLight {
@@ -13671,11 +13810,11 @@ entity { entityDef lamp { class = "idLight"; edit = {
                             intensity: light_backend_intensity(
                                 output.normalized_intensity,
                                 entities::LightType::Area,
-                                size,
+                                full_size,
                             )
                             .unwrap(),
-                            width: size[0],
-                            height: size[1],
+                            width: full_size[0],
+                            height: full_size[1],
                             range: output.range,
                         },
                         GlobalTransform::default(),
@@ -14903,6 +15042,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 mask0: None,
                 mask1: None,
                 mask2: None,
+                    specular0:None,specular1:None,specular2:None,
             },
         });
         app.insert_resource(materials);

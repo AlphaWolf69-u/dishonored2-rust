@@ -116,3 +116,72 @@ fn unpack_diffuse(packed: PackedIrradiance, direction: vec3<f32>, tangent: vec3<
     let irradiance3 = ycocg_to_rgb(vec3(l,packed.chroma_b.zw*l));
     return ao*(weights.x*irradiance0 + weights.y*irradiance1 + weights.z*irradiance2 + weights.w*irradiance3);
 }
+
+// lighting::NOTOUCHY_MapGlossAndMetalToLightingPipelineValue +
+// lightcontext::ComputeAmbientLighting, using fresnel's Ward diffuse integral.
+// Probe samples are irradiance; this conversion produces reflected radiance.
+fn native_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
+    specular_tint:vec3<f32>, use_metallic_specular:bool,
+    dielectric:vec3<f32>, metal_diffuse:vec3<f32>)->vec3<f32> {
+    let gloss=1.0-roughness;
+    var metal=metallic;var tint=specular_tint;
+    if use_metallic_specular {
+        metal*=metal;
+        tint=mix(dielectric,albedo,metal);
+        let low=smoothstep(0.0,1.07,gloss);
+        let high=smoothstep(0.05,1.0,gloss);
+        let mapped=mix(low,high,gloss);
+        tint*=clamp((mapped+metal)/0.05,0.0,1.0);
+    }
+    let diffuse=mix(albedo,metal_diffuse,metal);
+    let root=sqrt(tint);
+    let ior=(vec3(1.0)+root)/(vec3(1.00001)-root);
+    let ratio=(ior-vec3(1.0))/(ior+vec3(1.0));let f0=ratio*ratio;
+    let r=roughness;let r2=r*r;let r3=r2*r;
+    let base=0.181446-0.133354*r-0.141096*r2+0.142539*r3;
+    let scale=0.818887+0.156573*r-0.669738*r2+0.262344*r3;
+    let fdr=vec3(1.0)-(1.0-r2)*base-f0*scale;
+    return (1.0/3.14159265358979323846)*diffuse*fdr;
+}
+
+fn evaluate_sh_irradiance(direction: vec3<f32>, probe_index: u32) -> vec3<f32> {
+    let x = direction.x;
+    let y = direction.y;
+    let z = direction.z;
+    let c1 = 0.4290427654048917;
+    let c2 = 0.5116633539732442;
+    let c3 = 0.2477079561003757;
+    let c4 = 0.886226925452758;
+
+    return max(
+        vec3<f32>(0.0),
+        c1 * (x * x - y * y) * probe_sh[probe_index][8].rgb
+            + c3 * (3.0 * z * z - 1.0) * probe_sh[probe_index][6].rgb
+            + c4 * probe_sh[probe_index][0].rgb
+            + 2.0 * c1 * (probe_sh[probe_index][4].rgb * x * y + probe_sh[probe_index][7].rgb * x * z + probe_sh[probe_index][5].rgb * y * z)
+            + 2.0 * c2 * (probe_sh[probe_index][3].rgb * x + probe_sh[probe_index][1].rgb * y + probe_sh[probe_index][2].rgb * z),
+    );
+}
+
+// Match the game's three principal SH sample directions and 0.5 scale for a
+// front-facing, unoccluded surface. Bevy does not supply the game's bent-normal
+// AO term, so the authored coefficients remain unoccluded here.
+fn probe_diffuse(normal: vec3<f32>, probe_index: u32) -> vec3<f32> {
+    // Probe coefficients are authored in Dishonored 2 world XYZ. The viewer's
+    // camera basis maps game XYZ to view XZY with a sign flip on game Y.
+    let n = normalize(vec3<f32>(normal.x, -normal.z, normal.y));
+    let helper = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 1.0, 0.0), abs(n.z) > 0.999);
+    let tangent = normalize(cross(helper, n));
+    let bitangent = cross(n, tangent);
+    let r0 = vec3<f32>(0.7071, 0.0, 0.7071);
+    let r1 = vec3<f32>(-0.35355, -0.61237, 0.7071);
+    let r2 = vec3<f32>(-0.35355, 0.61237, 0.7071);
+    let d0 = r0.x * tangent + r0.y * bitangent + r0.z * n;
+    let d1 = r1.x * tangent + r1.y * bitangent + r1.z * n;
+    let d2 = r2.x * tangent + r2.y * bitangent + r2.z * n;
+    return 0.3535533906 * (
+        evaluate_sh_irradiance(d0, probe_index)
+        + evaluate_sh_irradiance(d1, probe_index)
+        + evaluate_sh_irradiance(d2, probe_index)
+    );
+}

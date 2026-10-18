@@ -1,14 +1,18 @@
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_bindings::mesh,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_functions::{alpha_discard, apply_pbr_lighting_with_native_shadows, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 }
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc}
+#import dh2_indirect::{PackedIrradiance,unpack_diffuse,probe_diffuse}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_native_shadow}
+#import dh2_parallel_receiver::{native_parallel_directional_index, native_parallel_depth_visibility}
 
 @fragment
 fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
+    var diffuse_response=pbr_input.material.base_color.rgb;
     if compiled_misc.z != 0u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
@@ -24,6 +28,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 #endif
         let authored = evaluate_surface(uv, uv1, color);
         pbr_input.material.base_color = authored.albedo;
+        diffuse_response=authored.diffuse_response;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
         pbr_input.diffuse_occlusion = vec3<f32>(authored.occlusion);
@@ -47,9 +52,37 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         // Native paths already clip raw diffuse alpha before tints/layers.
         pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     }
+    if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+        let probe_index = mesh[vertex_output.instance_index].tag;
+#ifdef DH2_VERTEX_PROBE
+#ifdef DH2_AUTHORED_BASIS
+        let bitangent = vertex_output.world_bitangent;
+#else
+        let bitangent = cross(vertex_output.world_normal, vertex_output.world_tangent.xyz) * vertex_output.world_tangent.w;
+#endif
+        let indirect = unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
+            vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
+            pbr_input.N, vertex_output.world_tangent.xyz, bitangent,
+            vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
+        pbr_input.material.emissive = vec4(pbr_input.material.emissive.rgb
+            + indirect * diffuse_response, pbr_input.material.emissive.a);
+#else
+        pbr_input.material.emissive = vec4<f32>(
+            pbr_input.material.emissive.rgb
+                + probe_diffuse(pbr_input.N, probe_index) * diffuse_response * pbr_input.diffuse_occlusion,
+            pbr_input.material.emissive.a,
+        );
+#endif
+    }
+
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
-        out.color = apply_pbr_lighting(pbr_input);
+        // arkDecal's standard pass calls the same shadowed IntegrateLighting
+        // as arkDefault. Its alpha/depth bias does not disable receiving.
+        let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz,
+            vertex_output.world_normal, vertex_output.position.xy, compiled_native_shadow);
+        out.color = apply_pbr_lighting_with_native_shadows(pbr_input,
+            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow);
     } else { out.color = pbr_input.material.base_color; }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

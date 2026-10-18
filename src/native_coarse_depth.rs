@@ -283,6 +283,9 @@ impl NativeDepthPyramid {
 }
 
 /// FUN_1402fc6a0's coarseDepthGen constants (average/max channels X/Z).
+/// Installed coarsedepthgeneration.decl indexes the logical matrix at [2].w,
+/// [3][3], [3][2]. DXBC's column-major CB register indices reverse the two
+/// off-diagonal slots; they are not row indices into our CPU matrix.
 /// Dimensions belong to the last
 /// downsampled-depth mip, not to the full camera target. No capture constants
 /// or assumed full-size viewport replace the owner's scale/inverse projection.
@@ -334,9 +337,9 @@ impl NativeCoarseDepthParameters {
             source_max: scaled.map(|v| (v as i32 - 1) as u32),
             source_per_destination: scaled.map(|v| v / COARSE_DEPTH_SIZE as f32),
             inverse_projection: [
-                inverse_projection[3][2],
-                inverse_projection[3][3],
                 inverse_projection[2][3],
+                inverse_projection[3][3],
+                inverse_projection[3][2],
                 0.0,
             ],
         })
@@ -774,6 +777,10 @@ fn publish_ready_coarse_depth(
     match attempt {
         Ok(Some((metadata, pixels))) if metadata.sequence > gpu.last_published_sequence => {
             let sequence = metadata.sequence;
+            if diagnostics_enabled() && sequence%300==0 {
+                let range=|channel:usize|pixels.iter().fold([f32::INFINITY,f32::NEG_INFINITY],|v,p|[v[0].min(p[channel]),v[1].max(p[channel])]);
+                eprintln!("Native coarse mapped sequence={sequence} ranges={:?}/{:?} samples={:?} inverse={:?}",range(0),range(1),&pixels[..8],metadata.inverse_projection);
+            }
             let source_extent = metadata.source_extent;
             let first_mapped_frame = gpu.last_published_sequence == 0;
             match mailbox.publish(NativeCoarseDepthSnapshot { metadata, pixels }) {
@@ -812,7 +819,12 @@ fn render_native_coarse_depth(
     mut gpu: ResMut<NativeCoarseDepthGpu>,
     mut context: RenderContext,
     mut last_error: Local<Option<String>>,
+    readiness:Option<Res<crate::native_shadow_scene::NativeShadowCaptureReadiness>>,
 ) {
+    // The original has resident shaders before drawing gameplay depth. An
+    // asynchronously compiling forward pass supplies an incomplete depth image
+    // and must not seed the native persistent cascade/movement cache.
+    if readiness.as_ref().is_some_and(|r|r.0.load(std::sync::atomic::Ordering::Acquire)==0) {return;}
     let Ok((entity, depth, view, camera)) = views.single() else {
         return;
     };
@@ -1015,7 +1027,7 @@ mod tests {
             p.source_per_destination.map(f32::to_bits),
             [(117.0f32 * 0.85) / 64.0, (69.0f32 * 0.93) / 64.0].map(f32::to_bits)
         );
-        assert_eq!(p.inverse_projection, [14.0, 15.0, 11.0, 0.0]);
+        assert_eq!(p.inverse_projection, [11.0, 15.0, 14.0, 0.0]);
         let bytes = p.to_bytes();
         let words: [u32; 8] = std::array::from_fn(|i| {
             u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
@@ -1027,12 +1039,35 @@ mod tests {
                 63,
                 p.source_per_destination[0].to_bits(),
                 p.source_per_destination[1].to_bits(),
-                14.0f32.to_bits(),
-                15.0f32.to_bits(),
                 11.0f32.to_bits(),
+                15.0f32.to_bits(),
+                14.0f32.to_bits(),
                 0
             ]
         );
+    }
+
+    #[test]
+    fn finite_gameplay_depth_keeps_the_shadow_receiver_distance() {
+        // Full Steam-game depth-source capture, 2026-10-17. Use asymmetric
+        // off-diagonal entries: identity fixtures cannot catch a CB transpose.
+        let projection = [
+            [0.7002075910568237,0.0,0.0,0.0],
+            [0.0,1.2448134422302246,0.0,0.0],
+            [0.0,0.0,1.4285733413998969e-6,0.010000013746321201],
+            [0.0,0.0,-1.0,0.0],
+        ];
+        let mut inverse=[[0.0;4];4];
+        assert!(crate::render_shadow::invert_rows(&projection,&mut inverse));
+        let parameters=NativeCoarseDepthParameters::from_owner([120,68],[1.0;2],inverse).unwrap();
+        let [a,b,c,_]=parameters.inverse_projection;
+        // Installed coarsedepthgeneration.decl's de-linearization, retaining
+        // its native plus sign. A 50-metre receiver must not collapse to 2m.
+        let depth=(-a/50.0+b)/c;
+        assert!((0.0..1.0).contains(&depth));
+        let far=crate::render_shadow::adaptive_directional_far(true,&projection,&inverse,
+            [30.0,75.0],Some(&[depth;4096])).unwrap();
+        assert_eq!(far,50.0);
     }
 
     #[test]

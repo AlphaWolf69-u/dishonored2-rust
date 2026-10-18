@@ -55,8 +55,9 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
             }).sum::<f64>() + f64::from(f32::from_bits(projection[row*4+3])).abs();
             roundoff_bounds.push(2.0*gamma*magnitude);
         }
-        // Actual game.rs host position permutation, including sign bits.
-        positions.extend([fields[0], fields[2], fields[1] ^ 0x8000_0000, fields[3]]);
+        // The live pipeline selects NativeVegetationPosition, which retains
+        // these original local values independently of the forward mesh.
+        positions.extend_from_slice(&fields[..4]);
         expected.extend_from_slice(&fields[4..]);
     }
     assert!(rows.next().is_none());
@@ -78,7 +79,7 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
     let view = buffer("native world VP/offset", &view, BufferUsages::UNIFORM);
     let matrices = buffer("native 48-byte matrix records", &matrices, BufferUsages::STORAGE);
     let indices = buffer("native visible ID remap", &indices, BufferUsages::STORAGE);
-    let positions = buffer("actual host coordinates", &positions, BufferUsages::STORAGE);
+    let positions = buffer("original local shadow coordinates", &positions, BufferUsages::STORAGE);
     let vertex_attributes = [VertexAttribute { format: VertexFormat::Float32x3, offset: 0, shader_location: 0 }];
     let raster = NativeOpaqueShadowPipeline::new_world_with_raster_state(
         device, adapter, &RawVertexBufferLayout { array_stride: 12,

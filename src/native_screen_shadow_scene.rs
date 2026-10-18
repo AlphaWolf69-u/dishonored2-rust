@@ -1,8 +1,7 @@
-//! Live screen-shadow owner. The forward renderer first establishes its exact
-//! opaque/alpha depth, then computes native visibility and shades that same
-//! geometry again before transparency. Both submissions use the same extracted
-//! meshes, transforms, alpha clipping and view; no approximate depth prepass.
-use bevy::{prelude::*,core_pipeline::{Core3d,core_3d::{main_opaque_pass_3d,main_transparent_pass_3d}},
+//! Live screen-shadow owner. The source-backed material Z branch establishes
+//! opaque/alpha depth before screen visibility and forward lighting.
+use bevy::render::diagnostic::RecordDiagnostics;
+use bevy::{prelude::*,core_pipeline::{Core3d,Core3dSystems,core_3d::main_opaque_pass_3d},
     render::{extract_resource::{ExtractResource,ExtractResourcePlugin},render_asset::RenderAssets,
         render_resource::*,renderer::{RenderContext,RenderDevice,RenderQueue},
         texture::GpuImage,storage::GpuShaderBuffer,view::{ViewDepthTexture,ExtractedView},RenderApp}};
@@ -35,14 +34,19 @@ pub struct NativeScreenShadowScenePlugin;
 impl Plugin for NativeScreenShadowScenePlugin {
     fn build(&self,app:&mut App) {
         app.add_plugins(ExtractResourcePlugin::<NativeScreenShadowFrame>::default())
-            .add_systems(Update,capture_screen_visibility);
+            .add_systems(Update,(ensure_screen_depth_source,capture_screen_visibility));
         let Some(render)=app.get_sub_app_mut(RenderApp) else {return;};
         render.init_resource::<ScreenGpu>().add_systems(Core3d,(
-            clear_view_stencil.before(main_opaque_pass_3d),
-            render_screen_shadow.after(main_opaque_pass_3d).before(shade_with_screen_shadow),
-            shade_with_screen_shadow.before(main_transparent_pass_3d),
+            clear_view_stencil.before(Core3dSystems::Prepass),
+            render_screen_shadow.in_set(Core3dSystems::MainPass).before(main_opaque_pass_3d),
         ));
     }
+}
+
+fn ensure_screen_depth_source(mut commands:Commands,frame:Option<Res<NativeScreenShadowFrame>>,
+    cameras:Query<Entity,(With<Camera3d>,Without<bevy::core_pipeline::prepass::DepthPrepass>)>) {
+    if frame.is_none() {return;}
+    for camera in &cameras {commands.entity(camera).insert(bevy::core_pipeline::prepass::DepthPrepass);}
 }
 
 #[derive(Resource,Default)]
@@ -172,6 +176,9 @@ fn render_screen_shadow(
             if i==1 {value.depth_scale_step_hack.w=1.0;value.depth_scale_step_hack.z=0.025;}
             queue.write_buffer(buffer,0,&bevy::render::storage::ShaderBuffer::from(value).data.unwrap());
         }
+        let diagnostics=context.diagnostic_recorder();
+        let diagnostics=diagnostics.as_deref();
+        let span=diagnostics.time_span(context.command_encoder(),"native_screen_shadows");
         let encoder=context.command_encoder();
         cached.producer[0].pack_depth(encoder,&cached.bindings[1],&output.texture_view);
         let attachment=depth.texture.create_view(&TextureViewDescriptor::default());
@@ -182,6 +189,7 @@ fn render_screen_shadow(
         cached.blur[0].draw(encoder,&cached.blur_bindings[0],&cached.blur_parameters[0],&cached.intermediate,
             &attachment,Operations {load:LoadOp::Clear(Default::default()),store:StoreOp::Store},viewport);
         cached.blur[1].draw(encoder,&cached.blur_bindings[1],&cached.blur_parameters[1],&output.texture_view,&attachment,load,viewport);
+        span.end(context.command_encoder());
         Ok(())
     })();
     match result {
@@ -210,6 +218,11 @@ fn capture_screen_visibility(
     if frame.produced.load(std::sync::atomic::Ordering::Acquire)<30 {return;}
     let Some(image)=images.get(&frame.output) else {return;};
     let extent=image.texture_descriptor.size;
+    if let Some(view)=&frame.current {
+        if let Err(error)=std::fs::write(format!("{path}.view.txt"),format!("{:#?}",view.parameters)) {
+            error!("native screen diagnostic parameters: {error}");
+        }
+    }
     *requested=true;
     commands.spawn(bevy::render::gpu_readback::Readback::texture(frame.output.clone())).observe(
         move |event:On<bevy::render::gpu_readback::ReadbackComplete>,mut commands:Commands| {
@@ -222,6 +235,7 @@ fn capture_screen_visibility(
             let shadowed=values.iter().filter(|&&v|v<255).count();
             println!("Native screen visibility readback: {}x{}, range={min:?}..{max:?}, shadowed={shadowed}/{}",extent.width,extent.height,values.len());
             let result=(||->Result<(),Box<dyn std::error::Error>> {
+                std::fs::write(format!("{path}.rgba.bin"),&event.data)?;
                 let mut encoder=png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&path)?),extent.width,extent.height);
                 encoder.set_color(png::ColorType::Grayscale);encoder.set_depth(png::BitDepth::Eight);
                 encoder.write_header()?.write_image_data(&values)?;Ok(())
@@ -229,21 +243,4 @@ fn capture_screen_visibility(
             if let Err(error)=result {error!("native screen diagnostic capture failed: {error}");}
             commands.entity(event.entity).despawn();
         });
-}
-
-// A distinct system identity orders the final opaque lighting after screen
-// production. The already extracted phase supplies exactly the same geometry,
-// depth values, alpha tests and transforms as the first submission.
-fn shade_with_screen_shadow(
-    world:&World,
-    view:bevy::render::renderer::ViewQuery<(
-        &bevy::render::camera::ExtractedCamera,&ExtractedView,&bevy::render::view::ViewTarget,&ViewDepthTexture,
-        Option<&bevy::core_pipeline::skybox::SkyboxPipelineId>,Option<&bevy::core_pipeline::skybox::SkyboxBindGroup>,
-        &bevy::render::view::ViewUniformOffset,Option<&bevy::camera::MainPassResolutionOverride>)>,
-    opaque:Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>>,
-    alpha:Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::AlphaMask3d>>,
-    pipelines:Res<PipelineCache>,context:RenderContext,
-) {
-    if !world.contains_resource::<NativeScreenShadowFrame>() {return;}
-    main_opaque_pass_3d(world,view,opaque,alpha,pipelines,context);
 }

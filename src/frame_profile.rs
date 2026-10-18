@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-pub const LABELS: [&str; 21] = [
+pub const LABELS: [&str; 29] = [
     "main",
     "extract",
     "sync_extract_wait",
@@ -34,6 +34,14 @@ pub const LABELS: [&str; 21] = [
     "prepare_views",
     "queue_meshes",
     "acquire_window",
+    "native_parallel_cpu",
+    "native_world_draws",
+    "native_model_draws",
+    "native_local_cpu",
+    "native_local_draws",
+    "native_model_collect",
+    "native_parallel_render",
+    "native_local_render",
 ];
 pub const COUNT: usize = LABELS.len();
 
@@ -57,6 +65,10 @@ impl Default for CpuFrameProfile {
 }
 
 impl CpuFrameProfile {
+    pub fn measure(&self,index:usize)->CpuSystemSpan<'_> {
+        self.start(index);
+        CpuSystemSpan {profile:self,index}
+    }
     fn start(&self, index: usize) {
         self.0.start[index].store(self.0.epoch.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -70,6 +82,11 @@ impl CpuFrameProfile {
     pub fn latest_ns(&self) -> [u64; COUNT] {
         std::array::from_fn(|i| self.0.elapsed[i].load(Ordering::Acquire))
     }
+}
+
+pub struct CpuSystemSpan<'a> {profile:&'a CpuFrameProfile,index:usize}
+impl Drop for CpuSystemSpan<'_> {
+    fn drop(&mut self) {self.profile.end(self.index);}
 }
 
 fn start<const I: usize>(profile: Res<CpuFrameProfile>) {

@@ -1,5 +1,6 @@
 #define_import_path dh2_surface
 
+#import dh2_indirect::native_diffuse_response
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
 
 struct SurfaceUniform {
@@ -15,6 +16,9 @@ struct SurfaceUniform {
     flags: vec4<u32>,
     misc: vec4<u32>,
     native_shadow: vec4<u32>,
+    specular_dielectric:vec4<f32>,
+    diffuse_metal:vec4<f32>,
+    specular_reuse:vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -45,12 +49,17 @@ const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFS
 @group(#{MATERIAL_BIND_GROUP}) @binding(116) var mask2: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(117) var surface_sampler: sampler;
 
+@group(#{MATERIAL_BIND_GROUP}) @binding(134) var specular0:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(135) var specular1:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(136) var specular2:texture_2d<f32>;
+
 struct SurfaceResult {
     albedo: vec4<f32>,
     roughness: f32,
     metallic: f32,
     occlusion: f32,
     normal_xy: vec2<f32>,
+    diffuse_response:vec3<f32>,
 }
 
 fn scaled_uv(uv: vec2<f32>, scale_bias: vec4<f32>) -> vec2<f32> {
@@ -75,6 +84,9 @@ fn sample_role(role: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f
         case 11u: { return textureSampleGrad(metallic2, surface_sampler, uv, dx, dy); }
         case 12u: { return textureSampleGrad(mask0, surface_sampler, uv, dx, dy); }
         case 13u: { return textureSampleGrad(mask1, surface_sampler, uv, dx, dy); }
+        case 16u: { return textureSampleGrad(specular0,surface_sampler,uv,dx,dy); }
+        case 17u: { return textureSampleGrad(specular1,surface_sampler,uv,dx,dy); }
+        case 18u: { return textureSampleGrad(specular2,surface_sampler,uv,dx,dy); }
         default: { return textureSampleGrad(mask2, surface_sampler, uv, dx, dy); }
     }
 }
@@ -152,6 +164,22 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
             else { bump[i] = sample_role(3u + i, u, ux, uy).rg; }
         }
     }
+    var specular=vec3(1.0);
+    var specular_layers:array<vec3<f32>,3>;
+    if #{DH2_HAS_SPECULAR}u != 0u {
+        for(var i=0u;i<=last_layer;i++) {
+            let reuse=surface.specular_reuse[i];
+            if i!=0u && reuse!=0u {specular_layers[i]=specular_layers[reuse-1u];}
+            else {
+                let uv=select(uv0,uv1,surface.uv_sets[i].x!=0u);
+                let dx=select(dx0,dx1,surface.uv_sets[i].x!=0u)*surface.uv[i].xy;
+                let dy=select(dy0,dy1,surface.uv_sets[i].x!=0u)*surface.uv[i].xy;
+                specular_layers[i]=sample_role(16u+i,scaled_uv(uv,surface.uv[i]),dx,dy).rgb;
+            }
+            if i==0u {specular=specular_layers[i];}
+            else {specular=mix(specular,specular_layers[i],masks[i]);}
+        }
+    }
     var out: SurfaceResult;
     out.albedo = diffuse[0];
     // arkVegetation samples diffuse0 directly; vertex RGB belongs to wind.
@@ -188,5 +216,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     out.roughness = 1.0 - g;
     if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }
+    out.diffuse_response=native_diffuse_response(out.albedo.rgb,out.roughness,out.metallic,specular,
+        #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb,surface.diffuse_metal.rgb);
     return out;
 }

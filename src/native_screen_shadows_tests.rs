@@ -1293,9 +1293,9 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         source.size(),
     );
     let mut inverse = Mat4::IDENTITY.to_cols_array_2d();
-    inverse[3][2] = -1.0;
+    inverse[2][3] = -1.0;
     inverse[3][3] = 0.0;
-    inverse[2][3] = 2.0;
+    inverse[3][2] = 2.0;
     let parameters = crate::native_coarse_depth::NativeCoarseDepthParameters::from_owner(
         mip_size,
         [0.85, 0.93],

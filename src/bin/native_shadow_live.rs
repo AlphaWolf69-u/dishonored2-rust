@@ -50,7 +50,9 @@ pub(super) fn collect_native_model_casters(
     sources:Res<NativeModelShadowSources>,scene:Res<SceneData>,queue:Res<SceneRenderQueue>,
     pickups:Res<PickupState>,cameras:Query<(&Transform,&Projection),With<Camera3d>>,
     frame_count:Res<bevy::diagnostic::FrameCount>,mut output:ResMut<NativeModelCasterFrame>,
+    profile:Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(26));
     output.current=None;
     let result=(||->Result<Vec<NativeModelShadowCaster>,String>{
         let (transform,projection)=cameras.single().map_err(|error|error.to_string())?;
@@ -344,6 +346,11 @@ pub(super) fn publish_native_parallel_shadow_frame(
             },
         };
         native_shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(&receiver)?;
+        if std::env::var_os("DH2_TRACE_SHADOW_GEOMETRY").is_some() && frame.frame%300==0 {
+            eprintln!("Native directional geometry frame={} fars={fars:?} view={:?} sun={direction:?} matrices={:?} counts={:?}",
+                frame.frame,frame.camera_view,receiver.world_to_shadow,
+                frame.masks.iter().map(|mask|mask.iter().filter(|&&v|v!=0).count()).collect::<Vec<_>>());
+        }
         let mut layers=world.clone();
         for (layer,models) in layers.iter_mut().zip(models) {layer.instances.extend(models.iter().cloned());}
         layers.push(native_shadow_scene::NativeShadowLayer {
@@ -468,7 +475,9 @@ pub(super) fn prepare_native_parallel_model_draws(
     materials:Res<NativeShadowMaterials>,images:Res<Assets<Image>>,
     vegetation:Res<NativeVegetationMeshInputs>,mut queue:ResMut<SceneRenderQueue>,
     mut output:ResMut<NativeParallelModelDraws>,
+    profile:Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(23));
     output.current=None;
     let (Some(owner),Some(frame))=(owner,cpu.current.as_ref()) else {return;};
     let result=(||->Result<Vec<Vec<native_shadow_scene::NativeShadowInstance>>,String>{
@@ -544,7 +553,9 @@ pub(super) fn prepare_native_parallel_world_draws(
     materials: Res<NativeShadowMaterials>, meshes: Res<Assets<Mesh>>, images: Res<Assets<Image>>,
     mut queue: ResMut<SceneRenderQueue>, mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<NativeParallelWorldDraws>,
+    profile:Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(22));
     draws.current = None;
     let (Some(owner),Some(frame)) = (owner,cpu.current.as_ref()) else { return; };
     let result = (|| -> Result<Vec<native_shadow_scene::NativeShadowLayer>,String> {
@@ -636,7 +647,9 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
     clocks: Res<game_clock_runtime::NativeGameplayViewClock>,
     model_frame:Res<NativeModelCasterFrame>,
     mut cpu: ResMut<NativeParallelShadowCpu>,
+    profile:Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(21));
     cpu.current = None;
     let Some(owner) = owner else { return; };
     let result = (|| -> Result<NativeParallelCasterFrame,String> {
@@ -681,6 +694,9 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 [previous_reference,cpu.prepared.far_state.authored_fars[count-1]],
                 Some(&depths))?
         } else { -1.0 };
+        if std::env::var_os("DH2_TRACE_SHADOW_GEOMETRY").is_some() && frame_count.0%300==0 {
+            eprintln!("Native adaptive candidate frame={} far={effective_far}",frame_count.0);
+        }
         let reset_frame = *cpu.reset_frame.get_or_insert(frame_count.0);
         let far_input = render_shadow::CascadeFarInput {
             parsed_authored_fars: Some(owner.cascade_fars),
@@ -750,11 +766,8 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             }
             let cascades = cascades.iter().map(NativeShadowFrustumQuery::as_receiver).collect::<Vec<_>>();
             let planes: Vec<usize> = (0..receiver.plane_count).collect();
-            let primary = VerifiedShadowReceiverState {
-                bounds:[[receiver.bounds[0],receiver.bounds[1],receiver.bounds[2]],
-                    [receiver.bounds[3],receiver.bounds[4],receiver.bounds[5]]],
-                planes:&receiver.planes[..receiver.plane_count],active_planes:&planes,
-            };
+            let primary = VerifiedShadowReceiverState::from_native_planes(
+                &receiver.planes[..receiver.plane_count], &planes);
             let direction = NativeCasterDirection::from_receiver_direction(ray)?;
             for job in 0..8 {
                 let mut hits = cpu.gather.as_mut().unwrap().gather(&caster_world.0,&NativeGlobalShadowCasterInput {

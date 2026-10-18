@@ -2,6 +2,8 @@
 use super::*;
 use crate::render_shadow::AtlasAllocation;
 use crate::native_shadow_depth_copy::NativeShadowDepthCopy;
+#[path="local/receiver_trace.rs"]
+mod receiver_trace;
 
 #[derive(Clone,Debug)]
 pub struct NativeLocalShadowRegion {
@@ -34,8 +36,8 @@ pub struct NativeLocalShadowSceneFrame(pub Option<NativeLocalShadowSubmission>);
 #[derive(Resource,Clone,Default,ExtractResource)]
 pub struct NativeLocalShadowCompletion(pub Arc<Mutex<Option<(u64,AssetId<Image>,AssetId<Image>,HashMap<u32,bool>)>>>);
 
-/// Capture readiness is separate from atlas completion: the screen pass can
-/// finish while asynchronously compiled forward material pipelines are pending.
+/// Forward pipeline readiness gates depth publication and diagnostic captures.
+/// Atlas completion alone cannot establish drawable forward geometry.
 #[derive(Resource,Clone,Default,ExtractResource)]
 pub struct NativeShadowCaptureReadiness(pub Arc<std::sync::atomic::AtomicU32>);
 
@@ -60,6 +62,7 @@ pub(super) fn install(app:&mut App) {
             .add_systems(Core3d,(draw,trace_material_readiness,update_capture_readiness).before(Core3dSystems::MainPass))
             .add_systems(Core3d,trace_hdr.after(Core3dSystems::MainPass).before(Core3dSystems::PostProcess))
             .add_systems(Render,map_hdr_trace.in_set(RenderSystems::Cleanup));
+        receiver_trace::install(render);
     }
 }
 
@@ -126,7 +129,6 @@ fn trace_material_readiness(materials:Res<bevy::pbr::RenderMaterialBindings>,
 fn update_capture_readiness(readiness:Res<NativeShadowCaptureReadiness>,
     materials:Res<bevy::pbr::RenderMaterialBindings>,
     pipelines:Res<bevy::render::render_resource::PipelineCache>) {
-    if std::env::var_os("DH2_SNAPSHOT").is_none() && std::env::var_os("DH2_TRACE_HDR").is_none() {return;}
     let ready=!materials.is_empty() && pipelines.pipelines().all(|p|matches!(p.state,
         bevy::render::render_resource::CachedPipelineState::Ok(_)));
     if ready {readiness.0.fetch_add(1,std::sync::atomic::Ordering::Release);}
@@ -146,7 +148,9 @@ fn draw(frame:Res<NativeLocalShadowSceneFrame>,completion:Res<NativeLocalShadowC
     sampling:Option<Res<crate::native_shadow_sampling::NativeLocalSamplingBuffer>>,queue:Res<RenderQueue>,
     light_indices:Res<bevy::pbr::GlobalClusterableObjectMeta>,
     entities:Query<(Entity,&bevy::render::sync_world::MainEntity),With<bevy::pbr::ExtractedPointLight>>,
+    profile:Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
+    let _span=profile.as_deref().map(|p|p.measure(28));
     let sampling=sampling.as_deref().and_then(|s|buffers.get(s.buffer.id()).map(|b|(s,b)));
     let Some(frame)=&frame.0 else {
         if let Some((_,buffer))=sampling {queue.write_buffer(&buffer.buffer,0,&0u32.to_le_bytes());}
@@ -184,6 +188,9 @@ fn draw(frame:Res<NativeLocalShadowSceneFrame>,completion:Res<NativeLocalShadowC
         &mut gpu.programs,&allocator,&meshes,&images,&buffers,&device,&adapter) else {return;};
     let LocalGpu {programs,arrays,copy,valid,..}= &mut *gpu;
     let (atlas,cache)=arrays.as_ref().unwrap();let copy=&copy.as_ref().unwrap().1;
+    let diagnostics=context.diagnostic_recorder();
+    let diagnostics=diagnostics.as_deref();
+    let span=diagnostics.time_span(context.command_encoder(),"native_local_shadows");
     let encoder=context.command_encoder();
     //32d6e0 clears each complete atlas slice once, before static regions.
     let clear=NativeShadowLayerOps {depth:NativeShadowLoad::Clear(1.0),stencil:NativeStencilLoad::Clear(0)};
@@ -221,6 +228,7 @@ fn draw(frame:Res<NativeLocalShadowSceneFrame>,completion:Res<NativeLocalShadowC
         }
         Ok(())
     })();
+    span.end(context.command_encoder());
     if let Err(error)=result {bevy::log::error!("native local atlas submission failed: {error}");return;}
     valid.retain(|id,_|frame.regions.iter().any(|r|r.cache.is_some_and(|c|c.id==*id)));
     if let Ok(mut done)=completion.0.lock() {*done=Some((frame.revision,frame.atlas.id(),frame.cache.id(),valid.clone()));}

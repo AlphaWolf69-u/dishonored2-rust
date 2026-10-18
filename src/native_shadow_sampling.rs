@@ -266,34 +266,59 @@ mod tests {
         let size=count as u64*4;let output=device.create_buffer_with_data(&BufferInitDescriptor {label:None,
             contents:&(0..count).flat_map(|_|f32::NAN.to_le_bytes()).collect::<Vec<_>>(),usage:BufferUsages::STORAGE|BufferUsages::COPY_SRC});
         let staging=device.create_buffer(&BufferDescriptor {label:None,size,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
-        let local=include_str!("../assets/shaders/dh2_local_receiver.wgsl").lines().filter(|l|!l.starts_with('#')).collect::<Vec<_>>().join("\n").replace("#{MATERIAL_BIND_GROUP}","0");
-        let code=format!("{}\n{}\n{}",include_str!("../assets/shaders/dh2_shadow.wgsl"),local,r#"
-            struct Case {position:vec4<f32>,normal:vec4<f32>,route:vec4<u32>,ids:vec4<u32>}
-            @group(0) @binding(129) var<storage,read> cases:array<Case>;
-            @group(0) @binding(130) var<storage,read_write> results:array<f32>;
-            @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
-                let c=cases[i.x];results[i.x]=native_local_visibility(c.ids.x,c.position.xyz,c.normal.xyz,c.route);
-            }
-        "#);
-        let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(code.into())});
-        let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {label:None,layout:None,module:&shader,entry_point:Some("main"),compilation_options:default(),cache:None});
-        let sampler=crate::native_shadow_gpu::native_shadow_comparison_sampler(device);
-        let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
-            BindGroupEntry{binding:126,resource:source.as_entire_binding()},BindGroupEntry{binding:127,resource:BindingResource::TextureView(&atlas.sampled)},
-            BindGroupEntry{binding:128,resource:BindingResource::Sampler(&sampler)},BindGroupEntry{binding:129,resource:input.as_entire_binding()},BindGroupEntry{binding:130,resource:output.as_entire_binding()}]});
-        let mut encoder=device.create_command_encoder(&CommandEncoderDescriptor::default());
-        for view in &atlas.layers {let _pass=encoder.begin_render_pass(&RenderPassDescriptor {label:None,color_attachments:&[],depth_stencil_attachment:Some(RenderPassDepthStencilAttachment {
-            view,depth_ops:Some(Operations {load:LoadOp::Clear(1.0),store:StoreOp::Store}),stencil_ops:Some(Operations {load:LoadOp::Clear(0),store:StoreOp::Store})}),..default()});}
-        {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(count as u32,1,1);}
-        encoder.copy_buffer_to_buffer(&output,0,&staging,0,size);queue.submit([encoder.finish()]);
-        let (sender,receiver)=std::sync::mpsc::channel();staging.slice(..).map_async(MapMode::Read,move|r|sender.send(r).unwrap());
-        device.wgpu_device().poll(PollType::Wait{submission_index:None,timeout:None}).unwrap();receiver.recv().unwrap().unwrap();
-        let mapped=staging.slice(..).get_mapped_range();let mut failures=Vec::new();
-        for (i,b) in mapped.chunks_exact(4).enumerate() {
-            let v=f32::from_le_bytes(b.try_into().unwrap());if !v.is_finite() || !(0.0..=1.0).contains(&v) {failures.push((i,v));}
+        let source_code=|source:&str|source.lines().filter(|l|!l.starts_with('#')).collect::<Vec<_>>().join("\n").replace("#{MATERIAL_BIND_GROUP}","0");
+        let mut variants=vec![("current",source_code(include_str!("../assets/shaders/dh2_local_receiver.wgsl")))];
+        if let Some(path)=std::env::var_os("DH2_LOCAL_RECEIVER_REFERENCE_SHADER") {
+            variants.push(("reference",source_code(&std::fs::read_to_string(path).unwrap())));
         }
-        assert!(failures.is_empty(),"{} non-finite/out-of-range local visibility cases, first {:?}",failures.len(),&failures[..failures.len().min(12)]);
-        eprintln!("{count} live local projection-plane/normal/option/filter cases returned finite visibility");drop(mapped);staging.unmap();
+        let fill_shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(r#"
+            @vertex fn vertex(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
+                let uv=vec2<f32>(f32((i<<1u)&2u),f32(i&2u));return vec4(uv*vec2(2.0,-2.0)+vec2(-1.0,1.0),0.0,1.0);
+            }
+            @fragment fn fragment(@builtin(position) p:vec4<f32>)->@builtin(frag_depth) f32 {return 0.125+floor(p.x)/32.0+floor(p.y)/64.0;}
+        "#.into())});
+        let fill=device.create_render_pipeline(&RawRenderPipelineDescriptor {label:None,layout:None,
+            vertex:RawVertexState {module:&fill_shader,entry_point:Some("vertex"),compilation_options:default(),buffers:&[]},
+            fragment:Some(RawFragmentState {module:&fill_shader,entry_point:Some("fragment"),compilation_options:default(),targets:&[]}),
+            primitive:default(),depth_stencil:Some(DepthStencilState {format:TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled:Some(true),depth_compare:Some(CompareFunction::Always),stencil:default(),bias:default()}),
+            multisample:default(),multiview_mask:None,cache:None});
+        let mut reference:Option<Vec<u32>>=None;
+        for (label,local) in variants {
+            let code=format!("{}\n{}\n{}",include_str!("../assets/shaders/dh2_shadow.wgsl"),local,r#"
+                struct Case {position:vec4<f32>,normal:vec4<f32>,route:vec4<u32>,ids:vec4<u32>}
+                @group(0) @binding(129) var<storage,read> cases:array<Case>;
+                @group(0) @binding(130) var<storage,read_write> results:array<f32>;
+                @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
+                    let c=cases[i.x];results[i.x]=native_local_visibility(c.ids.x,c.position.xyz,c.normal.xyz,c.route);
+                }
+            "#);
+            let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(code.into())});
+            let pipeline=device.wgpu_device().create_compute_pipeline(&RawComputePipelineDescriptor {label:None,layout:None,module:&shader,entry_point:Some("main"),compilation_options:default(),cache:None});
+            let sampler=crate::native_shadow_gpu::native_shadow_comparison_sampler(device);
+            let group=device.wgpu_device().create_bind_group(&BindGroupDescriptor {label:None,layout:&pipeline.get_bind_group_layout(0),entries:&[
+                BindGroupEntry{binding:126,resource:source.as_entire_binding()},BindGroupEntry{binding:127,resource:BindingResource::TextureView(&atlas.sampled)},
+                BindGroupEntry{binding:128,resource:BindingResource::Sampler(&sampler)},BindGroupEntry{binding:129,resource:input.as_entire_binding()},BindGroupEntry{binding:130,resource:output.as_entire_binding()}]});
+            let mut encoder=device.create_command_encoder(&CommandEncoderDescriptor::default());
+            for view in &atlas.layers {let mut pass=encoder.begin_render_pass(&RenderPassDescriptor {label:None,color_attachments:&[],depth_stencil_attachment:Some(RenderPassDepthStencilAttachment {
+                view,depth_ops:Some(Operations {load:LoadOp::Clear(1.0),store:StoreOp::Store}),stencil_ops:Some(Operations {load:LoadOp::Clear(0),store:StoreOp::Store})}),..default()});pass.set_pipeline(&fill);pass.draw(0..3,0..1);}
+            {let mut pass=encoder.begin_compute_pass(&ComputePassDescriptor::default());pass.set_pipeline(&pipeline);pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(count as u32,1,1);}
+            encoder.copy_buffer_to_buffer(&output,0,&staging,0,size);queue.submit([encoder.finish()]);
+            let (sender,receiver)=std::sync::mpsc::channel();staging.slice(..).map_async(MapMode::Read,move|r|sender.send(r).unwrap());
+            device.wgpu_device().poll(PollType::Wait{submission_index:None,timeout:None}).unwrap();receiver.recv().unwrap().unwrap();
+            let mapped=staging.slice(..).get_mapped_range();let mut failures=Vec::new();
+            for (i,b) in mapped.chunks_exact(4).enumerate() {
+                let v=f32::from_le_bytes(b.try_into().unwrap());if !v.is_finite() || !(0.0..=1.0).contains(&v) {failures.push((i,v));}
+            }
+            assert!(failures.is_empty(),"{} non-finite/out-of-range local visibility cases, first {:?}",failures.len(),&failures[..failures.len().min(12)]);
+            let actual=mapped.chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap())).collect::<Vec<_>>();
+            if let Some(reference)=&reference {
+                let differences=actual.iter().zip(reference).enumerate().filter(|(_, (a,b))|a!=b).collect::<Vec<_>>();
+                assert!(differences.is_empty(),"local receiver transport differs in {} cases, first {:?}",differences.len(),&differences[..differences.len().min(10)]);
+            }
+            else {reference=Some(actual);}
+            eprintln!("{label}: {count} live local projection-plane/normal/option/filter cases returned finite visibility");drop(mapped);staging.unmap();
+        }
     }
 
     #[test]

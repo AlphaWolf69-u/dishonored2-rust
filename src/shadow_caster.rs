@@ -698,6 +698,17 @@ pub struct VerifiedShadowReceiverState<'a> {
     pub active_planes: &'a [usize],
 }
 
+impl<'a> VerifiedShadowReceiverState<'a> {
+    /// FUN_140a707e0 passes the extruded planes to FUN_140a77b10. That
+    /// initializer leaves the world-space query bounds at +/-FLT_MAX.
+    /// The receiver's finite fitting box is in light space and cannot be
+    /// used as a world-space broad phase for this query.
+    pub fn from_native_planes(planes: &'a [[f32; 4]], active_planes: &'a [usize]) -> Self {
+        assert!(planes.len() <= 22 && active_planes.len() == planes.len());
+        Self { bounds: [[-f32::MAX; 3], [f32::MAX; 3]], planes, active_planes }
+    }
+}
+
 /// Plane fields of FUN_140a72df0's fresh cascade contexts. The original
 /// calls FUN_140a77560 with offset=[0,0,0], job=0, jobs=1 and partition=0.
 /// This owns only the geometry consumed by caster tests, not its portal scratch.
@@ -1379,11 +1390,8 @@ mod tests {
             (bounds, planes, active)
         };
         let (bounds, planes, active) = read_context(&receiver[0x8110..0x86a0]);
-        let primary = VerifiedShadowReceiverState {
-            bounds,
-            planes: &planes,
-            active_planes: &active,
-        };
+        let primary = VerifiedShadowReceiverState::from_native_planes(&planes, &active);
+        assert_eq!(primary.bounds, bounds, "live plane-only handoff must match the original query, not the receiver fitting box");
         let contexts: Vec<_> = (0..count)
             .map(|index| {
                 let at = 0x86d0 + index * 0x590;

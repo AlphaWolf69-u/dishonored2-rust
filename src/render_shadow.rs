@@ -1234,11 +1234,13 @@ pub fn unfitted_spot_projection(
 /// FUN_14032e7c0. Spot fit mode2 tightens the camera receiver frustum from
 /// the actual coarseDepth R channel; directional far fitting uses G instead.
 /// The caller retains its previous planes when no accepted depth is below1.
-/// camera_far is the live view owner's DAT_14393740c value, not a default.
+/// DAT_14393740c is the camera NEAR limit (.01 in the original gameplay
+/// capture); DAT_14393748c is its far limit (7000). The selected coarse
+/// sample tightens the far end while preserving the reverse-Z near end.
 pub fn spot_receiver_planes(
     shadow_clip:ShadowMatrix,camera_view:ShadowMatrix,camera_projection:ShadowMatrix,
     inverse_projection:ShadowMatrix,inverse_view_projection:ShadowMatrix,
-    camera_far:f32,coarse:&[[f32;2];4096],
+    camera_near:f32,coarse:&[[f32;2];4096],
 )->Option<[[f32;4];6]> {
     let clip=multiply_rows(shadow_clip,inverse_view_projection);
     let mut minimum=f32::MAX;let mut selected=[0.0;2];
@@ -1258,10 +1260,10 @@ pub fn spot_receiver_planes(
     let [u,v]=selected;
     let z=((u*inverse_projection[2][0]+v*inverse_projection[2][1])+minimum*inverse_projection[2][2])+inverse_projection[2][3]*1.0;
     let w=((u*inverse_projection[3][0]+v*inverse_projection[3][1])+minimum*inverse_projection[3][2])+inverse_projection[3][3]*1.0;
-    let near=-(z/w);let denominator=camera_far-near;
+    let far=-(z/w);let denominator=camera_near-far;
     let mut projection=camera_projection;
-    projection[2][2]=-(camera_far/denominator);
-    projection[2][3]=-((camera_far*near)/denominator);
+    projection[2][2]=-(camera_near/denominator);
+    projection[2][3]=-((camera_near*far)/denominator);
     Some(frustum_planes(multiply_rows(projection,camera_view),false,true))
 }
 
@@ -1385,7 +1387,7 @@ pub struct SpotProjectionInput {
 pub struct SpotFitCamera<'a> {
     pub planes:[[f32;4];6],pub view:ShadowMatrix,pub projection:ShadowMatrix,
     pub inverse_projection:ShadowMatrix,pub inverse_view_projection:ShadowMatrix,
-    pub far:f32,pub coarse:Option<&'a [[f32;2];4096]>,
+    pub near:f32,pub coarse:Option<&'a [[f32;2];4096]>,
 }
 
 /// FUN_14032ad70, both split and fitted paths. Caller-owned crop rectangles
@@ -1419,7 +1421,7 @@ fn fit_local_shadow_projection(projection:ShadowMatrix,view:ShadowMatrix,mode:i3
     let camera=camera.ok_or("native fitted local shadow has no matching camera owner")?;
     let planes=if mode==2 {
         spot_receiver_planes(clip,camera.view,camera.projection,camera.inverse_projection,
-            camera.inverse_view_projection,camera.far,camera.coarse.ok_or("native local fit mode2 has no coarseDepth source")?)
+            camera.inverse_view_projection,camera.near,camera.coarse.ok_or("native local fit mode2 has no coarseDepth source")?)
             .unwrap_or(camera.planes)
     } else {camera.planes};
     let mut fitted=projection;
@@ -2240,7 +2242,7 @@ mod tests {
             }
             assert_eq!(w.len(),113+count*58);
             let coarse=std::array::from_fn(|i|[match case%8 {0=>1.0,1=>0.0,_=>(((i%64)*37+(i/64)*53+case*19)%997) as f32/1024.0},-0.375]);
-            let camera=super::SpotFitCamera {planes:super::frustum_planes(matrix(90),false,true),view:matrix(26),projection:matrix(42),inverse_projection:matrix(58),inverse_view_projection:matrix(74),far:value(106),coarse:Some(&coarse)};
+            let camera=super::SpotFitCamera {planes:super::frustum_planes(matrix(90),false,true),view:matrix(26),projection:matrix(42),inverse_projection:matrix(58),inverse_view_projection:matrix(74),near:value(106),coarse:Some(&coarse)};
             let position=std::array::from_fn(|i|value(11+i));let basis=std::array::from_fn(|r|std::array::from_fn(|c|value(14+r*3+c)));
             let mode=super::local_shadow_fit_mode(priority,w[9] as u8,w[10] as u16,2);
             let mut crops=vec![[-1.0,-1.0,1.0,1.0];count];
@@ -2335,7 +2337,7 @@ mod tests {
                         0=>1.0,1=>0.0,_=>(((i%64)*37+(i/64)*53+grid_case*19)%997) as f32/1024.0,
                     },-0.375]);
                     let camera=super::SpotFitCamera {planes:std::array::from_fn(|r|std::array::from_fn(|c|value(98+r*4+c))),
-                        view:matrix(18),projection:matrix(34),inverse_projection:matrix(50),inverse_view_projection:matrix(66),far:value(122),coarse:Some(&coarse)};
+                        view:matrix(18),projection:matrix(34),inverse_projection:matrix(50),inverse_view_projection:matrix(66),near:value(122),coarse:Some(&coarse)};
                     let input=super::SpotProjectionInput {position:vector(3),basis:basis(6),cutoff_cosine:value(15),near:value(16),far:value(17),side_count:count,fit_mode:mode};
                     let mut rectangles=(0..count).map(|r|std::array::from_fn(|c|value(123+r*4+c))).collect::<Vec<_>>();
                     let output=if tag=="OMNI" {
@@ -2354,6 +2356,23 @@ mod tests {
         }
         assert_eq!(counts,[512,512,512,192,768,96,512]);
     }
+    #[test]
+    fn local_receiver_tightening_preserves_nearby_visible_receivers() {
+        // Original gameplay globals: near=.01 at393740c, far=7000 at393748c.
+        // Feeding far into the near slot instead fits [10,7000], discarding
+        // the visible four-metre receiver as the camera/crop changes.
+        let near=0.01f32;let far=7000.0f32;
+        let projection=[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],
+            [0.0,0.0,near/(far-near),near*far/(far-near)],[0.0,0.0,-1.0,0.0]];
+        let identity=[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]];
+        let mut inverse=[[0.0;4];4];assert!(super::invert_rows(&projection,&mut inverse));
+        let depth=(projection[2][2]*-10.0+projection[2][3])/10.0;
+        let planes=super::spot_receiver_planes(projection,identity,projection,inverse,inverse,near,&[[depth,depth];4096]).unwrap();
+        let contains=|z:f32|planes.iter().all(|p|p[2]*z+p[3]>=0.0);
+        assert!(contains(-4.0),"near visible receivers must remain inside the fitted camera");
+        assert!(!contains(-20.0),"the measured ten-metre far end must still tighten the fit");
+    }
+
     #[test]
     fn spot_receiver_planes_match_original_coarse_r_selection() {
         for (case,line) in include_str!("../analysis/original_spot_receiver_planes_cases.txt").lines().enumerate() {

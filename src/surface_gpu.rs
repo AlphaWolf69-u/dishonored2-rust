@@ -18,16 +18,19 @@ pub struct SurfaceUniform {
     pub misc: UVec4,
     /// Original forward receiver route, offset compile flags, filtering, light quality.
     pub native_shadow: UVec4,
+    pub specular_dielectric: Vec4,
+    pub diffuse_metal: Vec4,
+    pub specular_reuse: UVec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
 /// HLSL are #if parameters, not per-fragment uniform branches. Values must
 /// participate in the pipeline cache key; image handles and tints must not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceKey(pub [u32; 13]);
+pub struct SurfaceKey(pub [u32; 14]);
 
 impl SurfaceKey {
-    pub const NAMES: [&'static str; 13] = [
+    pub const NAMES: [&'static str; 14] = [
         "DH2_EXTRA_LAYERS",
         "DH2_HAS_GLOSS",
         "DH2_GLOSS_ALPHA",
@@ -41,6 +44,7 @@ impl SurfaceKey {
         "DH2_SHADOW_OFFSET_FLAGS",
         "DH2_SHADOW_FILTER",
         "DH2_SHADOW_LIGHT_QUALITY",
+        "DH2_HAS_SPECULAR",
     ];
 }
 
@@ -60,6 +64,7 @@ impl From<&SurfaceUniform> for SurfaceKey {
             surface.native_shadow.y,
             surface.native_shadow.z,
             surface.native_shadow.w,
+            surface.specular_reuse.w,
         ])
     }
 }
@@ -120,6 +125,9 @@ impl From<&Surface> for SurfaceUniform {
                 u32::from(s.alpha_test),
             ),
             native_shadow:UVec4::new(3,0,0,0),
+            specular_dielectric:Vec3::from_array(s.specular_dielectric).extend(0.0),
+            diffuse_metal:Vec3::from_array(s.diffuse_metal).extend(0.0),
+            specular_reuse:UVec4::new(s.layers[0].specular_reuse,s.layers[1].specular_reuse,s.layers[2].specular_reuse,u32::from(s.has_specular)),
         }
     }
 }
@@ -144,6 +152,7 @@ impl ImageRole {
     pub const fn mask(layer: usize) -> Self {
         Self(12 + layer)
     }
+    pub const fn specular(layer:usize)->Self {Self(16+layer)}
     pub const fn occlusion() -> Self {
         Self(15)
     }
@@ -199,6 +208,18 @@ mod tests {
         uniform.misc.w ^= 1;
         uniform.alpha.y = 1.0 - uniform.alpha.y;
         assert_ne!(SurfaceKey::from(&uniform), key);
+    }
+
+    #[test]
+    fn native_specular_inputs_reach_uniforms_and_pipeline_key() {
+        let surface=Surface::parse(b"hasSpecularMap 1\nextraLayer 2\nspecularMap original.tga\nLayer1_specularReuseLayer 1\nLayer2_specularReuseLayer 2\nspecularTintDielectric {0.02,0.03,0.07}\ndiffuseAlbedoMetallic {0.01,0.02,0.03}\n");
+        let uniform=SurfaceUniform::from(&surface);
+        assert_eq!(surface.layers[0].specular.as_deref(),Some("original.tga"));
+        assert_eq!(uniform.specular_reuse,UVec4::new(0,1,2,1));
+        assert_eq!(uniform.specular_dielectric,Vec4::new(0.02,0.03,0.07,0.0));
+        assert_eq!(uniform.diffuse_metal,Vec4::new(0.01,0.02,0.03,0.0));
+        let mut without=uniform.clone();without.specular_reuse.w=0;
+        assert_ne!(SurfaceKey::from(&uniform),SurfaceKey::from(&without));
     }
 
     #[test]
