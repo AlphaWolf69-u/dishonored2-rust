@@ -775,29 +775,6 @@ pub fn layer0_vertex_mask_channel(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-pub fn decal_depth_bias(bytes: &[u8]) -> Option<f32> {
-    let text = crate::entities::native_declaration_text(bytes);
-    let mut decal = false;
-    let mut original = None;
-    for line in text.lines() {
-        let line = line.split("//").next().unwrap_or("").trim();
-        let mut fields = line.split_whitespace();
-        match fields.next() {
-            Some("mainProgram") => decal = fields.next() == Some("arkDecal"),
-            Some("zbias") => original = fields.next().and_then(|value| value.parse::<f32>().ok()),
-            _ => {}
-        }
-    }
-    // arkDecal.hlsl_vp_main subtracts zbias.x from clip-space Z BEFORE
-    // perspective division. Keep its sign and scale; a rasterizer offset
-    // instead changes the result with the depth-buffer format and distance.
-    if decal {
-        Some(original.unwrap_or(0.0))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1397,7 +1374,7 @@ mod tests {
         );
     }
     #[test]
-    fn reads_decal_bias_and_vertex_mask() {
+    fn reads_vertex_mask() {
         assert_eq!(
             layer0_vertex_mask_channel(b"layer0_vtxcolormaskchannel 0\n"),
             Some(0)
@@ -1405,16 +1382,6 @@ mod tests {
         assert_eq!(
             transparency(b"layer0_vtxcolormaskchannel 0\n"),
             Transparency::Opaque
-        );
-        assert_eq!(
-            decal_depth_bias(b"mainProgram arkDecal\nzbias -0.0001\n"),
-            Some(-0.0001)
-        );
-        assert_eq!(decal_depth_bias(b"mainProgram arkDecal\n"), Some(0.0));
-        assert_eq!(decal_depth_bias(b"mainProgram arkDecal\nzbias 0\n"), Some(0.0));
-        assert_eq!(
-            decal_depth_bias(b"mainProgram arkDecal\nzbias 0.25\n"),
-            Some(0.25)
         );
     }
     #[test]

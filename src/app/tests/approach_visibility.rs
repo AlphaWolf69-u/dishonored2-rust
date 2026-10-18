@@ -1,6 +1,142 @@
 use super::*;
 
 #[test]
+#[ignore = "requires installed material and renderParm declarations"]
+fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
+    let base = crate::assets::installation::game_base().unwrap();
+    let catalog = archive::Catalog::open(&base).unwrap();
+    let mut library = shader_cache::NativeProgramLibrary::open(
+        &base,
+        shader_cache::ShaderCacheBackend::Pc,
+        &catalog,
+    )
+    .unwrap();
+    let program = catalog
+        .read("generated/decls/renderprog/arkdecal.decl")
+        .unwrap()
+        .unwrap();
+    assert!(material::program_option(b"{}", &program, "isDecal"));
+    for name in ["arkDecal", "arkdecal", "ARKDECAL", "\"arkDecal\""] {
+        for parameters in [
+            "zbias -0.0001",
+            "ZBIAS -0.0001",
+            "otherUniform 3 zbias { -0.0001, 0, 0, 0 }",
+            "options { zbias -1 } zbias -0.0001",
+        ] {
+            let bytes = format!("{{\nmainProgram {name}\n{parameters}\n}}");
+            let surface = material_surface::Surface::parse(bytes.as_bytes());
+            assert!(
+                surface
+                    .main_program
+                    .as_deref()
+                    .unwrap()
+                    .eq_ignore_ascii_case("arkDecal")
+            );
+            let [[bias, ..]] =
+                material_float_vectors(&mut library, &catalog, bytes.as_bytes(), ["zbias"])
+                    .unwrap();
+            assert_eq!(bias, -0.0001, "{bytes}");
+        }
+    }
+    assert_eq!(
+        material_float_vectors(
+            &mut library,
+            &catalog,
+            b"{\nmainProgram arkdecal\n}",
+            ["zbias"]
+        )
+        .unwrap(),
+        [[0.0; 4]]
+    );
+    let mut spellings = std::collections::BTreeMap::<String, usize>::new();
+    let mut defaults = 0;
+    for path in catalog.paths_containing("generated/decls/material/") {
+        let bytes = catalog.read(&path).unwrap().unwrap();
+        let surface = material_surface::Surface::parse(&bytes);
+        let Some(main) = surface
+            .main_program
+            .as_deref()
+            .filter(|name| name.eq_ignore_ascii_case("arkDecal"))
+        else {
+            continue;
+        };
+        *spellings.entry(main.to_owned()).or_default() += 1;
+        let resolved = material_float_vectors(&mut library, &catalog, &bytes, ["zbias"]).unwrap();
+        let overrides = entities::material_float_parameters(
+            &entities::native_declaration_text(&bytes),
+            |name| name == "zbias",
+        )
+        .unwrap();
+        let expected = overrides
+            .last()
+            .map(|(_, words)| words.map(f32::from_bits))
+            .unwrap_or([0.0; 4]);
+        defaults += usize::from(overrides.is_empty());
+        assert_eq!(resolved[0], expected, "decal Uniform binding {path}");
+    }
+    assert!(spellings.get("arkdecal").copied().unwrap_or(0) > 0);
+    assert!(spellings.get("arkDecal").copied().unwrap_or(0) > 0);
+    println!("Installed decal depth offsets: spellings={spellings:?} default_zero={defaults}");
+
+    // Exercise the actual loader, not only the shared Uniform decoder: these
+    // assets mix arkdecal/arkDecal spellings. The old loader lost the former's
+    // bias even though decoding the Uniform on its own already worked.
+    let mut native_programs = Ok(library);
+    let mut resolver = MaterialResolver {
+        material_exposure: default(),
+        anisotropic_sampler_image: default(),
+        linear_clamp_image: default(),
+        vista_sun: [Vec4::ZERO; 2],
+        environment: None,
+        catalog: Some(&catalog),
+        native_programs: Some(&mut native_programs),
+        probe_materials: &mut Assets::default(),
+        decal_materials: &mut Assets::default(),
+        probe_sh_buffers: &mut Assets::default(),
+        probe_sh_buffer: default(),
+        vertex_probe_buffer: default(),
+        native_shadow_buffer: default(),
+        native_local_shadow_buffer: default(),
+        native_shadow_map: default(),
+        probe_sh_records: default(),
+        probes: None,
+        cache: default(),
+        shadow_materials: default(),
+        diffuse_image_slots: default(),
+        diffuse_image_paths: default(),
+        preferred_mip: None,
+        misses: 0,
+        suppressed_transparent: 0,
+        cutout: 0,
+        blended: 0,
+        probe_samples: 0,
+        probe_sample_misses: 0,
+        lit: true,
+    };
+    for path in [
+        "models/environment/generic/decals/walls/dcl_plaster_holes_bottom_par_02.material",
+        "models/environment/generic/decals/walls/dcl_plaster_leaks_03_dark.material",
+        "models/environment/generic/decals/street_floors/leaves_dirt_01.material",
+        "models/environment/generic/decals/ghost_sign_01/ghost_sign_razina_01.material",
+    ] {
+        let resolved = resolver
+            .get(path, 0, [-27.582226, -26.091814, -17.269775])
+            .unwrap();
+        let MaterialHandle::Decal(handle) = resolved.handle else {
+            panic!("expected decal {path}")
+        };
+        let bias = resolver
+            .decal_materials
+            .get(&handle)
+            .unwrap()
+            .extension
+            .bias;
+        assert_eq!(bias, -0.0001, "loaded vertex Uniform {path}");
+        println!("Resolved decal {path}: vertex zbias={bias}");
+    }
+}
+
+#[test]
 fn short_range_lights_keep_finite_clusters_when_approached() {
     use bevy::camera::{CameraProjection, primitives::Frustum};
     use bevy::light::cluster::{ClusterableObjects, Clusters, GlobalClusterSettings};

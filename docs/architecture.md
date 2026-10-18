@@ -217,6 +217,9 @@ The two camera-angle replays and GPU samples are retained under
 capture switches unset.
 
 Mesh decals preserve the material's signed `zbias` (renderParm default zero).
+Its value uses the shared material token parser and registered Uniform defaults,
+including case-insensitive names and root-scope overrides. Both `arkdecal` and
+`arkDecal` declarations follow this same loader path.
 The installed `renderprog/arkdecal` vertex program subtracts it from homogeneous
 clip Z before division by W. It is a vertex uniform, not a depth-format-dependent
 integer raster bias. GPU checks place a decal behind its receiver and exercise

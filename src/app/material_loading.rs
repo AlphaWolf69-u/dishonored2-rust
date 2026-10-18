@@ -761,7 +761,22 @@ impl MaterialResolver<'_> {
         if env::var("DH2_TRACE_MATERIAL").ok().as_deref() == Some(path) {
             println!("NATIVE_MATERIAL {path}: {uniform:#?}");
         }
-        let decal_bias = material::decal_depth_bias(bytes);
+        // Resolve this Uniform through the same token/registry path as every
+        // other material parameter. Program/parameter names are case-insensitive;
+        // real arkdecal declarations need the same offset as arkDecal.
+        let is_decal = program_is_decal
+            || surface.main_program.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("arkDecal"));
+        let decal_bias = if is_decal {
+            match self.float_vectors(bytes, ["zbias"]) {
+                Ok([value]) => value[0],
+                Err(error) => {
+                    eprintln!("Decal depth parameter unavailable {path}: {error}");
+                    return None;
+                }
+            }
+        } else {
+            0.0
+        };
         let mut images = Vec::new();
         for (role, name) in surface.texture_bindings(program_is_decal) {
             if let Some(slot) = self.register_image(name) {
@@ -801,7 +816,6 @@ impl MaterialResolver<'_> {
                 AlphaMode::Blend
             }
         };
-        let is_decal = program_is_decal || decal_bias.is_some();
         let cull_mode = match material::cull_mode_with_program(bytes, program) {
             Ok(material::CullMode::None) => None,
             Ok(material::CullMode::Front) => Some(bevy::render::render_resource::Face::Front),
@@ -837,7 +851,7 @@ impl MaterialResolver<'_> {
                 base,
                 extension: DecalExtension {
                     material_exposure: self.material_exposure.clone(),
-                    bias: decal_bias.unwrap_or(0.0),
+                    bias: decal_bias,
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
                     native_shadow: self.native_shadow_buffer.clone(),
