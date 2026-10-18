@@ -16,6 +16,9 @@ pub(super) struct SceneData {
     pub(super) placed_lights: Vec<entities::PlacedLight>,
     pub(super) environment_lighting: Option<entities::EnvironmentLighting>,
     pub(super) environment_render_parameters: Option<entities::EnvironmentRenderParameters>,
+    pub(super) environment_blend_duration: f32,
+    pub(super) area_environments: Vec<crate::rendering::environment::AreaEnvironment>,
+    pub(super) rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings,
     pub(super) environment_probes: Option<probe_lighting::ProbeLightingSet>,
     #[allow(dead_code)]
     // Actual startup inputs for the native CPU frame publisher, not captured defaults.

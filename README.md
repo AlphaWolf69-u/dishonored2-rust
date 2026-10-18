@@ -28,7 +28,7 @@ cargo test --locked --features game --lib
 .\build-game.ps1
 ```
 
-The build script creates `bin/` and copies the release client there. Dependencies
+The build script produces `target/release/dishonored2-rust.exe`. Dependencies
 are downloaded on the first build; `--offline` is only appropriate once cached.
 Tests marked ignored need a local game installation, private research captures,
 or a GPU. Numeric regression fixtures ship in `tests/fixtures/`; the normal suite
@@ -40,7 +40,7 @@ Apache-2.0 licenses. Their licensed auxiliary assets are not Dishonored assets.
 ## Run with installed resources
 
 ```powershell
-.\bin\dishonored2-rust.exe
+.\target\release\dishonored2-rust.exe
 ```
 
 The client discovers Steam libraries and AppID 403640's installation. It reads
@@ -54,12 +54,18 @@ The default level is `eotw_p_lowchaos`. Select another installed world by its
 unambiguous stem or full archive resource path:
 
 ```powershell
-.\bin\dishonored2-rust.exe menu_p
+.\target\release\dishonored2-rust.exe menu_p
 ```
 
 To override discovery, set `DH2_GAME_BASE` to the installed game's `base` directory.
 An invalid override reports an error. The tools can list archive resource names;
 their optional extraction command is for research, not a launch prerequisite.
+
+The rewrite extends sunlight caster depth to at least 150 metres to reduce the
+original game's abrupt shadow cutoffs. Authored longer ranges are preserved.
+Set `DH2_SUN_SHADOW_MIN_EXTENT=0` to use the game's area ranges exactly, or set
+another distance in metres. This explicit rewrite setting leaves the game's
+configuration and assets untouched; longer caster depth can increase shadow cost.
 
 ## Controls and diagnostics
 

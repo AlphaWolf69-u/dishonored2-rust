@@ -813,6 +813,18 @@ impl NativeShadowInstanceMasks {
         &self.masks
     }
 
+    ///32c2a0 intersects the WORLD tree result with the published Tome bytes.
+    pub fn intersect_world_query(&mut self, cascade: usize, world: &[u8]) -> Result<(), String> {
+        let mask = self.masks.get_mut(cascade).ok_or("invalid WORLD query cascade")?;
+        if mask.len() != world.len() {
+            return Err("WORLD and Tome instance mask lengths differ".into());
+        }
+        for (selected, &broad) in mask.iter_mut().zip(world) {
+            *selected &= broad;
+        }
+        Ok(())
+    }
+
     /// Native world+0x408 is the same Tome-index-to-BWM-instance list already
     /// decoded as WorldMesh::tome_object_instances. Empty lists stay empty:
     /// authored object IDs are not a replacement for these renderer indices.
@@ -1383,7 +1395,9 @@ mod tests {
     #[ignore = "requires paired original gameplay caster capture and converter"]
     fn global_shadow_gather_matches_paired_original_gameplay() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let bytes = std::fs::read(root.join("artifacts/original-shadow-caster-paired-input.bin"))
+        let capture = std::env::var("DH2_SHADOW_CASTER_CAPTURE")
+            .unwrap_or_else(|_| "artifacts/original-shadow-caster-paired-input.bin".into());
+        let bytes = std::fs::read(root.join(capture))
             .expect("run analysis/convert_shadow_caster_capture.py");
         assert_eq!(&bytes[..4], b"DHC1");
         let u32_at = |data: &[u8], offset: usize| {

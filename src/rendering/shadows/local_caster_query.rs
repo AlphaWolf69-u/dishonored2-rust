@@ -134,6 +134,35 @@ impl NativeLocalWorldQuery {
         mask
     }
 
+    ///295710/28caf0/28ca10: directional queries test each tree node's
+    ///bounds against the clip volume, then admit its retained records together.
+    ///The explicit near threshold is the cascade's negative depth offset.
+    pub fn query_projection(&self, clip: &[[f32; 4]; 4], near_depth: f32) -> Vec<u8> {
+        let mut mask = vec![0; self.bounds.len()];
+        let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
+        if let Some(root) = &self.root {
+            self.visit_projection(root, &clip, near_depth, &mut mask);
+        }
+        mask
+    }
+
+    fn visit_projection(&self, node: &Node, clip: &[f32; 16], near_depth: f32, mask: &mut [u8]) {
+        if render_model::native_transformed_aabb_clip_cull_at_depth(
+            clip, node.bounds[0], node.bounds[1], near_depth,
+        ).culled {
+            return;
+        }
+        for &id in &self.ids[node.range.clone()] {
+            mask[id as usize] = 1;
+        }
+        if let Some(left) = &node.left {
+            self.visit_projection(left, clip, near_depth, mask);
+        }
+        if let Some(right) = &node.right {
+            self.visit_projection(right, clip, near_depth, mask);
+        }
+    }
+
     fn visit(&self, node: &Node, bounds: [[f32; 3]; 2], clip: &[f32; 16], mask: &mut [u8]) {
         if !(0..3).all(|axis| {
             bounds[0][axis] <= node.bounds[1][axis] + 0.0
@@ -311,6 +340,34 @@ fn sort_positions(pairs: &mut [(f32, u32)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires private original executable WORLD query fixtures"]
+    fn directional_world_queries_match_executable() {
+        let source = std::fs::read_to_string("analysis/parallel_world_tree_cases.txt").unwrap();
+        let mut cases = 0;
+        for line in source.lines() {
+            let (input, expected) = line.split_once(" | ").unwrap();
+            let words = input.split_whitespace()
+                .map(|v| u32::from_str_radix(v, 16).unwrap()).collect::<Vec<_>>();
+            let expected = expected.split_whitespace()
+                .map(|v| u32::from_str_radix(v, 16).unwrap()).collect::<Vec<_>>();
+            let count = words[1] as usize;
+            let bounds = (0..count).map(|i| std::array::from_fn(|r| {
+                std::array::from_fn(|c| f32::from_bits(words[2 + i * 6 + r * 3 + c]))
+            })).collect();
+            let tree = NativeLocalWorldQuery::from_bounds(bounds);
+            let offset = 2 + count * 6;
+            let clip = std::array::from_fn(|r| std::array::from_fn(|c| {
+                f32::from_bits(words[offset + r * 4 + c])
+            }));
+            let near = f32::from_bits(words[offset + 16]);
+            assert_eq!(tree.query_projection(&clip, near).into_iter().map(u32::from).collect::<Vec<_>>(),
+                expected[expected.len() - count..], "WORLD projection case {cases}");
+            cases += 1;
+        }
+        assert_eq!(cases, 160);
+    }
+
     fn serialize(node: &Node, out: &mut Vec<u32>) {
         out.extend([node.range.start as u32, node.range.end as u32]);
         for b in node.bounds {

@@ -153,6 +153,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve the user's ORIGINAL quality cvar and the installed declaration
     // once. No per-frame filesystem/catalog scans and no copied capture values.
     let original_shadow_settings = game_settings::read_shadow_settings();
+    let rewrite_shadow_settings = crate::platform::rewrite_settings::RewriteShadowSettings::from_environment()?;
+    println!("Sun shadow caster minimum: {} m (0 restores authored game ranges)",
+        rewrite_shadow_settings.minimum_sun_caster_extent);
     let shadow_depth_bias_clamp = original_shadow_settings
         .as_ref()
         .ok()
@@ -161,11 +164,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .ok()
         .map(|(_, settings)| settings.sort_shadows_ccw);
-    let shadow_cascade_controls = original_shadow_settings
+    let mut shadow_cascade_controls = original_shadow_settings
         .as_ref()
         .ok()
         .map(|(_, settings)| settings.cascade_controls);
-    let shadow_cascade_fars = original_shadow_settings
+    let mut shadow_cascade_fars = original_shadow_settings
         .as_ref()
         .ok()
         .and_then(|(_, settings)| settings.cascade_fars);
@@ -209,6 +212,22 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             (None, None, None)
         }
     };
+    if let Some(quality) = &shadow_quality {
+        if let (Some(controls), Some(partial)) = (
+            &mut shadow_cascade_controls,
+            quality.parallel_partial_dynamic_update,
+        ) {
+            controls.partial_dynamic_update = partial;
+        }
+        shadow_cascade_fars.get_or_insert(quality.cascade_fars);
+    }
+    let view_settings = match catalog.as_ref() {
+        Some(catalog) => read_installed_visuals(catalog).and_then(|visuals| {
+            game_settings::read_view_settings_with_visuals(&visuals).map(|(_, settings)| settings)
+        }),
+        None => game_settings::read_view_settings().map(|(_, settings)| settings),
+    };
+    println!("View distance settings: {view_settings:?}");
     let far_shadow_bounds = entity_document
         .as_ref()
         .map(entities::world_far_shadow_bounds)
@@ -266,15 +285,23 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         )
                         .map_err(std::io::Error::other)?;
-                    Ok::<_, std::io::Error>((lighting, render_parameters))
+                    let duration = entities::environment_blend_duration(&source)
+                        .map_err(std::io::Error::other)?;
+                    Ok::<_, std::io::Error>((lighting, render_parameters, duration))
                 })
                 .transpose()?
         }
         _ => None,
     };
-    let (environment_lighting, environment_render_parameters) = environment_data
-        .map(|(lighting, parameters)| (Some(lighting), Some(parameters)))
-        .unwrap_or((None, None));
+    let (environment_lighting, environment_render_parameters, environment_blend_duration) = environment_data
+        .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
+        .unwrap_or((None, None, 1.0));
+    let area_environments = match (entity_document.as_ref(), catalog.as_ref()) {
+        (Some(document), Some(catalog)) => crate::rendering::environment::load_area_environments(document, catalog)
+            .map_err(std::io::Error::other)?,
+        _ => Vec::new(),
+    };
+    println!("Loaded {} area environment trigger shapes", area_environments.len());
     let probe_start = Instant::now();
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
@@ -624,6 +651,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             placed_lights,
             environment_lighting,
             environment_render_parameters,
+            environment_blend_duration,
+            area_environments,
+            rewrite_shadow_settings,
             environment_probes,
             shadow_quality_preset,
             shadow_quality,
@@ -700,9 +730,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .init_resource::<shadow_updates::NativeParallelWorldDraws>()
         .init_resource::<shadow_updates::NativeModelCasterFrame>()
         .init_resource::<shadow_updates::NativeParallelModelDraws>()
-        .insert_resource(NativeViewSettings(
-            game_settings::read_view_settings().map(|(_, settings)| settings),
-        ))
+        .insert_resource(NativeViewSettings(view_settings))
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .insert_resource(VisibilityElapsedTiming::default())
@@ -886,6 +914,10 @@ pub(super) fn load_installed_shadow_quality(
     catalog: &archive::Catalog,
     preset: u32,
 ) -> Result<Option<entities::ShadowQualitySettings>, String> {
+    entities::shadow_quality_settings_for_preset(&read_installed_visuals(catalog)?, preset)
+}
+
+fn read_installed_visuals(catalog: &archive::Catalog) -> Result<String, String> {
     let candidates = catalog.paths_containing("menusectionoptionvisuals");
     if candidates.len() != 1 {
         return Err(format!(
@@ -898,8 +930,7 @@ pub(super) fn load_installed_shadow_quality(
         .read(resource)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("indexed visuals declaration vanished: {resource}"))?;
-    let source = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
-    entities::shadow_quality_settings_for_preset(source, preset)
+    String::from_utf8(bytes).map_err(|e| e.to_string())
 }
 
 pub fn main() {

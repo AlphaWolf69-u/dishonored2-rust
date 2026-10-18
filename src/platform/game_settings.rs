@@ -433,6 +433,7 @@ pub fn read_game_clock_controls() -> Result<(PathBuf, crate::game_clock::ClockCo
 pub struct ViewSettings {
     pub horizontal_fov_degrees: f32,
     pub lod_zoom_multiplier: f32,
+    pub umbra_gate_visibility_ratio: f32,
     pub umbra_distance_imprecision: f32,
     pub umbra_accurate_threshold: f32,
 }
@@ -449,6 +450,9 @@ pub fn view_settings(source: &str) -> Result<ViewSettings, String> {
             .map(original_float_cvar)
             .unwrap_or(1.0)
             .clamp(f32::from_bits(0x3586_37bd), f32::from_bits(0x4974_2400)),
+        umbra_gate_visibility_ratio: quoted_setting(source, "r_umbraGateVisibilityRatio")?
+            .map(original_float_cvar)
+            .unwrap_or(1.0),
         //141379340/1413792f0 register unbounded float CVars "0.f"/"70.f".
         umbra_distance_imprecision: quoted_setting(source, "umbra_distance")?
             .map(original_float_cvar)
@@ -464,8 +468,46 @@ pub fn read_view_settings() -> Result<(PathBuf, ViewSettings), String> {
     Ok((path, view_settings(source.as_deref().unwrap_or(""))?))
 }
 
+/// Startup quality application follows the original visuals manager rather
+/// than leaving the registered LOD default active after a preset is selected.
+pub fn view_settings_with_visuals(source: &str, visuals: &str) -> Result<ViewSettings, String> {
+    let mut settings = view_settings(source)?;
+    if let Some(preset) = quoted_setting(source, "r_viewDistPreset")? {
+        let preset = preset.parse().map_err(|_| "invalid r_viewDistPreset")?;
+        let quality = crate::entities::view_distance_quality_settings_for_preset(visuals, preset)?
+            .ok_or("installed view-distance preset is unavailable")?;
+        settings.lod_zoom_multiplier = quality.lod_zoom_multiplier;
+        settings.umbra_gate_visibility_ratio = quality.umbra_gate_visibility_ratio;
+    }
+    Ok(settings)
+}
+
+pub fn read_view_settings_with_visuals(visuals: &str) -> Result<(PathBuf, ViewSettings), String> {
+    let (path, source) = read_configuration()?;
+    Ok((path, view_settings_with_visuals(source.as_deref().unwrap_or(""), visuals)?))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn view_distance_preset_applies_over_registered_and_explicit_cvars() {
+        let visuals = r#"{ edit = {
+            m_viewDistanceSettings = { enumItem[ULTRA_QUALITY] = 0.6; }
+            m_umbraGateSettings = { enumItem[ULTRA_QUALITY] = 0; }
+        } }"#;
+        let settings = super::view_settings_with_visuals(
+            "r_viewDistPreset \"5\"\nr_lodZoomMultiplicator \"1.5\"\n",
+            visuals,
+        ).unwrap();
+        assert_eq!(settings.lod_zoom_multiplier, 0.6);
+        assert_eq!(settings.umbra_gate_visibility_ratio, 0.0);
+        let defaults = super::view_settings_with_visuals("r_viewDistPreset \"1\"", visuals).unwrap();
+        assert_eq!(defaults.lod_zoom_multiplier, 7000.0);
+        assert_eq!(defaults.umbra_gate_visibility_ratio, 1.0);
+        assert_eq!(super::view_settings_with_visuals("", visuals).unwrap(), super::view_settings("").unwrap());
+        assert!(super::view_settings_with_visuals("r_viewDistPreset \"7\"", visuals).is_err());
+    }
+
     #[test]
     fn local_shadow_settings_preserve_registered_defaults_and_integer_conversion() {
         let defaults = super::local_shadow_settings("").unwrap();

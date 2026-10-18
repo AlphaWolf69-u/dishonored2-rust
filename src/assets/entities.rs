@@ -645,6 +645,15 @@ fn decode_environment_source(source: &str) -> String {
         .replace("\\\"", "\"")
 }
 
+/// idDeclEnv constructor 140017b30 initializes blendDuration to one second.
+pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
+    for line in decode_environment_source(source).lines() {
+        let Some(value) = line.trim().strip_prefix("blendDuration") else { continue };
+        return value.trim().parse().map_err(|_| "invalid environment blendDuration".into());
+    }
+    Ok(1.0)
+}
+
 fn parse_environment_render_parameters(source: &str) -> Vec<(String, String)> {
     let decoded = decode_environment_source(source);
     let mut in_render_parms = false;
@@ -1381,6 +1390,43 @@ pub fn shadow_quality_settings_for_preset(
         Some(name) => shadow_quality_settings(source, name),
         None => Ok(None),
     }
+}
+
+/// FUN_1405105a0 applies both float tables when view-distance quality changes.
+/// Registered fields are at +0x25b8 and +0x2468 (FUN_141602170).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewDistanceQualitySettings {
+    pub lod_zoom_multiplier: f32,
+    pub umbra_gate_visibility_ratio: f32,
+}
+
+pub fn view_distance_quality_settings_for_preset(
+    source: &str,
+    preset: u32,
+) -> Result<Option<ViewDistanceQualitySettings>, String> {
+    let Some(name) = visual_quality_preset_name(preset) else {
+        return Ok(None);
+    };
+    let fields = parse_declaration(source)?;
+    let Some(edit) = scope(field(&fields, "edit")) else {
+        return Ok(None);
+    };
+    let selected = format!("enumItem[{name}]");
+    // FUN_14050a140 initializes all seven rows before declaration overrides.
+    let scalar = |table, default| -> Result<f32, String> {
+        let Some(value) = scope(field(edit, table)).and_then(|rows| field(rows, &selected)) else {
+            return Ok(default);
+        };
+        let Value::Atom(value) = value else {
+            return Err(format!("view-distance preset {name}: non-scalar {table}"));
+        };
+        value.parse::<f32>()
+            .map_err(|_| format!("view-distance preset {name}: invalid {table}"))
+    };
+    Ok(Some(ViewDistanceQualitySettings {
+        lod_zoom_multiplier: scalar("m_viewDistanceSettings", 7000.0)?,
+        umbra_gate_visibility_ratio: scalar("m_umbraGateSettings", 1.0)?,
+    }))
 }
 
 /// Read the selected original visuals declaration row. Uses the existing
@@ -3338,6 +3384,10 @@ entity { entityDef pickup { inherit = "entities/child.def"; edit = { spawnPositi
         ];
         for (index, name) in names.iter().enumerate() {
             assert_eq!(visual_quality_preset_name(index as u32), Some(*name));
+            let view = view_distance_quality_settings_for_preset(&source, index as u32)
+                .unwrap().unwrap();
+            assert_eq!(view.lod_zoom_multiplier, [1.0, 1.0, 1.0, 0.8, 0.7, 0.6][index]);
+            assert_eq!(view.umbra_gate_visibility_ratio, [1.15, 1.0, 0.8, 0.5, 0.2, 0.0][index]);
             let preset = shadow_quality_settings_for_preset(&source, index as u32)
                 .unwrap()
                 .unwrap();

@@ -196,6 +196,8 @@ pub(super) struct NativeParallelShadowCpu {
     gather: Option<NativeGlobalShadowCasterScratch>,
     masks: Option<NativeShadowInstanceMasks>,
     gather_count: usize,
+    world_query: Option<crate::local_caster_query::NativeLocalWorldQuery>,
+    shadow_extent: crate::rendering::environment::EnvironmentScalar,
     static_frames: Vec<Option<Arc<NativeStaticShadowFrame>>>,
     last_error: Option<String>,
 }
@@ -230,6 +232,10 @@ impl Default for NativeParallelShadowCpu {
             gather: None,
             masks: None,
             gather_count: 0,
+            world_query: None,
+            // Registered env/shadow/parallelLightExtend default at +0x50,
+            // measured from the original registry; area targets remain authored.
+            shadow_extent: crate::rendering::environment::EnvironmentScalar::new(70.0),
             static_frames: Vec::new(),
             last_error: None,
         }
@@ -1169,6 +1175,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
     clocks: Res<game_clock_runtime::NativeGameplayViewClock>,
     model_frame: Res<NativeModelCasterFrame>,
     mut cpu: ResMut<NativeParallelShadowCpu>,
+    mut receiver_dumped: Local<bool>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(21));
@@ -1199,6 +1206,16 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             return Err("native gameplay projection is singular".into());
         }
         let pose = game_pose_from_view_transform(transform);
+        let authored_shadow_near = cpu.shadow_extent.update(
+            scene.environment_render_parameters.as_ref().ok_or("shadow environment is unavailable")?,
+            scene.environment_blend_duration,
+            &scene.area_environments,
+            view_to_game(transform.translation),
+            "env/shadow/parallelLightExtend",
+            clocks.view_shader_times(owner.source_flag_04)?.world_time[1],
+        )?;
+        let shadow_near = authored_shadow_near
+            .max(scene.rewrite_shadow_settings.minimum_sun_caster_extent);
         let camera_view = tome::render_query_base_rows(Mat4::IDENTITY.to_cols_array_2d(), pose);
         let count = owner
             .dimensions
@@ -1294,7 +1311,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 camera_view,
                 renderer_sun_direction: toward_sun,
                 camera_near: projection.near,
-                shadow_near: owner.whole_view.near_far[0],
+                shadow_near,
                 fars: previous,
                 authored_fars: owner.cascade_fars,
                 count,
@@ -1354,6 +1371,29 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             },
             &mut depth_projection,
         )?;
+        // Optional numerical replay evidence; no framebuffer or image capture.
+        if !*receiver_dumped && frame_count.0 >= 300 {
+            if let Some(path) = std::env::var_os("DH2_SHADOW_RECEIVER_DUMP") {
+                let mut bytes = b"DHR2".to_vec();
+                bytes.extend_from_slice(&(dynamic_bounds.len() as u32).to_le_bytes());
+                for value in ordinary.render_rows.iter().flatten()
+                    .chain(ordinary.camera_point.iter()).chain(ray.iter())
+                    .chain([cpu.prepared.receiver_maximum_distance(count)?, ordinary.maximum_depth].iter())
+                    .chain(tome::global_bounds(&world.bytes)?.iter().flatten())
+                    .chain(dynamic_bounds.iter().flatten().flatten())
+                    .chain(depth.iter())
+                    .chain([receiver.distance, receiver.cutoff].iter())
+                    .chain(receiver.bounds.iter())
+                    .chain(depth_projection.receiver_rows.iter().flatten()) {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                for value in depth_projection.mask.iter() {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                std::fs::write(path, bytes).map_err(|error| error.to_string())?;
+                *receiver_dumped = true;
+            }
+        }
         if cpu.masks.is_none() {
             cpu.masks = Some(NativeShadowInstanceMasks::new(
                 scene.world.visibility.len(),
@@ -1441,6 +1481,17 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                     .iter()
                     .map(|group| (group.parent, group.children.as_slice())),
             )?;
+        }
+        if cpu.world_query.is_none() {
+            cpu.world_query = Some(crate::local_caster_query::NativeLocalWorldQuery::new(&scene.world));
+        }
+        for layer in 0..count {
+            if cpu.initialized[layer] {
+                let cascade = &cpu.prepared.cascades[layer];
+                let broad = cpu.world_query.as_ref().unwrap()
+                    .query_projection(&cascade.clip, cascade.depth_offset);
+                cpu.masks.as_mut().unwrap().intersect_world_query(layer, &broad)?;
+            }
         }
         let slice_plans: Vec<_> = (0..count)
             .map(|layer| {
