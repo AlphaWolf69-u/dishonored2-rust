@@ -96,3 +96,82 @@ release before upgrading; apply intentional changes individually and rerun GPU
 pipeline and numeric checks. Never modify the Cargo registry cache. The original
 game's material and shadow logic belongs in project code, with dependency patches
 limited to the hooks and GPU data layouts needed to express it.
+
+
+## Background materials and fog-volume routing
+
+`material_surface::Program` distinguishes `arkVista` from ordinary layered
+materials. Vista images stream through the same installed-archive loader as
+other textures, including the UV1 lightmap (image role 22). Its shader uses
+lightmap RGB for indirect light and lightmap alpha for sun visibility; ordinary
+mesh probes, local lights and cascaded shadow visibility do not enter this BRDF.
+Vista sun direction and colour come from the environment globals, independently
+of placed light entities or shadow-atlas readiness; Dust has no placed sun entity.
+`rendering/vista.rs` packs authored/registered parameters; `dh2_vista.wgsl` owns
+the independent lighting equations. Defaults come from installed renderParm
+declarations, including omitted gloss-boost values.
+
+`tests/fixtures/vista_lighting_cases.txt` contains only synthetic inputs' numeric
+outputs measured by executing the installed HLSL through D3D11. The offscreen
+material test compares 64 cases against the production WGSL and separately
+checks the real material layout, UV1 sampling, luminance scaling and alpha clip.
+The private generator is `analysis/probe_vista_lighting.py`; it reads shader
+captures locally and must not publish the captured game shader source.
+
+`atm/worldDistanceFog/arkInteriorVolume` writes signed linear depths with additive
+ONE/ONE blending into the original interior-volume fog target, without depth
+testing/writing. It is excluded from forward colour submission by program class,
+across all levels, rather than by object/material path. The understood boundary
+accumulation lives in `rendering/fog.rs`. **The distance-fog render graph and its
+volume accumulation target are not implemented yet.** Exclusion corrects opaque
+doorway blockers, but does not add fog. The original consumer is recorded in
+`analysis/decompiled/chunk_000124.c` (the `interiorVolumes` and
+`interiorWorldVolumes` passes). Next work must connect those depth targets to the
+world-distance-fog integration, using the retained environment parameters; it
+must not substitute colour or opacity for fog depth.
+
+Background coverage remains incomplete for `arkSky` and `arkClouds`, and the
+HDR/depth-dependent `arkWater` path. Their atmospheric integration, sky depth-mask
+and time inputs need a dedicated pass implementation. Installed program captures
+are retained privately in `artifacts/dust-background-programs.txt` and
+`artifacts/dust-background-helpers.txt`. The one-argument star `rand` helper is in
+`artifacts/shader-raw/helper.decl`; the remaining integration question is the
+world environment/fog parameter publication and pass ordering, not that helper.
+Do not treat the generic unsupported-material fallback as faithful coverage.
+
+F8 and streaming diagnostics belong under the checkout's `artifacts/` directory
+(or beside a packaged executable), independently of virtual archive resource
+names. F8 surface rays cover the camera's far range so distant vista hits can be
+identified without looking at captured images.
+
+Environment sunlight is also transported as an ordinary backend directional
+light whenever the environment publishes its sun direction. A placed
+`LIGHT_PRESET_SUN` is the same sun owner and must not add a duplicate when that
+world environment exists. This allows ordinary surfaces and the screen-shadow
+producer to work on maps such as Dust, which have no placed parallel sun actor.
+
+The Dust shadow audit exposed another valid `arkDefault` bank-2 pairing: the
+UV-exporting VS `63aba4ead9c2c3aab263a36ae8ed362c` with **no pixel stage**.
+Its projected position instructions are identical to the supported depth-only
+world path; the extra UV export is unused. Its original CB2 offset is word 4,
+whereas the position-only original VS uses word 0. The backend's rewritten
+opaque ABI transports the logical instance offset explicitly and never binds
+those original constant buffers directly. Actual installed VS stream output
+matched all 128 independent world-position oracle cases, word for word
+(`analysis/probe_world_uv_depth.py`, private outputs under `artifacts/`).
+
+Rejecting that pairing used to invalidate the entire local-shadow submission
+when any gathered light selected one of those casters. Camera-dependent caster
+selection therefore caused otherwise valid floodlight shadows to disappear.
+The pairing now resolves to the verified opaque depth path. The installed Dust
+material audit checks every world material through the original compiled bank;
+set `DH2_AUDIT_LEVEL=dust_p_lowchaos` when running the ignored
+`native_world_shadow_sources_resolve_level_materials` test. All 1,141 materials
+resolve, including 997 shadow-enabled variants. No material-name exceptions or
+unverified shader aliases are used.
+
+`DH2_CAPTURE_LOCAL_CPU` enables optional numeric snapshots of selected lights,
+projections, caster IDs and cache allocations. Receiver tracing remains numeric.
+The two camera-angle replays and GPU samples are retained under
+`artifacts/dust-flood-a*` and `artifacts/dust-flood-b*`. Normal play leaves these
+capture switches unset.

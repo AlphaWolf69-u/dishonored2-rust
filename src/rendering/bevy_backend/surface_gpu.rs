@@ -25,6 +25,8 @@ pub struct SurfaceUniform {
     pub emissive_color: Vec4,
     pub emissive_flags: UVec4,
     pub emissive_clip: Vec4,
+    pub vista: [Vec4; 4],
+    pub vista_sun: [Vec4; 2],
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -151,6 +153,8 @@ impl From<&Surface> for SurfaceUniform {
                 0,
             ),
             emissive_clip: Vec4::new(s.emissive_clip[0], s.emissive_clip[1], 0., 0.),
+            vista: [Vec4::ZERO; 4],
+            vista_sun: [Vec4::ZERO; 2],
         }
     }
 }

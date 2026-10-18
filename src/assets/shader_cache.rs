@@ -834,6 +834,13 @@ impl NativeProgramLibrary {
                 }
             }
             let class = match (vertex, pixel) {
+                // The UV-exporting VS has the identical position instructions
+                // (CB1[2..5], instance remap and 48-byte model rows). With no PS
+                // its extra UV varying is dead: transport the same opaque depth
+                // function through our position-only backend ABI. Its original
+                // CB2 instance offset is at word4 rather than word0; neither
+                // original CB is rebound directly to this rewrite-authored ABI.
+                (Some([0x63,0xab,0xa4,0xea,0xd9,0xc2,0xc3,0xaa,0xb2,0x63,0xa3,0x6a,0xe8,0xed,0x36,0x2c]), None) |
                 (Some([0x65,0x82,0x5b,0x7d,0xdd,0x6c,0x6e,0xc0,0xba,0x7a,0x54,0x34,0x47,0x18,0xc7,0xce]), None) =>
                     CachedWorldShadowClass::Opaque,
                 (Some([0x63,0xab,0xa4,0xea,0xd9,0xc2,0xc3,0xaa,0xb2,0x63,0xa3,0x6a,0xe8,0xed,0x36,0x2c]),

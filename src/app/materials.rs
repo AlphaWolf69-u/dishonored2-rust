@@ -78,6 +78,8 @@ pub(super) struct ProbeExtension {
     #[texture(141)]
     #[sampler(140)]
     pub(super) anisotropic_sampler_image: Option<Handle<Image>>,
+    #[texture(142)]
+    pub(super) lightmap: Option<Handle<Image>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -267,6 +269,8 @@ pub(super) struct DecalExtension {
     #[texture(141)]
     #[sampler(140)]
     pub(super) anisotropic_sampler_image: Option<Handle<Image>>,
+    #[texture(142)]
+    pub(super) lightmap: Option<Handle<Image>>,
 }
 
 pub(super) trait NativeImageAccess {
@@ -298,6 +302,7 @@ macro_rules! native_image_access {
                     19 => &mut self.detail_bump,
                     20 => &mut self.emissive_map,
                     21 => &mut self.emissive_mask,
+                    22 => &mut self.lightmap,
                     _ => panic!("invalid authored image role"),
                 }
             }

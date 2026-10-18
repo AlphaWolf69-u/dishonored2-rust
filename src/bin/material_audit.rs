@@ -14,9 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let base = base_path.as_path();
     let catalog = archive::Catalog::open(base)?;
     let mut args = std::env::args().skip(1);
-    let world_path = args
-        .next()
-        .unwrap_or_else(|| "artifacts/tutorial_p.bwm".into());
+    let world_path = args.next().unwrap_or_else(|| "tutorial_p".into());
     if world_path == "--texture-defaults" {
         for path in catalog.paths_containing("generated/decls/renderparm/") {
             let Some(bytes) = catalog.read(&path)? else {
@@ -201,7 +199,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let filter = args.next();
-    let world = world_mesh::parse(&fs::read(&world_path)?)?;
+    let world_bytes = if std::path::Path::new(&world_path).is_file() {
+        fs::read(&world_path)?
+    } else {
+        dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world_path)?
+            .read_world(&catalog)?
+    };
+    let world = world_mesh::parse(&world_bytes)?;
+    if filter.as_deref() == Some("--program-census") {
+        let mut programs = BTreeMap::<String, (usize, Vec<String>)>::new();
+        for object in &world.objects {
+            let path = format!("generated/decls/material/{}.decl", object.material_path);
+            let bytes = catalog.read(&path)?.unwrap_or_default();
+            let surface = material_surface::Surface::parse(&bytes);
+            let key = surface.main_program.unwrap_or_else(|| "<absent>".into());
+            let row = programs.entry(key).or_default();
+            row.0 += object.matrix_end - object.matrix_start;
+            if row.1.len() < 3 && !row.1.contains(&object.material_path) {
+                row.1.push(object.material_path.clone());
+            }
+        }
+        for (program, (instances, examples)) in programs {
+            println!("{program}\t{instances}\t{examples:?}");
+        }
+        return Ok(());
+    }
     if filter.as_deref() == Some("--ray") {
         let origin: [f32; 3] = args
             .next()
@@ -219,6 +241,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
             .map_err(|_| "--ray direction needs 3 values")?;
+        let limit = args
+            .next()
+            .map(|value| value.parse::<f32>())
+            .transpose()?
+            .unwrap_or(12.0);
         let mut hits = Vec::new();
         for object in world.objects.iter().filter(|object| object.lod == 0) {
             let mesh = &world.meshes[object.mesh_index];
@@ -235,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         })
                     });
                     if let Some(distance) = ray_triangle(origin, direction, triangle) {
-                        if distance < 12.0 {
+                        if distance < limit {
                             hits.push((
                                 distance,
                                 object.mesh_index,
@@ -248,7 +275,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-        println!("{} BWM ray hits within 12m", hits.len());
+        println!("{} BWM ray hits within {limit}m", hits.len());
         for hit in hits.into_iter().take(25) {
             println!("{hit:?}");
         }

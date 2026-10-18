@@ -328,6 +328,7 @@ pub(super) fn native_shadow_variant_overrides(
 
 pub(super) struct MaterialResolver<'a> {
     pub(super) anisotropic_sampler_image: Handle<Image>,
+    pub(super) vista_sun: [Vec4; 2],
     pub(super) catalog: Option<&'a archive::Catalog>,
     pub(super) native_programs: Option<&'a mut Result<shader_cache::NativeProgramLibrary, String>>,
     pub(super) probe_materials: &'a mut Assets<ProbeMaterial>,
@@ -472,6 +473,13 @@ impl MaterialResolver<'_> {
             return None;
         }
         let surface = material_surface::Surface::parse(bytes);
+        // The original schedules this additive signed-depth program in the
+        // interiorVolumes fog target, never in the forward colour pass.
+        if surface.program() == material_surface::Program::InteriorVolume {
+            eprintln!("Material {path}: interior fog depth volume excluded from forward colour; distance fog pass is not implemented");
+            self.cache.insert(key, None);
+            return None;
+        }
         if surface.extra_layers > 2
             || surface
                 .layers
@@ -483,6 +491,48 @@ impl MaterialResolver<'_> {
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
+        if surface.program() == material_surface::Program::Vista {
+            let parameters = (|| -> Result<_, String> {
+                use crate::rendering::vista;
+                let library = self
+                    .native_programs
+                    .as_deref_mut()
+                    .ok_or("program library unavailable")?
+                    .as_mut()
+                    .map_err(|e| e.clone())?;
+                let catalog = self.catalog.ok_or("material catalog unavailable")?;
+                let values = entities::material_float_parameters(
+                    &entities::native_declaration_text(bytes),
+                    |name| vista::PARAMETER_NAMES.contains(&name),
+                )?;
+                let overrides = render_program::SerializedParameterBlock {
+                    flags: 0,
+                    parameters: values
+                        .into_iter()
+                        .map(|(name, words)| render_program::SerializedParameter {
+                            name: name.into_bytes(),
+                            kind: render_program::RenderParameterKind::Uniform,
+                            value: render_program::SerializedParameterValue::Words(words),
+                        })
+                        .collect(),
+                };
+                vista::parameter_vectors(|name| {
+                    library
+                        .registered_float_vector(catalog, &overrides, name.as_bytes(), None)
+                        .map(|v| v.map(f32::from_bits))
+                })
+            })();
+            match parameters {
+                Ok(values) => {
+                    uniform.vista = values.map(Vec4::from_array);
+                    uniform.vista_sun = self.vista_sun;
+                }
+                Err(error) => {
+                    eprintln!("Vista parameters unavailable for {path}: {error}");
+                    return None;
+                }
+            }
+        }
         let program = surface.main_program.as_ref().and_then(|name| {
             self.catalog.and_then(|c| {
                 c.read(&format!(
@@ -608,7 +658,10 @@ impl MaterialResolver<'_> {
             base_color_texture: None,
             alpha_mode,
             depth_bias: 0.0,
-            unlit: !self.lit || path.contains("/vista/") || path.contains("/skies/"),
+            unlit: !self.lit
+                || surface.main_program.as_deref().is_some_and(|p| {
+                    p.eq_ignore_ascii_case("arkSky") || p.eq_ignore_ascii_case("arkClouds")
+                }),
             perceptual_roughness: 1.0 - surface.ward[1],
             metallic: surface.metallic_min_max[1],
             double_sided: two_sided_lighting,
@@ -652,6 +705,7 @@ impl MaterialResolver<'_> {
                     emissive_map: None,
                     emissive_mask: None,
                     anisotropic_sampler_image: Some(self.anisotropic_sampler_image.clone()),
+                    lightmap: None,
                 },
             }))
         } else {
@@ -689,6 +743,7 @@ impl MaterialResolver<'_> {
                     emissive_map: None,
                     emissive_mask: None,
                     anisotropic_sampler_image: Some(self.anisotropic_sampler_image.clone()),
+                    lightmap: None,
                 },
             }))
         };

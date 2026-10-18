@@ -1104,6 +1104,34 @@ pub(super) fn prepare_native_local_shadow_cpu(
     })();
     match result {
         Ok(lights) => {
+            // Explicit numerical replay diagnostics; never inspect framebuffer
+            // images to decide light/caster admission or cache correctness.
+            if frame.0 % 120 == 0 {
+                if let Some(path) = env::var_os("DH2_CAPTURE_LOCAL_CPU") {
+                    use std::fmt::Write;
+                    let mut text = format!("frame={}\n", frame.0);
+                    for light in &lights {
+                        let _=writeln!(text,"source={} position={:?} kind={} resolution={:?} priority={} clips={:?} crops={:?} models={:?} world={:?}",
+                            light.request.candidate.source,light.request.candidate.position,light.request.candidate.kind,
+                            light.request.resolution,light.request.priority,light.clips,light.crops,light.model_casters,light.world_casters);
+                        for (index, side) in light.sides.iter().enumerate() {
+                            let _ = writeln!(
+                                text,
+                                "side={index} state={:?}",
+                                side.as_ref().map(|side| (
+                                    side.allocation,
+                                    side.cache_key,
+                                    side.cache.as_ref().map(|c| c.allocation),
+                                    side.cache_match
+                                ))
+                            );
+                        }
+                    }
+                    if let Err(error) = std::fs::write(path, text) {
+                        eprintln!("Local CPU capture: {error}");
+                    }
+                }
+            }
             if cpu.error.take().is_some() || !cpu.reported {
                 println!("Native local shadow CPU projections online: {} lights, {} sides; GPU submission pending",lights.len(),lights.iter().map(|v|v.clips.len()).sum::<usize>());
                 cpu.reported = true;

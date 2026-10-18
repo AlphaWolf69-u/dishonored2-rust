@@ -16,7 +16,7 @@ use super::{
     ProbeExtension, ProbeMaterial, Render, RenderApp, RenderSystems, SceneData, Shader,
     SnapshotPath, StreamingDiagnostics, TomeWorld, VisibilityElapsedTiming, VisibilitySystems,
     DECAL_SHADER_HANDLE, INDIRECT_SHADER_HANDLE, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
-    PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE, SURFACE_SHADER_HANDLE,
+    PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
 };
 use bevy::prelude::*;
 
@@ -823,6 +823,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         app,
         INDIRECT_SHADER_HANDLE,
         "../../assets/shaders/dh2_indirect.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        VISTA_SHADER_HANDLE,
+        "../../assets/shaders/dh2_vista.wgsl",
         Shader::from_wgsl
     );
     bevy::asset::load_internal_asset!(

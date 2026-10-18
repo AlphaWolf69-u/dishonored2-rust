@@ -297,7 +297,10 @@ pub(super) fn collision_report(
         return;
     };
     let direction = camera.forward().as_vec3();
-    let distance_limit = 40.0;
+    let distance_limit = match projection {
+        Projection::Perspective(p) => p.far,
+        _ => 40.0,
+    };
     let visual =
         sightline_world_surface(&scene.world, camera.translation, direction, distance_limit);
     let visual_text = match &visual {
@@ -362,17 +365,13 @@ pub(super) fn collision_report(
             tome_camera_matrix_text(tome_world, camera_component, camera, projection),
         )
     } else {
-        "Tome: no matching extracted map file loaded".to_owned()
+        "Tome: no matching installed level resource loaded".to_owned()
     };
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_millis())
         .unwrap_or(0);
-    let directory = scene
-        .source_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join("collision-reports");
+    let directory = super::state::diagnostic_directory("collision-reports");
     if let Err(error) = fs::create_dir_all(&directory) {
         eprintln!("Collision report directory: {error}");
         return;

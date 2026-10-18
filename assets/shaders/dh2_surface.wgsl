@@ -23,6 +23,8 @@ struct SurfaceUniform {
     emissive_color:vec4<f32>,
     emissive_flags:vec4<u32>,
     emissive_clip:vec4<f32>,
+    vista: array<vec4<f32>,4>,
+    vista_sun: array<vec4<f32>,2>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -60,6 +62,7 @@ const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFS
 @group(#{MATERIAL_BIND_GROUP}) @binding(138) var emissive_map:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(139) var emissive_mask:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(140) var surface_anisotropic_sampler:sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(142) var lightmap: texture_2d<f32>;
 
 struct SurfaceResult {
     albedo: vec4<f32>,

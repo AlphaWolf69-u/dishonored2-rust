@@ -1,4 +1,5 @@
 pub mod bevy_backend;
+pub mod fog;
 pub mod material;
 pub mod material_surface;
 pub mod probe_lighting;
@@ -11,3 +12,4 @@ pub mod render_state;
 pub mod shadow_receiver;
 pub mod shadows;
 pub mod tiled_lighting;
+pub mod vista;

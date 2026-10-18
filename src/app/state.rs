@@ -189,16 +189,25 @@ pub(super) struct StreamingDiagnostics {
     pub(super) texture_events_dropped: usize,
 }
 
+/// Resource names inside archives are not filesystem output directories.
+/// Locate a checkout beside the executable, or keep outputs beside a packaged client.
+pub(super) fn diagnostic_directory(kind: &str) -> PathBuf {
+    let executable = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let parent = executable.parent().unwrap_or(std::path::Path::new("."));
+    let root = parent
+        .ancestors()
+        .find(|path| path.join("Cargo.toml").is_file())
+        .unwrap_or(parent);
+    root.join("artifacts").join(kind)
+}
+
 impl StreamingDiagnostics {
-    pub(super) fn new(source_path: &std::path::Path) -> Self {
+    pub(super) fn new(_source_path: &std::path::Path) -> Self {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let directory = source_path
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .join("streaming-reports");
+        let directory = diagnostic_directory("streaming-reports");
         let log_path = directory.join(format!("streaming-{stamp}-{}.log", std::process::id()));
         let log = fs::create_dir_all(&directory).and_then(|()| fs::File::create(&log_path));
         let log = match log {
@@ -417,6 +426,8 @@ pub(super) const PROBE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("169be3e1-273e-4607-aadf-e0d572cbf41d");
 pub(super) const PROBE_PREPASS_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("f78172ec-62f2-4bb4-9e45-c6e99fdf6c36");
+pub(super) const VISTA_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("61fa0479-ac93-413b-bdf0-cb04c11a6e6f");
 pub(super) const SURFACE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("b7018b4d-b81d-44c0-9dd0-0b64cc879316");
 pub(super) const DECAL_SHADER_HANDLE: Handle<Shader> =

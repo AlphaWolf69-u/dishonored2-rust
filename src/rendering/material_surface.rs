@@ -2,7 +2,7 @@
 //! installed arkDefaultHelpers and renderParm declarations, not a PBR preset.
 use std::collections::HashMap;
 
-pub const TEXTURE_PARAMETERS: [&str; 22] = [
+pub const TEXTURE_PARAMETERS: [&str; 23] = [
     "diffusemap",
     "layer1_diffusemap",
     "layer2_diffusemap",
@@ -25,6 +25,7 @@ pub const TEXTURE_PARAMETERS: [&str; 22] = [
     "detailbumpmap",
     "emissivemap",
     "emissivemaskmap",
+    "lightmap",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,8 @@ pub enum Program {
     Default = 1,
     Vegetation = 2,
     Water = 3,
+    Vista = 4,
+    InteriorVolume = 5,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,7 @@ pub struct Layer {
 #[derive(Debug, Clone)]
 pub struct Surface {
     pub main_program: Option<String>,
+    pub lightmap: String,
     pub layers: [Layer; 3],
     pub extra_layers: usize,
     pub has_bump: bool,
@@ -161,6 +165,8 @@ impl Surface {
             Some("arkdefault" | "arkdecal") => Program::Default,
             Some("arkvegetation") => Program::Vegetation,
             Some("arkwater") => Program::Water,
+            Some("arkvista") => Program::Vista,
+            Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
     }
@@ -168,7 +174,7 @@ impl Surface {
     /// arkVegetation tests the raw diffuse alpha against 0.5, before gloss
     /// consumes it. Its vertex RGB channels control wind, not albedo.
     pub fn forward_alpha_cutoff(&self) -> f32 {
-        if self.program() == Program::Vegetation {
+        if matches!(self.program(), Program::Vegetation | Program::Vista) {
             0.5
         } else {
             self.alpha_cutoff
@@ -228,6 +234,7 @@ impl Surface {
                     .map_or("arkDefault", |name| name.trim_matches('"'))
                     .to_owned(),
             ),
+            lightmap: image(&v, "lightmap").unwrap_or_else(|| "_default".into()),
             layers,
             extra_layers: number(&v, "extralayer", 0) as usize,
             has_bump: number(&v, "hasbumpmap", 0) != 0,
@@ -262,6 +269,25 @@ impl Surface {
     /// Image roles consumed by the implemented original material branches.
     /// Disabled and reused maps do not cause independent texture requests.
     pub fn texture_bindings(&self, is_decal: bool) -> Vec<(usize, &str)> {
+        if self.program() == Program::InteriorVolume {
+            return Vec::new();
+        }
+        if self.program() == Program::Vista {
+            let mut bindings = vec![
+                (0, self.layers[0].diffuse.as_deref().unwrap()),
+                (22, self.lightmap.as_str()),
+            ];
+            if self.has_bump {
+                bindings.push((3, self.layers[0].bump.as_deref().unwrap()));
+            }
+            if self.has_gloss {
+                bindings.push((6, self.layers[0].gloss.as_deref().unwrap()));
+            }
+            if self.has_emissive_map {
+                bindings.push((20, self.emissive_map.as_str()));
+            }
+            return bindings;
+        }
         let mut bindings = Vec::new();
         let last = if is_decal {
             0
@@ -671,5 +697,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(c, [0.8, 0.6, 0.4, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod vista_tests {
+    use super::*;
+    #[test]
+    fn vista_uses_uv1_lightmap_and_only_its_own_enabled_maps() {
+        let s=Surface::parse(b"mainProgram arkVista\nlightMap distant_lighting.tga\nhasGlossMap 1\nhasMetallicMap 1\nhasDetailBumpMap 1\n");
+        assert_eq!(s.program(), Program::Vista);
+        let roles = s.texture_bindings(false);
+        assert_eq!(
+            roles.iter().map(|(role, _)| *role).collect::<Vec<_>>(),
+            vec![0, 22, 6]
+        );
+        assert_eq!(roles[1].1, "distant_lighting.tga");
+        assert_eq!(s.forward_alpha_cutoff(), 0.5);
+    }
+    #[test]
+    fn interior_depth_volume_is_not_a_colour_texture_material() {
+        let s = Surface::parse(b"mainProgram atm/worldDistanceFog/arkInteriorVolume\n");
+        assert_eq!(s.program(), Program::InteriorVolume);
+        assert!(s.texture_bindings(false).is_empty());
     }
 }

@@ -26,6 +26,36 @@ use super::{
 };
 use bevy::prelude::*;
 
+// Shared by ordinary parallel lights and the vista global-sun transport.
+// Vista sun visibility comes from its baked lightmap, independent of shadow
+// atlas readiness and the clustered renderer's current directional-light slot.
+fn parallel_light_inputs(
+    light: &entities::PlacedLight,
+    environment: Option<entities::EnvironmentLighting>,
+    preset_color: [f32; 3],
+) -> ([f32; 3], Vec3) {
+    let is_sun = light.preset.as_deref() == Some("LIGHT_PRESET_SUN");
+    let color = if is_sun {
+        render_light::sun_ground_color(
+            environment
+                .and_then(|e| e.sun_color)
+                .unwrap_or([0.215861; 3]),
+        )
+    } else {
+        preset_color
+    };
+    let authored = game_to_view(light.rotation[0]).normalize_or_zero();
+    let direction = if is_sun {
+        environment
+            .and_then(environment_sun_ray)
+            .filter(|d| *d != Vec3::ZERO)
+            .unwrap_or(authored)
+    } else {
+        authored
+    };
+    (color, direction)
+}
+
 pub(super) fn setup(
     mut commands: Commands,
     mut scene: ResMut<SceneData>,
@@ -172,7 +202,19 @@ pub(super) fn setup(
     });
     let anisotropic_sampler_image = images
         .add(native_surface_sampler_image(catalog).expect("invalid original material sampler"));
+    // The original publishes parallelLightDir/Color from the environment
+    // even in levels with no placed LIGHT_PRESET_SUN entity (Dust District).
+    let vista_sun = scene
+        .environment_lighting
+        .and_then(|environment| {
+            let ray = environment_sun_ray(environment)?;
+            let color =
+                render_light::sun_ground_color(environment.sun_color.unwrap_or([0.215861; 3]));
+            Some([Vec3::from_array(color).extend(0.), (-ray).extend(0.)])
+        })
+        .unwrap_or([Vec4::ZERO; 2]);
     let mut resolver = MaterialResolver {
+        vista_sun,
         anisotropic_sampler_image,
         catalog,
         native_programs: native_programs.as_deref_mut().map(|source| &mut source.0),
@@ -1119,7 +1161,42 @@ pub(super) fn setup(
         let mut unsupported = 0;
         let mut energy_shortened_ranges = 0;
         if scene_lights_enabled {
+            // FUN_140017d30 publishes the environment sun independently of
+            // placed light actors. A directional backend light transports its
+            // radiance to all ordinary materials, including maps with no sun actor.
+            let environment_sun = scene
+                .environment_lighting
+                .and_then(environment_sun_ray)
+                .filter(|ray| *ray != Vec3::ZERO)
+                .map(|ray| {
+                    let color = render_light::sun_ground_color(
+                        scene
+                            .environment_lighting
+                            .and_then(|environment| environment.sun_color)
+                            .unwrap_or([0.215861; 3]),
+                    );
+                    commands.spawn((
+                        DirectionalLight {
+                            color: Color::linear_rgb(color[0], color[1], color[2]),
+                            illuminance: render_light::ARKANE_TO_WORLD_LUMINANCE,
+                            shadow_maps_enabled: authored_shadows,
+                            ..default()
+                        },
+                        Transform::from_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, ray)),
+                    ));
+                    spawned += 1;
+                })
+                .is_some();
             for (light_index, light) in scene.placed_lights.iter().enumerate() {
+                // The sun preset represents the same environment owner, rather
+                // than an additional source of solar illumination.
+                if environment_sun
+                    && light.kind == entities::LightType::Parallel
+                    && light.preset.as_deref() == Some("LIGHT_PRESET_SUN")
+                {
+                    continue;
+                }
+
                 if !light.visible {
                     continue;
                 }
@@ -1154,7 +1231,6 @@ pub(super) fn setup(
                         .is_some_and(|(cutoff, _)| range < cutoff),
                 );
                 let falloff_start = preset.falloff;
-                let is_sun = light.preset.as_deref() == Some("LIGHT_PRESET_SUN");
                 // Native normalized RGB is clamped before scaling. Point/spot
                 // and parallel paths convert native HDR with the original
                 // world-luminance factor; area profile photometry is separate.
@@ -1331,32 +1407,13 @@ pub(super) fn setup(
                         spawned += 1;
                     }
                     entities::LightType::Parallel => {
-                        let native_parallel_color = if is_sun {
-                            render_light::sun_ground_color(
-                                scene
-                                    .environment_lighting
-                                    .and_then(|environment| environment.sun_color)
-                                    .unwrap_or([0.215861; 3]),
-                            )
-                        } else {
-                            preset.color
-                        };
+                        let (native_parallel_color, direction) =
+                            parallel_light_inputs(light, scene.environment_lighting, preset.color);
                         let sun_color = Color::linear_rgb(
                             native_parallel_color[0],
                             native_parallel_color[1],
                             native_parallel_color[2],
                         );
-                        let authored_direction =
-                            game_to_view(light.rotation[0]).normalize_or_zero();
-                        let direction = if light.preset.as_deref() == Some("LIGHT_PRESET_SUN") {
-                            scene
-                                .environment_lighting
-                                .and_then(environment_sun_ray)
-                                .filter(|direction| *direction != Vec3::ZERO)
-                                .unwrap_or(authored_direction)
-                        } else {
-                            authored_direction
-                        };
                         let up = game_to_view(light.rotation[1]).normalize_or_zero();
                         if direction == Vec3::ZERO
                             || up == Vec3::ZERO

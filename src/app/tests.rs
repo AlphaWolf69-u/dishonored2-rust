@@ -1454,6 +1454,12 @@ fn authored_surface_gpu_pipelines_compile() {
     );
     bevy::asset::load_internal_asset!(
         app,
+        VISTA_SHADER_HANDLE,
+        "../../assets/shaders/dh2_vista.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
         SURFACE_SHADER_HANDLE,
         "../../assets/shaders/dh2_surface.wgsl",
         Shader::from_wgsl
@@ -1571,6 +1577,7 @@ fn authored_surface_gpu_pipelines_compile() {
                 emissive_map: None,
                 emissive_mask: None,
                 anisotropic_sampler_image: None,
+                lightmap: None,
             },
         });
     // Establish the target, then add a material without a binding while the
@@ -1671,6 +1678,7 @@ fn authored_surface_gpu_pipelines_compile() {
                 emissive_map: None,
                 emissive_mask: None,
                 anisotropic_sampler_image: None,
+                lightmap: None,
             },
         });
     app.world_mut().spawn((
@@ -2405,6 +2413,7 @@ fn authored_surface_gpu_pipelines_compile() {
     );
     eprintln!("GPU native exposure final display: luminance1/4={displayed:?}");
     auto_exposure::verify_gpu_math(&mut app);
+    vista_lighting_matches_reference(&mut app);
     native_probe_shader_matches_original(&mut app);
     tiled_depth_shader_matches_reference(&mut app);
     // Exercise ordinary emissive-map/mask sampling through the submitted
@@ -2514,6 +2523,84 @@ fn authored_surface_gpu_pipelines_compile() {
         "native emission mask must clip: {masked:?}"
     );
     eprintln!("GPU native emission: alpha1/0={emitted:?}, masked={masked:?}");
+    // Exercise the actual vista material layout, UV1 lightmap sampling and
+    // unconditional forward alpha clip. UV0 deliberately addresses the other
+    // lightmap texel, so accidentally using UV0 cannot pass this check.
+    let mesh_handle = app
+        .world_mut()
+        .query::<&Mesh3d>()
+        .single(app.world())
+        .unwrap()
+        .0
+        .clone();
+    {
+        let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+        let mut mesh = meshes.get_mut(&mesh_handle).unwrap();
+        let count = mesh.count_vertices();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.25, 0.5]; count]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.75, 0.5]; count]);
+    }
+    let baked = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(Image::new(
+            Extent3d {
+                width: 2,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![4, 8, 12, 0, 16, 24, 32, 0],
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        ));
+    let diffuse = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(pixel_image([128, 64, 32, 255]));
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+            b"mainProgram arkVista\nmetallicMinMax {0,0}\nwardRoughness {0,0}\n",
+        ));
+        m.extension.surface.vista = [
+            Vec4::new(0.1, 0., 0., 0.),
+            Vec4::new(-1., 1., 0., 1.),
+            Vec4::new(0., 1., 0., 0.),
+            Vec4::new(1., 0., 0.01, 0.),
+        ];
+        m.extension.diffuse0 = Some(diffuse.clone());
+        m.extension.lightmap = Some(baked);
+    }
+    for _ in 0..100 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let vista = forward_center(&mut app, &target);
+    for c in 0..3 {
+        let expected = [128., 64., 32.][c] / 255. * [16., 24., 32.][c] / 255.
+            * 0.1
+            * render_light::ARKANE_TO_WORLD_LUMINANCE
+            / 1.2;
+        assert!(
+            (linear(vista[c]) - expected).abs() < 0.006,
+            "vista UV1 channel{c}: {vista:?}, expected{expected}"
+        );
+    }
+    *app.world_mut()
+        .resource_mut::<Assets<Image>>()
+        .get_mut(&diffuse)
+        .unwrap() = pixel_image([128, 64, 32, 0]);
+    for _ in 0..30 {
+        app.update();
+    }
+    let clipped = forward_center(&mut app, &target);
+    assert!(
+        energy(clipped) < 10,
+        "vista forward alpha clip: {clipped:?}"
+    );
+    eprintln!("GPU vista UV1 lightmap and alpha clip: {vista:?}, {clipped:?}");
     // The test fragment exposes the production surface evaluator's result;
     // it does not duplicate its layer/detail sampling implementation.
     app.world_mut()
@@ -2606,6 +2693,7 @@ fn installed_omitted_surface_maps_resolve_native_constant_images() {
         ("detailbumpmap".into(), defaults.detail_bump.as_str()),
         ("emissivemap".into(), defaults.emissive_map.as_str()),
         ("emissivemaskmap".into(), defaults.emissive_mask.as_str()),
+        ("lightmap".into(), defaults.lightmap.as_str()),
     ]);
     for (key, source) in parameters {
         let bytes = catalog
@@ -4355,7 +4443,15 @@ fn add_culling_test_light(
 fn native_world_shadow_sources_resolve_level_materials() {
     let base = &crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(base).unwrap();
-    let world = world_mesh::parse(&fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()).unwrap();
+    let bytes = if let Ok(level) = env::var("DH2_AUDIT_LEVEL") {
+        crate::assets::level::LevelResources::resolve(&catalog, &level)
+            .unwrap()
+            .read_world(&catalog)
+            .unwrap()
+    } else {
+        fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()
+    };
+    let world = world_mesh::parse(&bytes).unwrap();
     let mut world_mesh_assets = Assets::<Mesh>::default();
     let native_mesh_sources = NativeWorldShadowMeshSources::prepare(&world, &mut world_mesh_assets);
     assert_eq!(native_mesh_sources.objects.len(), world.objects.len());
@@ -6203,6 +6299,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             emissive_map: None,
             emissive_mask: None,
             anisotropic_sampler_image: None,
+            lightmap: None,
         },
     });
     app.insert_resource(materials);
@@ -7793,4 +7890,115 @@ fn mouse_capture_look_and_mode_toggle_reach_camera_system() {
     }
     app.update();
     assert!(!app.world().resource::<NavigationState>().walking);
+}
+
+fn vista_lighting_matches_reference(app: &mut App) {
+    use bevy::render::{
+        render_resource::*,
+        renderer::{RenderDevice, RenderQueue},
+        RenderApp,
+    };
+    let render = app.sub_app(RenderApp).world();
+    let device = render.resource::<RenderDevice>();
+    let queue = render.resource::<RenderQueue>();
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/shaders/dh2_vista.wgsl"
+    ))
+    .replace("#define_import_path dh2_vista", "")
+        + r#"
+@group(0) @binding(0) var<storage,read_write> output:array<vec4<f32>>;
+fn view_vector(v:vec3<f32>)->vec3<f32> {return vec3(v.x,v.z,-v.y);}
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) tid:vec3<u32>) {
+    let id=tid.x;
+    let albedo=vec3(f32(id%17u),f32((id*3u)%17u),f32((id*7u)%17u))/16.0;
+    let baked=vec4(.2,.1,.04,f32(id%5u)/4.0);
+    let p=array<vec4<f32>,4>(vec4(10.0,0.0,0.0,0.0),
+        vec4(-1.0,1.0,0.0,select(0.0,1.0,(id&1u)!=0u)),
+        vec4(0.0,select(0.0,1.0,(id&2u)!=0u),.85,0.0),vec4(1.0,.13,.01,.5));
+    let N=vec3(0.0,1.0,0.0);let T=vec3(1.0,0.0,0.0);let B=vec3(0.0,0.0,-1.0);
+    let V=view_vector(normalize(vec3(.3,.2,1.0)));
+    let L=view_vector(normalize(vec3(.4,.1,select(1.0,-.7,(id&4u)!=0u))));
+    output[id]=vec4(vista_lighting(albedo,baked,f32(id%9u)/10.0,vec3(.04,.02,.08),
+        vec3(.01,.02,.03),f32((id/3u)%5u)/4.0,p,V,L,vec3(2.0,1.5,1.0),N,T,B,N,
+        .5*vec3(.03,.02,.01)),1.0);
+}
+"#;
+    let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+        label: Some("vista lighting parity"),
+        source: ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device
+        .wgpu_device()
+        .create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+    let size = 64 * 16;
+    let output = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size,
+        usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device
+        .wgpu_device()
+        .create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: output.as_entire_binding(),
+            }],
+        });
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(64, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+    let submission = queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(MapMode::Read, move |r| tx.send(r).unwrap());
+    device
+        .poll(PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(20)),
+        })
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = readback.slice(..).get_mapped_range();
+    let expected = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/vista_lighting_cases.txt"
+    ))
+    .split_whitespace()
+    .map(|s| f32::from_bits(u32::from_str_radix(s, 16).unwrap()))
+    .collect::<Vec<_>>();
+    for (i, (chunk, e)) in bytes.chunks_exact(4).zip(expected).enumerate() {
+        let actual = f32::from_le_bytes(chunk.try_into().unwrap());
+        assert!(
+            (actual - e).abs() < 0.00003 * e.abs().max(1.0),
+            "vista lighting case{} field{}: {actual} != {e}",
+            i / 4,
+            i % 4
+        );
+    }
+    drop(bytes);
+    readback.unmap();
+    eprintln!("GPU vista lighting:64 installed-HLSL gloss/metallic/baked-shadow cases passed");
 }

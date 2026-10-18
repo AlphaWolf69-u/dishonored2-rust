@@ -27,6 +27,15 @@ fn fragment(vertex_output: VertexOutput) {
         }
         return;
     }
+    if compiled_misc.z == 4u {
+        if (compiled_misc.w & 1u) != 0u {
+#ifdef VERTEX_UVS_A
+            let alpha=textureSampleGrad(diffuse0,surface_sampler,vertex_output.uv,dpdx(vertex_output.uv),dpdy(vertex_output.uv)).a;
+            if alpha<0.5 { discard; }
+#endif
+        }
+        return;
+    }
     let material = pbr_bindings::material;
     alpha_discard(material, material.base_color);
 }
