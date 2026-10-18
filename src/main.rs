@@ -1,140 +1,21 @@
-mod entities;
-mod material_surface;
-mod world_mesh;
+use dishonored2_rust::entities;
+use dishonored2_rust::world_mesh;
 
-use flate2::read::ZlibDecoder;
 use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-#[derive(Debug)]
-struct Entry {
-    group: u8,
-    id: u32,
-    kind: String,
-    source: String,
-    path: String,
-    offset: u64,
-    size: u32,
-    stored_size: u32,
-    archive_slot: u16,
-}
+use dishonored2_rust::archive::index::{
+    archive_path, load_catalog, read_entry, IndexEntry as Entry,
+};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-fn number<const N: usize>(input: &mut impl Read) -> io::Result<[u8; N]> {
-    let mut bytes = [0; N];
-    input.read_exact(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn be_u16(input: &mut impl Read) -> io::Result<u16> {
-    Ok(u16::from_be_bytes(number(input)?))
-}
-
-fn be_u32(input: &mut impl Read) -> io::Result<u32> {
-    Ok(u32::from_be_bytes(number(input)?))
-}
-
-fn le_u32(input: &mut impl Read) -> io::Result<u32> {
-    Ok(u32::from_le_bytes(number(input)?))
-}
-
-fn be_u64(input: &mut impl Read) -> io::Result<u64> {
-    Ok(u64::from_be_bytes(number(input)?))
-}
-
-fn name(input: &mut impl Read) -> io::Result<String> {
-    let length = le_u32(input)? as usize;
-    if length > 65_536 {
-        return Err(invalid(format!("unreasonable string length: {length}")));
-    }
-    let mut bytes = vec![0; length];
-    input.read_exact(&mut bytes)?;
-    if bytes.last() == Some(&0) {
-        bytes.pop();
-    }
-    String::from_utf8(bytes).map_err(|error| invalid(error.to_string()))
-}
-
-fn parse_index(input: &mut impl Read, group: u8) -> io::Result<(u32, Vec<Entry>)> {
-    if number::<4>(input)? != *b"\x05SER" {
-        return Err(invalid("wrong index signature"));
-    }
-    let payload_size = be_u32(input)?;
-    let _reserved = number::<24>(input)?;
-    let count = be_u32(input)?;
-    if count > 1_000_000 {
-        return Err(invalid(format!("unreasonable record count: {count}")));
-    }
-    let mut entries = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let id = be_u32(input)?;
-        let kind = name(input)?;
-        let source = name(input)?;
-        let path = name(input)?;
-        let offset = be_u64(input)?;
-        let size = be_u32(input)?;
-        let stored_size = be_u32(input)?;
-        let _unknown = number::<6>(input)?;
-        let _flags = be_u16(input)?;
-        let archive_slot = be_u16(input)? >> 2;
-        entries.push(Entry {
-            group,
-            id,
-            kind,
-            source,
-            path,
-            offset,
-            size,
-            stored_size,
-            archive_slot,
-        });
-    }
-    Ok((payload_size, entries))
-}
-
-fn archive_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
-    let filename = match slot {
-        0 => format!("game{group}.resources"),
-        1..=5 => format!("game{group}_{slot:03}.resources"),
-        6 => format!("game{group}_patch.resources"),
-        8192 if group == 2 || group == 3 => "shared_2_3.sharedrsc".to_string(),
-        _ => return Err(invalid(format!("unknown resource slot {slot} for game{group}")).into()),
-    };
-    Ok(base.join(filename))
-}
-
-fn load_group(base: &Path, group: u8) -> Result<Vec<Entry>> {
-    let path = base.join(format!("game{group}_patch.index"));
-    let mut input = BufReader::new(File::open(&path)?);
-    let (payload_size, entries) = parse_index(&mut input, group)?;
-    let consumed = input.stream_position()?;
-    let actual = fs::metadata(&path)?.len();
-    if consumed != actual || actual.checked_sub(32) != Some(payload_size as u64) {
-        return Err(invalid(format!(
-            "{}: header says {} payload bytes; file has {actual} and parser read {consumed}",
-            path.display(),
-            payload_size
-        ))
-        .into());
-    }
-    Ok(entries)
-}
-
-fn load_catalog(base: &Path) -> Result<Vec<Entry>> {
-    let mut all = Vec::new();
-    for group in 1..=4 {
-        all.extend(load_group(base, group)?);
-    }
-    Ok(all)
 }
 
 fn check_bounds(base: &Path, entries: &[Entry]) -> Result<()> {
@@ -171,39 +52,6 @@ fn check_bounds(base: &Path, entries: &[Entry]) -> Result<()> {
         lengths.len()
     );
     Ok(())
-}
-
-fn read_entry(base: &Path, entry: &Entry) -> Result<Vec<u8>> {
-    // Full campaign worlds exceed 200 MiB; retain a bounded read for archives.
-    const MAX_EXTRACT_BYTES: u32 = 512 * 1024 * 1024;
-    if entry.size > MAX_EXTRACT_BYTES || entry.stored_size > MAX_EXTRACT_BYTES {
-        return Err(invalid("resource exceeds the 512 MiB extraction limit").into());
-    }
-    let path = archive_path(base, entry.group, entry.archive_slot)?;
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(entry.offset))?;
-    let mut stored = vec![0; entry.stored_size as usize];
-    file.read_exact(&mut stored)?;
-    let data = if entry.size == entry.stored_size {
-        stored
-    } else {
-        let decoder = ZlibDecoder::new(stored.as_slice());
-        let mut output = Vec::new();
-        decoder
-            .take(entry.size as u64 + 1)
-            .read_to_end(&mut output)?;
-        output
-    };
-    if data.len() != entry.size as usize {
-        return Err(invalid(format!(
-            "{}: expected {} bytes, decoded {}",
-            entry.path,
-            entry.size,
-            data.len()
-        ))
-        .into());
-    }
-    Ok(data)
 }
 
 fn decode_game_text(bytes: &[u8]) -> String {
@@ -465,12 +313,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_wrong_signature() {
-        let mut bytes = io::Cursor::new(b"BAD!".to_vec());
-        assert!(parse_index(&mut bytes, 1).is_err());
-    }
 
     #[test]
     fn archive_slots_are_restricted() {

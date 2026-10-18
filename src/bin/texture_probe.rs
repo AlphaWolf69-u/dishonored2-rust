@@ -1,9 +1,5 @@
 //! Compare block compression modes for an extracted Void `_mip0` resource.
-#[cfg(test)]
-#[path = "../archive.rs"]
-mod archive;
-#[path = "../texture.rs"]
-mod texture;
+use dishonored2_rust::texture;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};

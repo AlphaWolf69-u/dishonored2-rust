@@ -1,21 +1,13 @@
-#[path = "../archive.rs"]
-mod archive;
-#[path = "../bmd6.rs"]
-mod bmd6;
-#[path = "../bmodel.rs"]
-mod bmodel;
-#[path = "../entities.rs"]
-mod entities;
-#[path = "../material.rs"]
-mod material;
-#[path = "../physworld.rs"]
-mod physworld;
-#[path = "../texture.rs"]
-mod texture;
+use dishonored2_rust::archive;
+use dishonored2_rust::bmd6;
+use dishonored2_rust::bmodel;
+use dishonored2_rust::entities;
+use dishonored2_rust::material;
+use dishonored2_rust::physworld;
+use dishonored2_rust::texture;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::path::Path;
 
 // Diagnostic geometry only: use the same authored column basis as the client.
 fn placed_vertex(placement: &entities::PlacedModel, local: [f32; 3]) -> [f32; 3] {
@@ -46,7 +38,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|s| s.indices.len() / 3)
             .sum::<usize>()
     );
-    let base = Path::new(r"D:\Programs\Steam\steamapps\common\Dishonored2\base");
+    let base_path = dishonored2_rust::assets::installation::game_base()?;
+    let base = base_path.as_path();
     let catalog = archive::Catalog::open(base)?;
     let mut args = std::env::args().skip(1);
     let entity_path = args

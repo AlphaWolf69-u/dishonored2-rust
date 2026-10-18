@@ -1,8 +1,6 @@
 //! Compare installed levels by authored entity/component diversity.
-#[path = "../archive.rs"]
-mod archive;
-#[path = "../entities.rs"]
-mod entities;
+use dishonored2_rust::archive;
+use dishonored2_rust::entities;
 
 use std::collections::{BTreeMap, HashSet};
 use std::{env, path::Path};
@@ -10,9 +8,23 @@ use std::{env, path::Path};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = env::args()
         .nth(1)
-        .or_else(|| env::var("DH2_GAME_BASE").ok())
-        .unwrap_or_else(|| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        .map(std::path::PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(dishonored2_rust::assets::installation::game_base)?;
     let catalog = archive::Catalog::open(Path::new(&base))?;
+    if env::args().nth(2).as_deref() == Some("--sources") {
+        for world in catalog.paths_with_suffix(".bwm") {
+            let level = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world)?;
+            println!(
+                "{} entities={} tome={} physics={:?}",
+                level.world,
+                catalog.contains(&level.entities),
+                catalog.contains(&level.tome),
+                level.physics
+            );
+        }
+        return Ok(());
+    }
     let mut levels = Vec::new();
     let mut class_totals = BTreeMap::<String, usize>::new();
     for path in catalog.paths_with_suffix(".entities") {

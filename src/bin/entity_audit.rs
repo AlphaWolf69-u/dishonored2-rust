@@ -1,14 +1,9 @@
 //! Inspect map-local pickup references in an extracted level definition.
-#[path = "../archive.rs"]
-mod archive;
-#[path = "../bmodel.rs"]
-mod bmodel;
-#[path = "../entities.rs"]
-mod entities;
-#[path = "../runtime.rs"]
-mod runtime;
-#[path = "../tome.rs"]
-mod tome;
+use dishonored2_rust::archive;
+use dishonored2_rust::bmodel;
+use dishonored2_rust::entities;
+use dishonored2_rust::runtime;
+use dishonored2_rust::tome;
 
 use std::{collections::BTreeMap, env, fs, path::Path};
 
@@ -96,8 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let visibility = env::args().nth(3).ok_or("missing level.tome")?;
         let source = fs::read_to_string(level)?;
         let document = entities::parse(&source)?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let lights = entities::placed_lights_with_inheritance(&document, |resource| {
             Ok(catalog
@@ -145,8 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource = env::args()
             .nth(2)
             .ok_or("Usage: entity-audit --probe-components <level.entities resource>")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let bytes = catalog
             .read(&resource)?
@@ -163,8 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if path == "--probe-versions" {
         let fragment = env::args().nth(2).unwrap_or_default();
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let mut versions = BTreeMap::<(u8, Option<u32>, Option<u32>), usize>::new();
         let mut invalid = 0usize;
@@ -203,8 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if path == "--light-counts" {
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let mut largest_area_set = (String::new(), 0usize, 0usize);
         for resource in catalog
@@ -244,8 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if path == "--resources" {
         let fragment = env::args().nth(2).unwrap_or_default();
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let paths = if fragment.is_empty() {
             catalog.paths_with_suffix(".decl")
@@ -262,8 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let environment = env::args()
             .nth(2)
             .ok_or("Usage: entity-audit --environment-lighting <environment-name>")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let lighting = read_environment_lighting(&catalog, &environment)?
             .ok_or_else(|| format!("environment declaration not found: {environment}"))?;
@@ -305,8 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(40.0);
         let bytes = fs::read(&level)?;
         let document = entities::parse(&String::from_utf8_lossy(&bytes))?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let lights = entities::placed_lights_with_inheritance(&document, |decl| {
             catalog
@@ -434,8 +422,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(100.0);
         let bytes = fs::read(&level)?;
         let document = entities::parse(&String::from_utf8_lossy(&bytes))?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let mut nearby = entities::placed_environment_volumes(&document)
             .into_iter()
@@ -540,8 +527,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource = env::args()
             .nth(2)
             .ok_or("Usage: entity-audit --resource <archive-path>")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let bytes = catalog
             .read(&resource)?
@@ -550,8 +536,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if path == "--sun-angle-audit" {
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let mut compared = 0usize;
         for resource in catalog
@@ -602,8 +587,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = String::from_utf8_lossy(&bytes);
     let document = entities::parse(&text)?;
     let start = entities::player_start(&document).ok_or("No player start in level")?;
-    let base = env::var("DH2_GAME_BASE")
-        .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+    let base = dishonored2_rust::assets::installation::game_base()?;
     let catalog = archive::Catalog::open(std::path::Path::new(&base))?;
     let direct_models = entities::placed_models(&document);
     let resolved_models = entities::placed_models_with_inheritance(&document, |path| {

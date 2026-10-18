@@ -30,6 +30,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 ## Working in this repository
 
+- Game behavior is the naming default: name files, modules and fixtures by responsibility without `native_` or `original_` prefixes. Mark host integration or deliberate deviations explicitly (for example `bevy_backend`, `debug_` or `approximate_`); keep comparison provenance in comments and test descriptions.
 - Prefer a general asset-format or engine-rule fix over addingdate object-name exceptions. If an exception is needed, record why it is specific.
 - When a reported example exposes a class of failures (fish, shutters, pickups, rigid bodies, constraints, or anything else), investigate and implement the class-wide rule. State which asset and entity types are covered and which remain unsupported; do not present an example-specific parser as a complete systemic fix.
 - Build and run the narrowest relevant tests. Report what was actually verified, including unresolved issues. Do not call a visual fix complete before it's tested by a human.
@@ -56,11 +57,15 @@ Take the first option that fully works:
 
 ## Repository map
 
-- `src/archive.rs`, `src/world_mesh.rs`, `src/bmodel.rs`, `src/bmd6.rs`,
-  `src/entities.rs`, `src/material.rs`, `src/material_surface.rs`, `src/texture.rs`,
-  and `src/physworld.rs` parse original data.
-- `src/bin/game.rs` is the Bevy client; `src/navigation.rs` handles walk collision;
-  `src/tome.rs` implements the currently understood visibility paths.
-- `assets/shaders/` contains rewrite-authored WGSL. `vendor/` contains licensed
-  patched dependencies. `artifacts/`, `bin/`, `reference/`, and `.pi/` are local-only.
-
+- `src/lib.rs` exposes shared code; `src/assets/` reads installed resources and
+  original formats. `src/assets/level.rs` resolves native level companions.
+- `src/rendering/` contains verified material, lighting, model and shadow rules;
+  `src/rendering/bevy_backend/` integrates those rules with Bevy/GPU resources.
+- `src/visibility/` implements understood Tome queries; `src/gameplay/` owns
+  clocks, entity runtime and navigation; `src/platform/` owns system settings.
+- `src/app/` composes the client in focused modules. `src/bin/` contains entry
+  points and diagnostic tools, all using the same library.
+- `tests/fixtures/` contains numerical comparisons; `assets/shaders/` contains
+  rewrite-authored WGSL. `docs/architecture.md` documents boundaries and checks.
+- `vendor/` contains licensed patched dependencies. `artifacts/`, `bin/`,
+  `reference/`, and `.pi/` are local-only. No extraction is needed to launch.

@@ -1,8 +1,7 @@
 //! Replay the live client's Tome query without creating a window or GPU device.
 //! Multiple jobs run serially here: timings are query CPU work, not GPU/frame time.
+use dishonored2_rust::tome;
 use std::{env, fs, time::Instant};
-#[path = "../tome.rs"]
-mod tome;
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();

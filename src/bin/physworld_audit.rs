@@ -1,7 +1,5 @@
-#[path = "../entities.rs"]
-mod entities;
-#[path = "../physworld.rs"]
-mod physworld;
+use dishonored2_rust::entities;
+use dishonored2_rust::physworld;
 
 use std::{env, fs};
 

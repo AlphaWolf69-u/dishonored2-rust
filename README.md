@@ -15,8 +15,8 @@ remain incomplete. Visual and gameplay parity are still being verified.
 - Windows and the Rust MSVC toolchain (`rustup`, Cargo, and Visual Studio C++
   build tools).
 - A recent stable Rust compiler and a graphics driver supporting Bevy's renderer.
-- Dishonored 2 installed locally. Set `DH2_GAME_BASE` to its `base` directory.
-- Disk space for Cargo dependencies and locally extracted map files.
+- Dishonored 2 installed through Steam, or `DH2_GAME_BASE` set to its `base` directory.
+- Disk space for Cargo dependencies. No map extraction is required.
 
 ## Build and test
 
@@ -24,47 +24,42 @@ From the repository root:
 
 ```powershell
 cargo test --locked
-cargo test --locked --features game --bin dishonored2-rust
+cargo test --locked --features game --lib
 .\build-game.ps1
 ```
 
 The build script creates `bin/` and copies the release client there. Dependencies
 are downloaded on the first build; `--offline` is only appropriate once cached.
-Tests marked ignored need a local game installation, extracted assets, runtime
-captures, or a GPU. They are not part of the asset-free test suite.
+Tests marked ignored need a local game installation, private research captures,
+or a GPU. Numeric regression fixtures ship in `tests/fixtures/`; the normal suite
+does not need extracted assets or the private research directory.
 
 Patched Bevy crates are included under `vendor/`, with their original MIT and
 Apache-2.0 licenses. Their licensed auxiliary assets are not Dishonored assets.
 
-## Prepare your own map
-
-Set the installation path, adjusting it for your Steam library:
+## Run with installed resources
 
 ```powershell
-$env:DH2_GAME_BASE = "C:\Program Files (x86)\Steam\steamapps\common\Dishonored2\base"
-cargo build --locked --release --bin dishonored2-tools
-.\target\release\dishonored2-tools.exe verify $env:DH2_GAME_BASE
-.\target\release\dishonored2-tools.exe find $env:DH2_GAME_BASE "eotw_p_lowchaos"
-New-Item -ItemType Directory -Path artifacts -Force
+.\bin\dishonored2-rust.exe
 ```
 
-The search prints the exact resource paths in your installed archives. Extract
-one resource at a time using the paths it reports:
+The client discovers Steam libraries and AppID 403640's installation. It reads
+world geometry, entities, visibility, collision, models, textures, probes and
+declarations directly from the installed indices and resource archives. Compiled
+program definitions are read from the installation's shader cache. The rewrite's
+own shaders are embedded in the executable. Launching does not require the
+repository to be the current directory or any pre-extracted map files.
+
+The default level is `eotw_p_lowchaos`. Select another installed world by its
+unambiguous stem or full archive resource path:
 
 ```powershell
-.\target\release\dishonored2-tools.exe extract $env:DH2_GAME_BASE "<exact .bwm resource path>" artifacts\eotw_p_lowchaos.bwm
+.\bin\dishonored2-rust.exe menu_p
 ```
 
-Also extract the matching `.entities`, `.bphysworld`, and `.tome` resources into
-`artifacts/`, using the same filename stem. Collision needs `.bphysworld`;
-visibility needs `.tome`. Material textures and placed models are read directly
-from the installed archives. The tools do not modify the installation.
-
-Launch from the repository root so the rewrite's shaders are available:
-
-```powershell
-.\bin\dishonored2-rust.exe artifacts\eotw_p_lowchaos.bwm
-```
+To override discovery, set `DH2_GAME_BASE` to the installed game's `base` directory.
+An invalid override reports an error. The tools can list archive resource names;
+their optional extraction command is for research, not a launch prerequisite.
 
 ## Controls and diagnostics
 
@@ -87,15 +82,10 @@ Local `artifacts/`, `bin/`, `target/`, `reference/`, `.pi/`, and research databa
 are intentionally ignored. Synthetic numerical regression vectors are separate
 from extracted game assets.
 
-Reverse-engineering findings and function coverage live in a **local** SQLite
-workspace, not in Git. The database and historical findings snapshot are not
-shipped. The project-owned tooling can initialize a new workspace:
-
-```powershell
-python knowledge\db.py refresh
-python knowledge\db.py search streaming
-python -m unittest discover -s knowledge -p "test_*.py"
-```
+The implementation is shared by the desktop client and command-line tools.
+See [docs/architecture.md](docs/architecture.md) for module responsibilities,
+dependency rules, verification and the policy for third-party patches. Local
+research evidence remains private under ignored directories.
 
 Implementations must be supported by installed data, executable inspection, or
 measured behavior; unsupported branches should remain explicitly unsupported.

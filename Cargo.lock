@@ -2200,6 +2200,7 @@ version = "0.1.0"
 dependencies = [
  "bcdec_rs",
  "bevy",
+ "bevy_math",
  "flate2",
  "half",
  "png",

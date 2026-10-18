@@ -1,11 +1,7 @@
-#[path = "../archive.rs"]
-mod archive;
-#[path = "../bprobe.rs"]
-mod bprobe;
-#[path = "../pnetwork.rs"]
-mod pnetwork;
-#[path = "../probe_lighting.rs"]
-mod probe_lighting;
+use dishonored2_rust::archive;
+use dishonored2_rust::bprobe;
+use dishonored2_rust::pnetwork;
+use dishonored2_rust::probe_lighting;
 
 use std::{collections::BTreeMap, env, fs, path::Path};
 
@@ -17,8 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource = env::args()
             .nth(2)
             .ok_or("--show requires a resource path")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let Some(bytes) = catalog.read(&resource)? else {
             return Err(format!("resource not found: {resource}").into());
@@ -30,8 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let fragment = env::args()
             .nth(2)
             .ok_or("--search requires a path fragment")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         for resource in catalog
             .paths_containing(&fragment)
@@ -46,8 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource = env::args()
             .nth(2)
             .ok_or("--network requires a catalog resource path")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let bytes = catalog
             .read_prefix(&resource, 1024 * 1024)?
@@ -112,8 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stem = env::args()
             .nth(2)
             .ok_or("--resolve requires a world-file stem")?;
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let started = std::time::Instant::now();
         let Some(set) =
@@ -220,8 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nth(2)
             .ok_or("--paths requires a resource suffix")?;
         let fragment = env::args().nth(3).unwrap_or_default().to_ascii_lowercase();
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let paths = catalog
             .paths_with_suffix(&suffix)
@@ -234,8 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if path == "--catalog" {
         let fragment = env::args().nth(2).unwrap_or_default();
-        let base = env::var("DH2_GAME_BASE")
-            .unwrap_or_else(|_| r"D:\Programs\Steam\steamapps\common\Dishonored2\base".into());
+        let base = dishonored2_rust::assets::installation::game_base()?;
         let catalog = archive::Catalog::open(Path::new(&base))?;
         let mut versions = BTreeMap::<(u32, u32), usize>::new();
         let mut total = 0usize;

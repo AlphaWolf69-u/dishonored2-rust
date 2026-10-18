@@ -1,9 +1,7 @@
 //! Inspect the installed map's Umbra Tome without guessing its visibility rules.
+use dishonored2_rust::tome;
+use dishonored2_rust::world_mesh;
 use std::{env, fs};
-#[path = "../tome.rs"]
-mod tome;
-#[path = "../world_mesh.rs"]
-mod world_mesh;
 use tome::object_ids;
 
 // FUN_140a765a0 searches the header-relative gate-ID array at +0x6c,
