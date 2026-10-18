@@ -40,6 +40,7 @@ fn view_z_to_z_slice(
     view_z: f32,
     is_orthographic: bool
 ) -> u32 {
+    if z_slices == 1u { return 0u; }
     var z_slice: u32 = 0u;
     if is_orthographic {
         // NOTE: view_z is correct in the orthographic case

@@ -9,6 +9,9 @@ use bevy::camera::PerspectiveProjection;
 use bevy::prelude::*;
 use std::path::Path;
 
+#[path = "tests/approach_visibility.rs"]
+mod approach_visibility;
+
 #[test]
 #[ignore = "requires installed original catalog and Saved Games config"]
 fn actual_shadow_quality_inputs_resolve_from_original_config_and_assets() {
@@ -1772,7 +1775,7 @@ fn authored_surface_gpu_pipelines_compile() {
             },
             extension: DecalExtension {
                 material_exposure: material_exposure.clone(),
-                bias: 0,
+                bias: 0.0,
                 sh: decal_probe_buffers.0,
                 vertex_probes: decal_probe_buffers.1,
                 native_shadow,
@@ -3056,6 +3059,189 @@ fn authored_surface_gpu_pipelines_compile() {
         );
     }
     eprintln!("GPU native detail/layer metallic sampling: {detail:?}");
+
+    // The reported sign sits just behind its receiver. A constant raster
+    // bias on Depth32Float cannot reproduce arkDecal's homogeneous offset.
+    let all_meshes: Vec<_> = app
+        .world_mut()
+        .query_filtered::<Entity, With<Mesh3d>>()
+        .iter(app.world())
+        .collect();
+    for entity in all_meshes {
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(Visibility::Hidden);
+    }
+    *app.world_mut()
+        .resource_mut::<Assets<Shader>>()
+        .get_mut(&PROBE_SHADER_HANDLE)
+        .unwrap() = Shader::from_wgsl(
+        include_str!("../../assets/shaders/dh2_probe.wgsl"),
+        "decal-depth-receiver",
+    );
+    let mut receiver = app
+        .world()
+        .resource::<Assets<ProbeMaterial>>()
+        .get(&emitting)
+        .unwrap()
+        .clone();
+    receiver.base = StandardMaterial {
+        base_color: Color::srgb(1.0, 0.0, 0.0),
+        unlit: true,
+        ..default()
+    };
+    receiver.extension.surface.misc.z = 0;
+    let receiver = app
+        .world_mut()
+        .resource_mut::<Assets<ProbeMaterial>>()
+        .add(receiver);
+    let mut overlay = app
+        .world()
+        .resource::<Assets<DecalMaterial>>()
+        .get(&decal)
+        .unwrap()
+        .clone();
+    overlay.base = StandardMaterial {
+        base_color: Color::srgb(0.0, 1.0, 0.0),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    };
+    overlay.extension.surface.misc.z = 0;
+    let overlay = app
+        .world_mut()
+        .resource_mut::<Assets<DecalMaterial>>()
+        .add(overlay);
+    let quad = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(Rectangle::new(2.0, 2.0));
+    app.world_mut().spawn((
+        Mesh3d(quad.clone()),
+        MeshMaterial3d(receiver.clone()),
+        Transform::default(),
+    ));
+    let overlay_entity = app
+        .world_mut()
+        .spawn((
+            Mesh3d(quad),
+            MeshMaterial3d(overlay.clone()),
+            Transform::from_xyz(0.0, 0.0, -0.01),
+        ))
+        .id();
+    app.world_mut()
+        .entity_mut(camera)
+        .insert(Projection::custom(
+            camera_projection::NativeGameProjection::new(110.0, 0.01, 7000.0),
+        ));
+    for distance in [2.0, 4.0, 8.0, 16.0] {
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(Transform::from_xyz(0.0, 0.0, distance));
+        for (bias, green) in [(0.0, false), (-0.0001, true), (0.0001, false)] {
+            app.world_mut()
+                .resource_mut::<Assets<DecalMaterial>>()
+                .get_mut(&overlay)
+                .unwrap()
+                .extension
+                .bias = bias;
+            for _ in 0..24 {
+                app.update();
+            }
+            let pixel = forward_center(&mut app, &target);
+            assert_eq!(
+                pixel[1] > pixel[0],
+                green,
+                "decal receiver distance={distance} zbias={bias} pixel={pixel:?}"
+            );
+        }
+    }
+    eprintln!(
+        "GPU decal clip-space bias: zero/negative/positive offsets at distances 2/4/8/16 passed"
+    );
+    app.world_mut()
+        .entity_mut(overlay_entity)
+        .insert(Visibility::Hidden);
+    let previous_lights: Vec<_> = app
+        .world_mut()
+        .query_filtered::<Entity, Or<(With<DirectionalLight>, With<PointLight>, With<SpotLight>)>>()
+        .iter(app.world())
+        .collect();
+    for entity in previous_lights {
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(Visibility::Hidden);
+    }
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut material = materials.get_mut(&receiver).unwrap();
+        material.base.base_color = Color::WHITE;
+        material.base.unlit = false;
+    }
+    let point = app
+        .world_mut()
+        .spawn((
+            PointLight {
+                intensity: 2000.0,
+                range: 1.0,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 0.5),
+        ))
+        .id();
+    for gpu_clustering in [false, true] {
+        app.world_mut()
+            .resource_mut::<bevy::light::cluster::GlobalClusterSettings>()
+            .gpu_clustering =
+            gpu_clustering.then_some(bevy::light::cluster::GlobalClusterGpuSettings {
+                initial_z_slice_list_capacity: 4096,
+                initial_index_list_capacity: 16384,
+            });
+        let mut candle_pixels = Vec::new();
+        for distance in [6.0, 4.0, 2.0, 0.75] {
+            app.world_mut()
+                .entity_mut(camera)
+                .insert(Transform::from_xyz(0.0, 0.0, distance));
+            for _ in 0..24 {
+                app.update();
+            }
+            let clusters = app
+                .world()
+                .get::<bevy::light::cluster::Clusters>(camera)
+                .unwrap();
+            let factors = bevy::light::cluster::assign::calculate_cluster_factors(
+                clusters.near,
+                clusters.far,
+                clusters.dimensions.z as f32,
+                false,
+            );
+            assert!(
+                factors.is_finite(),
+                "local-light grid must remain finite at distance {distance}: {clusters:?}"
+            );
+            if distance < 5.0 {
+                assert_eq!(clusters.dimensions.z, 1);
+            }
+            let on = forward_center(&mut app, &target);
+            app.world_mut().entity_mut(point).insert(Visibility::Hidden);
+            for _ in 0..6 {
+                app.update();
+            }
+            let off = forward_center(&mut app, &target);
+            assert!(
+                energy(on) > energy(off) + 20,
+                "nearby point light disappeared at distance {distance}: on={on:?} off={off:?}"
+            );
+            app.world_mut()
+                .entity_mut(point)
+                .insert(Visibility::Visible);
+            candle_pixels.push(on);
+        }
+        eprintln!(
+            "GPU point light crossing first depth slice (GPU assignment={gpu_clustering}): {candle_pixels:?}"
+        );
+    }
 }
 
 #[test]

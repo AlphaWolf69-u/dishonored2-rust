@@ -788,14 +788,11 @@ pub fn decal_depth_bias(bytes: &[u8]) -> Option<f32> {
             _ => {}
         }
     }
-    // Void's zbias is a fraction of normalized depth. The GPU pipeline uses
-    // integer depth-bias units; 24-bit conversion preserves the authored scale.
+    // arkDecal.hlsl_vp_main subtracts zbias.x from clip-space Z BEFORE
+    // perspective division. Keep its sign and scale; a rasterizer offset
+    // instead changes the result with the depth-buffer format and distance.
     if decal {
-        Some(
-            original
-                .map(|value| (-value * 16_777_216.0).round().clamp(1.0, 4096.0))
-                .unwrap_or(1678.0),
-        )
+        Some(original.unwrap_or(0.0))
     } else {
         None
     }
@@ -1411,7 +1408,13 @@ mod tests {
         );
         assert_eq!(
             decal_depth_bias(b"mainProgram arkDecal\nzbias -0.0001\n"),
-            Some(1678.0)
+            Some(-0.0001)
+        );
+        assert_eq!(decal_depth_bias(b"mainProgram arkDecal\n"), Some(0.0));
+        assert_eq!(decal_depth_bias(b"mainProgram arkDecal\nzbias 0\n"), Some(0.0));
+        assert_eq!(
+            decal_depth_bias(b"mainProgram arkDecal\nzbias 0.25\n"),
+            Some(0.25)
         );
     }
     #[test]

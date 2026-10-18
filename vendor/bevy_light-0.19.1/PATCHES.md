@@ -3,6 +3,9 @@
 - `src/point_light.rs`: add distance decay, falloff start and half-point axis/scale
   inputs. Defaults retain upstream behavior when custom inputs are absent.
 - `src/spot_light.rs`: add distance decay and falloff-start inputs.
+- `src/cluster/assign.rs`: collapse an empty perspective logarithmic depth
+  interval to one slice. Single-slice factors carry finite near/far extents;
+  CPU slice lookup and boundary construction handle that representation.
 
 These are data hooks used by `bevy_pbr`'s corresponding extraction and shader
 patches. The project resolves authored values and original attenuation rules;

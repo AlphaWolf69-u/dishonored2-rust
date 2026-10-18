@@ -350,6 +350,9 @@ fn line_intersection_to_z_plane(origin: vec3<f32>, p: vec3<f32>, z: f32) -> vec3
 
 // Computes the near and far extents of the cluster grid.
 fn compute_z_near_and_z_far(is_orthographic: bool) -> vec2<f32> {
+    if !is_orthographic && lights.cluster_dimensions.z == 1u {
+        return lights.cluster_factors.zw;
+    }
     let cluster_dimensions = vec3<f32>(lights.cluster_dimensions.xyz);
     let cluster_factors = lights.cluster_factors;
     var z_near: f32;

@@ -342,6 +342,12 @@ pub(crate) fn assign_objects_to_clusters(
 
         // NOTE: Ensure the far_z is at least as far as the first_depth_slice to avoid clustering problems.
         let far_z = far_z.max(first_slice_depth);
+        // If every light fits in the first perspective slice, there is no
+        // logarithmic depth interval to subdivide. Keep one real slice rather
+        // than publishing infinity/NaN factors to forward shading.
+        if !is_orthographic && far_z <= first_slice_depth {
+            requested_cluster_dimensions.z = 1;
+        }
         let cluster_factors = calculate_cluster_factors(
             first_slice_depth,
             far_z,
@@ -779,6 +785,11 @@ pub fn calculate_cluster_factors(
     z_slices: f32,
     is_orthographic: bool,
 ) -> Vec2 {
+    if !is_orthographic && z_slices == 1.0 {
+        // Carry the extents for GPU cluster AABB construction. Slice lookup
+        // returns zero directly and never interprets these as log factors.
+        return Vec2::new(near, far);
+    }
     if is_orthographic {
         Vec2::new(-near, z_slices / (-far - -near))
     } else {
@@ -867,6 +878,9 @@ fn z_slice_to_view_z(
     z_slice: u32,
     is_orthographic: bool,
 ) -> f32 {
+    if !is_orthographic && z_slices == 1 {
+        return if z_slice == 0 { 0.0 } else { -far };
+    }
     if is_orthographic {
         return -near - (far - near) * z_slice as f32 / z_slices as f32;
     }
@@ -1009,6 +1023,9 @@ fn view_z_to_z_slice(
     view_z: f32,
     is_orthographic: bool,
 ) -> u32 {
+    if z_slices == 1 {
+        return 0;
+    }
     let z_slice = if is_orthographic {
         // NOTE: view_z is correct in the orthographic case
         ((view_z - cluster_factors.x) * cluster_factors.y).floor() as u32

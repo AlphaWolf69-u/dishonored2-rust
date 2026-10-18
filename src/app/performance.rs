@@ -1,9 +1,8 @@
 //! Performance.
 use super::{
-    frame_profile, local_light_kind_index, view_to_game, AppExit, BenchmarkSeconds,
-    FrameRateOverlay, MeshTag, OriginalLocalLightCull, OriginalLocalLightCullStats,
-    SceneRenderQueue, StreamingDiagnostics, VisibilityElapsedTiming,
-    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+    AppExit, BenchmarkSeconds, FrameRateOverlay, MeshTag, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+    OriginalLocalLightCull, OriginalLocalLightCullStats, SceneRenderQueue, StreamingDiagnostics,
+    VisibilityElapsedTiming, frame_profile, local_light_kind_index, view_to_game,
 };
 use bevy::prelude::*;
 
@@ -16,7 +15,14 @@ pub(super) fn finish_streaming_diagnostics(
     mut light_culling: ResMut<OriginalLocalLightCullStats>,
     scene: Res<SceneRenderQueue>,
     meshes: Query<&ViewVisibility, With<MeshTag>>,
-    local_lights: Query<(&ViewVisibility, &OriginalLocalLightCull)>,
+    local_lights: Query<(
+        Entity,
+        &ViewVisibility,
+        &OriginalLocalLightCull,
+        &Visibility,
+    )>,
+    frame: Res<bevy::diagnostic::FrameCount>,
+    clusters: Query<&bevy::light::cluster::Clusters>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     let mut render_metrics = render_diagnostics
@@ -40,7 +46,38 @@ pub(super) fn finish_streaming_diagnostics(
         format!("\nrender_diagnostics {}", render_metrics.join(" "))
     };
     light_culling.visible_by_kind = [0; 4];
-    for (visibility, light) in &local_lights {
+    let trace_lights = (frame.0 < 4 || frame.0 % 120 == 0)
+        && std::env::var_os("DH2_TRACE_LIGHT_VISIBILITY").is_some();
+    if trace_lights {
+        for clusters in &clusters {
+            eprintln!(
+                "Light grid frame={} dimensions={:?} near={} far={}",
+                frame.0, clusters.dimensions, clusters.near, clusters.far
+            );
+        }
+    }
+    for (entity, visibility, light, authored_visibility) in &local_lights {
+        if trace_lights && (*authored_visibility != Visibility::Hidden || visibility.get()) {
+            let memberships: Vec<_> = clusters
+                .iter()
+                .map(|clusters| match &clusters.clusterable_objects {
+                    bevy::light::cluster::ClusterableObjects::Cpu(cells) => Some(
+                        cells
+                            .iter()
+                            .filter(|cell| cell.iter().any(|id| *id == entity))
+                            .count(),
+                    ),
+                    bevy::light::cluster::ClusterableObjects::Gpu => None,
+                })
+                .collect();
+            eprintln!(
+                "Light visibility frame={} hash={} position={:?} authored={authored_visibility:?} bevy={} clusters={memberships:?}",
+                frame.0,
+                light.definition_name_hash,
+                light.initial_sphere,
+                visibility.get()
+            );
+        }
         if visibility.get() {
             if let Some(kind_index) = local_light_kind_index(light.kind) {
                 light_culling.visible_by_kind[kind_index] += 1;

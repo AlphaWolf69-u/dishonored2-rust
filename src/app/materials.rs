@@ -253,7 +253,8 @@ impl MaterialExtension for ProbeExtension {
 pub(super) struct DecalExtension {
     #[storage(154, read_only)]
     pub(super) material_exposure: Handle<ShaderBuffer>,
-    pub(super) bias: i32,
+    #[uniform(155)]
+    pub(super) bias: f32,
     #[storage(100, read_only)]
     pub(super) sh: Handle<ShaderBuffer>,
     #[storage(119, read_only)]
@@ -435,14 +436,12 @@ native_shadow_image_access!(DecalExtension);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub(super) struct DecalKey {
-    pub(super) bias: i32,
     pub(super) surface: surface_gpu::SurfaceKey,
 }
 
 impl From<&DecalExtension> for DecalKey {
     fn from(extension: &DecalExtension) -> Self {
         Self {
-            bias: extension.bias,
             surface: surface_gpu::SurfaceKey::from(&extension.surface),
         }
     }
@@ -465,11 +464,7 @@ impl MaterialExtension for DecalExtension {
         layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            // Bevy's StandardMaterial.depth_bias only sorts transparent draws;
-            // the Void arkDecal z-bias needs an actual GPU depth offset.
-            depth.bias.constant = key.bind_group_data.bias;
-        }
+        descriptor.vertex.shader_defs.push("DH2_DECAL".into());
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.push("DH2_NATIVE_LOCAL_SHADOWS".into());
         }

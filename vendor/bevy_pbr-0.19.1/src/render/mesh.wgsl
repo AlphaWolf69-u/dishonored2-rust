@@ -11,6 +11,10 @@
 #import dh2_indirect::{native_vertex_sh, pack_vertex_irradiance}
 #endif
 
+#ifdef DH2_DECAL
+@group(#{MATERIAL_BIND_GROUP}) @binding(155) var<uniform> decal_zbias: f32;
+#endif
+
 #ifdef MORPH_TARGETS
 // The instance_index parameter must match vertex_in.instance_index. This is a work around for a wgpu dx12 bug.
 // See https://github.com/gfx-rs/naga/issues/2416
@@ -83,6 +87,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_POSITIONS
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef DH2_DECAL
+    // arkDecal: offset homogeneous Z, preserving the authored world position.
+    out.position.z -= decal_zbias;
+#endif
 #ifdef DH2_PROJECT_FAR
 #if DH2_PROJECT_FAR == 1
     out.position.z=0.0;

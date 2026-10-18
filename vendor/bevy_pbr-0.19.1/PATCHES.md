@@ -9,6 +9,11 @@ Compared with the matching upstream release, these files differ:
 - `src/render/mesh_view_types.wgsl`: corresponding GPU light records and limits.
 - `src/render/forward_io.wgsl` and `src/render/mesh.wgsl`: authored tangent basis
   and per-vertex probe attributes/interpolants for project material extensions.
+  The mesh vertex path also transports arkDecal's uniform homogeneous Z offset
+  and authored sky/cloud far-depth projection.
+- `src/render/clustered_forward.wgsl` and `src/cluster/cluster_raster.wgsl`:
+  match `bevy_light`'s single-depth-slice representation in forward lookup and
+  GPU cluster AABB construction, avoiding undefined logarithmic factors.
 - `src/render/pbr_functions.wgsl` and `src/render/pbr_lighting.wgsl`: project
   lighting hooks and original attenuation/half-point support.
 - `src/render/shadows.wgsl`: compatibility with the extended light layout.

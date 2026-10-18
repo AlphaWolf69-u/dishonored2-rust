@@ -837,7 +837,7 @@ impl MaterialResolver<'_> {
                 base,
                 extension: DecalExtension {
                     material_exposure: self.material_exposure.clone(),
-                    bias: decal_bias.unwrap_or(1678.0).round() as i32,
+                    bias: decal_bias.unwrap_or(0.0),
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
                     native_shadow: self.native_shadow_buffer.clone(),

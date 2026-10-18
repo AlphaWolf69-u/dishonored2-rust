@@ -215,3 +215,18 @@ projections, caster IDs and cache allocations. Receiver tracing remains numeric.
 The two camera-angle replays and GPU samples are retained under
 `artifacts/dust-flood-a*` and `artifacts/dust-flood-b*`. Normal play leaves these
 capture switches unset.
+
+Mesh decals preserve the material's signed `zbias` (renderParm default zero).
+The installed `renderprog/arkdecal` vertex program subtracts it from homogeneous
+clip Z before division by W. It is a vertex uniform, not a depth-format-dependent
+integer raster bias. GPU checks place a decal behind its receiver and exercise
+zero, negative and positive offsets across four distances.
+
+The backend's perspective light grid uses one depth slice when all visible
+light spheres fit before its first-slice boundary. A zero logarithmic interval
+previously produced infinite factors and inconsistent CPU/GPU slice indices,
+making nearby illumination disappear. Single-slice CPU assignment, forward
+lookup and GPU clustering now share finite extents; this does not alter authored
+light range, original Tome visibility, attenuation or shadow selection.
+`DH2_TRACE_LIGHT_VISIBILITY` optionally records authored visibility, backend
+visibility and CPU cluster memberships without inspecting screenshots.
