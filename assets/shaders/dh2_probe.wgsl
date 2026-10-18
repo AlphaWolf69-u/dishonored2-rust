@@ -1,3 +1,4 @@
+#import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_bindings::mesh,
@@ -19,6 +20,7 @@ fn fragment(
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
     var diffuse_response=pbr_input.material.base_color.rgb;
     var native_indirect=vec3<f32>(0.0);
+    var native_emissive=vec3<f32>(0.0);
     // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
     // Original arkWater requires a separate depth/HDR-dependent shader; do not
     // feed it through the default layered-material equations.
@@ -37,6 +39,7 @@ fn fragment(
 #endif
         let authored = evaluate_surface(uv, uv1, color);
         pbr_input.material.base_color = authored.albedo;
+        native_emissive=authored.emissive;
         diffuse_response=authored.diffuse_response;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
@@ -111,6 +114,9 @@ fn fragment(
             native_parallel_directional_index(), visibility, visibility, compiled_native_shadow, native_indirect);
     } else {
         out.color = pbr_input.material.base_color;
+    }
+    if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+        out.color=vec4(out.color.rgb+native_emissive*139.26*view.exposure,out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

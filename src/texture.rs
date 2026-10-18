@@ -163,6 +163,11 @@ pub fn normalize_image_format(packed: &mut u32) -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressedFormat {
+    // Uncompressed native intrinsics and BIM resources share the mip uploader.
+    Rgba8,
+    Rgba8Srgb,
+    Rg8,
+    Bgra8,
     Bc1,
     Bc1Srgb,
     Bc3,
@@ -180,6 +185,10 @@ pub enum CompressedFormat {
 impl CompressedFormat {
     pub fn from_dxgi(value: u32) -> Result<Self, String> {
         Ok(match value {
+            28 => Self::Rgba8,
+            29 => Self::Rgba8Srgb,
+            49 => Self::Rg8,
+            87 => Self::Bgra8,
             71 => Self::Bc1,
             72 => Self::Bc1Srgb,
             77 => Self::Bc3,
@@ -201,12 +210,21 @@ impl CompressedFormat {
     }
     pub fn block_bytes(self) -> usize {
         match self {
+            Self::Rgba8 | Self::Rgba8Srgb => 4,
+            Self::Rg8 => 2,
+            Self::Bgra8 => 4,
             Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8,
             _ => 16,
         }
     }
     pub fn bits_per_pixel(self) -> i32 {
-        self.block_bytes() as i32 / 2
+        if self.block_width()==1 {self.block_bytes() as i32*8} else {self.block_bytes() as i32 / 2}
+    }
+    pub fn block_width(self) -> u32 {
+        match self {Self::Rgba8 | Self::Rgba8Srgb | Self::Rg8 | Self::Bgra8 => 1, _ => 4}
+    }
+    pub fn mip_bytes(self,width:u32,height:u32)->usize {
+        width.div_ceil(self.block_width()) as usize * height.div_ceil(self.block_width()) as usize * self.block_bytes()
     }
 }
 
@@ -259,8 +277,7 @@ pub fn compressed_mip(
     if mip.mip_level != level {
         return Err("bimage mip level differs from request".into());
     }
-    let expected =
-        mip.width.div_ceil(4) as usize * mip.height.div_ceil(4) as usize * format.block_bytes();
+    let expected = format.mip_bytes(mip.width,mip.height);
     if mip.payload.len() != expected {
         return Err(format!(
             "invalid {format:?} mip payload: expected {expected}, got {}",
@@ -272,6 +289,22 @@ pub fn compressed_mip(
         height: mip.height,
         payload: mip.payload,
     })
+}
+
+#[test]
+fn rgba8_mips_keep_pixel_rows_and_color_space() {
+    assert_eq!(CompressedFormat::from_dxgi(28).unwrap(),CompressedFormat::Rgba8);
+    assert_eq!(CompressedFormat::from_dxgi(29).unwrap(),CompressedFormat::Rgba8Srgb);
+    assert_eq!(CompressedFormat::from_dxgi(49).unwrap().mip_bytes(3,5),30);
+    assert_eq!(CompressedFormat::from_dxgi(87).unwrap().mip_bytes(3,5),60);
+    for f in [CompressedFormat::Rgba8,CompressedFormat::Rgba8Srgb] {
+        assert_eq!(f.bits_per_pixel(),32);
+        let mut bytes=Vec::new();
+        for v in [0u32,0,3,5,60] {bytes.extend_from_slice(&v.to_le_bytes());}
+        bytes.extend_from_slice(&[127;60]);
+        let mip=compressed_mip(&bytes,0,f).unwrap();
+        assert_eq!((mip.width,mip.height,mip.payload.len()),(3,5,60));
+    }
 }
 
 pub struct InlineCompressedChain {

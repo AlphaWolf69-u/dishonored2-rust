@@ -8,6 +8,8 @@ mod entities;
 mod render_state;
 #[path = "../material.rs"]
 mod material;
+#[path = "../material_surface.rs"]
+mod material_surface;
 #[path = "../texture.rs"]
 mod texture;
 #[path = "../world_mesh.rs"]
@@ -24,6 +26,73 @@ fn main() -> Result<(), Box<dyn Error>> {
     let world_path = args
         .next()
         .unwrap_or_else(|| "artifacts/tutorial_p.bwm".into());
+    if world_path == "--texture-defaults" {
+        for path in catalog.paths_containing("generated/decls/renderparm/") {
+            let Some(bytes) = catalog.read(&path)? else { continue; };
+            let text = entities::native_declaration_text(&bytes);
+            if text.to_ascii_lowercase().contains("texture") {
+                println!("{}\t{}", path, text.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        return Ok(());
+    }
+    if world_path == "--texture-map-audit" {
+        let mut rows=BTreeMap::<String,(String,usize,usize,BTreeMap<String,usize>)>::new();
+        let mut active=BTreeMap::<String,(usize,usize)>::new();
+        for path in catalog.paths_containing("generated/decls/renderparm/") {
+            let Some(bytes)=catalog.read(&path)? else {continue;};
+            let text=entities::native_declaration_text(&bytes);
+            if !text.to_ascii_lowercase().contains("texture") {continue;}
+            let name=path.strip_prefix("generated/decls/renderparm/").unwrap().strip_suffix(".decl").unwrap();
+            rows.insert(name.into(),(text.split_whitespace().collect::<Vec<_>>().join(" "),0,0,BTreeMap::new()));
+        }
+        let mut materials=0;
+        for path in catalog.paths_containing("generated/decls/material/") {
+            let Some(bytes)=catalog.read(&path)? else {continue;};materials+=1;
+            let text=entities::native_declaration_text(&bytes);
+            let surface=material_surface::Surface::parse(&bytes);
+            if matches!(surface.program(),material_surface::Program::Default|material_surface::Program::Vegetation) {
+                let is_decal=surface.main_program.as_deref().is_some_and(|s|s.eq_ignore_ascii_case("arkdecal"));
+                let keys=text.lines().filter_map(|l|l.split("//").next()?.split_whitespace().next().map(str::to_ascii_lowercase)).collect::<HashSet<_>>();
+                for (role,_) in surface.texture_bindings(is_decal) {
+                    let name=material_surface::TEXTURE_PARAMETERS[role];
+                    let counts=active.entry(name.into()).or_default();counts.0+=1;counts.1+=usize::from(!keys.contains(name));
+                }
+            }
+            for line in text.lines() {
+                let line=line.split("//").next().unwrap().trim();
+                let Some(at)=line.find(char::is_whitespace) else {continue;};
+                let key=line[..at].to_ascii_lowercase();let Some(row)=rows.get_mut(&key) else {continue;};
+                row.1+=1;let name=line[at..].trim().trim_matches('"');
+                let format=if name.eq_ignore_ascii_case("_frameCapture") {"runtime frame capture (not a catalog image)".into()}
+                    else if name=="##PLACEHOLDERNAME##" {"native default-material template substitution".into()}
+                    else if material::intrinsic_image_pixels(name).is_some() {"intrinsic RGBA8".into()}
+                    else if let Some(stem)=material::compiled_image_stem(&catalog,name) {
+                        if let Some(bytes)=catalog.read(&stem)? {
+                            match texture::BimageInfo::parse(&bytes) {
+                                Ok(info)=>format!("{:?}",info.format),Err(e)=>format!("unsupported: {e}")
+                            }
+                        } else {row.2+=1;eprintln!("MISSING {path} {key} {name}");"missing catalog resource".into()}
+                    } else {row.2+=1;eprintln!("UNRESOLVED {path} {key} {name}");"unresolved source/runtime image".into()};
+                *row.3.entry(format).or_default()+=1;
+            }
+        }
+        eprintln!("Audited {} texture parameters across {materials} material declarations",rows.len());
+        println!("parameter\toriginal_declaration\texplicit_material_uses\tunresolved_sources\tformats\tactive_supported_bindings\tomitted_defaults_used");
+        for (name,(decl,uses,missing,formats)) in rows {
+            let (enabled,defaulted)=active.get(&name).copied().unwrap_or_default();
+            println!("{name}\t{decl}\t{uses}\t{missing}\t{formats:?}\t{enabled}\t{defaulted}");
+        }
+        return Ok(());
+    }
+    if world_path == "--image-info" {
+        for name in args {
+            let stem=material::compiled_image_stem(&catalog,&name).ok_or("unresolved image source")?;
+            let bytes=catalog.read(&stem)?.ok_or("missing image")?;
+            println!("{name:?}\t{stem}\t{:?}", texture::BimageInfo::parse(&bytes));
+        }
+        return Ok(());
+    }
     if world_path=="--read-resource" {
         for path in args {
             let bytes=catalog.read(&path)?.ok_or_else(||format!("missing resource {path}"))?;

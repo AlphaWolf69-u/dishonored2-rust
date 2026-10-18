@@ -21,6 +21,10 @@ pub struct SurfaceUniform {
     pub specular_dielectric: Vec4,
     pub diffuse_metal: Vec4,
     pub specular_reuse: UVec4,
+    pub detail: Vec4,
+    pub emissive_color: Vec4,
+    pub emissive_flags: UVec4,
+    pub emissive_clip: Vec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -128,6 +132,10 @@ impl From<&Surface> for SurfaceUniform {
             specular_dielectric:Vec3::from_array(s.specular_dielectric).extend(0.0),
             diffuse_metal:Vec3::from_array(s.diffuse_metal).extend(0.0),
             specular_reuse:UVec4::new(s.layers[0].specular_reuse,s.layers[1].specular_reuse,s.layers[2].specular_reuse,u32::from(s.has_specular)),
+            detail:Vec4::new(s.detail_tiling,s.detail_intensity,u32::from(s.has_detail_bump) as f32,0.),
+            emissive_color:Vec3::from_array(s.emissive_color).extend(s.emissive_intensity),
+            emissive_flags:UVec4::new(u32::from(s.has_emissive_map),u32::from(s.has_emissive_mask),u32::from(s.animated_emissive),0),
+            emissive_clip:Vec4::new(s.emissive_clip[0],s.emissive_clip[1],0.,0.),
         }
     }
 }

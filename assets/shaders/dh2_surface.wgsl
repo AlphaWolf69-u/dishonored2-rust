@@ -19,6 +19,10 @@ struct SurfaceUniform {
     specular_dielectric:vec4<f32>,
     diffuse_metal:vec4<f32>,
     specular_reuse:vec4<u32>,
+    detail:vec4<f32>,
+    emissive_color:vec4<f32>,
+    emissive_flags:vec4<u32>,
+    emissive_clip:vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -52,6 +56,10 @@ const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFS
 @group(#{MATERIAL_BIND_GROUP}) @binding(134) var specular0:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(135) var specular1:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(136) var specular2:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(137) var detail_bump:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(138) var emissive_map:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(139) var emissive_mask:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(140) var surface_anisotropic_sampler:sampler;
 
 struct SurfaceResult {
     albedo: vec4<f32>,
@@ -60,6 +68,7 @@ struct SurfaceResult {
     occlusion: f32,
     normal_xy: vec2<f32>,
     diffuse_response:vec3<f32>,
+    emissive:vec3<f32>,
 }
 
 fn scaled_uv(uv: vec2<f32>, scale_bias: vec4<f32>) -> vec2<f32> {
@@ -68,26 +77,32 @@ fn scaled_uv(uv: vec2<f32>, scale_bias: vec4<f32>) -> vec2<f32> {
 
 // Uniform material switches select resources; explicit gradients also make
 // derivative availability independent of control-flow analysis.
+fn sample_material_image(image:texture_2d<f32>,uv:vec2<f32>,dx:vec2<f32>,dy:vec2<f32>,anisotropic:bool)->vec4<f32> {
+    if anisotropic && (compiled_misc.w & 2u)==0u {
+        return textureSampleGrad(image,surface_anisotropic_sampler,uv,dx,dy);
+    }
+    return textureSampleGrad(image,surface_sampler,uv,dx,dy);
+}
 fn sample_role(role: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     switch role {
-        case 0u: { return textureSampleGrad(diffuse0, surface_sampler, uv, dx, dy); }
-        case 1u: { return textureSampleGrad(diffuse1, surface_sampler, uv, dx, dy); }
-        case 2u: { return textureSampleGrad(diffuse2, surface_sampler, uv, dx, dy); }
-        case 3u: { return textureSampleGrad(bump0, surface_sampler, uv, dx, dy); }
-        case 4u: { return textureSampleGrad(bump1, surface_sampler, uv, dx, dy); }
-        case 5u: { return textureSampleGrad(bump2, surface_sampler, uv, dx, dy); }
-        case 6u: { return textureSampleGrad(gloss0, surface_sampler, uv, dx, dy); }
-        case 7u: { return textureSampleGrad(gloss1, surface_sampler, uv, dx, dy); }
-        case 8u: { return textureSampleGrad(gloss2, surface_sampler, uv, dx, dy); }
-        case 9u: { return textureSampleGrad(metallic0, surface_sampler, uv, dx, dy); }
-        case 10u: { return textureSampleGrad(metallic1, surface_sampler, uv, dx, dy); }
-        case 11u: { return textureSampleGrad(metallic2, surface_sampler, uv, dx, dy); }
-        case 12u: { return textureSampleGrad(mask0, surface_sampler, uv, dx, dy); }
-        case 13u: { return textureSampleGrad(mask1, surface_sampler, uv, dx, dy); }
-        case 16u: { return textureSampleGrad(specular0,surface_sampler,uv,dx,dy); }
-        case 17u: { return textureSampleGrad(specular1,surface_sampler,uv,dx,dy); }
-        case 18u: { return textureSampleGrad(specular2,surface_sampler,uv,dx,dy); }
-        default: { return textureSampleGrad(mask2, surface_sampler, uv, dx, dy); }
+        case 0u: { return sample_material_image(diffuse0, uv, dx, dy, true); }
+        case 1u: { return sample_material_image(diffuse1, uv, dx, dy, true); }
+        case 2u: { return sample_material_image(diffuse2, uv, dx, dy, true); }
+        case 3u: { return sample_material_image(bump0, uv, dx, dy, true); }
+        case 4u: { return sample_material_image(bump1, uv, dx, dy, true); }
+        case 5u: { return sample_material_image(bump2, uv, dx, dy, true); }
+        case 6u: { return sample_material_image(gloss0, uv, dx, dy, false); }
+        case 7u: { return sample_material_image(gloss1, uv, dx, dy, false); }
+        case 8u: { return sample_material_image(gloss2, uv, dx, dy, false); }
+        case 9u: { return sample_material_image(metallic0, uv, dx, dy, true); }
+        case 10u: { return sample_material_image(metallic1, uv, dx, dy, true); }
+        case 11u: { return sample_material_image(metallic2, uv, dx, dy, true); }
+        case 12u: { return sample_material_image(mask0, uv, dx, dy, true); }
+        case 13u: { return sample_material_image(mask1, uv, dx, dy, true); }
+        case 16u: { return sample_material_image(specular0,uv,dx,dy,true); }
+        case 17u: { return sample_material_image(specular1,uv,dx,dy,true); }
+        case 18u: { return sample_material_image(specular2,uv,dx,dy,true); }
+        default: { return sample_material_image(mask2, uv, dx, dy, true); }
     }
 }
 
@@ -199,6 +214,31 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         if i != 1u || surface.reuse[i].y == 0u { out.normal_xy = mix(out.normal_xy, bump[i], masks[i]); }
     }
     if !is_vegetation && compiled_misc.y != 0u { out.albedo *= vertex_color; }
+    let base_uv=select(uv0,uv1,surface.uv_sets[0].x!=0u);
+    let base_dx=select(dx0,dx1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;
+    let base_dy=select(dy0,dy1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;
+    let base_scaled=scaled_uv(base_uv,surface.uv[0]);
+    if !is_decal && compiled_misc.x!=0u && surface.detail.z!=0.0 {
+        out.normal_xy+=sample_material_image(detail_bump,base_scaled*surface.detail.x,
+            base_dx*surface.detail.x,base_dy*surface.detail.x,true).xy*surface.detail.y;
+    }
+    out.emissive=vec3(0.0);
+    // AQ/HQ ordinary emission and LQ constant emission. Animated emission's
+    // separate time/mask owner remains an unsupported branch.
+    if surface.emissive_color.w!=0.0 && (surface.emissive_flags.z==0u || is_decal) {
+        var e=surface.emissive_color.rgb;
+        if !is_decal && surface.emissive_flags.x!=0u {
+            e=sample_material_image(emissive_map,base_scaled,base_dx,base_dy,true).rgb;
+        }
+        if !is_decal && surface.emissive_flags.y!=0u {
+            let mask=sample_material_image(emissive_mask,base_scaled,base_dx,base_dy,true).r;
+            // Native smoothstep has reversed edges; spell its polynomial out
+            // because WGSL smoothstep requires ordered edges.
+            let t=clamp((surface.emissive_clip.x-mask-surface.emissive_clip.y)/(-2.0*surface.emissive_clip.y),0.0,1.0);
+            e*=t*t*(3.0-2.0*t);
+        }
+        out.emissive=surface.emissive_color.w*e;
+    }
     if !is_decal && !is_vegetation { out.albedo = max(out.albedo, vec4<f32>(0.00001)); }
     if compiled_flags.z != 0u {
         g = mix(surface.ranges.x, surface.ranges.y, out.albedo.a);

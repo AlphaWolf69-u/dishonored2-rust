@@ -22,11 +22,27 @@ pub struct Catalog {
     // Image source names are authoritative index aliases, including imageprog
     // expressions and option suffixes. Values index the final override table.
     image_sources: Vec<(String, usize)>,
+    image_programs: Vec<(String, usize)>,
+}
+
+// Native image programs are tokenized before their source alias is emitted.
+// Ignore spacing around punctuation, preserving quoted paths and word breaks.
+fn image_program_key(source:&str)->String {
+    let source=source.trim().to_ascii_lowercase();
+    let source=source.strip_suffix(".imageprog").unwrap_or(&source);
+    let mut key=String::new();let mut quoted=false;let mut space=false;
+    for c in source.chars() {
+        let c=if c=='\\' {'/'} else {c};
+        if !quoted && c.is_whitespace() {space=true;continue;}
+        if space && !key.is_empty() && !"(),".contains(c) && !"(),".contains(key.chars().last().unwrap()) {key.push(' ');}
+        space=false;key.push(c);if c=='"' {quoted=!quoted;}
+    }
+    key
 }
 
 impl Catalog {
     fn entry(&self, path: &str) -> Option<&Entry> {
-        let normalized = path.to_ascii_lowercase();
+        let normalized = path.replace('\\',"/").to_ascii_lowercase();
         self.entries
             .binary_search_by(|(key, _)| key.as_str().cmp(&normalized))
             .ok()
@@ -105,8 +121,10 @@ impl Catalog {
                 // `name` already owns this buffer. Normalize it in place
                 // instead of allocating a second lowercase String per entry.
                 path.make_ascii_lowercase();
+                if path.contains('\\') {path=path.replace('\\',"/");}
                 if kind.eq_ignore_ascii_case("image") && path.ends_with(".bimage7") {
                     source.make_ascii_lowercase();
+                    if source.contains('\\') {source=source.replace('\\',"/");}
                     image_sources.push((source, path.clone()));
                 }
                 let offset = be64(&mut input)?;
@@ -163,10 +181,14 @@ impl Catalog {
                 false
             }
         });
+        let mut image_programs=image_sources.iter().filter(|(s,_)|s.ends_with(".imageprog"))
+            .map(|(s,i)|(image_program_key(s),*i)).collect::<Vec<_>>();
+        image_programs.sort();image_programs.dedup();
         Ok(Self {
             base: base.to_path_buf(),
             entries,
             image_sources,
+            image_programs,
         })
     }
 
@@ -185,12 +207,24 @@ impl Catalog {
 
     /// Resolve the source->compiled resource mapping stored by the game itself.
     pub fn image_resource(&self, source: &str) -> Option<&str> {
-        let source = source.to_ascii_lowercase();
+        // Native idStr slash normalization140140da0/140140de0 treats both
+        // Windows separators alike before resource/image-source lookup.
+        let source = source.replace('\\',"/").to_ascii_lowercase();
         let index = self
             .image_sources
             .binary_search_by(|(key, _)| key.cmp(&source))
             .ok()?;
         Some(&self.entries[self.image_sources[index].1].0)
+    }
+
+    /// Resolve any compiled image program through authoritative index aliases;
+    /// no guessed compiled filename or replacement procedural image is used.
+    pub fn image_program_resource(&self,source:&str)->Option<&str> {
+        let key=image_program_key(source);
+        let i=self.image_programs.partition_point(|(s,_)|s<&key);
+        let (found,index)=self.image_programs.get(i)?;
+        if found!=&key || self.image_programs.get(i+1).is_some_and(|(s,_)|s==&key) {return None;}
+        Some(&self.entries[*index].0)
     }
 
     pub fn paths_with_suffix(&self, suffix: &str) -> Vec<String> {
@@ -376,6 +410,7 @@ mod tests {
         let catalog = Catalog::open(&root).unwrap();
         assert_eq!(catalog.len(), 3);
         assert!(catalog.contains("THING/ASSET.BIN"));
+        assert!(catalog.contains("THING\\ASSET.BIN"));
         assert_eq!(
             catalog.image_resource("TREE$nomips.TGA"),
             Some("generated/image/tree$nomips.tga.bimage7")
@@ -385,6 +420,10 @@ mod tests {
             Some("generated/image/ipr_constantcolor__0__0__0__1_.bimage7")
         );
         assert_eq!(catalog.image_resource("tree.tga"), None);
+        assert_eq!(catalog.image_program_resource("ipr_constantColor(0,0,0,1)"),
+            Some("generated/image/ipr_constantcolor__0__0__0__1_.bimage7"));
+        assert_ne!(image_program_key("ipr_test(\"a b\",1)"),image_program_key("ipr_test(\"ab\",1)"));
+        assert_eq!(image_program_key("ipr_test(\"folder\\image.tga\",1)"),image_program_key("ipr_test(\"folder/image.tga\",1)"));
         assert_eq!(
             catalog.read("Thing/Asset.bin").unwrap(),
             Some(b"later".to_vec())

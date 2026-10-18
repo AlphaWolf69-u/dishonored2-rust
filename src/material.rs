@@ -592,6 +592,12 @@ pub fn constant_color_pixels(color: [f32; 4]) -> Option<[u8; 64]> {
 
 /// Prefer the source->compiled mapping stored by the game itself.
 pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Option<String> {
+    if matches!(name.trim().to_ascii_lowercase().as_str(), "_default" | "_black" | "_white") {
+        return Some(name.trim().to_ascii_lowercase());
+    }
+    if name.trim().get(..4).is_some_and(|s|s.eq_ignore_ascii_case("ipr_")) {
+        if let Some(resource)=catalog.image_program_resource(name) {return Some(resource.into());}
+    }
     if let Some(source) = image_source_name(name) {
         if let Some(resource) = catalog.image_resource(&source) {
             return Some(resource.to_owned());
@@ -609,7 +615,34 @@ pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Opt
     let declaration = format!("diffusemap {name}");
     diffuse_image(declaration.as_bytes())?
         .strip_suffix("_mip0")
-        .map(str::to_owned)
+        .map(|path|path.replace('\\',"/"))
+}
+
+/// Image_intrinsic.cpp: FUN_1402f5fc0, 1402f5630 and 1402f6a60.
+/// Intrinsics use linear RGBA8 (native packed format0x54a), not a white
+/// unbound-texture placeholder. The default is a16x16 grey image/white border.
+pub fn intrinsic_image_pixels(name: &str) -> Option<Vec<u8>> {
+    let name=name.to_ascii_lowercase();
+    if !matches!(name.as_str(),"_default" | "_black" | "_white") { return None; }
+    Some((0..16*16).flat_map(|i| {
+        if name=="_black" {[0;4]}
+        else if name=="_white" || i/16==0 || i/16==15 || i%16==0 || i%16==15 {[255;4]}
+        else {[32,32,32,255]}
+    }).collect())
+}
+
+#[test]
+fn intrinsic_images_match_original_generator_pixels() {
+    let default=intrinsic_image_pixels("_default").unwrap();
+    assert_eq!(default.len(),1024);
+    // Original1402f5fc0 captured by analysis/probe_original_default_image.py:
+    // all six cube faces and sixteen volume slices have this same16x16 image.
+    for (i,p) in default.chunks_exact(4).enumerate() {
+        assert_eq!(p,if i/16==0 || i/16==15 || i%16==0 || i%16==15 {&[255;4]} else {&[32,32,32,255]});
+    }
+    assert!(intrinsic_image_pixels("_white").unwrap().iter().all(|v|*v==255));
+    assert!(intrinsic_image_pixels("_black").unwrap().iter().all(|v|*v==0));
+    assert!(intrinsic_image_pixels("_unknown").is_none());
 }
 
 pub fn diffuse_image(bytes: &[u8]) -> Option<String> {

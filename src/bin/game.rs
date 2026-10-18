@@ -1914,6 +1914,15 @@ struct ProbeExtension {
     specular1: Option<Handle<Image>>,
     #[texture(136)]
     specular2: Option<Handle<Image>>,
+    #[texture(137)]
+    detail_bump: Option<Handle<Image>>,
+    #[texture(138)]
+    emissive_map: Option<Handle<Image>>,
+    #[texture(139)]
+    emissive_mask: Option<Handle<Image>>,
+    #[texture(141)]
+    #[sampler(140)]
+    anisotropic_sampler_image: Option<Handle<Image>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -2085,6 +2094,15 @@ struct DecalExtension {
     specular1: Option<Handle<Image>>,
     #[texture(136)]
     specular2: Option<Handle<Image>>,
+    #[texture(137)]
+    detail_bump: Option<Handle<Image>>,
+    #[texture(138)]
+    emissive_map: Option<Handle<Image>>,
+    #[texture(139)]
+    emissive_mask: Option<Handle<Image>>,
+    #[texture(141)]
+    #[sampler(140)]
+    anisotropic_sampler_image: Option<Handle<Image>>,
 }
 
 trait NativeImageAccess {
@@ -2113,6 +2131,9 @@ macro_rules! native_image_access {
                     16 => &mut self.specular0,
                     17 => &mut self.specular1,
                     18 => &mut self.specular2,
+                    19 => &mut self.detail_bump,
+                    20 => &mut self.emissive_map,
+                    21 => &mut self.emissive_mask,
                     _ => panic!("invalid authored image role"),
                 }
             }
@@ -2517,6 +2538,7 @@ fn upload_compressed_mips(
     let descriptor = &image.texture_descriptor;
     let block_bytes =
         streamed_block_bytes(descriptor.format).ok_or("unsupported streamed GPU image format")?;
+    let (block_width,block_height)=descriptor.format.block_dimensions();
     let (source_first, target_first, copy_count) = match (copy, previous) {
         (GpuMipCopy::None, None) if !uploads.is_empty() => (0, 0, 0),
         (GpuMipCopy::Extend, Some(previous))
@@ -2550,7 +2572,7 @@ fn upload_compressed_mips(
     for upload in uploads {
         let width = (descriptor.size.width >> upload.mip_level).max(1);
         let height = (descriptor.size.height >> upload.mip_level).max(1);
-        let expected = width.div_ceil(4) as usize * height.div_ceil(4) as usize * block_bytes;
+        let expected = width.div_ceil(block_width) as usize * height.div_ceil(block_height) as usize * block_bytes;
         if upload.mip_level >= descriptor.mip_level_count
             || upload.width != width
             || upload.height != height
@@ -2587,8 +2609,8 @@ fn upload_compressed_mips(
             &upload.payload,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(upload.width.div_ceil(4) * block_bytes as u32),
-                rows_per_image: Some(upload.height.div_ceil(4)),
+                bytes_per_row: Some(upload.width.div_ceil(block_width) * block_bytes as u32),
+                rows_per_image: Some(upload.height.div_ceil(block_height)),
             },
             Extent3d {
                 width: upload.width,
@@ -2661,6 +2683,14 @@ fn read_streamed_diffuse_at_target(
     stem: &str,
     target: TextureReadTarget,
 ) -> Result<Option<StreamedDiffuse>, String> {
+    if let Some(payload)=material::intrinsic_image_pixels(stem) {
+        if matches!(target,TextureReadTarget::Exact(..)) { return Err("intrinsic image has no streamed finer mip".into()); }
+        return Ok(Some(StreamedDiffuse {
+            image:empty_streamed_image(16,16,1,TextureFormat::Rgba8Unorm),
+            uploads:vec![CompressedMipUpload{mip_level:0,width:16,height:16,payload}],
+            level:DiffuseMipLevel{resource_mip:None,next_separate_suffix:None,width:16,height:16,format:texture::CompressedFormat::Rgba8},
+        }));
+    }
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
         let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else {
@@ -2746,7 +2776,7 @@ fn read_streamed_diffuse_at_target(
     for index in 0..inline.info.mip_count {
         let width = (inline.info.width >> index).max(1);
         let height = (inline.info.height >> index).max(1);
-        let size = width.div_ceil(4) as usize * height.div_ceil(4) as usize * format.block_bytes();
+        let size = format.mip_bytes(width,height);
         uploads.push(CompressedMipUpload {
             mip_level: mip_count + index,
             width,
@@ -2781,6 +2811,10 @@ fn read_streamed_diffuse_at_target(
 fn gpu_image_format(format: texture::CompressedFormat) -> TextureFormat {
     use texture::CompressedFormat::*;
     match format {
+        Rgba8 => TextureFormat::Rgba8Unorm,
+        Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
+        Rg8 => TextureFormat::Rg8Unorm,
+        Bgra8 => TextureFormat::Bgra8Unorm,
         Bc1 => TextureFormat::Bc1RgbaUnorm,
         Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
         Bc3 => TextureFormat::Bc3RgbaUnorm,
@@ -2798,6 +2832,9 @@ fn gpu_image_format(format: texture::CompressedFormat) -> TextureFormat {
 
 fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     match format {
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => Some(4),
+        TextureFormat::Rg8Unorm => Some(2),
+        TextureFormat::Bgra8Unorm => Some(4),
         TextureFormat::Bc1RgbaUnorm
         | TextureFormat::Bc1RgbaUnormSrgb
         | TextureFormat::Bc4RUnorm
@@ -2814,6 +2851,37 @@ fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     }
 }
 
+fn native_surface_sampler_image(catalog:Option<&archive::Catalog>)->Result<Image,String> {
+    // Installed anisotropicSampler declaration; FUN_1402d9300 canonicalizes
+    // any anisotropic filter to all three2-valued filter fields.
+    let mut own_anisotropy=4.0f32;
+    if let Some(catalog)=catalog {
+        let bytes=catalog.read("generated/decls/renderparm/anisotropicsampler.decl")
+            .map_err(|e|e.to_string())?.ok_or("missing native anisotropic sampler")?;
+        for line in entities::native_declaration_text(&bytes).lines() {
+            let mut words=line.split_whitespace();let Some(key)=words.next() else {continue;};
+            match key.to_ascii_lowercase().as_str() {
+                "minfilter"|"magfilter"|"mipfilter"=>if words.next().is_none_or(|v|!v.eq_ignore_ascii_case("aniso")) {return Err("changed native anisotropic filter declaration".into());},
+                "addressu"|"addressv"|"addressw"=>if words.next().is_none_or(|v|!v.eq_ignore_ascii_case("wrap")) {return Err("changed native anisotropic address declaration".into());},
+                "maxanisotropy"=>own_anisotropy=words.next().ok_or("missing native anisotropy")?.parse::<f32>().map_err(|e|e.to_string())?,
+                "{"|"}"=>{},
+                _=>return Err(format!("unsupported native sampler field {key}")),
+            }
+        }
+    }
+    // With mipFilter=ANISO, native378280 uses the declaration's own limit,
+    // independently of image_anisotropy. The descriptor port has768 oracles.
+    // Native default MaxLOD DAT_141b1a400 is13.0, verified in installed EXE.
+    let descriptor=render_state::native_sampler_descriptor(&[0x2a,0,0,0,0,0,0,13.0f32.to_bits(),own_anisotropy.to_bits()],1.0);
+    let anisotropy=u16::try_from(descriptor[5]).map_err(|e|e.to_string())?;
+    if !(1..=16).contains(&anisotropy) {return Err("native anisotropy exceeds device-supported range".into());}
+    let mut image=Image::new_fill(Extent3d::default(),TextureDimension::D2,&[255;4],TextureFormat::Rgba8Unorm,RenderAssetUsages::RENDER_WORLD);
+    let mut sampler=ImageSamplerDescriptor::linear();sampler.set_address_mode(ImageAddressMode::Repeat);
+    sampler.anisotropy_clamp=anisotropy;sampler.lod_max_clamp=f32::from_bits(descriptor[12]);
+    image.sampler=ImageSampler::Descriptor(sampler);
+    Ok(image)
+}
+
 fn empty_streamed_image(width: u32, height: u32, mip_count: u32, format: TextureFormat) -> Image {
     let mut image = Image::new_uninit(
         Extent3d {
@@ -2828,6 +2896,7 @@ fn empty_streamed_image(width: u32, height: u32, mip_count: u32, format: Texture
     image.texture_descriptor.mip_level_count = mip_count;
     let mut sampler = ImageSamplerDescriptor::linear();
     sampler.set_address_mode(ImageAddressMode::Repeat);
+    sampler.lod_max_clamp=13.0;
     image.sampler = ImageSampler::Descriptor(sampler);
     image
 }
@@ -4737,6 +4806,7 @@ fn native_shadow_variant_overrides(
 }
 
 struct MaterialResolver<'a> {
+    anisotropic_sampler_image: Handle<Image>,
     catalog: Option<&'a archive::Catalog>,
     native_programs: Option<&'a mut Result<shader_cache::NativeProgramLibrary, String>>,
     probe_materials: &'a mut Assets<ProbeMaterial>,
@@ -4816,7 +4886,7 @@ impl MaterialResolver<'_> {
         let catalog = self.catalog?;
         let mut stem = material::compiled_image_stem(catalog, name)?;
         stem.make_ascii_lowercase();
-        if !catalog.contains(&stem)
+        if material::intrinsic_image_pixels(&stem).is_none() && !catalog.contains(&stem)
             && !(0..=self.preferred_mip.unwrap_or(15))
                 .any(|mip| catalog.contains(&format!("{stem}_mip{mip}")))
         {
@@ -4917,61 +4987,11 @@ impl MaterialResolver<'_> {
         }
         let decal_bias = material::decal_depth_bias(bytes);
         let mut images = Vec::new();
-        for index in 0..=surface.extra_layers {
-            let layer = &surface.layers[index];
-            let candidates = [
-                (
-                    surface_gpu::ImageRole::diffuse(index),
-                    layer.diffuse.as_deref(),
-                    index == 0 || layer.reuse[0] == 0,
-                ),
-                (
-                    surface_gpu::ImageRole::bump(index),
-                    layer.bump.as_deref(),
-                    surface.has_bump && (index == 0 || layer.reuse[1] == 0),
-                ),
-                (
-                    surface_gpu::ImageRole::gloss(index),
-                    layer.gloss.as_deref(),
-                    surface.has_gloss
-                        && !surface.gloss_in_alpha
-                        && (index == 0 || layer.reuse[2] == 0),
-                ),
-                (
-                    surface_gpu::ImageRole::metallic(index),
-                    layer.metallic.as_deref(),
-                    surface.has_metallic && (index == 0 || layer.reuse[3] == 0),
-                ),
-                (surface_gpu::ImageRole::specular(index),layer.specular.as_deref(),
-                    surface.has_specular && (index==0 || layer.specular_reuse==0)),
-                (
-                    surface_gpu::ImageRole::mask(index),
-                    layer.mask.as_deref(),
-                    (index != 0 || layer.use_color) && layer.mask_mode != 0 && layer.reuse[4] == 0,
-                ),
-            ];
-            for (role, name, enabled) in candidates {
-                if !enabled {
-                    continue;
-                }
-                if let Some(name) = name {
-                    if let Some(slot) = self.register_image(name) {
-                        images.push((slot, role));
-                    } else {
-                        eprintln!("Material image missing {path} role={} name={name}", role.0);
-                    }
-                }
-            }
-        }
-        // HQ/AQ AO samples the red channel at layer-zero UVs. LQ decals
-        // return 1.0 and do not request this texture.
-        if surface.has_occlusion && !program_is_decal {
-            if let Some(name) = surface.occlusion.as_deref() {
-                if let Some(slot) = self.register_image(name) {
-                    images.push((slot, surface_gpu::ImageRole::occlusion()));
-                } else {
-                    eprintln!("Material image missing {path} role=15 name={name}");
-                }
+        for (role,name) in surface.texture_bindings(program_is_decal) {
+            if let Some(slot)=self.register_image(name) {
+                images.push((slot,surface_gpu::ImageRole(role)));
+            } else {
+                eprintln!("Material image missing {path} role={role} name={name}");
             }
         }
         let diffuse_image_slot = images
@@ -5059,6 +5079,7 @@ impl MaterialResolver<'_> {
                     mask1: None,
                     mask2: None,
                     specular0:None,specular1:None,specular2:None,
+                    detail_bump:None,emissive_map:None,emissive_mask:None,anisotropic_sampler_image:Some(self.anisotropic_sampler_image.clone()),
                 },
             }))
         } else {
@@ -5090,6 +5111,7 @@ impl MaterialResolver<'_> {
                     mask1: None,
                     mask2: None,
                     specular0:None,specular1:None,specular2:None,
+                    detail_bump:None,emissive_map:None,emissive_mask:None,anisotropic_sampler_image:Some(self.anisotropic_sampler_image.clone()),
                 },
             }))
         };
@@ -5333,7 +5355,9 @@ fn setup(
     commands.insert_resource(native_shadow_sampling::NativeLocalSamplingBuffer {
         buffer:native_local_shadow_buffer.clone(),light_capacity:local_capacity,
     });
+    let anisotropic_sampler_image=images.add(native_surface_sampler_image(catalog).expect("invalid original material sampler"));
     let mut resolver = MaterialResolver {
+        anisotropic_sampler_image,
         catalog,
         native_programs: native_programs.as_deref_mut().map(|source| &mut source.0),
         probe_materials: &mut probe_materials,
@@ -10845,6 +10869,7 @@ mod game_control_tests {
                     mask1: None,
                     mask2: None,
                     specular0:None,specular1:None,specular2:None,
+                    detail_bump:None,emissive_map:None,emissive_mask:None,anisotropic_sampler_image:None,
                 },
             });
         // Establish the target, then add a material without a binding while the
@@ -10932,6 +10957,7 @@ mod game_control_tests {
                     mask1: None,
                     mask2: None,
                     specular0:None,specular1:None,specular2:None,
+                    detail_bump:None,emissive_map:None,emissive_mask:None,anisotropic_sampler_image:None,
                 },
             });
         app.world_mut().spawn((
@@ -11530,6 +11556,125 @@ mod game_control_tests {
         native_exposure::verify_gpu_math(&mut app);
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
+        // Exercise ordinary emissive-map/mask sampling through the submitted
+        // material, with no direct or probe lighting. Emission is independent
+        // of diffuse coverage until the hardware decal blend.
+        let entities=app.world_mut().query_filtered::<Entity,Or<(With<Mesh3d>,With<DirectionalLight>)>>()
+            .iter(app.world()).collect::<Vec<_>>();
+        for e in entities {app.world_mut().despawn(e);}
+        app.world_mut().entity_mut(camera).remove::<(native_exposure::NativeExposure,bevy::camera::Hdr)>()
+            .insert((bevy::camera::Exposure{ev100:0.0},bevy::core_pipeline::tonemapping::Tonemapping::None));
+        *app.world_mut().resource_mut::<Assets<ShaderBuffer>>().get_mut(&probe_buffer).unwrap()=
+            ShaderBuffer::from(vec![[Vec4::ZERO;9]]);
+        let pixel_image=|rgba:[u8;4]|Image::new_fill(
+            Extent3d::default(),TextureDimension::D2,&rgba,TextureFormat::Rgba8Unorm,RenderAssetUsages::default());
+        let white=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([255;4]));
+        let emission=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([255,128,64,0]));
+        let mask=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([191,0,0,0]));
+        let mut emitting=app.world().resource::<Assets<ProbeMaterial>>().get(&handle).unwrap().clone();
+        emitting.base=StandardMaterial{..default()};emitting.extension.sh=probe_buffer;
+        emitting.extension.surface=surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+            b"hasEmissiveMap 1\nhasEmissiveMaskMap 1\nemissiveIntensity 0.001\nemissiveClipParms {0.5,0.1}\nuse_Layer0_ColorConstant 1\n"));
+        emitting.extension.diffuse0=Some(white);emitting.extension.emissive_map=Some(emission);
+        emitting.extension.emissive_mask=Some(mask.clone());
+        let emitting=app.world_mut().resource_mut::<Assets<ProbeMaterial>>().add(emitting);
+        app.world_mut().spawn((Mesh3d(mesh),MeshMaterial3d(emitting.clone()),Transform::default()));
+        let mut emitted=Vec::new();
+        for alpha in [1.0,0.0] {
+            app.world_mut().resource_mut::<Assets<ProbeMaterial>>().get_mut(&emitting).unwrap().extension.surface.colors[0].w=alpha;
+            for _ in 0..80 {app.update();std::thread::sleep(std::time::Duration::from_millis(5));}
+            emitted.push(forward_center(&mut app,&target));
+        }
+        for c in 0..3 {
+            let expected=0.001*render_light::ARKANE_TO_WORLD_LUMINANCE*[1.0,128.0/255.0,64.0/255.0][c]/1.2;
+            assert!((linear(emitted[0][c])-expected).abs()<0.006,"native emission units/channel{c}: {emitted:?}");
+            assert!((i32::from(emitted[0][c])-i32::from(emitted[1][c])).abs()<=2,"opaque emission must ignore diffuse alpha: {emitted:?}");
+        }
+        *app.world_mut().resource_mut::<Assets<Image>>().get_mut(&mask).unwrap()=pixel_image([64,0,0,0]);
+        for _ in 0..20 {app.update();}
+        let masked=forward_center(&mut app,&target);
+        assert!(energy(masked)<10,"native emission mask must clip: {masked:?}");
+        eprintln!("GPU native emission: alpha1/0={emitted:?}, masked={masked:?}");
+        // The test fragment exposes the production surface evaluator's result;
+        // it does not duplicate its layer/detail sampling implementation.
+        app.world_mut().resource_mut::<Assets<Shader>>().insert(PROBE_SHADER_HANDLE.id(),Shader::from_wgsl(r#"
+            #import bevy_pbr::forward_io::{VertexOutput,FragmentOutput}
+            #import dh2_surface::evaluate_surface
+            @fragment fn fragment(v:VertexOutput)->FragmentOutput {
+                let s=evaluate_surface(v.uv,vec2(0.0),vec4(1.0));
+                var out:FragmentOutput;out.color=vec4(s.normal_xy,s.metallic,1.0);return out;
+            }
+        "#,"surface map probe")).unwrap();
+        let base_normal=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([64,128,0,0]));
+        let detail_normal=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([128,64,0,0]));
+        let zero=app.world_mut().resource_mut::<Assets<Image>>().add(pixel_image([0;4]));
+        {
+            let mut materials=app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+            let mut material=materials.get_mut(&emitting).unwrap();
+            material.extension.surface=surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+                b"hasBumpMap 1\nhasDetailBumpMap 1\ndetailBumpmapIntensity 0.5\nextraLayer 1\nLayer1_BumpReuseLayer 1\nhasMetallicMap 1\nmetallicMinMax {0,1}\n"));
+            material.extension.bump0=Some(base_normal);material.extension.detail_bump=Some(detail_normal);
+            material.extension.metallic1=Some(zero);
+        }
+        for _ in 0..80 {app.update();std::thread::sleep(std::time::Duration::from_millis(5));}
+        let detail=forward_center(&mut app,&target);
+        for (c,expected) in [128.0/255.0,160.0/255.0,0.0].into_iter().enumerate() {
+            assert!((linear(detail[c])-expected).abs()<0.006,"native layer/detail map sample channel{c}: {detail:?}");
+        }
+        eprintln!("GPU native detail/layer metallic sampling: {detail:?}");
+    }
+
+    #[test]
+    #[ignore = "requires installed original renderParm declarations and image catalog"]
+    fn installed_omitted_surface_maps_resolve_native_constant_images() {
+        let catalog=archive::Catalog::open(Path::new("D:/Programs/Steam/steamapps/common/Dishonored2/base")).unwrap();
+        let sampler=native_surface_sampler_image(Some(&catalog)).unwrap();
+        let ImageSampler::Descriptor(sampler)=sampler.sampler else {panic!("native sampler missing")};
+        assert_eq!(sampler.anisotropy_clamp,4);
+        assert_eq!(sampler.lod_max_clamp,13.0);
+        let defaults=material_surface::Surface::parse(b"");
+        let mut parameters=Vec::new();
+        for (i,layer) in defaults.layers.iter().enumerate() {
+            for (suffix,value) in [("diffusemap",&layer.diffuse),("bumpmap",&layer.bump),
+                ("glossmap",&layer.gloss),("metallicmap",&layer.metallic),
+                ("maskmap",&layer.mask),("specularmap",&layer.specular)] {
+                let key=if i==0 && suffix!="maskmap" {suffix.into()} else {format!("layer{i}_{suffix}")};
+                parameters.push((key,value.as_deref().unwrap()));
+            }
+        }
+        parameters.extend([("occlusionmap".into(),defaults.occlusion.as_deref().unwrap()),
+            ("detailbumpmap".into(),defaults.detail_bump.as_str()),
+            ("emissivemap".into(),defaults.emissive_map.as_str()),("emissivemaskmap".into(),defaults.emissive_mask.as_str())]);
+        for (key,source) in parameters {
+            let bytes=catalog.read(&format!("generated/decls/renderparm/{key}.decl")).unwrap().unwrap();
+            let text=entities::native_declaration_text(&bytes).chars().filter(|c|!c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            let source_key=source.chars().filter(|c|!c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            assert!(text.ends_with(&format!("{source_key}}}")),"native texture default mismatch {key}: {source} vs {text}");
+            let stem=material::compiled_image_stem(&catalog,source).unwrap();
+            let image=read_streamed_diffuse_image(&catalog,&stem,0).unwrap().unwrap();
+            assert!(!image.uploads.is_empty(),"native default must upload: {key}");
+            if source=="_default" {assert_eq!(image.level.format,texture::CompressedFormat::Rgba8);}
+        }
+        let perlin=material::compiled_image_stem(&catalog,"ipr_noise_perlin(32, 32, 5, 3)").unwrap();
+        assert!(read_streamed_diffuse_image(&catalog,&perlin,0).unwrap().is_some());
+        assert_eq!(material::compiled_image_stem(&catalog,"models\\rendering\\powers\\darkVisionFlowMap_n.png").unwrap(),
+            "generated/image/models/rendering/powers/darkvisionflowmap_n.bimage7");
+        for name in ["specularmap","layer1_specularmap","layer2_specularmap",
+            "layer1_glossmap","layer2_glossmap","layer1_metallicmap","layer2_metallicmap"] {
+            let bytes=catalog.read(&format!("generated/decls/renderparm/{name}.decl")).unwrap().unwrap();
+            let text=entities::native_declaration_text(&bytes).chars()
+                .filter(|c|!c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            assert!(text.contains("ipr_constantcolor(0,0,0,0)"),"native default changed: {name}: {text}");
+        }
+        let bytes=catalog.read("generated/decls/material/models/environment/archi/karnaca/street_gate_01/gate_roof_01.material.decl").unwrap().unwrap();
+        let surface=material_surface::Surface::parse(&bytes);
+        for name in [&surface.layers[1].gloss,&surface.layers[1].metallic] {
+            let name=name.as_deref().unwrap();
+            let stem=material::compiled_image_stem(&catalog,name).unwrap();
+            assert_eq!(stem,"generated/image/ipr_constantcolor__0__0__0__0_.bimage7");
+            let image=read_streamed_diffuse_image(&catalog,&stem,0).unwrap().unwrap();
+            assert!(!image.uploads.is_empty(),"native constant must reach texture uploader");
+        }
     }
 
     // Execute the actual shared WGSL functions, not a test-only reimplementation.
@@ -15101,6 +15246,7 @@ entity { entityDef lamp { class = "idLight"; edit = {
                 mask1: None,
                 mask2: None,
                     specular0:None,specular1:None,specular2:None,
+                    detail_bump:None,emissive_map:None,emissive_mask:None,anisotropic_sampler_image:None,
             },
         });
         app.insert_resource(materials);

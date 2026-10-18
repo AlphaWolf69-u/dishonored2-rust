@@ -2,6 +2,16 @@
 //! installed arkDefaultHelpers and renderParm declarations, not a PBR preset.
 use std::collections::HashMap;
 
+pub const TEXTURE_PARAMETERS:[&str;22]=[
+    "diffusemap","layer1_diffusemap","layer2_diffusemap",
+    "bumpmap","layer1_bumpmap","layer2_bumpmap",
+    "glossmap","layer1_glossmap","layer2_glossmap",
+    "metallicmap","layer1_metallicmap","layer2_metallicmap",
+    "layer0_maskmap","layer1_maskmap","layer2_maskmap","occlusionmap",
+    "specularmap","layer1_specularmap","layer2_specularmap",
+    "detailbumpmap","emissivemap","emissivemaskmap",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Program {
@@ -52,6 +62,18 @@ pub struct Surface {
     pub metallic_min_max: [f32; 2],
     pub alpha_test: bool,
     pub alpha_cutoff: f32,
+    pub detail_bump: String,
+    pub has_detail_bump: bool,
+    pub detail_tiling: f32,
+    pub detail_intensity: f32,
+    pub emissive_map: String,
+    pub emissive_mask: String,
+    pub has_emissive_map: bool,
+    pub has_emissive_mask: bool,
+    pub animated_emissive: bool,
+    pub emissive_color: [f32;3],
+    pub emissive_intensity: f32,
+    pub emissive_clip: [f32;2],
 }
 
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
@@ -149,7 +171,15 @@ impl Surface {
                 } else {
                     key(suffix)
                 };
-                image(&v, &name)
+                image(&v, &name).or_else(|| {
+                    // Installed renderParm defaults, including intrinsic images.
+                    Some(match suffix {
+                        "bumpmap" => "ipr_constantColor(0.5,0.5,0,0)",
+                        "specularmap" => "ipr_constantColor(0,0,0,0)",
+                        "glossmap" | "metallicmap" if index > 0 => "ipr_constantColor(0,0,0,0)",
+                        _ => "_default",
+                    }.to_owned())
+                })
             };
             Layer {
                 diffuse: texture("diffusemap"),
@@ -189,14 +219,51 @@ impl Surface {
             specular_dielectric: vector(&v,"speculartintdielectric",[0.04;3]),
             diffuse_metal: vector(&v,"diffusealbedometallic",[0.0;3]),
             has_occlusion: number(&v, "hasocclusionmap", 0) != 0,
-            occlusion: image(&v, "occlusionmap"),
+            occlusion: Some(image(&v, "occlusionmap").unwrap_or_else(|| "_default".into())),
             gloss_in_alpha: number(&v, "glossindiffusealpha", 0) != 0,
             vertex_color_multiply: number(&v, "vtxcolormultiply", 0) != 0,
             ward: vector(&v, "wardroughness", [0.0, 0.5, 0.0, 0.0]),
             metallic_min_max: vector(&v, "metallicminmax", [0.0, 0.5]),
             alpha_test: number(&v, "alphatest", 0) != 0,
             alpha_cutoff: vector(&v, "defaultalphatest", [0.5])[0],
+            detail_bump: image(&v,"detailbumpmap").unwrap_or_else(||"_default".into()),
+            has_detail_bump: number(&v,"hasdetailbumpmap",0)!=0,
+            detail_tiling: vector(&v,"detailbumpmaptiling",[2.0])[0],
+            detail_intensity: vector(&v,"detailbumpmapintensity",[1.0])[0],
+            emissive_map: image(&v,"emissivemap").unwrap_or_else(||"_default".into()),
+            emissive_mask: image(&v,"emissivemaskmap").unwrap_or_else(||"_default".into()),
+            has_emissive_map: number(&v,"hasemissivemap",0)!=0,
+            has_emissive_mask: number(&v,"hasemissivemaskmap",0)!=0,
+            animated_emissive: number(&v,"hasanimatedemissive",0)!=0,
+            emissive_color: vector(&v,"emissivecolorconstant",[0.;3]),
+            emissive_intensity: vector(&v,"emissiveintensity",[0.])[0],
+            emissive_clip: vector(&v,"emissiveclipparms",[0.,0.001]),
         }
+    }
+
+    /// Image roles consumed by the implemented original material branches.
+    /// Disabled and reused maps do not cause independent texture requests.
+    pub fn texture_bindings(&self,is_decal:bool)->Vec<(usize,&str)> {
+        let mut bindings=Vec::new();
+        let last=if is_decal {0} else {self.extra_layers.min(2)};
+        for index in 0..=last {
+            let l=&self.layers[index];
+            for (role,name,enabled) in [
+                (index,&l.diffuse,index==0 || l.reuse[0]==0),
+                (3+index,&l.bump,self.has_bump && (index==0 || l.reuse[1]==0)),
+                (6+index,&l.gloss,self.has_gloss && !self.gloss_in_alpha && (index==0 || l.reuse[2]==0)),
+                (9+index,&l.metallic,self.has_metallic && (index==0 || l.reuse[3]==0)),
+                (12+index,&l.mask,(index!=0 || l.use_color) && l.mask_mode!=0 && l.reuse[4]==0),
+                (16+index,&l.specular,self.has_specular && (index==0 || l.specular_reuse==0)),
+            ] {if enabled {if let Some(name)=name {bindings.push((role,name.as_str()));}}}
+        }
+        if self.has_occlusion && !is_decal {if let Some(name)=&self.occlusion {bindings.push((15,name));}}
+        if self.has_detail_bump && self.has_bump && !is_decal {bindings.push((19,&self.detail_bump));}
+        if !self.animated_emissive && self.emissive_intensity!=0. {
+            if !is_decal && self.has_emissive_map {bindings.push((20,&self.emissive_map));}
+            if !is_decal && self.has_emissive_mask {bindings.push((21,&self.emissive_mask));}
+        }
+        bindings
     }
 
     /// HQ/AQ_FetchAO's ordinary branch; LQ_FetchAO always returns one.
@@ -454,6 +521,39 @@ mod tests {
         assert_eq!(s.layers[0].mask_channel, 3);
         assert_eq!(s.layers[2].uv_scale_bias, [1.0, 1.0, 0.0, 0.0]);
         assert_eq!(s.roughness(&mut 0.25, [0.0; 3], [0.0; 3]).unwrap(), 0.5);
+    }
+
+    #[test]
+    fn omitted_layer_maps_use_native_black_defaults_and_preserve_overrides() {
+        let s = Surface::parse(b"extraLayer 2\nhasMetallicMap 1\nhasGlossMap 1\nhasSpecularMap 1\nmetallicMap base_mt\nLayer2_MetallicMap coat_mt\nLayer1_GlossMap coat_g\n");
+        let black = Some("ipr_constantColor(0,0,0,0)");
+        assert_eq!(s.layers[0].metallic.as_deref(), Some("base_mt"));
+        assert_eq!(s.layers[1].metallic.as_deref(), black);
+        assert_eq!(s.layers[2].metallic.as_deref(), Some("coat_mt"));
+        assert_eq!(s.layers[1].gloss.as_deref(), Some("coat_g"));
+        assert_eq!(s.layers[2].gloss.as_deref(), black);
+        assert!(s.layers.iter().all(|l| l.specular.as_deref() == black));
+        // A fully selected coat with no metallic map is dielectric even when
+        // the underlying layer is metal (arkDefault HQ_FetchMetallic).
+        assert_eq!(s.metallic([0., 1., 0.], [1., 0., 1.]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn all_standard_texture_roles_resolve_original_defaults() {
+        let s=Surface::parse(b"extraLayer 2\nhasBumpMap 1\nhasGlossMap 1\nhasMetallicMap 1\nhasSpecularMap 1\nhasOcclusionMap 1\nhasDetailBumpMap 1\nhasEmissiveMap 1\nhasEmissiveMaskMap 1\nemissiveIntensity 1\nuse_Layer0_ColorConstant 1\nLayer0_MaskMode 1\nLayer1_MaskMode 1\nLayer2_MaskMode 1\n");
+        let bindings=s.texture_bindings(false);
+        assert_eq!(bindings.len(),22);
+        for (role,name) in bindings {
+            assert_eq!(name,match role {
+                3..=5=>"ipr_constantColor(0.5,0.5,0,0)",
+                7|8|10|11|16..=18=>"ipr_constantColor(0,0,0,0)",
+                _=>"_default",
+            },"role{role}");
+        }
+        let decal=s.texture_bindings(true);
+        assert!(!decal.iter().any(|(r,_)|matches!(r,15|19|20|21)));
+        assert_eq!(s.detail_tiling,2.0);assert_eq!(s.detail_intensity,1.0);
+        assert_eq!(s.emissive_clip,[0.,0.001]);
     }
 
     #[test]
