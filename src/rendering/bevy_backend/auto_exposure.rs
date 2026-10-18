@@ -5,8 +5,10 @@ use bevy::{
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
         globals::{GlobalsBuffer, GlobalsUniform},
+        render_asset::RenderAssets,
         render_resource::*,
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
+        storage::{GpuShaderBuffer, ShaderBuffer},
         view::{ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
         Render, RenderApp, RenderStartup, RenderSystems,
     },
@@ -59,6 +61,13 @@ impl NativeExposure {
     }
 }
 pub struct NativeExposurePlugin;
+/// The gameplay view's previous adaptation state is also read by particle
+/// materials. Other views retain independent adaptation unless explicitly linked.
+#[derive(Component, Clone, ExtractComponent)]
+pub struct MaterialExposure(pub Handle<ShaderBuffer>);
+pub fn initial_material_exposure() -> ShaderBuffer {
+    ShaderBuffer::from(vec![1.0_f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+}
 #[derive(Resource)]
 struct ShaderHandle(Handle<Shader>);
 #[derive(Resource)]
@@ -98,6 +107,7 @@ impl Plugin for NativeExposurePlugin {
                 "shaders/dh2_exposure.wgsl",
             ));
         app.add_plugins(ExtractComponentPlugin::<NativeExposure>::default());
+        app.add_plugins(ExtractComponentPlugin::<MaterialExposure>::default());
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -152,6 +162,7 @@ fn expose(
         &ViewTarget,
         &NativeExposure,
         &bevy::render::camera::ExtractedCamera,
+        Option<&MaterialExposure>,
     )>,
     mut views: ResMut<Views>,
     pipelines: Res<Pipelines>,
@@ -160,11 +171,12 @@ fn expose(
     queue: Res<RenderQueue>,
     uniforms: Res<ViewUniforms>,
     globals: Res<GlobalsBuffer>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
     mut copies: ResMut<TraceCopies>,
     mut context: RenderContext,
 ) {
     let entity = view.entity();
-    let (offset, target, settings, camera) = view.into_inner();
+    let (offset, target, settings, camera, material_exposure) = view.into_inner();
     assert!(
         camera.hdr,
         "native exposure requires an HDR camera before display tonemapping"
@@ -203,6 +215,14 @@ fn expose(
     });
     gpu.settings.set(*settings);
     gpu.settings.write_buffer(&device, &queue);
+    let state = if let Some(material_exposure) = material_exposure {
+        let Some(prepared) = buffers.get(&material_exposure.0) else {
+            return;
+        };
+        &prepared.buffer
+    } else {
+        &gpu.state
+    };
     let Some(view_buffer) = uniforms.uniforms.buffer() else {
         return;
     };
@@ -214,7 +234,7 @@ fn expose(
             &gpu.settings,
             target.main_texture_view(),
             gpu.histogram.as_entire_buffer_binding(),
-            gpu.state.as_entire_buffer_binding(),
+            state.as_entire_buffer_binding(),
             BufferBinding {
                 buffer: view_buffer,
                 size: Some(ViewUniform::min_size()),
@@ -248,7 +268,7 @@ fn expose(
             });
             context
                 .command_encoder()
-                .copy_buffer_to_buffer(&gpu.state, 0, &staging, 0, 32);
+                .copy_buffer_to_buffer(state, 0, &staging, 0, 32);
             copies.0.push((
                 staging,
                 gpu.tick,

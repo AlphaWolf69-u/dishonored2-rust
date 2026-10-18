@@ -69,8 +69,8 @@ pub(super) fn setup(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     view_settings: Res<NativeViewSettings>,
 ) {
-    // Temporarily take the catalog to avoid borrowing the scene while setup
-    // mutates its parsed world. Restore it after setup for later streamed reads.
+    // Take the catalog to avoid borrowing the scene while setup mutates its
+    // parsed world, then transfer ownership to the texture worker below.
     let catalog_storage = scene.catalog.take();
     let catalog = catalog_storage.as_ref();
     commands
@@ -213,7 +213,19 @@ pub(super) fn setup(
             Some([Vec3::from_array(color).extend(0.), (-ray).extend(0.)])
         })
         .unwrap_or([Vec4::ZERO; 2]);
+    let mut linear_clamp =
+        native_surface_sampler_image(catalog).expect("sampler source unavailable");
+    let bevy::image::ImageSampler::Descriptor(sampler) = &mut linear_clamp.sampler else {
+        unreachable!()
+    };
+    sampler.set_address_mode(bevy::image::ImageAddressMode::ClampToEdge);
+    sampler.anisotropy_clamp = 1;
+    let linear_clamp_image = images.add(linear_clamp);
+    let material_exposure = probe_sh_buffers.add(auto_exposure::initial_material_exposure());
     let mut resolver = MaterialResolver {
+        material_exposure: material_exposure.clone(),
+        environment: scene.environment_render_parameters.as_ref(),
+        linear_clamp_image,
         vista_sun,
         anisotropic_sampler_image,
         catalog,
@@ -1136,7 +1148,7 @@ pub(super) fn setup(
             let exposure = auto_exposure::NativeExposure::from_parameters(parameters)
                 .expect("invalid native exposure environment");
             println!("Native exposure parameters: {exposure:?}");
-            camera_entity.insert(exposure);
+            camera_entity.insert((exposure, auto_exposure::MaterialExposure(material_exposure)));
         }
     }
     commands.insert_resource(NavigationState { walking, walker });

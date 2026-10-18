@@ -327,8 +327,11 @@ pub(super) fn native_shadow_variant_overrides(
 }
 
 pub(super) struct MaterialResolver<'a> {
+    pub(super) material_exposure: Handle<ShaderBuffer>,
     pub(super) anisotropic_sampler_image: Handle<Image>,
+    pub(super) linear_clamp_image: Handle<Image>,
     pub(super) vista_sun: [Vec4; 2],
+    pub(super) environment: Option<&'a entities::EnvironmentRenderParameters>,
     pub(super) catalog: Option<&'a archive::Catalog>,
     pub(super) native_programs: Option<&'a mut Result<shader_cache::NativeProgramLibrary, String>>,
     pub(super) probe_materials: &'a mut Assets<ProbeMaterial>,
@@ -355,7 +358,52 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) lit: bool,
 }
 
+pub(super) fn material_float_vectors<const N: usize>(
+    library: &mut shader_cache::NativeProgramLibrary,
+    catalog: &archive::Catalog,
+    bytes: &[u8],
+    names: [&str; N],
+) -> Result<[[f32; 4]; N], String> {
+    let values =
+        entities::material_float_parameters(&entities::native_declaration_text(bytes), |name| {
+            names.contains(&name)
+        })?;
+    let overrides = render_program::SerializedParameterBlock {
+        flags: 0,
+        parameters: values
+            .into_iter()
+            .map(|(name, words)| render_program::SerializedParameter {
+                name: name.into_bytes(),
+                kind: render_program::RenderParameterKind::Uniform,
+                value: render_program::SerializedParameterValue::Words(words),
+            })
+            .collect(),
+    };
+    let mut result = [[0.; 4]; N];
+    for (i, name) in names.iter().enumerate() {
+        result[i] = library
+            .registered_float_vector(catalog, &overrides, name.as_bytes(), None)?
+            .map(f32::from_bits);
+    }
+    Ok(result)
+}
+
 impl MaterialResolver<'_> {
+    fn float_vectors<const N: usize>(
+        &mut self,
+        bytes: &[u8],
+        names: [&str; N],
+    ) -> Result<[[f32; 4]; N], String> {
+        let library = self
+            .native_programs
+            .as_deref_mut()
+            .ok_or("program library unavailable")?
+            .as_mut()
+            .map_err(|e| e.clone())?;
+        let catalog = self.catalog.ok_or("material catalog unavailable")?;
+        material_float_vectors(library, catalog, bytes, names)
+    }
+
     pub(super) fn native_caster_admission(&mut self, path: &str) -> Result<u8, String> {
         let catalog = self
             .catalog
@@ -491,6 +539,63 @@ impl MaterialResolver<'_> {
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
+        if matches!(
+            surface.program(),
+            material_surface::Program::Sky | material_surface::Program::Clouds
+        ) {
+            let result = (|| -> Result<_, String> {
+                let values = self.float_vectors(bytes, crate::rendering::sky::PARAMETER_NAMES)?;
+                let mut p = [Vec4::ZERO; 7];
+                p[..5].copy_from_slice(
+                    &crate::rendering::sky::parameter_vectors(values).map(Vec4::from_array),
+                );
+                // Registered Uniform int cloudProjOnFar defaults to zero.
+                let project = entities::material_float_parameters(
+                    &entities::native_declaration_text(bytes),
+                    |n| n == "cloudprojonfar",
+                )?;
+                p[4].x = project
+                    .last()
+                    .map(|(_, v)| f32::from_bits(v[0]))
+                    .unwrap_or(0.0);
+                let environment = self.environment.ok_or("sky environment unavailable")?;
+                let read = |name| {
+                    environment
+                        .scalar_parameter(name)?
+                        .ok_or_else(|| format!("missing sky environment {name}"))
+                };
+                let direction = if read("atm/worldfog/useactualsundirection")? != 0.0 {
+                    self.vista_sun[1].truncate()
+                } else {
+                    super::game_to_view(crate::render_shadow::environment_sun_direction(
+                        read("atm/worldfog/scatteringangletheta")?,
+                        read("atm/worldfog/scatteringanglephi")?,
+                    ))
+                };
+                p[5] = direction.extend(read("atm/worldfog/scatteringphase")?);
+                let color = if read("atm/worldfog/useactualsuncolor")? != 0.0 {
+                    self.vista_sun[0].truncate()
+                } else {
+                    let text = environment
+                        .parameter("atm/worldfog/scatteringcolor")
+                        .ok_or("missing scattering colour")?;
+                    let values =
+                        entities::material_float_parameters(&format!("{{ value {text} }}"), |n| {
+                            n == "value"
+                        })?;
+                    Vec4::from_array(values[0].1.map(f32::from_bits)).truncate()
+                };
+                p[6] = color.extend(0.0);
+                Ok(p)
+            })();
+            match result {
+                Ok(p) => uniform.sky = p,
+                Err(e) => {
+                    eprintln!("Sky material unavailable {path}: {e}");
+                    return None;
+                }
+            }
+        }
         if surface.program() == material_surface::Program::Vista {
             let parameters = (|| -> Result<_, String> {
                 use crate::rendering::vista;
@@ -533,6 +638,60 @@ impl MaterialResolver<'_> {
                 }
             }
         }
+        if surface.program() == material_surface::Program::Filling {
+            let result = (|| -> Result<_, String> {
+                use crate::rendering::filling;
+                let v = self.float_vectors(bytes, filling::PARAMETER_NAMES)?;
+                let clip = self.float_vectors(bytes, filling::CLIP_PARAMETER_NAMES)?;
+                let exposure = self.float_vectors(bytes, ["fx/auto_exposure_amount"])?[0][0];
+                let library = self
+                    .native_programs
+                    .as_deref_mut()
+                    .unwrap()
+                    .as_mut()
+                    .map_err(|e| e.clone())?;
+                let overrides = native_material_option_overrides(library, bytes)?;
+                let mut option = |name: &[u8]| {
+                    library.option_value(b"particle/filing_container", &overrides, name)
+                };
+                let mut flags = 0u32;
+                for (i, name) in [
+                    b"fx/opt/use_mesh".as_slice(),
+                    b"fx/opt/fresnel",
+                    b"fx/opt/fresnel/useNormalMap",
+                    b"fx/opt/fresnel/useLUT",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    flags |= u32::from(option(name)? != 0) << i;
+                }
+                let lighting = option(b"fx/opt/use_lighting")? as u32;
+                // Particle instance geometry and vertex-lit families require
+                // their own original input producer, not invented mesh inputs.
+                if flags & 1 == 0
+                    || lighting > 1
+                    || option(b"fx/opt/use_softcontact")? != 0
+                    || option(b"fx/opt/view_dependent_fade")? != 0
+                    || option(b"fx/opt/use_sprite_lighting")? != 0
+                {
+                    return Err("filling material requires unported particle/vertex-light/depth-fade input producer".into());
+                }
+                let mut parameters = filling::parameter_vectors(v, clip);
+                parameters[10][1] = exposure;
+                Ok((parameters, UVec4::new(flags, lighting, 0, 0)))
+            })();
+            match result {
+                Ok((p, flags)) => {
+                    uniform.filling = p.map(Vec4::from_array);
+                    uniform.filling_flags = flags;
+                }
+                Err(error) => {
+                    eprintln!("Filling material unavailable {path}: {error}");
+                    return None;
+                }
+            }
+        }
         let program = surface.main_program.as_ref().and_then(|name| {
             self.catalog.and_then(|c| {
                 c.read(&format!(
@@ -544,7 +703,7 @@ impl MaterialResolver<'_> {
             })
         });
         let program = program.as_deref().unwrap_or(&[]);
-        if matches!(uniform.misc.z, 1 | 2) {
+        if matches!(uniform.misc.z, 1 | 2 | 6) {
             let receiver = (|| -> Result<UVec4, String> {
                 let source = resolve_native_shadow_source_inputs(
                     self.native_programs.as_deref_mut(),
@@ -659,8 +818,12 @@ impl MaterialResolver<'_> {
             alpha_mode,
             depth_bias: 0.0,
             unlit: !self.lit
+                || (surface.program() == material_surface::Program::Filling
+                    && uniform.filling_flags.y == 0)
                 || surface.main_program.as_deref().is_some_and(|p| {
-                    p.eq_ignore_ascii_case("arkSky") || p.eq_ignore_ascii_case("arkClouds")
+                    p.eq_ignore_ascii_case("arkSky")
+                        || p.eq_ignore_ascii_case("arkClouds")
+                        || p.eq_ignore_ascii_case("arkSimpleSprite")
                 }),
             perceptual_roughness: 1.0 - surface.ward[1],
             metallic: surface.metallic_min_max[1],
@@ -668,11 +831,12 @@ impl MaterialResolver<'_> {
             cull_mode,
             ..default()
         };
-        let native_vertex_lighting = matches!(uniform.misc.z, 1 | 2);
+        let native_vertex_lighting = matches!(uniform.misc.z, 1 | 2 | 6);
         let handle = if is_decal {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
                 extension: DecalExtension {
+                    material_exposure: self.material_exposure.clone(),
                     bias: decal_bias.unwrap_or(1678.0).round() as i32,
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
@@ -706,12 +870,23 @@ impl MaterialResolver<'_> {
                     emissive_mask: None,
                     anisotropic_sampler_image: Some(self.anisotropic_sampler_image.clone()),
                     lightmap: None,
+                    filling_diffuse: None,
+                    filling_distortion1: None,
+                    filling_distortion2: None,
+                    filling_lookup: None,
+                    filling_normal: None,
+                    filling_fresnel: None,
+                    cloud_opacity: None,
+                    cloud_density: None,
+                    cloud_back_density: None,
+                    linear_clamp_image: Some(self.linear_clamp_image.clone()),
                 },
             }))
         } else {
             MaterialHandle::Probe(self.probe_materials.add(ProbeMaterial {
                 base,
                 extension: ProbeExtension {
+                    material_exposure: self.material_exposure.clone(),
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
                     native_shadow: self.native_shadow_buffer.clone(),
@@ -744,6 +919,16 @@ impl MaterialResolver<'_> {
                     emissive_mask: None,
                     anisotropic_sampler_image: Some(self.anisotropic_sampler_image.clone()),
                     lightmap: None,
+                    filling_diffuse: None,
+                    filling_distortion1: None,
+                    filling_distortion2: None,
+                    filling_lookup: None,
+                    filling_normal: None,
+                    filling_fresnel: None,
+                    cloud_opacity: None,
+                    cloud_density: None,
+                    cloud_back_density: None,
+                    linear_clamp_image: Some(self.linear_clamp_image.clone()),
                 },
             }))
         };

@@ -83,6 +83,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_POSITIONS
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef DH2_PROJECT_FAR
+#if DH2_PROJECT_FAR == 1
+    out.position.z=0.0;
+#endif
+#endif
 #endif
 
 #ifdef VERTEX_UVS_A

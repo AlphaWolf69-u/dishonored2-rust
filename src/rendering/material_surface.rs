@@ -2,7 +2,7 @@
 //! installed arkDefaultHelpers and renderParm declarations, not a PBR preset.
 use std::collections::HashMap;
 
-pub const TEXTURE_PARAMETERS: [&str; 23] = [
+pub const TEXTURE_PARAMETERS: [&str; 33] = [
     "diffusemap",
     "layer1_diffusemap",
     "layer2_diffusemap",
@@ -26,6 +26,16 @@ pub const TEXTURE_PARAMETERS: [&str; 23] = [
     "emissivemap",
     "emissivemaskmap",
     "lightmap",
+    "fx/diffuse",
+    "fx/disto1",
+    "fx/disto2",
+    "fx/lookup_fire",
+    "particlefresnelnormalmap",
+    "particlefresnellut",
+    "opacitymap",
+    "densitymap",
+    "backdensitymap",
+    "texturemap",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +47,10 @@ pub enum Program {
     Water = 3,
     Vista = 4,
     InteriorVolume = 5,
+    Filling = 6,
+    Sky = 7,
+    Clouds = 8,
+    SimpleSprite = 9,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +79,8 @@ pub struct Layer {
 pub struct Surface {
     pub main_program: Option<String>,
     pub lightmap: String,
+    pub filling_images: [String; 6],
+    pub cloud_images: [String; 3],
     pub layers: [Layer; 3],
     pub extra_layers: usize,
     pub has_bump: bool,
@@ -166,6 +182,10 @@ impl Surface {
             Some("arkvegetation") => Program::Vegetation,
             Some("arkwater") => Program::Water,
             Some("arkvista") => Program::Vista,
+            Some("particle/filing_container") => Program::Filling,
+            Some("arksky") => Program::Sky,
+            Some("arkclouds") => Program::Clouds,
+            Some("arksimplesprite") => Program::SimpleSprite,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
@@ -206,7 +226,14 @@ impl Surface {
                 })
             };
             Layer {
-                diffuse: texture("diffusemap"),
+                diffuse: if index == 0
+                    && v.get("mainprogram").is_some_and(|n| {
+                        n.trim_matches('"').eq_ignore_ascii_case("arkSimpleSprite")
+                    }) {
+                    Some(image(&v, "texturemap").unwrap_or_else(|| "_default".into()))
+                } else {
+                    texture("diffusemap")
+                },
                 bump: texture("bumpmap"),
                 gloss: texture("glossmap"),
                 metallic: texture("metallicmap"),
@@ -235,6 +262,12 @@ impl Surface {
                     .to_owned(),
             ),
             lightmap: image(&v, "lightmap").unwrap_or_else(|| "_default".into()),
+            filling_images: std::array::from_fn(|i| {
+                image(&v, crate::rendering::filling::IMAGE_NAMES[i])
+                    .unwrap_or_else(|| crate::rendering::filling::IMAGE_DEFAULTS[i].into())
+            }),
+            cloud_images: ["opacitymap", "densitymap", "backdensitymap"]
+                .map(|n| image(&v, n).unwrap_or_else(|| "_black".into())),
             layers,
             extra_layers: number(&v, "extralayer", 0) as usize,
             has_bump: number(&v, "hasbumpmap", 0) != 0,
@@ -269,6 +302,18 @@ impl Surface {
     /// Image roles consumed by the implemented original material branches.
     /// Disabled and reused maps do not cause independent texture requests.
     pub fn texture_bindings(&self, is_decal: bool) -> Vec<(usize, &str)> {
+        if self.program() == Program::SimpleSprite {
+            return vec![(0, self.layers[0].diffuse.as_deref().unwrap())];
+        }
+        if matches!(self.program(), Program::Sky | Program::Clouds) {
+            let mut bindings = vec![(0, self.layers[0].diffuse.as_deref().unwrap())];
+            if self.program() == Program::Clouds {
+                for (i, name) in self.cloud_images.iter().enumerate() {
+                    bindings.push((29 + i, name.as_str()));
+                }
+            }
+            return bindings;
+        }
         if self.program() == Program::InteriorVolume {
             return Vec::new();
         }
@@ -289,6 +334,12 @@ impl Surface {
             return bindings;
         }
         let mut bindings = Vec::new();
+        if self.program() == Program::Filling {
+            for (i, name) in self.filling_images.iter().enumerate() {
+                bindings.push((23 + i, name.as_str()));
+            }
+        }
+
         let last = if is_decal {
             0
         } else {

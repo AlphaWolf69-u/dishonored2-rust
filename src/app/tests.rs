@@ -32,6 +32,103 @@ fn actual_shadow_quality_inputs_resolve_from_original_config_and_assets() {
 }
 
 #[test]
+#[ignore = "requires installed game archives"]
+fn installed_sky_and_liquid_material_inputs_resolve() {
+    let base = crate::assets::installation::game_base().unwrap();
+    let catalog = archive::Catalog::open(&base).unwrap();
+    let mut library = shader_cache::NativeProgramLibrary::open(
+        &base,
+        shader_cache::ShaderCacheBackend::Pc,
+        &catalog,
+    )
+    .unwrap();
+    let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+    let world = world_mesh::parse(&level.read_world(&catalog).unwrap()).unwrap();
+    let mut names = world
+        .objects
+        .iter()
+        .map(|o| o.material_path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    names.extend([
+        "models/templates/flat_colors/life_01.material".into(),
+        "models/templates/flat_colors/mana_01.material".into(),
+        "models/weapons/crossbow/bolt_sleep_liquid.material".into(),
+        "models/weapons/crossbow/bolt_incendiary_liquid.material".into(),
+        "models/weapons/crossbow/bolt_venom_liquid.material".into(),
+    ]);
+    let mut counts = [0; 3];
+    for name in names {
+        let bytes = catalog
+            .read(&format!("generated/decls/material/{name}.decl"))
+            .unwrap()
+            .unwrap();
+        let surface = material_surface::Surface::parse(&bytes);
+        match surface.program() {
+            material_surface::Program::Filling => {
+                let p = material_float_vectors(
+                    &mut library,
+                    &catalog,
+                    &bytes,
+                    crate::rendering::filling::PARAMETER_NAMES,
+                )
+                .unwrap();
+                let clip = material_float_vectors(
+                    &mut library,
+                    &catalog,
+                    &bytes,
+                    crate::rendering::filling::CLIP_PARAMETER_NAMES,
+                )
+                .unwrap();
+                assert!(p
+                    .iter()
+                    .flatten()
+                    .chain(clip.iter().flatten())
+                    .all(|v| v.is_finite()));
+                if name.contains("/flat_colors/") {
+                    assert_eq!(p[7][0], 1.0, "authored potion fill level {name}");
+                    assert_eq!(
+                        p[12],
+                        [5., 0.015, 0.01, 1.],
+                        "brace-adjacent liquid colour {name}"
+                    );
+                }
+                counts[0] += 1;
+            }
+            material_surface::Program::Sky | material_surface::Program::Clouds => {
+                let p = material_float_vectors(
+                    &mut library,
+                    &catalog,
+                    &bytes,
+                    crate::rendering::sky::PARAMETER_NAMES,
+                )
+                .unwrap();
+                assert!(
+                    p.iter().flatten().all(|v| v.is_finite()),
+                    "sky parameters {name}"
+                );
+                counts[if surface.program() == material_surface::Program::Sky {
+                    1
+                } else {
+                    2
+                }] += 1;
+            }
+            _ => continue,
+        }
+        for (_, image) in surface.texture_bindings(false) {
+            assert!(
+                material::intrinsic_image_pixels(image).is_some()
+                    || material::compiled_image_stem(&catalog, image).is_some(),
+                "unresolved effect image {name}: {image}"
+            );
+        }
+        println!("installed effect material {:?}: {name}", surface.program());
+    }
+    assert_eq!(counts[0], 5);
+    assert!(counts[1] > 0 && counts[2] > 0, "{counts:?}");
+    println!("installed liquid/sky/cloud inputs resolved: {counts:?}");
+}
+
+#[test]
 fn native_shadow_model_bounds_keep_hidden_owners_once_not_surface_boxes() {
     let instance = |surface| RenderInstance {
         source: Some(RenderInstanceSource {
@@ -1434,6 +1531,7 @@ fn authored_surface_gpu_pipelines_compile() {
     )
     .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
     .add_plugins(MaterialPlugin::<DecalMaterial>::default());
+    super::sky_sprite::register_renderer(&mut app);
     bevy::asset::load_internal_asset!(
         app,
         PROBE_SHADER_HANDLE,
@@ -1450,6 +1548,18 @@ fn authored_surface_gpu_pipelines_compile() {
         app,
         INDIRECT_SHADER_HANDLE,
         "../../assets/shaders/dh2_indirect.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        SKY_SHADER_HANDLE,
+        "../../assets/shaders/dh2_sky.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        FILLING_SHADER_HANDLE,
+        "../../assets/shaders/dh2_filling.wgsl",
         Shader::from_wgsl
     );
     bevy::asset::load_internal_asset!(
@@ -1474,6 +1584,10 @@ fn authored_surface_gpu_pipelines_compile() {
     app.add_plugins(auto_exposure::NativeExposurePlugin);
     app.finish();
     app.cleanup();
+    let material_exposure = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(auto_exposure::initial_material_exposure());
     let target = app
         .world_mut()
         .resource_mut::<Assets<Image>>()
@@ -1546,6 +1660,7 @@ fn authored_surface_gpu_pipelines_compile() {
         .add(ProbeMaterial {
             base: StandardMaterial::default(),
             extension: ProbeExtension {
+                material_exposure: material_exposure.clone(),
                 sh,
                 vertex_probes,
                 native_shadow: native_shadow.clone(),
@@ -1578,6 +1693,16 @@ fn authored_surface_gpu_pipelines_compile() {
                 emissive_mask: None,
                 anisotropic_sampler_image: None,
                 lightmap: None,
+                filling_diffuse: None,
+                filling_distortion1: None,
+                filling_distortion2: None,
+                filling_lookup: None,
+                filling_normal: None,
+                filling_fresnel: None,
+                cloud_opacity: None,
+                cloud_density: None,
+                cloud_back_density: None,
+                linear_clamp_image: None,
             },
         });
     // Establish the target, then add a material without a binding while the
@@ -1646,6 +1771,7 @@ fn authored_surface_gpu_pipelines_compile() {
                 ..default()
             },
             extension: DecalExtension {
+                material_exposure: material_exposure.clone(),
                 bias: 0,
                 sh: decal_probe_buffers.0,
                 vertex_probes: decal_probe_buffers.1,
@@ -1679,6 +1805,16 @@ fn authored_surface_gpu_pipelines_compile() {
                 emissive_mask: None,
                 anisotropic_sampler_image: None,
                 lightmap: None,
+                filling_diffuse: None,
+                filling_distortion1: None,
+                filling_distortion2: None,
+                filling_lookup: None,
+                filling_normal: None,
+                filling_fresnel: None,
+                cloud_opacity: None,
+                cloud_density: None,
+                cloud_back_density: None,
+                linear_clamp_image: None,
             },
         });
     app.world_mut().spawn((
@@ -1706,6 +1842,7 @@ fn authored_surface_gpu_pipelines_compile() {
         .spawn((
             Camera3d::default(),
             DepthPrepass,
+            auto_exposure::MaterialExposure(material_exposure.clone()),
             Msaa::Sample4,
             bevy::camera::RenderTarget::Image(target.clone().into()),
             Transform::from_xyz(0.0, 0.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -2414,6 +2551,7 @@ fn authored_surface_gpu_pipelines_compile() {
     eprintln!("GPU native exposure final display: luminance1/4={displayed:?}");
     auto_exposure::verify_gpu_math(&mut app);
     vista_lighting_matches_reference(&mut app);
+    filling_matches_reference(&mut app);
     native_probe_shader_matches_original(&mut app);
     tiled_depth_shader_matches_reference(&mut app);
     // Exercise ordinary emissive-map/mask sampling through the submitted
@@ -2601,6 +2739,271 @@ fn authored_surface_gpu_pipelines_compile() {
         "vista forward alpha clip: {clipped:?}"
     );
     eprintln!("GPU vista UV1 lightmap and alpha clip: {vista:?}, {clipped:?}");
+    {
+        let black = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(pixel_image([0, 0, 0, 255]));
+        let liquid_diffuse = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(pixel_image([64, 128, 192, 255]));
+        let lookup = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(pixel_image([255, 64, 32, 255]));
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.base.unlit = true;
+        m.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+            b"mainProgram particle/filing_container\n",
+        ));
+        let p = &mut m.extension.surface;
+        // Keep the native pixel-lit clip branch; isolate procedural colour
+        // from lighting with the host material's debug-unlit switch.
+        p.filling_flags = UVec4::new(1, 1, 0, 0);
+        p.filling[2] = Vec4::ONE;
+        p.filling[3] = Vec4::ONE;
+        p.filling[4].w = 1.;
+        p.filling[5] = Vec4::new(0., 2., 0.1, 0.);
+        p.filling[6] = Vec4::ONE;
+        p.filling[7] = Vec4::new(1., 1., 1., 0.001);
+        p.filling[8] = Vec4::new(1., 0.5, 1., 0.03);
+        p.filling[9].w = 100000.;
+        m.extension.filling_diffuse = Some(liquid_diffuse);
+        m.extension.filling_distortion1 = Some(black.clone());
+        m.extension.filling_distortion2 = Some(black);
+        m.extension.filling_lookup = Some(lookup);
+    }
+    app.world_mut().entity_mut(camera).insert(DepthPrepass);
+    let mut filled = Vec::new();
+    let mut liquid_depth = Vec::new();
+    for (level, fresnel) in [(1., false), (0., false), (1., true)] {
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+            let mut m = materials.get_mut(&emitting).unwrap();
+            m.extension.surface.filling[4].w = level;
+            m.extension.surface.filling_flags.x = if fresnel { 3 } else { 1 };
+        }
+        for _ in 0..40 {
+            app.update();
+        }
+        filled.push(forward_center(&mut app, &target));
+        liquid_depth.push(center_depth(&mut app));
+    }
+    assert!(
+        energy(filled[0]) > 100,
+        "liquid shader must draw colour: {filled:?}"
+    );
+    assert!(energy(filled[1]) < 10, "empty liquid must clip: {filled:?}");
+    assert!(
+        energy(filled[2]) > 100,
+        "front-facing Fresnel liquid must remain visible: {filled:?}"
+    );
+    assert!(
+        liquid_depth[0] > 0.0 && liquid_depth[1] == 0.0 && liquid_depth[2] > 0.0,
+        "liquid prepass fill: {liquid_depth:?}"
+    );
+    app.world_mut()
+        .resource_mut::<Assets<ProbeMaterial>>()
+        .get_mut(&emitting)
+        .unwrap()
+        .extension
+        .surface
+        .filling[8]
+        .y = 100.0;
+    for _ in 0..40 {
+        app.update();
+    }
+    let fresnel_clipped = forward_center(&mut app, &target);
+    assert!(
+        energy(fresnel_clipped) < 10 && center_depth(&mut app) > 0.0,
+        "Fresnel clips forward only: {fresnel_clipped:?}"
+    );
+    app.world_mut().entity_mut(camera).remove::<DepthPrepass>();
+    eprintln!("GPU filling full/empty/Fresnel: {filled:?}");
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.extension.surface.filling_flags = UVec4::new(1, 0, 0, 0);
+        m.extension.surface.filling[10].y = 1.0;
+    }
+    let mut compensated = Vec::new();
+    for factor in [1.0_f32, 0.5] {
+        *app.world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .get_mut(&material_exposure)
+            .unwrap() = ShaderBuffer::from(vec![factor, 1., 0., 0., 0., 0., 0., 0.]);
+        for _ in 0..40 {
+            app.update();
+        }
+        compensated.push(forward_center(&mut app, &target));
+    }
+    for channel in 0..3 {
+        let ratio = linear(compensated[1][channel]) / linear(compensated[0][channel]);
+        assert!(
+            (ratio - 2.0).abs() < 0.1,
+            "unlit liquid reads native exposure state: {compensated:?}"
+        );
+    }
+    eprintln!("GPU unlit liquid exposure compensation: {compensated:?}");
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.extension.surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(
+            b"mainProgram arkSky\n",
+        ));
+        m.extension.surface.sky[0].x = 0.001;
+        m.extension.surface.sky[1] = Vec4::new(30., 60., 0.1, 0.);
+        m.extension.diffuse0 = Some(diffuse.clone());
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    let sky_pixel = forward_center(&mut app, &target);
+    assert!(
+        energy(sky_pixel) > 30,
+        "authored sky must draw at far depth: {sky_pixel:?}"
+    );
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.extension.surface.misc.z = 8;
+        m.extension.surface.sky[2].z = 1.;
+        m.extension.surface.sky[3].w = 1.;
+        m.extension.surface.sky[4].x = 1.;
+        m.extension.surface.sky[5] = Vec4::new(0., 1., 0., 0.75);
+        m.base.alpha_mode = AlphaMode::Blend;
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    let _ = forward_center(&mut app, &target);
+    // The celestial pass must be visible against the far plane and occluded
+    // by ordinary scene depth. Its screen size follows native aspect scaling.
+    let existing = app
+        .world_mut()
+        .query_filtered::<Entity, With<Mesh3d>>()
+        .iter(app.world())
+        .collect::<Vec<_>>();
+    for e in &existing {
+        app.world_mut().entity_mut(*e).insert(Visibility::Hidden);
+    }
+    let image = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(pixel_image([255; 4]));
+    let celestial = app
+        .world_mut()
+        .resource_mut::<Assets<super::sky_sprite::CelestialSprite>>()
+        .add(super::sky_sprite::comparison_material(image));
+    let quad = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(Rectangle::new(2., 2.));
+    let celestial = app
+        .world_mut()
+        .spawn((
+            Mesh3d(quad),
+            MeshMaterial3d(celestial),
+            Transform::default(),
+            bevy::camera::visibility::NoFrustumCulling,
+        ))
+        .id();
+    for _ in 0..40 {
+        app.update();
+    }
+    let disc = forward_center(&mut app, &target);
+    assert!(energy(disc) > 80, "celestial disc must draw: {disc:?}");
+    let mut occluding = app
+        .world()
+        .resource::<Assets<ProbeMaterial>>()
+        .get(&emitting)
+        .unwrap()
+        .clone();
+    occluding.base.alpha_mode = AlphaMode::Opaque;
+    occluding.extension.surface = surface_gpu::SurfaceUniform::from(
+        &material_surface::Surface::parse(b"mainProgram arkDefault\n"),
+    );
+    let occluding = app
+        .world_mut()
+        .resource_mut::<Assets<ProbeMaterial>>()
+        .add(occluding);
+    let occluder = app
+        .world_mut()
+        .spawn((
+            Mesh3d(mesh_handle.clone()),
+            MeshMaterial3d(occluding),
+            Transform::default(),
+        ))
+        .id();
+    for _ in 0..40 {
+        app.update();
+    }
+    let covered = forward_center(&mut app, &target);
+    assert_ne!(disc, covered, "scene geometry must occlude celestial disc");
+    eprintln!("GPU sky/disc/depth: {sky_pixel:?} / {disc:?} / {covered:?}");
+    app.world_mut().despawn(celestial);
+    for _ in 0..12 {
+        app.update();
+    }
+    let without_disc = forward_center(&mut app, &target);
+    if covered != without_disc {
+        use bevy::render::render_resource::PipelineDescriptor;
+        let cache = app
+            .sub_app(bevy::render::RenderApp)
+            .world()
+            .resource::<bevy::render::render_resource::PipelineCache>();
+        for p in cache.pipelines() {
+            if let PipelineDescriptor::RenderPipelineDescriptor(d) = &p.descriptor {
+                if let Some(f) = &d.fragment {
+                    if f.shader == PROBE_SHADER_HANDLE {
+                        let program = f
+                            .shader_defs
+                            .iter()
+                            .find(|v| format!("{v:?}").contains("DH2_SURFACE_ENABLED"));
+                        let far = d
+                            .vertex
+                            .shader_defs
+                            .iter()
+                            .filter(|v| format!("{v:?}").contains("DH2_PROJECT_FAR"))
+                            .collect::<Vec<_>>();
+                        eprintln!(
+                            "occlusion pipeline program={program:?} far={far:?} depth={:?}",
+                            d.depth_stencil
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        covered, without_disc,
+        "occluded disc must contribute no light"
+    );
+    app.world_mut().despawn(occluder);
+    for e in &existing {
+        app.world_mut().entity_mut(*e).insert(Visibility::Visible);
+    }
+    {
+        *app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&diffuse)
+            .unwrap() = pixel_image([128, 64, 32, 255]);
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut m = materials.get_mut(&emitting).unwrap();
+        m.extension.surface.misc.z = 9;
+        m.base.alpha_mode = AlphaMode::Blend;
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    let sprite_pixel = forward_center(&mut app, &target);
+    assert!(
+        energy(sprite_pixel) > 40,
+        "textured vertex-colour sprite must draw: {sprite_pixel:?}"
+    );
+    eprintln!("GPU simple sprite: {sprite_pixel:?}");
     // The test fragment exposes the production surface evaluator's result;
     // it does not duplicate its layer/detail sampling implementation.
     app.world_mut()
@@ -6268,6 +6671,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let material = materials.add(ProbeMaterial {
         base: StandardMaterial::default(),
         extension: ProbeExtension {
+            material_exposure: Handle::default(),
             sh: Handle::default(),
             vertex_probes: Handle::default(),
             native_shadow: Handle::default(),
@@ -6300,6 +6704,16 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             emissive_mask: None,
             anisotropic_sampler_image: None,
             lightmap: None,
+            filling_diffuse: None,
+            filling_distortion1: None,
+            filling_distortion2: None,
+            filling_lookup: None,
+            filling_normal: None,
+            filling_fresnel: None,
+            cloud_opacity: None,
+            cloud_density: None,
+            cloud_back_density: None,
+            linear_clamp_image: None,
         },
     });
     app.insert_resource(materials);
@@ -8001,4 +8415,110 @@ fn view_vector(v:vec3<f32>)->vec3<f32> {return vec3(v.x,v.z,-v.y);}
     drop(bytes);
     readback.unmap();
     eprintln!("GPU vista lighting:64 installed-HLSL gloss/metallic/baked-shadow cases passed");
+}
+
+fn filling_matches_reference(app: &mut App) {
+    use bevy::render::{
+        render_resource::*,
+        renderer::{RenderDevice, RenderQueue},
+        RenderApp,
+    };
+    let render = app.sub_app(RenderApp).world();
+    let device = render.resource::<RenderDevice>();
+    let queue = render.resource::<RenderQueue>();
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/shaders/dh2_filling.wgsl"
+    ))
+    .replace("#define_import_path dh2_filling", "")
+        + r#"
+@group(0) @binding(0) var<storage,read_write> output:array<vec4<f32>>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) tid:vec3<u32>) {
+ let id=tid.x;let y=f32(id%17u)/16.0;let level=f32(id%5u)/4.0;let lerp_colour=f32(id%3u)/2.0;
+ let time=f32(id/7u)*0.25;
+ let a=filling_pan_uv(vec2(.23,y),.61*.37+time,.13,vec2(.01,.025),vec2(.5,1.0));
+ let b=filling_pan_uv(-vec2(.23,y),-.61*.37+time,-.17,vec2(.005,.05),vec2(1.0,.7));
+ output[2u*id]=vec4(a,b);
+ let coord=filling_lookup_coordinate(y,f32(id%7u)/6.0,1.0-level,vec4(.12,.7,.18,0.0));
+ output[2u*id+1u]=filling_transfer_color(vec4(.2,.4,.8,.6),vec4(.7,.1,.9,.3),coord,y,1.0-level,
+     lerp_colour,vec4(5.0,.015,.01,1.0),vec4(1.2,.03,2.1,.8),1.0);
+}
+"#;
+    let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+        label: Some("filling parity"),
+        source: ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device
+        .wgpu_device()
+        .create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+    let size = 128 * 16;
+    let output = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size,
+        usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device
+        .wgpu_device()
+        .create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: output.as_entire_binding(),
+            }],
+        });
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(64, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+    let submission = queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(MapMode::Read, move |r| tx.send(r).unwrap());
+    device
+        .poll(PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(20)),
+        })
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = readback.slice(..).get_mapped_range();
+    let expected = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/filling_cases.txt"
+    ))
+    .split_whitespace()
+    .map(|s| f32::from_bits(u32::from_str_radix(s, 16).unwrap()))
+    .collect::<Vec<_>>();
+    for (i, (chunk, e)) in bytes.chunks_exact(4).zip(expected).enumerate() {
+        let actual = f32::from_le_bytes(chunk.try_into().unwrap());
+        assert!(
+            (actual - e).abs() < 0.00003 * e.abs().max(1.0),
+            "filling case{} field{}: {actual} != {e}",
+            i / 4,
+            i % 4
+        );
+    }
+    drop(bytes);
+    readback.unmap();
+    eprintln!("GPU filling:64 installed-HLSL animated UV/fill/colour cases passed");
 }

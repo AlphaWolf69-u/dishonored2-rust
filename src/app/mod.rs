@@ -55,10 +55,10 @@ use state::{
     OriginalLocalLightCullEnabled, OriginalLocalLightCullStats, PickupInstance, PickupState,
     PickupVisual, ProbeMaterial, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, ResolvedMaterial, SceneData, SnapshotPath, StreamingDiagnostics,
-    TomeWorld, VisibilityElapsedTiming, DECAL_SHADER_HANDLE, INDIRECT_SHADER_HANDLE,
-    ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES, ORIGINAL_DEFAULT_NEAR,
-    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE,
-    SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
+    TomeWorld, VisibilityElapsedTiming, DECAL_SHADER_HANDLE, FILLING_SHADER_HANDLE,
+    INDIRECT_SHADER_HANDLE, ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
+    ORIGINAL_DEFAULT_NEAR, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE,
+    PROBE_SHADER_HANDLE, SKY_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
 };
 mod shadow_preparation;
 use shadow_preparation::{
@@ -71,6 +71,7 @@ use shadow_preparation::{
     NativeVegetationMeshInputs, NativeWorldShadowDrawSettings, NativeWorldShadowMeshSources,
 };
 mod materials;
+mod sky_sprite;
 use materials::{
     DecalExtension, NativeImageAccess, NativeShadowImageAccess, ProbeExtension, DH2_BITANGENT,
 };

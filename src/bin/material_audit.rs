@@ -15,6 +15,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     let catalog = archive::Catalog::open(base)?;
     let mut args = std::env::args().skip(1);
     let world_path = args.next().unwrap_or_else(|| "tutorial_p".into());
+    if world_path == "--environment" {
+        let level = args.next().ok_or("--environment requires a level")?;
+        let resources = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &level)?;
+        let bytes = resources
+            .read_entities(&catalog)?
+            .ok_or("level has no entities")?;
+        let doc = entities::parse(&String::from_utf8_lossy(&bytes))?;
+        let name = entities::world_environment(&doc).ok_or("level has no environment")?;
+        let source = catalog
+            .read(&format!("generated/decls/env/{name}.decl"))?
+            .ok_or("missing environment")?;
+        let parameters = entities::environment_render_parameters_with_inheritance(
+            &name,
+            &String::from_utf8_lossy(&source),
+            |parent| {
+                catalog
+                    .read(&format!("generated/decls/env/{parent}.decl"))
+                    .map(|v| v.map(|v| String::from_utf8_lossy(&v).into_owned()))
+                    .map_err(|e| e.to_string())
+            },
+        )?;
+        println!("environment={name}");
+        for layer in &parameters.layers {
+            println!("LAYER {}", layer.resource);
+            for (k, v) in &layer.parameters {
+                println!("{k} {v}");
+            }
+        }
+        return Ok(());
+    }
     if world_path == "--texture-defaults" {
         for path in catalog.paths_containing("generated/decls/renderparm/") {
             let Some(bytes) = catalog.read(&path)? else {

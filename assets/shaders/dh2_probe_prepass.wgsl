@@ -5,12 +5,31 @@
 }
 
 #import dh2_surface::{surface, compiled_misc, scaled_uv, diffuse0, surface_sampler}
+#import dh2_surface::{filling_colour,filling_plane_alpha}
 
 // arkDefault/arkVegetation Z branches return after ClipZorShadowPass:
 // only diffuse0 alpha and DefaultAlphaTest, before layers, vertex color,
 // gloss-in-alpha, normals, AO or lighting (arkDefaultHelpers.decl:29-40).
 @fragment
 fn fragment(vertex_output: VertexOutput) {
+    if compiled_misc.z==7u || compiled_misc.z==8u {discard;}
+    if compiled_misc.z==6u {
+        var uv=vec2(0.0);var uv1=vec2(0.0);
+#ifdef VERTEX_UVS_A
+        uv=vertex_output.uv;
+#endif
+#ifdef VERTEX_UVS_B
+        uv1=vertex_output.uv_b;
+#endif
+        let color=filling_colour(uv,uv1,vec4(1.0));
+        let alpha=filling_plane_alpha(color.a,vertex_output.world_position.xyz);
+#ifdef SHADOW_PASS
+        if alpha<0.7 {discard;}
+#else
+        if alpha<max(surface.filling[8].w,0.0001) {discard;}
+#endif
+        return;
+    }
     if compiled_misc.z == 1u || compiled_misc.z == 2u {
         if (compiled_misc.w & 1u) != 0u {
             var uv0 = vec2<f32>(0.0);

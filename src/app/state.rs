@@ -15,7 +15,6 @@ pub(super) struct SceneData {
     pub(super) placed_models: Vec<entities::PlacedModel>,
     pub(super) placed_lights: Vec<entities::PlacedLight>,
     pub(super) environment_lighting: Option<entities::EnvironmentLighting>,
-    #[allow(dead_code)] // Preserved for the not-yet-ported fog, water, sky, and postfx passes.
     pub(super) environment_render_parameters: Option<entities::EnvironmentRenderParameters>,
     pub(super) environment_probes: Option<probe_lighting::ProbeLightingSet>,
     #[allow(dead_code)]
@@ -426,6 +425,10 @@ pub(super) const PROBE_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("169be3e1-273e-4607-aadf-e0d572cbf41d");
 pub(super) const PROBE_PREPASS_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("f78172ec-62f2-4bb4-9e45-c6e99fdf6c36");
+pub(super) const SKY_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("c71f38cc-1ea7-4767-974d-2c7a487d8b51");
+pub(super) const FILLING_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("513799f1-0041-462a-931b-87457bb21ce4");
 pub(super) const VISTA_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("61fa0479-ac93-413b-bdf0-cb04c11a6e6f");
 pub(super) const SURFACE_SHADER_HANDLE: Handle<Shader> =

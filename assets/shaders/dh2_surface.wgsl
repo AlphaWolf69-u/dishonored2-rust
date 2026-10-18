@@ -25,6 +25,9 @@ struct SurfaceUniform {
     emissive_clip:vec4<f32>,
     vista: array<vec4<f32>,4>,
     vista_sun: array<vec4<f32>,2>,
+    filling:array<vec4<f32>,11>,
+    filling_flags:vec4<u32>,
+    sky:array<vec4<f32>,7>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -63,6 +66,45 @@ const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFS
 @group(#{MATERIAL_BIND_GROUP}) @binding(139) var emissive_mask:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(140) var surface_anisotropic_sampler:sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(142) var lightmap: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(143) var filling_diffuse:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(144) var filling_distortion1:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(145) var filling_distortion2:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(146) var filling_lookup:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(147) var filling_normal:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(148) var filling_fresnel:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(149) var linear_clamp:sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(151) var cloud_opacity:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(152) var cloud_density:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(153) var cloud_back_density:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(154) var<storage,read> material_exposure:array<f32>;
+#ifdef PREPASS_PIPELINE
+#import bevy_render::globals::Globals
+@group(0) @binding(1) var<uniform> globals:Globals;
+#else
+#import bevy_pbr::mesh_view_bindings::globals
+#endif
+#import dh2_filling::{filling_pan_uv,filling_lookup_coordinate,filling_transfer_color,filling_step}
+fn filling_plane_alpha(alpha:f32,world:vec3<f32>)->f32 {
+    let p=surface.filling;
+    let game_position=vec3(world.x,-world.z,world.y);
+    let plane=dot(p[9],vec4(game_position,1.0));
+    if plane<0.0 {discard;}
+    return alpha*p[8].x*filling_step(0.0,p[10].x,plane);
+}
+fn filling_colour(uv:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> {
+    let p=surface.filling;
+    let one=filling_pan_uv(uv,uv1.y*p[4].z+globals.time,p[4].x,p[0].xy,p[2].xy);
+    let two=filling_pan_uv(-uv,-uv1.y*p[4].z+globals.time,p[4].y,p[1].xy,p[3].xy);
+    let a=textureSampleGrad(filling_distortion1,surface_sampler,one,dpdx(one),dpdy(one)).x;
+    let b=textureSampleGrad(filling_distortion2,surface_sampler,two,dpdx(two),dpdy(two)).x;
+    let distorted=uv+vec2(a*b);
+    let rgb=textureSampleGrad(filling_diffuse,surface_sampler,distorted,dpdx(distorted),dpdy(distorted))
+        +textureSampleGrad(filling_diffuse,surface_sampler,-distorted,dpdx(-distorted),dpdy(-distorted));
+    let coord=filling_lookup_coordinate(uv.y,a*b,1.0-p[4].w,p[5]);
+    let lookup=textureSampleGrad(filling_lookup,surface_sampler,vec2(coord,0.5),vec2(dpdx(coord),0.0),vec2(dpdy(coord),0.0));
+    return filling_transfer_color(rgb,lookup,coord,uv.y,1.0-p[4].w,p[5].w,p[6],p[7],1.0);
+}
+
 
 struct SurfaceResult {
     albedo: vec4<f32>,
@@ -165,7 +207,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         else { diffuse[i] = sample_role(i, u, ux, uy); }
         // Native forward clipping happens at diffuse0, before normal/gloss
         // fetches and additional-layer composition.
-        if i == 0u && (compiled_misc.w & 1u) != 0u && (is_decal || is_vegetation || compiled_flags.z == 0u) {
+        if compiled_misc.z!=6u && i == 0u && (compiled_misc.w & 1u) != 0u && (is_decal || is_vegetation || compiled_flags.z == 0u) {
             let cutoff = select(surface.alpha.x, 0.5, is_decal || is_vegetation);
             if diffuse[0].a < cutoff { discard; }
         }
@@ -256,6 +298,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         let dy = select(dy0, dy1, surface.uv_sets[0].x != 0u) * surface.uv[0].xy;
         out.occlusion = textureSampleGrad(occlusion_texture, occlusion_sampler, scaled_uv(uv, surface.uv[0]), dx, dy).r;
     }
+    if compiled_misc.z==6u {out.albedo=filling_colour(uv0,uv1,vertex_color);}
     out.roughness = 1.0 - g;
     if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }

@@ -27,16 +27,19 @@ pub struct SurfaceUniform {
     pub emissive_clip: Vec4,
     pub vista: [Vec4; 4],
     pub vista_sun: [Vec4; 2],
+    pub filling: [Vec4; 11],
+    pub filling_flags: UVec4,
+    pub sky: [Vec4; 7],
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
 /// HLSL are #if parameters, not per-fragment uniform branches. Values must
 /// participate in the pipeline cache key; image handles and tints must not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceKey(pub [u32; 14]);
+pub struct SurfaceKey(pub [u32; 16]);
 
 impl SurfaceKey {
-    pub const NAMES: [&'static str; 14] = [
+    pub const NAMES: [&'static str; 16] = [
         "DH2_EXTRA_LAYERS",
         "DH2_HAS_GLOSS",
         "DH2_GLOSS_ALPHA",
@@ -51,6 +54,8 @@ impl SurfaceKey {
         "DH2_SHADOW_FILTER",
         "DH2_SHADOW_LIGHT_QUALITY",
         "DH2_HAS_SPECULAR",
+        "DH2_FILLING_FLAGS",
+        "DH2_PROJECT_FAR",
     ];
 }
 
@@ -71,6 +76,8 @@ impl From<&SurfaceUniform> for SurfaceKey {
             surface.native_shadow.z,
             surface.native_shadow.w,
             surface.specular_reuse.w,
+            surface.filling_flags.x,
+            u32::from(surface.misc.z == 7 || (surface.misc.z == 8 && surface.sky[4].x != 0.0)),
         ])
     }
 }
@@ -155,6 +162,9 @@ impl From<&Surface> for SurfaceUniform {
             emissive_clip: Vec4::new(s.emissive_clip[0], s.emissive_clip[1], 0., 0.),
             vista: [Vec4::ZERO; 4],
             vista_sun: [Vec4::ZERO; 2],
+            filling: [Vec4::ZERO; 11],
+            filling_flags: UVec4::ZERO,
+            sky: [Vec4::ZERO; 7],
         }
     }
 }

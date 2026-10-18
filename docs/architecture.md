@@ -130,14 +130,54 @@ doorway blockers, but does not add fog. The original consumer is recorded in
 world-distance-fog integration, using the retained environment parameters; it
 must not substitute colour or opacity for fog depth.
 
-Background coverage remains incomplete for `arkSky` and `arkClouds`, and the
-HDR/depth-dependent `arkWater` path. Their atmospheric integration, sky depth-mask
-and time inputs need a dedicated pass implementation. Installed program captures
-are retained privately in `artifacts/dust-background-programs.txt` and
-`artifacts/dust-background-helpers.txt`. The one-argument star `rand` helper is in
-`artifacts/shader-raw/helper.decl`; the remaining integration question is the
-world environment/fog parameter publication and pass ordering, not that helper.
-Do not treat the generic unsupported-material fallback as faithful coverage.
+`arkSky` and `arkClouds` use their authored colour, star, opacity, animated UV,
+density, scattering and back/rim-lighting equations in `dh2_sky.wgsl`.
+`rendering/sky.rs` packs registered parameters; `MaterialResolver` supplies the
+inherited environment direction, colour and phase. The backend projects sky
+vertices to far depth and honours `cloudProjOnFar`; neither program writes depth.
+Their prepass discards rather than occluding the rest of the environment.
+
+`app/sky_sprite.rs` implements the environment's `PostFX_Sun_Sprite` disc using
+its actual texture, direction or independent polar angles, size, colour and
+additive/alpha blending. `FUN_14030a800` projects the world-space direction scaled
+by `r_zfar * 0.9`, sizes it by `SunSpriteSize * 0.01`, and applies viewport aspect
+to its vertical extent. The disc draws at far depth, behind scene geometry, and
+participates in HDR exposure. Dust deliberately supplies a moon texture. Ordinary
+visible light-source meshes continue to use their emissive maps and masks;
+emission does not substitute for their scene-light illumination. Authored mesh
+surfaces using `arkSimpleSprite` also sample their `textureMap` with vertex
+colour and the program's alpha blend; they do not use ordinary mesh lighting.
+
+`particle/filing_container` mesh materials use `rendering/filling.rs` and
+`dh2_filling.wgsl`: two animated distortion maps, diffuse/lookup colour, authored
+fill level, colour adjustment, alpha clip, optional Fresnel normal/LUT and world
+clip plane. Forward/prepass share the procedural alpha, with the original
+prepass exclusion of Fresnel. Pixel-lit materials use the existing Ward/probe/
+direct-lighting path. Unlit mesh liquids use the original exposure-compensation
+amount, including crossbow bolt liquids. `MaterialExposure` links the gameplay
+view's GPU adaptation state to the material buffer: forward drawing reads its
+previous value, then postprocessing updates that same buffer. Other views keep
+independent state unless explicitly linked. The host's debug-unlit view preserves
+HDR units without changing the material's authored lighting option. Exposure
+bindings currently follow the single gameplay view; additional world views must
+receive their own matching material/exposure-state binding. Image
+roles 23–28 and 29–31 supply liquid and cloud maps through archive streaming.
+`filling_cases.txt` contains numeric results from 64 installed-HLSL UV/fill/colour
+cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
+occlusion without looking at images.
+
+Remaining render-graph coverage: the sky/cloud secondary fog-depth mask is not
+consumed until world-distance fog is connected; physical atmosphere LUT
+composition and the HDR/depth-dependent `arkWater` path are also pending.
+The corresponding installed shader captures remain private under
+`artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
+and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
+soft-contact/view fades, vertex-lit particle producers, animated-emissive mask
+production and lens-flare postprocessing are not implemented. A mesh liquid that
+requests an unavailable producer is rejected explicitly rather than passed
+through ordinary white material shading. Next steps are the native particle
+instance/clock publishers and postFX pass dependencies. Adding debug light
+markers or synthetic bloom would not provide their authored appearance.
 
 F8 and streaming diagnostics belong under the checkout's `artifacts/` directory
 (or beside a packaged executable), independently of virtual archive resource

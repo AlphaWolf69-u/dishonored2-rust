@@ -10,6 +10,8 @@ use bevy::prelude::*;
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(SurfaceKey)]
 pub(super) struct ProbeExtension {
+    #[storage(154, read_only)]
+    pub(super) material_exposure: Handle<ShaderBuffer>,
     #[storage(100, read_only)]
     pub(super) sh: Handle<ShaderBuffer>,
     #[storage(119, read_only)]
@@ -80,6 +82,27 @@ pub(super) struct ProbeExtension {
     pub(super) anisotropic_sampler_image: Option<Handle<Image>>,
     #[texture(142)]
     pub(super) lightmap: Option<Handle<Image>>,
+    #[texture(143)]
+    pub(super) filling_diffuse: Option<Handle<Image>>,
+    #[texture(144)]
+    pub(super) filling_distortion1: Option<Handle<Image>>,
+    #[texture(145)]
+    pub(super) filling_distortion2: Option<Handle<Image>>,
+    #[texture(146)]
+    pub(super) filling_lookup: Option<Handle<Image>>,
+    #[texture(147)]
+    pub(super) filling_normal: Option<Handle<Image>>,
+    #[texture(148)]
+    pub(super) filling_fresnel: Option<Handle<Image>>,
+    #[texture(150)]
+    #[sampler(149)]
+    pub(super) linear_clamp_image: Option<Handle<Image>>,
+    #[texture(151)]
+    pub(super) cloud_opacity: Option<Handle<Image>>,
+    #[texture(152)]
+    pub(super) cloud_density: Option<Handle<Image>>,
+    #[texture(153)]
+    pub(super) cloud_back_density: Option<Handle<Image>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -100,6 +123,34 @@ pub(super) fn specialize_surface(
     descriptor: &mut RenderPipelineDescriptor,
     key: surface_gpu::SurfaceKey,
 ) {
+    // Bevy omits opaque depth-only fragments unless its alpha-mask flag is
+    // set. These original programs discard procedurally even with ONE/ZERO
+    // blending: liquid clips its fill level; sky never contributes Z.
+    if matches!(key.0[6], 6 | 7 | 8)
+        && descriptor.fragment.is_none()
+        && descriptor.vertex.shader_defs.iter().any(
+            |v| matches!(v,bevy::shader::ShaderDefVal::Bool(name,true) if name=="PREPASS_PIPELINE"),
+        )
+    {
+        descriptor.fragment = Some(bevy::render::render_resource::FragmentState {
+            shader: PROBE_PREPASS_SHADER_HANDLE,
+            shader_defs: descriptor.vertex.shader_defs.clone(),
+            targets: Vec::new(),
+            ..default()
+        });
+    }
+    descriptor
+        .vertex
+        .shader_defs
+        .push(bevy::shader::ShaderDefVal::UInt(
+            "DH2_PROJECT_FAR".into(),
+            key.0[15],
+        ));
+    if matches!(key.0[6], 7 | 8) {
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+        }
+    }
     if let Some(fragment) = descriptor.fragment.as_mut() {
         // Optional numerical light attribution; normal rendering has no branch.
         if let Ok(component) = std::env::var("DH2_TRACE_LIGHT_COMPONENT")
@@ -146,7 +197,7 @@ pub(super) fn specialize_native_vertex_lighting(
     layout: &MeshVertexBufferLayoutRef,
     key: surface_gpu::SurfaceKey,
 ) {
-    let native_lighting = matches!(key.0[6], 1 | 2)
+    let native_lighting = matches!(key.0[6], 1 | 2 | 6)
         && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
         && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
         && descriptor.fragment.as_ref().is_some_and(|fragment| {
@@ -200,6 +251,8 @@ impl MaterialExtension for ProbeExtension {
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(DecalKey)]
 pub(super) struct DecalExtension {
+    #[storage(154, read_only)]
+    pub(super) material_exposure: Handle<ShaderBuffer>,
     pub(super) bias: i32,
     #[storage(100, read_only)]
     pub(super) sh: Handle<ShaderBuffer>,
@@ -271,6 +324,27 @@ pub(super) struct DecalExtension {
     pub(super) anisotropic_sampler_image: Option<Handle<Image>>,
     #[texture(142)]
     pub(super) lightmap: Option<Handle<Image>>,
+    #[texture(143)]
+    pub(super) filling_diffuse: Option<Handle<Image>>,
+    #[texture(144)]
+    pub(super) filling_distortion1: Option<Handle<Image>>,
+    #[texture(145)]
+    pub(super) filling_distortion2: Option<Handle<Image>>,
+    #[texture(146)]
+    pub(super) filling_lookup: Option<Handle<Image>>,
+    #[texture(147)]
+    pub(super) filling_normal: Option<Handle<Image>>,
+    #[texture(148)]
+    pub(super) filling_fresnel: Option<Handle<Image>>,
+    #[texture(150)]
+    #[sampler(149)]
+    pub(super) linear_clamp_image: Option<Handle<Image>>,
+    #[texture(151)]
+    pub(super) cloud_opacity: Option<Handle<Image>>,
+    #[texture(152)]
+    pub(super) cloud_density: Option<Handle<Image>>,
+    #[texture(153)]
+    pub(super) cloud_back_density: Option<Handle<Image>>,
 }
 
 pub(super) trait NativeImageAccess {
@@ -303,6 +377,15 @@ macro_rules! native_image_access {
                     20 => &mut self.emissive_map,
                     21 => &mut self.emissive_mask,
                     22 => &mut self.lightmap,
+                    23 => &mut self.filling_diffuse,
+                    24 => &mut self.filling_distortion1,
+                    25 => &mut self.filling_distortion2,
+                    26 => &mut self.filling_lookup,
+                    27 => &mut self.filling_normal,
+                    28 => &mut self.filling_fresnel,
+                    29 => &mut self.cloud_opacity,
+                    30 => &mut self.cloud_density,
+                    31 => &mut self.cloud_back_density,
                     _ => panic!("invalid authored image role"),
                 }
             }

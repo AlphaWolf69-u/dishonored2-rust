@@ -15,8 +15,9 @@ use super::{
     OriginalLocalLightCullStats, PathBuf, PointLightShadowMap, PreparedImageMailbox,
     ProbeExtension, ProbeMaterial, Render, RenderApp, RenderSystems, SceneData, Shader,
     SnapshotPath, StreamingDiagnostics, TomeWorld, VisibilityElapsedTiming, VisibilitySystems,
-    DECAL_SHADER_HANDLE, INDIRECT_SHADER_HANDLE, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
-    PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
+    DECAL_SHADER_HANDLE, FILLING_SHADER_HANDLE, INDIRECT_SHADER_HANDLE,
+    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE,
+    SKY_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
 };
 use bevy::prelude::*;
 
@@ -323,7 +324,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|layer| layer.parameters.len())
             .sum::<usize>();
         println!(
-            "World environment render parameters retained: {} layers, {value_count} raw entries (not yet consumed by fog/water/sky/postfx rendering)",
+            "World environment render parameters: {} layers, {value_count} raw entries; exposure and sky consume authored values; fog/water remain pending",
             parameters.layers.len(),
         );
     }
@@ -823,6 +824,19 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         app,
         INDIRECT_SHADER_HANDLE,
         "../../assets/shaders/dh2_indirect.wgsl",
+        Shader::from_wgsl
+    );
+    super::sky_sprite::register(&mut app);
+    bevy::asset::load_internal_asset!(
+        app,
+        SKY_SHADER_HANDLE,
+        "../../assets/shaders/dh2_sky.wgsl",
+        Shader::from_wgsl
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        FILLING_SHADER_HANDLE,
+        "../../assets/shaders/dh2_filling.wgsl",
         Shader::from_wgsl
     );
     bevy::asset::load_internal_asset!(

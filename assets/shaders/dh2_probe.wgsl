@@ -13,6 +13,9 @@
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
 #import dh2_parallel_receiver::{native_parallel_directional_index, native_parallel_depth_visibility}
+#import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, linear_clamp, scaled_uv}
+#import dh2_sky::sky_colour
+#import dh2_surface::material_exposure
 
 @fragment
 fn fragment(
@@ -20,6 +23,32 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(vertex_output, is_front);
+    if compiled_misc.z==9u {
+        var uv=vec2(0.0);var color=vec4(1.0);
+#ifdef VERTEX_UVS_A
+        uv=vertex_output.uv;
+#endif
+#ifdef VERTEX_COLORS
+        color=vertex_output.color;
+#endif
+        var out:FragmentOutput;
+        out.color=main_pass_post_lighting_processing(pbr_input,
+            textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv))*color);
+        return out;
+    }
+    if compiled_misc.z==7u || compiled_misc.z==8u {
+        var uv=vec2(0.0);var color=vec4(1.0);
+#ifdef VERTEX_UVS_A
+        uv=vertex_output.uv;
+#endif
+#ifdef VERTEX_COLORS
+        color=vertex_output.color;
+#endif
+        let sky=sky_colour(uv,vertex_output.world_position.xyz,vertex_output.world_normal,color,compiled_misc.z==8u);
+        var out:FragmentOutput;
+        out.color=main_pass_post_lighting_processing(pbr_input,vec4(sky.rgb*139.26*view.exposure,sky.a));
+        return out;
+    }
     if compiled_misc.z == 4u {
         var uv0=vec2<f32>(0.0);
         var uv1=vec2<f32>(0.0);
@@ -73,7 +102,7 @@ fn fragment(
     // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
     // Original arkWater requires a separate depth/HDR-dependent shader; do not
     // feed it through the default layered-material equations.
-    if compiled_misc.z == 1u || compiled_misc.z == 2u {
+    if compiled_misc.z == 1u || compiled_misc.z == 2u || compiled_misc.z == 6u {
         var uv = vec2<f32>(0.0);
 #ifdef VERTEX_UVS_A
         uv = vertex_output.uv;
@@ -111,6 +140,33 @@ fn fragment(
             pbr_input.N = face_factor * normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
         }
 #endif
+        if compiled_misc.z==6u {
+            var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz);
+            if (surface.filling_flags.x & 2u)!=0u {
+                var N=pbr_input.N;
+#ifdef VERTEX_TANGENTS
+                if (surface.filling_flags.x & 4u)!=0u {
+                    let coords=scaled_uv(select(uv,uv1,surface.uv_sets[0].x!=0u),surface.uv[0]);
+                    let normal=unpack_bc5_normal_map(textureSampleGrad(filling_normal,surface_sampler,coords,dpdx(coords),dpdy(coords)).xy);
+                    let T=vertex_output.world_tangent;
+#ifdef DH2_AUTHORED_BASIS
+                    let B=vertex_output.world_bitangent;
+#else
+                    let B=cross(vertex_output.world_normal,T.xyz)*T.w;
+#endif
+                    N=normalize(normal.x*T.xyz+normal.y*B+normal.z*vertex_output.world_normal);
+                }
+#endif
+                let cosine=clamp(dot(normalize(view.world_position-vertex_output.world_position.xyz),N),0.0,1.0);
+                var fresnel=min(cosine/surface.filling[8].y,1.0);
+                if (surface.filling_flags.x & 8u)!=0u {
+                    fresnel=textureSampleGrad(filling_fresnel,linear_clamp,vec2(cosine),vec2(dpdx(cosine)),vec2(dpdy(cosine))).r;
+                }
+                alpha*=pow(fresnel,surface.filling[8].z);
+            }
+            if surface.filling_flags.y>0u && alpha<max(surface.filling[8].w,0.0001) {discard;}
+            pbr_input.material.base_color.a=alpha;
+        }
     } else {
         // Native paths already clip raw diffuse alpha before tints/layers.
         pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
@@ -163,6 +219,11 @@ fn fragment(
             native_parallel_directional_index(), visibility, visibility, compiled_native_shadow, native_indirect);
     } else {
         out.color = pbr_input.material.base_color;
+        if compiled_misc.z==6u {
+            var compensation=1.0;
+            if surface.filling_flags.y==0u {compensation=mix(1.0,1.0/material_exposure[0],surface.filling[10].y);}
+            out.color=vec4(out.color.rgb*139.26*view.exposure*compensation,out.color.a);
+        }
     }
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color=vec4(out.color.rgb+native_emissive*139.26*view.exposure,out.color.a);
