@@ -105,7 +105,23 @@ pub struct TetrahedronVertex {
 }
 
 #[derive(Clone, Debug)]
+pub struct Cell {
+    pub probe_name: String,
+    pub first_tetrahedron: usize,
+    pub tetrahedron_count: usize,
+    pub planes: Vec<([f32; 3], [f32; 3], bool)>,
+    pub occluder_samples: Vec<usize>,
+}
+#[derive(Clone, Debug)]
+pub struct RuntimeTetrahedron {
+    pub shader_index: usize,
+    pub cell_index: u32,
+    pub positions: [[f32; 3]; 4],
+}
+#[derive(Clone, Debug)]
 pub struct SpatialData {
+    pub cells: Vec<Cell>,
+    pub runtime_tetrahedra: Vec<RuntimeTetrahedron>,
     pub voronoi_version: u32,
     pub cell_count: usize,
     pub tetrahedra: Vec<Tetrahedron>,
@@ -113,10 +129,9 @@ pub struct SpatialData {
     pub bytes_consumed: usize,
 }
 
-/// Read the geometry buffers used by the original indirect-lighting vertex
-/// shader. PNW v7 embeds Voronoi v9; cells and runtime tetrahedra are skipped
-/// using their saved deserializer layouts, then the packed shader buffers are
-/// decoded according to tetrahedron_t and tetrahedronVertex_t declarations.
+/// Read the CPU Voronoi query geometry and indirect-lighting shader buffers.
+/// PNW v7 embeds Voronoi v9; cell/runtime layouts follow the native loaders,
+/// while packed shader buffers follow tetrahedron_t/tetrahedronVertex_t.
 pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> {
     let mut cursor = offset;
     let voronoi_version = u32le(bytes, cursor)?;
@@ -135,6 +150,7 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
     if cell_count > 1_000_000 {
         return Err(format!("unreasonable Voronoi cell count {cell_count}"));
     }
+    let mut cells = Vec::with_capacity(cell_count);
     for cell_index in 0..cell_count {
         let name_len = u32le(bytes, cursor)? as usize;
         cursor = cursor
@@ -143,6 +159,14 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
         if cursor > bytes.len() {
             return Err("truncated Voronoi cell name".into());
         }
+        let name_start = cursor - name_len;
+        let probe_name = std::str::from_utf8(&bytes[name_start..cursor])
+            .map_err(|e| e.to_string())?
+            .trim_end_matches('\0')
+            .to_owned();
+        let first_tetrahedron = u32le(bytes, cursor + 9)? as usize;
+        let cell_tetrahedron_count = u32le(bytes, cursor + 13)? as usize;
+        let mut planes = Vec::new();
         // FUN_140384870 fixed fields through the variable neighbor list.
         cursor = cursor
             .checked_add(29)
@@ -154,6 +178,12 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             ));
         }
         for neighbor_index in 0..neighbor_records {
+            let f = |at| u32le(bytes, cursor + at).map(f32::from_bits);
+            let point = [f(8)?, f(12)?, f(16)?];
+            let normal = [f(20)?, f(24)?, f(28)?];
+            let skip = voronoi_version >= 7
+                && *bytes.get(cursor + 45).ok_or("truncated neighbor flag")? != 0;
+            planes.push((point, normal, skip));
             cursor = cursor
                 .checked_add(
                     44 + usize::from(voronoi_version >= 2) + usize::from(voronoi_version >= 7),
@@ -162,7 +192,9 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             let vertex_count = u32le(bytes, cursor)? as usize;
             cursor += 4;
             if vertex_count > 1_000_000 {
-                return Err(format!("unreasonable Voronoi neighbor vertex count {vertex_count} at cell {cell_index}, neighbor {neighbor_index}, offset {cursor:#x}, feature {data_feature}"));
+                return Err(format!(
+                    "unreasonable Voronoi neighbor vertex count {vertex_count} at cell {cell_index}, neighbor {neighbor_index}, offset {cursor:#x}, feature {data_feature}"
+                ));
             }
             let per_vertex_extra =
                 usize::from(voronoi_version < 6) * 4 + usize::from(voronoi_version < 4) * 4;
@@ -182,6 +214,16 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
         if face_count > 1_000_000 {
             return Err(format!("unreasonable Voronoi face count {face_count}"));
         }
+        let occluder_samples = (0..face_count)
+            .map(|i| u32le(bytes, cursor + i * 4).map(|v| v as usize))
+            .collect::<Result<Vec<_>, _>>()?;
+        cells.push(Cell {
+            probe_name,
+            first_tetrahedron,
+            tetrahedron_count: cell_tetrahedron_count,
+            planes,
+            occluder_samples,
+        });
         cursor = cursor
             .checked_add(
                 face_count
@@ -202,14 +244,25 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             "unreasonable Voronoi tetrahedron count {tetrahedron_count}"
         ));
     }
-    // FUN_140384d70 reads two ids and four serialized vec3 positions for v9.
-    cursor = cursor
-        .checked_add(
-            tetrahedron_count
-                .checked_mul(56)
-                .ok_or("tetrahedron count overflow")?,
-        )
-        .ok_or("Voronoi tetrahedron records offset overflow")?;
+    // Keep the CPU tetrahedra and cell ranges: shader tetrahedra overlap and
+    // cannot be searched globally to reproduce FUN_140385da0.
+    let mut runtime_tetrahedra = Vec::with_capacity(tetrahedron_count);
+    for _ in 0..tetrahedron_count {
+        let shader_index = u32le(bytes, cursor)? as usize;
+        let cell_index = u32le(bytes, cursor + 4)?;
+        let mut positions = [[0.; 3]; 4];
+        for i in 0..4 {
+            for c in 0..3 {
+                positions[i][c] = f32::from_bits(u32le(bytes, cursor + 8 + (i * 3 + c) * 4)?);
+            }
+        }
+        runtime_tetrahedra.push(RuntimeTetrahedron {
+            shader_index,
+            cell_index,
+            positions,
+        });
+        cursor += 56;
+    }
 
     // FUN_1403843f0 reads raw byte sizes for 24-byte tetrahedron_t and
     // 16-byte tetrahedronVertex_t shader records.
@@ -280,9 +333,21 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
     }) {
         return Err("tetrahedron references a vertex outside its shader buffer".into());
     }
+    if cells.iter().any(|c| {
+        c.first_tetrahedron
+            .checked_add(c.tetrahedron_count)
+            .is_none_or(|end| end > runtime_tetrahedra.len())
+    }) || runtime_tetrahedra
+        .iter()
+        .any(|t| t.shader_index >= tetrahedra.len())
+    {
+        return Err("Voronoi CPU query references an invalid tetrahedron".into());
+    }
     Ok(SpatialData {
         voronoi_version,
         cell_count,
+        cells,
+        runtime_tetrahedra,
         tetrahedra,
         vertices,
         bytes_consumed: cursor,
@@ -406,9 +471,11 @@ mod tests {
         assert_eq!(tail.instance_offsets, [3, 4, 5]);
         assert_eq!(tail.bytes_consumed, bytes.len());
         bytes[28] = 1;
-        assert!(vertex_references(&bytes, 0, 8)
-            .unwrap_err()
-            .contains("status 9"));
+        assert!(
+            vertex_references(&bytes, 0, 8)
+                .unwrap_err()
+                .contains("status 9")
+        );
     }
 
     #[test]

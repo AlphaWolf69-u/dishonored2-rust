@@ -49,6 +49,7 @@ mod original_settings;
 mod physworld;
 #[path = "../pnetwork.rs"]
 mod pnetwork;
+#[path="../native_exposure.rs"] mod native_exposure;
 #[path = "../probe_lighting.rs"]
 mod probe_lighting;
 #[path = "../render_light.rs"]
@@ -97,14 +98,10 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::{
     CascadeShadowConfigBuilder, DirectionalLightShadowMap, PointLightShadowMap, RectLight,
 };
-use bevy::math::cubic_splines::LinearSpline;
 use bevy::mesh::{Indices, MeshTag, MeshVertexAttribute, MeshVertexBufferLayoutRef};
 use bevy::pbr::{
     ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
     MaterialPlugin,
-};
-use bevy::post_process::auto_exposure::{
-    AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin,
 };
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssets;
@@ -5205,7 +5202,6 @@ fn setup(
     mut probe_sh_buffers: ResMut<Assets<ShaderBuffer>>,
     render_device: Res<RenderDevice>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
-    mut exposure_curves: ResMut<Assets<AutoExposureCompensationCurve>>,
     view_settings: Res<NativeViewSettings>,
 ) {
     // Temporarily take the catalog to avoid borrowing the scene while setup
@@ -6158,34 +6154,11 @@ fn setup(
         camera_entity.insert(DepthPrepass);
     }
     if lit {
-        if let Some(environment) = scene.environment_lighting {
-            if environment.auto_exposure_ev.is_some()
-                || environment.auto_exposure_adapt_speed_up.is_some()
-                || environment.auto_exposure_adapt_speed_down.is_some()
-            {
-                let compensation = environment.auto_exposure_ev.unwrap_or(0.0);
-                let curve = exposure_curves.add(
-                    AutoExposureCompensationCurve::from_curve(LinearSpline::new([
-                        Vec2::new(-16.0, compensation),
-                        Vec2::new(16.0, compensation),
-                    ]))
-                    .expect("constant environment exposure compensation curve is valid"),
-                );
-                let defaults = AutoExposure::default();
-                camera_entity.insert(AutoExposure {
-                    // Raising the EV darkens the image; lowering it brightens it.
-                    speed_brighten: environment
-                        .auto_exposure_adapt_speed_down
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                        .unwrap_or(defaults.speed_brighten),
-                    speed_darken: environment
-                        .auto_exposure_adapt_speed_up
-                        .filter(|value| value.is_finite() && *value >= 0.0)
-                        .unwrap_or(defaults.speed_darken),
-                    compensation_curve: curve,
-                    ..default()
-                });
-            }
+        if let Some(parameters)=&scene.environment_render_parameters {
+            let exposure=native_exposure::NativeExposure::from_parameters(parameters)
+                .expect("invalid native exposure environment");
+            println!("Native exposure parameters: {exposure:?}");
+            camera_entity.insert(exposure);
         }
     }
     commands.insert_resource(NavigationState { walking, walker });
@@ -9167,7 +9140,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ));
         frame_profile::install(&mut app);
     }
-    app.add_plugins(AutoExposurePlugin)
+    app.add_plugins(native_exposure::NativeExposurePlugin)
         .add_plugins(game_clock_runtime::NativeClockRuntimePlugin)
         .add_plugins(native_shadow_scene::NativeShadowScenePlugin)
         .add_plugins(native_screen_shadow_scene::NativeScreenShadowScenePlugin)
@@ -10780,6 +10753,7 @@ mod game_control_tests {
             Shader::from_wgsl
         );
         native_shadow_sampling::register_shaders(&mut app);
+        app.add_plugins(native_exposure::NativeExposurePlugin);
         app.finish();
         app.cleanup();
         let target =
@@ -11532,6 +11506,28 @@ mod game_control_tests {
         }
         assert!(energy(pixels[4])<10,"zero-coverage decal must remain transparent: {pixels:?}");
         eprintln!("GPU native indirect coverage: opaque alpha1/0, blended alpha1/0.5/0 = {pixels:?}");
+        // Verify native exposure reaches the displayed pixel through the HDR
+        // camera and final tonemapping, rather than only updating its state.
+        app.world_mut().resource_mut::<Assets<DecalMaterial>>()
+            .get_mut(&receiving).unwrap().extension.surface.colors[0].w=1.0;
+        app.world_mut().entity_mut(camera).insert(
+            bevy::core_pipeline::tonemapping::Tonemapping::Reinhard);
+        let mut displayed=Vec::new();
+        for luminance in [1.0,4.0] {
+            app.world_mut().entity_mut(camera).insert(native_exposure::NativeExposure {
+                range:Vec4::new(luminance,luminance,0.0,1.0),
+                adaptation:Vec4::new(0.0,1.0,1.0,1.0),
+                camera:Vec4::new(30.0,0.0,0.0,0.0),
+            });
+            assert!(app.world().entity(camera).contains::<bevy::camera::Hdr>());
+            for _ in 0..100 {app.update();std::thread::sleep(std::time::Duration::from_millis(5));}
+            displayed.push(forward_center(&mut app,&target));
+        }
+        let brighter=linear(displayed[0][0]);let darker=linear(displayed[1][0]);
+        assert!(brighter>0.0001 && (brighter/darker-4.0).abs()<1.0,
+            "native exposure must reach final pixel once: {displayed:?}");
+        eprintln!("GPU native exposure final display: luminance1/4={displayed:?}");
+        native_exposure::verify_gpu_math(&mut app);
         native_probe_shader_matches_original(&mut app);
         tiled_depth_shader_matches_reference(&mut app);
     }

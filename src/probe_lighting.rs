@@ -1,14 +1,11 @@
 //! Map probe lookup backed by the ordered PNW resource list and PRB headers.
 
 use crate::{archive, bprobe, pnetwork};
-use std::collections::HashMap;
 
 #[path="probe_lighting/update.rs"]
 mod update;
+#[path="probe_lighting/query.rs"] mod query;
 pub use update::{ProbeLightingParameters,sky_zh};
-
-const TETRA_GRID_CELL_SIZE: f32 = 16.0;
-const MAX_TETRA_GRID_CELLS: usize = 512;
 
 /// PC sphericalharmonics.decl EvaluateSH (four- and nine-coefficient overloads).
 pub fn evaluate_sh<const N: usize>(direction: [f32; 3], sh: &[[f32; 3]; N]) -> [f32; 3] {
@@ -177,6 +174,7 @@ pub struct ProbeLighting {
     pub illuminance_estimate: [f32; 3],
     pub cubemap_name: String,
     pub sources:bprobe::ProbeSources,
+    pub samples:Vec<bprobe::Sample>,
     pub render_lighting_sh:[[f32;3];9],
     pub static_lighting_sh: [[f32; 3]; 9],
     pub sun_factor_sh: [[f32; 3]; 9],
@@ -193,64 +191,7 @@ pub struct ProbeLightingSet {
     pub rejected_resources: Vec<(String, String)>,
     pub spatial: pnetwork::SpatialData,
     pub vertex_references: pnetwork::VertexReferences,
-    tetra_grid: TetraGrid,
-}
-
-#[derive(Clone, Debug, Default)]
-struct TetraGrid {
-    cells: HashMap<[i32; 3], Vec<usize>>,
-    large_tetrahedra: Vec<usize>,
-}
-
-impl TetraGrid {
-    fn build(spatial: &pnetwork::SpatialData) -> Self {
-        let mut grid = Self::default();
-        for (tetrahedron_index, tetrahedron) in spatial.tetrahedra.iter().enumerate() {
-            let points = tetrahedron
-                .vertex_indices
-                .map(|index| spatial.vertices[index as usize].position);
-            let mut low = [f32::INFINITY; 3];
-            let mut high = [f32::NEG_INFINITY; 3];
-            for point in points {
-                for axis in 0..3 {
-                    low[axis] = low[axis].min(point[axis]);
-                    high[axis] = high[axis].max(point[axis]);
-                }
-            }
-            let first = low.map(|value| (value / TETRA_GRID_CELL_SIZE).floor() as i32);
-            let last = high.map(|value| (value / TETRA_GRID_CELL_SIZE).floor() as i32);
-            let spans = std::array::from_fn::<_, 3, _>(|axis| {
-                (last[axis] - first[axis] + 1).max(1) as usize
-            });
-            let cell_count = spans[0]
-                .checked_mul(spans[1])
-                .and_then(|count| count.checked_mul(spans[2]));
-            if cell_count.is_none_or(|count| count > MAX_TETRA_GRID_CELLS) {
-                grid.large_tetrahedra.push(tetrahedron_index);
-                continue;
-            }
-            for x in first[0]..=last[0] {
-                for y in first[1]..=last[1] {
-                    for z in first[2]..=last[2] {
-                        grid.cells
-                            .entry([x, y, z])
-                            .or_default()
-                            .push(tetrahedron_index);
-                    }
-                }
-            }
-        }
-        grid
-    }
-
-    fn candidates(&self, position: [f32; 3]) -> Vec<usize> {
-        let cell = position.map(|value| (value / TETRA_GRID_CELL_SIZE).floor() as i32);
-        let mut candidates = self.cells.get(&cell).cloned().unwrap_or_default();
-        candidates.extend(self.large_tetrahedra.iter().copied());
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
-    }
+    pub cell_geometry:Vec<query::CellGeometry>,
 }
 
 #[derive(Clone, Debug)]
@@ -320,7 +261,7 @@ pub fn load_for_world(
         pnetwork::spatial_data(&network, spatial_offset).map_err(|error| error.to_string())?;
     let vertex_references =
         pnetwork::vertex_references(&network, spatial.bytes_consumed, secondary_resources.len())?;
-    let tetra_grid = TetraGrid::build(&spatial);
+
     let mut probes = Vec::with_capacity(names.len());
     let rejected_resources = Vec::new();
     for name in names {
@@ -340,6 +281,7 @@ pub fn load_for_world(
                 illuminance_estimate: probe.illuminance_estimate,
                 cubemap_name: probe.cubemap_name,
                 sources:probe.sources,
+                samples:probe.samples,
                 render_lighting_sh:probe.static_lighting_sh,
                 static_lighting_sh: probe.static_lighting_sh,
                 sun_factor_sh: probe.sun_factor_sh,
@@ -354,6 +296,13 @@ pub fn load_for_world(
             Err(error) => return Err(format!("required primary probe {resource}: {error}; native ordered probe IDs cannot be compacted")),
         }
     }
+    let mut cell_geometry=Vec::with_capacity(spatial.cells.len());
+    for cell in &spatial.cells {
+        let name=format!("{}.bprobe",cell.probe_name);
+        let probe=probes.iter().find(|p|p.resource==name)
+            .ok_or_else(||format!("missing CPU Voronoi probe {name}"))?;
+        cell_geometry.push(query::geometry(probe.position,&probe.samples,&cell.occluder_samples)?);
+    }
     Ok(Some(ProbeLightingSet {
         network_resource,
         probes,
@@ -361,7 +310,7 @@ pub fn load_for_world(
         rejected_resources,
         spatial,
         vertex_references,
-        tetra_grid,
+        cell_geometry,
     }))
 }
 
@@ -434,7 +383,7 @@ impl ProbeLightingSet {
             let edge1 = sub(points[1], points[3]);
             let edge2 = sub(points[2], points[3]);
             let determinant = dot_cross(edge0, edge1, edge2);
-            let reciprocal = if determinant.abs() > 0.0 {
+            let reciprocal = if determinant.abs() > 1e-6 {
                 determinant.recip()
             } else {
                 0.0
@@ -445,18 +394,11 @@ impl ProbeLightingSet {
             [first, second, third, 1.0 - first - second - third]
         };
 
-        'tetrahedron: for tetrahedron_index in self.tetra_grid.candidates(position) {
+        let selected=query::select(self,position)?;
+        let runtime=&self.spatial.runtime_tetrahedra[selected];
+        'tetrahedron: for tetrahedron_index in [runtime.shader_index] {
             let tetrahedron = &self.spatial.tetrahedra[tetrahedron_index];
-            let points = tetrahedron
-                .vertex_indices
-                .map(|index| self.spatial.vertices[index as usize].position);
-            let barycentrics = barycentric(points);
-            if barycentrics
-                .iter()
-                .any(|weight| !weight.is_finite() || *weight < -1.0e-5 || *weight > 1.00001)
-            {
-                continue;
-            }
+            let barycentrics = barycentric(runtime.positions);
 
             let mut probe_weights = [0.0; 4];
             for (vertex, barycentric) in tetrahedron.vertex_indices.iter().zip(barycentrics) {
