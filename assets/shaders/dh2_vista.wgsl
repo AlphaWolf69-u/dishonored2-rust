@@ -9,6 +9,9 @@ fn vista_saturate(x:f32)->f32 {
     return min(x,1.0);
 }
 fn vista_smoothstep(a:f32,b:f32,x:f32)->f32 {
+    // Equal thresholds produce NaN at the threshold in HLSL; D3D saturate
+    // maps that value to zero. Avoid FXC optimizing away the NaN check.
+    if a==b {return select(0.0,1.0,x>a);}
     let t=vista_saturate((x-a)/(b-a));
     return t*t*(3.0-2.0*t);
 }

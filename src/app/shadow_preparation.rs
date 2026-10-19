@@ -49,16 +49,64 @@ impl NativeShadowMaterialInputs {
 /// UV values nor guessed wind/clock values become native shadow constants.
 #[derive(Clone, Debug)]
 pub(super) struct NativeShadowMaterialParameters {
-    pub(super) overrides: render_program::SerializedParameterBlock,
-    pub(super) defaults: HashMap<Vec<u8>, [u32; 4]>,
+    overrides: render_program::SerializedParameterBlock,
+    defaults: HashMap<Vec<u8>, [u32; 4]>,
+    resolved: bevy::platform::collections::HashMap<Vec<u8>, Result<[u32; 4], String>>,
 }
 
 impl NativeShadowMaterialParameters {
+    pub(super) fn new(
+        overrides: render_program::SerializedParameterBlock,
+        defaults: HashMap<Vec<u8>, [u32; 4]>,
+    ) -> Self {
+        // These serialized declarations are immutable. Keep raw words and
+        // deferred errors; gameplay clocks and per-model fallback blocks are
+        // still resolved at their original call sites.
+        let resolved = defaults
+            .iter()
+            .map(|(name, default)| {
+                (
+                    name.clone(),
+                    overrides.vector_words(name, 0x30, *default, None),
+                )
+            })
+            .collect();
+        Self {
+            overrides,
+            defaults,
+            resolved,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn declarations(
+        &self,
+    ) -> (
+        &render_program::SerializedParameterBlock,
+        &HashMap<Vec<u8>, [u32; 4]>,
+    ) {
+        (&self.overrides, &self.defaults)
+    }
+
     pub(super) fn vector(
         &self,
         name: &[u8],
         fallback: Option<&render_program::SerializedParameterBlock>,
     ) -> Result<[f32; 4], String> {
+        if fallback.is_none() {
+            return self
+                .resolved
+                .get(name)
+                .ok_or_else(|| {
+                    format!(
+                        "unresolved native shadow Uniform {}",
+                        String::from_utf8_lossy(name)
+                    )
+                })?
+                .as_ref()
+                .map(|words| words.map(f32::from_bits))
+                .map_err(Clone::clone);
+        }
         let default = *self.defaults.get(name).ok_or_else(|| {
             format!(
                 "unresolved native shadow Uniform {}",
@@ -117,7 +165,10 @@ impl NativeShadowMaterialParameters {
 
 #[derive(Resource, Default)]
 pub(super) struct NativeShadowMaterials(
-    pub(super) HashMap<MaterialHandle, Result<NativeShadowMaterialInputs, String>>,
+    pub(super)  bevy::platform::collections::HashMap<
+        MaterialHandle,
+        Result<NativeShadowMaterialInputs, String>,
+    >,
 );
 
 impl NativeShadowMaterials {
@@ -521,6 +572,17 @@ pub(super) struct NativeParallelShadowOwner {
 }
 
 impl NativeParallelShadowOwner {
+    pub(super) fn world_draw_settings(&self) -> NativeWorldShadowDrawSettings {
+        NativeWorldShadowDrawSettings {
+            dimensions: self.dimensions,
+            hardware_bias: self.hardware_bias,
+            sort_shadows_ccw: self.sort_shadows_ccw,
+            source_flag_04: self.source_flag_04,
+            exclude_lod: false,
+            depth_clip: 0,
+        }
+    }
+
     pub(super) fn from_scene(
         scene: &SceneData,
         images: &mut Assets<Image>,
@@ -615,14 +677,14 @@ impl NativeParallelShadowOwner {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct NativeWorldShadowMaskPlan {
     pub(super) instance_ids: Vec<u32>,
     pub(super) auxiliary: Vec<[u32; 8]>,
     pub(super) instances: Vec<NativeWorldShadowPreparedInstance>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct NativeWorldShadowPreparedInstance {
     pub(super) mesh: Handle<Mesh>,
     pub(super) constants: NativeWorldShadowPreparedConstants,
@@ -633,7 +695,7 @@ pub(super) struct NativeWorldShadowPreparedInstance {
     pub(super) draw_state: [u32; 9],
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum NativeWorldShadowPreparedConstants {
     World {
         bytes: [u8; shadow_pass::NATIVE_WORLD_SHADOW_INSTANCE_BYTES],
@@ -656,7 +718,7 @@ pub(super) fn prepare_native_whole_view_masks(
     materials: &NativeShadowMaterials,
     meshes: &Assets<Mesh>,
     images: &Assets<Image>,
-    queue: &mut SceneRenderQueue,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
     local_time: Option<[f32; 2]>,
     clock_error: Option<&str>,
 ) -> Result<Vec<NativeWorldShadowMaskPlan>, String> {
@@ -682,21 +744,14 @@ pub(super) fn prepare_native_world_shadow_masks(
     materials: &NativeShadowMaterials,
     meshes: &Assets<Mesh>,
     images: &Assets<Image>,
-    queue: &mut SceneRenderQueue,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
     masks: &[Vec<u8>],
     clip: &render_shadow::ShadowMatrix,
     local_time: Option<[f32; 2]>,
     clock_error: Option<&str>,
 ) -> Result<Vec<NativeWorldShadowMaskPlan>, String> {
     prepare_native_world_shadow_masks_with_settings(
-        &NativeWorldShadowDrawSettings {
-            dimensions: owner.dimensions,
-            hardware_bias: owner.hardware_bias,
-            sort_shadows_ccw: owner.sort_shadows_ccw,
-            source_flag_04: owner.source_flag_04,
-            exclude_lod: false,
-            depth_clip: 0,
-        },
+        &owner.world_draw_settings(),
         world,
         sources,
         materials,
@@ -719,6 +774,100 @@ pub(super) struct NativeWorldShadowDrawSettings {
     pub(super) depth_clip: u8,
 }
 
+/// Immutable inputs shared only within one frame. Borrowing prevents source
+/// mutation during reuse; every next frame revalidates the current associations.
+pub(super) struct NativeWorldShadowAdmission<'a> {
+    world: &'a world_mesh::WorldMesh,
+    sources: &'a NativeWorldShadowMeshSources,
+    materials: &'a NativeShadowMaterials,
+    flags: [std::sync::OnceLock<Result<Vec<u8>, String>>; 2],
+}
+
+impl<'a> NativeWorldShadowAdmission<'a> {
+    pub(super) fn new(
+        world: &'a world_mesh::WorldMesh,
+        sources: &'a NativeWorldShadowMeshSources,
+        materials: &'a NativeShadowMaterials,
+    ) -> Self {
+        Self {
+            world,
+            sources,
+            materials,
+            flags: Default::default(),
+        }
+    }
+
+    fn flags(&self, exclude_lod: bool) -> Result<&[u8], String> {
+        self.flags[usize::from(exclude_lod)]
+            .get_or_init(|| {
+                let (world, sources, materials) = (self.world, self.sources, self.materials);
+                let mut flags48 = Vec::with_capacity(world.objects.len());
+                for (object_id, object) in world.objects.iter().enumerate() {
+                    let source = sources.object(object_id).ok_or_else(|| {
+                        format!("native BWM object {object_id} has no retained mesh owner")
+                    })?;
+                    if source.mesh_index != object.mesh_index
+                        || source.matrix_start != object.matrix_start
+                        || source.matrix_end != object.matrix_end
+                        || source.lod != object.lod
+                        || source.flipped != object.flipped
+                    {
+                        return Err(format!(
+                            "native BWM object {object_id} source association changed"
+                        ));
+                    }
+                    if let Some(flags) = &source.gather_flags48 {
+                        flags48.push(flags.clone().map_err(|error| {
+                            format!("native BWM object {object_id} admission: {error}")
+                        })?);
+                        continue;
+                    }
+                    let Some(material) = source.material.as_ref() else {
+                        if object.matrix_start == object.matrix_end {
+                            // Empty record ranges cannot contribute a native packet.
+                            flags48.push(0);
+                            continue;
+                        }
+                        return Err(source.material_error.clone().unwrap_or_else(|| {
+                            format!(
+                                "native BWM object {object_id} has no resolved material +0x18 owner"
+                            )
+                        }));
+                    };
+                    let inputs = materials
+                        .0
+                        .get(material)
+                        .ok_or_else(|| {
+                            format!(
+                                "native BWM object {object_id} material has no native input record"
+                            )
+                        })?
+                        .as_ref()
+                        .map_err(|error| {
+                            format!("native BWM object {object_id} material input: {error}")
+                        })?;
+                    flags48.push(inputs.world_gather_flags48().map_err(|error| {
+                        format!("native BWM object {object_id} +0x48 flags: {error}")
+                    })?);
+                }
+
+                if exclude_lod {
+                    //2a2490/2a3080/2a4850 reject native object+c bit0 before gathering.
+                    for (flags, object) in flags48.iter_mut().zip(&world.objects) {
+                        if object.lod & 1 != 0 {
+                            *flags = 0;
+                        }
+                    }
+                }
+
+                Ok(flags48)
+            })
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(Clone::clone)
+    }
+}
+
 pub(super) fn prepare_native_world_shadow_masks_with_settings(
     owner: &NativeWorldShadowDrawSettings,
     world: &world_mesh::WorldMesh,
@@ -726,12 +875,38 @@ pub(super) fn prepare_native_world_shadow_masks_with_settings(
     materials: &NativeShadowMaterials,
     meshes: &Assets<Mesh>,
     images: &Assets<Image>,
-    queue: &mut SceneRenderQueue,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
     masks: &[Vec<u8>],
     clip: &render_shadow::ShadowMatrix,
     local_time: Option<[f32; 2]>,
     clock_error: Option<&str>,
 ) -> Result<Vec<NativeWorldShadowMaskPlan>, String> {
+    let admission = NativeWorldShadowAdmission::new(world, sources, materials);
+    prepare_world_shadow_masks_with_admission(
+        owner,
+        &admission,
+        meshes,
+        images,
+        queue,
+        masks,
+        clip,
+        local_time,
+        clock_error,
+    )
+}
+
+pub(super) fn prepare_world_shadow_masks_with_admission(
+    owner: &NativeWorldShadowDrawSettings,
+    admission: &NativeWorldShadowAdmission<'_>,
+    meshes: &Assets<Mesh>,
+    images: &Assets<Image>,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
+    masks: &[Vec<u8>],
+    clip: &render_shadow::ShadowMatrix,
+    local_time: Option<[f32; 2]>,
+    clock_error: Option<&str>,
+) -> Result<Vec<NativeWorldShadowMaskPlan>, String> {
+    let (world, sources, materials) = (admission.world, admission.sources, admission.materials);
     if sources.objects.len() != world.objects.len() {
         return Err("native BWM mesh/material owner count differs from world records".into());
     }
@@ -747,67 +922,12 @@ pub(super) fn prepare_native_world_shadow_masks_with_settings(
         return Err("native shadow diffuse image handles and paths have different domains".into());
     }
 
-    let mut flags48 = Vec::with_capacity(world.objects.len());
-    for (object_id, object) in world.objects.iter().enumerate() {
-        let source = sources
-            .object(object_id)
-            .ok_or_else(|| format!("native BWM object {object_id} has no retained mesh owner"))?;
-        if source.mesh_index != object.mesh_index
-            || source.matrix_start != object.matrix_start
-            || source.matrix_end != object.matrix_end
-            || source.lod != object.lod
-            || source.flipped != object.flipped
-        {
-            return Err(format!(
-                "native BWM object {object_id} source association changed"
-            ));
-        }
-        if let Some(flags) = &source.gather_flags48 {
-            flags48.push(
-                flags
-                    .clone()
-                    .map_err(|error| format!("native BWM object {object_id} admission: {error}"))?,
-            );
-            continue;
-        }
-        let Some(material) = source.material.as_ref() else {
-            if object.matrix_start == object.matrix_end {
-                // Empty record ranges cannot contribute a native packet.
-                flags48.push(0);
-                continue;
-            }
-            return Err(source.material_error.clone().unwrap_or_else(|| {
-                format!("native BWM object {object_id} has no resolved material +0x18 owner")
-            }));
-        };
-        let inputs = materials
-            .0
-            .get(material)
-            .ok_or_else(|| {
-                format!("native BWM object {object_id} material has no native input record")
-            })?
-            .as_ref()
-            .map_err(|error| format!("native BWM object {object_id} material input: {error}"))?;
-        flags48.push(
-            inputs
-                .world_gather_flags48()
-                .map_err(|error| format!("native BWM object {object_id} +0x48 flags: {error}"))?,
-        );
-    }
-
-    if owner.exclude_lod {
-        //2a2490/2a3080/2a4850 reject native object+c bit0 before gathering.
-        for (flags, object) in flags48.iter_mut().zip(&world.objects) {
-            if object.lod & 1 != 0 {
-                *flags = 0;
-            }
-        }
-    }
+    let flags48 = admission.flags(owner.exclude_lod)?;
 
     let mut plans = Vec::with_capacity(masks.len());
     for (mask_index, mask) in masks.iter().enumerate() {
         let mut gathered = world
-            .gather_native_shadow_packets(mask, &flags48)
+            .gather_native_shadow_packets(mask, flags48)
             .map_err(|error| format!("native whole-view mask {mask_index}: {error}"))?;
         gathered.sort_for_shadow_draw(owner.sort_shadows_ccw);
         for &id in &gathered.instance_ids {
@@ -1021,11 +1141,14 @@ pub(super) fn prepare_native_world_shadow_masks_with_settings(
                             packet.object
                         )
                     })?;
-                    let path = queue.diffuse_image_paths.get(slot).cloned()
-                        .ok_or_else(|| format!("native world alpha material object {} references absent diffuse slot {slot}", packet.object))?;
-                    if !queue.native_shadow_diffuse_slots.contains(&slot) {
-                        queue.native_shadow_diffuse_slots.push(slot);
+                    if slot >= queue.diffuse_image_paths.len() {
+                        return Err(format!(
+                            "native world alpha material object {} references absent diffuse slot {slot}",
+                            packet.object
+                        ));
                     }
+                    queue.request_shadow_diffuse(slot);
+                    let path = &queue.diffuse_image_paths[slot];
                     let diffuse = queue.diffuse_image_handles.get(slot)
                         .and_then(Option::as_ref)
                         .ok_or_else(|| format!("native whole-view alpha image pending through texture streamer: slot {slot} ({path})"))?;
@@ -1189,20 +1312,216 @@ pub(super) fn build_native_whole_view_layer(
     build_native_world_layer(plans, matrices.as_ref(), dimensions, shader_buffers)
 }
 
+/// Upload slots for a cascade. Live slots are mutable; retained generations
+/// use separate slots and share storage only when every encoded byte matches.
+#[derive(Default)]
+pub(super) struct WorldShadowUpload {
+    ids: Option<(Handle<ShaderBuffer>, usize)>,
+    winds: Option<(Handle<ShaderBuffer>, usize)>,
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn immutable_shadow_upload_shares_only_identical_bytes_and_preserves_old_generations() {
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut slot = None;
+        let first = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
+        let original = buffers.get(&first).unwrap().data.clone();
+        let same = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
+        assert_eq!(first.id(), same.id());
+        assert_eq!(
+            original,
+            ShaderBuffer::from(vec![7u32, 11, 13]).data,
+            "immutable uploads keep their exact length"
+        );
+        let changed = reuse_immutable_shadow_values(vec![19u32, 23, 29], &mut slot, &mut buffers);
+        assert_ne!(changed.id(), first.id());
+        assert_eq!(buffers.get(&first).unwrap().data, original);
+        let changed_bytes = buffers.get(&changed).unwrap().data.clone();
+        let grown = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
+        assert_ne!(grown.id(), changed.id());
+        assert_eq!(buffers.get(&changed).unwrap().data, changed_bytes);
+        buffers.get_mut(&grown).unwrap().set_data(vec![99u32; 5]);
+        let repaired = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
+        assert_ne!(
+            grown.id(),
+            repaired.id(),
+            "another writer invalidates reuse without overwriting its asset"
+        );
+        assert_eq!(
+            buffers.get(&grown).unwrap().data,
+            ShaderBuffer::from(vec![99u32; 5]).data
+        );
+    }
+
+    #[test]
+    fn live_shadow_upload_reuses_capacity_and_replaces_every_value() {
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut cached = None;
+        let first = upload_shadow_values(vec![7u32, 11, 13], &mut cached, &mut buffers);
+        assert_eq!(
+            buffers.get(&first).unwrap().data.as_ref().unwrap(),
+            ShaderBuffer::from(vec![7u32, 11, 13, 0])
+                .data
+                .as_ref()
+                .unwrap()
+        );
+        let data_pointer = buffers.get(&first).unwrap().data.as_ref().unwrap().as_ptr();
+        let unchanged = upload_shadow_values(vec![7u32, 11, 13], &mut cached, &mut buffers);
+        assert_eq!(unchanged.id(), first.id());
+        assert_eq!(
+            buffers
+                .get(&unchanged)
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()
+                .as_ptr(),
+            data_pointer
+        );
+        // Another producer changing the actual asset must invalidate reuse,
+        // even when this caller submits the same values as last time.
+        buffers.get_mut(&first).unwrap().set_data(vec![99u32; 4]);
+        let restored = upload_shadow_values(vec![7u32, 11, 13], &mut cached, &mut buffers);
+        assert_eq!(
+            buffers.get(&restored).unwrap().data,
+            ShaderBuffer::from(vec![7u32, 11, 13, 0]).data
+        );
+        let next = upload_shadow_values(vec![19u32, 23], &mut cached, &mut buffers);
+        assert_eq!(first.id(), next.id());
+        assert_eq!(
+            buffers.get(&next).unwrap().data.as_ref().unwrap(),
+            ShaderBuffer::from(vec![19u32, 23, 0, 0])
+                .data
+                .as_ref()
+                .unwrap()
+        );
+        let grown = upload_shadow_values(vec![29u32; 5], &mut cached, &mut buffers);
+        assert_ne!(grown.id(), next.id());
+        assert_eq!(
+            buffers.get(&next).unwrap().data.as_ref().unwrap(),
+            ShaderBuffer::from(vec![19u32, 23, 0, 0])
+                .data
+                .as_ref()
+                .unwrap()
+        );
+        assert_eq!(cached.as_ref().unwrap().1, 8);
+    }
+}
+
+fn upload_shadow_values<T: Default + Clone>(
+    mut values: Vec<T>,
+    cached: &mut Option<(Handle<ShaderBuffer>, usize)>,
+    buffers: &mut Assets<ShaderBuffer>,
+) -> Handle<ShaderBuffer>
+where
+    Vec<T>: bevy::render::render_resource::ShaderType
+        + bevy::render::render_resource::encase::internal::WriteInto,
+{
+    let required = values.len().max(1).next_power_of_two();
+    let capacity = cached
+        .as_ref()
+        .map_or(required, |(_, capacity)| (*capacity).max(required));
+    values.resize(capacity, T::default());
+    let mut encoded = ShaderBuffer::default();
+    encoded.set_data(values);
+    if let Some((handle, old_capacity)) = cached {
+        if *old_capacity == capacity {
+            if let Some(buffer) = buffers.get(&*handle) {
+                // An unchanged remap/wind buffer needs no asset event, extract
+                // clone or GPU upload. Compare every encoded byte; never infer
+                // equality from a stationary camera or matching capacity.
+                if buffer.data == encoded.data {
+                    return handle.clone();
+                }
+                buffers.get_mut(&*handle).unwrap().data = encoded.data;
+                return handle.clone();
+            }
+        }
+    }
+    let handle = buffers.add(encoded);
+    *cached = Some((handle.clone(), capacity));
+    handle
+}
+
+/// Share identical immutable generation data; changed data gets a new asset
+/// so every older retained snapshot keeps its original bytes.
+fn reuse_immutable_shadow_values<T>(
+    values: Vec<T>,
+    cached: &mut Option<(Handle<ShaderBuffer>, usize)>,
+    buffers: &mut Assets<ShaderBuffer>,
+) -> Handle<ShaderBuffer>
+where
+    Vec<T>: bevy::render::render_resource::ShaderType
+        + bevy::render::render_resource::encase::internal::WriteInto,
+{
+    let length = values.len();
+    let encoded = ShaderBuffer::from(values);
+    if let Some((handle, _)) = cached {
+        if buffers
+            .get(&*handle)
+            .is_some_and(|buffer| buffer.data == encoded.data)
+        {
+            return handle.clone();
+        }
+    }
+    let handle = buffers.add(encoded);
+    *cached = Some((handle.clone(), length));
+    handle
+}
+
 pub(super) fn build_native_world_layer(
     plans: Vec<NativeWorldShadowMaskPlan>,
     matrices: Option<&Handle<ShaderBuffer>>,
     dimensions: shadow_pass::NativeParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
 ) -> shadow_pass::NativeShadowLayer {
+    build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None, false)
+}
+
+pub(super) fn build_world_shadow_layer(
+    plans: Vec<NativeWorldShadowMaskPlan>,
+    matrices: Option<&Handle<ShaderBuffer>>,
+    dimensions: shadow_pass::NativeParallelShadowTargetDimensions,
+    shader_buffers: &mut Assets<ShaderBuffer>,
+    mut uploads: Option<&mut Vec<WorldShadowUpload>>,
+    immutable_uploads: bool,
+) -> shadow_pass::NativeShadowLayer {
     let mut instances = Vec::new();
-    for plan in plans {
+    for (index, plan) in plans.into_iter().enumerate() {
         if plan.instances.is_empty() {
             continue;
         }
-        let visible_indices = shader_buffers.add(ShaderBuffer::from(plan.instance_ids));
-        let winds = (!plan.auxiliary.is_empty())
-            .then(|| shader_buffers.add(ShaderBuffer::from(plan.auxiliary)));
+        let upload = uploads.as_deref_mut().map(|uploads| {
+            if uploads.len() <= index {
+                uploads.resize_with(index + 1, WorldShadowUpload::default);
+            }
+            &mut uploads[index]
+        });
+        let (visible_indices, winds) = if let Some(upload) = upload {
+            let ids = if immutable_uploads {
+                reuse_immutable_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
+            } else {
+                upload_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
+            };
+            let winds = (!plan.auxiliary.is_empty()).then(|| {
+                if immutable_uploads {
+                    reuse_immutable_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
+                } else {
+                    upload_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
+                }
+            });
+            (ids, winds)
+        } else {
+            (
+                shader_buffers.add(ShaderBuffer::from(plan.instance_ids)),
+                (!plan.auxiliary.is_empty())
+                    .then(|| shader_buffers.add(ShaderBuffer::from(plan.auxiliary))),
+            )
+        };
         let matrices = matrices
             .expect("nonempty native world has matrices")
             .clone();
@@ -1274,7 +1593,8 @@ pub(super) fn publish_initial_native_whole_view_depth(
     meshes: Option<Res<Assets<Mesh>>>,
     images: Option<Res<Assets<Image>>>,
     gameplay_clock: Option<Res<game_clock_runtime::NativeGameplayViewClock>>,
-    mut queue: Option<ResMut<SceneRenderQueue>>,
+    queue: Option<Res<SceneRenderQueue>>,
+    mut commands: Commands,
     mut shader_buffers: Option<ResMut<Assets<ShaderBuffer>>>,
     completion: Option<Res<shadow_pass::NativeShadowSceneCompletion>>,
     mut frame: ResMut<shadow_pass::NativeShadowSceneFrame>,
@@ -1333,11 +1653,12 @@ pub(super) fn publish_initial_native_whole_view_depth(
             .as_deref()
             .ok_or("native Image assets are unavailable")?;
         let queue = queue
-            .as_deref_mut()
+            .as_deref()
             .ok_or("native render queue is unavailable")?;
         let shader_buffers = shader_buffers
             .as_deref_mut()
             .ok_or("native ShaderBuffer asset table is unavailable")?;
+        let mut shadow_textures = super::scene_queue::ShadowTextureRequests::new(queue);
         let plans = prepare_native_whole_view_masks(
             &owner,
             &scene.world,
@@ -1345,10 +1666,12 @@ pub(super) fn publish_initial_native_whole_view_depth(
             materials,
             meshes,
             images,
-            queue,
+            &mut shadow_textures,
             local_time,
             clock_error.as_deref(),
-        )?;
+        );
+        shadow_textures.submit(&mut commands);
+        let plans = plans?;
         Ok(build_native_whole_view_layer(
             plans,
             &scene.world,

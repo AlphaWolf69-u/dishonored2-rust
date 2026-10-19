@@ -6,9 +6,34 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Host benchmark motion only; ordinary player controls never use this state.
+pub(super) struct BenchmarkCameraSweep {
+    degrees: Option<f32>,
+    base: Option<Quat>,
+    elapsed: f32,
+}
+
+impl Default for BenchmarkCameraSweep {
+    fn default() -> Self {
+        let degrees = std::env::var("DH2_BENCHMARK_SWEEP_DEGREES")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0 && *value <= 45.0);
+        if let Some(degrees) = degrees {
+            println!("BENCHMARK camera_sweep_degrees={degrees}");
+        }
+        Self {
+            degrees,
+            base: None,
+            elapsed: 0.0,
+        }
+    }
+}
+
 pub(super) fn camera_controls(
     time: Res<Time>,
     benchmark: Option<Res<BenchmarkSeconds>>,
+    mut sweep: Local<BenchmarkCameraSweep>,
     keys: Res<ButtonInput<KeyCode>>,
     mut focuses: ResMut<FocusTargets>,
     mut cameras: Query<&mut Transform, With<Camera3d>>,
@@ -19,6 +44,14 @@ pub(super) fn camera_controls(
     collision: Option<Res<NavigationWorld>>,
 ) {
     if benchmark.is_some() {
+        if let Some(degrees) = sweep.degrees {
+            if let Ok(mut camera) = cameras.single_mut() {
+                let base = *sweep.base.get_or_insert(camera.rotation);
+                sweep.elapsed += time.delta_secs();
+                let angle = degrees.to_radians() * (sweep.elapsed * 0.8).sin();
+                camera.rotation = Quat::from_rotation_y(angle) * base;
+            }
+        }
         return;
     }
     let Ok(mut camera) = cameras.single_mut() else {

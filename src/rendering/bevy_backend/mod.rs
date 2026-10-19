@@ -16,7 +16,11 @@ pub mod shadow_pass;
 pub mod shadow_pipeline;
 #[cfg(feature = "game")]
 pub mod shadow_sampling;
+#[cfg(all(test, feature = "game"))]
+mod submission_tests;
 #[cfg(feature = "game")]
 pub mod surface_gpu;
+#[cfg(all(test, feature = "game"))]
+mod texture_query_tests;
 #[cfg(feature = "game")]
 pub mod tiled_lighting_gpu;

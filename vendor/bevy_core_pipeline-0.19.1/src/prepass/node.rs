@@ -185,62 +185,105 @@ fn run_prepass_system(
         color_attachments.clear();
     }
 
-    let depth_stencil_attachment = Some(view_depth_texture.get_attachment(StoreOp::Store));
+    let mut depth_stencil_attachment = Some(view_depth_texture.get_attachment(StoreOp::Store));
 
-    let mut render_pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
-        label: Some(label),
-        color_attachments: &color_attachments,
-        depth_stencil_attachment,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    let pass_span = diagnostics.pass_span(&mut render_pass, label);
-
-    if let Some(viewport) =
-        Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override)
+    if let Some(chunk_size) = world.get_resource::<bevy_render::render_phase::CameraDrawChunking>()
+        && chunk_size.batch_size() > 0
+        && diagnostics.is_none()
+        && view_depth_texture.texture.sample_count() == 1
+        && deferred_prepass.is_none()
+        && background_motion_vectors_pipeline.is_none()
+        && opaque_prepass_phase.direct_batch_count().is_some()
+        && alpha_mask_prepass_phase.direct_batch_count().is_some()
     {
-        render_pass.set_camera_viewport(&viewport);
-    }
-
-    if !opaque_prepass_phase.is_empty() {
-        #[cfg(feature = "trace")]
-        let _opaque_prepass_span = info_span!("opaque_prepass").entered();
-        if let Err(err) = opaque_prepass_phase.render(&mut render_pass, world, view_entity) {
+        let viewport =
+            Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override);
+        if let Err(err) = bevy_render::render_phase::render_binned_phase_in_chunks(
+            opaque_prepass_phase,
+            ctx,
+            world,
+            view_entity,
+            label,
+            &mut color_attachments,
+            &mut depth_stencil_attachment,
+            viewport.as_ref(),
+            chunk_size.batch_size(),
+        ) {
             error!("Error encountered while rendering the opaque prepass phase {err:?}");
         }
-    }
-
-    if !alpha_mask_prepass_phase.is_empty() {
-        #[cfg(feature = "trace")]
-        let _alpha_mask_prepass_span = info_span!("alpha_mask_prepass").entered();
-        if let Err(err) = alpha_mask_prepass_phase.render(&mut render_pass, world, view_entity) {
-            error!("Error encountered while rendering the alpha mask prepass phase {err:?}");
+        if !alpha_mask_prepass_phase.is_empty() {
+            if let Err(err) = bevy_render::render_phase::render_binned_phase_in_chunks(
+                alpha_mask_prepass_phase,
+                ctx,
+                world,
+                view_entity,
+                label,
+                &mut color_attachments,
+                &mut depth_stencil_attachment,
+                viewport.as_ref(),
+                chunk_size.batch_size(),
+            ) {
+                error!("Error encountered while rendering the alpha mask prepass phase {err:?}");
+            }
         }
-    }
+    } else {
+        let descriptor = RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        };
+        let mut render_pass = ctx.begin_tracked_render_pass(descriptor);
+        let pass_span = diagnostics.pass_span(&mut render_pass, label);
 
-    if let (
-        Some(background_motion_vectors_pipeline),
-        Some(background_motion_vectors_bind_group),
-        Some(view_prev_uniform_offset),
-    ) = (
-        background_motion_vectors_pipeline,
-        background_motion_vectors_bind_group,
-        view_prev_uniform_offset,
-    ) && let Some(pipeline) =
-        pipeline_cache.get_render_pipeline(background_motion_vectors_pipeline.0)
-    {
-        render_pass.set_render_pipeline(pipeline);
-        render_pass.set_bind_group(
-            0,
-            &background_motion_vectors_bind_group.0,
-            &[view_uniform_offset.offset, view_prev_uniform_offset.offset],
-        );
-        render_pass.draw(0..3, 0..1);
-    }
+        if let Some(viewport) =
+            Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override)
+        {
+            render_pass.set_camera_viewport(&viewport);
+        }
 
-    pass_span.end(&mut render_pass);
-    drop(render_pass);
+        if !opaque_prepass_phase.is_empty() {
+            #[cfg(feature = "trace")]
+            let _opaque_prepass_span = info_span!("opaque_prepass").entered();
+            if let Err(err) = opaque_prepass_phase.render(&mut render_pass, world, view_entity) {
+                error!("Error encountered while rendering the opaque prepass phase {err:?}");
+            }
+        }
+
+        if !alpha_mask_prepass_phase.is_empty() {
+            #[cfg(feature = "trace")]
+            let _alpha_mask_prepass_span = info_span!("alpha_mask_prepass").entered();
+            if let Err(err) = alpha_mask_prepass_phase.render(&mut render_pass, world, view_entity)
+            {
+                error!("Error encountered while rendering the alpha mask prepass phase {err:?}");
+            }
+        }
+
+        if let (
+            Some(background_motion_vectors_pipeline),
+            Some(background_motion_vectors_bind_group),
+            Some(view_prev_uniform_offset),
+        ) = (
+            background_motion_vectors_pipeline,
+            background_motion_vectors_bind_group,
+            view_prev_uniform_offset,
+        ) && let Some(pipeline) =
+            pipeline_cache.get_render_pipeline(background_motion_vectors_pipeline.0)
+        {
+            render_pass.set_render_pipeline(pipeline);
+            render_pass.set_bind_group(
+                0,
+                &background_motion_vectors_bind_group.0,
+                &[view_uniform_offset.offset, view_prev_uniform_offset.offset],
+            );
+            render_pass.draw(0..3, 0..1);
+        }
+
+        pass_span.end(&mut render_pass);
+        drop(render_pass);
+    }
 
     if deferred_prepass.is_none()
         && let Some(prepass_depth_texture) = &view_prepass_textures.depth

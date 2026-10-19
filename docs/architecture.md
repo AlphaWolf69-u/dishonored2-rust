@@ -86,16 +86,24 @@ and play confirmation belongs to the user.
 
 Build and runtime output, performance measurements and private byte-for-byte
 archive comparisons remain under ignored `artifacts/`. The release build script
-checks that the executable copied into `bin/` matches the built executable.
+builds the canonical `target/release/dishonored2-rust.exe` directly; launchers use
+that executable without copying it.
 
 ## Third-party patches
 
-Each patched Bevy crate includes `PATCHES.md`, listing purpose, changed files and
-validation. Retain upstream licenses. Compare against the matching upstream
+Patched dependencies live under `vendor/`, with patch notes recording purpose,
+changed files and validation. Retain upstream licenses. Compare against the matching upstream
 release before upgrading; apply intentional changes individually and rerun GPU
 pipeline and numeric checks. Never modify the Cargo registry cache. The original
 game's material and shadow logic belongs in project code, with dependency patches
 limited to the hooks and GPU data layouts needed to express it.
+
+Naga's HLSL texture-query fix selects the correct `GetDimensions` output for
+array layers, mip counts and sample counts. Its SPIR-V layer query uses the
+non-mip opcode for storage and multisampled images. The ignored
+`texture_query_dimensions_layers_levels_and_samples_gpu` test validates these
+outputs on the actual Vulkan and DirectX 12 devices; shadow GPU readbacks also
+exercise depth-array layer counts.
 
 
 ## Background materials and fog-volume routing
@@ -233,3 +241,71 @@ lookup and GPU clustering now share finite extents; this does not alter authored
 light range, original Tome visibility, attenuation or shadow selection.
 `DH2_TRACE_LIGHT_VISIBILITY` optionally records authored visibility, backend
 visibility and CPU cluster memberships without inspecting screenshots.
+
+Authored texture payloads retain their storage format through catalog loading,
+mip validation and GPU streaming. Single-channel half-float images use
+`R16Float`, including atmosphere lookup curves; they are not decoded through
+the diagnostic RGBA8 image helpers. The GPU format test checks signed and HDR
+values, mip selection, linear filtering and the default sampled channels.
+
+`rendering/fog/world.rs` owns prepared distance/height fog parameters and the
+understood shader calculations. Its synthetic numerical reference comes from
+executing the installed fog helpers. This is groundwork for atmosphere
+rendering; the runtime fog pass still needs its interior-depth, sky/cloud mask,
+scattering and turbulence producers. It must consume those authored inputs
+before being enabled. The interior-volume depth contract remains separate from
+opaque forward surface materials.
+
+Tome support-plane, distance and portal-pixel kernels retain the game's packed
+SSE arithmetic and comparison order. Their scalar test oracles and captured
+original-executable mask fixtures check signed zero, NaNs and individual pixel
+bits. Portal macroblock selection and mask propagation remain separate from
+the packed pixel kernel.
+
+The shadow backend stores pipelines in an append-only table with typed IDs.
+Description hashes resolve pipeline choices during preparation; prepared draws
+index the table directly. Pipeline creation finishes before draw references
+are borrowed. IDs retain their meaning for the lifetime of the owning GPU
+scene, including cached descriptors. Semantic keys remain available for
+validation; live uniform contents and the publisher's draw order remain inputs
+to every submission.
+
+Cached shadow descriptors retain strong asset handles and the exact fields
+that select geometry, resources, draw state and validated buffer ranges.
+They omit live shader constant bytes, which are uploaded independently on
+every frame. The full former snapshot comparison remains a test oracle for
+the compact representation.
+
+Each ordinary Tome worker prepares one immutable `PortalQueryProjection` from
+its matrix and winding flag, as the game does in query-context setup. All
+spatial records and portal links share its six face-vector sets. A one-off
+projection wrapper remains available to probes. Setup errors are consumed only
+by clipped portals, preserving the no-portal sentinel path. Existing portal
+masks are updated in place when their rectangles already contain the incoming
+tile; growth retains transactional replacement so a failed update leaves the
+previous coverage intact.
+
+The forward texture-demand producer folds repeated image-area contributions
+before publishing through the existing atomic maximum. This is a host scheduling
+optimization of the area-only helper; packed streamer metadata has its own
+unchanged model. The producer borrows the scene queue exclusively in PostUpdate,
+while streaming consumes demands in Update. No demand clear can interleave with
+that fold. Logical submission counts and validation order are retained, and a
+later mapping error still publishes the valid prefix's contributions.
+
+Scene construction resolves Tome/BWM/material associations into a compact image
+slot table after all material bindings are available. Visibility submits demand
+through those slots, avoiding per-frame material hashes and scattered render
+instance reads. Texture uploads retain the same logical image slots; replacing
+the scene or its material associations requires rebuilding the table. The
+reference association walk remains available, and visibility verification
+compares per-image area bits, logical counts, and deferred errors against it.
+Invalid associations retain their valid prefix and fail only if selected by a
+query with an area metric.
+
+Shadow mesh allocation metadata stays in one table across unchanged allocator
+and render-mesh epochs. Entries mark the submission that used them; completion
+removes unused entries, and failure or epoch changes invalidate the cache.
+Repeated draws resolve one allocation per submission. GPU tests compare against
+fresh lookups across geometry growth, index-format changes, asset replacement,
+and removal.

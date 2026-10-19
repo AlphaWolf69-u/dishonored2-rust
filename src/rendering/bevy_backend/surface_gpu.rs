@@ -39,6 +39,22 @@ pub struct SurfaceUniform {
 pub struct SurfaceKey(pub [u32; 16]);
 
 impl SurfaceKey {
+    /// These ordinary Z programs return without sampling when alphaTest is off.
+    /// Procedural liquid/sky and unsupported programs retain their material path.
+    pub fn depth_needs_material(self) -> bool {
+        !matches!(self.0[6], 1 | 2) || self.0[7] & 1 != 0
+    }
+
+    /// The Z shader reads only the program/alpha switches. Keep procedural
+    /// filling and projected-far controls as well; lighting/layers are absent
+    /// from arkDefault's ClipZorShadowPass branch and dh2_probe_prepass.wgsl.
+    pub fn depth_prepass(self) -> Self {
+        let mut depth = [0; 16];
+        for index in [6, 7, 14, 15] {
+            depth[index] = self.0[index];
+        }
+        Self(depth)
+    }
     pub const NAMES: [&'static str; 16] = [
         "DH2_EXTRA_LAYERS",
         "DH2_HAS_GLOSS",
@@ -199,6 +215,20 @@ impl ImageRole {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn depth_key_retains_only_consumed_shader_controls() {
+        let key = super::SurfaceKey([9; 16]);
+        let depth = key.depth_prepass();
+        for index in 0..16 {
+            let mut changed = key;
+            changed.0[index] ^= 1;
+            assert_eq!(
+                changed.depth_prepass() != depth,
+                [6, 7, 14, 15].contains(&index)
+            );
+        }
+        assert_eq!(depth.depth_prepass(), depth);
+    }
     use super::*;
 
     #[test]

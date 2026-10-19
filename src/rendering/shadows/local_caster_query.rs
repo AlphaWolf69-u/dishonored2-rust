@@ -148,8 +148,13 @@ impl NativeLocalWorldQuery {
 
     fn visit_projection(&self, node: &Node, clip: &[f32; 16], near_depth: f32, mask: &mut [u8]) {
         if render_model::native_transformed_aabb_clip_cull_at_depth(
-            clip, node.bounds[0], node.bounds[1], near_depth,
-        ).culled {
+            clip,
+            node.bounds[0],
+            node.bounds[1],
+            near_depth,
+        )
+        .culled
+        {
             return;
         }
         for &id in &self.ids[node.range.clone()] {
@@ -347,22 +352,36 @@ mod tests {
         let mut cases = 0;
         for line in source.lines() {
             let (input, expected) = line.split_once(" | ").unwrap();
-            let words = input.split_whitespace()
-                .map(|v| u32::from_str_radix(v, 16).unwrap()).collect::<Vec<_>>();
-            let expected = expected.split_whitespace()
-                .map(|v| u32::from_str_radix(v, 16).unwrap()).collect::<Vec<_>>();
+            let words = input
+                .split_whitespace()
+                .map(|v| u32::from_str_radix(v, 16).unwrap())
+                .collect::<Vec<_>>();
+            let expected = expected
+                .split_whitespace()
+                .map(|v| u32::from_str_radix(v, 16).unwrap())
+                .collect::<Vec<_>>();
             let count = words[1] as usize;
-            let bounds = (0..count).map(|i| std::array::from_fn(|r| {
-                std::array::from_fn(|c| f32::from_bits(words[2 + i * 6 + r * 3 + c]))
-            })).collect();
+            let bounds = (0..count)
+                .map(|i| {
+                    std::array::from_fn(|r| {
+                        std::array::from_fn(|c| f32::from_bits(words[2 + i * 6 + r * 3 + c]))
+                    })
+                })
+                .collect();
             let tree = NativeLocalWorldQuery::from_bounds(bounds);
             let offset = 2 + count * 6;
-            let clip = std::array::from_fn(|r| std::array::from_fn(|c| {
-                f32::from_bits(words[offset + r * 4 + c])
-            }));
+            let clip = std::array::from_fn(|r| {
+                std::array::from_fn(|c| f32::from_bits(words[offset + r * 4 + c]))
+            });
             let near = f32::from_bits(words[offset + 16]);
-            assert_eq!(tree.query_projection(&clip, near).into_iter().map(u32::from).collect::<Vec<_>>(),
-                expected[expected.len() - count..], "WORLD projection case {cases}");
+            assert_eq!(
+                tree.query_projection(&clip, near)
+                    .into_iter()
+                    .map(u32::from)
+                    .collect::<Vec<_>>(),
+                expected[expected.len() - count..],
+                "WORLD projection case {cases}"
+            );
             cases += 1;
         }
         assert_eq!(cases, 160);

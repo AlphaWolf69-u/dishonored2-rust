@@ -413,6 +413,7 @@ fn draw_vegetation_cutout(
                 },
                 None,
                 &[NativeOpaqueShadowDraw {
+                    model_state_offset: 0,
                     model_state: &binding,
                     program_resources: Some(material),
                     vertex_buffer: &vertices,

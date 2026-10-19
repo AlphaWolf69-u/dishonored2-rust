@@ -14,25 +14,93 @@ pub(super) fn run_tome_render_jobs(
     world: &TomeWorld,
     input: &tome::OrdinaryDirectQueryInput<'_>,
 ) -> Vec<tome::RenderQueryJob> {
-    let run = |job| {
-        tome::ordinary_direct_tome_render_job(
-            &world.tree,
-            &world.bytes,
-            &world.query_data,
-            input,
-            job,
-            world.query_job_count,
-        )
-    };
-    if world.query_job_count == 1 {
-        return vec![run(0)];
-    }
-    bevy::tasks::ComputeTaskPool::get().scope(|scope| {
-        for job in 0..world.query_job_count {
-            let run = &run;
-            scope.spawn(async move { run(job) });
+    let dispatch = |count| {
+        let run = |job| {
+            tome::ordinary_direct_tome_render_job(
+                &world.tree,
+                &world.bytes,
+                &world.query_data,
+                input,
+                job,
+                count,
+            )
+        };
+        if count == 1 {
+            return vec![run(0)];
         }
-    })
+        let pool: &bevy::tasks::TaskPool = match world.query_pool.as_ref() {
+            Some(pool) => pool,
+            None => bevy::tasks::ComputeTaskPool::get(),
+        };
+        pool.scope(|scope| {
+            for job in 0..count {
+                let run = &run;
+                scope.spawn(async move { run(job) });
+            }
+        })
+    };
+    let actual = dispatch(world.query_job_count);
+    if world.query_job_count != tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT
+        && std::env::var("DH2_VERIFY_TOME_QUERY_JOBS").as_deref() == Ok("1")
+    {
+        let expected = dispatch(tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT);
+        verify_tome_job_outputs(&actual, &expected);
+    }
+    actual
+}
+
+// Worker lists intentionally retain duplicates and their dispatch order.
+// Compare downstream object metrics/cell membership and the merged descriptor,
+// rather than requiring different native tile partitions to emit equal lists.
+fn verify_tome_job_outputs(actual: &[tome::RenderQueryJob], expected: &[tome::RenderQueryJob]) {
+    assert!(
+        actual.iter().chain(expected).all(|job| job.result.is_ok()),
+        "query-job comparison requires successful workers"
+    );
+    let actual = tome::merge_render_query_outputs(actual).unwrap();
+    let expected = tome::merge_render_query_outputs(expected).unwrap();
+    assert_eq!(
+        actual.is_some(),
+        expected.is_some(),
+        "query-job root membership changed"
+    );
+    let (Some(actual), Some(expected)) = (actual, expected) else {
+        return;
+    };
+    let metrics = |output: &tome::RenderQueryObjectOutput| {
+        let mut objects = std::collections::BTreeMap::<u32, Option<f32>>::new();
+        for (&index, &area) in output.indices().iter().zip(output.area_metrics()) {
+            let entry = objects.entry(index).or_insert(area);
+            if let Some(area) = area {
+                if entry.is_none_or(|previous| area > previous) {
+                    *entry = Some(area);
+                }
+            }
+        }
+        objects
+    };
+    let actual_objects = metrics(&actual);
+    let expected_objects = metrics(&expected);
+    assert!(actual_objects == expected_objects,
+        "query-job object/area mismatch: actual={} expected={} first_actual_difference={:?} first_expected_difference={:?}",
+        actual_objects.len(), expected_objects.len(),
+        actual_objects.iter().find(|(id, area)| expected_objects.get(*id) != Some(*area)),
+        expected_objects.iter().find(|(id, area)| actual_objects.get(*id) != Some(*area)));
+    let cells = |output: &tome::RenderQueryObjectOutput| {
+        output
+            .cell_indices()
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert!(
+        cells(&actual) == cells(&expected),
+        "query-job visible cell membership changed"
+    );
+    assert!(
+        actual.state == expected.state,
+        "query-job merged depth/descriptor changed"
+    );
 }
 
 #[derive(PartialEq, Eq)]
@@ -117,6 +185,15 @@ impl TomeRenderQueryCache {
     }
 }
 
+/// Mirror only visibility membership, keeping the per-frame update scan off
+/// large mesh/material records. Pickup removal may leave an extra true bit;
+/// the next touched instance corrects it. Only this system makes bits true.
+#[derive(Default)]
+pub(super) struct VisibilityUpdateScratch {
+    instance_buffer: usize,
+    visible: Vec<bool>,
+}
+
 // The ordinary direct-Tome query selects mapped static BWM instances and
 // forwards their projected image demand. The installed worker clears only
 // its own output on error, then returns; merge the successful siblings, log
@@ -132,7 +209,10 @@ pub(super) fn stream_visible_models(
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
     mut query_cache: Local<TomeRenderQueryCache>,
+    mut updates: Local<VisibilityUpdateScratch>,
     view_settings: Option<Res<NativeViewSettings>>,
+    mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
+    profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
 ) {
     let started = Instant::now();
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
@@ -254,20 +334,49 @@ pub(super) fn stream_visible_models(
                     // Native shadow preparation consumes the merged ordinary
                     // descriptor, not color-visible BWM IDs or a prior frame.
                     // Forward mapping errors do not invalidate this query.
-                    scene.publish_shadow_ordinary_query(&output);
+                    {
+                        let _span = profile.as_deref().map(|p| p.measure(44));
+                        scene.publish_shadow_ordinary_query(&output);
+                    }
                     merged_query_tile = output.state.as_ref().map(|state| state.viewport);
                     requested = output.indices().len();
                     accepted_sample.extend(output.indices().iter().take(16).copied());
                     let mut visible = vec![false; scene.instances.len()];
                     let mapping = &scene.tome_render_instances;
-                    let mapped = mapping
-                        .mark_visible_instances(output.indices(), &mut visible)
+                    let marked = {
+                        let _span = profile.as_deref().map(|p| p.measure(45));
+                        mapping.mark_visible_instances(output.indices(), &mut visible)
+                    };
+                    let mapped = marked
                         .and_then(|()| {
+                            let _span = profile.as_deref().map(|p| p.measure(46));
                             spatial_accepted = mapping
                                 .apply_spatial_queries(output.state.as_ref(), &mut visible)?;
                             Ok(())
                         })
                         .and_then(|()| {
+                            let _span = profile.as_deref().map(|p| p.measure(47));
+                            if let Some(prepared) = &mapping.image_demands {
+                                if std::env::var("DH2_VERIFY_VISIBILITY_UPDATES").as_deref()
+                                    == Ok("1")
+                                {
+                                    prepared.verify(
+                                        mapping,
+                                        output.indices(),
+                                        output.area_metrics(),
+                                        &scene.instances,
+                                        &scene.native_material_images,
+                                        scene.diffuse_image_demands.len(),
+                                    );
+                                }
+                                return prepared
+                                    .submit(
+                                        output.indices(),
+                                        output.area_metrics(),
+                                        &scene.diffuse_image_demands,
+                                    )
+                                    .map(|_| ());
+                            }
                             mapping
                                 .submit_material_texture_demands(
                                     output.indices(),
@@ -278,8 +387,12 @@ pub(super) fn stream_visible_models(
                                 )
                                 .map(|_| ())
                         })
-                        .and_then(|()| scene.publish_light_query_outputs(&tome_world, &output))
                         .and_then(|()| {
+                            let _span = profile.as_deref().map(|p| p.measure(48));
+                            scene.publish_light_query_outputs(&tome_world, &output)
+                        })
+                        .and_then(|()| {
+                            let _span = profile.as_deref().map(|p| p.measure(49));
                             if let (Some(groups), Some(state)) =
                                 (placed_model_queries.as_ref(), output.state.as_ref())
                             {
@@ -374,10 +487,39 @@ pub(super) fn stream_visible_models(
     }
     let update_started = Instant::now();
     let mut active = scene.active;
-    for (index, instance) in scene.instances.iter_mut().enumerate() {
+    let updates = &mut *updates;
+    let instance_buffer = scene.instances.as_ptr() as usize;
+    if updates.instance_buffer != instance_buffer || updates.visible.len() != scene.instances.len()
+    {
+        updates.instance_buffer = instance_buffer;
+        updates.visible = scene
+            .instances
+            .iter()
+            .map(|instance| instance.visible)
+            .collect();
+    }
+    let verify_updates = std::env::var("DH2_VERIFY_VISIBILITY_UPDATES").as_deref() == Ok("1");
+    if verify_updates {
+        assert!(
+            scene
+                .instances
+                .iter()
+                .zip(&updates.visible)
+                .all(|(instance, &recorded)| !instance.visible || recorded),
+            "visibility membership missed a previously visible instance"
+        );
+    }
+    if let Some(selection) = visible_instances.as_deref_mut() {
+        selection.begin(&scene);
+    }
+    for index in 0..scene.instances.len() {
         // FUN_14037e1d0 handles BWM indices; FUN_14031ad30 handles the
         // supported initial BML groups independently of serialized Tome IDs.
         let visible = tome_visibility.as_ref().is_some_and(|result| result[index]);
+        if !visible && !updates.visible[index] {
+            continue;
+        }
+        let instance = &mut scene.instances[index];
         let available = instance
             .pickup_id
             .as_ref()
@@ -428,10 +570,57 @@ pub(super) fn stream_visible_models(
                 hidden += 1;
             }
         }
+        updates.visible[index] = instance.visible;
+        if instance.visible {
+            if let Some(selection) = visible_instances.as_deref_mut() {
+                selection.indices.push(index);
+            }
+        }
+    }
+    if verify_updates {
+        assert!(
+            scene
+                .instances
+                .iter()
+                .zip(&updates.visible)
+                .all(|(instance, &recorded)| instance.visible == recorded),
+            "visibility update mirror differs from actual instance state"
+        );
+    }
+    if verify_updates {
+        if let Some(selection) = visible_instances.as_deref() {
+            let actual: Vec<_> = scene
+                .instances
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instance)| instance.visible.then_some(index))
+                .collect();
+            assert_eq!(
+                selection.indices, actual,
+                "forward visible indices differ from actual instance visibility"
+            );
+        }
     }
     scene.active = active;
     if let Some(diagnostics) = diagnostics.as_deref_mut() {
         diagnostics.frame += 1;
+        if diagnostics.frame % 120 == 0
+            && !query_cached
+            && std::env::var_os("DH2_PROFILE_TOME_QUERY").is_some()
+        {
+            let mut costs = [0u128; 5];
+            for job in &query_diagnostics {
+                for (total, cost) in costs.iter_mut().zip(job.progress.cost_ns) {
+                    *total += cost;
+                }
+            }
+            if let Some(maximum) = query_diagnostics.iter().max_by_key(|job| job.elapsed_ns) {
+                eprintln!("Tome query CPU cost sum_ms={:?} max_job={} max_wall_ms={:.3} max_cost_ms={:?} cells={} object_passes={} objects={}",
+                    costs.map(|cost| cost as f64 / 1e6), maximum.job_index,
+                    maximum.elapsed_ns as f64 / 1e6, maximum.progress.cost_ns.map(|cost| cost as f64 / 1e6),
+                    maximum.progress.cells_processed, maximum.progress.object_passes, maximum.progress.accepted_objects);
+            }
+        }
         diagnostics.status = status;
         let pose = transform.map(game_pose_from_view_transform);
         let authored_id_sample =

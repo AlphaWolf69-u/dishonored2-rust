@@ -167,6 +167,7 @@ pub enum ImageFormat {
     Rgba8,
     Rgba8Srgb,
     Rg8,
+    R16Float,
     Bgra8,
     Bc1,
     Bc1Srgb,
@@ -188,6 +189,7 @@ impl ImageFormat {
             28 => Self::Rgba8,
             29 => Self::Rgba8Srgb,
             49 => Self::Rg8,
+            54 => Self::R16Float,
             87 => Self::Bgra8,
             71 => Self::Bc1,
             72 => Self::Bc1Srgb,
@@ -201,17 +203,13 @@ impl ImageFormat {
             96 => Self::Bc6Signed,
             98 => Self::Bc7,
             99 => Self::Bc7Srgb,
-            _ => {
-                return Err(format!(
-                    "unsupported native compressed texture format {value}"
-                ))
-            }
+            _ => return Err(format!("unsupported native texture format {value}")),
         })
     }
     pub fn block_bytes(self) -> usize {
         match self {
             Self::Rgba8 | Self::Rgba8Srgb => 4,
-            Self::Rg8 => 2,
+            Self::Rg8 | Self::R16Float => 2,
             Self::Bgra8 => 4,
             Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8,
             _ => 16,
@@ -226,7 +224,7 @@ impl ImageFormat {
     }
     pub fn block_width(self) -> u32 {
         match self {
-            Self::Rgba8 | Self::Rgba8Srgb | Self::Rg8 | Self::Bgra8 => 1,
+            Self::Rgba8 | Self::Rgba8Srgb | Self::Rg8 | Self::R16Float | Self::Bgra8 => 1,
             _ => 4,
         }
     }
@@ -321,6 +319,37 @@ fn rgba8_mips_keep_pixel_rows_and_color_space() {
 pub struct InlineCompressedChain {
     pub info: BimageInfo,
     pub payload: Vec<u8>,
+}
+
+#[test]
+fn half_float_lookup_mips_preserve_authored_bits() {
+    // FUN_1402c2f50: family 2, selector 7, precision 1 maps to DXGI 54.
+    // Values outside [0,1] and subnormal values must survive without RGBA8 conversion.
+    let words = [0x0000u16, 0x0001, 0x3555, 0x3c00, 0x4200, 0xbc00];
+    let mut bytes = vec![0u8; 62];
+    bytes[..3].copy_from_slice(b"BIM");
+    for (offset, value) in [(12, 2u32), (16, 7), (20, 1), (24, 3), (28, 2), (44, 1)] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for value in [0u32, 0, 3, 2, 12] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in words {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let chain = compressed_inline_chain(&bytes).unwrap();
+    assert_eq!(chain.info.format, ImageFormat::R16Float);
+    assert_eq!(chain.info.format.bits_per_pixel(), 16);
+    assert_eq!(chain.info.format.mip_bytes(3, 2), 12);
+    assert_eq!(
+        chain.payload,
+        words
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    bytes.pop();
+    assert!(compressed_inline_chain(&bytes).is_err());
 }
 pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, String> {
     let info = BimageInfo::parse(bytes)?;

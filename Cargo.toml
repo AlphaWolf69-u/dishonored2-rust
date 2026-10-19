@@ -10,17 +10,21 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 bcdec_rs = "0.2.0"
 png = "0.18.1"
 half = "2.7.1"
+# Reuse Bevy/wgpu's existing logging facade to set its fast runtime level cap.
+log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }
 bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts"] }
 
 [patch.crates-io]
+naga = { path = "vendor/naga-29.0.4" }
+bevy_render = { path = "vendor/bevy_render-0.19.1" }
 bevy_core_pipeline = { path = "vendor/bevy_core_pipeline-0.19.1" }
 bevy_light = { path = "vendor/bevy_light-0.19.1" }
 bevy_pbr = { path = "vendor/bevy_pbr-0.19.1" }
 bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 
 [features]
-game = ["dep:bevy"]
+game = ["dep:bevy", "dep:log"]
 
 [[bin]]
 name = "dishonored2-rust"
@@ -70,6 +74,10 @@ path = "src/bin/visibility_probe.rs"
 [profile.dev]
 debug = 0
 incremental = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
 
 [[bin]]
 name = "probe-audit"

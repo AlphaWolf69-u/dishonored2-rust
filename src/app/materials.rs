@@ -220,6 +220,22 @@ pub(super) fn specialize_native_vertex_lighting(
     }
 }
 
+pub(super) fn depth_prepass_material_keys(
+    material_free: bool,
+) -> bevy::pbr::DepthPrepassMaterialKeys {
+    let mut keys = bevy::pbr::DepthPrepassMaterialKeys::default();
+    keys.register::<super::ProbeMaterial>(|mut key| {
+        key.extension = key.extension.depth_prepass();
+        key
+    });
+    if material_free {
+        keys.register_material_free::<super::ProbeMaterial>(|key| {
+            !key.extension.depth_needs_material()
+        });
+    }
+    keys
+}
+
 impl MaterialExtension for ProbeExtension {
     fn fragment_shader() -> ShaderRef {
         PROBE_SHADER_HANDLE.into()

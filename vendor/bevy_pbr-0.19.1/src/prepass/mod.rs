@@ -1,51 +1,53 @@
+mod material_keys;
 mod prepass_bindings;
+pub use material_keys::DepthPrepassMaterialKeys;
 
 use crate::{
+    DeferredAlphaMaskDrawFunction, DeferredFragmentShader, DeferredOpaqueDrawFunction,
+    DeferredVertexShader, DrawMesh, MaterialPipeline, MaterialPropertiesExt, MeshLayouts,
+    MeshPipeline, MeshPipelineKey, PreparedMaterial, PrepassAlphaMaskDrawFunction,
+    PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction, PrepassOpaqueDrawFunction,
+    PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags,
+    RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
     alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout,
     collect_meshes_for_gpu_building, init_material_pipeline, set_mesh_motion_vector_flags,
-    setup_morph_and_skinning_defs, skin, DeferredAlphaMaskDrawFunction, DeferredFragmentShader,
-    DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, MaterialPipeline,
-    MaterialPropertiesExt, MeshLayouts, MeshPipeline, MeshPipelineKey, PreparedMaterial,
-    PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction,
-    PrepassOpaqueDrawFunction, PrepassVertexShader, RenderLightmaps, RenderMaterialInstances,
-    RenderMeshInstanceFlags, RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup,
-    ShadowView,
+    setup_morph_and_skinning_defs, skin,
 };
 use bevy_app::{App, Plugin, PreUpdate};
-use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
+use bevy_asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};
 use bevy_camera::{Camera, Camera3d};
 use bevy_core_pipeline::{core_3d::CORE_3D_DEPTH_FORMAT, deferred::*, prepass::*};
 use bevy_ecs::{
     prelude::*,
     system::{
-        lifetimeless::{Read, SRes},
         SystemParam, SystemParamItem, SystemState,
+        lifetimeless::{Read, SRes},
     },
 };
 use bevy_material::{
-    key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
     AlphaMode, MaterialProperties, OpaqueRendererMethod, RenderPhaseType,
+    key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
 };
 use bevy_math::{Affine3A, Mat4, Vec4};
 use bevy_mesh::{Mesh, Mesh3d, MeshVertexBufferLayoutRef};
 use bevy_render::{
+    Extract, ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderDebugFlags,
+    RenderStartup, RenderSystems,
     batching::gpu_preprocessing::GpuPreprocessingSupport,
     camera::{DirtySpecializations, PendingQueues},
     globals::{GlobalsBuffer, GlobalsUniform},
-    mesh::{allocator::MeshAllocator, RenderMesh},
-    render_asset::{prepare_assets, RenderAssets},
+    mesh::{RenderMesh, allocator::MeshAllocator},
+    render_asset::{RenderAssets, prepare_assets},
     render_phase::*,
     render_resource::{binding_types::uniform_buffer, *},
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
     sync_world::RenderEntity,
     view::{
         ExtractedView, Msaa, RenderVisibilityRanges, RenderVisibleEntities, RetainedViewEntity,
-        ViewUniform, ViewUniformOffset, ViewUniforms, VISIBILITY_RANGES_STORAGE_BUFFER_COUNT,
+        VISIBILITY_RANGES_STORAGE_BUFFER_COUNT, ViewUniform, ViewUniformOffset, ViewUniforms,
     },
-    Extract, ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderDebugFlags,
-    RenderStartup, RenderSystems,
 };
-use bevy_shader::{load_shader_library, Shader, ShaderDefVal};
+use bevy_shader::{Shader, ShaderDefVal, load_shader_library};
 use bevy_transform::prelude::GlobalTransform;
 use core::any::TypeId;
 pub use prepass_bindings::*;
@@ -53,8 +55,8 @@ use tracing::{error, warn};
 
 #[cfg(feature = "meshlet")]
 use crate::meshlet::{
-    prepare_material_meshlet_meshes_prepass, queue_material_meshlet_meshes, InstanceManager,
-    MeshletMesh3d,
+    InstanceManager, MeshletMesh3d, prepare_material_meshlet_meshes_prepass,
+    queue_material_meshlet_meshes,
 };
 
 use alloc::sync::Arc;
@@ -63,9 +65,9 @@ use bevy_ecs::{change_detection::Tick, system::SystemChangeTick};
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_platform::hash::FixedHasher;
 use bevy_render::{
+    RenderSystems::{PrepareAssets, PrepareResources},
     erased_render_asset::ErasedRenderAssets,
     sync_world::{MainEntity, MainEntityHashMap},
-    RenderSystems::{PrepareAssets, PrepareResources},
 };
 use bevy_utils::default;
 
@@ -342,6 +344,7 @@ pub fn init_prepass_pipeline(
 pub struct PrepassPipelineSpecializer {
     pub pipeline: PrepassPipeline,
     pub properties: Arc<MaterialProperties>,
+    pub material_is_unused: bool,
 }
 
 impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
@@ -361,6 +364,7 @@ impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
             shader_defs,
             layout,
             &self.properties,
+            self.material_is_unused,
         )?;
 
         // This is a bit risky because it's possible to change something that would
@@ -379,6 +383,15 @@ impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
     }
 }
 
+pub(crate) fn is_plain_depth_prepass(mesh_key: MeshPipelineKey) -> bool {
+    mesh_key.contains(MeshPipelineKey::DEPTH_PREPASS)
+        && !mesh_key.intersects(
+            MeshPipelineKey::NORMAL_PREPASS
+                | MeshPipelineKey::MOTION_VECTOR_PREPASS
+                | MeshPipelineKey::DEFERRED_PREPASS,
+        )
+}
+
 fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
     !mesh_key.intersects(MeshPipelineKey::MAY_DISCARD | MeshPipelineKey::PREPASS_READS_MATERIAL)
         && mesh_key.intersection(MeshPipelineKey::ALL_PREPASS_BITS)
@@ -392,6 +405,7 @@ impl PrepassPipeline {
         shader_defs: Vec<ShaderDefVal>,
         layout: &MeshVertexBufferLayoutRef,
         material_properties: &MaterialProperties,
+        material_is_unused: bool,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut shader_defs = shader_defs;
         let mut bind_group_layouts = vec![
@@ -419,7 +433,7 @@ impl PrepassPipeline {
             && !self.depth_clip_control_supported;
         if is_depth_only_opaque_prepass(mesh_key)
             && !emulate_unclipped_depth
-            && !material_properties.prepass_reads_material()
+            && (material_is_unused || !material_properties.prepass_reads_material())
         {
             // The shaders for depth only opaque prepass doesn't need material's bind group.
             // We set an empty layout and batch them by setting `material_bind_group_index` to `None` in batch set key.
@@ -885,6 +899,7 @@ pub(crate) struct SpecializePrepassSystemParam<'w, 's> {
     pending_prepass_mesh_material_queues: ResMut<'w, PendingPrepassMeshMaterialQueues>,
     dirty_specializations: Res<'w, DirtySpecializations>,
     this_run: SystemChangeTick,
+    depth_material_keys: Option<Res<'w, DepthPrepassMaterialKeys>>,
 }
 
 pub(crate) fn specialize_prepass_material_meshes(
@@ -918,6 +933,7 @@ pub(crate) fn specialize_prepass_material_meshes(
             mut pending_prepass_mesh_material_queues,
             dirty_specializations,
             this_run: system_change_tick,
+            depth_material_keys,
         } = state.get_mut(world).unwrap();
 
         this_run = system_change_tick.this_run();
@@ -1097,6 +1113,25 @@ pub(crate) fn specialize_prepass_material_meshes(
                     }
                 }
 
+                if is_plain_depth_prepass(mesh_key)
+                    && mesh_key.msaa_samples() == 1
+                    && !mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+                    && matches!(
+                        material.properties.render_phase_type,
+                        RenderPhaseType::Opaque
+                    )
+                    && let Some(keys) = depth_material_keys.as_deref()
+                    && keys.material_is_unused(
+                        material_instance.asset_id.type_id(),
+                        &material.properties.material_key,
+                    )
+                {
+                    mesh_key.remove(
+                        MeshPipelineKey::MAY_DISCARD | MeshPipelineKey::PREPASS_READS_MATERIAL,
+                    );
+                    keys.record_omission();
+                }
+
                 work_items.push(PrepassSpecializationWorkItem {
                     visible_entity: *visible_entity,
                     retained_view_entity: extracted_view.retained_view_entity,
@@ -1120,10 +1155,20 @@ pub(crate) fn specialize_prepass_material_meshes(
             continue;
         };
 
+        let material_key = if is_plain_depth_prepass(item.mesh_key) {
+            world
+                .get_resource::<DepthPrepassMaterialKeys>()
+                .map_or_else(
+                    || item.properties.material_key.clone(),
+                    |keys| keys.normalize(item.material_type_id, &item.properties.material_key),
+                )
+        } else {
+            item.properties.material_key.clone()
+        };
         let key = ErasedMaterialPipelineKey {
             type_id: item.material_type_id,
             mesh_key: ErasedMeshPipelineKey::new(item.mesh_key),
-            material_key: item.properties.material_key.clone(),
+            material_key,
         };
 
         let emulate_unclipped_depth = item

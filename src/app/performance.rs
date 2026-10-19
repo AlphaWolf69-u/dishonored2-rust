@@ -1,8 +1,9 @@
 //! Performance.
 use super::{
-    AppExit, BenchmarkSeconds, FrameRateOverlay, MeshTag, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
-    OriginalLocalLightCull, OriginalLocalLightCullStats, SceneRenderQueue, StreamingDiagnostics,
-    VisibilityElapsedTiming, frame_profile, local_light_kind_index, view_to_game,
+    frame_profile, local_light_kind_index, view_to_game, AppExit, BenchmarkSeconds,
+    FrameRateOverlay, MeshTag, OriginalLocalLightCull, OriginalLocalLightCullStats,
+    SceneRenderQueue, StreamingDiagnostics, VisibilityElapsedTiming,
+    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
 };
 use bevy::prelude::*;
 
@@ -148,12 +149,28 @@ pub(super) fn finish_streaming_diagnostics(
     diagnostics.record(sample, scene.active, keys.just_pressed(KeyCode::F8));
 }
 
+pub(super) struct CpuBenchmarkMetrics {
+    samples: u64,
+    totals: [u128; frame_profile::COUNT],
+    maxima: [u64; frame_profile::COUNT],
+}
+
+impl Default for CpuBenchmarkMetrics {
+    fn default() -> Self {
+        Self {
+            samples: 0,
+            totals: [0; frame_profile::COUNT],
+            maxima: [0; frame_profile::COUNT],
+        }
+    }
+}
+
 pub(super) fn benchmark_frames(
     // Performance must include stalls; gameplay Time clamps deltas to 250 ms.
     time: Res<Time<bevy::time::Real>>,
     target: Option<Res<BenchmarkSeconds>>,
     models: Res<SceneRenderQueue>,
-    camera: Query<&Transform, With<Camera3d>>,
+    camera: Query<(&bevy::prelude::Camera, &Transform), With<Camera3d>>,
     visibility_timing: Option<Res<VisibilityElapsedTiming>>,
     light_culling: Res<OriginalLocalLightCullStats>,
     mut elapsed: Local<f32>,
@@ -162,16 +179,64 @@ pub(super) fn benchmark_frames(
     render_diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
     mut render_metrics: Local<std::collections::BTreeMap<String, (u64, f64, f64)>>,
     cpu_profile: Option<Res<frame_profile::CpuFrameProfile>>,
-    mut cpu_metrics: Local<(
-        u64,
-        [u128; frame_profile::COUNT],
-        [u64; frame_profile::COUNT],
-    )>,
+    render_ready: (
+        Res<super::shadow_pass::NativeShadowCaptureReadiness>,
+        Res<super::shadow_pass::NativeShadowSceneFrame>,
+        Option<Res<super::NativeParallelShadowOwner>>,
+        Option<Res<super::local_shadow_updates::NativeLocalShadowOwner>>,
+        Res<super::shadow_pass::NativeLocalShadowCompletion>,
+        Res<super::NativeViewSettings>,
+    ),
+    mut readiness: Local<(f32, bool)>,
+    mut cpu_metrics: Local<CpuBenchmarkMetrics>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(target) = target else {
         return;
     };
+    // Async compilation must not produce an apparent speedup by omitting the
+    // forward depth or either native shadow owner. Warm up complete rendering.
+    let (forward, directional, sun, local, local_done, view_settings) = render_ready;
+    if let Err(error) = &view_settings.0 {
+        eprintln!("BENCHMARK INVALID: view settings unavailable: {error}; no FPS result");
+        exit.write(AppExit::error());
+        return;
+    }
+    let ready = forward.0.load(std::sync::atomic::Ordering::Acquire) >= 30
+        && (sun.is_none()
+            || matches!(
+                directional.state,
+                super::shadow_pass::NativeShadowSceneState::Ready { .. }
+            ))
+        && (local.is_none() || local_done.0.lock().is_ok_and(|done| done.is_some()));
+    if !ready {
+        readiness.0 += time.delta_secs();
+        *elapsed = 0.0;
+        *measured = (0, 0.0);
+        frame_times.clear();
+        render_metrics.clear();
+        *cpu_metrics = CpuBenchmarkMetrics::default();
+        if !readiness.1 {
+            println!(
+                "BENCHMARK waiting for compiled forward materials and completed native shadow owners"
+            );
+            readiness.1 = true;
+        }
+        if readiness.0 >= 300.0 {
+            eprintln!(
+                "BENCHMARK INVALID: rendering remained incomplete for 300 seconds; no FPS result"
+            );
+            exit.write(AppExit::error());
+        }
+        return;
+    }
+    if readiness.1 {
+        println!(
+            "BENCHMARK complete rendering ready after {:.2}s; starting warmup",
+            readiness.0
+        );
+        readiness.1 = false;
+    }
     let previous_elapsed = *elapsed;
     *elapsed += time.delta_secs();
     if previous_elapsed >= target.1 {
@@ -180,10 +245,10 @@ pub(super) fn benchmark_frames(
         frame_times.push(time.delta_secs_f64() * 1000.0);
         if let Some(profile) = cpu_profile.as_ref() {
             let latest = profile.latest_ns();
-            cpu_metrics.0 += 1;
+            cpu_metrics.samples += 1;
             for (i, ns) in latest.into_iter().enumerate() {
-                cpu_metrics.1[i] += ns as u128;
-                cpu_metrics.2[i] = cpu_metrics.2[i].max(ns);
+                cpu_metrics.totals[i] += ns as u128;
+                cpu_metrics.maxima[i] = cpu_metrics.maxima[i].max(ns);
             }
         }
         if let Some(store) = render_diagnostics.as_deref() {
@@ -205,17 +270,25 @@ pub(super) fn benchmark_frames(
         }
     }
     if *elapsed >= target.0 {
+        if let Some((view, transform)) = camera.iter().next() {
+            println!(
+                "BENCHMARK_INPUT viewport={:?} direction_game_xyz={:?} up_game_xyz={:?}",
+                view.physical_viewport_size().map(|size| [size.x, size.y]),
+                view_to_game(transform.forward().as_vec3()),
+                view_to_game(transform.up().as_vec3())
+            );
+        }
         for (i, label) in frame_profile::LABELS
             .iter()
             .enumerate()
-            .filter(|_| cpu_metrics.0 > 0)
+            .filter(|_| cpu_metrics.samples > 0)
         {
             println!(
                 "BENCHMARK_CPU phase={} samples={} avg_ms={:.3} max_ms={:.3}",
                 label,
-                cpu_metrics.0,
-                cpu_metrics.1[i] as f64 / cpu_metrics.0 as f64 / 1_000_000.0,
-                cpu_metrics.2[i] as f64 / 1_000_000.0
+                cpu_metrics.samples,
+                cpu_metrics.totals[i] as f64 / cpu_metrics.samples as f64 / 1_000_000.0,
+                cpu_metrics.maxima[i] as f64 / 1_000_000.0
             );
         }
         let (samples, average_ms, max_ms) = visibility_timing
@@ -253,7 +326,7 @@ pub(super) fn benchmark_frames(
             camera
                 .single()
                 .ok()
-                .map(|transform| view_to_game(transform.translation)),
+                .map(|(_,transform)| view_to_game(transform.translation)),
             samples,
             average_ms,
             max_ms,

@@ -1,6 +1,24 @@
 //! Portal projection.
 use super::{native_projected_corner_bounds, PortalTileMask};
 
+/// Query-context matrix and six face-vector sets prepared by FUN_140a81500.
+/// Keep setup errors deferred until a clipped portal actually consumes them.
+pub struct PortalQueryProjection {
+    matrix: [[f32; 4]; 4],
+    winding_flip: bool,
+    faces: Result<[[[f32; 4]; 3]; 6], String>,
+}
+
+impl PortalQueryProjection {
+    pub fn new(matrix: [[f32; 4]; 4], winding_flip: bool) -> Self {
+        Self {
+            matrix,
+            winding_flip,
+            faces: portal_face_vectors_from_query_matrix(matrix, winding_flip),
+        }
+    }
+}
+
 /// Transform a world-space portal corner with the row-major matrix stored in
 /// the Umbra query context at +0x40..+0x7c. FUN_140a85bd0 computes each output
 /// component as x*M[0][j] + y*M[1][j] + z*M[2][j] + M[3][j]. This is the
@@ -57,6 +75,21 @@ pub(super) fn portal_raster_and_clip_inputs_from_bounds(
     matrix: [[f32; 4]; 4],
     winding_flip: bool,
 ) -> Result<([[f32; 4]; 4], [[f32; 4]; 3], [[f32; 4]; 8]), String> {
+    portal_raster_and_clip_inputs_prepared(
+        bounds,
+        face_code,
+        &PortalQueryProjection::new(matrix, winding_flip),
+    )
+}
+
+#[inline(always)]
+pub(super) fn portal_raster_and_clip_inputs_prepared(
+    bounds: [[f32; 3]; 2],
+    face_code: u8,
+    projection: &PortalQueryProjection,
+) -> Result<([[f32; 4]; 4], [[f32; 4]; 3], [[f32; 4]; 8]), String> {
+    let matrix = projection.matrix;
+    let winding_flip = projection.winding_flip;
     if face_code >= 6
         || bounds
             .iter()
@@ -100,7 +133,7 @@ pub(super) fn portal_raster_and_clip_inputs_from_bounds(
         std::array::from_fn(|corner| corners[corner][3]),
         normal,
     ];
-    let face = portal_face_vectors_from_query_matrix(matrix, winding_flip)?[face_code as usize];
+    let face = projection.faces.as_ref().map_err(Clone::clone)?[face_code as usize];
     if projected.iter().flatten().any(|v| !v.is_finite()) {
         return Err("nonfinite projected Tome portal corner".into());
     }
@@ -199,6 +232,7 @@ pub fn portal_face_vectors_from_query_matrix(
 /// first vector is [32, 32, 32, 32]; the second is [32, 32, 32.999996,
 /// 32.999996]. CVTTPS2DQ truncates the four results, then the function clamps
 /// the minimum edges upward and maximum edges downward to its query viewport.
+#[inline(always)]
 pub fn projected_portal_pixel_rect(
     projected: [f32; 4],
     viewport: [i32; 4],
@@ -222,7 +256,10 @@ pub fn projected_portal_pixel_rect(
     {
         return Err("projected Tome portal pixel coordinate exceeds integer range".into());
     }
-    let mut pixels = pixels.map(|value| value.trunc() as i32);
+    #[cfg(target_arch = "x86_64")]
+    let mut pixels = super::simd_predicates::truncate_i32x4(pixels);
+    #[cfg(not(target_arch = "x86_64"))]
+    let mut pixels = pixels.map(|value| value as i32);
     pixels[0] = pixels[0].max(viewport[0]);
     pixels[1] = pixels[1].max(viewport[1]);
     pixels[2] = pixels[2].min(viewport[2]);
@@ -235,6 +272,7 @@ pub fn projected_portal_pixel_rect(
 /// homogeneous corners to [min x, min y, max x, max y]. The active-plane
 /// crossing branch must not use this helper; it adds edge-derived extrema.
 #[cfg(target_arch = "x86_64")]
+#[inline(always)]
 pub fn projected_portal_box_fallback_bounds(corners: [[f32; 4]; 8]) -> Result<[f32; 4], String> {
     use std::arch::x86_64::*;
 
@@ -315,6 +353,7 @@ pub fn projected_portal_box_crossing_bounds(
 
 /// Select the two FUN_140a85bd0 projected-bound paths from the record's
 /// retained active-plane indices and the projected box W lanes.
+#[inline(always)]
 pub fn projected_portal_box_bounds(
     corners: [[f32; 4]; 8],
     active_planes: &[usize],
@@ -349,6 +388,7 @@ pub fn portal_box_depth_mask(corners: [[f32; 4]; 8]) -> u32 {
 /// Compose FUN_140a85bd0's selected portal-bound branch with its NDC-to-pixel
 /// conversion and viewport clamp. The boolean reports whether the active
 /// plane-zero crossing branch supplied the bounds.
+#[inline(always)]
 pub fn projected_portal_box_pixel_rect(
     corners: [[f32; 4]; 8],
     active_planes: &[usize],
@@ -368,6 +408,7 @@ pub fn projected_portal_box_pixel_rect(
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
 pub fn projected_portal_box_fallback_bounds(_: [[f32; 4]; 8]) -> Result<[f32; 4], String> {
     Err("original Tome portal projection requires x86_64 SSE".into())
 }
@@ -711,22 +752,13 @@ impl PortalTileMask {
                     }
                 }
                 let coverage = coverage.unwrap_or_else(|| {
-                    let mut coverage = 0u16;
-                    for py in 0..4 {
-                        for px in 0..4 {
-                            let mut inside = true;
-                            for lane in 0..4 {
-                                let value = edge_origin[lane]
-                                    + edge_x[lane] * (half_x * 4 + px) as f32
-                                    + edge_y[lane] * (half_y * 4 + py) as f32;
-                                inside &= value.to_bits() & 0x8000_0000 != 0;
-                            }
-                            if inside {
-                                coverage |= 1 << (py * 4 + px);
-                            }
-                        }
-                    }
-                    coverage
+                    super::portal_raster::coverage_4x4(
+                        edge_origin,
+                        edge_x,
+                        edge_y,
+                        half_x * 4,
+                        half_y * 4,
+                    )
                 });
                 let tx = (half_x >> 1) as u8;
                 let ty = half_y as u8;

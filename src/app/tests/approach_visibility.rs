@@ -25,13 +25,11 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         ] {
             let bytes = format!("{{\nmainProgram {name}\n{parameters}\n}}");
             let surface = material_surface::Surface::parse(bytes.as_bytes());
-            assert!(
-                surface
-                    .main_program
-                    .as_deref()
-                    .unwrap()
-                    .eq_ignore_ascii_case("arkDecal")
-            );
+            assert!(surface
+                .main_program
+                .as_deref()
+                .unwrap()
+                .eq_ignore_ascii_case("arkDecal"));
             let [[bias, ..]] =
                 material_float_vectors(&mut library, &catalog, bytes.as_bytes(), ["zbias"])
                     .unwrap();
@@ -138,7 +136,7 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
 
 #[test]
 fn short_range_lights_keep_finite_clusters_when_approached() {
-    use bevy::camera::{CameraProjection, primitives::Frustum};
+    use bevy::camera::{primitives::Frustum, CameraProjection};
     use bevy::light::cluster::{ClusterableObjects, Clusters, GlobalClusterSettings};
     let mut app = App::new();
     app.add_plugins((
@@ -236,6 +234,7 @@ fn saved_dust_approach_visibility_queries() {
         bytes,
         tree,
         query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
     };
     let bwm = world_mesh::parse(&level.read_world(&catalog).unwrap()).unwrap();
     let document = entities::parse(&String::from_utf8_lossy(

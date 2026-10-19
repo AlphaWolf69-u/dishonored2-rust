@@ -166,6 +166,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
                     store: StoreOp::Store,
                 }),
                 &[NativeOpaqueShadowDraw {
+                    model_state_offset: 0,
                     model_state: binding,
                     program_resources: None,
                     vertex_buffer: &vertices,
@@ -401,6 +402,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
         ];
         for region in regions {
             let draw = NativeOpaqueShadowDraw {
+                model_state_offset: 0,
                 model_state: &binding,
                 program_resources: None,
                 vertex_buffer: &vertices,
@@ -430,7 +432,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
                 width: 2,
                 height: 1
             },
-            &[]
+            &[],
         )
         .is_err());
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {

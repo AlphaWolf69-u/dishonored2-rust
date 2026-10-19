@@ -8,8 +8,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+mod cell_worklist;
+mod portal_raster;
+pub use cell_worklist::CellTraversalWorklist;
 #[path = "shadow_caster.rs"]
 pub mod shadow_caster;
+#[cfg(target_arch = "x86_64")]
+mod simd_predicates;
 #[path = "tome_sphere.rs"]
 mod sphere;
 pub use sphere::{
@@ -738,6 +743,7 @@ pub fn sorted_authored_id_index(ids: &[u32], target: u32) -> Option<usize> {
 
 /// FUN_140a73bf0 binds the header +0x44 table to the render query;
 /// FUN_140a82710 reads six float bounds at Tome object index * 0x18.
+#[inline(always)]
 pub fn object_bounds(bytes: &[u8], index: u32) -> Result<[[f32; 3]; 2], String> {
     let count = word(bytes, 0x40)?;
     if index >= count {
@@ -782,6 +788,7 @@ pub const ORIGINAL_DEFAULT_OBJECT_DISTANCE_SCALE_SQUARED: f32 = 1.0;
 /// has a 32-byte record: lower XYZ / squared near, upper XYZ / squared far.
 /// Preserve raw floats: the executable's ordered SIMD comparisons, not format
 /// validation or camera imprecision, determine acceptance of these records.
+#[inline(always)]
 pub fn object_distance_bounds(bytes: &[u8], index: u32) -> Result<Option<[[f32; 4]; 2]>, String> {
     let table = word(bytes, 0x48)? as usize;
     if table == 0 {
@@ -818,6 +825,18 @@ pub fn object_distance_bounds(bytes: &[u8], index: u32) -> Result<Option<[[f32; 
 /// MINPS/MAXPS select their second operand on NaNs/equality; f32::min/max do
 /// not reproduce that behavior. Far is exclusive and near is inclusive.
 pub fn object_distance_rejection_mask(
+    record: [[f32; 4]; 2],
+    point: [f32; 3],
+    scale_squared: [f32; 4],
+) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    return simd_predicates::object_distance_rejection_mask(record, point, scale_squared);
+    #[cfg(not(target_arch = "x86_64"))]
+    object_distance_rejection_mask_scalar(record, point, scale_squared)
+}
+
+#[cfg(any(test, not(target_arch = "x86_64")))]
+fn object_distance_rejection_mask_scalar(
     record: [[f32; 4]; 2],
     point: [f32; 3],
     scale_squared: [f32; 4],
@@ -1963,11 +1982,34 @@ fn query_plane_minimum(
     input: [[f32; 4]; 2],
     active: &[usize],
     maximum_corner: bool,
-    mut minimum: f32,
+    minimum: f32,
 ) -> Result<f32, String> {
     if active.iter().any(|&index| index >= planes.len()) {
         return Err("invalid Tome query-bounds plane index".into());
     }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: all selected indices were checked above; x86_64 guarantees SSE.
+    return Ok(unsafe {
+        simd_predicates::plane_minimum(planes, input, active, maximum_corner, minimum)
+    });
+    #[cfg(not(target_arch = "x86_64"))]
+    Ok(query_plane_minimum_scalar(
+        planes,
+        input,
+        active,
+        maximum_corner,
+        minimum,
+    ))
+}
+
+#[cfg(any(test, not(target_arch = "x86_64")))]
+fn query_plane_minimum_scalar(
+    planes: &[[f32; 4]],
+    input: [[f32; 4]; 2],
+    active: &[usize],
+    maximum_corner: bool,
+    mut minimum: f32,
+) -> f32 {
     let distance = |index: usize| {
         let plane = planes[index];
         let terms: [f32; 4] = std::array::from_fn(|axis| {
@@ -1986,7 +2028,7 @@ fn query_plane_minimum(
     for &index in groups.remainder() {
         minimum = minps(minimum, distance(index));
     }
-    Ok(minimum)
+    minimum
 }
 
 /// FUN_140a76bd0 clips a four-lane box against the selected query planes
@@ -2913,121 +2955,6 @@ impl CellWorkNodePool {
     }
 }
 
-/// Ordered model of the runtime list passed to FUN_140a85790. Node index zero
-/// is the list sentinel and is therefore not a work item.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CellTraversalWorklist {
-    entries: VecDeque<CellWorkItem>,
-}
-
-impl CellTraversalWorklist {
-    pub fn new(entries: impl IntoIterator<Item = CellWorkItem>) -> Result<Self, String> {
-        let entries = entries.into_iter().collect::<VecDeque<_>>();
-        let mut seen = std::collections::HashSet::with_capacity(entries.len());
-        for item in &entries {
-            if item.entry_id == 0 || item.entry_id & !CellTraversalState::ENTRY_MASK != 0 {
-                return Err("Tome work-list entry is outside its 14-bit non-sentinel range".into());
-            }
-            if !seen.insert(item.entry_id) {
-                return Err("duplicate Tome work-list entry ID".into());
-            }
-        }
-        Ok(Self { entries })
-    }
-
-    pub fn entries(&self) -> impl Iterator<Item = CellWorkItem> + '_ {
-        self.entries.iter().copied()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Port FUN_140a85790's same-spatial fast path and its ordered-list/state
-    /// transitions. The scan limit is derived from the active list after its
-    /// head is removed, matching FUN_140a85790's decrement of the query-local
-    /// active count. Gate openness is assumed to have been checked by
-    /// FUN_140a85bd0 before this helper is reached.
-    pub fn select_same_spatial_chain<F>(
-        &mut self,
-        spatial_index: usize,
-        direction: LinkQueryDirection,
-        cell_states: &mut [u16],
-        mut links_for_cell: F,
-    ) -> Result<Option<CellWorkItem>, String>
-    where
-        F: FnMut(usize, &mut dyn FnMut([u32; 4]) -> Result<bool, String>) -> Result<(), String>,
-    {
-        let Some(mut current) = self.entries.pop_front() else {
-            return Ok(None);
-        };
-
-        let mut remaining = self.entries.len();
-        while remaining != 0 {
-            let mut next = None;
-            links_for_cell(current.cell_index as usize, &mut |link| {
-                // FUN_140a85790 jumps out of the fast scan at the first
-                // boundary-face or different-spatial link.
-                let Some(target_spatial) = direct_spatial_link_target(link) else {
-                    return Ok(false);
-                };
-                if target_spatial as usize != spatial_index {
-                    return Ok(false);
-                }
-                let target_cell_index = (link[1] >> 16) as usize;
-                let state = *cell_states
-                    .get(target_cell_index)
-                    .ok_or("Tome traversal cell-state table is too short")?;
-                if let Some(target) =
-                    ready_same_spatial_cell_target(link, spatial_index, direction, state)
-                {
-                    next = Some(target);
-                    return Ok(false);
-                }
-                Ok(true)
-            })?;
-
-            let Some(target) = next else {
-                break;
-            };
-
-            // FUN_140a85790 puts the current entry at the list head and marks
-            // its cell processed before removing the queued target entry.
-            self.entries.push_front(current);
-            let source_state = cell_states
-                .get_mut(current.cell_index as usize)
-                .ok_or("Tome traversal cell-state table is too short")?;
-            *source_state = current.entry_id | 0xc000;
-
-            let target_position = self
-                .entries
-                .iter()
-                .position(|item| item.entry_id == target.worklist_entry)
-                .ok_or("queued Tome work-list entry is absent from the active list")?;
-            current = self.entries.remove(target_position).unwrap();
-            remaining -= 1;
-        }
-
-        // Match FUN_140a85790's list walk: requeue entries until the first
-        // entry whose cell already has the queued flag.
-        for item in &self.entries {
-            let state = cell_states
-                .get_mut(item.cell_index as usize)
-                .ok_or("Tome traversal cell-state table is too short")?;
-            if *state & 0xc000 == 0x8000 {
-                break;
-            }
-            *state = item.entry_id | 0x8000;
-        }
-
-        Ok(Some(current))
-    }
-}
-
 /// Pending per-spatial cell lists and the active list initialized by
 /// FUN_140a82340. The slot is the mapped list-head index produced for a
 /// spatial record by the query; work-item entry IDs come from the game's
@@ -3035,14 +2962,39 @@ impl CellTraversalWorklist {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SpatialCellWorklists {
     pending_by_slot: HashMap<usize, VecDeque<CellWorkItem>>,
+    pending_entries: Vec<u64>,
     active: CellTraversalWorklist,
     cell_states: Vec<u16>,
 }
 
 impl SpatialCellWorklists {
+    fn pending_contains_entry(&self, id: u16) -> bool {
+        self.pending_entries
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1u64 << (id % 64)) != 0)
+    }
+
+    fn set_pending_entry(&mut self, id: u16, present: bool) {
+        let word = id as usize / 64;
+        let mask = 1u64 << (id % 64);
+        if present {
+            if self.pending_entries.len() <= word {
+                self.pending_entries.resize(word + 1, 0);
+            }
+            self.pending_entries[word] |= mask;
+        } else {
+            self.pending_entries[word] &= !mask;
+            // Keep equality independent of earlier node-allocation history.
+            while self.pending_entries.last() == Some(&0) {
+                self.pending_entries.pop();
+            }
+        }
+    }
+
     pub fn new(cell_state_count: usize) -> Self {
         Self {
             pending_by_slot: HashMap::new(),
+            pending_entries: Vec::new(),
             active: CellTraversalWorklist::default(),
             cell_states: vec![0; cell_state_count],
         }
@@ -3123,23 +3075,14 @@ impl SpatialCellWorklists {
         if self.pending_cell(slot, item.cell_index).is_some() {
             return Err("destination cell already exists in pending spatial list".into());
         }
-        if self
-            .active
-            .entries
-            .iter()
-            .any(|active| active.entry_id == item.entry_id)
-            || self
-                .pending_by_slot
-                .values()
-                .flatten()
-                .any(|queued| queued.entry_id == item.entry_id)
-        {
+        if self.active.contains_entry(item.entry_id) || self.pending_contains_entry(item.entry_id) {
             return Err("duplicate Tome work-list entry ID".into());
         }
         self.pending_by_slot
             .entry(slot)
             .or_default()
             .push_front(item);
+        self.set_pending_entry(item.entry_id, true);
         Ok(())
     }
 
@@ -3159,20 +3102,13 @@ impl SpatialCellWorklists {
         if state & 0xc000 != 0 {
             return Err("new active Tome cell is not in the unvisited state".into());
         }
-        if self
-            .active
-            .entries
-            .iter()
-            .any(|active| active.entry_id == item.entry_id || active.cell_index == item.cell_index)
-            || self
-                .pending_by_slot
-                .values()
-                .flatten()
-                .any(|queued| queued.entry_id == item.entry_id)
+        if self.active.contains_entry(item.entry_id)
+            || self.active.contains_cell(item.cell_index)
+            || self.pending_contains_entry(item.entry_id)
         {
             return Err("duplicate Tome active work-list entry or cell".into());
         }
-        self.active.entries.push_front(item);
+        self.active.push_front(item);
         self.cell_states[cell_index] = item.entry_id | CellTraversalState::QUEUED;
         Ok(())
     }
@@ -3192,11 +3128,7 @@ impl SpatialCellWorklists {
     ) -> Result<bool, String> {
         if self.cell_states.get(destination.cell_index).copied() != Some(item.entry_id | 0x4000)
             || item.cell_index as usize != destination.cell_index
-            || self
-                .active
-                .entries
-                .iter()
-                .any(|active| active.entry_id == item.entry_id)
+            || self.active.contains_entry(item.entry_id)
         {
             return Err("processed Tome cell cannot be reactivated from this worklist".into());
         }
@@ -3204,7 +3136,7 @@ impl SpatialCellWorklists {
             return Ok(false);
         }
         pool.reactivate_processed(item, destination, &self.cell_states)?;
-        self.active.entries.push_front(item);
+        self.active.push_front(item);
         self.cell_states[destination.cell_index] = item.entry_id | CellTraversalState::QUEUED;
         Ok(true)
     }
@@ -3418,8 +3350,9 @@ impl SpatialCellWorklists {
         let pending = self.pending_by_slot.remove(&slot).unwrap();
         let count = pending.len();
         for item in pending {
+            self.set_pending_entry(item.entry_id, false);
             self.cell_states[item.cell_index as usize] = item.entry_id | 0x8000;
-            self.active.entries.push_back(item);
+            self.active.push_back(item);
         }
         Ok(count)
     }
@@ -3434,7 +3367,7 @@ impl SpatialCellWorklists {
         pool: &mut CellWorkNodePool,
         coverage: &mut VisitedCellCoverage,
     ) -> Result<(), String> {
-        for item in &self.active.entries {
+        for item in self.active.entries() {
             let owner =
                 pool.owners[item.entry_id as usize].ok_or("active Tome work node has no owner")?;
             if owner.cell_index != item.cell_index as usize {
@@ -3559,6 +3492,23 @@ impl VisitedCellCoverage {
         path: PortalCoveragePath,
     ) -> Result<bool, String> {
         let tile_rect = portal_tile_rect(pixels)?;
+        if let Some(destination) = self.masks.get_mut(&cell) {
+            if tile_rect[0] >= destination.rect[0]
+                && tile_rect[1] >= destination.rect[1]
+                && tile_rect[2] <= destination.rect[2]
+                && tile_rect[3] <= destination.rect[3]
+            {
+                // Both writers validate before changing any bits. With no
+                // rectangle growth, update the existing allocation as the
+                // original does; errors still leave coverage untouched.
+                return match path {
+                    PortalCoveragePath::Unclipped => destination.merge_new_coverage(incoming),
+                    PortalCoveragePath::Clipped { projected, face } => {
+                        destination.rasterize_projected_box(incoming, pixels, projected, face)
+                    }
+                };
+            }
+        }
         let mut destination = match self.masks.get(&cell) {
             Some(mask) => mask.clone(),
             None => PortalTileMask::new(tile_rect)?,
@@ -3594,6 +3544,7 @@ pub enum PortalCoveragePath {
 /// FUN_140a85bd0's face selector after an authored traversal link passes its
 /// gate/direction precheck. None is the no-portal sentinel: the incoming mask
 /// is propagated without rasterizing a projected portal rectangle.
+#[inline(always)]
 pub fn admitted_link_portal_face(
     bytes: &[u8],
     record_offset: u32,
@@ -3686,6 +3637,28 @@ pub fn projected_link_portal_transition(
     viewport: [i32; 4],
     incoming: &PortalTileMask,
 ) -> Result<Option<([i32; 4], PortalCoveragePath)>, String> {
+    projected_link_portal_transition_prepared(
+        bytes,
+        record_offset,
+        link,
+        face_code,
+        &PortalQueryProjection::new(query_matrix, winding_flip),
+        active_planes,
+        viewport,
+        incoming,
+    )
+}
+
+fn projected_link_portal_transition_prepared(
+    bytes: &[u8],
+    record_offset: u32,
+    link: [u32; 4],
+    face_code: Option<u8>,
+    projection: &PortalQueryProjection,
+    active_planes: &[usize],
+    viewport: [i32; 4],
+    incoming: &PortalTileMask,
+) -> Result<Option<([i32; 4], PortalCoveragePath)>, String> {
     //a86319 jumps directly to a867ab for sentinel-1, bypassing
     //corner construction and the paired depth predicate entirely.
     let Some(face_code) = face_code else {
@@ -3707,7 +3680,7 @@ pub fn projected_link_portal_transition(
             .ok_or("missing gated Tome portal bounds")?
     };
     let (projected, face, box_corners) =
-        portal_raster_and_clip_inputs_from_bounds(bounds, face_code, query_matrix, winding_flip)?;
+        portal_raster_and_clip_inputs_prepared(bounds, face_code, projection)?;
     let (pixels, _) = projected_portal_box_pixel_rect(box_corners, active_planes, viewport)?;
     Ok(pixels.map(|pixels| (pixels, PortalCoveragePath::Clipped { projected, face })))
 }
@@ -3724,8 +3697,7 @@ pub fn traverse_direct_unvisited_link_from_pool<F>(
     gate_states: Option<&[u32]>,
     query_point: [f32; 3],
     point_mode_face: Option<u8>,
-    query_matrix: [[f32; 4]; 4],
-    winding_flip: bool,
+    projection: &PortalQueryProjection,
     active_planes: &[usize],
     viewport: [i32; 4],
     incoming: &PortalTileMask,
@@ -3758,13 +3730,12 @@ where
         query_point,
         point_mode_face,
     )?;
-    let Some((pixels, path)) = projected_link_portal_transition(
+    let Some((pixels, path)) = projected_link_portal_transition_prepared(
         bytes,
         record_offset,
         link,
         face,
-        query_matrix,
-        winding_flip,
+        projection,
         active_planes,
         viewport,
         incoming,
@@ -3797,8 +3768,7 @@ pub fn traverse_same_spatial_direct_link_from_pool<F>(
     gate_states: Option<&[u32]>,
     query_point: [f32; 3],
     point_mode_face: Option<u8>,
-    query_matrix: [[f32; 4]; 4],
-    winding_flip: bool,
+    projection: &PortalQueryProjection,
     active_planes: &[usize],
     viewport: [i32; 4],
     incoming: &PortalTileMask,
@@ -3832,8 +3802,7 @@ where
             gate_states,
             query_point,
             point_mode_face,
-            query_matrix,
-            winding_flip,
+            projection,
             active_planes,
             viewport,
             incoming,
@@ -3857,13 +3826,12 @@ where
         query_point,
         point_mode_face,
     )?;
-    let Some((pixels, path)) = projected_link_portal_transition(
+    let Some((pixels, path)) = projected_link_portal_transition_prepared(
         bytes,
         record_offset,
         link,
         face,
-        query_matrix,
-        winding_flip,
+        projection,
         active_planes,
         viewport,
         incoming,
@@ -3901,8 +3869,7 @@ pub fn traverse_cross_spatial_direct_link_from_pool<F>(
     gate_states: Option<&[u32]>,
     query_point: [f32; 3],
     point_mode_face: Option<u8>,
-    query_matrix: [[f32; 4]; 4],
-    winding_flip: bool,
+    projection: &PortalQueryProjection,
     active_planes: &[usize],
     viewport: [i32; 4],
     incoming: &PortalTileMask,
@@ -3935,13 +3902,12 @@ where
         query_point,
         point_mode_face,
     )?;
-    let Some((pixels, path)) = projected_link_portal_transition(
+    let Some((pixels, path)) = projected_link_portal_transition_prepared(
         bytes,
         record_offset,
         link,
         face,
-        query_matrix,
-        winding_flip,
+        projection,
         active_planes,
         viewport,
         incoming,
@@ -3981,8 +3947,7 @@ pub fn process_next_active_direct_cell<F>(
     gate_states: Option<&[u32]>,
     query_point: [f32; 3],
     point_mode_face: Option<u8>,
-    query_matrix: [[f32; 4]; 4],
-    winding_flip: bool,
+    projection: &PortalQueryProjection,
     active_planes: &[usize],
     rows: &SpatialCellSlotRows,
     mapper: &mut SpatialCellSlotMapper,
@@ -4044,13 +4009,12 @@ where
                     query_point,
                     point_mode_face,
                 )?;
-                if let Some((pixels, path)) = projected_link_portal_transition(
+                if let Some((pixels, path)) = projected_link_portal_transition_prepared(
                     bytes,
                     record_offset,
                     link,
                     face,
-                    query_matrix,
-                    winding_flip,
+                    projection,
                     active_planes,
                     viewport,
                     &incoming,
@@ -4078,8 +4042,7 @@ where
                 gate_states,
                 query_point,
                 point_mode_face,
-                query_matrix,
-                winding_flip,
+                projection,
                 active_planes,
                 viewport,
                 &incoming,
@@ -4105,8 +4068,7 @@ where
                 gate_states,
                 query_point,
                 point_mode_face,
-                query_matrix,
-                winding_flip,
+                projection,
                 active_planes,
                 viewport,
                 &incoming,
@@ -4146,6 +4108,8 @@ fn direct_cell_link_error(
 /// This is diagnostic state only; it never changes traversal or acceptance.
 #[derive(Debug, Default, Clone)]
 pub struct OrdinaryQueryDiagnostics {
+    /// Optional CPU timings: setup, global seed, record setup, objects, cell depth.
+    pub cost_ns: [u128; 5],
     pub stage: &'static str,
     pub root_accepted: bool,
     pub global_nodes_visited: usize,
@@ -4974,6 +4938,8 @@ fn ordinary_direct_tome_visible_objects_inner(
     mut output_state: Option<&mut RenderQueryState>,
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
     *diagnostics = OrdinaryQueryDiagnostics::default();
+    let profile_cost = std::env::var_os("DH2_PROFILE_TOME_QUERY").is_some();
+    let setup_started = profile_cost.then(std::time::Instant::now);
     diagnostics.stage = "setup";
     //a77560 normalizes the first depth plane before either the global
     //selection or cell-object clipping. Keep the same prepared planes used
@@ -4984,6 +4950,7 @@ fn ordinary_direct_tome_visible_objects_inner(
         input.camera_imprecision,
     )?;
     let stored_matrix = stored_query_matrix_from_render_rows(input.render_rows);
+    let portal_projection = PortalQueryProjection::new(stored_matrix, input.winding_flip);
     let initial_mask = PortalTileMask::full(input.initial_tile_rect)?;
     let depth_query = output_state
         .as_deref()
@@ -5005,6 +4972,10 @@ fn ordinary_direct_tome_visible_objects_inner(
     let mut worklists = SpatialCellWorklists::new_for_original_query();
     let mut pool = CellWorkNodePool::new_for_original_query()?;
     let mut coverage = VisitedCellCoverage::default();
+    if let Some(started) = setup_started {
+        diagnostics.cost_ns[0] += started.elapsed().as_nanos();
+    }
+    let seed_started = profile_cost.then(std::time::Instant::now);
     diagnostics.stage = "global_seed";
     let Some(mut global) = tree.seed_ordinary_camera_global_query(
         bytes,
@@ -5026,6 +4997,10 @@ fn ordinary_direct_tome_visible_objects_inner(
         diagnostics.stage = "outside_tome_root";
         return Err("Tome query input outside root bounds (error 5)".into());
     };
+    if let Some(started) = seed_started {
+        diagnostics.cost_ns[1] += started.elapsed().as_nanos();
+    }
+    let setup_started = profile_cost.then(std::time::Instant::now);
     diagnostics.root_accepted = true;
     diagnostics.global_nodes_visited = global.nodes_visited;
     diagnostics.link_target_records = global
@@ -5054,6 +5029,9 @@ fn ordinary_direct_tome_visible_objects_inner(
         cell_count,
         ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY,
     ));
+    if let Some(started) = setup_started {
+        diagnostics.cost_ns[0] += started.elapsed().as_nanos();
+    }
     while let Some(activation) = global.activate_next_spatial_record(
         tree,
         input.camera_point,
@@ -5066,6 +5044,7 @@ fn ordinary_direct_tome_visible_objects_inner(
         diagnostics.spatial_records_activated += 1;
         diagnostics.current_spatial_record = Some(activation.spatial_node_index);
         diagnostics.stage = "record_setup";
+        let record_started = profile_cost.then(std::time::Instant::now);
         worklists.bind_active_cells_to_spatial_record(
             activation.spatial_node_index,
             &mut pool,
@@ -5096,6 +5075,9 @@ fn ordinary_direct_tome_visible_objects_inner(
             center: setup.link_center,
             tolerance: setup.link_tolerance,
         };
+        if let Some(started) = record_started {
+            diagnostics.cost_ns[2] += started.elapsed().as_nanos();
+        }
         let mut process_recycled = |item: CellWorkItem,
                                     owner: TraversalCellId,
                                     state: &VisitedCellCoverage|
@@ -5137,14 +5119,19 @@ fn ordinary_direct_tome_visible_objects_inner(
                 //The ordinary37e1d0/a73820 caller passes flags0.
                 point_occlusion_near_offset: Some(0.0),
             };
-            let result = cells
-                .append_visible_object_candidates(
-                    bytes,
-                    item.cell_index as usize,
-                    &query,
-                    &mut output,
-                )
-                .and_then(|()| {
+            let object_started = profile_cost.then(std::time::Instant::now);
+            let result = cells.append_visible_object_candidates(
+                bytes,
+                item.cell_index as usize,
+                &query,
+                &mut output,
+            );
+            if let Some(started) = object_started {
+                diagnostics.cost_ns[3] += started.elapsed().as_nanos();
+            }
+            let result = result.and_then(|()| {
+                let depth_started = profile_cost.then(std::time::Instant::now);
+                let result = (|| {
                     // 140a82710 emits cell depth after objects, before cells.
                     if let (Some(depth_query), Some(state)) =
                         (depth_query.as_ref(), output_state.as_deref_mut())
@@ -5172,7 +5159,12 @@ fn ordinary_direct_tome_visible_objects_inner(
                         None,
                         output.cells.as_mut(),
                     )
-                });
+                })();
+                if let Some(started) = depth_started {
+                    diagnostics.cost_ns[4] += started.elapsed().as_nanos();
+                }
+                result
+            });
             diagnostics.accepted_cells = output
                 .cells
                 .as_ref()
@@ -5200,8 +5192,7 @@ fn ordinary_direct_tome_visible_objects_inner(
                 input.gate_states,
                 input.camera_point,
                 None,
-                stored_matrix,
-                input.winding_flip,
+                &portal_projection,
                 &setup.active_planes,
                 rows,
                 &mut mapper,
@@ -5253,6 +5244,7 @@ fn ordinary_direct_tome_visible_objects_inner(
 /// using the record's bounds and +0x30 padding. Direct Tome initialization
 /// supplies zero additional offset. This is the geometry supplied to later
 /// clipping, not a visibility decision by itself.
+#[inline(always)]
 pub fn packed_link_query_bounds(
     bytes: &[u8],
     record_offset: u32,
@@ -5342,6 +5334,7 @@ pub fn gated_link_bounds(bytes: &[u8], link: [u32; 4]) -> Result<Option<[[f32; 3
 
 /// FUN_140a85bd0 applies the current spatial record's +0x30 padding to
 /// the gated link's float-table bounds before later query clipping.
+#[inline(always)]
 pub fn gated_link_query_bounds(
     bytes: &[u8],
     record_offset: u32,
@@ -5410,13 +5403,13 @@ use trees::recorded_bounds;
 pub use trees::render_query_job_quad;
 
 mod portal_projection;
-use portal_projection::portal_raster_and_clip_inputs_from_bounds;
+use portal_projection::portal_raster_and_clip_inputs_prepared;
 pub use portal_projection::{
     depth_grid_intersects_pixels, portal_box_depth_mask, portal_face_vectors_from_query_matrix,
     portal_raster_inputs_from_bounds, portal_tile_rect, projected_portal_box_bounds,
     projected_portal_box_crossing_bounds, projected_portal_box_fallback_bounds,
     projected_portal_box_pixel_rect, projected_portal_pixel_rect, rasterize_depth_mask,
-    transform_portal_corner_by_query_matrix,
+    transform_portal_corner_by_query_matrix, PortalQueryProjection,
 };
 
 mod query_geometry;

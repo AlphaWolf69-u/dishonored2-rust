@@ -280,8 +280,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
         Some(&gates),
         viewpoint,
         None,
-        stored_matrix,
-        false,
+        &PortalQueryProjection::new(stored_matrix, false),
         &setup.active_planes,
         [0, 0, 64, 64],
         &portal,
@@ -336,8 +335,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
         Some(&gates),
         viewpoint,
         None,
-        stored_matrix,
-        false,
+        &PortalQueryProjection::new(stored_matrix, false),
         &setup.active_planes,
         [0, 0, 64, 64],
         &portal,
@@ -405,8 +403,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
         Some(&gates),
         viewpoint,
         None,
-        stored_matrix,
-        false,
+        &PortalQueryProjection::new(stored_matrix, false),
         &setup.active_planes,
         &rows,
         &mut loop_mapper,
@@ -439,8 +436,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
             Some(&gates),
             viewpoint,
             None,
-            stored_matrix,
-            false,
+            &PortalQueryProjection::new(stored_matrix, false),
             &setup.active_planes,
             &rows,
             &mut loop_mapper,
@@ -917,8 +913,7 @@ fn direct_local_link_reaches_unvisited_cell_through_original_work_pool() {
         None,
         [0.0; 3],
         None,
-        [[0.0; 4]; 4],
-        false,
+        &PortalQueryProjection::new([[0.0; 4]; 4], false),
         &[],
         [0, 0, 8, 4],
         &incoming,
@@ -961,7 +956,7 @@ fn new_portal_bits_reactivate_a_processed_cell_from_recycled_chain() {
             |_, _, _| Ok(()),
         )
         .unwrap();
-    let item = worklists.active.entries.pop_front().unwrap();
+    let item = worklists.active.pop_front().unwrap();
     pool.release_processed(item, worklists.cell_states_mut())
         .unwrap();
     assert_eq!(pool.recycled_count(), 1);
@@ -996,8 +991,7 @@ fn new_portal_bits_reactivate_a_processed_cell_from_recycled_chain() {
         None,
         [0.0; 3],
         None,
-        [[0.0; 4]; 4],
-        false,
+        &PortalQueryProjection::new([[0.0; 4]; 4], false),
         &[],
         [0, 0, 8, 4],
         &second,
@@ -1099,6 +1093,68 @@ fn portal_propagation_uses_direct_merge_or_projected_clip_branch() {
             },
         )
         .unwrap());
+}
+
+#[test]
+fn failed_portal_propagation_preserves_existing_coverage() {
+    let cell = TraversalCellId {
+        spatial_index: 12,
+        cell_index: 3,
+    };
+    let incoming = PortalTileMask::full([0, 0, 1, 1]).unwrap();
+    let mut visited = VisitedCellCoverage::default();
+    visited.merge_incoming(cell, &incoming).unwrap();
+    let before = visited.coverage(cell).unwrap().clone();
+    let mut nonfinite = [[0.0; 4]; 4];
+    nonfinite[0][0] = f32::NAN;
+    assert!(visited
+        .propagate_portal(
+            cell,
+            [0, 0, 4, 4],
+            &incoming,
+            PortalCoveragePath::Clipped {
+                projected: nonfinite,
+                face: [[0.0; 4]; 3]
+            }
+        )
+        .is_err());
+    assert_eq!(visited.coverage(cell), Some(&before));
+    let wider = PortalTileMask::full([0, 0, 2, 1]).unwrap();
+    assert!(visited
+        .propagate_portal(cell, [0, 0, 4, 4], &wider, PortalCoveragePath::Unclipped)
+        .is_err());
+    assert_eq!(visited.coverage(cell), Some(&before));
+    // The growth branch must also roll back if its later raster validation fails.
+    assert!(visited
+        .propagate_portal(
+            cell,
+            [0, 0, 16, 4],
+            &wider,
+            PortalCoveragePath::Clipped {
+                projected: nonfinite,
+                face: [[0.0; 4]; 3]
+            }
+        )
+        .is_err());
+    assert_eq!(visited.coverage(cell), Some(&before));
+}
+
+#[test]
+fn unclipped_portal_does_not_consume_invalid_face_setup() {
+    let incoming = PortalTileMask::full([0, 0, 1, 1]).unwrap();
+    let projection = PortalQueryProjection::new([[f32::NAN; 4]; 4], false);
+    let result = projected_link_portal_transition_prepared(
+        &[],
+        0,
+        [0; 4],
+        None,
+        &projection,
+        &[],
+        [0, 0, 8, 4],
+        &incoming,
+    )
+    .unwrap();
+    assert_eq!(result, Some(([0, 0, 8, 4], PortalCoveragePath::Unclipped)));
 }
 
 #[test]

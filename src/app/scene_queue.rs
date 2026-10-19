@@ -6,6 +6,96 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Forward visibility's ordered instance indices, published before streaming.
+/// Shadow-only image requests remain independent of this color-view list.
+#[derive(Resource, Default)]
+pub(super) struct VisibleSceneInstances {
+    instance_buffer: usize,
+    count: usize,
+    pub(super) indices: Vec<usize>,
+}
+
+impl VisibleSceneInstances {
+    pub(super) fn begin(&mut self, scene: &SceneRenderQueue) {
+        self.instance_buffer = scene.instances.as_ptr() as usize;
+        self.count = scene.instances.len();
+        self.indices.clear();
+    }
+}
+
+pub(super) fn for_each_visible_instance(
+    scene: &SceneRenderQueue,
+    selection: Option<&VisibleSceneInstances>,
+    mut visit: impl FnMut(&RenderInstance),
+) {
+    if let Some(selection) = selection.filter(|selection| {
+        selection.instance_buffer == scene.instances.as_ptr() as usize
+            && selection.count == scene.instances.len()
+    }) {
+        for &index in &selection.indices {
+            let instance = &scene.instances[index];
+            // A pickup may have been removed after forward visibility ran.
+            if instance.visible {
+                visit(instance);
+            }
+        }
+    } else {
+        for instance in &scene.instances {
+            if instance.visible {
+                visit(instance);
+            }
+        }
+    }
+}
+
+/// A producer reads one immutable scene snapshot and publishes its texture
+/// requests through deferred commands. World and model preparation can then
+/// run together instead of contending over the whole scene resource.
+pub(super) struct ShadowTextureRequests<'a> {
+    scene: &'a SceneRenderQueue,
+    slots: Vec<usize>,
+}
+
+impl<'a> ShadowTextureRequests<'a> {
+    pub(super) fn new(scene: &'a SceneRenderQueue) -> Self {
+        Self {
+            scene,
+            slots: Vec::new(),
+        }
+    }
+
+    pub(super) fn request_shadow_diffuse(&mut self, slot: usize) {
+        self.slots.push(slot);
+    }
+
+    pub(super) fn into_slots(self) -> Vec<usize> {
+        self.slots
+    }
+
+    pub(super) fn append_slots(&mut self, slots: Vec<usize>) {
+        self.slots.extend(slots);
+    }
+
+    pub(super) fn submit(self, commands: &mut Commands) {
+        if self.slots.is_empty() {
+            return;
+        }
+        commands.queue(move |world: &mut World| {
+            let mut scene = world.resource_mut::<SceneRenderQueue>();
+            for slot in self.slots {
+                scene.request_shadow_diffuse(slot);
+            }
+        });
+    }
+}
+
+impl std::ops::Deref for ShadowTextureRequests<'_> {
+    type Target = SceneRenderQueue;
+    fn deref(&self) -> &Self::Target {
+        self.scene
+    }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct SceneRenderQueue {
     pub(super) instances: Vec<RenderInstance>,
@@ -39,6 +129,7 @@ pub(super) struct SceneRenderQueue {
     pub(super) diffuse_image_handles: Vec<Option<Handle<Image>>>,
     /// Initial native whole-view alpha casters are independent of color visibility.
     pub(super) native_shadow_diffuse_slots: Vec<usize>,
+    pub(super) shadow_diffuse_membership: Vec<bool>,
     pub(super) diffuse_image_pending: Vec<Option<Handle<Image>>>,
     pub(super) diffuse_mip_states: Vec<DiffuseMipState>,
     pub(super) diffuse_image_attempted: Vec<bool>,
@@ -50,6 +141,27 @@ pub(super) struct SceneRenderQueue {
 }
 
 impl SceneRenderQueue {
+    /// Preserve first-request order without scanning every previously requested
+    /// texture for each caster in every cascade and local-light side.
+    pub(super) fn request_shadow_diffuse(&mut self, slot: usize) {
+        if self.shadow_diffuse_membership.len() != self.diffuse_image_paths.len() {
+            self.shadow_diffuse_membership = vec![false; self.diffuse_image_paths.len()];
+            for &old in &self.native_shadow_diffuse_slots {
+                if let Some(member) = self.shadow_diffuse_membership.get_mut(old) {
+                    *member = true;
+                }
+            }
+        }
+        if let Some(member) = self.shadow_diffuse_membership.get_mut(slot) {
+            if !std::mem::replace(member, true) {
+                self.native_shadow_diffuse_slots.push(slot);
+            }
+        } else if !self.native_shadow_diffuse_slots.contains(&slot) {
+            // Keep the existing error path and request order for malformed IDs.
+            self.native_shadow_diffuse_slots.push(slot);
+        }
+    }
+
     pub(super) fn publish_shadow_ordinary_query(&mut self, output: &tome::RenderQueryObjectOutput) {
         self.shadow_ordinary_query = Some(output.clone());
     }
@@ -80,6 +192,92 @@ impl SceneRenderQueue {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_index_handles_removed_pickups_and_replaced_scene_buffers() {
+        let mut scene = SceneRenderQueue::default();
+        for index in 0..6 {
+            scene.instances.push(RenderInstance {
+                source: None,
+                mesh: Handle::default(),
+                material: MaterialHandle::Probe(Handle::default()),
+                diffuse_image_slot: None,
+                probe_index: index,
+                transform: Transform::IDENTITY,
+                bounds: bevy::camera::primitives::Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
+                pickup_id: None,
+                entity: None,
+                visible: index == 1 || index == 4,
+            });
+        }
+        let mut selection = VisibleSceneInstances::default();
+        selection.begin(&scene);
+        selection.indices.extend([1, 4]);
+        let collect = |scene: &SceneRenderQueue, selection: Option<&VisibleSceneInstances>| {
+            let mut result = Vec::new();
+            for_each_visible_instance(scene, selection, |instance| {
+                result.push(instance.probe_index)
+            });
+            result
+        };
+        assert_eq!(collect(&scene, Some(&selection)), collect(&scene, None));
+        scene.instances[1].visible = false;
+        assert_eq!(collect(&scene, Some(&selection)), vec![4]);
+        // Change the domain while retaining the old selection: use the actual
+        // current visibility until the new scene's collector publishes indices.
+        scene.instances.pop();
+        scene.instances[2].visible = true;
+        assert_eq!(collect(&scene, Some(&selection)), vec![2, 4]);
+    }
+
+    #[test]
+    fn independent_shadow_producers_publish_ordered_requests_at_the_deferred_boundary() {
+        let mut world = World::new();
+        let mut scene = SceneRenderQueue::default();
+        scene.diffuse_image_paths.resize(4, String::new());
+        world.insert_resource(scene);
+        let mut deferred = bevy::ecs::world::CommandQueue::default();
+        {
+            let scene = world.resource::<SceneRenderQueue>();
+            let mut world_requests = ShadowTextureRequests::new(scene);
+            let mut model_requests = ShadowTextureRequests::new(scene);
+            world_requests.request_shadow_diffuse(2);
+            world_requests.request_shadow_diffuse(1);
+            model_requests.request_shadow_diffuse(1);
+            model_requests.request_shadow_diffuse(3);
+            let mut commands = Commands::new(&mut deferred, &world);
+            world_requests.submit(&mut commands);
+            model_requests.submit(&mut commands);
+            assert!(scene.native_shadow_diffuse_slots.is_empty());
+        }
+        deferred.apply(&mut world);
+        assert_eq!(
+            world
+                .resource::<SceneRenderQueue>()
+                .native_shadow_diffuse_slots,
+            [2, 1, 3]
+        );
+    }
+
+    #[test]
+    fn shadow_texture_requests_keep_first_request_order_and_rebuild_membership() {
+        let mut queue = SceneRenderQueue::default();
+        queue.diffuse_image_paths.resize(4, String::new());
+        for slot in [2, 1, 2, 0, 1, 99, 99] {
+            queue.request_shadow_diffuse(slot);
+        }
+        assert_eq!(queue.native_shadow_diffuse_slots, [2, 1, 0, 99]);
+        queue.diffuse_image_paths.resize(6, String::new());
+        for slot in [2, 5, 1, 5] {
+            queue.request_shadow_diffuse(slot);
+        }
+        assert_eq!(queue.native_shadow_diffuse_slots, [2, 1, 0, 99, 5]);
     }
 }
 

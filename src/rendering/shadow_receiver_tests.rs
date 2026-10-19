@@ -13,25 +13,47 @@ fn replayed_receiver_planes_match_executable() {
     let ray_direction = floats(&bytes, &mut cursor);
     let [maximum_distance, maximum_depth] = floats(&bytes, &mut cursor);
     let world_bounds = [floats(&bytes, &mut cursor), floats(&bytes, &mut cursor)];
-    let dynamic_bounds = (0..count).map(|_| [floats(&bytes, &mut cursor), floats(&bytes, &mut cursor)]).collect::<Vec<_>>();
+    let dynamic_bounds = (0..count)
+        .map(|_| [floats(&bytes, &mut cursor), floats(&bytes, &mut cursor)])
+        .collect::<Vec<_>>();
     let ordinary_depth = floats(&bytes, &mut cursor);
     let mut projection = NativeReceiverDepthProjection {
-        receiver_rows: [[0.0; 4]; 4], transposed_rows: [[0.0; 4]; 4], mask: Box::new([0; 128 * 128]),
+        receiver_rows: [[0.0; 4]; 4],
+        transposed_rows: [[0.0; 4]; 4],
+        mask: Box::new([0; 128 * 128]),
     };
-    let result = initialize_native_receiver(NativeReceiverInput {
-        flags: 0, camera_clip_rows, camera_position, ray_direction,
-        maximum_depth: Some(maximum_depth), maximum_distance, world_bounds,
-        dynamic_bounds: &dynamic_bounds, ordinary_depth: &ordinary_depth,
-    }, &mut projection).unwrap();
+    let result = initialize_native_receiver(
+        NativeReceiverInput {
+            flags: 0,
+            camera_clip_rows,
+            camera_position,
+            ray_direction,
+            maximum_depth: Some(maximum_depth),
+            maximum_distance,
+            world_bounds,
+            dynamic_bounds: &dynamic_bounds,
+            ordinary_depth: &ordinary_depth,
+        },
+        &mut projection,
+    )
+    .unwrap();
     let expected = std::fs::read(format!("{path}.native-planes.bin")).unwrap();
     let mut cursor = 0;
     assert_eq!(result.plane_count, word(&expected, &mut cursor) as usize);
     for index in 0..result.plane_count {
         let plane: [f32; 4] = floats(&expected, &mut cursor);
-        assert_eq!(result.planes[index].map(f32::to_bits), plane.map(f32::to_bits), "plane {index}");
+        assert_eq!(
+            result.planes[index].map(f32::to_bits),
+            plane.map(f32::to_bits),
+            "plane {index}"
+        );
     }
     let expected_mask = std::fs::read(format!("{path}.native-mask.bin")).unwrap();
-    let actual = projection.mask.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+    let actual = projection
+        .mask
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
     assert_eq!(actual, expected_mask, "paired receiver mask");
 }
 

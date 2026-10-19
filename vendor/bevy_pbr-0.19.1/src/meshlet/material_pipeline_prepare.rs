@@ -11,8 +11,8 @@ use bevy_core_pipeline::{
 use bevy_derive::{Deref, DerefMut};
 use bevy_light::{EnvironmentMapLight, IrradianceVolume, ShadowFilteringMethod};
 use bevy_material::{
-    key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
     OpaqueRendererMethod,
+    key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
 };
 use bevy_mesh::VertexBufferLayout;
 use bevy_mesh::{Mesh, MeshVertexBufferLayout, MeshVertexBufferLayoutRef, MeshVertexBufferLayouts};
@@ -350,6 +350,7 @@ pub fn prepare_material_meshlet_meshes_prepass(
             let material_pipeline_specializer = PrepassPipelineSpecializer {
                 pipeline: prepass_pipeline.clone(),
                 properties: material.properties.clone(),
+                material_is_unused: false,
             };
             let Ok(material_pipeline_descriptor) =
                 material_pipeline_specializer.specialize(erased_key, fake_vertex_buffer_layout)

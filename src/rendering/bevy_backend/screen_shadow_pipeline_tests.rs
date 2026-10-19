@@ -729,7 +729,9 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     let partition = make_texture(
         "native main D32S8 screen partition",
         TextureFormat::Depth32FloatStencil8,
-        TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+        // Match the live main-Z owner, whose depth is also sampled by the
+        // coarse-depth producer before the read-only stencil screen passes.
+        TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
         4,
         4,
     );
@@ -808,6 +810,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         usage: BufferUsages::INDEX,
     });
     let draw = |binding, x| NativeOpaqueShadowDraw {
+        model_state_offset: 0,
         model_state: binding,
         program_resources: None,
         vertex_buffer: &model_vertices,

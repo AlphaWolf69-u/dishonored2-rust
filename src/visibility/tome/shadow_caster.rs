@@ -413,6 +413,7 @@ pub struct NativeCasterDirection {
 }
 
 impl NativeCasterDirection {
+    #[inline(always)]
     pub fn from_receiver_direction(direction: [f32; 3]) -> Result<Self, String> {
         if direction.iter().any(|value| !value.is_finite()) {
             return Err("nonfinite native caster direction".into());
@@ -440,9 +441,12 @@ impl NativeCasterDirection {
         let next = (1usize << axis) & 3;
         let last = (1usize << next) & 3;
         let scale = 8.0 / f32::from_bits(absolute[axis]); // DAT_141ac8fe4 = 8
+        #[cfg(target_arch = "x86_64")]
+        let cvtt = super::simd_predicates::truncate_i32;
+        #[cfg(not(target_arch = "x86_64"))]
         let cvtt = |value: f32| {
             if value >= -2147483648.0 && value < 2147483648.0 {
-                value.trunc() as i32
+                value as i32
             } else {
                 i32::MIN
             }
@@ -456,6 +460,7 @@ impl NativeCasterDirection {
 
     /// Both packed forms used by FUN_140a73bf0. This consumes the original
     /// node/global Tome bytes without duplicating the large baked tables.
+    #[inline(always)]
     pub fn allows_object(self, bytes: &[u8], index: u32) -> Result<bool, String> {
         let count = object_count(bytes)?;
         if index as usize >= count
@@ -514,6 +519,7 @@ impl NativeCasterDirection {
 ///direction records/palette as a73bf0. Unlike directional caster admission,
 ///the palette word is a truncated float distance (bits shifted left16).
 ///The query's near-plane displacement is added before the radial test.
+#[inline(always)]
 pub fn native_point_occlusion_visible(
     bytes: &[u8],
     index: u32,
@@ -815,7 +821,10 @@ impl NativeShadowInstanceMasks {
 
     ///32c2a0 intersects the WORLD tree result with the published Tome bytes.
     pub fn intersect_world_query(&mut self, cascade: usize, world: &[u8]) -> Result<(), String> {
-        let mask = self.masks.get_mut(cascade).ok_or("invalid WORLD query cascade")?;
+        let mask = self
+            .masks
+            .get_mut(cascade)
+            .ok_or("invalid WORLD query cascade")?;
         if mask.len() != world.len() {
             return Err("WORLD and Tome instance mask lengths differ".into());
         }
@@ -900,6 +909,7 @@ impl NativeShadowInstanceMasks {
 /// `source` must be the same immutable Tome from which `tome` was parsed.
 /// Receiver states must be freshly initialized (all plane indices in order),
 /// not the reduced lists produced for a previously visited spatial node.
+#[derive(Clone, Copy)]
 pub struct NativeGlobalShadowCasterInput<'a> {
     pub source: &'a [u8],
     pub primary: VerifiedShadowReceiverState<'a>,

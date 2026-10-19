@@ -336,10 +336,26 @@ pub fn game_clock_controls(source: &str) -> Result<crate::game_clock::ClockContr
     Ok(controls)
 }
 
+/// A host may select the existing configuration when running under a different
+/// Windows account. Automatic discovery remains the ordinary launch path.
+pub fn configuration_path() -> Result<PathBuf, String> {
+    if let Some(value) = std::env::var_os("DH2_HOST_CONFIG_PATH") {
+        let path = PathBuf::from(value);
+        if !path.is_file() {
+            return Err(format!(
+                "DH2_HOST_CONFIG_PATH is not an existing configuration file: {}",
+                path.display()
+            ));
+        }
+        return Ok(path);
+    }
+    saved_games_configuration_path()
+}
+
 /// Windows resolves redirected/localized Saved Games folders itself.
 /// The subpath is the installed original's existing configuration location.
 #[cfg(target_os = "windows")]
-pub fn configuration_path() -> Result<PathBuf, String> {
+fn saved_games_configuration_path() -> Result<PathBuf, String> {
     use std::{
         ffi::{c_void, OsString},
         os::windows::ffi::OsStringExt,
@@ -394,7 +410,7 @@ pub fn configuration_path() -> Result<PathBuf, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn configuration_path() -> Result<PathBuf, String> {
+fn saved_games_configuration_path() -> Result<PathBuf, String> {
     Err("original Saved Games configuration discovery requires Windows".into())
 }
 
@@ -484,7 +500,10 @@ pub fn view_settings_with_visuals(source: &str, visuals: &str) -> Result<ViewSet
 
 pub fn read_view_settings_with_visuals(visuals: &str) -> Result<(PathBuf, ViewSettings), String> {
     let (path, source) = read_configuration()?;
-    Ok((path, view_settings_with_visuals(source.as_deref().unwrap_or(""), visuals)?))
+    Ok((
+        path,
+        view_settings_with_visuals(source.as_deref().unwrap_or(""), visuals)?,
+    ))
 }
 
 #[cfg(test)]
@@ -498,13 +517,18 @@ mod tests {
         let settings = super::view_settings_with_visuals(
             "r_viewDistPreset \"5\"\nr_lodZoomMultiplicator \"1.5\"\n",
             visuals,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(settings.lod_zoom_multiplier, 0.6);
         assert_eq!(settings.umbra_gate_visibility_ratio, 0.0);
-        let defaults = super::view_settings_with_visuals("r_viewDistPreset \"1\"", visuals).unwrap();
+        let defaults =
+            super::view_settings_with_visuals("r_viewDistPreset \"1\"", visuals).unwrap();
         assert_eq!(defaults.lod_zoom_multiplier, 7000.0);
         assert_eq!(defaults.umbra_gate_visibility_ratio, 1.0);
-        assert_eq!(super::view_settings_with_visuals("", visuals).unwrap(), super::view_settings("").unwrap());
+        assert_eq!(
+            super::view_settings_with_visuals("", visuals).unwrap(),
+            super::view_settings("").unwrap()
+        );
         assert!(super::view_settings_with_visuals("r_viewDistPreset \"7\"", visuals).is_err());
     }
 

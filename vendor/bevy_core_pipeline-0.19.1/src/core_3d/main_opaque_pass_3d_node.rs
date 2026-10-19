@@ -61,17 +61,59 @@ pub fn main_opaque_pass_3d(
     let diagnostics = ctx.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
 
-    let color_attachments = [Some(target.get_color_attachment())];
-    let depth_stencil_attachment = Some(depth.get_attachment(StoreOp::Store));
+    let mut color_attachments = [Some(target.get_color_attachment())];
+    let mut depth_stencil_attachment = Some(depth.get_attachment(StoreOp::Store));
 
-    let mut render_pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
+    if let Some(chunk_size) = world.get_resource::<bevy_render::render_phase::CameraDrawChunking>()
+        && chunk_size.batch_size() > 0
+        && diagnostics.is_none()
+        && depth.texture.sample_count() == 1
+        && skybox_pipeline.is_none()
+        && opaque_phase.direct_batch_count().is_some()
+        && alpha_mask_phase.direct_batch_count().is_some()
+    {
+        let viewport =
+            Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override);
+        if let Err(err) = bevy_render::render_phase::render_binned_phase_in_chunks(
+            opaque_phase,
+            &mut ctx,
+            world,
+            view_entity,
+            "main_opaque_pass_3d",
+            &mut color_attachments,
+            &mut depth_stencil_attachment,
+            viewport.as_ref(),
+            chunk_size.batch_size(),
+        ) {
+            error!("Error encountered while rendering the opaque phase {err:?}");
+        }
+        if !alpha_mask_phase.is_empty() {
+            if let Err(err) = bevy_render::render_phase::render_binned_phase_in_chunks(
+                alpha_mask_phase,
+                &mut ctx,
+                world,
+                view_entity,
+                "main_alpha_mask_pass_3d",
+                &mut color_attachments,
+                &mut depth_stencil_attachment,
+                viewport.as_ref(),
+                chunk_size.batch_size(),
+            ) {
+                error!("Error encountered while rendering the alpha mask phase {err:?}");
+            }
+        }
+        return;
+    }
+
+    let descriptor = RenderPassDescriptor {
         label: Some("main_opaque_pass_3d"),
         color_attachments: &color_attachments,
         depth_stencil_attachment,
         timestamp_writes: None,
         occlusion_query_set: None,
         multiview_mask: None,
-    });
+    };
+    let mut render_pass = ctx.begin_tracked_render_pass(descriptor);
     let pass_span = diagnostics.pass_span(&mut render_pass, "main_opaque_pass_3d");
 
     if let Some(viewport) =

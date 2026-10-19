@@ -2,10 +2,11 @@
 use super::*;
 use crate::render_shadow::AtlasAllocation;
 use crate::shadow_depth_copy::NativeShadowDepthCopy;
+use std::collections::HashMap;
 #[path = "local/receiver_trace.rs"]
 mod receiver_trace;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeLocalShadowRegion {
     pub atlas: AtlasAllocation,
     pub cache: Option<AtlasAllocation>,
@@ -67,6 +68,44 @@ struct LocalGpu {
     valid: HashMap<u32, bool>,
     receiver_error: Option<String>,
     receiver_reported: bool,
+    retained_atlas: Option<RetainedLocalAtlas>,
+    atlas_reused: u64,
+}
+
+/// Atlas pixels can survive an idle frame only after a successful submission
+/// with these exact GPU owners, cache rectangles and copy state. No caster
+/// commands or missing static-cache allocations may be skipped.
+#[derive(PartialEq, Eq)]
+struct RetainedLocalAtlas {
+    atlas: bevy::render::render_resource::TextureId,
+    cache: bevy::render::render_resource::TextureId,
+    copy_state: [u32; 9],
+    regions: Vec<NativeLocalShadowRegion>,
+}
+impl RetainedLocalAtlas {
+    fn idle(
+        frame: &NativeLocalShadowSubmission,
+        atlas: bevy::render::render_resource::TextureId,
+        cache: bevy::render::render_resource::TextureId,
+        valid: &HashMap<u32, bool>,
+    ) -> Option<Self> {
+        if frame.layers.iter().any(|layer| !layer.instances.is_empty())
+            || frame.regions.iter().any(|region| {
+                region.static_instances != 0
+                    || region
+                        .cache
+                        .is_some_and(|allocation| !valid.contains_key(&allocation.id))
+            })
+        {
+            return None;
+        }
+        Some(Self {
+            atlas,
+            cache,
+            copy_state: frame.copy_state,
+            regions: frame.regions.clone(),
+        })
+    }
 }
 
 pub(super) fn install(app: &mut App) {
@@ -234,6 +273,7 @@ fn map_hdr_trace(mut trace: ResMut<HdrTrace>) {
 fn trace_material_readiness(
     materials: Res<bevy::pbr::RenderMaterialBindings>,
     pipelines: Res<bevy::render::render_resource::PipelineCache>,
+    depth_keys: Option<Res<bevy::pbr::DepthPrepassMaterialKeys>>,
     mut tick: Local<u32>,
 ) {
     if std::env::var_os("DH2_TRACE_MATERIAL_READINESS").is_none() {
@@ -255,6 +295,13 @@ fn trace_material_readiness(
         "Native material readiness: {} bindings, pipelines ready/error/pending={counts:?}",
         materials.len()
     );
+    if let Some(keys) = depth_keys {
+        eprintln!(
+            "Depth specialization: normalized_keys={} omitted_materials={}",
+            keys.normalized_keys(),
+            keys.omitted_materials()
+        );
+    }
 }
 
 fn update_capture_readiness(
@@ -410,6 +457,7 @@ fn draw(
     let Some(records) = prepare_native_shadow_records(
         &frame.layers,
         frame.depth_32_bits,
+        false,
         uniform,
         stride,
         &mut gpu.programs,
@@ -422,126 +470,115 @@ fn draw(
     ) else {
         return;
     };
+    let idle_atlas = (std::env::var("DH2_REUSE_LOCAL_SHADOW_ATLAS").as_deref() != Ok("0"))
+        .then(|| {
+            RetainedLocalAtlas::idle(frame, atlas.texture.id(), cache.texture.id(), &gpu.valid)
+        })
+        .flatten();
+    let reuse_atlas = idle_atlas.is_some() && gpu.retained_atlas.as_ref() == idle_atlas.as_ref();
+    // Invalidate before recording: even a partially recorded failed submission
+    // can touch the atlas. Only a fully successful frame may establish reuse.
+    gpu.retained_atlas = None;
     let LocalGpu {
         programs,
         arrays,
         copy,
         valid,
+        retained_atlas,
+        atlas_reused,
         ..
     } = &mut *gpu;
     let (atlas, cache) = arrays.as_ref().unwrap();
     let copy = &copy.as_ref().unwrap().1;
-    let diagnostics = context.diagnostic_recorder();
-    let diagnostics = diagnostics.as_deref();
-    let span = diagnostics.time_span(context.command_encoder(), "native_local_shadows");
-    let encoder = context.command_encoder();
-    //32d6e0 clears each complete atlas slice once, before static regions.
-    let clear = NativeShadowLayerOps {
-        depth: NativeShadowLoad::Clear(1.0),
-        stencil: NativeStencilLoad::Clear(0),
-    };
-    for slice in 0..atlas.size.depth_or_array_layers {
-        clear_empty_layer(encoder, atlas, slice, clear);
-    }
-    if replace {
-        for slice in 0..cache.size.depth_or_array_layers {
-            clear_empty_layer(encoder, cache, slice, clear);
+    let result = if reuse_atlas {
+        *atlas_reused += 1;
+        if *atlas_reused % 300 == 1 && std::env::var_os("DH2_TRACE_LOCAL_ATLAS_REUSE").is_some() {
+            eprintln!("LOCAL_ATLAS_REUSE idle_frames={}", *atlas_reused);
         }
-    }
-    let result = (|| -> Result<(), String> {
-        for (region_index, region) in frame.regions.iter().enumerate() {
-            let mut draws = Vec::new();
-            for record in records.iter().filter(|record| record.0 == region_index) {
-                let (
-                    _,
-                    instance,
-                    key,
-                    slot,
-                    vertex,
-                    base_vertex,
-                    index,
-                    indices,
-                    format,
-                    resources,
-                ) = record;
-                draws.push((
-                    *key,
-                    NativeOpaqueShadowDraw {
-                        model_state: &programs.pipelines[key].bindings[slot],
-                        program_resources: resources.as_ref(),
-                        vertex_buffer: vertex,
-                        index_buffer: index,
-                        index_format: *format,
-                        indices: indices.clone(),
-                        base_vertex: *base_vertex,
-                        instances: 0..match &instance.per_instance_cb {
-                            NativeShadowInstanceConstants::World { instance_count, .. }
-                            | NativeShadowInstanceConstants::WorldVegetation {
-                                instance_count,
-                                ..
-                            } => *instance_count,
-                            _ => 1,
-                        },
-                        scissor: instance.scissor,
-                    },
-                ));
+        Ok(())
+    } else {
+        let diagnostics = context.diagnostic_recorder();
+        let diagnostics = diagnostics.as_deref();
+        let span = diagnostics.time_span(context.command_encoder(), "native_local_shadows");
+        let encoder = context.command_encoder();
+        //32d6e0 clears each complete atlas slice once, before static regions.
+        let clear = NativeShadowLayerOps {
+            depth: NativeShadowLoad::Clear(1.0),
+            stencil: NativeStencilLoad::Clear(0),
+        };
+        for slice in 0..atlas.size.depth_or_array_layers {
+            clear_empty_layer(encoder, atlas, slice, clear);
+        }
+        if replace {
+            for slice in 0..cache.size.depth_or_array_layers {
+                clear_empty_layer(encoder, cache, slice, clear);
             }
-            if region.static_instances > draws.len() {
-                return Err("native local static/dynamic boundary exceeds draws".into());
-            }
-            let mut dynamic = draws.split_off(region.static_instances);
-            if let Some(allocation) = region.cache {
-                if !valid.contains_key(&allocation.id) {
-                    // A newly assigned rectangle can contain an older light.
-                    // Initialize it from this frame's cleared atlas region
-                    // before loading the cache attachment for caster draws.
+        }
+        let result = (|| -> Result<(), String> {
+            for (region_index, region) in frame.regions.iter().enumerate() {
+                let mut draws = Vec::new();
+                for record in records.iter().filter(|record| record.layer == region_index) {
+                    draws.push((record.pipeline, record.draw(&programs.pipelines)));
+                }
+                if region.static_instances > draws.len() {
+                    return Err("native local static/dynamic boundary exceeds draws".into());
+                }
+                let mut dynamic = draws.split_off(region.static_instances);
+                if let Some(allocation) = region.cache {
+                    if !valid.contains_key(&allocation.id) {
+                        // A newly assigned rectangle can contain an older light.
+                        // Initialize it from this frame's cleared atlas region
+                        // before loading the cache attachment for caster draws.
+                        copy.copy(
+                            &device,
+                            encoder,
+                            atlas,
+                            region.atlas.slice as u32,
+                            region.atlas.rect,
+                            cache,
+                            allocation.slice as u32,
+                            allocation.rect,
+                        )?;
+                        draw_region(encoder, cache, allocation, &programs.pipelines, &mut draws)?;
+                        valid.insert(allocation.id, region.contains_models);
+                    }
                     copy.copy(
                         &device,
                         encoder,
-                        atlas,
-                        region.atlas.slice as u32,
-                        region.atlas.rect,
                         cache,
                         allocation.slice as u32,
                         allocation.rect,
+                        atlas,
+                        region.atlas.slice as u32,
+                        region.atlas.rect,
                     )?;
-                    draw_region(encoder, cache, allocation, &programs.pipelines, &mut draws)?;
-                    valid.insert(allocation.id, region.contains_models);
+                } else {
+                    draw_region(
+                        encoder,
+                        atlas,
+                        region.atlas,
+                        &programs.pipelines,
+                        &mut draws,
+                    )?;
                 }
-                copy.copy(
-                    &device,
-                    encoder,
-                    cache,
-                    allocation.slice as u32,
-                    allocation.rect,
-                    atlas,
-                    region.atlas.slice as u32,
-                    region.atlas.rect,
-                )?;
-            } else {
                 draw_region(
                     encoder,
                     atlas,
                     region.atlas,
                     &programs.pipelines,
-                    &mut draws,
+                    &mut dynamic,
                 )?;
             }
-            draw_region(
-                encoder,
-                atlas,
-                region.atlas,
-                &programs.pipelines,
-                &mut dynamic,
-            )?;
-        }
-        Ok(())
-    })();
-    span.end(context.command_encoder());
+            Ok(())
+        })();
+        span.end(context.command_encoder());
+        result
+    };
     if let Err(error) = result {
         bevy::log::error!("native local atlas submission failed: {error}");
         return;
     }
+    *retained_atlas = idle_atlas;
     valid.retain(|id, _| {
         frame
             .regions
@@ -557,7 +594,11 @@ fn draw(
         ));
     }
     if programs.last_revision.is_none() {
-        println!("Native local shadow GPU atlas online: {} regions, {} completed static cache allocations",frame.regions.len(),valid.len());
+        println!(
+            "Native local shadow GPU atlas online: {} regions, {} completed static cache allocations",
+            frame.regions.len(),
+            valid.len()
+        );
     }
     programs.last_revision = Some(frame.revision);
     let result = (|| -> Result<(), String> {
@@ -624,7 +665,10 @@ fn draw(
         }
         queue.write_buffer(&buffer.buffer, 0, &bytes);
         if !gpu.receiver_reported {
-            println!("Native local shadow receiver online: {matched} actual clustered light indices, {} native shadow records",receiver.shadows.len());
+            println!(
+                "Native local shadow receiver online: {matched} actual clustered light indices, {} native shadow records",
+                receiver.shadows.len()
+            );
             gpu.receiver_reported = true;
         }
         Ok(())
@@ -644,8 +688,8 @@ fn draw_region(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
     target: &NativeShadowDepthArray,
     allocation: AtlasAllocation,
-    pipelines: &HashMap<PipelineKey, CachedPipeline>,
-    draws: &mut [(PipelineKey, NativeOpaqueShadowDraw<'_>)],
+    pipelines: &ShadowPipelineStore,
+    draws: &mut [(PipelineId, NativeOpaqueShadowDraw<'_>)],
 ) -> Result<(), String> {
     let [x, y, x1, y1] = allocation.rect;
     let scissor = NativeShadowScissor {
@@ -659,7 +703,7 @@ fn draw_region(
     }
     let sequence = draws
         .iter()
-        .map(|(key, draw)| (&pipelines[key].pipeline, &*draw))
+        .map(|(key, draw)| (&pipelines.by_id(*key).pipeline, &*draw))
         .collect::<Vec<_>>();
     NativeOpaqueShadowPipeline::draw_layer_region_sequence(
         encoder,
@@ -669,3 +713,7 @@ fn draw_region(
         &sequence,
     )
 }
+
+#[cfg(test)]
+#[path = "local/atlas_reuse_tests.rs"]
+mod atlas_reuse_tests;

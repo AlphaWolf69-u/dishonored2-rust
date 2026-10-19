@@ -182,6 +182,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
             },
             None,
             &[NativeOpaqueShadowDraw {
+                model_state_offset: 0,
                 model_state: &model,
                 program_resources: Some(&resources),
                 vertex_buffer: &vertices,

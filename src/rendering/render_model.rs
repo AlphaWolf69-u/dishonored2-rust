@@ -1709,7 +1709,92 @@ pub fn native_unit_aabb_clip_cull(
     native_transformed_aabb_clip_cull_bounds(matrix, minimum, maximum, 0.0, true)
 }
 
+#[inline]
 fn native_transformed_aabb_clip_cull_bounds(
+    matrix: &[f32; 16],
+    minimum: [f32; 3],
+    maximum: [f32; 3],
+    near_depth: f32,
+    unit_xy: bool,
+) -> NativeAabbClipCullResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SSE is part of the x86-64 baseline. Each lane is one original
+        // corner; preserve 109e40/10a0d0's multiply/add order and ordered
+        // comparisons, including NaNs and exact plane boundaries.
+        unsafe { aabb_clip_cull_sse(matrix, minimum, maximum, near_depth, unit_xy) }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        aabb_clip_cull_scalar(matrix, minimum, maximum, near_depth, unit_xy)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn aabb_clip_cull_sse(
+    matrix: &[f32; 16],
+    minimum: [f32; 3],
+    maximum: [f32; 3],
+    near_depth: f32,
+    unit_xy: bool,
+) -> NativeAabbClipCullResult {
+    use core::arch::x86_64::*;
+    // All array accesses have fixed, in-range indices; these operations use
+    // registers, with no alignment assumptions or changes to the FP mode.
+    unsafe {
+        let x = _mm_setr_ps(minimum[0], maximum[0], minimum[0], maximum[0]);
+        let y = _mm_setr_ps(minimum[1], minimum[1], maximum[1], maximum[1]);
+        let xy: [__m128; 4] = std::array::from_fn(|row| {
+            let at = row * 4;
+            _mm_add_ps(
+                _mm_add_ps(
+                    _mm_mul_ps(_mm_set1_ps(matrix[at]), x),
+                    _mm_set1_ps(matrix[at + 3]),
+                ),
+                _mm_mul_ps(_mm_set1_ps(matrix[at + 1]), y),
+            )
+        });
+        let mut inside = [0; 6];
+        for z in [minimum[2], maximum[2]] {
+            let z = _mm_set1_ps(z);
+            let c: [__m128; 4] = std::array::from_fn(|row| {
+                _mm_add_ps(_mm_mul_ps(_mm_set1_ps(matrix[row * 4 + 2]), z), xy[row])
+            });
+            let lower = if unit_xy {
+                _mm_setzero_ps()
+            } else {
+                _mm_xor_ps(c[3], _mm_set1_ps(-0.0))
+            };
+            let tests = [
+                _mm_cmplt_ps(lower, c[0]),
+                _mm_cmplt_ps(c[0], c[3]),
+                _mm_cmplt_ps(lower, c[1]),
+                _mm_cmplt_ps(c[1], c[3]),
+                _mm_cmplt_ps(_mm_set1_ps(near_depth), c[2]),
+                _mm_cmplt_ps(c[2], c[3]),
+            ];
+            for (inside, test) in inside.iter_mut().zip(tests) {
+                *inside |= _mm_movemask_ps(test);
+            }
+        }
+        let inside_mask = inside
+            .into_iter()
+            .enumerate()
+            .fold(0u8, |mask, (bit, value)| {
+                mask | (u8::from(value != 0) << bit)
+            });
+        let outside_plane_mask = inside_mask ^ 0x3f;
+        NativeAabbClipCullResult {
+            outside_plane_mask,
+            output_byte: outside_plane_mask,
+            culled: inside_mask != 0x3f,
+        }
+    }
+}
+
+#[cfg(any(test, not(target_arch = "x86_64")))]
+fn aabb_clip_cull_scalar(
     matrix: &[f32; 16],
     minimum: [f32; 3],
     maximum: [f32; 3],
@@ -2909,6 +2994,44 @@ mod zprepass_list_tests {
             });
         assert_eq!(error, Err("callback error".to_owned()));
         assert_eq!(visits, 2);
+    }
+
+    #[test]
+    fn vectorized_aabb_clip_preserves_scalar_masks_for_float_edge_cases() {
+        let mut seed = 0xc9e354a7u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let values = [
+                0.0,
+                -0.0,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::from_bits(0x7fc01234),
+                f32::from_bits(1),
+                -f32::from_bits(1),
+            ];
+            if seed & 15 == 0 {
+                values[(seed as usize >> 4) % values.len()]
+            } else {
+                f32::from_bits(seed)
+            }
+        };
+        for _ in 0..16384 {
+            let matrix = std::array::from_fn(|_| next());
+            let minimum = std::array::from_fn(|_| next());
+            let maximum = std::array::from_fn(|_| next());
+            let near = next();
+            for unit in [false, true] {
+                assert_eq!(
+                    super::native_transformed_aabb_clip_cull_bounds(
+                        &matrix, minimum, maximum, near, unit
+                    ),
+                    super::aabb_clip_cull_scalar(&matrix, minimum, maximum, near, unit)
+                );
+            }
+        }
     }
 
     #[test]

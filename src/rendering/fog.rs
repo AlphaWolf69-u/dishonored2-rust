@@ -1,4 +1,6 @@
-//! Interior fog-volume depth accumulation, separate from forward colour.
+//! Authored atmosphere calculations, separate from forward surface lighting.
+
+pub mod world;
 
 /// Signed linear-depth contribution to the separate interior fog-volume target.
 /// arkInteriorVolume writes ONE/ONE, with depth testing/writes disabled. This

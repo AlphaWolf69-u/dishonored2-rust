@@ -245,10 +245,7 @@ pub(super) fn resolve_native_shadow_material_parameters(
                 .map(|words| (name.to_vec(), words))
         })
         .collect::<Result<_, _>>()?;
-    Ok(NativeShadowMaterialParameters {
-        overrides,
-        defaults,
-    })
+    Ok(NativeShadowMaterialParameters::new(overrides, defaults))
 }
 
 pub(super) fn native_material_option_overrides(
@@ -765,7 +762,10 @@ impl MaterialResolver<'_> {
         // other material parameter. Program/parameter names are case-insensitive;
         // real arkdecal declarations need the same offset as arkDecal.
         let is_decal = program_is_decal
-            || surface.main_program.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("arkDecal"));
+            || surface
+                .main_program
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("arkDecal"));
         let decal_bias = if is_decal {
             match self.float_vectors(bytes, ["zbias"]) {
                 Ok([value]) => value[0],

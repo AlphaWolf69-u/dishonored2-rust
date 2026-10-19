@@ -64,6 +64,7 @@ pub(super) struct TomeWorld {
     pub(super) query_data: tome::DirectTomeQueryData,
     pub(super) sphere_graph: Result<tome::SphereCellGraph, String>,
     pub(super) query_job_count: u32,
+    pub(super) query_pool: Option<bevy::tasks::TaskPool>,
 }
 
 #[derive(Resource)]

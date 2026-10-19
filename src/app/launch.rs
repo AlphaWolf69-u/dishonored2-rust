@@ -153,9 +153,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve the user's ORIGINAL quality cvar and the installed declaration
     // once. No per-frame filesystem/catalog scans and no copied capture values.
     let original_shadow_settings = game_settings::read_shadow_settings();
-    let rewrite_shadow_settings = crate::platform::rewrite_settings::RewriteShadowSettings::from_environment()?;
-    println!("Sun shadow caster minimum: {} m (0 restores authored game ranges)",
-        rewrite_shadow_settings.minimum_sun_caster_extent);
+    let rewrite_shadow_settings =
+        crate::platform::rewrite_settings::RewriteShadowSettings::from_environment()?;
+    println!(
+        "Sun shadow caster minimum: {} m (0 restores authored game ranges)",
+        rewrite_shadow_settings.minimum_sun_caster_extent
+    );
     let shadow_depth_bias_clamp = original_shadow_settings
         .as_ref()
         .ok()
@@ -293,15 +296,21 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => None,
     };
-    let (environment_lighting, environment_render_parameters, environment_blend_duration) = environment_data
-        .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
-        .unwrap_or((None, None, 1.0));
+    let (environment_lighting, environment_render_parameters, environment_blend_duration) =
+        environment_data
+            .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
+            .unwrap_or((None, None, 1.0));
     let area_environments = match (entity_document.as_ref(), catalog.as_ref()) {
-        (Some(document), Some(catalog)) => crate::rendering::environment::load_area_environments(document, catalog)
-            .map_err(std::io::Error::other)?,
+        (Some(document), Some(catalog)) => {
+            crate::rendering::environment::load_area_environments(document, catalog)
+                .map_err(std::io::Error::other)?
+        }
         _ => Vec::new(),
     };
-    println!("Loaded {} area environment trigger shapes", area_environments.len());
+    println!(
+        "Loaded {} area environment trigger shapes",
+        area_environments.len()
+    );
     let probe_start = Instant::now();
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
@@ -407,6 +416,19 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => eprintln!("Native shadow Tome cache unavailable: {error}"),
         }
+        let query_threads = env::var("DH2_TOME_QUERY_THREADS")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()?
+            .unwrap_or(0);
+        if query_threads > 32 {
+            return Err("Tome query worker count exceeds 32".into());
+        }
+        let query_pool = (query_threads > 0).then(|| {
+            println!("Host Tome query workers: {query_threads} dedicated; {query_job_count} unchanged query jobs");
+            bevy::tasks::TaskPoolBuilder::new().num_threads(query_threads)
+                .thread_name("Tome Query".into()).build()
+        });
         app.insert_resource(TomeWorld {
             sphere_graph: tome::SphereCellGraph::parse(&tome_bytes),
             bytes: tome_bytes,
@@ -414,6 +436,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             gate_states,
             query_data,
             query_job_count,
+            query_pool,
         });
     } else {
         println!(
@@ -635,6 +658,29 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         app.insert_resource(BenchmarkSeconds(total, warmup));
     }
+    // An explicit host benchmark size keeps pixel/LOD work independent of
+    // desktop resolution and DPI. Ordinary launches retain borderless mode.
+    let benchmark_resolution = if let Ok(size) = env::var("DH2_BENCHMARK_SIZE") {
+        let (width, height) = size
+            .split_once('x')
+            .ok_or("DH2_BENCHMARK_SIZE must be WIDTHxHEIGHT")?;
+        let (width, height) = (width.parse::<u32>()?, height.parse::<u32>()?);
+        if width == 0 || height == 0 {
+            return Err("benchmark dimensions must be positive".into());
+        }
+        Some(bevy::window::WindowResolution::new(width, height).with_scale_factor_override(1.0))
+    } else {
+        None
+    };
+    let mut graphics = bevy::render::settings::WgpuSettings::default();
+    #[cfg(target_os = "windows")]
+    if env::var_os("WGPU_BACKEND").is_none() {
+        graphics.backends = Some(bevy::render::settings::Backends::DX12);
+    }
+    graphics.features |= bevy::render::settings::WgpuFeatures::DEPTH_CLIP_CONTROL
+        | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8;
+    #[cfg(target_os = "windows")]
+    crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(NativeProgramCacheSource(program_cache))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
@@ -672,7 +718,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     primary_window: Some(bevy::window::Window {
                         // Match the installed game's measured r_fullscreen=2 borderless mode.
                         // DH2_BORDERLESS=0 remains available for windowed debugging.
-                        mode: if env::var("DH2_BORDERLESS").as_deref() != Ok("0") {
+                        resolution: benchmark_resolution.clone().unwrap_or_default(),
+                        decorations: benchmark_resolution.is_none(),
+                        resizable: benchmark_resolution.is_none(),
+                        mode: if benchmark_resolution.is_some() {
+                            bevy::window::WindowMode::Windowed
+                        } else if env::var("DH2_BORDERLESS").as_deref() != Ok("0") {
                             bevy::window::WindowMode::BorderlessFullscreen(
                                 bevy::window::MonitorSelection::Primary,
                             )
@@ -694,20 +745,24 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .set(bevy::render::RenderPlugin {
                     render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
-                        bevy::render::settings::WgpuSettings {
-                            // Original shadow world draws disable depth clipping.
-                            // The captured `decompressedDepth` input uses an
-                            // R24G8 typeless depth-stencil backing (not a DXGI
-                            // format number passed through unchanged).
-                            features: bevy::render::settings::WgpuSettings::default().features
-                                | bevy::render::settings::WgpuFeatures::DEPTH_CLIP_CONTROL
-                                | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8,
-                            ..default()
-                        },
+                        graphics,
                     )),
                     ..default()
                 }),
         );
+    // LogTracer initializes `log` at TRACE even when tracing rejects TRACE.
+    // wgpu constructs owned resource labels before that later rejection.
+    // Match the subscriber's actual upper bound before formatting log args;
+    // explicitly enabled debug/trace output remains available.
+    log::set_max_level(
+        bevy::log::tracing_subscriber::filter::LevelFilter::current()
+            .to_string()
+            .parse()
+            .unwrap_or(log::LevelFilter::Trace),
+    );
+    if env::var("DH2_CPU_PROFILE").as_deref() == Ok("1") {
+        println!("CPU_PROFILE log_max_level={}", log::max_level());
+    }
     if env::var("DH2_RENDER_PROFILE").as_deref() == Ok("1") {
         println!(
             "Bevy render profiling enabled (GPU timestamps and pipeline stats require Vulkan or DX12)"
@@ -716,13 +771,65 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
             bevy::render::diagnostic::RenderDiagnosticsPlugin,
         ));
+    }
+    if env::var("DH2_RENDER_PROFILE").as_deref() == Ok("1")
+        || env::var("DH2_CPU_PROFILE").as_deref() == Ok("1")
+    {
         frame_profile::install(&mut app);
+    }
+    let parallel_finalization = env::var("DH2_PARALLEL_COMMAND_FINALIZATION")
+        .map_or(cfg!(target_os = "windows"), |value| value != "0");
+    if let Some(chunk_size) = env::var("DH2_CAMERA_DRAW_CHUNK_SIZE")
+        .ok()
+        .or_else(|| {
+            (cfg!(target_os = "windows") && parallel_finalization).then(|| "1024".to_owned())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|size| *size > 0 && *size <= 16384)
+    {
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.insert_resource(bevy::render::render_phase::CameraDrawChunking::new(
+                chunk_size,
+            ));
+        }
+    }
+    let shared_depth = env::var("DH2_SHARE_DEPTH_PIPELINES").as_deref() != Ok("0");
+    let material_free_depth = env::var("DH2_MATERIAL_FREE_DEPTH").as_deref() != Ok("0");
+    if shared_depth {
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render.insert_resource(super::materials::depth_prepass_material_keys(
+                material_free_depth,
+            ));
+        }
+    }
+    if parallel_finalization {
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.insert_resource(bevy::render::renderer::ParallelCommandFinalization);
+        }
+    }
+    if let Some(threads) = env::var("DH2_RENDER_FINALIZATION_THREADS")
+        .ok()
+        .or_else(|| {
+            (cfg!(target_os = "windows")
+                && std::thread::available_parallelism().is_ok_and(|count| count.get() >= 4))
+            .then(|| "1".to_owned())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0 && *threads <= 32)
+    {
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render.add_systems(bevy::render::RenderStartup,
+                (move |mut pending: ResMut<bevy::render::renderer::PendingCommandBuffers>| {
+                    pending.set_finalization_threads(threads);
+                }).after(bevy::render::init_gpu_resource::<bevy::render::renderer::PendingCommandBuffers>));
+        }
     }
     app.add_plugins(auto_exposure::NativeExposurePlugin)
         .add_plugins(game_clock_runtime::NativeClockRuntimePlugin)
         .add_plugins(shadow_pass::NativeShadowScenePlugin)
         .add_plugins(screen_shadow_pass::NativeScreenShadowScenePlugin)
         .add_plugins(coarse_depth::NativeCoarseDepthPlugin)
+        .init_resource::<super::scene_queue::VisibleSceneInstances>()
         .init_resource::<shadow_updates::NativeParallelShadowCpu>()
         .init_resource::<local_shadow_updates::NativeLocalShadowCpu>()
         .init_resource::<local_shadow_updates::NativeLocalShadowViewControls>()

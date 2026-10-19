@@ -19,6 +19,7 @@
 !/analysis/
 !/analysis/shadow_pcf_probe.py
 !/tests/
+!/tests/render_command_reuse.rs
 !/tests/fixtures/
 !/tests/fixtures/**
 !/docs/

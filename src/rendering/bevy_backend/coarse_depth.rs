@@ -826,7 +826,9 @@ fn render_native_coarse_depth(
     mut context: RenderContext,
     mut last_error: Local<Option<String>>,
     readiness: Option<Res<crate::shadow_pass::NativeShadowCaptureReadiness>>,
+    profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
+    let _span = profile.as_deref().map(|profile| profile.measure(43));
     // The original has resident shaders before drawing gameplay depth. An
     // asynchronously compiling forward pass supplies an incomplete depth image
     // and must not seed the native persistent cascade/movement cache.

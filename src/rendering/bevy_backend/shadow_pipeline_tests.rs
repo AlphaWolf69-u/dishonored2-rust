@@ -566,9 +566,8 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     assert!(pipeline
         .bind_prepared_model_state_at(device, &state, u64::MAX)
         .is_err());
-    let model_state = pipeline
-        .bind_prepared_model_state_at(device, &state, state_offset)
-        .unwrap();
+    // The shared descriptor must select the second record through its dynamic offset.
+    let model_state = pipeline.bind_prepared_model_state(device, &state).unwrap();
     // Existing rewrite meshes are not the original captured 32-byte stream.
     // Use an unchanged 60-byte owner buffer, with the same float3 positions.
     let owner_layout = RawVertexBufferLayout {
@@ -614,6 +613,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .bind_prepared_model_state_at(device, &state, state_offset)
         .unwrap();
     let draw = NativeOpaqueShadowDraw {
+        model_state_offset: state_offset as u32,
         model_state: &model_state,
         program_resources: None,
         vertex_buffer: &vertices,
@@ -751,6 +751,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .unwrap();
     probe_depth(&mut encoder, 16);
     let owner_draw = NativeOpaqueShadowDraw {
+        model_state_offset: 0,
         model_state: &owner_model_state,
         program_resources: None,
         vertex_buffer: &owner_vertices,
@@ -864,6 +865,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
             .bind_alpha_material(device, &diffuse_view, &bilinear, &uv_state)
             .unwrap();
         let draw = NativeOpaqueShadowDraw {
+            model_state_offset: 0,
             model_state: &alpha_model,
             program_resources: Some(&material),
             vertex_buffer: &owner_vertices,
@@ -923,6 +925,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .bind_alpha_material(device, &diffuse_view, &bilinear, &large_uv)
         .unwrap();
     let large_uv_draw = NativeOpaqueShadowDraw {
+        model_state_offset: 0,
         model_state: &alpha_model,
         program_resources: Some(&large_uv_material),
         vertex_buffer: &large_uv_vertices,

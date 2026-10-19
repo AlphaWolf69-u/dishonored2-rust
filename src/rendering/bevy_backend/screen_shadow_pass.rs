@@ -323,7 +323,9 @@ fn render_screen_shadow(
     mut gpu: ResMut<ScreenGpu>,
     mut context: RenderContext,
     mut last_error: Local<Option<String>>,
+    profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
+    let _span = profile.as_deref().map(|profile| profile.measure(42));
     let Some(frame) = frame else {
         return;
     };

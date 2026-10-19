@@ -1,6 +1,8 @@
 //! Visibility instances.
 use super::{texture, tome, world_mesh, HashMap, HashSet, MaterialHandle, RenderInstance};
 use bevy::prelude::*;
+mod texture_demands;
+pub(super) use texture_demands::PreparedTextureDemands;
 
 /// Flatten the authored Tome object -> BWM visibility record -> client
 /// render-instance mapping once, preserving the order and multiplicity of
@@ -12,6 +14,7 @@ pub(super) struct TomeRenderInstanceMap {
     pub(super) empty_bwm_groups: Vec<bool>,
     pub(super) spatial_query_instances: Vec<SpatialQueryRenderInstance>,
     pub(super) zero_metric_instances: HashSet<usize>,
+    pub(super) image_demands: Option<PreparedTextureDemands>,
 }
 
 #[derive(Debug)]
@@ -58,6 +61,7 @@ impl TomeRenderInstanceMap {
             empty_bwm_groups: Vec::with_capacity(tome_object_bwm_instances.len()),
             spatial_query_instances: Vec::new(),
             zero_metric_instances: HashSet::new(),
+            image_demands: None,
         };
         for bwm_indices in tome_object_bwm_instances {
             map.empty_bwm_groups.push(bwm_indices.is_empty());
@@ -77,6 +81,16 @@ impl TomeRenderInstanceMap {
             .get(tome_object)
             .map(|range| &self.indices[range.start..range.end])
             .unwrap_or_default()
+    }
+
+    /// Bind after material resolution. Scene replacement constructs a fresh
+    /// map; a material-association change must bind its image table again.
+    pub(super) fn bind_texture_demands(
+        &mut self,
+        instances: &[RenderInstance],
+        bindings: &HashMap<MaterialHandle, Vec<usize>>,
+    ) {
+        self.image_demands = Some(PreparedTextureDemands::new(self, instances, bindings));
     }
 
     /// Apply successful FUN_14037e1d0 query results to their BWM render
@@ -185,34 +199,59 @@ impl TomeRenderInstanceMap {
         if visible_tome_indices.len() != area_metrics.len() {
             return Err("Tome visibility indices and area outputs have different lengths".into());
         }
-        let mut submitted = 0;
-        for (&tome_object, area_metric) in visible_tome_indices.iter().zip(area_metrics) {
-            if tome_object as usize >= self.ranges.len() {
-                return Err("visible Tome index exceeds render-instance mapping".into());
-            }
-            let Some(area_metric) = area_metric else {
-                continue;
-            };
-            for &render_index in self.get(tome_object as usize) {
-                let Some(instance) = render_instances.get(render_index) else {
-                    return Err("Tome render-instance mapping exceeds scene render queue".into());
+        // This consumer runs while the scene queue is exclusively borrowed;
+        // the streaming system clears demands in a different schedule stage.
+        // Fold this sequential producer's repeated image submissions first,
+        // then publish through the same atomic max operation. Other producer
+        // maxima still compose, and no packed streamer metadata is changed.
+        let mut maximum_area = vec![0.0; image_demands.len()];
+        let result = (|| {
+            let mut submitted = 0;
+            for (&tome_object, area_metric) in visible_tome_indices.iter().zip(area_metrics) {
+                if tome_object as usize >= self.ranges.len() {
+                    return Err("visible Tome index exceeds render-instance mapping".into());
+                }
+                let Some(area_metric) = area_metric else {
+                    continue;
                 };
-                let primary = instance.diffuse_image_slot.into_iter().collect::<Vec<_>>();
-                let slots = bindings.get(&instance.material).unwrap_or(&primary);
-                for &image_slot in slots {
-                    let Some(demand) = image_demands.get(image_slot) else {
-                        return Err("render instance references an unknown material image".into());
+                for &render_index in self.get(tome_object as usize) {
+                    let Some(instance) = render_instances.get(render_index) else {
+                        return Err(
+                            "Tome render-instance mapping exceeds scene render queue".into()
+                        );
                     };
-                    // Spatial suppression applies to every shader image role.
-                    demand.submit(if self.zero_metric_instances.contains(&render_index) {
+                    let slots = bindings
+                        .get(&instance.material)
+                        .map(Vec::as_slice)
+                        .unwrap_or_else(|| instance.diffuse_image_slot.as_slice());
+                    let area = if self.zero_metric_instances.contains(&render_index) {
                         0.0
                     } else {
                         *area_metric
-                    });
-                    submitted += 1;
+                    };
+                    for &image_slot in slots {
+                        let Some(maximum) = maximum_area.get_mut(image_slot) else {
+                            return Err(
+                                "render instance references an unknown material image".into()
+                            );
+                        };
+                        // Spatial suppression applies to every shader image role.
+                        if area > *maximum {
+                            *maximum = area;
+                        }
+                        submitted += 1;
+                    }
                 }
             }
+            Ok(submitted)
+        })();
+        // Flush even on an invalid later mapping: retain the original prefix's
+        // updates and error order, rather than discarding a partially valid list.
+        for (demand, area) in image_demands.iter().zip(maximum_area) {
+            if area > 0.0 {
+                demand.submit(area);
+            }
         }
-        Ok(submitted)
+        result
     }
 }

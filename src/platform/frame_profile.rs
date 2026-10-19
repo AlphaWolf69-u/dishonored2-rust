@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 
-pub const LABELS: [&str; 29] = [
+pub const LABELS: [&str; 50] = [
     "main",
     "extract",
     "sync_extract_wait",
@@ -42,6 +42,27 @@ pub const LABELS: [&str; 29] = [
     "native_model_collect",
     "native_parallel_render",
     "native_local_render",
+    "shadow_prepare_records",
+    "shadow_encode_draws",
+    "host_cluster_stage_span",
+    "host_opaque_draws",
+    "host_transparent_draws",
+    "host_camera_driver",
+    "host_core3d_schedule",
+    "host_postprocess",
+    "host_queue_submit",
+    "shadow_cascade_fit",
+    "shadow_receiver",
+    "shadow_tome_gather",
+    "shadow_world_query",
+    "native_screen_shadow_render",
+    "native_coarse_depth_render",
+    "visibility_publish",
+    "visibility_mark_instances",
+    "visibility_spatial_instances",
+    "visibility_texture_demands",
+    "visibility_light_outputs",
+    "visibility_placed_models",
 ];
 pub const COUNT: usize = LABELS.len();
 
@@ -121,9 +142,64 @@ pub fn install(app: &mut App) {
     app.insert_resource(profile.clone());
     app.add_systems(First, start::<0>);
     app.add_systems(Last, end::<0>);
+    app.add_systems(
+        PostUpdate,
+        (
+            start::<31>
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
+                .after(bevy::camera::CameraUpdateSystems)
+                .before(bevy::light::SimulationLightSystems::AssignLightsToClusters),
+            end::<31>.after(bevy::light::SimulationLightSystems::AssignLightsToClusters),
+        ),
+    );
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         wrap_extract(render, profile.clone(), 1);
         render.insert_resource(profile.clone());
+        use bevy::core_pipeline::core_3d::{main_opaque_pass_3d, main_transparent_pass_3d};
+        use bevy::core_pipeline::{Core3d, Core3dSystems};
+        render.add_systems(
+            Core3d,
+            (
+                start::<35>.before(Core3dSystems::Prepass),
+                end::<35>.after(Core3dSystems::PostProcess),
+                start::<36>
+                    .after(Core3dSystems::MainPass)
+                    .before(Core3dSystems::EarlyPostProcess),
+                end::<36>.after(Core3dSystems::PostProcess),
+                start::<32>
+                    .in_set(Core3dSystems::MainPass)
+                    .before(main_opaque_pass_3d),
+                end::<32>
+                    .in_set(Core3dSystems::MainPass)
+                    .after(main_opaque_pass_3d)
+                    .before(main_transparent_pass_3d),
+                start::<33>
+                    .in_set(Core3dSystems::MainPass)
+                    .after(main_opaque_pass_3d)
+                    .before(main_transparent_pass_3d),
+                end::<33>
+                    .in_set(Core3dSystems::MainPass)
+                    .after(main_transparent_pass_3d),
+            ),
+        );
+        render.add_systems(
+            bevy::render::renderer::RenderGraph,
+            (
+                start::<34>
+                    .in_set(bevy::render::renderer::RenderGraphSystems::Render)
+                    .before(bevy::core_pipeline::schedule::camera_driver),
+                end::<34>
+                    .in_set(bevy::render::renderer::RenderGraphSystems::Render)
+                    .after(bevy::core_pipeline::schedule::camera_driver),
+                start::<37>
+                    .after(bevy::render::renderer::RenderGraphSystems::Render)
+                    .before(bevy::render::renderer::RenderGraphSystems::Submit),
+                end::<37>
+                    .after(bevy::render::renderer::RenderGraphSystems::Submit)
+                    .before(bevy::render::renderer::RenderGraphSystems::Finish),
+            ),
+        );
         render.add_systems(First, start::<10>);
         render.add_systems(
             bevy::render::Render,

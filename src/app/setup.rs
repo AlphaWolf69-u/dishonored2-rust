@@ -111,8 +111,9 @@ pub(super) fn setup(
         .and_then(|value| value.parse::<u8>().ok())
         .filter(|&value| value <= 15);
     let lit = env::var("DH2_LIT").as_deref() != Ok("0");
-    // Debug opt-in; each light still honors the authored m_NoShadows flag.
-    let authored_shadows = env::var("DH2_SHADOWS").as_deref() == Ok("1");
+    // The game-derived atlas owners render shadows and honor m_NoShadows.
+    // Backend light components transport radiance only: enabling Bevy maps
+    // creates a second set of shadow views and multiplies local attenuation.
     // Profiling switch: leave probe/environment lighting on while isolating scene lights.
     let scene_lights_enabled = env::var("DH2_SCENE_LIGHTS").as_deref() != Ok("0");
     let trace_startup = env::var("DH2_TRACE_STARTUP").as_deref() == Ok("1");
@@ -1191,7 +1192,7 @@ pub(super) fn setup(
                         DirectionalLight {
                             color: Color::linear_rgb(color[0], color[1], color[2]),
                             illuminance: render_light::ARKANE_TO_WORLD_LUMINANCE,
-                            shadow_maps_enabled: authored_shadows,
+                            shadow_maps_enabled: false,
                             ..default()
                         },
                         Transform::from_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, ray)),
@@ -1303,7 +1304,7 @@ pub(super) fn setup(
                                 decay: light.decay,
                                 falloff_start,
                                 range,
-                                shadow_maps_enabled: authored_shadows && !light.no_shadows,
+                                shadow_maps_enabled: false,
                                 shadow_map_near_z: light
                                     .shadow_near_plane
                                     .unwrap_or(PointLight::DEFAULT_SHADOW_MAP_NEAR_Z),
@@ -1337,7 +1338,7 @@ pub(super) fn setup(
                                 falloff_start,
                                 range,
                                 half_point_data: direction.extend(angular_scale),
-                                shadow_maps_enabled: authored_shadows && !light.no_shadows,
+                                shadow_maps_enabled: false,
                                 shadow_map_near_z: light
                                     .shadow_near_plane
                                     .unwrap_or(PointLight::DEFAULT_SHADOW_MAP_NEAR_Z),
@@ -1381,7 +1382,7 @@ pub(super) fn setup(
                                 range,
                                 inner_angle,
                                 outer_angle,
-                                shadow_maps_enabled: authored_shadows && !light.no_shadows,
+                                shadow_maps_enabled: false,
                                 shadow_map_near_z: light
                                     .shadow_near_plane
                                     .unwrap_or(SpotLight::DEFAULT_SHADOW_MAP_NEAR_Z),
@@ -1454,7 +1455,7 @@ pub(super) fn setup(
                                 // Native lighting uses normalized HDR radiance;
                                 // PostFX/Luminance/common supplies world units.
                                 illuminance: render_light::ARKANE_TO_WORLD_LUMINANCE,
-                                shadow_maps_enabled: authored_shadows && !light.no_shadows,
+                                shadow_maps_enabled: false,
                                 ..default()
                             },
                             Transform::from_translation(position).looking_to(direction, up),
@@ -1466,13 +1467,8 @@ pub(super) fn setup(
             }
         }
         println!(
-            "Resolved authored lights spawned: {spawned}; unsupported shapes, presets, or invalid ranges: {unsupported}; native energy-shortened ranges: {energy_shortened_ranges}; scene lights {}; shadow maps {} (DH2_SHADOWS=1 enables)",
+            "Resolved authored lights spawned: {spawned}; unsupported shapes, presets, or invalid ranges: {unsupported}; native energy-shortened ranges: {energy_shortened_ranges}; scene lights {}; game-derived shadow atlas owners active",
             if scene_lights_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            if authored_shadows {
                 "enabled"
             } else {
                 "disabled"
@@ -1494,7 +1490,7 @@ pub(super) fn setup(
         scene.pickups.len()
     );
     commands.insert_resource(FocusTargets { targets, active });
-    let tome_render_instances =
+    let mut tome_render_instances =
         TomeRenderInstanceMap::from_world_mapping(&scene.world, &bwm_visibility_render_instances);
     let visibility_suppression_groups = scene
         .world
@@ -1521,6 +1517,7 @@ pub(super) fn setup(
         }
     }
     let diffuse_image_count = resolver.diffuse_image_paths.len();
+    tome_render_instances.bind_texture_demands(&render_instances, &native_material_images);
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(NativeShadowModelBoundsSources(native_shadow_model_bounds));
@@ -1584,6 +1581,7 @@ pub(super) fn setup(
         native_material_images,
         diffuse_image_handles: vec![None; diffuse_image_count],
         native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_membership: Vec::new(),
         diffuse_image_pending: vec![None; diffuse_image_count],
         diffuse_mip_states: (0..diffuse_image_count)
             .map(|_| DiffuseMipState::default())

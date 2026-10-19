@@ -422,6 +422,7 @@ pub(super) fn gpu_image_format(format: texture::ImageFormat) -> TextureFormat {
         Rgba8 => TextureFormat::Rgba8Unorm,
         Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
         Rg8 => TextureFormat::Rg8Unorm,
+        R16Float => TextureFormat::R16Float,
         Bgra8 => TextureFormat::Bgra8Unorm,
         Bc1 => TextureFormat::Bc1RgbaUnorm,
         Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
@@ -441,7 +442,7 @@ pub(super) fn gpu_image_format(format: texture::ImageFormat) -> TextureFormat {
 pub(super) fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     match format {
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => Some(4),
-        TextureFormat::Rg8Unorm => Some(2),
+        TextureFormat::Rg8Unorm | TextureFormat::R16Float => Some(2),
         TextureFormat::Bgra8Unorm => Some(4),
         TextureFormat::Bc1RgbaUnorm
         | TextureFormat::Bc1RgbaUnormSrgb
@@ -628,6 +629,7 @@ pub(super) fn stream_visible_textures(
     worker: Option<ResMut<TextureReadWorker>>,
     prepared_images: Option<Res<PreparedImageMailbox>>,
     mut queue: ResMut<SceneRenderQueue>,
+    visible_instances: Option<Res<super::scene_queue::VisibleSceneInstances>>,
     mut images: ResMut<Assets<Image>>,
     mut probe_materials: ResMut<Assets<ProbeMaterial>>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
@@ -639,8 +641,10 @@ pub(super) fn stream_visible_textures(
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
     let mut requested = vec![false; queue.diffuse_image_paths.len()];
-    for instance in &queue.instances {
-        if instance.visible {
+    super::scene_queue::for_each_visible_instance(
+        &queue,
+        visible_instances.as_deref(),
+        |instance| {
             if let Some(slots) = queue.native_material_images.get(&instance.material) {
                 for &slot in slots {
                     requested[slot] = true;
@@ -650,8 +654,8 @@ pub(super) fn stream_visible_textures(
                     *needed = true;
                 }
             }
-        }
-    }
+        },
+    );
     for &slot in &queue.native_shadow_diffuse_slots {
         if let Some(needed) = requested.get_mut(slot) {
             *needed = true;

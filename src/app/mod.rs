@@ -63,8 +63,7 @@ use state::{
 mod shadow_preparation;
 use shadow_preparation::{
     apply_native_rest_pose, build_native_world_layer, initialize_native_parallel_shadow_owner,
-    native_rest_skinning, native_shadow_target_dimensions, prepare_native_world_shadow_masks,
-    prepare_native_world_shadow_masks_with_settings, publish_initial_native_whole_view_depth,
+    native_rest_skinning, native_shadow_target_dimensions, publish_initial_native_whole_view_depth,
     retain_native_model_shadow_position, retain_native_skin_inputs, sync_native_shadow_target,
     CachedMaterial, NativeParallelShadowOwner, NativeProgramCacheSource,
     NativeShadowMaterialInputs, NativeShadowMaterialParameters, NativeShadowMaterials,

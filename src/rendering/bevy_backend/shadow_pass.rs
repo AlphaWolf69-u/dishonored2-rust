@@ -10,6 +10,8 @@ use crate::shadow_pipeline::{
     NativeOpaqueShadowPipeline, NativeShadowDepthArray, NativeShadowDepthProgram,
     NativeShadowScissor,
 };
+use bevy::platform::collections::HashMap;
+mod pipeline_store;
 use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::{
     app::{App, Plugin},
@@ -33,11 +35,13 @@ use bevy::{
         Render, RenderApp, RenderSystems,
     },
 };
-use std::collections::HashMap;
+use pipeline_store::{PipelineId, ShadowPipelineStore};
 use std::sync::{Arc, Mutex};
 
 #[path = "shadow_pass/local.rs"]
 mod local;
+#[path = "shadow_pass/prepared_cache.rs"]
+mod prepared_cache;
 pub use local::{
     NativeLocalShadowCompletion, NativeLocalShadowReceiver, NativeLocalShadowReceiverLight,
     NativeLocalShadowRegion, NativeLocalShadowSceneFrame, NativeLocalShadowSubmission,
@@ -75,6 +79,16 @@ pub struct NativeShadowAlphaMaterial {
     pub uv_set: u32,
     pub uv_scale_bias: [f32; 4],
 }
+
+// GPU transport equality must retain signed zero and NaN payload words.
+impl PartialEq for NativeShadowAlphaMaterial {
+    fn eq(&self, other: &Self) -> bool {
+        self.diffuse == other.diffuse
+            && self.uv_set == other.uv_set
+            && self.uv_scale_bias.map(f32::to_bits) == other.uv_scale_bias.map(f32::to_bits)
+    }
+}
+impl Eq for NativeShadowAlphaMaterial {}
 
 pub const NATIVE_SHADOW_INSTANCE_BYTES: usize = 80;
 pub const NATIVE_WORLD_SHADOW_INSTANCE_BYTES: usize = 96;
@@ -438,7 +452,7 @@ pub struct NativeShadowLayerOps {
 }
 
 /// A single instance of a resolved original model-shadow program.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeShadowInstance {
     pub mesh: Handle<Mesh>,
     /// Program-specific variables from the actual owner. Rigid records use
@@ -565,11 +579,17 @@ impl NativeShadowSceneCompletion {
 pub(crate) struct NativeShadowSceneGpu {
     last_revision: Option<u64>,
     targets: HashMap<AssetId<Image>, CachedTarget>,
-    pipelines: HashMap<PipelineKey, CachedPipeline>,
+    pipelines: ShadowPipelineStore,
+    resource_bindings: HashMap<ShadowResourceKey, BindGroup>,
+    mesh_allocations: mesh_allocations::MeshAllocationCache,
+    prepared_records: Option<prepared_cache::PreparedRecordCache>,
+    prepared_hits: u64,
+    prepared_misses: u64,
     uniform_ring: Option<Buffer>,
     uniform_capacity: usize,
     uniform_stride: u64,
     uniform_bytes: Vec<u8>,
+    uniform_records: Vec<ShadowUniformRecord>,
     alpha_sampler: Option<Sampler>,
     vista_sampler: Option<Sampler>,
     sampling_buffer: Option<Buffer>,
@@ -659,10 +679,8 @@ struct PipelineKey {
 struct CachedPipeline {
     layout: MeshVertexBufferLayoutRef,
     pipeline: NativeOpaqueShadowPipeline,
-    // Uniform slots belong to the complete frame, not this pipeline. Keep
-    // only slots actually used by this pipeline; filling every preceding
-    // slot multiplies descriptor allocations by unrelated material states.
-    bindings: HashMap<usize, BindGroup>,
+    // One descriptor selects this program's records by dynamic ring offset.
+    binding: Option<BindGroup>,
     alpha_materials: HashMap<(AssetId<Image>, [u32; 4]), CachedAlphaMaterial>,
 }
 
@@ -729,7 +747,25 @@ fn upload_native_shadow_uniform_ring(
     let draw_count: usize = layers.iter().map(|layer| layer.instances.len()).sum();
     let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
     let stride = instance_uniform_stride(layers, alignment);
-    let needed = draw_count.max(1);
+    // World shader indexing is CB.offset + instance_index. Moving that exact
+    // integer offset into first_instance leaves every shader read unchanged
+    // and lets packets with the same view/UV data share a constant record.
+    let compact_world = std::env::var("DH2_COMPACT_SHADOW_UNIFORMS").as_deref() != Ok("0");
+    gpu.uniform_bytes.clear();
+    gpu.uniform_records.clear();
+    gpu.uniform_records.reserve(draw_count);
+    let mut world_slots = HashMap::new();
+    for instance in layers.iter().flat_map(|layer| &layer.instances) {
+        let record = pack_shadow_uniform(
+            instance,
+            stride as usize,
+            compact_world,
+            &mut gpu.uniform_bytes,
+            &mut world_slots,
+        );
+        gpu.uniform_records.push(record);
+    }
+    let needed = (gpu.uniform_bytes.len() / stride as usize).max(1);
     let grow =
         gpu.uniform_ring.is_none() || gpu.uniform_capacity < needed || gpu.uniform_stride != stride;
     if grow {
@@ -746,21 +782,75 @@ fn upload_native_shadow_uniform_ring(
         gpu.uniform_capacity = capacity;
         gpu.uniform_stride = stride;
         for cached in gpu.pipelines.values_mut() {
-            cached.bindings.clear();
+            cached.binding = None;
         }
     }
     let Some(buffer) = gpu.uniform_ring.as_ref().cloned() else {
         return;
     };
-    gpu.uniform_bytes
-        .resize(draw_count.saturating_mul(stride as usize), 0);
-    for (slot, instance) in layers.iter().flat_map(|layer| &layer.instances).enumerate() {
-        let offset = slot * stride as usize;
-        let bytes = instance.per_instance_cb.as_bytes();
-        gpu.uniform_bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
-    }
     if !gpu.uniform_bytes.is_empty() {
         queue.write_buffer(&buffer, 0, &gpu.uniform_bytes);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ShadowUniformRecord {
+    slot: usize,
+    instances: std::ops::Range<u32>,
+}
+
+fn pack_shadow_uniform(
+    instance: &NativeShadowInstance,
+    stride: usize,
+    compact_world: bool,
+    bytes: &mut Vec<u8>,
+    world_slots: &mut HashMap<[u8; NATIVE_WORLD_SHADOW_INSTANCE_BYTES], usize>,
+) -> ShadowUniformRecord {
+    let append = |bytes: &mut Vec<u8>, constants: &[u8]| {
+        let slot = bytes.len() / stride;
+        bytes.resize(bytes.len() + stride, 0);
+        bytes[slot * stride..slot * stride + constants.len()].copy_from_slice(constants);
+        slot
+    };
+    let normalize = compact_world
+        && matches!(
+            instance.program,
+            NativeShadowProgram::WorldOpaque
+                | NativeShadowProgram::WorldAlphaTested
+                | NativeShadowProgram::WorldVistaAlpha
+        );
+    if let (
+        true,
+        NativeShadowInstanceConstants::World {
+            constants,
+            instance_count,
+            ..
+        },
+    ) = (normalize, &instance.per_instance_cb)
+    {
+        let start = u32::from_le_bytes(constants[64..68].try_into().unwrap());
+        // Preserve the original shader's wrapping addition if the range cannot
+        // be expressed by a draw's non-wrapping first/end instance arguments.
+        if let Some(end) = start.checked_add(*instance_count) {
+            let mut canonical = *constants;
+            canonical[64..68].fill(0);
+            let slot = *world_slots
+                .entry(canonical)
+                .or_insert_with(|| append(bytes, &canonical));
+            return ShadowUniformRecord {
+                slot,
+                instances: start..end,
+            };
+        }
+    }
+    let count = match &instance.per_instance_cb {
+        NativeShadowInstanceConstants::World { instance_count, .. }
+        | NativeShadowInstanceConstants::WorldVegetation { instance_count, .. } => *instance_count,
+        _ => 1,
+    };
+    ShadowUniformRecord {
+        slot: append(bytes, instance.per_instance_cb.as_bytes()),
+        instances: 0..count,
     }
 }
 
@@ -907,7 +997,9 @@ fn render_native_shadow_scene(
         return;
     };
     if target.dimensions != *dimensions {
-        bevy::log::error!("native shadow target handle was reused with different dimensions; refusing per-frame recreation");
+        bevy::log::error!(
+            "native shadow target handle was reused with different dimensions; refusing per-frame recreation"
+        );
         return;
     }
 
@@ -931,9 +1023,11 @@ fn render_native_shadow_scene(
         return;
     };
     let uniform_stride = gpu.uniform_stride;
+    let records_span = profile.as_deref().map(|p| p.measure(29));
     let Some(records) = prepare_native_shadow_records(
         layers,
         dimensions.depth_32_bits,
+        true,
         uniform_buffer,
         uniform_stride,
         &mut gpu,
@@ -946,6 +1040,8 @@ fn render_native_shadow_scene(
     ) else {
         return;
     };
+    drop(records_span);
+    let _encoding_span = profile.as_deref().map(|p| p.measure(30));
 
     let NativeShadowSceneGpu {
         targets, pipelines, ..
@@ -957,126 +1053,103 @@ fn render_native_shadow_scene(
     let diagnostics = diagnostics.as_deref();
     let span = diagnostics.time_span(context.command_encoder(), "native_directional_shadows");
     let mut complete = true;
-    for (layer_index, layer) in layers.iter().enumerate() {
-        let physical_layer = first_layer as usize + layer_index;
-        let temporary = &target.temporary[physical_layer];
-        let mut remaining = Vec::new();
-        for record in records.iter().filter(|record| record.0 == layer_index) {
-            let (
-                _,
-                instance,
-                key,
-                slot,
-                vertex_buffer,
-                base_vertex,
-                index_buffer,
-                indices,
-                index_format,
-                program_resources,
-            ) = record;
-            let binding = &pipelines[key].bindings[slot];
-            remaining.push((
-                *key,
-                NativeOpaqueShadowDraw {
-                    model_state: binding,
-                    program_resources: program_resources.as_ref(),
-                    vertex_buffer,
-                    index_buffer,
-                    index_format: *index_format,
-                    indices: indices.clone(),
-                    base_vertex: *base_vertex,
-                    instances: 0..match &instance.per_instance_cb {
-                        NativeShadowInstanceConstants::World { instance_count, .. }
-                        | NativeShadowInstanceConstants::WorldVegetation {
-                            instance_count, ..
-                        } => *instance_count,
-                        _ => 1,
-                    },
-                    scissor: instance.scissor,
-                },
-            ));
-        }
-        // A skipped native submission preserves the atlas, not stale scratch.
-        if remaining.is_empty()
-            && layer.cache == NativeShadowCacheOp::None
-            && matches!(layer.ops.depth, NativeShadowLoad::Load)
-            && matches!(layer.ops.stencil, NativeStencilLoad::Load)
-        {
-            // Collapsed native intervals deliberately receive no draw/clear.
-            // The shader's sum(step(fars,Z)) cannot select those layers, so
-            // their undefined contents do not prevent a real receiver frame.
-            complete &= target.layer_valid[physical_layer]
-                || receiver.is_some_and(|receiver| {
-                    !crate::render_shadow::parallel_shadow_layer_can_be_selected(
-                        receiver.cascade_fars,
-                        physical_layer,
-                    )
-                });
-            continue;
-        }
-        let load = NativeShadowLayerOps {
-            depth: NativeShadowLoad::Load,
-            stencil: NativeStencilLoad::Load,
-        };
-        let result = (|| -> Result<(), String> {
-            match layer.cache {
-                NativeShadowCacheOp::None => {
-                    draw_native_shadow_groups(
-                        context.command_encoder(),
-                        temporary,
-                        pipelines,
-                        remaining,
-                        layer.ops,
-                    )?;
-                }
-                NativeShadowCacheOp::Restore => {
-                    temporary.copy_resource_from(
-                        context.command_encoder(),
-                        &target.static_cache[layer_index - 1],
-                    )?;
-                    draw_native_shadow_groups(
-                        context.command_encoder(),
-                        temporary,
-                        pipelines,
-                        remaining,
-                        load,
-                    )?;
-                }
-                NativeShadowCacheOp::Store { static_instances } => {
-                    let dynamic = remaining.split_off(static_instances);
-                    draw_native_shadow_groups(
-                        context.command_encoder(),
-                        temporary,
-                        pipelines,
-                        remaining,
-                        layer.ops,
-                    )?;
-                    target.static_cache[layer_index - 1]
-                        .copy_resource_from(context.command_encoder(), temporary)?;
-                    target.cache_valid[layer_index - 1] = true;
-                    target.cache_generation[layer_index - 1] = None;
-                    draw_native_shadow_groups(
-                        context.command_encoder(),
-                        temporary,
-                        pipelines,
-                        dynamic,
-                        load,
-                    )?;
-                }
-                NativeShadowCacheOp::Retained {
-                    generation,
-                    static_instances,
-                } => {
-                    let dynamic = remaining.split_off(static_instances);
-                    let cache = layer_index - 1;
-                    if target.cache_valid[cache]
-                        && target.cache_generation[cache] == Some(generation)
-                    {
-                        temporary.copy_resource_from(
-                            context.command_encoder(),
-                            &target.static_cache[cache],
+    if layers
+        .iter()
+        .all(|layer| layer.cache == NativeShadowCacheOp::None)
+        && std::env::var("DH2_PARALLEL_SHADOW_ENCODING").as_deref() != Ok("0")
+    {
+        // Distinct physical slices share read-only meshes and constants. Record
+        // their commands independently, then submit in the publisher's order.
+        let shared_target = &*target;
+        let pipelines = &*pipelines;
+        let records = &records;
+        let device = &*device;
+        let mut encoded = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            for (layer_index, layer) in layers.iter().enumerate() {
+                scope.spawn(async move {
+                    let physical = first_layer as usize + layer_index;
+                    let draws = directional_layer_draws(records, pipelines, layer_index);
+                    let skipped = draws.is_empty()
+                        && matches!(layer.ops.depth, NativeShadowLoad::Load)
+                        && matches!(layer.ops.stencil, NativeStencilLoad::Load);
+                    if skipped {
+                        let valid = shared_target.layer_valid[physical]
+                            || receiver.is_some_and(|receiver| {
+                                !crate::render_shadow::parallel_shadow_layer_can_be_selected(
+                                    receiver.cascade_fars,
+                                    physical,
+                                )
+                            });
+                        return (physical, valid, Ok::<_, String>(None));
+                    }
+                    let result = (|| {
+                        let mut encoder = device.create_command_encoder(&Default::default());
+                        let temporary = &shared_target.temporary[physical];
+                        draw_native_shadow_groups(
+                            &mut encoder,
+                            temporary,
+                            pipelines,
+                            draws,
+                            layer.ops,
                         )?;
-                    } else {
+                        shared_target.array.copy_layer_from(
+                            &mut encoder,
+                            physical as u32,
+                            temporary,
+                            0,
+                        )?;
+                        Ok(Some(encoder.finish()))
+                    })();
+                    (physical, true, result)
+                });
+            }
+        });
+        encoded.sort_by_key(|entry| entry.0);
+        for (physical, valid, result) in encoded {
+            match result {
+                Ok(Some(commands)) => {
+                    context.add_command_buffer(commands);
+                    target.layer_valid[physical] = true;
+                    complete &= valid;
+                }
+                Ok(None) => complete &= valid,
+                Err(error) => {
+                    bevy::log::error!("parallel directional submission failed: {error}");
+                    span.end(context.command_encoder());
+                    return;
+                }
+            }
+        }
+    } else {
+        for (layer_index, layer) in layers.iter().enumerate() {
+            let physical_layer = first_layer as usize + layer_index;
+            let temporary = &target.temporary[physical_layer];
+            let mut remaining = directional_layer_draws(&records, pipelines, layer_index);
+            // A skipped native submission preserves the atlas, not stale scratch.
+            if remaining.is_empty()
+                && layer.cache == NativeShadowCacheOp::None
+                && matches!(layer.ops.depth, NativeShadowLoad::Load)
+                && matches!(layer.ops.stencil, NativeStencilLoad::Load)
+            {
+                // Collapsed native intervals deliberately receive no draw/clear.
+                // The shader's sum(step(fars,Z)) cannot select those layers, so
+                // their undefined contents do not prevent a real receiver frame.
+                complete &= target.layer_valid[physical_layer]
+                    || receiver.is_some_and(|receiver| {
+                        !crate::render_shadow::parallel_shadow_layer_can_be_selected(
+                            receiver.cascade_fars,
+                            physical_layer,
+                        )
+                    });
+                continue;
+            }
+            let load = NativeShadowLayerOps {
+                depth: NativeShadowLoad::Load,
+                stencil: NativeStencilLoad::Load,
+            };
+            let result = (|| -> Result<(), String> {
+                match layer.cache {
+                    NativeShadowCacheOp::None => {
                         draw_native_shadow_groups(
                             context.command_encoder(),
                             temporary,
@@ -1084,34 +1157,91 @@ fn render_native_shadow_scene(
                             remaining,
                             layer.ops,
                         )?;
-                        target.static_cache[cache]
-                            .copy_resource_from(context.command_encoder(), temporary)?;
-                        target.cache_valid[cache] = true;
-                        target.cache_generation[cache] = Some(generation);
                     }
-                    draw_native_shadow_groups(
-                        context.command_encoder(),
-                        temporary,
-                        pipelines,
-                        dynamic,
-                        load,
-                    )?;
+                    NativeShadowCacheOp::Restore => {
+                        temporary.copy_resource_from(
+                            context.command_encoder(),
+                            &target.static_cache[layer_index - 1],
+                        )?;
+                        draw_native_shadow_groups(
+                            context.command_encoder(),
+                            temporary,
+                            pipelines,
+                            remaining,
+                            load,
+                        )?;
+                    }
+                    NativeShadowCacheOp::Store { static_instances } => {
+                        let dynamic = remaining.split_off(static_instances);
+                        draw_native_shadow_groups(
+                            context.command_encoder(),
+                            temporary,
+                            pipelines,
+                            remaining,
+                            layer.ops,
+                        )?;
+                        target.static_cache[layer_index - 1]
+                            .copy_resource_from(context.command_encoder(), temporary)?;
+                        target.cache_valid[layer_index - 1] = true;
+                        target.cache_generation[layer_index - 1] = None;
+                        draw_native_shadow_groups(
+                            context.command_encoder(),
+                            temporary,
+                            pipelines,
+                            dynamic,
+                            load,
+                        )?;
+                    }
+                    NativeShadowCacheOp::Retained {
+                        generation,
+                        static_instances,
+                    } => {
+                        let dynamic = remaining.split_off(static_instances);
+                        let cache = layer_index - 1;
+                        if target.cache_valid[cache]
+                            && target.cache_generation[cache] == Some(generation)
+                        {
+                            temporary.copy_resource_from(
+                                context.command_encoder(),
+                                &target.static_cache[cache],
+                            )?;
+                        } else {
+                            draw_native_shadow_groups(
+                                context.command_encoder(),
+                                temporary,
+                                pipelines,
+                                remaining,
+                                layer.ops,
+                            )?;
+                            target.static_cache[cache]
+                                .copy_resource_from(context.command_encoder(), temporary)?;
+                            target.cache_valid[cache] = true;
+                            target.cache_generation[cache] = Some(generation);
+                        }
+                        draw_native_shadow_groups(
+                            context.command_encoder(),
+                            temporary,
+                            pipelines,
+                            dynamic,
+                            load,
+                        )?;
+                    }
                 }
+                // 32db10 full-rectangle copy fast path, AFTER the dynamic pass.
+                target.array.copy_layer_from(
+                    context.command_encoder(),
+                    physical_layer as u32,
+                    temporary,
+                    0,
+                )
+            })();
+            if let Err(error) = result {
+                bevy::log::error!("native directional cache/draw submission failed: {error}");
+                span.end(context.command_encoder());
+                return;
             }
-            // 32db10 full-rectangle copy fast path, AFTER the dynamic pass.
-            target.array.copy_layer_from(
-                context.command_encoder(),
-                physical_layer as u32,
-                temporary,
-                0,
-            )
-        })();
-        if let Err(error) = result {
-            bevy::log::error!("native directional cache/draw submission failed: {error}");
-            span.end(context.command_encoder());
-            return;
+            target.layer_valid[physical_layer] = true;
         }
-        target.layer_valid[physical_layer] = true;
     }
     span.end(context.command_encoder());
     if matches!(frame.state, NativeShadowSceneState::WholeViewDepth { .. }) {
@@ -1134,23 +1264,261 @@ fn render_native_shadow_scene(
     gpu.last_revision = Some(frame.revision);
 }
 
-type PreparedShadowRecord<'a> = (
-    usize,
-    &'a NativeShadowInstance,
-    PipelineKey,
-    usize,
-    Buffer,
-    i32,
-    Buffer,
-    std::ops::Range<u32>,
-    bevy::render::render_resource::IndexFormat,
-    Option<BindGroup>,
-);
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum ShadowResourceKey {
+    World(
+        PipelineKey,
+        bevy::render::render_resource::BufferId,
+        bevy::render::render_resource::BufferId,
+        Option<bevy::render::render_resource::BufferId>,
+        Option<bevy::render::render_resource::TextureViewId>,
+    ),
+    Skin(
+        PipelineKey,
+        bevy::render::render_resource::BufferId,
+        Option<bevy::render::render_resource::TextureViewId>,
+    ),
+}
+
+struct ShadowMeshAllocation {
+    layout: MeshVertexBufferLayoutRef,
+    layout_key: u64,
+    vertex: Buffer,
+    base_vertex: i32,
+    index: Buffer,
+    indices: std::ops::Range<u32>,
+    index_format: bevy::render::render_resource::IndexFormat,
+}
+
+struct PreparedShadowRecord {
+    layer: usize,
+    scissor: NativeShadowScissor,
+    key: PipelineKey,
+    pipeline: PipelineId,
+    uniform_offset: u32,
+    instances: std::ops::Range<u32>,
+    vertex: Buffer,
+    base_vertex: i32,
+    index: Buffer,
+    indices: std::ops::Range<u32>,
+    index_format: bevy::render::render_resource::IndexFormat,
+    resources: Option<BindGroup>,
+}
+
+impl PreparedShadowRecord {
+    fn draw<'a>(&'a self, pipelines: &'a ShadowPipelineStore) -> NativeOpaqueShadowDraw<'a> {
+        NativeOpaqueShadowDraw {
+            model_state_offset: self.uniform_offset,
+            model_state: pipelines
+                .by_id(self.pipeline)
+                .binding
+                .as_ref()
+                .expect("prepared constant ring binding"),
+            program_resources: self.resources.as_ref(),
+            vertex_buffer: &self.vertex,
+            index_buffer: &self.index,
+            index_format: self.index_format,
+            indices: self.indices.clone(),
+            base_vertex: self.base_vertex,
+            instances: self.instances.clone(),
+            scissor: self.scissor,
+        }
+    }
+}
 
 /// Shared asset validation and program binding for directional and local
 /// submissions. A missing resource rejects the entire prepared submission.
-fn prepare_native_shadow_records<'a>(
-    layers: &'a [NativeShadowLayer],
+fn prepare_native_shadow_records(
+    layers: &[NativeShadowLayer],
+    depth_32_bits: bool,
+    allow_cache: bool,
+    uniform_buffer: Buffer,
+    uniform_stride: u64,
+    gpu: &mut NativeShadowSceneGpu,
+    allocator: &Res<MeshAllocator>,
+    meshes: &Res<RenderAssets<RenderMesh>>,
+    images: &Res<RenderAssets<GpuImage>>,
+    buffers: &Res<RenderAssets<GpuShaderBuffer>>,
+    device: &RenderDevice,
+    adapter: &RenderAdapter,
+) -> Option<Arc<Vec<PreparedShadowRecord>>> {
+    // Cache/clear operations govern submission, not descriptor preparation.
+    let enabled = allow_cache && std::env::var("DH2_CACHE_PREPARED_SHADOWS").as_deref() != Ok("0");
+    let verify = std::env::var("DH2_VERIFY_PREPARED_SHADOWS").as_deref() == Ok("1");
+    let geometry_epoch = (allocator.last_changed().get(), meshes.last_changed().get());
+    let resource_epoch = (images.last_changed().get(), buffers.last_changed().get());
+    let uniforms = &gpu.uniform_records;
+    let cached = if enabled {
+        gpu.prepared_records.as_mut().and_then(|cached| {
+            cached
+                .matches(
+                    layers,
+                    geometry_epoch,
+                    resource_epoch,
+                    uniform_buffer.id(),
+                    uniform_stride,
+                    depth_32_bits,
+                    uniforms,
+                    images,
+                    buffers,
+                )
+                .then(|| cached.records.clone())
+        })
+    } else {
+        gpu.prepared_records = None;
+        None
+    };
+    if enabled {
+        if cached.is_some() {
+            gpu.prepared_hits += 1;
+        } else {
+            gpu.prepared_misses += 1;
+        }
+        if gpu
+            .last_revision
+            .is_some_and(|revision| revision % 300 == 0)
+        {
+            eprintln!(
+                "Prepared shadow descriptors: hits={} misses={}",
+                gpu.prepared_hits, gpu.prepared_misses
+            );
+        }
+    }
+    if !verify {
+        if let Some(cached) = cached {
+            return Some(cached);
+        }
+    }
+    let ring_id = uniform_buffer.id();
+    let fresh = prepare_native_shadow_records_fresh(
+        layers,
+        depth_32_bits,
+        uniform_buffer,
+        uniform_stride,
+        gpu,
+        allocator,
+        meshes,
+        images,
+        buffers,
+        device,
+        adapter,
+    );
+    let Some(fresh) = fresh else {
+        gpu.prepared_records = None;
+        return None;
+    };
+    if let Some(cached) = cached {
+        prepared_cache::verify_records(&cached, &fresh);
+        return Some(cached);
+    }
+    let fresh = Arc::new(fresh);
+    if enabled {
+        gpu.prepared_records = prepared_cache::PreparedRecordCache::new(
+            layers,
+            geometry_epoch,
+            resource_epoch,
+            ring_id,
+            uniform_stride,
+            depth_32_bits,
+            &gpu.uniform_records,
+            fresh.clone(),
+            images,
+            buffers,
+        );
+    }
+    Some(fresh)
+}
+
+fn prepare_native_shadow_records_fresh(
+    layers: &[NativeShadowLayer],
+    depth_32_bits: bool,
+    uniform_buffer: Buffer,
+    uniform_stride: u64,
+    gpu: &mut NativeShadowSceneGpu,
+    allocator: &Res<MeshAllocator>,
+    meshes: &Res<RenderAssets<RenderMesh>>,
+    images: &RenderAssets<GpuImage>,
+    sampling_buffers: &RenderAssets<GpuShaderBuffer>,
+    device: &RenderDevice,
+    adapter: &RenderAdapter,
+) -> Option<Vec<PreparedShadowRecord>> {
+    // Keep only descriptors actually used by this submission. GPU identities
+    // invalidate uploads, streamed textures and reallocated buffers naturally.
+    let mut previous = std::mem::take(&mut gpu.resource_bindings);
+    let mut current = HashMap::with_capacity(previous.len());
+    let mut allocations = std::mem::take(&mut gpu.mesh_allocations);
+    let cache_meshes = std::env::var("DH2_CACHE_SHADOW_MESH_ALLOCATIONS").as_deref() != Ok("0");
+    allocations.begin_frame(
+        (allocator.last_changed().get(), meshes.last_changed().get()),
+        cache_meshes,
+    );
+    let mut timings = (std::env::var("DH2_PROFILE_SHADOW_RECORDS").as_deref() == Ok("1"))
+        .then(|| ([0u128; 3], HashMap::<NativeShadowProgram, usize>::new()));
+    let result = prepare_shadow_records_with_bindings(
+        layers,
+        depth_32_bits,
+        uniform_buffer,
+        uniform_stride,
+        gpu,
+        allocator,
+        meshes,
+        images,
+        sampling_buffers,
+        device,
+        adapter,
+        &mut previous,
+        &mut current,
+        &mut allocations,
+        timings.as_mut(),
+    );
+    gpu.resource_bindings = current;
+    allocations.finish_frame(result.is_some());
+    if std::env::var("DH2_TRACE_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1")
+        && gpu
+            .last_revision
+            .is_some_and(|revision| revision % 300 == 0)
+    {
+        eprintln!(
+            "Shadow mesh allocation cache: hits={} misses={}",
+            allocations.hits, allocations.misses
+        );
+    }
+    gpu.mesh_allocations = allocations;
+    if gpu
+        .last_revision
+        .is_some_and(|revision| revision % 300 == 0)
+    {
+        if let Some((times, counts)) = timings {
+            eprintln!(
+                "Shadow record preparation metadata/resources/packet ms={:?}; programs={counts:?}",
+                times.map(|ns| ns as f64 / 1e6)
+            );
+        }
+    }
+    result
+}
+
+fn reuse_shadow_resource_binding(
+    current: &mut HashMap<ShadowResourceKey, BindGroup>,
+    previous: &mut HashMap<ShadowResourceKey, BindGroup>,
+    key: ShadowResourceKey,
+    create: impl FnOnce() -> Result<BindGroup, String>,
+) -> Result<BindGroup, String> {
+    match current.entry(key) {
+        bevy::platform::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
+        bevy::platform::collections::hash_map::Entry::Vacant(entry) => {
+            let binding = match previous.remove(entry.key()) {
+                Some(binding) => binding,
+                None => create()?,
+            };
+            entry.insert(binding.clone());
+            Ok(binding)
+        }
+    }
+}
+
+fn prepare_shadow_records_with_bindings(
+    layers: &[NativeShadowLayer],
     depth_32_bits: bool,
     uniform_buffer: Buffer,
     uniform_stride: u64,
@@ -1161,12 +1529,16 @@ fn prepare_native_shadow_records<'a>(
     sampling_buffers: &RenderAssets<GpuShaderBuffer>,
     device: &RenderDevice,
     adapter: &RenderAdapter,
-) -> Option<Vec<PreparedShadowRecord<'a>>> {
-    let mut records = Vec::new();
+    previous: &mut HashMap<ShadowResourceKey, BindGroup>,
+    resource_bindings: &mut HashMap<ShadowResourceKey, BindGroup>,
+    mesh_allocations: &mut mesh_allocations::MeshAllocationCache,
+    mut timings: Option<&mut ([u128; 3], HashMap<NativeShadowProgram, usize>)>,
+) -> Option<Vec<PreparedShadowRecord>> {
+    let mut records = Vec::with_capacity(layers.iter().map(|layer| layer.instances.len()).sum());
+    let mut last_pipeline = None;
     // World packets vary their CB/remap offset, but most share the very
     // same immutable remap/matrix buffers and diffuse image. One resource
     // binding per actual combination suffices throughout this submission.
-    let mut world_bindings = HashMap::new();
     for (slot, (layer_index, instance)) in layers
         .iter()
         .enumerate()
@@ -1178,28 +1550,28 @@ fn prepare_native_shadow_records<'a>(
         })
         .enumerate()
     {
+        let uniform = &gpu.uniform_records[slot];
+        if (uniform.slot as u64)
+            .checked_mul(uniform_stride)
+            .is_none_or(|offset| offset > u64::from(u32::MAX))
+        {
+            bevy::log::error!("shadow constant ring offset exceeds dynamic binding range");
+            return None;
+        }
+        let mut started = timings.as_ref().map(|_| std::time::Instant::now());
+        if let Some((_, counts)) = timings.as_deref_mut() {
+            *counts.entry(instance.program).or_default() += 1;
+        }
         let mesh_id = instance.mesh.id();
-        let Some(render_mesh) = meshes.get(mesh_id) else {
-            bevy::log::error!(
-                "native shadow owner Mesh {:?} has no RenderMesh; refusing an incomplete layer",
-                mesh_id
-            );
-            return None;
+        let allocation = match mesh_allocations.get(mesh_id, allocator, meshes) {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                bevy::log::error!("{error}");
+                return None;
+            }
         };
-        let (Some(vertex), Some(index), Some(index_format)) = (
-            allocator.mesh_vertex_slice(&mesh_id),
-            allocator.mesh_index_slice(&mesh_id),
-            render_mesh.index_format(),
-        ) else {
-            bevy::log::error!(
-                "native shadow owner Mesh {:?} has no indexed GPU allocation",
-                mesh_id
-            );
-            return None;
-        };
-        let layout_key = hash_layout(&render_mesh.layout);
         let key = PipelineKey {
-            layout: layout_key,
+            layout: allocation.layout_key,
             depth_32_bits,
             front_face: instance.front_face,
             cull_mode: instance.cull_mode,
@@ -1211,11 +1583,22 @@ fn prepare_native_shadow_records<'a>(
             draw_state: instance.draw_state,
             stencil_reference: instance.stencil_reference,
         };
-        if let Err(error) =
-            ensure_pipeline(&mut gpu, key, render_mesh.layout.clone(), &device, &adapter)
-        {
-            bevy::log::error!("native shadow pipeline unavailable: {error}");
-            return None;
+        let pipeline = match last_pipeline {
+            Some((previous, id)) if previous == key => id,
+            _ => match ensure_pipeline(&mut gpu, key, allocation.layout.clone(), device, adapter) {
+                Ok(id) => {
+                    last_pipeline = Some((key, id));
+                    id
+                }
+                Err(error) => {
+                    bevy::log::error!("native shadow pipeline unavailable: {error}");
+                    return None;
+                }
+            },
+        };
+        if let Some((times, _)) = timings.as_deref_mut() {
+            times[0] += started.unwrap().elapsed().as_nanos();
+            started = Some(std::time::Instant::now());
         }
         let alpha_sampler = instance.alpha_material.as_ref().map(|_| {
             if matches!(
@@ -1234,7 +1617,7 @@ fn prepare_native_shadow_records<'a>(
                     .clone()
             }
         });
-        let cached = gpu.pipelines.get_mut(&key).expect("pipeline just inserted");
+        let cached = gpu.pipelines.by_id_mut(pipeline);
         let alpha_binding = if let NativeShadowInstanceConstants::Skinned { palette, .. } =
             &instance.per_instance_cb
         {
@@ -1249,10 +1632,18 @@ fn prepare_native_shadow_records<'a>(
             } else {
                 None
             };
-            match cached
-                .pipeline
-                .bind_skinned_instances(&device, &palette.buffer, diffuse)
-            {
+            let resource_key = ShadowResourceKey::Skin(
+                key,
+                palette.buffer.id(),
+                diffuse.map(|(view, _)| view.id()),
+            );
+            let binding =
+                reuse_shadow_resource_binding(resource_bindings, previous, resource_key, || {
+                    cached
+                        .pipeline
+                        .bind_skinned_instances(device, &palette.buffer, diffuse)
+                });
+            match binding {
                 Ok(binding) => Some(binding),
                 Err(error) => {
                     bevy::log::error!("native skin resources unavailable: {error}");
@@ -1310,38 +1701,36 @@ fn prepare_native_shadow_records<'a>(
             let Some(diffuse) = images.get(material.diffuse.id()) else {
                 return None;
             };
-            let resource_key = (
+            let resource_key = ShadowResourceKey::World(
                 key,
                 ids.buffer.id(),
                 transforms.buffer.id(),
                 wind_gpu.map(|wind| wind.buffer.id()),
                 Some(diffuse.texture_view.id()),
             );
-            let binding = if let Some(binding) = world_bindings.get(&resource_key) {
-                Ok(BindGroup::clone(binding))
-            } else if let Some(winds) = wind_gpu {
-                cached.pipeline.bind_world_vegetation_instances(
-                    &device,
-                    &ids.buffer,
-                    &transforms.buffer,
-                    &winds.buffer,
-                    &diffuse.texture_view,
-                    alpha_sampler.as_ref().unwrap(),
-                )
-            } else {
-                cached.pipeline.bind_world_alpha_instances(
-                    &device,
-                    &ids.buffer,
-                    &transforms.buffer,
-                    &diffuse.texture_view,
-                    alpha_sampler.as_ref().unwrap(),
-                )
-            };
+            let binding =
+                reuse_shadow_resource_binding(resource_bindings, previous, resource_key, || {
+                    if let Some(winds) = wind_gpu {
+                        cached.pipeline.bind_world_vegetation_instances(
+                            &device,
+                            &ids.buffer,
+                            &transforms.buffer,
+                            &winds.buffer,
+                            &diffuse.texture_view,
+                            alpha_sampler.as_ref().unwrap(),
+                        )
+                    } else {
+                        cached.pipeline.bind_world_alpha_instances(
+                            &device,
+                            &ids.buffer,
+                            &transforms.buffer,
+                            &diffuse.texture_view,
+                            alpha_sampler.as_ref().unwrap(),
+                        )
+                    }
+                });
             match binding {
-                Ok(binding) => {
-                    world_bindings.insert(resource_key, binding.clone());
-                    Some(binding)
-                }
+                Ok(binding) => Some(binding),
                 Err(error) => {
                     bevy::log::error!("native world vegetation unavailable: {error}");
                     return None;
@@ -1384,33 +1773,33 @@ fn prepare_native_shadow_records<'a>(
             } else {
                 None
             };
-            let resource_key = (
+            let resource_key = ShadowResourceKey::World(
                 key,
                 ids.buffer.id(),
                 transforms.buffer.id(),
                 None,
                 diffuse.map(|image| image.texture_view.id()),
             );
-            let binding = if let Some(binding) = world_bindings.get(&resource_key) {
-                Ok(BindGroup::clone(binding))
-            } else if let Some(diffuse) = diffuse {
-                cached.pipeline.bind_world_alpha_instances(
-                    &device,
-                    &ids.buffer,
-                    &transforms.buffer,
-                    &diffuse.texture_view,
-                    alpha_sampler.as_ref().unwrap(),
-                )
-            } else {
-                cached
-                    .pipeline
-                    .bind_world_instances(&device, &ids.buffer, &transforms.buffer)
-            };
+            let binding =
+                reuse_shadow_resource_binding(resource_bindings, previous, resource_key, || {
+                    if let Some(diffuse) = diffuse {
+                        cached.pipeline.bind_world_alpha_instances(
+                            &device,
+                            &ids.buffer,
+                            &transforms.buffer,
+                            &diffuse.texture_view,
+                            alpha_sampler.as_ref().unwrap(),
+                        )
+                    } else {
+                        cached.pipeline.bind_world_instances(
+                            &device,
+                            &ids.buffer,
+                            &transforms.buffer,
+                        )
+                    }
+                });
             match binding {
-                Ok(binding) => {
-                    world_bindings.insert(resource_key, binding.clone());
-                    Some(binding)
-                }
+                Ok(binding) => Some(binding),
                 Err(error) => {
                     bevy::log::error!("native world shadow buffers unavailable: {error}");
                     return None;
@@ -1441,27 +1830,47 @@ fn prepare_native_shadow_records<'a>(
         } else {
             None
         };
-        if let Err(error) =
-            ensure_binding_slot(cached, &uniform_buffer, &device, uniform_stride, slot)
-        {
+        if let Some((times, _)) = timings.as_deref_mut() {
+            times[1] += started.unwrap().elapsed().as_nanos();
+            started = Some(std::time::Instant::now());
+        }
+        if let Err(error) = ensure_uniform_binding(cached, &uniform_buffer, &device) {
             bevy::log::error!("native shadow uniform binding unavailable: {error}");
             return None;
         }
-        records.push((
-            layer_index,
-            instance,
+        records.push(PreparedShadowRecord {
+            layer: layer_index,
+            scissor: instance.scissor,
             key,
-            slot,
-            vertex.buffer.clone(),
-            vertex.range.start as i32,
-            index.buffer.clone(),
-            index.range.clone(),
-            index_format,
-            alpha_binding,
-        ));
+            pipeline,
+            uniform_offset: (gpu.uniform_records[slot].slot as u64 * uniform_stride) as u32,
+            instances: gpu.uniform_records[slot].instances.clone(),
+            vertex: allocation.vertex.clone(),
+            base_vertex: allocation.base_vertex,
+            index: allocation.index.clone(),
+            indices: allocation.indices.clone(),
+            index_format: allocation.index_format,
+            resources: alpha_binding,
+        });
+        if let Some((times, _)) = timings.as_deref_mut() {
+            times[2] += started.unwrap().elapsed().as_nanos();
+        }
     }
 
     Some(records)
+}
+
+fn directional_layer_draws<'a>(
+    records: &'a [PreparedShadowRecord],
+    pipelines: &'a ShadowPipelineStore,
+    layer_index: usize,
+) -> Vec<(PipelineId, NativeOpaqueShadowDraw<'a>)> {
+    let start = records.partition_point(|record| record.layer < layer_index);
+    let end = records.partition_point(|record| record.layer <= layer_index);
+    records[start..end]
+        .iter()
+        .map(|record| (record.pipeline, record.draw(pipelines)))
+        .collect()
 }
 
 /// Preserve the publisher's native order. Grouping unrelated instances in a
@@ -1470,8 +1879,8 @@ fn prepare_native_shadow_records<'a>(
 fn draw_native_shadow_groups<'a>(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
     temporary: &NativeShadowDepthArray,
-    pipelines: &HashMap<PipelineKey, CachedPipeline>,
-    draws: Vec<(PipelineKey, NativeOpaqueShadowDraw<'a>)>,
+    pipelines: &ShadowPipelineStore,
+    draws: Vec<(PipelineId, NativeOpaqueShadowDraw<'a>)>,
     requested: NativeShadowLayerOps,
 ) -> Result<(), String> {
     if draws.is_empty() {
@@ -1484,15 +1893,7 @@ fn draw_native_shadow_groups<'a>(
     }
     let sequence: Vec<_> = draws
         .iter()
-        .map(|(key, draw)| {
-            (
-                &pipelines
-                    .get(key)
-                    .expect("all pipeline states prepared before submission")
-                    .pipeline,
-                draw,
-            )
-        })
+        .map(|(key, draw)| (&pipelines.by_id(*key).pipeline, draw))
         .collect();
     let ops = layer_operations(
         requested,
@@ -1590,7 +1991,7 @@ fn validate_frame(
             | NativeShadowCacheOp::Retained { .. }
                 if index == 0 || index >= cascade_count =>
             {
-                return Err("native static cache excludes cascade0 and the auxiliary layer".into())
+                return Err("native static cache excludes cascade0 and the auxiliary layer".into());
             }
             NativeShadowCacheOp::Restore => {
                 if !matches!(layer.ops.depth, NativeShadowLoad::Load)
@@ -1665,7 +2066,7 @@ fn validate_instances(
                     return Err(format!(
                         "unsupported or unresolved native caster shader class {:?}",
                         instance.program
-                    ))
+                    ));
                 }
             }
             match (&instance.per_instance_cb, instance.program) {
@@ -1764,7 +2165,7 @@ fn validate_instances(
                 _ => {
                     return Err(
                         "native shadow program and instance constant layout disagree".into(),
-                    )
+                    );
                 }
             }
             let scissor = instance.scissor;
@@ -1826,9 +2227,9 @@ fn ensure_pipeline(
     layout: MeshVertexBufferLayoutRef,
     device: &RenderDevice,
     adapter: &RenderAdapter,
-) -> Result<(), String> {
-    if gpu.pipelines.contains_key(&key) {
-        return Ok(());
+) -> Result<PipelineId, String> {
+    if let Some(id) = gpu.pipelines.id(&key) {
+        return Ok(id);
     }
     if std::env::var_os("DH2_TRACE_SHADOW_SUBMISSION").is_some() {
         eprintln!(
@@ -1903,7 +2304,7 @@ fn ensure_pipeline(
         }
         NativeShadowProgram::Vegetation => NativeShadowDepthProgram::Vegetation,
         NativeShadowProgram::Unsupported(_) => {
-            return Err("unresolved native shadow program".into())
+            return Err("unresolved native shadow program".into());
         }
     };
     let pipeline = NativeOpaqueShadowPipeline::new_prepared_shadow_depth(
@@ -1917,12 +2318,12 @@ fn ensure_pipeline(
         key.cull_mode,
         program,
     )?;
-    gpu.pipelines.insert(
+    let id = gpu.pipelines.insert(
         key,
         CachedPipeline {
             layout,
             pipeline,
-            bindings: HashMap::new(),
+            binding: None,
             alpha_materials: HashMap::new(),
         },
     );
@@ -1932,7 +2333,7 @@ fn ensure_pipeline(
             gpu.pipelines.len()
         );
     }
-    Ok(())
+    Ok(id)
 }
 
 fn ensure_alpha_material(
@@ -2008,19 +2409,14 @@ fn ensure_alpha_material(
     Ok(cached.alpha_materials[&key].binding.clone())
 }
 
-fn ensure_binding_slot(
+fn ensure_uniform_binding(
     cached: &mut CachedPipeline,
     buffer: &Buffer,
     device: &RenderDevice,
-    stride: u64,
-    slot: usize,
 ) -> Result<(), String> {
-    if !cached.bindings.contains_key(&slot) {
-        let binding =
-            cached
-                .pipeline
-                .bind_prepared_model_state_at(device, buffer, slot as u64 * stride)?;
-        cached.bindings.insert(slot, binding);
+    if cached.binding.is_none() {
+        let binding = cached.pipeline.bind_prepared_model_state(device, buffer)?;
+        cached.binding = Some(binding);
     }
     Ok(())
 }
@@ -2469,13 +2865,11 @@ mod tests {
             };
             ensure_pipeline(&mut gpu, key.clone(), layout.clone(), device, adapter).unwrap();
             let cached = gpu.pipelines.get_mut(&key).unwrap();
-            ensure_binding_slot(cached, &ring, device, stride, 1).unwrap();
-            assert_eq!(cached.bindings.len(), 1);
-            assert!(cached.bindings.contains_key(&1));
-            // A late frame slot must not allocate a descriptor for every
-            // unrelated draw before it (thousands in the live whole view).
-            ensure_binding_slot(cached, &ring, device, stride, 1).unwrap();
-            assert_eq!(cached.bindings.len(), 1);
+            ensure_uniform_binding(cached, &ring, device).unwrap();
+            let shared = cached.binding.as_ref().unwrap().id();
+            // All ring offsets share a descriptor, including late frame slots.
+            ensure_uniform_binding(cached, &ring, device).unwrap();
+            assert_eq!(cached.binding.as_ref().unwrap().id(), shared);
             if program != NativeShadowProgram::RigidOpaque {
                 ensure_alpha_material(cached, program, &material, &image, &sampler, device)
                     .unwrap();
@@ -2890,3 +3284,10 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "shadow_pass/uniform_tests.rs"]
+mod uniform_tests;
+
+#[path = "shadow_pass/mesh_allocations.rs"]
+mod mesh_allocations;

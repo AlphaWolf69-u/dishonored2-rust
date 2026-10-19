@@ -327,13 +327,15 @@ pub fn native_shadow_vista_sampler(device: &RenderDevice) -> Sampler {
 
 use bevy::render::{
     render_resource::{
-        BindGroup, BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer, BufferBinding,
-        BufferUsages, CommandEncoder, DepthBiasState, DepthStencilState, DownlevelFlags, Face,
-        FrontFace, IndexFormat, LoadOp, MultisampleState, Operations, PolygonMode, PrimitiveState,
-        RawFragmentState, RawRenderPipelineDescriptor, RawVertexBufferLayout, RawVertexState,
-        RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-        ShaderModuleDescriptor, ShaderSource, StencilFaceState, StencilOperation, StencilState,
-        StoreOp, VertexAttribute, VertexFormat, VertexStepMode,
+        BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutEntry, BindingResource,
+        BindingType, Buffer, BufferBinding, BufferBindingType, BufferUsages, CommandEncoder,
+        DepthBiasState, DepthStencilState, DownlevelFlags, Face, FrontFace, IndexFormat, LoadOp,
+        MultisampleState, Operations, PipelineLayout, PipelineLayoutDescriptor, PolygonMode,
+        PrimitiveState, RawFragmentState, RawRenderPipelineDescriptor, RawVertexBufferLayout,
+        RawVertexState, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+        SamplerBindingType, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilFaceState,
+        StencilOperation, StencilState, StoreOp, TextureSampleType, VertexAttribute, VertexFormat,
+        VertexStepMode,
     },
     renderer::RenderAdapter,
 };
@@ -438,6 +440,8 @@ pub fn native_depth_stencil_gpu(
 /// verified vegetation program are supported; skin/paraboloid remain unmapped.
 pub struct NativeOpaqueShadowDraw<'a> {
     pub model_state: &'a BindGroup,
+    /// Byte offset in the shared per-frame constant ring. Static bindings use 0.
+    pub model_state_offset: u32,
     /// Program-specific group 1: original diffuse/sampler/UV for cutouts;
     /// remapped instance IDs and 48-byte matrix records for WorldOpaque.
     pub program_resources: Option<&'a BindGroup>,
@@ -489,6 +493,83 @@ impl NativeShadowDepthProgram {
             Self::Vegetation | Self::WorldVegetation | Self::WorldVegetationFixed => 208,
         }
     }
+}
+
+/// Keep the original per-draw CB bytes, selecting their ring slice dynamically
+/// instead of allocating a descriptor for every draw/program combination.
+fn shadow_pipeline_layout(
+    device: &RenderDevice,
+    program: NativeShadowDepthProgram,
+) -> PipelineLayout {
+    let uniform = |binding, bytes, dynamic| BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::VERTEX_FRAGMENT,
+        ty: BindingType::Buffer {
+            ty: BufferBindingType::Uniform,
+            has_dynamic_offset: dynamic,
+            min_binding_size: NonZeroU64::new(bytes),
+        },
+        count: None,
+    };
+    let storage = |binding| BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::VERTEX,
+        ty: BindingType::Buffer {
+            ty: BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let texture = |binding| BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::FRAGMENT,
+        ty: BindingType::Texture {
+            sample_type: TextureSampleType::Float { filterable: true },
+            view_dimension: TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let sampler = |binding| BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::FRAGMENT,
+        ty: BindingType::Sampler(SamplerBindingType::Filtering),
+        count: None,
+    };
+    let model = device.create_bind_group_layout(
+        "shadow constant ring slice",
+        &[uniform(0, program.model_uniform_bytes(), true)],
+    );
+    let entries = match program {
+        NativeShadowDepthProgram::Opaque => Vec::new(),
+        NativeShadowDepthProgram::RigidAlpha => vec![texture(0), sampler(1), uniform(2, 16, false)],
+        NativeShadowDepthProgram::Vegetation => vec![texture(0), sampler(1)],
+        NativeShadowDepthProgram::WorldOpaque => vec![storage(0), storage(1)],
+        NativeShadowDepthProgram::WorldAlpha
+        | NativeShadowDepthProgram::WorldVistaAlpha
+        | NativeShadowDepthProgram::WorldVegetationFixed => {
+            vec![storage(0), storage(1), texture(2), sampler(3)]
+        }
+        NativeShadowDepthProgram::WorldVegetation => {
+            vec![storage(0), storage(1), texture(2), sampler(3), storage(4)]
+        }
+        NativeShadowDepthProgram::Skinned { alpha: true, .. } => {
+            vec![storage(0), texture(1), sampler(2)]
+        }
+        NativeShadowDepthProgram::Skinned { alpha: false, .. } => vec![storage(0)],
+    };
+    let resources = (!entries.is_empty())
+        .then(|| device.create_bind_group_layout("shadow program resources", &entries));
+    let mut layouts = vec![Some(&*model)];
+    if let Some(resources) = &resources {
+        layouts.push(Some(&**resources));
+    }
+    device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("shadow program with dynamic constant ring"),
+        bind_group_layouts: &layouts,
+        immediate_size: 0,
+    })
 }
 
 /// Cached native depth pipeline. The legacy type name is retained for existing
@@ -984,9 +1065,10 @@ impl NativeOpaqueShadowPipeline {
             label: Some("native resolved shadow vertex program"),
             source: ShaderSource::Wgsl(shader_source.into()),
         });
+        let layout = shadow_pipeline_layout(device, program);
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("native resolved rigid depth pipeline"),
-            layout: None,
+            layout: Some(&layout),
             vertex: RawVertexState {
                 module: &shader,
                 entry_point: Some(
@@ -1556,6 +1638,11 @@ impl NativeOpaqueShadowPipeline {
             multiview_mask: None,
         });
         let mut previous: Option<&Self> = None;
+        let mut previous_scissor = None;
+        let mut previous_vertex = None;
+        let mut previous_index = None;
+        let mut previous_resources = None;
+        let mut previous_uniform = None;
         if let Some(region) = viewport {
             pass.set_viewport(
                 region.x as f32,
@@ -1571,19 +1658,38 @@ impl NativeOpaqueShadowPipeline {
                 pass.set_pipeline(&pipeline.pipeline);
                 pass.set_stencil_reference(pipeline.stencil_reference);
                 previous = Some(pipeline);
+                previous_resources = None;
+                previous_uniform = None;
             }
-            pass.set_scissor_rect(
-                draw.scissor.x,
-                draw.scissor.y,
-                draw.scissor.width,
-                draw.scissor.height,
-            );
-            pass.set_bind_group(0, draw.model_state, &[]);
+            if previous_scissor != Some(draw.scissor) {
+                pass.set_scissor_rect(
+                    draw.scissor.x,
+                    draw.scissor.y,
+                    draw.scissor.width,
+                    draw.scissor.height,
+                );
+                previous_scissor = Some(draw.scissor);
+            }
+            let uniform = (draw.model_state.id(), draw.model_state_offset);
+            if previous_uniform != Some(uniform) {
+                pass.set_bind_group(0, draw.model_state, &[draw.model_state_offset]);
+                previous_uniform = Some(uniform);
+            }
             if let Some(resources) = draw.program_resources {
-                pass.set_bind_group(1, resources, &[]);
+                if previous_resources != Some(resources.id()) {
+                    pass.set_bind_group(1, resources, &[]);
+                    previous_resources = Some(resources.id());
+                }
             }
-            pass.set_vertex_buffer(0, *draw.vertex_buffer.slice(..));
-            pass.set_index_buffer(*draw.index_buffer.slice(..), draw.index_format);
+            if previous_vertex != Some(draw.vertex_buffer.id()) {
+                pass.set_vertex_buffer(0, *draw.vertex_buffer.slice(..));
+                previous_vertex = Some(draw.vertex_buffer.id());
+            }
+            let index = (draw.index_buffer.id(), draw.index_format);
+            if previous_index != Some(index) {
+                pass.set_index_buffer(*draw.index_buffer.slice(..), draw.index_format);
+                previous_index = Some(index);
+            }
             pass.draw_indexed(
                 draw.indices.clone(),
                 draw.base_vertex,

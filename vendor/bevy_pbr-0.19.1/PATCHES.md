@@ -18,6 +18,14 @@ Compared with the matching upstream release, these files differ:
   lighting hooks and original attenuation/half-point support.
 - `src/render/shadows.wgsl`: compatibility with the extended light layout.
 - `src/volumetric_fog/volumetric_fog.wgsl`: corresponding light-call signature.
+- `src/prepass/material_keys.rs`, `src/prepass/mod.rs`, and `src/material.rs`:
+  opt-in, material-type-specific key normalization for plain depth passes.
+  Registered opaque paths may also omit material reads and bindings, allowing
+  compatible instances with different forward materials to share a depth draw.
+  Alpha-tested, normal, motion-vector and deferred passes retain their required
+  material state. Unregistered materials retain upstream behavior.
+- `src/meshlet/material_pipeline_prepare.rs`: supply the unchanged material-read
+  behavior to the extended prepass specializer.
 
 The project owns material interpretation, native shadow preparation and probe
 lighting. These patches expose those inputs to the existing renderer. Preserve
@@ -27,5 +35,10 @@ Validate original light math with CPU comparisons and
 `authored_surface_gpu_pipelines_compile` for real GPU shader compilation,
 material outputs and shadow sampling. Runtime testing remains necessary after
 an upstream renderer upgrade.
+
+The same GPU fixture compares every depth pixel against the unmodified key path
+for opaque, coverage, alpha-tested, vegetation, layered and liquid materials.
+It requires both actual key normalization and a reduction from two compatible
+material batches to one, preventing a disabled optimization from passing.
 
 Upstream source is licensed MIT OR Apache-2.0; licenses are included.

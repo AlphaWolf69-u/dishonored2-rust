@@ -61,6 +61,12 @@ To override discovery, set `DH2_GAME_BASE` to the installed game's `base` direct
 An invalid override reports an error. The tools can list archive resource names;
 their optional extraction command is for research, not a launch prerequisite.
 
+Windows launches use DirectX 12 by default. `WGPU_BACKEND=vulkan` selects the
+Vulkan backend explicitly. DirectX shader compilation prefers an installed DXC
+compiler beside the executable, on PATH, or in the Windows SDK; an SDK is not a
+launch requirement. `WGPU_DX12_COMPILER=Fxc` retains the FXC fallback explicitly.
+No compiler DLLs or game executables are copied by the launcher.
+
 The rewrite extends sunlight caster depth to at least 150 metres to reduce the
 original game's abrupt shadow cutoffs. Authored longer ranges are preserved.
 Set `DH2_SUN_SHADOW_MIN_EXTENT=0` to use the game's area ranges exactly, or set
@@ -75,9 +81,35 @@ configuration and assets untouched; longer caster depth can increase shadow cost
 - F8 saves a screenshot and collision/render diagnostics under ignored
   `artifacts/`. Use matching captures when reporting a rendering defect.
 - `DH2_GAME_BASE` selects the installed asset directory.
+- `DH2_HOST_CONFIG_PATH` selects an existing game configuration when running under a different Windows account; normal launches discover Saved Games automatically.
 - `DH2_RENDER_PROFILE=1` enables rendering timing/streaming diagnostics.
 - `DH2_BENCHMARK_SECONDS` runs a fixed-camera benchmark; it disables movement
   during that measurement.
+- `DH2_BENCHMARK_SIZE=1920x1080` fixes the physical benchmark viewport independently
+  of desktop size and DPI. Benchmark output records viewport and camera pose.
+
+Exact shadow-query reuse, compact world-shadow constants, unchanged local
+atlas reuse, mesh allocation metadata reuse and prepared shadow record reuse
+are enabled by default. Depth passes share compatible pipelines and omit
+material reads only for verified opaque shader paths. Windows also finalizes
+independent command encoders in parallel, using one dedicated worker on hosts
+with at least four logical processors, and records large direct camera phases
+in consecutive chunks. These paths preserve quality settings, selected
+geometry, draw order and shadow coverage. Diagnostic controls retain the
+reference submission paths:
+
+| Control | Reference path |
+| --- | --- |
+| `DH2_CACHE_SHADOW_QUERIES=0` | Recompute every caster query |
+| `DH2_CACHE_SHADOW_MESH_ALLOCATIONS=0` | Resolve mesh allocations for every packet |
+| `DH2_CACHE_PREPARED_SHADOWS=0` | Prepare shadow records every frame |
+| `DH2_SHARE_DEPTH_PIPELINES=0` | Use complete material keys for depth passes |
+| `DH2_MATERIAL_FREE_DEPTH=0` | Keep material bindings in otherwise shared depth passes |
+| `DH2_COMPACT_SHADOW_UNIFORMS=0` | Separate constants for every world packet |
+| `DH2_REUSE_LOCAL_SHADOW_ATLAS=0` | Repack the local atlas every frame |
+| `DH2_PARALLEL_COMMAND_FINALIZATION=0` | Finalize commands serially |
+| `DH2_RENDER_FINALIZATION_THREADS=0` | Use the shared worker pool for finalization |
+| `DH2_CAMERA_DRAW_CHUNK_SIZE=0` | Record each camera phase as one pass |
 
 ## Sharing and research
 

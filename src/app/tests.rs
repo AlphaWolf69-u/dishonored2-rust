@@ -11,6 +11,8 @@ use std::path::Path;
 
 #[path = "tests/approach_visibility.rs"]
 mod approach_visibility;
+#[path = "tests/texture_formats.rs"]
+mod texture_formats;
 
 #[test]
 #[ignore = "requires installed original catalog and Saved Games config"]
@@ -441,8 +443,8 @@ fn native_world_shadow_test_material(
         defaults.insert(name.to_vec(), vector(value));
     }
     let uv_override = [2.0, 3.0, 0.25, 0.5].map(f32::to_bits);
-    let world_parameters = NativeShadowMaterialParameters {
-        overrides: SerializedParameterBlock {
+    let world_parameters = NativeShadowMaterialParameters::new(
+        SerializedParameterBlock {
             flags: 0,
             parameters: vec![SerializedParameter {
                 name: b"layer0_scalebias".to_vec(),
@@ -451,7 +453,7 @@ fn native_world_shadow_test_material(
             }],
         },
         defaults,
-    };
+    );
     let variant = D3dVariantData {
         header: D3dVariantHeader {
             source_crc: 0,
@@ -507,7 +509,7 @@ fn native_world_shadow_test_material(
     };
     (
         material.clone(),
-        NativeShadowMaterials(HashMap::from([(material, Ok(inputs))])),
+        NativeShadowMaterials([(material, Ok(inputs))].into_iter().collect()),
     )
 }
 
@@ -523,7 +525,9 @@ fn native_world_shadow_test_scene(world: world_mesh::WorldMesh) -> SceneData {
         environment_render_parameters: None,
         environment_blend_duration: 1.0,
         area_environments: Vec::new(),
-        rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings { minimum_sun_caster_extent: 0.0 },
+        rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings {
+            minimum_sun_caster_extent: 0.0,
+        },
         environment_probes: None,
         shadow_quality_preset: None,
         shadow_quality: None,
@@ -627,7 +631,7 @@ fn native_world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
             materials,
             meshes,
             images,
-            &mut queue,
+            &mut super::scene_queue::ShadowTextureRequests::new(&queue),
             None,
             Some("clock is not needed by this alpha shader"),
         )
@@ -655,7 +659,7 @@ fn native_world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
             materials,
             meshes,
             images,
-            &mut queue,
+            &mut super::scene_queue::ShadowTextureRequests::new(&queue),
             None,
             Some("clock is not needed by this alpha shader"),
         )
@@ -886,7 +890,7 @@ fn native_world_shadow_all_supported_programs_preserve_typed_material_inputs() {
             &materials,
             &mesh_assets,
             &image_assets,
-            &mut queue,
+            &mut super::scene_queue::ShadowTextureRequests::new(&queue),
             Some([12.5, 0.125]),
             None,
         )
@@ -1010,7 +1014,9 @@ fn native_shadow_owner_uses_level_sources_without_publishing_fake_frame() {
         environment_render_parameters: Some(parameters),
         environment_blend_duration: 1.0,
         area_environments: Vec::new(),
-        rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings { minimum_sun_caster_extent: 0.0 },
+        rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings {
+            minimum_sun_caster_extent: 0.0,
+        },
         environment_probes: None,
         shadow_quality_preset: Some(preset),
         shadow_quality: Some(quality),
@@ -1851,6 +1857,7 @@ fn authored_surface_gpu_pipelines_compile() {
         .spawn((
             Camera3d::default(),
             DepthPrepass,
+            bevy::render::view::NoIndirectDrawing,
             auto_exposure::MaterialExposure(material_exposure.clone()),
             Msaa::Sample4,
             bevy::camera::RenderTarget::Image(target.clone().into()),
@@ -1893,15 +1900,15 @@ fn authored_surface_gpu_pipelines_compile() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-            validated >= 5 && prepass_validated > 0,
-            "ordinary, decal, vegetation, and alpha-cutout prepass shaders must actually compile, got {validated} pipelines / {prepass_validated} prepass"
-        );
+        validated >= 5 && prepass_validated > 0,
+        "ordinary, decal, vegetation, and alpha-cutout prepass shaders must actually compile, got {validated} pipelines / {prepass_validated} prepass"
+    );
 
     app.world_mut().entity_mut(camera).insert(Msaa::Off);
     // Sample the actual prepass attachment, not the main-pass depth that
     // subsequent forward drawing can overwrite. It has TEXTURE_BINDING
     // but no COPY_SRC, so a one-invocation compute probe reads its center.
-    fn center_depth(app: &mut App) -> f32 {
+    fn all_prepass_depth(app: &mut App) -> Vec<u32> {
         use bevy::core_pipeline::prepass::ViewPrepassTextures;
         use bevy::render::{
             render_resource::*,
@@ -1928,9 +1935,9 @@ fn authored_surface_gpu_pipelines_compile() {
             source: ShaderSource::Wgsl(
                 r#"
                     @group(0) @binding(0) var depth: texture_depth_2d;
-                    @group(0) @binding(1) var<storage, read_write> result: f32;
-                    @compute @workgroup_size(1) fn main() {
-                        result = textureLoad(depth, vec2<i32>(32, 32), 0);
+                    @group(0) @binding(1) var<storage, read_write> result: array<u32>;
+                    @compute @workgroup_size(8,8) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+                        result[id.y * 64u + id.x] = bitcast<u32>(textureLoad(depth, vec2<i32>(id.xy), 0));
                     }
                 "#
                 .into(),
@@ -1949,13 +1956,13 @@ fn authored_surface_gpu_pipelines_compile() {
                 });
         let output = device.create_buffer(&BufferDescriptor {
             label: None,
-            size: 4,
+            size: 64 * 64 * 4,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let readback = device.create_buffer(&BufferDescriptor {
             label: None,
-            size: 4,
+            size: 64 * 64 * 4,
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -1983,9 +1990,9 @@ fn authored_surface_gpu_pipelines_compile() {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
+            pass.dispatch_workgroups(8, 8, 1);
         }
-        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, 4);
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, 64 * 64 * 4);
         let submission = queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         readback.slice(..).map_async(MapMode::Read, move |result| {
@@ -2001,10 +2008,17 @@ fn authored_surface_gpu_pipelines_compile() {
             .unwrap()
             .unwrap();
         let bytes = readback.slice(..).get_mapped_range();
-        let depth = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let depth = bytes
+            .chunks_exact(4)
+            .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+            .collect();
         drop(bytes);
         readback.unmap();
         depth
+    }
+
+    fn center_depth(app: &mut App) -> f32 {
+        f32::from_bits(all_prepass_depth(app)[32 * 64 + 32])
     }
 
     let entities: Vec<_> = app
@@ -2094,7 +2108,41 @@ fn authored_surface_gpu_pipelines_compile() {
     opaque.base.alpha_mode = AlphaMode::Opaque;
     opaque.extension.diffuse0 = Some(empty);
     opaque.extension.surface.misc.w = 0;
+    // Distinct lighting/layer keys share geometry but not reference depth
+    // pipelines. The material-free path must batch their transforms correctly.
+    let mut companion = opaque.clone();
+    companion.extension.surface.flags.x = 2;
+    companion.extension.surface.flags.y = 1;
+    let companion = app
+        .world_mut()
+        .resource_mut::<Assets<ProbeMaterial>>()
+        .add(companion);
+    let companion_entity = app
+        .world_mut()
+        .spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(companion.clone()),
+            Transform::from_xyz(-1.2, 0.0, 0.0),
+        ))
+        .id();
+    fn opaque_depth_batches(app: &App) -> usize {
+        use bevy::core_pipeline::prepass::Opaque3dPrepass;
+        use bevy::render::render_phase::ViewBinnedRenderPhases;
+        app.sub_app(bevy::render::RenderApp)
+            .world()
+            .resource::<ViewBinnedRenderPhases<Opaque3dPrepass>>()
+            .values()
+            .map(|phase| {
+                phase
+                    .direct_batch_count()
+                    .expect("fixture uses direct draws")
+            })
+            .sum()
+    }
+    let mut coverage_opaque = opaque.clone();
+    coverage_opaque.base.alpha_mode = AlphaMode::AlphaToCoverage;
     let cases = [
+        ("coverage material with opaque Z", coverage_opaque, true),
         ("opaque alpha", material.clone(), true),
         ("color constant must not erase depth", tinted, true),
         ("layer1 must not erase depth", layered, true),
@@ -2128,14 +2176,82 @@ fn authored_surface_gpu_pipelines_compile() {
         ))
         .id();
     for (label, material, expected) in cases {
+        let expect_material_free = matches!(
+            material.base.alpha_mode,
+            AlphaMode::Opaque | AlphaMode::AlphaToCoverage
+        ) && !surface_gpu::SurfaceKey::from(&material.extension.surface)
+            .depth_needs_material();
+        app.sub_app_mut(bevy::render::RenderApp)
+            .world_mut()
+            .remove_resource::<bevy::pbr::DepthPrepassMaterialKeys>();
         *app.world_mut()
             .resource_mut::<Assets<ProbeMaterial>>()
             .get_mut(&handle)
             .unwrap() = material;
+        let _ = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .get_mut(&companion)
+            .unwrap()
+            .into_inner();
         for _ in 0..6 {
             app.update();
         }
-        let depth = center_depth(&mut app);
+        if label == "opaque Z variant never samples alpha" {
+            assert_eq!(
+                opaque_depth_batches(&app),
+                2,
+                "reference must use separate material pipelines"
+            );
+        }
+        let reference = all_prepass_depth(&mut app);
+        let depth = f32::from_bits(reference[32 * 64 + 32]);
+        app.sub_app_mut(bevy::render::RenderApp)
+            .world_mut()
+            .insert_resource(super::materials::depth_prepass_material_keys(true));
+        // AssetMut::into_inner emits the modification event needed to respecialize.
+        for asset in [&handle, &companion] {
+            let _ = app
+                .world_mut()
+                .resource_mut::<Assets<ProbeMaterial>>()
+                .get_mut(asset)
+                .unwrap()
+                .into_inner();
+        }
+        for _ in 0..6 {
+            app.update();
+        }
+        let actual = all_prepass_depth(&mut app);
+        assert!(
+            reference == actual,
+            "{label}: shared depth pipeline changed {} pixels",
+            reference
+                .iter()
+                .zip(&actual)
+                .filter(|(a, b)| a != b)
+                .count()
+        );
+        let keys = app
+            .sub_app(bevy::render::RenderApp)
+            .world()
+            .resource::<bevy::pbr::DepthPrepassMaterialKeys>();
+        assert!(
+            keys.normalized_keys() > 0,
+            "{label}: depth normalization must actually run"
+        );
+        if expect_material_free {
+            assert!(
+                keys.omitted_materials() > 0,
+                "{label}: material-free depth must actually run"
+            );
+        }
+        if label == "opaque Z variant never samples alpha" {
+            assert_eq!(
+                opaque_depth_batches(&app),
+                1,
+                "material-free depth must actually combine both instances"
+            );
+        }
         assert!(depth.is_finite(), "{label}: nonfinite depth {depth}");
         assert_eq!(
             depth > 0.0,
@@ -2143,6 +2259,7 @@ fn authored_surface_gpu_pipelines_compile() {
             "{label}: actual prepass depth {depth}"
         );
     }
+    app.world_mut().despawn(companion_entity);
     // A valid prepass silhouette alone cannot catch a later forward discard.
     app.world_mut().entity_mut(camera).remove::<DepthPrepass>();
     app.world_mut()
@@ -2423,7 +2540,9 @@ fn authored_surface_gpu_pipelines_compile() {
         energy(lit) > 50 && energy(dark) * 5 < energy(lit),
         "decal must receive native sun visibility: lit={lit:?} shadowed={dark:?}"
     );
-    eprintln!("GPU decal native shadow attenuation: lit={lit:?}, shadowed={dark:?}; late material atlas association passed");
+    eprintln!(
+        "GPU decal native shadow attenuation: lit={lit:?}, shadowed={dark:?}; late material atlas association passed"
+    );
     // Compile the separate native specular-map branch, including layered
     // reuse. A valid shadow remains required after this material change.
     {
@@ -3373,6 +3492,45 @@ fn installed_omitted_surface_maps_resolve_native_constant_images() {
             "native constant must reach texture uploader"
         );
     }
+}
+
+#[test]
+#[ignore = "requires installed Dust District fog lookup texture"]
+fn installed_fog_lookup_preserves_half_float_uploads() {
+    let catalog =
+        archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let stem = material::compiled_image_stem(
+        &catalog,
+        "env/campaign/dust/dust_env/dust_ext01/atm/worlddistancefog/colorlut",
+    )
+    .unwrap();
+    let bytes = catalog.read(&stem).unwrap().unwrap();
+    let chain = texture::compressed_inline_chain(&bytes).unwrap();
+    assert_eq!(chain.info.format, texture::ImageFormat::R16Float);
+    let image = read_streamed_diffuse_image(&catalog, &stem, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        image.image.texture_descriptor.format,
+        TextureFormat::R16Float
+    );
+    assert_eq!(streamed_block_bytes(TextureFormat::R16Float), Some(2));
+    assert_eq!(
+        image
+            .uploads
+            .iter()
+            .flat_map(|mip| mip.payload.iter().copied())
+            .collect::<Vec<_>>(),
+        chain.payload
+    );
+    let values = chain
+        .payload
+        .chunks_exact(2)
+        .map(|v| half::f16::from_le_bytes([v[0], v[1]]).to_f32())
+        .collect::<Vec<_>>();
+    assert!(values.len() > 1);
+    assert!(values.iter().all(|v| v.is_finite()));
+    assert!(values.windows(2).any(|v| v[0] != v[1]));
 }
 
 // Execute the actual shared WGSL functions, not a test-only reimplementation.
@@ -4724,8 +4882,8 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
     }
     eprintln!("GPU native diffuse radiance response: 64 installed-HLSL cases passed");
     eprintln!(
-            "GPU native SH parity:64 original HLSL packed one/two-sided cases +4 PNW reference/interpolation cases passed"
-        );
+        "GPU native SH parity:64 original HLSL packed one/two-sided cases +4 PNW reference/interpolation cases passed"
+    );
 }
 
 #[test]
@@ -5189,8 +5347,8 @@ fn native_world_shadow_sources_resolve_level_materials() {
         }
     }
     eprintln!(
-            "actual world shadow bank2 disabled/opaque/alpha/vegetation/unsupported={counts:?}; base slot10 absent/present={base_slots:?}"
-        );
+        "actual world shadow bank2 disabled/opaque/alpha/vegetation/unsupported={counts:?}; base slot10 absent/present={base_slots:?}"
+    );
     for failure in &failures {
         eprintln!("WORLD SOURCE UNSUPPORTED {failure}");
     }
@@ -5346,9 +5504,9 @@ fn native_shadow_sources_resolve_actual_world_materials() {
                     .unwrap()
                     .native_render_state();
                 return Err(format!(
-                        "{error}; requested native signature {requested_hash:?}; base {base:?}; blend parsed={:08x} mainRpd={:08x}; effective main options {values:?}; native instance banks {banks:?}",
-                        source.main_blend_state, main_state[0]
-                    ));
+                    "{error}; requested native signature {requested_hash:?}; base {base:?}; blend parsed={:08x} mainRpd={:08x}; effective main options {values:?}; native instance banks {banks:?}",
+                    source.main_blend_state, main_state[0]
+                ));
             }
             resolved
         })();
@@ -5370,9 +5528,10 @@ fn native_shadow_sources_resolve_actual_world_materials() {
                 .unwrap_or_else(|error| {
                     panic!("{name}: native shadow material parameters: {error}")
                 });
-                for (parameter, default) in &parameters.defaults {
+                let (overrides, defaults) = parameters.declarations();
+                for (parameter, default) in defaults {
                     let expected = library
-                        .registered_float_vector(&catalog, &parameters.overrides, parameter, None)
+                        .registered_float_vector(&catalog, overrides, parameter, None)
                         .unwrap();
                     assert_eq!(
                         parameters
@@ -5391,8 +5550,7 @@ fn native_shadow_sources_resolve_actual_world_materials() {
                             ),
                         }],
                     };
-                    let expected = parameters
-                        .overrides
+                    let expected = overrides
                         .vector_words(parameter, 0x30, *default, Some(&fallback))
                         .unwrap();
                     assert_eq!(
@@ -5544,19 +5702,19 @@ fn native_shadow_sources_resolve_actual_world_materials() {
         .map(|result| *result.as_ref().unwrap())
         .sum();
     let geometry_report = format!(
-            "native vegetation geometry: {} shared meshes, {vertices} vertices, {} decoded attribute bytes",
-            inputs.0.len(),
-            vertices * std::mem::size_of::<[f32; 8]>()
-        );
+        "native vegetation geometry: {} shared meshes, {vertices} vertices, {} decoded attribute bytes",
+        inputs.0.len(),
+        vertices * std::mem::size_of::<[f32; 8]>()
+    );
     eprintln!("{geometry_report}");
     let report = format!(
-            "actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}\n{geometry_report}\n{}\n",
-            failures.join("\n")
-        );
+        "actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}\n{geometry_report}\n{}\n",
+        failures.join("\n")
+    );
     fs::write("artifacts/native-world-shadow-source-coverage.txt", &report).unwrap();
     eprintln!(
-            "actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}"
-        );
+        "actual BWM shadow material sources disabled/opaque/cutout/vegetation/unsupported={counts:?}"
+    );
     for error in failures.iter().take(25) {
         eprintln!("unsupported shadow source: {error}");
     }
@@ -5981,6 +6139,7 @@ fn light_sphere_batch_rejects_hidden_cells_and_retains_unlocated_sources() {
         tree,
         query_data,
         query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
     });
     world.insert_resource(OriginalLocalLightCullEnabled(true));
     world.insert_resource(OriginalLocalLightCullStats::default());
@@ -6120,6 +6279,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         visible_cell_indices: vec![0],
         visible_cell_mask: vec![1],
         native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_membership: Vec::new(),
         light_query_state: None,
         shadow_ordinary_query: None,
         visibility_suppression_groups: Vec::new(),
@@ -6254,6 +6414,7 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
         tree,
         query_data,
         query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
     });
     world.insert_resource(PickupState {
         items: Vec::new(),
@@ -6944,6 +7105,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
         )]],
         native_material_images: HashMap::new(),
         native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_membership: Vec::new(),
         diffuse_image_handles: vec![None],
         diffuse_image_pending: vec![None],
         diffuse_mip_states: vec![DiffuseMipState::default()],
@@ -7170,6 +7332,7 @@ fn roof_point_diagnostic_reports_authored_tome_records() {
         gate_states,
         query_data,
         query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
     };
     let empty_world = world_mesh::WorldMesh {
         meshes: Vec::new(),
@@ -7186,6 +7349,7 @@ fn roof_point_diagnostic_reports_authored_tome_records() {
         light_query_state: None,
         shadow_ordinary_query: None,
         native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_membership: Vec::new(),
         instances: Vec::new(),
         active: 0,
         tome_render_instances: TomeRenderInstanceMap::default(),
@@ -7245,6 +7409,7 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
         gate_states,
         query_data,
         query_job_count: 1,
+        query_pool: None,
     };
     // User capture frame 1164: dense street, ~5,000 mapped render instances.
     let pose = [
@@ -7256,8 +7421,24 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
     let rows =
         tome::original_world_visibility_query_matrix(80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0)
             .unwrap();
-    for count in [1, 2, 3, 4, 12, 16] {
+    for (count, threads) in [
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (4, 0),
+        (12, 0),
+        (16, 0),
+        (12, 4),
+        (12, 6),
+        (12, 12),
+    ] {
         world.query_job_count = count;
+        world.query_pool = (threads > 0).then(|| {
+            bevy::tasks::TaskPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name("Tome Query Test".into())
+                .build()
+        });
         let input = tome::OrdinaryDirectQueryInput {
             camera_point: [pose[0][3], pose[1][3], pose[2][3]],
             render_rows: rows,
@@ -7304,7 +7485,7 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
             }
         }
         println!(
-            "headless dispatch jobs={count} samples={samples} mean_wall_ms={:.3}",
+            "headless dispatch jobs={count} threads={threads} samples={samples} mean_wall_ms={:.3}",
             elapsed.as_secs_f64() * 1000.0 / samples as f64
         );
         assert_eq!(parallel.len(), count as usize);
@@ -7513,6 +7694,7 @@ fn dense_depth_grid_matches_original_bounds_after_camera_shifts() {
         tree,
         query_data,
         query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
     };
     let pose = [
         [-0.72593063, 0.01375436, -0.6876305, -36.467716],
@@ -7593,9 +7775,9 @@ fn dense_depth_grid_matches_original_bounds_after_camera_shifts() {
             workloads.push((accepted, surfaces, geometry));
         }
         println!(
-                "dense yaw={yaw} query_ms={query_ms:.3} spatial/mapped_surfaces/mapped_triangles before={:?} after={:?}",
-                workloads[0], workloads[1]
-            );
+            "dense yaw={yaw} query_ms={query_ms:.3} spatial/mapped_surfaces/mapped_triangles before={:?} after={:?}",
+            workloads[0], workloads[1]
+        );
         let mut old_count = 0;
         let mut depth_count = 0;
         // World object output and later spatial AABB output are different
@@ -7655,10 +7837,10 @@ fn dense_depth_grid_matches_original_bounds_after_camera_shifts() {
             "dense camera did not reject any extra bounds yaw={yaw}"
         );
         println!(
-                "dense yaw={yaw} frustum_bounds={old_count} depth_bounds={depth_count} accepted_objects={} grid_max={}",
-                output.indices().len(),
-                state.maximum_depth
-            );
+            "dense yaw={yaw} frustum_bounds={old_count} depth_bounds={depth_count} accepted_objects={} grid_max={}",
+            output.indices().len(),
+            state.maximum_depth
+        );
     }
 }
 
@@ -7704,8 +7886,8 @@ fn authored_distance_tiers_dispatch_far_bwm_surfaces() {
                 }
             }
             eprintln!(
-                    "DISTANCE_RENDER_WORK {label} mapped_surfaces={surface_count} mapped_triangles={triangle_count}"
-                );
+                "DISTANCE_RENDER_WORK {label} mapped_surfaces={surface_count} mapped_triangles={triangle_count}"
+            );
         }
     }
     let mut far_groups = 0;
@@ -7812,6 +7994,7 @@ fn unmapped_object_has_no_invented_frustum_visibility() {
         diffuse_image_materials: Vec::new(),
         native_material_images: HashMap::new(),
         native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_membership: Vec::new(),
         diffuse_image_handles: Vec::new(),
         diffuse_image_pending: Vec::new(),
         diffuse_mip_states: Vec::new(),
@@ -7896,35 +8079,35 @@ fn installed_image_source_aliases_load_lod_and_constant_maps() {
     let catalog =
         archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
     let cases = [
-            (
-                "models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips",
-                "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips.tga.bimage7",
-            ),
-            (
-                "models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips",
-                "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips.bimage7",
-            ),
-            (
-                "models/environment/vs_map/nature/roots_01/roots_lod2_g.tga$nomips",
-                "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_g.tga$nomips.bimage7",
-            ),
-            (
-                "ipr_constantcolor(0.0745098, 0.0980392, 0.12549, 1)",
-                "generated/image/ipr_constantcolor__0.0745098__0.0980392__0.12549__1_.bimage7",
-            ),
-            (
-                "ipr_constantcolor(0.501961, 0.501961, 0, 1)",
-                "generated/image/ipr_constantcolor__0.501961__0.501961__0__1_.bimage7",
-            ),
-            (
-                "ipr_constantcolor(0, 0, 0, 1)",
-                "generated/image/ipr_constantcolor__0__0__0__1_.bimage7",
-            ),
-            (
-                "ipr_constantcolor(0.6, 0.6, 0.6, 1)",
-                "generated/image/ipr_constantcolor__0.6__0.6__0.6__1_.bimage7",
-            ),
-        ];
+        (
+            "models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips",
+            "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_green_d$nomips.tga.bimage7",
+        ),
+        (
+            "models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips",
+            "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_n.tga$nomips.bimage7",
+        ),
+        (
+            "models/environment/vs_map/nature/roots_01/roots_lod2_g.tga$nomips",
+            "generated/image/models/environment/vs_map/nature/roots_01/roots_lod2_g.tga$nomips.bimage7",
+        ),
+        (
+            "ipr_constantcolor(0.0745098, 0.0980392, 0.12549, 1)",
+            "generated/image/ipr_constantcolor__0.0745098__0.0980392__0.12549__1_.bimage7",
+        ),
+        (
+            "ipr_constantcolor(0.501961, 0.501961, 0, 1)",
+            "generated/image/ipr_constantcolor__0.501961__0.501961__0__1_.bimage7",
+        ),
+        (
+            "ipr_constantcolor(0, 0, 0, 1)",
+            "generated/image/ipr_constantcolor__0__0__0__1_.bimage7",
+        ),
+        (
+            "ipr_constantcolor(0.6, 0.6, 0.6, 1)",
+            "generated/image/ipr_constantcolor__0.6__0.6__0.6__1_.bimage7",
+        ),
+    ];
     for (source, expected) in cases {
         let stem = material::compiled_image_stem(&catalog, source).unwrap();
         assert_eq!(stem, expected, "{source}");
@@ -7966,6 +8149,43 @@ fn accepted_tome_area_metrics_reach_mapped_diffuse_images() {
     assert!(map
         .submit_texture_demands(&[2], &[Some(1.0)], &instances, &demands)
         .is_err());
+    // A bad later object must retain the earlier object's submissions.
+    assert!(map
+        .submit_texture_demands(&[0, 2], &[Some(0.75), Some(1.0)], &instances, &demands,)
+        .is_err());
+    assert_eq!(demands[0].take(), 0.75);
+    assert_eq!(demands[1].take(), 0.75);
+
+    // All shader image roles share the same maximum, including repeated
+    // associations and unordered metrics; retain logical submission counts.
+    let mut bindings = HashMap::new();
+    bindings.insert(instances[0].material.clone(), vec![0, 1, 0]);
+    let metrics = [
+        None,
+        Some(f32::NAN),
+        Some(-1.0),
+        Some(-0.0),
+        Some(0.125),
+        Some(0.5),
+        Some(0.25),
+        Some(f32::INFINITY),
+    ];
+    let indices = vec![0; metrics.len()];
+    assert_eq!(
+        map.submit_material_texture_demands(&indices, &metrics, &instances, &demands, &bindings,)
+            .unwrap(),
+        (metrics.len() - 1) * 2 * 3
+    );
+    assert_eq!(demands[0].take(), f32::INFINITY);
+    assert_eq!(demands[1].take(), f32::INFINITY);
+
+    // Failure partway through one material also publishes the valid prefix.
+    bindings.insert(instances[0].material.clone(), vec![0, 9, 1]);
+    assert!(map
+        .submit_material_texture_demands(&[0], &[Some(0.375)], &instances, &demands, &bindings,)
+        .is_err());
+    assert_eq!(demands[0].take(), 0.375);
+    assert_eq!(demands[1].take(), 0.0);
 }
 
 #[test]
@@ -8366,11 +8586,11 @@ fn blueprint_root_collision_uses_component_not_render_children() {
     let catalog =
         archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
     assert_eq!(
-            model_havok_path(&parent, "hkt", false).as_deref(),
-            Some(
-                "generated/models/environment/props/karnaca/fence_metal_set_01/bp_fence_metal_200cm_02.blueprint.hkt._100_100_100.10.hkx"
-            )
-        );
+        model_havok_path(&parent, "hkt", false).as_deref(),
+        Some(
+            "generated/models/environment/props/karnaca/fence_metal_set_01/bp_fence_metal_200cm_02.blueprint.hkt._100_100_100.10.hkx"
+        )
+    );
     let placements = expanded_model_placements(&[parent], &catalog);
     assert_eq!(placements.len(), 10);
     let (triangles, owners, matched, failed) =
@@ -8713,4 +8933,75 @@ fn filling_matches_reference(app: &mut App) {
     drop(bytes);
     readback.unmap();
     eprintln!("GPU filling:64 installed-HLSL animated UV/fill/colour cases passed");
+}
+
+#[test]
+fn immutable_shadow_vectors_keep_raw_bits_and_model_fallbacks_live() {
+    use crate::render_program::{
+        RenderParameterKind, SerializedParameter, SerializedParameterBlock,
+        SerializedParameterValue,
+    };
+    let words = [0x7fc01234, 0x80000000, 1, 0x7f800000];
+    let parameters = NativeShadowMaterialParameters::new(
+        SerializedParameterBlock {
+            flags: 0,
+            parameters: vec![
+                SerializedParameter {
+                    name: b"layer0_scalebias".to_vec(),
+                    kind: RenderParameterKind::Uniform,
+                    value: SerializedParameterValue::Words(words),
+                },
+                SerializedParameter {
+                    name: b"bad".to_vec(),
+                    kind: RenderParameterKind::Sampler,
+                    value: SerializedParameterValue::Name(b"texture".to_vec()),
+                },
+            ],
+        },
+        [
+            (b"layer0_scalebias".to_vec(), [0; 4]),
+            (b"modeldepthhack".to_vec(), [1.0f32.to_bits(), 0, 0, 0]),
+            (b"bad".to_vec(), [0; 4]),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(
+        parameters
+            .vector(b"layer0_scalebias", None)
+            .unwrap()
+            .map(f32::to_bits),
+        words
+    );
+    assert_eq!(parameters.vector(b"modeldepthhack", None).unwrap()[0], 1.0);
+    let mut fallback = SerializedParameterBlock {
+        flags: 0,
+        parameters: vec![SerializedParameter {
+            name: b"modeldepthhack".to_vec(),
+            kind: RenderParameterKind::Uniform,
+            value: SerializedParameterValue::Words([2.0f32.to_bits(), 0, 0, 0]),
+        }],
+    };
+    assert_eq!(
+        parameters
+            .vector(b"modeldepthhack", Some(&fallback))
+            .unwrap()[0],
+        2.0
+    );
+    fallback.parameters[0].value = SerializedParameterValue::Words([3.0f32.to_bits(), 0, 0, 0]);
+    assert_eq!(
+        parameters
+            .vector(b"modeldepthhack", Some(&fallback))
+            .unwrap()[0],
+        3.0
+    );
+    assert_eq!(parameters.vector(b"modeldepthhack", None).unwrap()[0], 1.0);
+    assert_eq!(
+        parameters.vector(b"bad", None).unwrap_err(),
+        "numeric render parameter has a nonnumeric payload"
+    );
+    assert_eq!(
+        parameters.vector(b"missing", None).unwrap_err(),
+        "unresolved native shadow Uniform missing"
+    );
 }
