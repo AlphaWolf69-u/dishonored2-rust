@@ -59,7 +59,7 @@ pub struct CachedStageBytes {
 }
 
 #[derive(Debug)]
-pub struct NativeShaderCache {
+pub struct ShaderCache {
     pub names: Vec<Vec<u8>>,
     pub programs: HashMap<Vec<u8>, CachedProgramIndex>,
     pub stages: Vec<CachedStageIndex>,
@@ -121,7 +121,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-impl NativeShaderCache {
+impl ShaderCache {
     /// `base` is the installed game's `base/`, not `base/shaderCache/`.
     pub fn open(base: &Path, backend: ShaderCacheBackend) -> Result<Self> {
         let directory = base.join("shaderCache");
@@ -362,8 +362,8 @@ fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
 /// original serialized programs, NOT validated GPU objects or a shadow bank.
 /// Lookups do no archive scans after startup; definitions decode once.
 #[derive(Debug)]
-pub struct NativeProgramLibrary {
-    pub cache: NativeShaderCache,
+pub struct ProgramLibrary {
+    pub cache: ShaderCache,
     pub parameter_kinds: HashMap<Vec<u8>, crate::render_program::RenderParameterKind>,
     option_defaults: HashMap<Vec<u8>, i32>,
     float_vector_defaults: HashMap<Vec<u8>, Result<[u32; 4]>>,
@@ -374,13 +374,13 @@ pub struct NativeProgramLibrary {
         HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedWorldShadowSource>>>>,
 }
 
-impl NativeProgramLibrary {
+impl ProgramLibrary {
     pub fn open(
         base: &Path,
         backend: ShaderCacheBackend,
         catalog: &crate::archive::Catalog,
     ) -> Result<Self> {
-        let cache = NativeShaderCache::open(base, backend)?;
+        let cache = ShaderCache::open(base, backend)?;
         let parameter_kinds = crate::render_program::render_parameter_schema(catalog)?;
         let mut option_defaults = HashMap::new();
         for (name, kind) in &parameter_kinds {
@@ -756,7 +756,7 @@ impl NativeProgramLibrary {
                     "compiled shadow source CRC differs from its resident definition".into(),
                 );
             }
-            let state = definition.native_render_state();
+            let state = definition.render_state();
             Ok(Some(std::sync::Arc::new(CachedRigidShadowSource {
                 class,
                 skin_influences,
@@ -852,7 +852,7 @@ impl NativeProgramLibrary {
                  Some([0x1a,0x8e,0xaf,0x20,0x45,0xc7,0x0c,0x56,0x8c,0x1e,0xdb,0x69,0x7b,0x3d,0xd2,0x1b])) =>
                     CachedWorldShadowClass::VistaAlpha,
                 // Actual installed world-wind VS/PS, not rigid VS14200.
-                // Stream-output verified in original_world_shadow_wind_cases.
+                // Stream-output verified in world_shadow_wind_cases.
                 (Some([0xe5,0xee,0xdb,0x97,0x8c,0xbe,0x4c,0xee,0x3d,0x57,0xcf,0x15,0xf8,0x61,0x9f,0x90]),
                  Some([0x75,0x42,0x36,0x0b,0x4a,0x74,0xed,0x4a,0x15,0xbf,0x8d,0xf5,0x2e,0xb3,0xd4,0x4b])) =>
                     CachedWorldShadowClass::Vegetation,
@@ -877,7 +877,7 @@ impl NativeProgramLibrary {
                 class,
                 program: name.to_vec(),
                 variant_hash: hash,
-                definition_render_state: definition.native_render_state(),
+                definition_render_state: definition.render_state(),
                 variant,
             })))
         })();
@@ -976,7 +976,7 @@ mod tests {
     }
 
     #[test]
-    fn resident_indices_payloads_and_native_lookup_rules() {
+    fn resident_indices_payloads_and_lookup_rules() {
         let dir =
             std::env::temp_dir().join(format!("dh2-owned-shader-cache-{}", std::process::id()));
         let fixture = Fixture(dir);
@@ -1038,7 +1038,7 @@ mod tests {
             )
             .unwrap();
         }
-        let mut cache = NativeShaderCache::open(&fixture.0, ShaderCacheBackend::Pc).unwrap();
+        let mut cache = ShaderCache::open(&fixture.0, ShaderCacheBackend::Pc).unwrap();
         assert_eq!(cache.stage_counts, [0, 1]);
         assert_eq!(cache.names, [b"first".to_vec(), Vec::new()]);
         assert_eq!(
@@ -1108,7 +1108,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         let programs: Vec<_> = library
             .cache
             .programs
@@ -1149,7 +1149,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         // 1402d5210 slot10, ordinary nonblended/non-sky fixture. These are
         // explicit fixture inputs, NOT a runtime fallback for other classes.
         let overrides = SerializedParameterBlock {
@@ -1216,7 +1216,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         let directory = Path::new("artifacts/native-world-shadow-source");
         std::fs::create_dir_all(directory).unwrap();
         let mut found = 0;
@@ -1320,7 +1320,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         let overrides = SerializedParameterBlock {
             flags: 0,
             parameters: [
@@ -1397,7 +1397,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         let directory = Path::new("artifacts/native-skin-shadow-source");
         std::fs::create_dir_all(directory).unwrap();
         let mut found = 0;
@@ -1462,7 +1462,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let mut library =
-            NativeProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
+            ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog).unwrap();
         let mut overrides = SerializedParameterBlock {
             flags: 0,
             parameters: [("isShadow", 1), ("isAlpha", 0), ("noScreenShadows", 0)]
@@ -1497,7 +1497,7 @@ mod tests {
         );
         assert_eq!(
             source.definition_render_state,
-            library.definitions[b"arkdefault".as_slice()].native_render_state()
+            library.definitions[b"arkdefault".as_slice()].render_state()
         );
         overrides.parameters.push(SerializedParameter {
             name: b"alphaTest".to_vec(),
@@ -1579,7 +1579,7 @@ mod tests {
         let base = &crate::assets::installation::game_base().unwrap();
         let catalog = crate::archive::Catalog::open(base).unwrap();
         let schema = crate::render_program::render_parameter_schema(&catalog).unwrap();
-        let mut cache = NativeShaderCache::open(base, ShaderCacheBackend::Pc).unwrap();
+        let mut cache = ShaderCache::open(base, ShaderCacheBackend::Pc).unwrap();
         let programs: Vec<_> = cache.programs.values().map(|p| p.name.clone()).collect();
         let mut parameters = 0;
         let mut options = 0;
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     #[ignore = "requires the installed original shader cache"]
     fn installed_cache_all_indexed_stages_and_variants() {
-        let mut cache = NativeShaderCache::open(
+        let mut cache = ShaderCache::open(
             &crate::assets::installation::game_base().unwrap(),
             ShaderCacheBackend::Pc,
         )

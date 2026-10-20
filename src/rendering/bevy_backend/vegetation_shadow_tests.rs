@@ -4,7 +4,7 @@ use bevy::render::{render_resource::*, renderer::RenderQueue, RenderApp};
 
 #[test]
 #[ignore = "requires a GPU and original VS14200 numeric stream-output fixture"]
-fn native_vegetation_shadow_vs_matches_original_stream_output_gpu() {
+fn vegetation_shadow_vs_matches_stream_output_gpu() {
     // The SM5 port is checked BIT-EXACT against the installed shader by the
     // Python oracle's --compiled-port mode. Modern WGSL math lowering differs
     // slightly even on this same GPU under both Vulkan and DX12: measured
@@ -30,7 +30,7 @@ fn native_vegetation_shadow_vs_matches_original_stream_output_gpu() {
     // not just a separately packed CB in the direct shader harness.
     for case in &cases {
         let vector = |at: usize| std::array::from_fn(|lane| f32::from_bits(case[at + lane]));
-        let wind = crate::shadow_pass::NativeVegetationShadowParameters {
+        let wind = crate::shadow_pass::VegetationShadowParameters {
             main_variation: vector(4),
             main_frequency: vector(8),
             main_amplitude: vector(12),
@@ -39,7 +39,7 @@ fn native_vegetation_shadow_vs_matches_original_stream_output_gpu() {
             leaf_amplitude: vector(24),
             branch_amplitude: vector(28),
         };
-        let cb = crate::shadow_pass::native_vegetation_shadow_instance_cb(
+        let cb = crate::shadow_pass::vegetation_shadow_instance_cb(
             vector(0),
             &wind,
             &[vector(40), vector(36), vector(32), vector(44)],
@@ -248,7 +248,7 @@ const VEGETATION_ATTRIBUTES: [VertexAttribute; 4] = [
 ];
 
 #[test]
-fn vegetation_shadow_layout_requires_native_inputs_and_complete_cb() {
+fn vegetation_shadow_layout_requires_inputs_and_complete_cb() {
     let mut attributes = VEGETATION_ATTRIBUTES;
     fn layout(attributes: &[VertexAttribute]) -> RawVertexBufferLayout<'_> {
         RawVertexBufferLayout {
@@ -265,12 +265,12 @@ fn vegetation_shadow_layout_requires_native_inputs_and_complete_cb() {
     attributes[3].offset = 36;
     assert!(validate_vegetation_vertex_layout(&layout(&attributes)).is_err());
     assert_eq!(
-        NativeShadowDepthProgram::Vegetation.model_uniform_bytes(),
+        ShadowDepthProgram::Vegetation.model_uniform_bytes(),
         208
     );
-    assert_eq!(NativeShadowDepthProgram::Opaque.model_uniform_bytes(), 80);
+    assert_eq!(ShadowDepthProgram::Opaque.model_uniform_bytes(), 80);
     assert_eq!(
-        NativeShadowDepthProgram::RigidAlpha.model_uniform_bytes(),
+        ShadowDepthProgram::RigidAlpha.model_uniform_bytes(),
         80
     );
 }
@@ -288,7 +288,7 @@ fn draw_vegetation_cutout(
         step_mode: VertexStepMode::Vertex,
         attributes: &VEGETATION_ATTRIBUTES,
     };
-    let pipeline = NativeOpaqueShadowPipeline::new_vegetation_with_raster_state(
+    let pipeline = ShadowDepthPipeline::new_vegetation_with_raster_state(
         device,
         adapter,
         &layout,
@@ -307,7 +307,7 @@ fn draw_vegetation_cutout(
         .flat_map(|word| word.to_le_bytes())
         .collect();
     let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("native vegetation vertex inputs"),
+        label: Some("vegetation vertex inputs"),
         contents: &vertex_bytes,
         usage: BufferUsages::VERTEX,
     });
@@ -335,8 +335,8 @@ fn draw_vegetation_cutout(
         .bind_prepared_model_state(device, &rigid)
         .unwrap_err()
         .contains("208"));
-    let sampler = native_shadow_alpha_sampler(device);
-    let depths = NativeShadowDepthArray::new_with_format(
+    let sampler = shadow_alpha_sampler(device);
+    let depths = ShadowDepthArray::new_with_format(
         device,
         Extent3d {
             width: 32,
@@ -412,7 +412,7 @@ fn draw_vegetation_cutout(
                     store: StoreOp::Store,
                 },
                 None,
-                &[NativeOpaqueShadowDraw {
+                &[ShadowDepthDraw {
                     model_state_offset: 0,
                     model_state: &binding,
                     program_resources: Some(material),
@@ -422,7 +422,7 @@ fn draw_vegetation_cutout(
                     indices: 0..3,
                     base_vertex: 0,
                     instances: 0..1,
-                    scissor: NativeShadowScissor {
+                    scissor: ShadowScissor {
                         x: 0,
                         y: 0,
                         width: 32,

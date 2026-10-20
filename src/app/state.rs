@@ -26,7 +26,7 @@ pub(super) struct SceneData {
     #[allow(dead_code)]
     pub(super) shadow_quality: Option<entities::ShadowQualitySettings>,
     #[allow(dead_code)] // Actual startup target specification; not a fabricated Ready frame.
-    pub(super) shadow_target_dimensions: Option<shadow_pass::NativeParallelShadowTargetDimensions>,
+    pub(super) shadow_target_dimensions: Option<shadow_pass::ParallelShadowTargetDimensions>,
     #[allow(dead_code)] // Original r_depthBiasClamp CVar used by native hardware shadow bias.
     pub(super) shadow_depth_bias_clamp: Option<f32>,
     pub(super) shadow_sort_ccw: Option<bool>,
@@ -68,10 +68,10 @@ pub(super) struct TomeWorld {
 }
 
 #[derive(Resource)]
-pub(super) struct NativeShadowCasterWorld(pub(super) tome::shadow_caster::ShadowCasterTome);
+pub(super) struct ShadowCasterWorld(pub(super) tome::shadow_caster::ShadowCasterTome);
 
 #[derive(Resource)]
-pub(super) struct NativeViewSettings(pub(super) Result<game_settings::ViewSettings, String>);
+pub(super) struct ViewSettings(pub(super) Result<game_settings::ViewSettings, String>);
 
 #[derive(Resource)]
 pub(super) struct NavigationState {
@@ -106,10 +106,10 @@ pub(super) struct SnapshotPath(pub(super) PathBuf);
 pub(super) struct BenchmarkSeconds(pub(super) f32, pub(super) f32);
 
 #[derive(Resource)]
-pub(super) struct OriginalLocalLightCullEnabled(pub(super) bool);
+pub(super) struct LocalLightCullEnabled(pub(super) bool);
 
 #[derive(Resource, Default)]
-pub(super) struct OriginalLocalLightCullStats {
+pub(super) struct LocalLightCullStats {
     pub(super) total: usize,
     pub(super) zero_preset_rgb: usize,
     pub(super) proximity_culled: usize,
@@ -135,7 +135,7 @@ pub(super) struct OriginalLocalLightCullStats {
 }
 
 #[derive(Component, Clone, Copy)]
-pub(super) struct OriginalLocalLightCull {
+pub(super) struct LocalLightCull {
     pub(super) range: f32,
     pub(super) kind: entities::LightType,
     pub(super) culling: entities::LightCulling,
@@ -159,9 +159,9 @@ pub(super) struct LocalLightSphereBatch {
 
 // The non-Umbra branch uses 128 / viewport area (32 physical pixels).
 // The world-query branch instead consumes the native normalized area metric.
-pub(super) const ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS: f32 = 32.0;
-pub(super) const ORIGINAL_LIGHT_MIN_RANGE: f32 = 0.1;
-pub(super) const ORIGINAL_LIGHT_FALLBACK_CULL_RADIUS: f32 = 32_768.0;
+pub(super) const LOCAL_LIGHT_MIN_AREA_PIXELS: f32 = 32.0;
+pub(super) const LIGHT_MIN_RANGE: f32 = 0.1;
+pub(super) const LIGHT_FALLBACK_CULL_RADIUS: f32 = 32_768.0;
 
 #[derive(Resource, Default)]
 pub(super) struct VisibilityElapsedTiming {
@@ -441,9 +441,9 @@ pub(super) const DECAL_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("9165b294-a09d-46cb-af56-27edbe334a1b");
 pub(super) const INDIRECT_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("8257a42a-79cb-431e-862a-d5c8380347b5");
-pub(super) const ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES: f32 = 80.0;
-pub(super) const ORIGINAL_DEFAULT_NEAR: f32 = 0.01;
-pub(super) const ORIGINAL_DEFAULT_FAR: f32 = 7000.0;
+pub(super) const DEFAULT_HORIZONTAL_FOV_DEGREES: f32 = 80.0;
+pub(super) const DEFAULT_NEAR: f32 = 0.01;
+pub(super) const DEFAULT_FAR: f32 = 7000.0;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum MaterialHandle {
@@ -456,5 +456,5 @@ pub(super) struct ResolvedMaterial {
     pub(super) handle: MaterialHandle,
     pub(super) diffuse_image_slot: Option<usize>,
     pub(super) probe_index: u32,
-    pub(super) native_vertex_lighting: bool,
+    pub(super) vertex_lighting: bool,
 }

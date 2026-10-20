@@ -119,7 +119,7 @@ pub(super) fn accumulate(probe: &ProbeLighting, p: &ProbeLightingParameters) -> 
 mod tests {
     use super::*;
     #[test]
-    fn sky_projection_matches_original_executable() {
+    fn sky_projection_matches_executable() {
         for line in "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
 3f800000 3f800000 3f800000 3f800000 3f800000 3f800000 4062dfbc 4062dfbc 4062dfbc 00000000 00000000 00000000 ba225900 ba225900 ba225900
 3f800000 00000000 00000000 00000000 3f800000 00000000 3fa4cad2 40107a59 00000000 00000000 00000000 00000000 3f56b372 bf56dc08 00000000
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires installed EOTW assets and numerical original GPU probe buffers"]
-    fn installed_probe_sources_match_original_gpu_accumulation() {
+    fn installed_probe_sources_match_gpu_accumulation() {
         let catalog =
             crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap())
                 .unwrap();
@@ -217,9 +217,9 @@ mod tests {
             let result = accumulate(probe, &parameters);
             for i in 0..9 {
                 for c in 0..3 {
-                    let native = f(&output, p * 112 + (i * 3 + c) * 4);
+                    let game = f(&output, p * 112 + (i * 3 + c) * 4);
                     let dyn_value = f(&dynamic, p * 112 + (i * 3 + c) * 4) * s.bounce_factors[2][c];
-                    let error = (result[i][c] + dyn_value - native).abs();
+                    let error = (result[i][c] + dyn_value - game).abs();
                     if error > result_max {
                         result_max = error;
                         worst = p;

@@ -1,7 +1,7 @@
 //! Live screen-shadow owner. The source-backed material Z branch establishes
 //! opaque/alpha depth before screen visibility and forward lighting.
 use crate::{
-    screen_shadow_pipeline::*, shadow_pass::*, shadow_sampling::NativeParallelSamplingBuffer,
+    screen_shadow_pipeline::*, shadow_pass::*, shadow_sampling::ParallelSamplingBuffer,
 };
 use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::{
@@ -20,17 +20,17 @@ use bevy::{
 };
 
 #[derive(Resource, Clone, ExtractResource)]
-pub struct NativeScreenShadowFrame {
+pub struct ScreenShadowFrame {
     pub output: Handle<Image>,
     pub cloud: Handle<Image>,
-    pub current: Option<NativeScreenShadowView>,
+    pub current: Option<ScreenShadowView>,
     pub produced: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
-pub struct NativeScreenShadowView {
+pub struct ScreenShadowView {
     pub revision: u64,
-    pub parameters: NativeScreenShadowUniform,
+    pub parameters: ScreenShadowUniform,
     pub producer_state: [u32; 9],
     pub blur_state: [u32; 9],
 }
@@ -51,10 +51,10 @@ pub fn visibility_image(width: u32, height: u32) -> Image {
     image
 }
 
-pub struct NativeScreenShadowScenePlugin;
-impl Plugin for NativeScreenShadowScenePlugin {
+pub struct ScreenShadowScenePlugin;
+impl Plugin for ScreenShadowScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(ExtractResourcePlugin::<NativeScreenShadowFrame>::default())
+        app.add_plugins(ExtractResourcePlugin::<ScreenShadowFrame>::default())
             .add_systems(
                 Update,
                 (ensure_screen_depth_source, capture_screen_visibility),
@@ -76,7 +76,7 @@ impl Plugin for NativeScreenShadowScenePlugin {
 
 fn ensure_screen_depth_source(
     mut commands: Commands,
-    frame: Option<Res<NativeScreenShadowFrame>>,
+    frame: Option<Res<ScreenShadowFrame>>,
     cameras: Query<
         Entity,
         (
@@ -107,8 +107,8 @@ struct ScreenTargets {
     cloud_id: TextureId,
     atlas_id: TextureId,
     state: ([u32; 9], [u32; 9]),
-    producer: [NativeScreenShadowPipelines; 2],
-    blur: [NativeDwaoBlurPipeline; 2],
+    producer: [ScreenShadowPipelines; 2],
+    blur: [DwaoBlurPipeline; 2],
     parameters: [Buffer; 2],
     bindings: [BindGroup; 2],
     blur_bindings: [BindGroup; 2],
@@ -119,7 +119,7 @@ struct ScreenTargets {
 }
 
 fn clear_view_stencil(
-    frame: Option<Res<NativeScreenShadowFrame>>,
+    frame: Option<Res<ScreenShadowFrame>>,
     views: Query<&ViewDepthTexture, With<ExtractedView>>,
     mut context: RenderContext,
 ) {
@@ -139,7 +139,7 @@ fn clear_view_stencil(
     let _pass = context
         .command_encoder()
         .begin_render_pass(&RenderPassDescriptor {
-            label: Some("native view stencil initialization"),
+            label: Some("view stencil initialization"),
             color_attachments: &[],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: &view,
@@ -161,7 +161,7 @@ fn typed_buffer(
 ) -> Buffer {
     let bytes = value.into().data.expect("typed native screen transport");
     device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("native screen owner parameters"),
+        label: Some("screen owner parameters"),
         contents: &bytes,
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
     })
@@ -175,14 +175,14 @@ impl ScreenTargets {
         cloud: &GpuImage,
         atlas: &GpuImage,
         parallel: &Buffer,
-        view: &NativeScreenShadowView,
+        view: &ScreenShadowView,
     ) -> Result<Self, String> {
         let extent = [output.texture.width(), output.texture.height()];
         if depth.texture.sample_count() != 1
             || extent != [depth.texture.width(), depth.texture.height()]
             || output.texture.format() != TextureFormat::Rgba8Unorm
         {
-            return Err("native screen shadows require matching single-sample current-view depth and RGBA8 output".into());
+            return Err("screen shadows require matching single-sample current-view depth and RGBA8 output".into());
         }
         let states = screen_producer_states(
             view.producer_state,
@@ -190,7 +190,7 @@ impl ScreenTargets {
             depth.texture.format(),
         )?;
         let producer = states.map(|state| {
-            NativeScreenShadowPipelines::new(
+            ScreenShadowPipelines::new(
                 device,
                 state.color,
                 Some(state.depth),
@@ -201,12 +201,12 @@ impl ScreenTargets {
                 },
             )
         });
-        let blur_depth = crate::shadow_pipeline::native_depth_stencil_gpu(
+        let blur_depth = crate::shadow_pipeline::depth_stencil_gpu(
             &view.blur_state,
             depth.texture.format(),
         )?;
         let blur = std::array::from_fn(|i| {
-            NativeDwaoBlurPipeline::new(
+            DwaoBlurPipeline::new(
                 device,
                 &producer[0],
                 ColorTargetState {
@@ -224,7 +224,7 @@ impl ScreenTargets {
         // FUN_14032c7f0 allocates a 0x54a intermediate (DXGI10 RGBA16F),
         // while the actual ssaoScreenShadows output is DXGI28 RGBA8.
         let intermediate = device.create_texture(&TextureDescriptor {
-            label: Some("native screen shadow blur intermediate"),
+            label: Some("screen shadow blur intermediate"),
             size: Extent3d {
                 width: extent[0],
                 height: extent[1],
@@ -243,14 +243,14 @@ impl ScreenTargets {
             ..Default::default()
         });
         let point = device.create_sampler(&SamplerDescriptor {
-            label: Some("native pointClamp"),
+            label: Some("pointClamp"),
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             ..Default::default()
         });
-        let comparison = crate::shadow_pipeline::native_shadow_comparison_sampler(device);
+        let comparison = crate::shadow_pipeline::shadow_comparison_sampler(device);
         let cloud_sampler = device.create_sampler(&SamplerDescriptor {
-            label: Some("native cloud bilinearWrap"),
+            label: Some("cloud bilinearWrap"),
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
             ..Default::default()
@@ -277,7 +277,7 @@ impl ScreenTargets {
         // Executable 32cd21/32cdcd: threshold=.1, radius=1, X then Y.
         // The centre-weight parameter is not read by PostFX_DWAOBlur.
         let blur_parameters = std::array::from_fn(|i| {
-            let params = NativeDwaoBlurUniform::from_owner(
+            let params = DwaoBlurUniform::from_owner(
                 extent.map(|x| x as f32),
                 if i == 0 { [1.0, 0.0] } else { [0.0, 1.0] },
                 1.0,
@@ -307,10 +307,10 @@ impl ScreenTargets {
 }
 
 fn render_screen_shadow(
-    frame: Option<Res<NativeScreenShadowFrame>>,
-    atlas_frame: Res<NativeShadowSceneFrame>,
-    atlas_gpu: Res<NativeShadowSceneGpu>,
-    sampling: Option<Res<NativeParallelSamplingBuffer>>,
+    frame: Option<Res<ScreenShadowFrame>>,
+    atlas_frame: Res<ShadowSceneFrame>,
+    atlas_gpu: Res<ShadowSceneGpu>,
+    sampling: Option<Res<ParallelSamplingBuffer>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     images: Res<RenderAssets<GpuImage>>,
     views: Query<(
@@ -333,12 +333,12 @@ fn render_screen_shadow(
         let view = frame
             .current
             .as_ref()
-            .ok_or("native screen CPU frame pending")?;
+            .ok_or("screen CPU frame pending")?;
         if view.revision != atlas_frame.revision || !atlas_gpu.completed_revision(view.revision) {
-            return Err("native screen pass awaits the same-frame atlas submission".into());
+            return Err("screen pass awaits the same-frame atlas submission".into());
         }
-        let NativeShadowSceneState::Ready { target_image, .. } = &atlas_frame.state else {
-            return Err("native atlas is unavailable".into());
+        let ShadowSceneState::Ready { target_image, .. } = &atlas_frame.state else {
+            return Err("atlas is unavailable".into());
         };
         let (depth, _, camera) = views.single().map_err(|error| error.to_string())?;
         if camera.physical_viewport_size != camera.physical_target_size
@@ -347,21 +347,21 @@ fn render_screen_shadow(
                 .as_ref()
                 .is_some_and(|v| v.physical_position != UVec2::ZERO)
         {
-            return Err("native screen sub-view owner is unresolved".into());
+            return Err("screen sub-view owner is unresolved".into());
         }
         let output = images
             .get(frame.output.id())
-            .ok_or("native screen target pending GPU upload")?;
+            .ok_or("screen target pending GPU upload")?;
         let cloud = images
             .get(frame.cloud.id())
-            .ok_or("native cloud input pending GPU upload")?;
+            .ok_or("cloud input pending GPU upload")?;
         let atlas = images
             .get(target_image.id())
-            .ok_or("native atlas pending GPU upload")?;
+            .ok_or("atlas pending GPU upload")?;
         let parallel = sampling
             .as_ref()
             .and_then(|s| buffers.get(s.buffer.id()))
-            .ok_or("native parallel parameters pending GPU upload")?;
+            .ok_or("parallel parameters pending GPU upload")?;
         if gpu.cached.as_ref().is_none_or(|old| {
             old.depth_id != depth.texture.id()
                 || old.output_id != output.texture.id()
@@ -467,7 +467,7 @@ fn render_screen_shadow(
                 .produced
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
             if !gpu.reported {
-                println!("Native screen shadow producer and X/Y blur online");
+                println!("Screen shadow producer and X/Y blur online");
                 gpu.reported = true;
             }
             *last_error = None;
@@ -476,12 +476,12 @@ fn render_screen_shadow(
             // A failed screen pass must not let final lighting sample an old view.
             if let Some(buffer) = sampling.as_ref().and_then(|s| buffers.get(s.buffer.id())) {
                 let neutral = bevy::render::storage::ShaderBuffer::from(
-                    crate::shadow_sampling::NativeParallelSamplingUniform::default(),
+                    crate::shadow_sampling::ParallelSamplingUniform::default(),
                 );
                 queue.write_buffer(&buffer.buffer, 0, &neutral.data.unwrap());
             }
             if last_error.as_ref() != Some(&error) {
-                warn!("Native screen shadows pending: {error}");
+                warn!("Screen shadows pending: {error}");
                 *last_error = Some(error);
             }
         }
@@ -490,14 +490,14 @@ fn render_screen_shadow(
 
 fn capture_screen_visibility(
     mut commands: Commands,
-    frame: Option<Res<NativeScreenShadowFrame>>,
+    frame: Option<Res<ScreenShadowFrame>>,
     images: Res<Assets<Image>>,
     mut requested: Local<bool>,
 ) {
     if *requested {
         return;
     }
-    let Ok(path) = std::env::var("DH2_NATIVE_SHADOW_SCREEN_SNAPSHOT") else {
+    let Ok(path) = std::env::var("DH2_SHADOW_SCREEN_SNAPSHOT") else {
         return;
     };
     let Some(frame) = frame else {
@@ -515,7 +515,7 @@ fn capture_screen_visibility(
             format!("{path}.view.txt"),
             format!("{:#?}", view.parameters),
         ) {
-            error!("native screen diagnostic parameters: {error}");
+            error!("screen diagnostic parameters: {error}");
         }
     }
     *requested = true;
@@ -528,14 +528,14 @@ fn capture_screen_visibility(
             }
             let min=values.iter().min();let max=values.iter().max();
             let shadowed=values.iter().filter(|&&v|v<255).count();
-            println!("Native screen visibility readback: {}x{}, range={min:?}..{max:?}, shadowed={shadowed}/{}",extent.width,extent.height,values.len());
+            println!("Screen visibility readback: {}x{}, range={min:?}..{max:?}, shadowed={shadowed}/{}",extent.width,extent.height,values.len());
             let result=(||->Result<(),Box<dyn std::error::Error>> {
                 std::fs::write(format!("{path}.rgba.bin"),&event.data)?;
                 let mut encoder=png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&path)?),extent.width,extent.height);
                 encoder.set_color(png::ColorType::Grayscale);encoder.set_depth(png::BitDepth::Eight);
                 encoder.write_header()?.write_image_data(&values)?;Ok(())
             })();
-            if let Err(error)=result {error!("native screen diagnostic capture failed: {error}");}
+            if let Err(error)=result {error!("screen diagnostic capture failed: {error}");}
             commands.entity(event.entity).despawn();
         });
 }

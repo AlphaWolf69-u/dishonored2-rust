@@ -17,13 +17,13 @@ fn replayed_receiver_planes_match_executable() {
         .map(|_| [floats(&bytes, &mut cursor), floats(&bytes, &mut cursor)])
         .collect::<Vec<_>>();
     let ordinary_depth = floats(&bytes, &mut cursor);
-    let mut projection = NativeReceiverDepthProjection {
+    let mut projection = ReceiverDepthProjection {
         receiver_rows: [[0.0; 4]; 4],
         transposed_rows: [[0.0; 4]; 4],
         mask: Box::new([0; 128 * 128]),
     };
-    let result = initialize_native_receiver(
-        NativeReceiverInput {
+    let result = initialize_receiver(
+        ReceiverInput {
             flags: 0,
             camera_clip_rows,
             camera_position,
@@ -57,8 +57,8 @@ fn replayed_receiver_planes_match_executable() {
     assert_eq!(actual, expected_mask, "paired receiver mask");
 }
 
-fn auxiliary_input() -> NativeAuxiliaryReceiverInput {
-    NativeAuxiliaryReceiverInput {
+fn auxiliary_input() -> AuxiliaryReceiverInput {
+    AuxiliaryReceiverInput {
         camera_clip_rows: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -72,17 +72,17 @@ fn auxiliary_input() -> NativeAuxiliaryReceiverInput {
 }
 
 #[test]
-fn auxiliary_and_ordinary_share_original_plane_setup() {
+fn auxiliary_and_ordinary_share_plane_setup() {
     let input = auxiliary_input();
     let auxiliary = initialize_auxiliary_receiver(input).unwrap().unwrap();
-    let mut projection = NativeReceiverDepthProjection {
+    let mut projection = ReceiverDepthProjection {
         receiver_rows: [[0.0; 4]; 4],
         transposed_rows: [[0.0; 4]; 4],
         mask: Box::new([0; 128 * 128]),
     };
     let depth = [1.0; 4096];
-    let ordinary = initialize_native_receiver(
-        NativeReceiverInput {
+    let ordinary = initialize_receiver(
+        ReceiverInput {
             flags: 0,
             camera_clip_rows: input.camera_clip_rows,
             camera_position: input.camera_position,
@@ -167,7 +167,7 @@ fn exact_stage(name: &str, actual: &[f32], expected: &[f32]) {
 /// tolerance/renderer precision. Results are local original gameplay data.
 #[test]
 #[ignore = "requires local original gameplay leaf stage outputs"]
-fn receiver_leaves_match_original_gameplay_stages() {
+fn receiver_leaves_match_gameplay_stages() {
     let bytes = std::fs::read("artifacts/original-shadow-receiver-gameplay-stages.bin").unwrap();
     assert_eq!(&bytes[..4], b"DHS1");
     let mut cursor = 4;
@@ -187,7 +187,7 @@ fn receiver_leaves_match_original_gameplay_stages() {
         basis.as_flattened(),
         expected_basis.as_flattened(),
     );
-    let corners = crate::tome::shadow_caster::native_frustum_plane_corners(&planes);
+    let corners = crate::tome::shadow_caster::frustum_plane_corners(&planes);
     exact_stage(
         "frustum corners",
         corners.as_flattened(),
@@ -214,7 +214,7 @@ fn receiver_leaves_match_original_gameplay_stages() {
 /// with analysis/convert_shadow_receiver_capture.py before explicitly running.
 #[test]
 #[ignore = "requires the local original gameplay receiver capture"]
-fn receiver_initializer_matches_original_gameplay_projection_and_mask() {
+fn receiver_initializer_matches_gameplay_projection_and_mask() {
     let bytes = std::fs::read("artifacts/original-shadow-receiver-gameplay.bin").unwrap();
     assert_eq!(&bytes[..4], b"DHR1");
     let mut cursor = 4;
@@ -237,7 +237,7 @@ fn receiver_initializer_matches_original_gameplay_projection_and_mask() {
     let expected_mask = mask(&bytes, &mut cursor);
     assert_eq!(cursor, bytes.len());
 
-    let input = NativeReceiverInput {
+    let input = ReceiverInput {
         flags,
         camera_clip_rows,
         camera_position,
@@ -248,13 +248,13 @@ fn receiver_initializer_matches_original_gameplay_projection_and_mask() {
         dynamic_bounds: &bounds,
         ordinary_depth: &depths,
     };
-    let mut projection = NativeReceiverDepthProjection {
+    let mut projection = ReceiverDepthProjection {
         receiver_rows: [[0.0; 4]; 4],
         transposed_rows: [[0.0; 4]; 4],
         mask: initial_mask,
     };
-    let result = initialize_native_receiver(input, &mut projection).unwrap();
-    assert_eq!(result.status, NativeReceiverStatus::Initialized);
+    let result = initialize_receiver(input, &mut projection).unwrap();
+    assert_eq!(result.status, ReceiverStatus::Initialized);
     let mut matrices = Vec::new();
     for row in 0..4 {
         for column in 0..4 {

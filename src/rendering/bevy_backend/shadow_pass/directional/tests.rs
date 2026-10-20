@@ -60,7 +60,7 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
         PrimitiveTopology::TriangleList,
         bevy::asset::RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(NATIVE_VEGETATION_POSITION, vec![[0f32; 3]; 6]);
+    mesh.insert_attribute(VEGETATION_POSITION, vec![[0f32; 3]; 6]);
     let mut layouts = bevy::mesh::MeshVertexBufferLayouts::default();
     let layout = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
     let indices = device.create_buffer_with_data(&BufferInitDescriptor {
@@ -71,7 +71,7 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
             .collect::<Vec<_>>(),
         usage: BufferUsages::INDEX,
     });
-    let constants = native_shadow_instance_cb(
+    let constants = shadow_instance_cb(
         &[
             [1., 0., 0., 0.],
             [0., 1., 0., 0.],
@@ -87,14 +87,14 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
     });
     for depth_32_bits in [false, true] {
         let format = parallel_target_format(depth_32_bits);
-        let dimensions = NativeParallelShadowTargetDimensions {
+        let dimensions = ParallelShadowTargetDimensions {
             width: 8,
             height: 8,
             layers: 4,
             depth_32_bits,
         };
         let make_target = || {
-            let array = NativeShadowDepthArray::new_with_format(
+            let array = ShadowDepthArray::new_with_format(
                 &device,
                 Extent3d {
                     width: 8,
@@ -108,16 +108,16 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
             CachedTarget::new(&device, dimensions, array).unwrap()
         };
         let mut targets = [make_target(), make_target()];
-        let mut gpu = NativeShadowSceneGpu::default();
+        let mut gpu = ShadowSceneGpu::default();
         let mut draw_state = [0; 9];
-        crate::render_state::reset_native_render_state(&mut draw_state);
+        crate::render_state::reset_render_state(&mut draw_state);
         draw_state[5] = (draw_state[5] & !7) | 1;
         let key = PipelineKey {
             layout: hash_layout(&layout),
             depth_32_bits,
             front_face: FrontFace::Ccw,
             cull_mode: None,
-            program: NativeShadowProgram::RigidOpaque,
+            program: ShadowProgram::RigidOpaque,
             alpha_uv: None,
             draw_state,
             stencil_reference: 0,
@@ -139,23 +139,23 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
             }
             let static_count = usize::from(stage < 6 || stage >= 8);
             let cache = match stage {
-                0 | 1 => NativeShadowCacheOp::Retained {
+                0 | 1 => ShadowCacheOp::Retained {
                     generation: 1,
                     static_instances: 1,
                 },
-                2 | 5 => NativeShadowCacheOp::Retained {
+                2 | 5 => ShadowCacheOp::Retained {
                     generation: 2,
                     static_instances: 1,
                 },
-                3 => NativeShadowCacheOp::Restore,
-                4 => NativeShadowCacheOp::Store {
+                3 => ShadowCacheOp::Restore,
+                4 => ShadowCacheOp::Store {
                     static_instances: 1,
                 },
-                6 | 7 => NativeShadowCacheOp::Retained {
+                6 | 7 => ShadowCacheOp::Retained {
                     generation: 3,
                     static_instances: 0,
                 },
-                _ => NativeShadowCacheOp::Retained {
+                _ => ShadowCacheOp::Retained {
                     generation: 3,
                     static_instances: 1,
                 },
@@ -206,7 +206,7 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
                             geometry.base_vertex = 0;
                             records.push(PreparedShadowRecord {
                                 layer,
-                                scissor: NativeShadowScissor {
+                                scissor: ShadowScissor {
                                     x: 0,
                                     y: 0,
                                     width: 8,
@@ -220,22 +220,22 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
                             });
                         }
                     }
-                    NativeShadowLayer {
+                    ShadowLayer {
                         cache: if cached && !skip {
                             cache
                         } else {
-                            NativeShadowCacheOp::None
+                            ShadowCacheOp::None
                         },
-                        ops: NativeShadowLayerOps {
+                        ops: ShadowLayerOps {
                             depth: if skip {
-                                NativeShadowLoad::Load
+                                ShadowLoad::Load
                             } else {
-                                NativeShadowLoad::Clear(1.)
+                                ShadowLoad::Clear(1.)
                             },
                             stencil: if skip {
-                                NativeStencilLoad::Load
+                                StencilLoad::Load
                             } else {
-                                NativeStencilLoad::Clear(50 + stage * 10 + layer as u32)
+                                StencilLoad::Clear(50 + stage * 10 + layer as u32)
                             },
                         },
                         instances: Vec::new(),

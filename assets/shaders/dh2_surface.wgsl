@@ -1,6 +1,6 @@
 #define_import_path dh2_surface
 
-#import dh2_indirect::native_diffuse_response
+#import dh2_indirect::evaluate_diffuse_response
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
 
 struct SurfaceUniform {
@@ -15,7 +15,7 @@ struct SurfaceUniform {
     alpha: vec4<f32>,
     flags: vec4<u32>,
     misc: vec4<u32>,
-    native_shadow: vec4<u32>,
+    shadow: vec4<u32>,
     specular_dielectric:vec4<f32>,
     diffuse_metal:vec4<f32>,
     specular_reuse:vec4<u32>,
@@ -39,7 +39,7 @@ const compiled_occlusion = #{DH2_HAS_OCCLUSION}u;
 // Original shadowCommon offset flags and shadowFilteringQuality are shader
 // options. Preserve specialization instead of evaluating their branches for
 // every local light in every fragment.
-const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAGS}u,
+const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAGS}u,
     #{DH2_SHADOW_FILTER}u, #{DH2_SHADOW_LIGHT_QUALITY}u);
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var diffuse0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var diffuse1: texture_2d<f32>;
@@ -306,7 +306,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     out.roughness = 1.0 - g;
     if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }
-    out.diffuse_response=native_diffuse_response(out.albedo.rgb,out.roughness,out.metallic,specular,
+    out.diffuse_response=evaluate_diffuse_response(out.albedo.rgb,out.roughness,out.metallic,specular,
         #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb,surface.diffuse_metal.rgb);
     return out;
 }

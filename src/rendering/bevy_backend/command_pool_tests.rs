@@ -8,28 +8,9 @@ use bevy::{
     },
 };
 fn private_bytes() -> usize {
-    #[repr(C)]
-    struct MemoryCounters {
-        size: u32,
-        page_fault_count: u32,
-        sizes: [usize; 9],
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn K32GetProcessMemoryInfo(process: isize, counters: *mut MemoryCounters, size: u32)
-            -> i32;
-    }
-    let size = std::mem::size_of::<MemoryCounters>() as u32;
-    let mut counters = MemoryCounters {
-        size,
-        page_fault_count: 0,
-        sizes: [0; 9],
-    };
-    assert_ne!(
-        unsafe { K32GetProcessMemoryInfo(-1, &mut counters, size) },
-        0
-    );
-    counters.sizes[8]
+    crate::platform::process_memory::sample()
+        .expect("current process memory counters")
+        .private_bytes
 }
 #[test]
 #[ignore = "requires a DX12 GPU; checks heterogeneous command batches retain bounded driver memory"]

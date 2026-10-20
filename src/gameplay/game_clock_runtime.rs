@@ -7,7 +7,7 @@
 use crate::{
     game_clock::{
         self, ClockControls, ClockStepInputs, CounterMicroseconds, FrameTimingEstimator,
-        NativeGameClock,
+        GameClock,
     },
     game_settings,
 };
@@ -46,10 +46,10 @@ mod platform {
 #[cfg(not(target_os = "windows"))]
 mod platform {
     pub fn counter() -> Result<i64, String> {
-        Err("native QPC clock requires Windows".into())
+        Err("QPC clock requires Windows".into())
     }
     pub fn frequency() -> Result<i64, String> {
-        Err("native QPC clock requires Windows".into())
+        Err("QPC clock requires Windows".into())
     }
 }
 
@@ -80,12 +80,12 @@ impl PerformanceCounter {
         let counter = self.elapsed_counter()?;
         self.microseconds
             .read(counter, self.frequency)
-            .ok_or_else(|| "native counter scale unavailable".into())
+            .ok_or_else(|| "counter scale unavailable".into())
     }
 }
 
 struct LoadedClock {
-    clock: NativeGameClock,
+    clock: GameClock,
     source: PerformanceCounter,
     timing: FrameTimingEstimator,
     controls: ClockControls,
@@ -119,10 +119,10 @@ impl LoadedClock {
 /// Actual main-world owner available to the native scene publisher. A platform
 /// or configuration error stays unavailable: no zero-clock/Instant fallback.
 #[derive(Resource)]
-pub struct NativeClockRuntime(Result<LoadedClock, String>);
+pub struct ClockRuntime(Result<LoadedClock, String>);
 
-impl NativeClockRuntime {
-    pub fn clock(&self) -> Result<&NativeGameClock, &str> {
+impl ClockRuntime {
+    pub fn clock(&self) -> Result<&GameClock, &str> {
         self.0
             .as_ref()
             .map(|state| &state.clock)
@@ -133,14 +133,14 @@ impl NativeClockRuntime {
     }
 }
 
-impl FromWorld for NativeClockRuntime {
+impl FromWorld for ClockRuntime {
     fn from_world(_: &mut World) -> Self {
         let state = (|| {
             let (path, controls) = game_settings::read_game_clock_controls()?;
             let source = PerformanceCounter::new()?;
-            let mut clock = NativeGameClock::from_bytes([0; game_clock::STATE_SIZE]);
+            let mut clock = GameClock::from_bytes([0; game_clock::STATE_SIZE]);
             clock.initialize(); // Opaque owned padding is not given field meanings.
-            info!("Native game clock: QPC {} Hz, controls {:?} from {} (registered defaults where absent)",
+            info!("Game clock: QPC {} Hz, controls {:?} from {} (registered defaults where absent)",
                 source.frequency, controls, path.display());
             Ok(LoadedClock {
                 clock,
@@ -152,7 +152,7 @@ impl FromWorld for NativeClockRuntime {
             })
         })();
         if let Err(error) = &state {
-            error!("Native game clock unavailable: {error}");
+            error!("Game clock unavailable: {error}");
         }
         Self(state)
     }
@@ -162,9 +162,9 @@ impl FromWorld for NativeClockRuntime {
 /// publication use the same five native seconds/deltas, not per-draw QPC reads.
 /// Missing owner state remains an error, never a zero or Bevy-clock fallback.
 #[derive(Resource, Clone, ExtractResource)]
-pub struct NativeGameplayViewClock(Result<game_clock::GameplayViewClocks, String>);
+pub struct GameplayViewClock(Result<game_clock::GameplayViewClocks, String>);
 
-impl NativeGameplayViewClock {
+impl GameplayViewClock {
     pub fn clocks(&self) -> Result<&game_clock::GameplayViewClocks, &str> {
         self.0.as_ref().map_err(String::as_str)
     }
@@ -186,18 +186,18 @@ impl NativeGameplayViewClock {
             .model_local_time(offset, model_flags_1c31)
             .ok_or_else(|| {
                 format!(
-                    "native model clock group {} is outside the five gameplay clocks",
+                    "model clock group {} is outside the five gameplay clocks",
                     crate::render_model::model_shader_time_group(model_flags_1c31)
                 )
             })
     }
 }
 
-impl FromWorld for NativeGameplayViewClock {
+impl FromWorld for GameplayViewClock {
     fn from_world(world: &mut World) -> Self {
         Self(
             world
-                .resource::<NativeClockRuntime>()
+                .resource::<ClockRuntime>()
                 .clock()
                 .map(game_clock::GameplayViewClocks::from_clock)
                 .map_err(str::to_owned),
@@ -206,14 +206,14 @@ impl FromWorld for NativeGameplayViewClock {
 }
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeClockSystems {
+pub enum ClockSystems {
     Advance,
     PublishView,
 }
 
 fn publish_gameplay_view_clock(
-    owner: Res<NativeClockRuntime>,
-    mut view: ResMut<NativeGameplayViewClock>,
+    owner: Res<ClockRuntime>,
+    mut view: ResMut<GameplayViewClock>,
 ) {
     view.0 = owner
         .clock()
@@ -221,28 +221,28 @@ fn publish_gameplay_view_clock(
         .map_err(str::to_owned);
 }
 
-fn advance_native_clock(mut owner: ResMut<NativeClockRuntime>) {
+fn advance_clock(mut owner: ResMut<ClockRuntime>) {
     if let Ok(state) = &mut owner.0 {
         if let Err(error) = state.advance() {
-            error!("Native game clock unavailable: {error}");
+            error!("Game clock unavailable: {error}");
             owner.0 = Err(error);
         }
     }
 }
 
-pub struct NativeClockRuntimePlugin;
-impl Plugin for NativeClockRuntimePlugin {
+pub struct ClockRuntimePlugin;
+impl Plugin for ClockRuntimePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NativeClockRuntime>()
-            .init_resource::<NativeGameplayViewClock>()
-            .add_plugins(ExtractResourcePlugin::<NativeGameplayViewClock>::default())
+        app.init_resource::<ClockRuntime>()
+            .init_resource::<GameplayViewClock>()
+            .add_plugins(ExtractResourcePlugin::<GameplayViewClock>::default())
             .add_systems(
                 First,
-                advance_native_clock.in_set(NativeClockSystems::Advance),
+                advance_clock.in_set(ClockSystems::Advance),
             )
             .add_systems(
                 PostUpdate,
-                publish_gameplay_view_clock.in_set(NativeClockSystems::PublishView),
+                publish_gameplay_view_clock.in_set(ClockSystems::PublishView),
             );
     }
 }
@@ -254,22 +254,22 @@ mod tests {
     fn loaded_clock_owner_uses_actual_qpc_without_window_or_bevy_elapsed() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .add_plugins(NativeClockRuntimePlugin);
+            .add_plugins(ClockRuntimePlugin);
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             std::time::Duration::ZERO,
         ));
         app.update();
-        let owner = app.world().resource::<NativeClockRuntime>();
+        let owner = app.world().resource::<ClockRuntime>();
         let before = owner.clock().unwrap().time(3).unwrap();
         assert!(owner.advanced());
         std::thread::sleep(std::time::Duration::from_millis(20));
         app.update();
-        let owner = app.world().resource::<NativeClockRuntime>();
+        let owner = app.world().resource::<ClockRuntime>();
         let clock = owner.clock().unwrap();
         assert!(clock.time(3).unwrap() > before);
         assert!(clock.delta(3).unwrap() > 0.0);
         assert!(owner.advanced());
-        let view = app.world().resource::<NativeGameplayViewClock>();
+        let view = app.world().resource::<GameplayViewClock>();
         for group in 0..game_clock::GROUP_COUNT {
             let actual = view.model_local_time(0.5, (group as u8) << 4).unwrap();
             let expected = crate::render_model::model_shader_local_time(
@@ -290,12 +290,12 @@ mod tests {
     fn gameplay_view_clock_preserves_unavailable_owner() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .add_plugins(NativeClockRuntimePlugin);
-        app.world_mut().insert_resource(NativeClockRuntime(Err(
+            .add_plugins(ClockRuntimePlugin);
+        app.world_mut().insert_resource(ClockRuntime(Err(
             "test unavailable native clock".into()
         )));
         app.update();
-        let view = app.world().resource::<NativeGameplayViewClock>();
+        let view = app.world().resource::<GameplayViewClock>();
         assert_eq!(view.clocks().unwrap_err(), "test unavailable native clock");
         assert_eq!(
             view.view_shader_times(game_clock::RESET_VIEW_LOCAL_TIME_FLAG)
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a graphics adapter; verifies native main-world publication/render-world extraction"]
-    fn gameplay_view_clock_is_extracted_after_native_publication() {
+    fn gameplay_view_clock_is_extracted_after_publication() {
         use bevy::render::RenderApp;
         let mut app = App::new();
         app.add_plugins(
@@ -323,19 +323,19 @@ mod tests {
                 .disable::<bevy::winit::WinitPlugin>()
                 .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
         )
-        .add_plugins(NativeClockRuntimePlugin);
+        .add_plugins(ClockRuntimePlugin);
         app.finish();
         app.cleanup();
         app.update();
         let main = app
             .world()
-            .resource::<NativeGameplayViewClock>()
+            .resource::<GameplayViewClock>()
             .clocks()
             .unwrap();
         let render = app
             .sub_app(RenderApp)
             .world()
-            .resource::<NativeGameplayViewClock>()
+            .resource::<GameplayViewClock>()
             .clocks()
             .unwrap();
         let mut main_bytes = [0; 0x3c];
@@ -343,19 +343,19 @@ mod tests {
         main.write_game_result(&mut main_bytes).unwrap();
         render.write_game_result(&mut render_bytes).unwrap();
         assert_eq!(main_bytes, render_bytes);
-        let native = app
+        let game = app
             .world()
-            .resource::<NativeClockRuntime>()
+            .resource::<ClockRuntime>()
             .clock()
             .unwrap();
         for group in 0..game_clock::GROUP_COUNT {
             assert_eq!(
                 &main_bytes[group * 8..group * 8 + 8],
-                &native.time(group).unwrap().to_le_bytes()
+                &game.time(group).unwrap().to_le_bytes()
             );
             assert_eq!(
                 &main_bytes[0x28 + group * 4..0x2c + group * 4],
-                &native.delta(group).unwrap().to_le_bytes()
+                &game.delta(group).unwrap().to_le_bytes()
             );
         }
     }

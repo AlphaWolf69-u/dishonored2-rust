@@ -99,7 +99,7 @@ impl WorldShadowGather {
 /// pivot, native equality swaps, selection-sort leaves <=4 and 128-entry
 /// bounded work stack. std sort would not preserve equal-key permutations.
 fn sort_shadow_packets(packets: &mut [WorldShadowPacket]) {
-    sort_native_shadow_records(packets, |a, b| {
+    sort_shadow_records(packets, |a, b| {
         (a.flipped_key as i32).partial_cmp(&(b.flipped_key as i32))
     });
 }
@@ -107,7 +107,7 @@ fn sort_shadow_packets(packets: &mut [WorldShadowPacket]) {
 /// Shared native midpoint/end partition and short selection algorithm.
 /// 2ab630 compares signed WORLD packet keys;3348e0 compares floating local
 /// light priority differences. The caller preserves unordered comparisons.
-pub(crate) fn sort_native_shadow_records<T>(
+pub(crate) fn sort_shadow_records<T>(
     packets: &mut [T],
     compare: impl Fn(&T, &T) -> Option<std::cmp::Ordering>,
 ) {
@@ -200,20 +200,20 @@ impl WorldMesh {
         if material_flags48.len() != self.objects.len()
             || runtime_wind_indices.len() != self.visibility.len()
         {
-            return Err("native world wind-center domain mismatch".into());
+            return Err("world wind-center domain mismatch".into());
         }
         let mut count = 0usize;
         for (object, flags) in self.objects.iter().zip(material_flags48) {
             if object.matrix_start > object.matrix_end || object.matrix_end > self.visibility.len()
             {
                 return Err(
-                    "native world wind-center object range is outside visibility records".into(),
+                    "world wind-center object range is outside visibility records".into(),
                 );
             }
             if flags & 0x40 != 0 {
                 count = count
                     .checked_add(object.matrix_end - object.matrix_start)
-                    .ok_or("native world wind-center count overflow")?;
+                    .ok_or("world wind-center count overflow")?;
             }
         }
         if count != 0
@@ -223,12 +223,12 @@ impl WorldMesh {
                 .is_none_or(|end| end > i16::MAX as usize + 1)
         {
             return Err(
-                "native world wind-center index exceeds signed-short address domain".into(),
+                "world wind-center index exceeds signed-short address domain".into(),
             );
         }
         centers
             .try_reserve(count)
-            .map_err(|error| format!("native world wind-center allocation failed: {error}"))?;
+            .map_err(|error| format!("world wind-center allocation failed: {error}"))?;
         for (object, flags) in self.objects.iter().zip(material_flags48) {
             if flags & 0x40 == 0 {
                 continue;
@@ -248,12 +248,12 @@ impl WorldMesh {
 
     /// The actual shadow gather's zero auxiliary values, NOT forward color
     /// wind-volume samples. Sorting is an explicit later original step.
-    pub fn gather_native_shadow_packets(
+    pub fn gather_shadow_packets(
         &self,
         mask: &[u8],
         material_flags48: &[u8],
     ) -> Result<WorldShadowGather, String> {
-        self.gather_shadow_packets(mask, material_flags48, WORLD_SHADOW_AUXILIARY_DEFAULT)
+        self.gather_shadow_packets_with_auxiliary(mask, material_flags48, WORLD_SHADOW_AUXILIARY_DEFAULT)
     }
 
     /// FUN_1402996f0, 140299795..140299a09: gather in object/file order.
@@ -269,7 +269,7 @@ impl WorldMesh {
     /// The optional idSort_ShadowWorld, buffer uploads, material/program binds
     /// and indexed submission occur AFTER this boundary and are not replaced
     /// by sorting these packets or by the rigid-model shader.
-    pub fn gather_shadow_packets(
+    pub fn gather_shadow_packets_with_auxiliary(
         &self,
         mask: &[u8],
         material_flags48: &[u8],
@@ -280,14 +280,14 @@ impl WorldMesh {
             || mask.len() != count
             || material_flags48.len() != self.objects.len()
         {
-            return Err("native world shadow gather domain mismatch".into());
+            return Err("world shadow gather domain mismatch".into());
         }
         // Validate before starting: native objects always reference their first
         // visibility record, even when that object's selection turns out empty.
         if self.objects.iter().any(|o| {
             o.matrix_start >= count || o.matrix_start > o.matrix_end || o.matrix_end > count
         }) {
-            return Err("native world shadow object range is outside visibility records".into());
+            return Err("world shadow object range is outside visibility records".into());
         }
         let mut result = WorldShadowGather::default();
         for (index, (object, &flags)) in self.objects.iter().zip(material_flags48).enumerate() {
@@ -313,7 +313,7 @@ impl WorldMesh {
                 // These are packed low-24-bit native array lengths. Malformed
                 // overlapping source ranges must not silently wrap GPU offsets.
                 if end > 0x00ff_ffff || result.auxiliary.len() > 0x00ff_ffff {
-                    return Err("native world shadow gather exceeds packed count domain".into());
+                    return Err("world shadow gather exceeds packed count domain".into());
                 }
                 result.packets.push(WorldShadowPacket {
                     object: index,
@@ -349,7 +349,7 @@ impl WorldMesh {
     ) -> Result<(), String> {
         let count = self.visibility.len();
         if count > 0x00ff_ffff {
-            return Err("native world shadow count exceeds packed 24-bit domain".into());
+            return Err("world shadow count exceeds packed 24-bit domain".into());
         }
         if self
             .objects
@@ -360,7 +360,7 @@ impl WorldMesh {
                 .iter()
                 .any(|group| group.parent >= count)
         {
-            return Err("native world shadow range/parent exceeds visibility domain".into());
+            return Err("world shadow range/parent exceeds visibility domain".into());
         }
         // For a 24-bit count, native ceil(float(count)/4096) is exactly this.
         let batches = count.div_ceil(4096);
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_packet_sort_matches_original_executable_including_ties() {
+    fn shadow_packet_sort_matches_executable_including_ties() {
         let mut cases = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -849,7 +849,7 @@ mod tests {
             gather.sort_for_shadow_draw(false);
             assert_eq!(gather.packets, input);
             gather.sort_for_shadow_draw(true);
-            assert_eq!(gather.packets, expected, "native packet sort case{case}");
+            assert_eq!(gather.packets, expected, "packet sort case{case}");
             assert_eq!(gather.instance_ids, [7, 13, 29]);
             assert_eq!(gather.auxiliary, [[0xdeadbeef; 8]]);
             cases += 1;
@@ -858,18 +858,18 @@ mod tests {
     }
 
     #[test]
-    fn native_shadow_gather_uploads_zero_auxiliary_not_forward_wind_samples() {
+    fn shadow_gather_uploads_zero_auxiliary_not_forward_wind_samples() {
         let mut world = shadow_mask_world(2);
         world.objects.push(shadow_object(0, 2, 0));
         let gathered = world
-            .gather_native_shadow_packets(&[1, 1], &[0x41])
+            .gather_shadow_packets(&[1, 1], &[0x41])
             .unwrap();
         assert_eq!(gathered.auxiliary, [[0; 8]; 2]);
         assert_eq!(gathered.packets[0].auxiliary_start, Some(0));
     }
 
     #[test]
-    fn world_wind_centers_match_original_executable() {
+    fn world_wind_centers_match_executable() {
         let mut cases = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -917,7 +917,7 @@ mod tests {
             assert_eq!(
                 indices.iter().map(|&v| v as u16).collect::<Vec<_>>(),
                 expected_indices,
-                "native indices case{case}"
+                "indices case{case}"
             );
             assert_eq!(
                 centers
@@ -925,7 +925,7 @@ mod tests {
                     .map(|v| v.map(f32::to_bits))
                     .collect::<Vec<_>>(),
                 expected_centers,
-                "native midpoint bits case{case}"
+                "midpoint bits case{case}"
             );
             cases += 1;
         }
@@ -957,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_packet_gather_matches_original_executable_prefix() {
+    fn shadow_packet_gather_matches_executable_prefix() {
         let mut cases = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1022,7 +1022,7 @@ mod tests {
             };
             assert_eq!(
                 world
-                    .gather_shadow_packets(&mask, &flags, auxiliary)
+                    .gather_shadow_packets_with_auxiliary(&mask, &flags, auxiliary)
                     .unwrap(),
                 expected,
                 "original executable case {case}"
@@ -1046,7 +1046,7 @@ mod tests {
             record.trailing_field = 100 + index as u16;
         }
         let gathered = world
-            .gather_shadow_packets(
+            .gather_shadow_packets_with_auxiliary(
                 &[0, 2, 1, 1, 0, 0, 0, 1, 1],
                 &[1, 0x41, 1, 0],
                 [0x8000_0000, 0x7fc0_1234, 0x3f80_0000, 0xffff_ffff],
@@ -1090,13 +1090,13 @@ mod tests {
         // All-zero selections and flags with bit0 clear emit no descriptors.
         assert_eq!(
             world
-                .gather_shadow_packets(&[0; 9], &[0xff; 4], [0; 4])
+                .gather_shadow_packets_with_auxiliary(&[0; 9], &[0xff; 4], [0; 4])
                 .unwrap(),
             WorldShadowGather::default()
         );
         assert_eq!(
             world
-                .gather_shadow_packets(&[1; 9], &[0xfe; 4], [0; 4])
+                .gather_shadow_packets_with_auxiliary(&[1; 9], &[0xfe; 4], [0; 4])
                 .unwrap(),
             WorldShadowGather::default()
         );
@@ -1113,7 +1113,7 @@ mod tests {
         let mut batches = Vec::new();
         world
             .for_each_whole_view_shadow_batch(|mask| {
-                batches.push(world.gather_shadow_packets(mask, &[1, 1], [0; 4]).unwrap());
+                batches.push(world.gather_shadow_packets_with_auxiliary(mask, &[1, 1], [0; 4]).unwrap());
             })
             .unwrap();
         assert_eq!(batches.len(), 1);
@@ -1123,8 +1123,8 @@ mod tests {
             (batches[0].packets[0].start, batches[0].packets[0].end),
             (0, 3)
         );
-        assert!(world.gather_shadow_packets(&[], &[1, 1], [0; 4]).is_err());
-        assert!(world.gather_shadow_packets(&[1; 8], &[], [0; 4]).is_err());
+        assert!(world.gather_shadow_packets_with_auxiliary(&[], &[1, 1], [0; 4]).is_err());
+        assert!(world.gather_shadow_packets_with_auxiliary(&[1; 8], &[], [0; 4]).is_err());
     }
 
     #[test]
@@ -1143,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn whole_view_shadow_masks_preserve_native_ceil_stride_overlap() {
+    fn whole_view_shadow_masks_preserve_ceil_stride_overlap() {
         let mut world = shadow_mask_world(4100);
         world.objects = vec![shadow_object(1, 3, 3), shadow_object(4096, 4098, 1)];
         world.visibility_groups.push(WorldVisibilityGroup {
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires local initialized-game registry capture"]
-    fn vertex_element_lookup_matches_all_native_live_declarations() {
+    fn vertex_element_lookup_matches_all_live_declarations() {
         let text = std::fs::read_to_string("artifacts/runtime-vertex-declarations.txt").unwrap();
         let mut verified = 0;
         for line in text.lines().filter(|l| l.starts_with("decl_raw ")) {
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn static_shadow_query_bounds_match_original_root() {
+    fn static_shadow_query_bounds_match_root() {
         let mut checked = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1237,7 +1237,7 @@ mod tests {
                 .collect();
             let result = static_query_bounds(bounds.iter()).unwrap();
             let actual: Vec<u32> = result.iter().flatten().map(|v| v.to_bits()).collect();
-            assert_eq!(actual, words[3 + count * 8..], "native root case {case}");
+            assert_eq!(actual, words[3 + count * 8..], "root case {case}");
             checked += 1;
         }
         assert_eq!(checked, 192);

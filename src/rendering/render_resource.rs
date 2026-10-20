@@ -9,7 +9,7 @@
 //! FUN_140370860 flags3 creates a GPU-only uninitialized pool, with default
 //! usage, bind flags0x28 and stride4. FUN_140351780 schedules the zero-UAV
 //! descriptor initialized by FUN_1403772d0 for ctx+0xc798; the equivalent
-//! counter reset now lives in tiled_lighting_gpu::NativeTlfBuffers::begin_frame.
+//! counter reset now lives in tiled_lighting_gpu::TlfBuffers::begin_frame.
 //! List-head initialization and live depth-pass ownership remain separate.
 //! Do not infer D3D11 clears
 //! from an arbitrary +0x198 virtual call: inspected 140348bb0 is monitor-mode
@@ -126,7 +126,7 @@ impl BufferViewCache {
         let available = if format_word & 0x001f_e000 != 0 {
             let bpp = image_bits_per_pixel(format_word);
             if bpp == 0 {
-                return Err("native typed buffer view has zero bits per pixel".into());
+                return Err("typed buffer view has zero bits per pixel".into());
             }
             byte_width.wrapping_shl(3) / bpp
         } else {
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_hash_specializations_match_original_machine_code() {
+    fn resource_hash_specializations_match_machine_code() {
         let mut checked = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_views_match_original_cache_fields_and_identity() {
+    fn buffer_views_match_cache_fields_and_identity() {
         let mut cache = BufferViewCache::default();
         let mut case = None;
         let mut identities = BTreeMap::new();
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn original_buffer_view_zero_count_and_cached_identity() {
+    fn buffer_view_zero_count_and_cached_identity() {
         let mut cache = BufferViewCache::default();
         let view = cache.get(4608000, 1152000, 0, 0, 0).unwrap();
         assert_eq!(view.element_count, 1152000);
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn native_buffer_key_keeps_original_aliasing() {
+    fn buffer_key_keeps_aliasing() {
         let mut cache = BufferViewCache::default();
         // Top index bits are discarded by the native key construction.
         let first = cache.get(4, 1, 0, 0, 1).unwrap() as *const BufferView;

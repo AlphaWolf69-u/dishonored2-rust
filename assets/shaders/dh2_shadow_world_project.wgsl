@@ -1,7 +1,7 @@
 // Shared installed world-shadow VS clip arithmetic: MUL Y, MAD X,
 // MAD Z, ADD translation. Inputs are original game-space world position
 // and the original VP rows; this is not a rigid-model MVP/depth hack.
-fn native_shadow_world_project(world: vec4<f32>, x: vec4<f32>, y: vec4<f32>,
+fn shadow_world_project(world: vec4<f32>, x: vec4<f32>, y: vec4<f32>,
     z: vec4<f32>, w: vec4<f32>) -> vec4<f32>
 {
     let column_x = vec4<f32>(x.x, y.x, z.x, w.x);

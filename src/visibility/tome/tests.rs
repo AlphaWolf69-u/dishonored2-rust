@@ -1,5 +1,5 @@
 #[test]
-fn portal_depth_admission_matches_original_pair_masks() {
+fn portal_depth_admission_matches_pair_masks() {
     let mut count = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -24,7 +24,7 @@ fn portal_depth_admission_matches_original_pair_masks() {
         assert_eq!(
             portal_box_depth_mask(corners),
             words[16],
-            "native portal depth case{count}"
+            "portal depth case{count}"
         );
         count += 1;
     }
@@ -33,7 +33,7 @@ fn portal_depth_admission_matches_original_pair_masks() {
 use super::*;
 
 #[test]
-fn query_distance_threshold_matches_original_radius_overflow_and_unordered_cases() {
+fn query_distance_threshold_matches_radius_overflow_and_unordered_cases() {
     let mut count = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -53,7 +53,7 @@ fn query_distance_threshold_matches_original_radius_overflow_and_unordered_cases
                 .unwrap()
                 .to_bits(),
             w[4],
-            "native query distance case{count}"
+            "query distance case{count}"
         );
         count += 1;
     }
@@ -77,8 +77,8 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         tree.node_count()
     );
     let point = [-43.0, 138.0, 44.0];
-    let mut worklists = SpatialCellWorklists::new_for_original_query();
-    let mut pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut worklists = SpatialCellWorklists::new_for_query();
+    let mut pool = CellWorkNodePool::new_for_query().unwrap();
     let mut coverage = VisitedCellCoverage::default();
     let mask = PortalTileMask::full([0, 0, 8, 16]).unwrap();
     let planes = [[0.0, 0.0, 0.0, 1.0]; 6];
@@ -118,10 +118,10 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         [0.0, 0.0, 1.0, point[2]],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let matrix = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+    let matrix = render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let planes = query_planes_from_rows(matrix, matrix);
-    let mut worklists = SpatialCellWorklists::new_for_original_query();
-    let mut pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut worklists = SpatialCellWorklists::new_for_query();
+    let mut pool = CellWorkNodePool::new_for_query().unwrap();
     let mut coverage = VisitedCellCoverage::default();
     let mut frustum_result = tree
         .seed_ordinary_camera_global_query(
@@ -130,7 +130,7 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
             point,
             &planes,
             [0.6; 3],
-            ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
             &mut worklists,
             &mut pool,
             &mut coverage,
@@ -139,8 +139,8 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         .unwrap()
         .expect("camera point inside the Tome root");
     assert!(frustum_result.nodes_visited < tree.node_count());
-    let mut unbounded_worklists = SpatialCellWorklists::new_for_original_query();
-    let mut unbounded_pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut unbounded_worklists = SpatialCellWorklists::new_for_query();
+    let mut unbounded_pool = CellWorkNodePool::new_for_query().unwrap();
     let mut unbounded_coverage = VisitedCellCoverage::default();
     let unbounded_result = tree
         .seed_ordinary_camera_global_query(
@@ -185,7 +185,7 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
             [100_000.0, 0.0, 0.0],
             &planes,
             [0.6; 3],
-            ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
             &mut worklists,
             &mut pool,
             &mut coverage,
@@ -214,7 +214,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
         [0.0, 0.0, 1.0, viewpoint[2]],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let matrix = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+    let matrix = render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let planes = query_planes_from_rows(matrix, matrix);
     let stored_matrix = stored_query_matrix_from_render_rows(matrix);
     let setup = setup_spatial_record_query(&bytes, record, viewpoint, [0.6; 3], &planes).unwrap();
@@ -274,8 +274,8 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
     .unwrap();
     assert_eq!(pixels, [29, 29, 30, 41]);
     assert!(matches!(path, PortalCoveragePath::Clipped { .. }));
-    let mut worklists = SpatialCellWorklists::new_for_original_query();
-    let mut pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut worklists = SpatialCellWorklists::new_for_query();
+    let mut pool = CellWorkNodePool::new_for_query().unwrap();
     let mut coverage = VisitedCellCoverage::default();
     let changed = traverse_same_spatial_direct_link_from_pool(
         &bytes,
@@ -310,8 +310,8 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
 
     let rows = SpatialCellSlotRows::parse(&bytes).unwrap();
     assert_eq!(rows.spatial_record_count(), tree.node_count());
-    let mut cross_worklists = SpatialCellWorklists::new_for_original_query();
-    let mut cross_pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut cross_worklists = SpatialCellWorklists::new_for_query();
+    let mut cross_pool = CellWorkNodePool::new_for_query().unwrap();
     let mut cross_coverage = VisitedCellCoverage::default();
     let mut global = tree
         .seed_ordinary_camera_global_query(
@@ -320,7 +320,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
             point,
             &[[0.0, 0.0, 0.0, 1.0]; 6],
             [0.6; 3],
-            ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
             &mut cross_worklists,
             &mut cross_pool,
             &mut cross_coverage,
@@ -376,8 +376,8 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
             .is_none()
     );
 
-    let mut loop_worklists = SpatialCellWorklists::new_for_original_query();
-    let mut loop_pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut loop_worklists = SpatialCellWorklists::new_for_query();
+    let mut loop_pool = CellWorkNodePool::new_for_query().unwrap();
     let mut loop_coverage = VisitedCellCoverage::default();
     let mut loop_global = tree
         .seed_ordinary_camera_global_query(
@@ -386,7 +386,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
             point,
             &[[0.0, 0.0, 0.0, 1.0]; 6],
             [0.6; 3],
-            ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
             &mut loop_worklists,
             &mut loop_pool,
             &mut loop_coverage,
@@ -516,7 +516,7 @@ fn ordinary_direct_query_returns_authored_eotw_roof_objects() {
         [0.0, 0.0, 1.0, point[2]],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let rows = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+    let rows = render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let gates = initial_gate_states(&bytes).unwrap();
     let input = OrdinaryDirectQueryInput {
         camera_point: point,
@@ -524,7 +524,7 @@ fn ordinary_direct_query_returns_authored_eotw_roof_objects() {
         cropped_rows: rows,
         initial_tile_rect: [0, 0, 8, 16],
         camera_imprecision: [0.6; 3],
-        global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+        global_distance_threshold: DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
         object_distance_scale: 1.0,
         object_imprecision: 0.6,
         minimum_area_metric: 25.0 / (1920.0 * 1080.0),
@@ -584,7 +584,7 @@ fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
         [0.0, 0.0, 0.0, 1.0],
     ];
     let rows =
-        original_world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+        world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let gates = initial_gate_states(&bytes).unwrap();
     let input = OrdinaryDirectQueryInput {
         camera_point: point,
@@ -594,11 +594,11 @@ fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
         camera_imprecision: [0.6; 3],
         object_imprecision: 0.6,
         minimum_area_metric: 25.0 / (1920.0 * 1080.0),
-        global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+        global_distance_threshold: DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
         object_distance_scale: 1.0,
         winding_flip: query_matrix_winding_flip(rows),
         gate_states: Some(&gates),
-        output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+        output_capacity: WORLD_QUERY_OUTPUT_CAPACITY,
     };
     for count in [1, 4] {
         let mut cached_jobs = Vec::new();
@@ -676,7 +676,7 @@ fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
 }
 
 #[test]
-fn grows_and_merges_original_portal_tile_coverage() {
+fn grows_and_merges_portal_tile_coverage() {
     assert_eq!(portal_tile_rect([9, 5, 24, 12]).unwrap(), [1, 1, 3, 3]);
     assert!(portal_tile_rect([9, 5, 9, 12]).is_err());
     let mut destination = PortalTileMask::new([2, 3, 4, 5]).unwrap();
@@ -705,7 +705,7 @@ fn initial_camera_cell_mask_covers_the_viewport_tile_rectangle() {
 }
 
 #[test]
-fn portal_face_vectors_follow_original_query_context_cofactors_and_winding() {
+fn portal_face_vectors_follow_query_context_cofactors_and_winding() {
     let matrix = [
         [1.0, 2.0, 3.0, 4.0],
         [5.0, 6.0, 7.0, 8.0],
@@ -774,7 +774,7 @@ fn portal_face_vectors_follow_original_query_context_cofactors_and_winding() {
 }
 
 #[test]
-fn portal_corner_transform_uses_original_query_matrix_component_order() {
+fn portal_corner_transform_uses_query_matrix_component_order() {
     let matrix = [
         [1.0, 2.0, 3.0, 4.0],
         [5.0, 6.0, 7.0, 8.0],
@@ -789,7 +789,7 @@ fn portal_corner_transform_uses_original_query_matrix_component_order() {
 }
 
 #[test]
-fn caller_builds_raster_corners_in_original_face_cycle() {
+fn caller_builds_raster_corners_in_face_cycle() {
     let identity = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -828,7 +828,7 @@ fn caller_builds_raster_corners_in_original_face_cycle() {
 }
 
 #[test]
-fn real_street_portal_matches_original_raster() {
+fn real_street_portal_matches_raster() {
     let source = PortalTileMask::full([0, 0, 8, 16]).unwrap();
     let mut target = PortalTileMask::new([0, 0, 8, 16]).unwrap();
     let projected = [
@@ -909,7 +909,7 @@ fn local_no_portal_transition_reuses_incoming_tile_extent() {
 }
 
 #[test]
-fn direct_local_link_reaches_unvisited_cell_through_original_work_pool() {
+fn direct_local_link_reaches_unvisited_cell_through_work_pool() {
     let link = [
         (1 << 29) | 4,
         (1 << 16) | 50,
@@ -1203,7 +1203,7 @@ fn unclipped_portal_does_not_consume_invalid_face_setup() {
 }
 
 #[test]
-fn cell_traversal_state_matches_original_queued_and_processed_flags() {
+fn cell_traversal_state_matches_queued_and_processed_flags() {
     let queued = CellTraversalState::queued(0x123).unwrap();
     assert_eq!(queued.raw(), 0x8123);
     assert_eq!(queued.entry(), 0x123);
@@ -1260,7 +1260,7 @@ fn target_spatial_slot_mapping_rejects_incomplete_tables() {
 }
 
 #[test]
-fn parses_original_spatial_slot_rows_from_tome_header() {
+fn parses_spatial_slot_rows_from_tome_header() {
     let mut bytes = vec![0; 0x104];
     bytes[0x90..0x94].copy_from_slice(&3u32.to_le_bytes());
     bytes[0x94..0x98].copy_from_slice(&3u32.to_le_bytes());
@@ -1278,7 +1278,7 @@ fn parses_original_spatial_slot_rows_from_tome_header() {
 }
 
 #[test]
-fn tests_each_original_portal_pixel_bit_against_object_rectangle() {
+fn tests_each_portal_pixel_bit_against_object_rectangle() {
     let mut mask = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     for x in 0..8 {
         for y in 0..4 {
@@ -1307,7 +1307,7 @@ fn tests_each_original_portal_pixel_bit_against_object_rectangle() {
 }
 
 #[test]
-fn rasterizes_original_small_and_medium_portal_tile_branches() {
+fn rasterizes_small_and_medium_portal_tile_branches() {
     let mut destination = PortalTileMask::new([0, 0, 2, 3]).unwrap();
     let mut incoming = PortalTileMask::new([0, 0, 2, 3]).unwrap();
     incoming.bits.fill(u32::MAX);
@@ -1353,7 +1353,7 @@ fn rasterizes_original_small_and_medium_portal_tile_branches() {
     assert_eq!(outlined.bits[0], 0x0000_8000);
 }
 
-fn check_original_raster_samples(cases: &str, rect: [u8; 4]) {
+fn check_raster_samples(cases: &str, rect: [u8; 4]) {
     let word_count = (rect[2] - rect[0]) as usize * (rect[3] - rect[1]) as usize;
     for (case, row) in cases.lines().enumerate() {
         let values = row.split_whitespace().collect::<Vec<_>>();
@@ -1381,22 +1381,22 @@ fn check_original_raster_samples(cases: &str, rect: [u8; 4]) {
 }
 
 #[test]
-fn small_and_medium_portal_raster_matches_original_executable_samples() {
-    check_original_raster_samples(
+fn small_and_medium_portal_raster_matches_executable_samples() {
+    check_raster_samples(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/portal_small_cases.txt"
         )),
         [0, 0, 3, 3],
     );
-    check_original_raster_samples(
+    check_raster_samples(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/portal_strip_cases.txt"
         )),
         [0, 0, 6, 11],
     );
-    check_original_raster_samples(
+    check_raster_samples(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/portal_medium_cases.txt"
@@ -1406,8 +1406,8 @@ fn small_and_medium_portal_raster_matches_original_executable_samples() {
 }
 
 #[test]
-fn large_portal_raster_matches_original_executable_samples() {
-    check_original_raster_samples(
+fn large_portal_raster_matches_executable_samples() {
+    check_raster_samples(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/portal_large_cases.txt"
@@ -1451,7 +1451,7 @@ fn large_portal_raster_matches_original_executable_samples() {
 }
 
 #[test]
-fn depth_grid_matches_original_executable_samples() {
+fn depth_grid_matches_executable_samples() {
     for (case, row) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/depth_grid_cases.txt"
@@ -1482,7 +1482,7 @@ fn depth_grid_matches_original_executable_samples() {
 }
 
 #[test]
-fn combined_mask_depth_matches_original_executable_samples() {
+fn combined_mask_depth_matches_executable_samples() {
     for (case, row) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/mask_depth_cases.txt"
@@ -1530,7 +1530,7 @@ fn combined_mask_depth_matches_original_executable_samples() {
 }
 
 #[test]
-fn depth_mask_raster_matches_original_executable_samples() {
+fn depth_mask_raster_matches_executable_samples() {
     for (case, row) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/depth_raster_cases.txt"
@@ -1576,7 +1576,7 @@ fn depth_mask_raster_matches_original_executable_samples() {
 }
 
 #[test]
-fn decodes_original_grouped_tome_object_ids() {
+fn decodes_grouped_tome_object_ids() {
     let mut data = vec![0u8; 0x90];
     data[0x40..0x44].copy_from_slice(&3u32.to_le_bytes());
     data[0x4c..0x50].copy_from_slice(&0x60u32.to_le_bytes());
@@ -1596,7 +1596,7 @@ fn decodes_original_grouped_tome_object_ids() {
 }
 
 #[test]
-fn reconstructs_original_four_corner_order_from_query_planes() {
+fn reconstructs_four_corner_order_from_query_planes() {
     let planes = [
         [0.0, 0.0, 1.0, -1.0],
         [0.0, 0.0, 1.0, -2.0],
@@ -1620,8 +1620,8 @@ fn reconstructs_original_four_corner_order_from_query_planes() {
 }
 
 #[test]
-fn builds_original_render_view_reverse_depth_projection() {
-    let finite = original_render_perspective_rows([-1.0, 1.0], [-1.0, 1.0], 1.0, 100.0).unwrap();
+fn builds_render_view_reverse_depth_projection() {
+    let finite = render_perspective_rows([-1.0, 1.0], [-1.0, 1.0], 1.0, 100.0).unwrap();
     assert_eq!(finite[0], [1.0, 0.0, 0.0, 0.0]);
     assert_eq!(finite[1], [0.0, 1.0, 0.0, 0.0]);
     assert_eq!(finite[3], [0.0, 0.0, -1.0, 0.0]);
@@ -1632,9 +1632,9 @@ fn builds_original_render_view_reverse_depth_projection() {
     assert!((project_depth(-1.0) - 1.0).abs() < 1e-6);
     assert!(project_depth(-100.0).abs() < 1e-6);
 
-    let infinite = original_render_perspective_rows([-1.0, 1.0], [-1.0, 1.0], 1.0, 0.0).unwrap();
+    let infinite = render_perspective_rows([-1.0, 1.0], [-1.0, 1.0], 1.0, 0.0).unwrap();
     assert_eq!(infinite[2], [0.0, 0.0, -1.0, 0.0]);
-    assert!(original_render_perspective_rows([0.0, 0.0], [-1.0, 1.0], 1.0, 100.0).is_err());
+    assert!(render_perspective_rows([0.0, 0.0], [-1.0, 1.0], 1.0, 100.0).is_err());
 }
 
 #[test]
@@ -1645,9 +1645,9 @@ fn world_visibility_query_replaces_depth_and_flips_portal_winding() {
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let reverse = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+    let reverse = render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let visibility =
-        original_world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+        world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     assert_eq!(visibility[0], reverse[0]);
     assert_eq!(visibility[1], reverse[1]);
     assert_eq!(visibility[3], reverse[3]);
@@ -1658,25 +1658,25 @@ fn world_visibility_query_replaces_depth_and_flips_portal_winding() {
 }
 
 #[test]
-fn derives_original_render_fov_from_reference_fov_and_pixel_aspect() {
+fn derives_render_fov_from_reference_fov_and_pixel_aspect() {
     let (wide_horizontal, wide_vertical) =
-        original_render_fov_radians(80.0, 1920, 1080, 1.0).unwrap();
+        render_fov_radians(80.0, 1920, 1080, 1.0).unwrap();
     assert!((wide_horizontal.to_degrees() - 80.0).abs() < 1e-4);
     let expected_vertical = 2.0 * ((80.0_f32.to_radians() * 0.5).tan() * 0.5625).atan();
     assert!((wide_vertical - expected_vertical).abs() < 1e-6);
 
     let (narrow_horizontal, narrow_vertical) =
-        original_render_fov_radians(80.0, 4, 3, 1.0).unwrap();
+        render_fov_radians(80.0, 4, 3, 1.0).unwrap();
     assert!(narrow_horizontal < wide_horizontal);
     assert!((narrow_vertical - wide_vertical).abs() < 1e-6);
 
-    assert!(original_render_fov_radians(80.0, 0, 1080, 1.0).is_err());
-    assert!(original_render_fov_radians(80.0, 1920, 1080, 0.0).is_err());
-    assert!(original_render_fov_radians(180.0, 1920, 1080, 1.0).is_err());
+    assert!(render_fov_radians(80.0, 0, 1080, 1.0).is_err());
+    assert!(render_fov_radians(80.0, 1920, 1080, 0.0).is_err());
+    assert!(render_fov_radians(180.0, 1920, 1080, 1.0).is_err());
 }
 
 #[test]
-fn assembles_query_planes_from_original_matrix_rows() {
+fn assembles_query_planes_from_matrix_rows() {
     let rows = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -1707,7 +1707,7 @@ fn assembles_query_planes_from_original_matrix_rows() {
 }
 
 #[test]
-fn cell_depth_output_matches_full_original_cell_worker() {
+fn cell_depth_output_matches_full_cell_worker() {
     let mask = PortalTileMask::full([0, 0, 8, 16]).unwrap();
     let fixture = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1743,27 +1743,27 @@ fn cell_depth_output_matches_full_original_cell_worker() {
             depth_grid: None,
         };
         let count = words[66] as usize;
-        assert_eq!(words.len(), 69 + count, "native cell depth case {case}");
+        assert_eq!(words.len(), 69 + count, "cell depth case {case}");
         let active = words[67..67 + count]
             .iter()
             .map(|&word| word as usize)
             .collect::<Vec<_>>();
         let query = RenderAabbQuery::from_state(&state).unwrap();
-        let native_planes: [[u32; 4]; 6] = std::array::from_fn(|plane| {
+        let planes: [[u32; 4]; 6] = std::array::from_fn(|plane| {
             std::array::from_fn(|axis| words[34 + plane * 4 + axis] as u32)
         });
-        let native_bounds: [[u32; 4]; 2] = std::array::from_fn(|side| {
+        let query_bounds: [[u32; 4]; 2] = std::array::from_fn(|side| {
             std::array::from_fn(|axis| words[58 + side * 4 + axis] as u32)
         });
         assert_eq!(
             query.planes.map(|row| row.map(f32::to_bits)),
-            native_planes,
-            "native cell query planes case {case}"
+            planes,
+            "cell query planes case {case}"
         );
         assert_eq!(
             query.query_bounds.map(|row| row.map(f32::to_bits)),
-            native_bounds,
-            "native cell query bounds case {case}"
+            query_bounds,
+            "cell query bounds case {case}"
         );
         let value = query.cell_depth_value(bounds, &active).unwrap();
         let mut grid = [0.0f32; 4096];
@@ -1771,7 +1771,7 @@ fn cell_depth_output_matches_full_original_cell_worker() {
         assert_eq!(
             maximum.to_bits(),
             words[67 + count] as u32,
-            "native cell depth maximum case {case}"
+            "cell depth maximum case {case}"
         );
         let digest = grid.iter().fold(0xcbf29ce484222325u64, |hash, depth| {
             (hash ^ u64::from(depth.to_bits())).wrapping_mul(0x100000001b3)
@@ -1779,7 +1779,7 @@ fn cell_depth_output_matches_full_original_cell_worker() {
         assert_eq!(
             digest,
             words[68 + count],
-            "native cell depth grid case {case}"
+            "cell depth grid case {case}"
         );
     }
     assert_eq!(fixture.lines().count(), 1440);
@@ -1830,18 +1830,18 @@ fn depth_enabled_aabb_matches_installed_executable() {
             std::array::from_fn(|axis| f32::from_bits(words[26 + side * 3 + axis]))
         });
         let query = RenderAabbQuery::from_state(&state).unwrap();
-        let native_planes: [[f32; 4]; 6] = std::array::from_fn(|plane| {
+        let planes: [[f32; 4]; 6] = std::array::from_fn(|plane| {
             std::array::from_fn(|axis| f32::from_bits(words[32 + plane * 4 + axis]))
         });
-        let native_bounds: [[f32; 4]; 2] = std::array::from_fn(|side| {
+        let query_bounds: [[f32; 4]; 2] = std::array::from_fn(|side| {
             std::array::from_fn(|axis| f32::from_bits(words[56 + side * 4 + axis]))
         });
         assert_eq!(
-            query.planes, native_planes,
+            query.planes, planes,
             "depth fixture {line_number}: query planes"
         );
         assert_eq!(
-            query.query_bounds, native_bounds,
+            query.query_bounds, query_bounds,
             "depth fixture {line_number}: query bounds"
         );
         let (visible, area) = query.visibility_and_area(bounds).unwrap();
@@ -1870,7 +1870,7 @@ fn no_depth_light_aabb_area_matches_installed_instructions() {
     .enumerate()
     {
         let fields = line.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(fields.len(), 77, "native case {}", line_number + 1);
+        assert_eq!(fields.len(), 77, "case {}", line_number + 1);
         let f = |index: usize| fields[index].parse::<f32>().unwrap();
         let initialized = fields[3] == "1";
         let expected_visible = fields[11] == "1";
@@ -1893,13 +1893,13 @@ fn no_depth_light_aabb_area_matches_installed_instructions() {
             assert_eq!(
                 visible,
                 expected_visible,
-                "native visibility case {}",
+                "visibility case {}",
                 line_number + 1
             );
             assert_eq!(
                 area.to_bits(),
                 expected_area,
-                "native area case {}: {area}",
+                "area case {}: {area}",
                 line_number + 1
             );
             let render_rows =
@@ -2028,7 +2028,7 @@ fn query_corners_and_bounds_match_installed_instructions() {
         assert_eq!(
             bounds.map(|row| row.map(f32::to_bits)),
             expected.map(|row| row.map(f32::to_bits)),
-            "native bounds case {checked}"
+            "bounds case {checked}"
         );
         if finite {
             for index in 0..8 {
@@ -2038,7 +2038,7 @@ fn query_corners_and_bounds_match_installed_instructions() {
                         .unwrap()
                         .map(f32::to_bits),
                     expected.map(f32::to_bits),
-                    "native corner case {checked}/{index}"
+                    "corner case {checked}/{index}"
                 );
             }
         }
@@ -2050,7 +2050,7 @@ fn query_corners_and_bounds_match_installed_instructions() {
 }
 
 #[test]
-fn light_area_threshold_uses_the_original_64_numerator() {
+fn light_area_threshold_uses_the_64_numerator() {
     assert_eq!(
         minimum_light_projected_area_metric(1920, 1080)
             .unwrap()
@@ -2062,7 +2062,7 @@ fn light_area_threshold_uses_the_original_64_numerator() {
 }
 
 #[test]
-fn selects_active_query_planes_using_original_sign_masks() {
+fn selects_active_query_planes_using_sign_masks() {
     let planes = [
         [1.0, 0.0, 0.0, -2.0],
         [-1.0, 0.0, 0.0, 0.0],
@@ -2074,7 +2074,7 @@ fn selects_active_query_planes_using_original_sign_masks() {
 }
 
 #[test]
-fn active_query_planes_match_original_executable_cases() {
+fn active_query_planes_match_executable_cases() {
     let mut cases = 0;
     for (line_number, line) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -2112,7 +2112,7 @@ fn active_query_planes_match_original_executable_cases() {
 }
 
 #[test]
-fn crops_query_matrix_on_original_sixty_four_unit_grid() {
+fn crops_query_matrix_on_sixty_four_unit_grid() {
     let identity = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -2316,7 +2316,7 @@ fn render_query_state_merge_matches_installed_executable() {
 }
 
 #[test]
-fn builds_original_row_major_query_matrix_from_camera_pose() {
+fn builds_row_major_query_matrix_from_camera_pose() {
     let identity = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -2341,7 +2341,7 @@ fn builds_original_row_major_query_matrix_from_camera_pose() {
 }
 
 #[test]
-fn composes_game_default_projection_with_original_camera_pose() {
+fn composes_game_default_projection_with_camera_pose() {
     let identity = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -2349,15 +2349,15 @@ fn composes_game_default_projection_with_original_camera_pose() {
         [0.0, 0.0, 0.0, 1.0],
     ];
     let matrix =
-        original_render_query_matrix(80.0, 1920, 1080, 1.0, identity, 0.01, 7000.0).unwrap();
+        render_query_matrix(80.0, 1920, 1080, 1.0, identity, 0.01, 7000.0).unwrap();
     assert!(matrix[0][0] > 0.0);
     assert!(matrix[1][1] > matrix[0][0]);
     assert_eq!(matrix[3], [0.0, 0.0, -1.0, 0.0]);
-    assert!(original_render_query_matrix(80.0, 1920, 1080, 1.0, identity, 0.0, 7000.0).is_err());
+    assert!(render_query_matrix(80.0, 1920, 1080, 1.0, identity, 0.0, 7000.0).is_err());
 }
 
 #[test]
-fn partitions_render_query_jobs_on_original_grid() {
+fn partitions_render_query_jobs_on_grid() {
     assert_eq!(render_query_job_tile(0, 1).unwrap(), [0, 0, 64, 64]);
     assert_eq!(render_query_job_tile(0, 2).unwrap(), [0, 0, 32, 64]);
     assert_eq!(render_query_job_tile(1, 2).unwrap(), [32, 0, 64, 64]);
@@ -2386,20 +2386,20 @@ fn partitions_render_query_jobs_on_original_grid() {
 }
 
 #[test]
-fn original_render_job_settings_and_inputs() {
-    assert_eq!(ORIGINAL_DEFAULT_QUERY_JOB_COUNT, 12);
-    assert_eq!(ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE, 2);
+fn render_job_settings_and_inputs() {
+    assert_eq!(DEFAULT_QUERY_JOB_COUNT, 12);
+    assert_eq!(DEFAULT_SCHEDULER_THREADING_MODE, 2);
     assert_eq!(
-        original_world_query_job_count(ORIGINAL_DEFAULT_QUERY_JOB_COUNT, 2).unwrap(),
+        world_query_job_count(DEFAULT_QUERY_JOB_COUNT, 2).unwrap(),
         12
     );
-    assert_eq!(original_world_query_job_count(1, 2).unwrap(), 1);
-    assert_eq!(original_world_query_job_count(32, 2).unwrap(), 16);
-    assert_eq!(original_world_query_job_count(16, 0).unwrap(), 1);
-    assert_eq!(original_world_query_job_count(4, 1).unwrap(), 4);
-    assert!(original_world_query_job_count(0, 2).is_err());
-    assert!(original_world_query_job_count(33, 2).is_err());
-    assert!(original_world_query_job_count(1, 3).is_err());
+    assert_eq!(world_query_job_count(1, 2).unwrap(), 1);
+    assert_eq!(world_query_job_count(32, 2).unwrap(), 16);
+    assert_eq!(world_query_job_count(16, 0).unwrap(), 1);
+    assert_eq!(world_query_job_count(4, 1).unwrap(), 4);
+    assert!(world_query_job_count(0, 2).is_err());
+    assert!(world_query_job_count(33, 2).is_err());
+    assert!(world_query_job_count(1, 3).is_err());
     let rows = [
         [2.0, 0.0, 0.0, 3.0],
         [0.0, 4.0, 0.0, 5.0],
@@ -2414,11 +2414,11 @@ fn original_render_job_settings_and_inputs() {
         camera_imprecision: [0.6; 3],
         object_imprecision: 0.6,
         minimum_area_metric: 0.1,
-        global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+        global_distance_threshold: DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
         object_distance_scale: 1.0,
         winding_flip: false,
         gate_states: None,
-        output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+        output_capacity: WORLD_QUERY_OUTPUT_CAPACITY,
     };
     for count in 1..=16 {
         for job in 0..count {
@@ -2510,7 +2510,7 @@ fn render_job_merge_keeps_order_metrics_and_clears_failed_jobs() {
 
 #[test]
 fn render_job_merge_grows_beyond_per_worker_query_capacity() {
-    let capacity = ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY;
+    let capacity = WORLD_QUERY_OUTPUT_CAPACITY;
     let jobs: [_; 2] = std::array::from_fn(|job| {
         let mut output = VisibleObjectIndexOutput::new(capacity, capacity);
         for index in 0..capacity {
@@ -2567,7 +2567,7 @@ fn cached_direct_query_matches_uncached_installed_tome() {
                 [0.0, 0.0, 0.0, 1.0],
             ];
             let rows =
-                original_world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0)
+                world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0)
                     .unwrap();
             let input = OrdinaryDirectQueryInput {
                 camera_point: point,
@@ -2577,11 +2577,11 @@ fn cached_direct_query_matches_uncached_installed_tome() {
                 camera_imprecision: [0.6; 3],
                 object_imprecision: 0.6,
                 minimum_area_metric: 25.0 / (1920.0 * 1080.0),
-                global_distance_threshold: ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+                global_distance_threshold: DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
                 object_distance_scale: 1.0,
                 winding_flip: query_matrix_winding_flip(rows),
                 gate_states: Some(&gates),
-                output_capacity: ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                output_capacity: WORLD_QUERY_OUTPUT_CAPACITY,
             };
             let mut reference_progress = OrdinaryQueryDiagnostics::default();
             let reference = ordinary_direct_tome_visible_objects_with_diagnostics(
@@ -2638,7 +2638,7 @@ fn tests_quad_edge_segments_against_spatial_boxes() {
 }
 
 #[test]
-fn tests_original_four_corner_volume_against_spatial_box() {
+fn tests_four_corner_volume_against_spatial_box() {
     let bounds = [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]];
     let quad = |extent: f32, z: f32| {
         [
@@ -2764,7 +2764,7 @@ fn reads_link_gate_indices_from_header_table() {
 }
 
 #[test]
-fn traversal_link_precheck_selects_original_direction_and_gate_branches() {
+fn traversal_link_precheck_selects_direction_and_gate_branches() {
     let packed = [(1 << 29) | 17, 50, 0, 0];
     assert_eq!(
         traversal_link_precheck(
@@ -2826,7 +2826,7 @@ fn traversal_link_precheck_selects_original_direction_and_gate_branches() {
 }
 
 #[test]
-fn ready_same_spatial_cell_target_matches_original_link_loop_condition() {
+fn ready_same_spatial_cell_target_matches_link_loop_condition() {
     let volume = LinkQueryDirection::Volume {
         center: [53, 0, 0, 0],
         tolerance: [2, 0, 0, 0],
@@ -2957,7 +2957,7 @@ fn assembles_record_local_query_bounds_quantization_and_active_planes() {
 }
 
 #[test]
-fn expands_packed_portal_bounds_from_original_record() {
+fn expands_packed_portal_bounds_from_record() {
     let mut bytes = vec![0u8; 0x80];
     for (index, value) in [0.0f32, 0.0, 0.0, 65535.0, 65535.0, 65535.0]
         .iter()
@@ -2975,7 +2975,7 @@ fn expands_packed_portal_bounds_from_original_record() {
 }
 
 #[test]
-fn clips_box_against_original_query_plane_with_rcpps() {
+fn clips_box_against_query_plane_with_rcpps() {
     let query = [[-10.0, -10.0, -10.0, 1.0], [10.0, 10.0, 10.0, 1.0]];
     let input = [[0.0, 0.0, 0.0, 1.0], [2.0, 2.0, 2.0, 1.0]];
     let mut planes = [[0.0; 4]; 3];
@@ -2997,7 +2997,7 @@ fn clips_box_against_original_query_plane_with_rcpps() {
 }
 
 #[test]
-fn box_clipping_matches_original_executable_cases() {
+fn box_clipping_matches_executable_cases() {
     for (case, line) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/box_clip_cases.txt"
@@ -3127,7 +3127,7 @@ fn caster_containment_matches_installed_executable_cases() {
 }
 
 #[test]
-fn native_plane_initializer_matches_original_bytes() {
+fn plane_initializer_matches_bytes() {
     let fixture = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/plane_initialization_cases.txt"
@@ -3150,7 +3150,7 @@ fn native_plane_initializer_matches_original_bytes() {
             .map(|index| u8::from_str_radix(&expected[index * 2..index * 2 + 2], 16).unwrap())
             .collect();
         let mut context = std::array::from_fn(|index| ((index * 37 + count * 17) & 255) as u8);
-        initialize_native_plane_query(&mut context, &planes[..count]).unwrap();
+        initialize_plane_query(&mut context, &planes[..count]).unwrap();
         assert_eq!(
             context.as_slice(),
             expected.as_slice(),
@@ -3162,15 +3162,15 @@ fn native_plane_initializer_matches_original_bytes() {
 }
 
 #[test]
-fn native_plane_initializer_rejects_oversize_before_writing() {
+fn plane_initializer_rejects_oversize_before_writing() {
     let mut context = [0xa5; 0x590];
-    let original = context;
-    assert!(initialize_native_plane_query(&mut context, &[[1.0; 4]; 23]).is_err());
-    assert_eq!(context, original);
+    let reference = context;
+    assert!(initialize_plane_query(&mut context, &[[1.0; 4]; 23]).is_err());
+    assert_eq!(context, reference);
 }
 
 #[test]
-fn native_shadow_caster_query_returns_ordered_candidate_ids() {
+fn shadow_caster_query_returns_ordered_candidate_ids() {
     fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
@@ -3210,12 +3210,12 @@ fn native_shadow_caster_query_returns_ordered_candidate_ids() {
     let broad_planes = box_planes(broad);
     let active = [0, 1, 2, 3, 4, 5];
     let receivers = [
-        shadow_caster::VerifiedShadowReceiverState {
+        shadow_caster::ShadowReceiverState {
             bounds: narrow,
             planes: &narrow_planes,
             active_planes: &active,
         },
-        shadow_caster::VerifiedShadowReceiverState {
+        shadow_caster::ShadowReceiverState {
             bounds: broad,
             planes: &broad_planes,
             active_planes: &active,
@@ -3223,21 +3223,21 @@ fn native_shadow_caster_query_returns_ordered_candidate_ids() {
     ];
     let flags = [true; 5];
     let parent_suppression = [
-        NativeShadowCasterSuppression {
+        ShadowCasterSuppression {
             parent_id: 101,
             suppressed_child_id: 100,
         },
-        NativeShadowCasterSuppression {
+        ShadowCasterSuppression {
             parent_id: 100,
             suppressed_child_id: 102,
         },
     ];
-    let mut scratch = NativeShadowCasterAabbQueryScratch::new(&tome, receivers.len()).unwrap();
-    let input = NativeShadowCasterAabbQueryInput {
+    let mut scratch = ShadowCasterAabbQueryScratch::new(&tome, receivers.len()).unwrap();
+    let input = ShadowCasterAabbQueryInput {
         receivers: &receivers,
         caster_enabled: &flags,
         parent_suppression: &parent_suppression,
-        distance_path: NativeShadowDistancePath::UnboundedNoAuxiliaryRecords,
+        distance_path: ShadowDistancePath::UnboundedNoAuxiliaryRecords,
     };
     assert_eq!(
         scratch.query_candidates(&tome, input).unwrap(),
@@ -3326,8 +3326,8 @@ fn native_shadow_caster_query_returns_ordered_candidate_ids() {
     assert_eq!(scratch.candidate_ids(0), Some(&[][..]));
     assert_eq!(scratch.candidate_ids(1), Some(&[][..]));
 
-    let unsupported = NativeShadowCasterAabbQueryInput {
-        distance_path: NativeShadowDistancePath::Unknown,
+    let unsupported = ShadowCasterAabbQueryInput {
+        distance_path: ShadowDistancePath::Unknown,
         ..input
     };
     assert!(scratch.query_candidates(&tome, unsupported).is_err());
@@ -3406,7 +3406,7 @@ fn spatial_query_and_bounds_match_installed_executable_cases() {
 }
 
 #[test]
-fn spatial_query_uses_native_depth_and_rejects_bad_plane_indices() {
+fn spatial_query_uses_depth_and_rejects_bad_plane_indices() {
     let rows = std::array::from_fn(|row| {
         std::array::from_fn(|column| if row == column { 1.0 } else { 0.0 })
     });
@@ -3436,7 +3436,7 @@ fn spatial_query_uses_native_depth_and_rejects_bad_plane_indices() {
 }
 
 #[test]
-fn projected_area_metric_uses_original_unit_square_clip() {
+fn projected_area_metric_uses_unit_square_clip() {
     assert_eq!(projected_object_area_metric([-1.0, -1.0, 1.0, 1.0]), 1.0);
     assert_eq!(projected_object_area_metric([0.0, 0.0, 1.0, 1.0]), 0.25);
     assert_eq!(projected_object_area_metric([-2.0, -2.0, 0.0, 0.0]), 0.25);
@@ -3622,7 +3622,7 @@ fn object_distance_matches_installed_instruction_cases() {
         assert_eq!(
             object_distance_rejection_mask(record, point, scale),
             words[16],
-            "native distance case {case}"
+            "distance case {case}"
         );
         count += 1;
     }
@@ -3702,7 +3702,7 @@ fn authored_eotw_distance_tiers_match_installed_predicate() {
 }
 
 #[test]
-fn viewport_bounds_pack_to_original_query_tile_bytes() {
+fn viewport_bounds_pack_to_query_tile_bytes() {
     assert_eq!(query_viewport_tile_bounds([10, 5, 101, 51]), [1, 1, 13, 13]);
     assert_eq!(
         query_viewport_tile_bounds([0, 0, 1920, 1080]),
@@ -3899,7 +3899,7 @@ fn projected_portal_box_uses_active_plane_crossing_clip_path() {
 }
 
 #[test]
-fn portal_crossing_bounds_match_original_conservative_masks() {
+fn portal_crossing_bounds_match_conservative_masks() {
     let mut count = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -3925,7 +3925,7 @@ fn portal_crossing_bounds_match_original_conservative_masks() {
             .unwrap()
             .unwrap()
             .map(f32::to_bits);
-        assert_eq!(actual, words[24..], "native portal crossing case{count}");
+        assert_eq!(actual, words[24..], "portal crossing case{count}");
         count += 1;
     }
     assert_eq!(count, 512);
@@ -3933,7 +3933,7 @@ fn portal_crossing_bounds_match_original_conservative_masks() {
 }
 
 #[test]
-fn object_bounds_expand_by_original_camera_translation_imprecision() {
+fn object_bounds_expand_by_camera_translation_imprecision() {
     let bounds = [[-2.0, 3.0, 8.0], [5.0, 9.0, 14.0]];
     let expanded = expand_object_bounds_for_camera_imprecision(bounds, 0.6);
     for axis in 0..3 {
@@ -3960,7 +3960,7 @@ fn visible_object_output_deduplicates_and_counts_beyond_buffer_capacity() {
 }
 
 #[test]
-fn projected_rectangle_output_selects_original_portal_or_depth_branch() {
+fn projected_rectangle_output_selects_portal_or_depth_branch() {
     let pixels = [0, 0, 8, 4];
     let mut portal = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     portal.bits[0] = 1;
@@ -4207,14 +4207,14 @@ fn visible_cell_output_matches_installed_instructions() {
         assert_eq!(
             output.count(),
             expected_count,
-            "native cell count case {case}"
+            "cell count case {case}"
         );
         assert_eq!(
             output.indices(),
             expected_indices,
-            "native cell indices case {case}"
+            "cell indices case {case}"
         );
-        assert_eq!(output.seen, expected_mask, "native cell bitset case {case}");
+        assert_eq!(output.seen, expected_mask, "cell bitset case {case}");
         checked += 1;
     }
     assert_eq!(checked, 756);
@@ -4284,7 +4284,7 @@ fn visible_cell_mask_and_invalid_stream_boundaries() {
 }
 
 #[test]
-fn object_candidate_batches_match_original_32_entry_limit_across_runs() {
+fn object_candidate_batches_match_32_entry_limit_across_runs() {
     let first_run = (31u64 << 6) | 0;
     let second_run = (4u64 << 6) | 31;
     let packed = first_run | (second_run << 11);
@@ -4362,7 +4362,7 @@ fn resolves_direct_link_to_internal_record_cell_table() {
 }
 
 #[test]
-fn split_branch_stack_matches_original_child_insertions_and_order() {
+fn split_branch_stack_matches_child_insertions_and_order() {
     let tree = SpatialTree {
         bounds: Vec::new(),
         children: vec![Some([1, 2]), None, None],
@@ -4553,7 +4553,7 @@ fn ordinary_renderer_inverted_sentinel_selects_camera_point_volume() {
 }
 
 #[test]
-fn original_query_root_gate_matches_all_three_volume_modes() {
+fn query_root_gate_matches_all_three_volume_modes() {
     let tree = SpatialTree {
         bounds: vec![[[-2.0, -1.0, -1.0], [2.0, 1.0, 1.0]]],
         children: vec![None],
@@ -4563,23 +4563,23 @@ fn original_query_root_gate_matches_all_three_volume_modes() {
         global_distance_scales: None,
     };
     assert!(
-        original_query_accepts_tome_root(
+        query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::Bounds([[-3.0; 3], [3.0; 3]])
+            SpatialQueryVolume::Bounds([[-3.0; 3], [3.0; 3]])
         )
         .unwrap()
     );
     assert!(
-        !original_query_accepts_tome_root(
+        !query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::Bounds([[-1.0; 3], [1.0; 3]])
+            SpatialQueryVolume::Bounds([[-1.0; 3], [1.0; 3]])
         )
         .unwrap()
     );
     assert!(
-        original_query_accepts_tome_root(
+        query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::FourCorners([
+            SpatialQueryVolume::FourCorners([
                 [0.0, 0.0, 0.0],
                 [-1.0, 0.5, 0.0],
                 [0.5, -0.5, 0.5],
@@ -4589,9 +4589,9 @@ fn original_query_root_gate_matches_all_three_volume_modes() {
         .unwrap()
     );
     assert!(
-        !original_query_accepts_tome_root(
+        !query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::FourCorners([
+            SpatialQueryVolume::FourCorners([
                 [0.0, 0.0, 0.0],
                 [-1.0, 0.5, 0.0],
                 [0.5, -0.5, 0.5],
@@ -4601,16 +4601,16 @@ fn original_query_root_gate_matches_all_three_volume_modes() {
         .unwrap()
     );
     assert!(
-        original_query_accepts_tome_root(
+        query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::Point([-2.0, 0.0, 1.0])
+            SpatialQueryVolume::Point([-2.0, 0.0, 1.0])
         )
         .unwrap()
     );
     assert!(
-        !original_query_accepts_tome_root(
+        !query_accepts_tome_root(
             &tree,
-            OriginalSpatialQueryVolume::Point([2.01, 0.0, 0.0])
+            SpatialQueryVolume::Point([2.01, 0.0, 0.0])
         )
         .unwrap()
     );
@@ -5007,7 +5007,7 @@ fn pooled_cross_spatial_transition_reuses_existing_pending_node() {
 }
 
 #[test]
-fn cross_spatial_portal_scheduling_resolves_original_pending_slot() {
+fn cross_spatial_portal_scheduling_resolves_pending_slot() {
     let mut worklists = SpatialCellWorklists::new(3);
     let mut pool = CellWorkNodePool::new(3).unwrap();
     let mut coverage = VisitedCellCoverage::default();
@@ -5022,7 +5022,7 @@ fn cross_spatial_portal_scheduling_resolves_original_pending_slot() {
         spatial_index: 1,
         cell_index: 2,
     };
-    let mut global_branch_states = vec![0u16; ORIGINAL_QUERY_CELL_STATE_COUNT];
+    let mut global_branch_states = vec![0u16; QUERY_CELL_STATE_COUNT];
     let mut incoming = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     incoming.bits[0] = 1;
 
@@ -5127,7 +5127,7 @@ fn selects_children_from_packed_codes_and_planes() {
     assert_eq!(root_entry.bytes()[0x1c], 0); // root path length
     assert_eq!(root_entry.bytes()[0x1d], data[0x60] & 3);
     assert_eq!(&root_entry.bytes()[0x1e..0x20], &0x003fu16.to_le_bytes());
-    let root_stack = SpatialQueryBranchStack::from_original_root(&tree).unwrap();
+    let root_stack = SpatialQueryBranchStack::from_root(&tree).unwrap();
     assert_eq!(root_stack.top(), 0);
     assert_eq!(root_stack.current(), &root_entry);
     assert_eq!(tree.leaf_for_point([-1.0, 0.0, 0.0]), Some(1));
@@ -5216,15 +5216,15 @@ fn selects_children_from_packed_codes_and_planes() {
 
 #[test]
 fn initial_camera_cell_seed_copies_full_mask_and_marks_pending_state() {
-    let mut worklists = SpatialCellWorklists::new_for_original_query();
-    let mut pool = CellWorkNodePool::new_for_original_query().unwrap();
+    let mut worklists = SpatialCellWorklists::new_for_query();
+    let mut pool = CellWorkNodePool::new_for_query().unwrap();
     let mut coverage = VisitedCellCoverage::default();
     assert_eq!(
         worklists.cell_states().len(),
-        ORIGINAL_RECORD_CELL_STATE_COUNT
+        RECORD_CELL_STATE_COUNT
     );
     // 140a85090 reserves exterior node1 before this camera-cell seed.
-    assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 2);
+    assert_eq!(pool.free_count(), QUERY_WORK_NODE_COUNT - 2);
     let destination = TraversalCellId {
         spatial_index: 17,
         cell_index: 2,
@@ -5251,7 +5251,7 @@ fn initial_camera_cell_seed_copies_full_mask_and_marks_pending_state() {
             .unwrap(),
         None
     );
-    assert_eq!(pool.free_count(), ORIGINAL_QUERY_WORK_NODE_COUNT - 3);
+    assert_eq!(pool.free_count(), QUERY_WORK_NODE_COUNT - 3);
 }
 
 #[test]

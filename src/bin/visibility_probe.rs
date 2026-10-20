@@ -47,9 +47,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         [1920, 1080]
     };
-    let job_count = tome::original_world_query_job_count(
-        integer("--jobs", tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT)?,
-        tome::ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE,
+    let job_count = tome::world_query_job_count(
+        integer("--jobs", tome::DEFAULT_QUERY_JOB_COUNT)?,
+        tome::DEFAULT_SCHEDULER_THREADING_MODE,
     )?;
     let repeat = integer("--repeat", 1)?;
     if !(1..=10000).contains(&repeat) {
@@ -113,7 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 rotated[1][column] = pose[0][column] * sin + pose[1][column] * cos;
             }
         }
-        let rows = tome::original_world_visibility_query_matrix(
+        let rows = tome::world_visibility_query_matrix(
             80.0,
             viewport[0],
             viewport[1],
@@ -130,11 +130,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             camera_imprecision: [0.6; 3],
             object_imprecision: 0.6,
             minimum_area_metric: 25.0 / (viewport[0] as f32 * viewport[1] as f32),
-            global_distance_threshold: tome::ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
+            global_distance_threshold: tome::DEFAULT_GLOBAL_DISTANCE_THRESHOLD,
             object_distance_scale: 1.0,
             winding_flip: tome::query_matrix_winding_flip(rows),
             gate_states: Some(&gates),
-            output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+            output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
         };
         for sample in 0..repeat {
             let started = Instant::now();

@@ -1,28 +1,28 @@
 //! Setup.
 use super::{
-    apply_native_rest_pose, authored_area_light_transform, authored_light_cosines, authored_mesh,
+    apply_rest_pose, authored_area_light_transform, authored_light_cosines, authored_mesh,
     authored_world_bounds, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, entities,
     env, environment_sun_ray, expanded_model_placements, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
-    local_shadow_updates, material, mean_game_position, native_rest_skinning,
-    native_surface_sampler_image, navigation, needs_exact_world_mesh, original_light_distance,
-    original_light_preset, original_light_projection_bounds,
-    original_light_proximity_from_cached_bounds, original_local_light_clip_to_world,
+    local_shadow_updates, material, mean_game_position, rest_skinning,
+    surface_sampler_image, navigation, needs_exact_world_mesh, light_distance,
+    light_preset, light_projection_bounds,
+    light_proximity_from_cached_bounds, local_light_clip_to_world,
     placed_direction, placed_transform, placed_vertex, preserved_half_point_angular_scale,
-    probe_lighting, render_bounds, render_light, render_model, retain_native_model_shadow_position,
-    retain_native_skin_inputs, runtime, shadow_pipeline, shadow_sampling, shadow_updates,
+    probe_lighting, render_bounds, render_light, render_model, retain_model_shadow_position,
+    retain_skin_inputs, runtime, shadow_pipeline, shadow_sampling, shadow_updates,
     source_mesh, texture, tome, transformed, transformed_direction, view_of, view_to_game, Arc,
     BTreeMap, Bounds, CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass,
     DiffuseMipState, FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet,
-    MaterialResolver, NativeProgramCacheSource, NativeShadowMaterials,
-    NativeShadowModelBoundsSource, NativeShadowModelBoundsSources, NativeVegetationMeshInputs,
-    NativeViewSettings, NativeWorldShadowMeshSources, NavigationState, NavigationWorld,
-    OriginalLocalLightCull, PathBuf, PickupInstance, PickupState, PlacedModelQueries,
+    MaterialResolver, ProgramCacheSource, ShadowMaterials,
+    ShadowModelBoundsSource, ShadowModelBoundsSources, VegetationMeshInputs,
+    ViewSettings, WorldShadowMeshSources, NavigationState, NavigationWorld,
+    LocalLightCull, PathBuf, PickupInstance, PickupState, PlacedModelQueries,
     PlacedModelQueryGroup, ProbeMaterial, Projection, RectLight, RenderDevice, RenderInstance,
     RenderInstanceSource, RenderModelSurface, RenderSourcePlacements, RenderSuppressionGroup,
     SceneData, SceneRenderQueue, ShaderBuffer, TextureFormat, TextureReadWorker,
-    TomeRenderInstanceMap, ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
-    ORIGINAL_DEFAULT_NEAR,
+    TomeRenderInstanceMap, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES,
+    DEFAULT_NEAR,
 };
 use bevy::prelude::*;
 
@@ -59,7 +59,7 @@ fn parallel_light_inputs(
 pub(super) fn setup(
     mut commands: Commands,
     mut scene: ResMut<SceneData>,
-    mut native_programs: Option<ResMut<NativeProgramCacheSource>>,
+    mut programs: Option<ResMut<ProgramCacheSource>>,
     navigation: Option<Res<NavigationWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
@@ -67,7 +67,7 @@ pub(super) fn setup(
     mut probe_sh_buffers: ResMut<Assets<ShaderBuffer>>,
     render_device: Res<RenderDevice>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
-    view_settings: Res<NativeViewSettings>,
+    view_settings: Res<ViewSettings>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -88,7 +88,7 @@ pub(super) fn setup(
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("FPS: measuring"),
+                Text::new("FPS: measuring\nRAM: measuring"),
                 TextFont {
                     font_size: FontSize::Px(18.0),
                     ..default()
@@ -164,21 +164,21 @@ pub(super) fn setup(
     assert!(
         bytes <= u64::from(limits.max_storage_buffer_binding_size)
             && bytes <= limits.max_buffer_size,
-        "native PNW vertex lighting requires a {bytes}-byte buffer; device storage limit={}, buffer limit={}",
+        "PNW vertex lighting requires a {bytes}-byte buffer; device storage limit={}, buffer limit={}",
         limits.max_storage_buffer_binding_size,
         limits.max_buffer_size
     );
     println!(
-        "Native vertex-probe GPU data: {} primary records, {bytes} bytes (device storage limit {})",
+        "Vertex-probe GPU data: {} primary records, {bytes} bytes (device storage limit {})",
         records.len(),
         limits.max_storage_buffer_binding_size
     );
     let vertex_probe_buffer = probe_sh_buffers.add(ShaderBuffer::from(words));
     let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(records.clone()));
-    let native_shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
-        shadow_sampling::NativeParallelSamplingUniform::default(),
+    let shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
+        shadow_sampling::ParallelSamplingUniform::default(),
     ));
-    let native_shadow_map = images.add(
+    let shadow_map = images.add(
         shadow_pipeline::shadow_depth_image(
             bevy::render::render_resource::Extent3d {
                 width: 1,
@@ -189,20 +189,20 @@ pub(super) fn setup(
         )
         .expect("unavailable depth binding descriptor"),
     );
-    commands.insert_resource(shadow_sampling::NativeParallelSamplingBuffer {
-        buffer: native_shadow_buffer.clone(),
-        unavailable_depth: native_shadow_map.clone(),
+    commands.insert_resource(shadow_sampling::ParallelSamplingBuffer {
+        buffer: shadow_buffer.clone(),
+        unavailable_depth: shadow_map.clone(),
     });
     let local_capacity = scene.placed_lights.len().max(1).next_power_of_two() as u32;
-    let native_local_shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
+    let local_shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
         vec![0u32; shadow_sampling::local_sampling_word_count(local_capacity)],
     ));
-    commands.insert_resource(shadow_sampling::NativeLocalSamplingBuffer {
-        buffer: native_local_shadow_buffer.clone(),
+    commands.insert_resource(shadow_sampling::LocalSamplingBuffer {
+        buffer: local_shadow_buffer.clone(),
         light_capacity: local_capacity,
     });
     let anisotropic_sampler_image = images
-        .add(native_surface_sampler_image(catalog).expect("invalid original material sampler"));
+        .add(surface_sampler_image(catalog).expect("invalid original material sampler"));
     // The original publishes parallelLightDir/Color from the environment
     // even in levels with no placed LIGHT_PRESET_SUN entity (Dust District).
     let vista_sun = scene
@@ -215,7 +215,7 @@ pub(super) fn setup(
         })
         .unwrap_or([Vec4::ZERO; 2]);
     let mut linear_clamp =
-        native_surface_sampler_image(catalog).expect("sampler source unavailable");
+        surface_sampler_image(catalog).expect("sampler source unavailable");
     let bevy::image::ImageSampler::Descriptor(sampler) = &mut linear_clamp.sampler else {
         unreachable!()
     };
@@ -230,19 +230,19 @@ pub(super) fn setup(
         vista_sun,
         anisotropic_sampler_image,
         catalog,
-        native_programs: native_programs.as_deref_mut().map(|source| &mut source.0),
+        programs: programs.as_deref_mut().map(|source| &mut source.0),
         probe_materials: &mut probe_materials,
         decal_materials: &mut decal_materials,
         probe_sh_buffers: &mut probe_sh_buffers,
         probe_sh_buffer,
         vertex_probe_buffer,
-        native_shadow_buffer,
-        native_local_shadow_buffer,
-        native_shadow_map,
+        shadow_buffer,
+        local_shadow_buffer,
+        shadow_map,
         probe_sh_records: records,
         probes: scene.environment_probes.as_ref(),
         cache: HashMap::new(),
-        shadow_materials: NativeShadowMaterials::default(),
+        shadow_materials: ShadowMaterials::default(),
         diffuse_image_slots: HashMap::new(),
         diffuse_image_paths: Vec::new(),
         preferred_mip,
@@ -256,10 +256,10 @@ pub(super) fn setup(
     };
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
-    let mut native_world_shadow_mesh_sources =
-        NativeWorldShadowMeshSources::prepare(&scene.world, &mut meshes);
-    let mut native_world_admissions = HashMap::<String, Result<u8, String>>::new();
-    let mut native_vegetation_meshes = NativeVegetationMeshInputs::default();
+    let mut world_shadow_mesh_sources =
+        WorldShadowMeshSources::prepare(&scene.world, &mut meshes);
+    let mut world_admissions = HashMap::<String, Result<u8, String>>::new();
+    let mut vegetation_meshes = VegetationMeshInputs::default();
     let mut baked_shear_instances = 0usize;
     let mut authored_lod_instances = BTreeMap::<usize, usize>::new();
     let mut render_instances = Vec::new();
@@ -290,11 +290,11 @@ pub(super) fn setup(
         // independently of the color-visible render entities. Resolve this
         // object's actual material even when its debug/helper color mesh is
         // intentionally absent; never turn that absence into a no-caster flag.
-        let admission = native_world_admissions
+        let admission = world_admissions
             .entry(object.material_path.clone())
-            .or_insert_with(|| resolver.native_caster_admission(&object.material_path))
+            .or_insert_with(|| resolver.caster_admission(&object.material_path))
             .clone();
-        native_world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
+        world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
         let first_material = if let Some(matrix) = scene.world.matrices.get(object.matrix_start) {
             let points: Vec<Vec3> = source
                 .positions
@@ -310,15 +310,15 @@ pub(super) fn setup(
             None
         };
         if let Some(material) = &first_material {
-            native_world_shadow_mesh_sources
+            world_shadow_mesh_sources
                 .bind_material(object_number, &material.handle)
                 .expect("resolved native BWM object/material ownership");
         } else {
-            native_world_shadow_mesh_sources
+            world_shadow_mesh_sources
                 .record_material_error(
                     object_number,
                     format!(
-                        "native BWM object {object_number} material {} could not be resolved",
+                        "BWM object {object_number} material {} could not be resolved",
                         object.material_path
                     ),
                 )
@@ -334,7 +334,7 @@ pub(super) fn setup(
         // Using it as vertex alpha made 1,059 authored world objects translucent.
         // Reuse the unbaked shared forward mesh, which also retains explicit
         // raw local attributes for native world-shadow vertex declarations.
-        let mesh = native_world_shadow_mesh_sources
+        let mesh = world_shadow_mesh_sources
             .object(object_number)
             .expect("prepared native BWM object association")
             .mesh
@@ -363,18 +363,18 @@ pub(super) fn setup(
                 )
             };
             let Some(mat) = mat else {
-                native_world_shadow_mesh_sources
+                world_shadow_mesh_sources
                     .record_material_error(
                         object_number,
                         format!(
-                            "native BWM object {object_number} material {} could not be resolved",
+                            "BWM object {object_number} material {} could not be resolved",
                             object.material_path
                         ),
                     )
                     .expect("prepared native BWM object association");
                 continue;
             };
-            native_world_shadow_mesh_sources
+            world_shadow_mesh_sources
                 .bind_material(object_number, &mat.handle)
                 .expect("resolved BWM object/material ownership");
             for &point in &points {
@@ -407,7 +407,7 @@ pub(super) fn setup(
                     mesh: baked,
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some()
+                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some()
                     {
                         0x80000000 | matrix_index as u32
                     } else {
@@ -433,7 +433,7 @@ pub(super) fn setup(
                     mesh: mesh.clone(),
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.native_vertex_lighting && scene.environment_probes.is_some()
+                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some()
                     {
                         0x80000000 | matrix_index as u32
                     } else {
@@ -446,7 +446,7 @@ pub(super) fn setup(
                     visible: false,
                 }
             };
-            native_vegetation_meshes.prepare(
+            vegetation_meshes.prepare(
                 resolver
                     .shadow_materials
                     .uses_vegetation(&render_instance.material),
@@ -483,10 +483,10 @@ pub(super) fn setup(
     let mut model_instances = 0usize;
     let mut model_surfaces = 0usize;
     let mut placed_model_queries = Vec::new();
-    let mut native_shadow_model_bounds = Vec::new();
-    let mut native_model_shadow_sources = Vec::new();
-    let mut native_skin_palettes =
-        HashMap::<String, Result<Arc<shadow_updates::NativeRestSkinning>, String>>::new();
+    let mut shadow_model_bounds = Vec::new();
+    let mut model_shadow_sources = Vec::new();
+    let mut skin_palettes =
+        HashMap::<String, Result<Arc<shadow_updates::RestSkinning>, String>>::new();
     let mut placed_model_default_ranges = 0usize;
     for (number, placement) in expanded_placements.iter().enumerate() {
         if trace_startup {
@@ -534,13 +534,13 @@ pub(super) fn setup(
                     }
                 });
             if let Some(model) = model {
-                let skinning = native_skin_palettes
+                let skinning = skin_palettes
                     .entry(placement.resource_path.clone())
                     .or_insert_with(|| {
-                        native_rest_skinning(
+                        rest_skinning(
                             catalog
                                 .as_ref()
-                                .ok_or("native skin catalog is unavailable")?,
+                                .ok_or("skin catalog is unavailable")?,
                             &placement.resource_path,
                             model,
                             resolver.probe_sh_buffers,
@@ -562,9 +562,9 @@ pub(super) fn setup(
                             .get(surface_number)
                             .and_then(Option::as_deref)
                             .unwrap_or(&surface.material_path);
-                        let flags = native_world_admissions
+                        let flags = world_admissions
                             .entry(path.to_owned())
-                            .or_insert_with(|| resolver.native_caster_admission(path))
+                            .or_insert_with(|| resolver.caster_admission(path))
                             .clone();
                         (surface_number, surface.vertex_count as i32, flags)
                     })
@@ -631,12 +631,12 @@ pub(super) fn setup(
                             instance,
                         )
                     };
-                    retain_native_model_shadow_position(&mut meshes, &mesh, &surface.positions);
+                    retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
                     if let Some(mut mesh) = meshes.get_mut(&mesh) {
-                        retain_native_skin_inputs(&mut mesh, surface);
+                        retain_skin_inputs(&mut mesh, surface);
                         if skin_influences != 0 {
                             match skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
-                                apply_native_rest_pose(
+                                apply_rest_pose(
                                     &mut mesh,
                                     surface,
                                     &skin.matrices,
@@ -647,13 +647,13 @@ pub(super) fn setup(
                             }) {
                                 Ok(()) => {}
                                 Err(error) => eprintln!(
-                                    "Native model rest pose pending {}: {error}",
+                                    "Model rest pose pending {}: {error}",
                                     placement.resource_path
                                 ),
                             }
                         }
                     }
-                    native_vegetation_meshes.prepare(
+                    vegetation_meshes.prepare(
                         resolver.shadow_materials.uses_vegetation(&mat.handle),
                         &mesh,
                         &mut meshes,
@@ -690,7 +690,7 @@ pub(super) fn setup(
                     placement.rotation,
                     placement.scale,
                 );
-                native_model_shadow_sources.push(shadow_updates::NativeModelShadowSource {
+                model_shadow_sources.push(shadow_updates::ModelShadowSource {
                     placement: number,
                     bounds: caster_bounds,
                     skinned: true,
@@ -719,7 +719,7 @@ pub(super) fn setup(
                     flags_18bd: 0,
                 });
                 if model_render_start < render_instances.len() {
-                    native_shadow_model_bounds.push(NativeShadowModelBoundsSource {
+                    shadow_model_bounds.push(ShadowModelBoundsSource {
                         placement: number,
                         instances: model_render_start..render_instances.len(),
                         bounds: render_model::transformed_bounds(
@@ -781,9 +781,9 @@ pub(super) fn setup(
                     .get(surface_number)
                     .and_then(Option::as_deref)
                     .unwrap_or(&surface.material_path);
-                let flags = native_world_admissions
+                let flags = world_admissions
                     .entry(path.to_owned())
-                    .or_insert_with(|| resolver.native_caster_admission(path))
+                    .or_insert_with(|| resolver.caster_admission(path))
                     .clone();
                 (surface_number, surface.positions.len() as i32, flags)
             })
@@ -853,8 +853,8 @@ pub(super) fn setup(
                     instance,
                 )
             };
-            retain_native_model_shadow_position(&mut meshes, &mesh, &surface.positions);
-            native_vegetation_meshes.prepare(
+            retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
+            vegetation_meshes.prepare(
                 resolver.shadow_materials.uses_vegetation(&mat.handle),
                 &mesh,
                 &mut meshes,
@@ -889,7 +889,7 @@ pub(super) fn setup(
             placement.rotation,
             placement.scale,
         );
-        native_model_shadow_sources.push(shadow_updates::NativeModelShadowSource {
+        model_shadow_sources.push(shadow_updates::ModelShadowSource {
             placement: number,
             bounds: caster_bounds,
             skinned: false,
@@ -919,7 +919,7 @@ pub(super) fn setup(
         });
         if let Some(input) = query_input {
             if model_render_start < render_instances.len() {
-                native_shadow_model_bounds.push(NativeShadowModelBoundsSource {
+                shadow_model_bounds.push(ShadowModelBoundsSource {
                     placement: number,
                     instances: model_render_start..render_instances.len(),
                     bounds: input.bounds,
@@ -932,7 +932,7 @@ pub(super) fn setup(
         }
     }
     println!(
-        "Original initial BML query groups: {}; constructor-default range models: {}; blueprint/MD6 and surface bit40 producers remain unsupported",
+        "Initial BML query groups: {}; constructor-default range models: {}; blueprint/MD6 and surface bit40 producers remain unsupported",
         placed_model_queries.len(),
         placed_model_default_ranges
     );
@@ -947,7 +947,7 @@ pub(super) fn setup(
     resolver.upload_probe_records();
     println!(
         "Shared geometry: {} world meshes and {} placed-model surfaces; {} world instances baked for shear",
-        native_world_shadow_mesh_sources.shared_mesh_count,
+        world_shadow_mesh_sources.shared_mesh_count,
         model_mesh_handles.len(),
         baked_shear_instances
     );
@@ -1010,7 +1010,7 @@ pub(super) fn setup(
         .0
         .as_ref()
         .map(|settings| settings.horizontal_fov_degrees)
-        .unwrap_or(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES);
+        .unwrap_or(DEFAULT_HORIZONTAL_FOV_DEGREES);
     if let Some(path) = env::var_os("DH2_REPLAY_F8") {
         let report = fs::read_to_string(&path).expect("cannot read DH2_REPLAY_F8 capture");
         camera = f8_camera_pose(&report).expect("DH2_REPLAY_F8 has an invalid camera pose");
@@ -1083,7 +1083,7 @@ pub(super) fn setup(
     // r_zfar=7000. The vertical FOV is derived by FUN_140890b50; Bevy updates
     // the projection aspect when the actual camera viewport changes.
     let _game_default_vertical_fov =
-        tome::original_render_vertical_fov_radians(reference_horizontal_fov)
+        tome::render_vertical_fov_radians(reference_horizontal_fov)
             .expect("the registered game FOV default is valid");
     // The original registers r_multiSamples=0 and clamps physical count to1.
     // Override only in explicit profiling runs for same-source A/B testing.
@@ -1095,18 +1095,18 @@ pub(super) fn setup(
                 .parse::<i32>()
                 .expect("invalid DH2_PERF_MULTI_SAMPLES")
         })
-        .unwrap_or(render_model::ORIGINAL_DEFAULT_MULTI_SAMPLES);
-    let physical_samples = render_model::original_renderer_sample_count(multi_samples);
+        .unwrap_or(render_model::DEFAULT_MULTI_SAMPLES);
+    let physical_samples = render_model::renderer_sample_count(multi_samples);
     assert!(
         [1, 2, 4, 8].contains(&physical_samples),
         "DH2_PERF_MULTI_SAMPLES={multi_samples} requests {physical_samples} samples; this renderer supports 1, 2, 4, or 8"
     );
     let renderer_msaa = Msaa::from_samples(physical_samples);
-    let native_coarse_depth_source = coarse_depth::diagnostics_enabled()
+    let coarse_depth_source = coarse_depth::diagnostics_enabled()
         || scene
             .shadow_cascade_controls
             .is_some_and(|controls| controls.tighten_parallel_shadows);
-    let camera_3d = if native_coarse_depth_source {
+    let camera_3d = if coarse_depth_source {
         Camera3d {
             depth_texture_usages: (bevy::render::render_resource::TextureUsages::RENDER_ATTACHMENT
                 | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING)
@@ -1122,16 +1122,16 @@ pub(super) fn setup(
     );
     let mut camera_entity = commands.spawn((
         camera_3d,
-        Projection::custom(camera_projection::NativeGameProjection::new(
+        Projection::custom(camera_projection::GameProjection::new(
             reference_horizontal_fov,
-            ORIGINAL_DEFAULT_NEAR,
-            ORIGINAL_DEFAULT_FAR,
+            DEFAULT_NEAR,
+            DEFAULT_FAR,
         )),
         camera,
         renderer_msaa,
     ));
-    if native_coarse_depth_source {
-        camera_entity.insert(coarse_depth::NativeCoarseDepthSource);
+    if coarse_depth_source {
+        camera_entity.insert(coarse_depth::CoarseDepthSource);
     }
     // Direct submission avoids Bevy's per-bin indirect-buffer uploads/unpacking.
     // Mesh transforms, shaders and CPU/Tome visibility stay unchanged.
@@ -1146,9 +1146,9 @@ pub(super) fn setup(
     }
     if lit {
         if let Some(parameters) = &scene.environment_render_parameters {
-            let exposure = auto_exposure::NativeExposure::from_parameters(parameters)
-                .expect("invalid native exposure environment");
-            println!("Native exposure parameters: {exposure:?}");
+            let exposure = auto_exposure::ExposureParameters::from_parameters(parameters)
+                .expect("invalid exposure environment");
+            println!("Exposure parameters: {exposure:?}");
             camera_entity.insert((exposure, auto_exposure::MaterialExposure(material_exposure)));
         }
     }
@@ -1223,7 +1223,7 @@ pub(super) fn setup(
                     light.color[2].max(0.0),
                 );
                 let linear_color = color.to_linear();
-                let Some(preset) = original_light_preset(
+                let Some(preset) = light_preset(
                     light,
                     [linear_color.red, linear_color.green, linear_color.blue],
                 ) else {
@@ -1240,7 +1240,7 @@ pub(super) fn setup(
                 }
                 let range = preset.range;
                 energy_shortened_ranges += usize::from(
-                    original_light_distance(light.distance_cutoff, light.distance_falloff)
+                    light_distance(light.distance_cutoff, light.distance_falloff)
                         .is_some_and(|(cutoff, _)| range < cutoff),
                 );
                 let falloff_start = preset.falloff;
@@ -1264,7 +1264,7 @@ pub(super) fn setup(
                 let spot_cosines = (light.kind == entities::LightType::Spot)
                     .then(|| authored_light_cosines(light.angular_cutoff, light.angular_falloff));
                 let cull = (light.kind != entities::LightType::Parallel).then(|| {
-                    let clip_to_world = original_local_light_clip_to_world(
+                    let clip_to_world = local_light_clip_to_world(
                         position,
                         light.rotation,
                         light.kind,
@@ -1272,8 +1272,8 @@ pub(super) fn setup(
                         spot_cosines.map(|(cutoff, _)| cutoff),
                     );
                     let projection_bounds =
-                        clip_to_world.and_then(original_light_projection_bounds);
-                    OriginalLocalLightCull {
+                        clip_to_world.and_then(light_projection_bounds);
+                    LocalLightCull {
                         range,
                         kind: light.kind,
                         culling: light.culling,
@@ -1288,7 +1288,7 @@ pub(super) fn setup(
                             range,
                         ]),
                         projection_bounds,
-                        proximity_bounds: original_light_proximity_from_cached_bounds(
+                        proximity_bounds: light_proximity_from_cached_bounds(
                             light.max_visible_range,
                             projection_bounds,
                         ),
@@ -1312,7 +1312,7 @@ pub(super) fn setup(
                             },
                             Transform::from_translation(position),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::NativeLocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1346,7 +1346,7 @@ pub(super) fn setup(
                             },
                             Transform::from_translation(position),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::NativeLocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1390,7 +1390,7 @@ pub(super) fn setup(
                             },
                             Transform::from_translation(position).looking_to(direction, up),
                             cull.expect("local light cull data"),
-                            local_shadow_updates::NativeLocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource(light_index),
                         ));
                         spawned += 1;
                     }
@@ -1415,17 +1415,17 @@ pub(super) fn setup(
                             },
                             transform,
                             cull.expect("local light cull data"),
-                            local_shadow_updates::NativeLocalLightSource(light_index),
+                            local_shadow_updates::LocalLightSource(light_index),
                         ));
                         spawned += 1;
                     }
                     entities::LightType::Parallel => {
-                        let (native_parallel_color, direction) =
+                        let (parallel_color, direction) =
                             parallel_light_inputs(light, scene.environment_lighting, preset.color);
                         let sun_color = Color::linear_rgb(
-                            native_parallel_color[0],
-                            native_parallel_color[1],
-                            native_parallel_color[2],
+                            parallel_color[0],
+                            parallel_color[1],
+                            parallel_color[2],
                         );
                         let up = game_to_view(light.rotation[1]).normalize_or_zero();
                         if direction == Vec3::ZERO
@@ -1506,9 +1506,9 @@ pub(super) fn setup(
         })
         .collect();
     let mut diffuse_image_materials = vec![Vec::new(); resolver.diffuse_image_paths.len()];
-    let mut native_material_images = HashMap::new();
+    let mut material_images = HashMap::new();
     for cached in resolver.cache.values().flatten() {
-        native_material_images.insert(
+        material_images.insert(
             cached.handle.clone(),
             cached.images.iter().map(|&(slot, _)| slot).collect(),
         );
@@ -1517,31 +1517,31 @@ pub(super) fn setup(
         }
     }
     let diffuse_image_count = resolver.diffuse_image_paths.len();
-    tome_render_instances.bind_texture_demands(&render_instances, &native_material_images);
+    tome_render_instances.bind_texture_demands(&render_instances, &material_images);
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
-    commands.insert_resource(NativeShadowModelBoundsSources(native_shadow_model_bounds));
-    commands.insert_resource(shadow_updates::NativeModelShadowSources(
-        native_model_shadow_sources,
+    commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
+    commands.insert_resource(shadow_updates::ModelShadowSources(
+        model_shadow_sources,
     ));
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
-    let vegetation_vertices: usize = native_vegetation_meshes
+    let vegetation_vertices: usize = vegetation_meshes
         .0
         .values()
         .filter_map(|result| result.as_ref().ok())
         .sum();
-    let vegetation_meshes = native_vegetation_meshes
+    let vegetation_mesh_count = vegetation_meshes
         .0
         .values()
         .filter(|result| result.is_ok())
         .count();
     println!(
-        "Native vegetation inputs: {vegetation_meshes} shared meshes, {vegetation_vertices} vertices, {} decoded attribute bytes; {} unavailable",
+        "Vegetation inputs: {vegetation_mesh_count} shared meshes, {vegetation_vertices} vertices, {} decoded attribute bytes; {} unavailable",
         vegetation_vertices * std::mem::size_of::<[f32; 8]>(),
-        native_vegetation_meshes.0.len() - vegetation_meshes
+        vegetation_meshes.0.len() - vegetation_mesh_count
     );
-    commands.insert_resource(native_vegetation_meshes);
-    commands.insert_resource(native_world_shadow_mesh_sources);
+    commands.insert_resource(vegetation_meshes);
+    commands.insert_resource(world_shadow_mesh_sources);
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
             .iter()
@@ -1578,9 +1578,9 @@ pub(super) fn setup(
             .collect(),
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
-        native_material_images,
+        material_images,
         diffuse_image_handles: vec![None; diffuse_image_count],
-        native_shadow_diffuse_slots: Vec::new(),
+        shadow_diffuse_slots: Vec::new(),
         shadow_diffuse_membership: Vec::new(),
         diffuse_image_pending: vec![None; diffuse_image_count],
         diffuse_mip_states: (0..diffuse_image_count)

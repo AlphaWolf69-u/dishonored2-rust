@@ -1,7 +1,7 @@
 // Shared bending arithmetic from the installed rigid and instanced
 // arkvegetation shadow VS. Wind is supplied by each ORIGINAL input ABI;
 // this helper does not choose a clock, wind direction, amplitude or fallback.
-struct NativeShadowWindParameters {
+struct ShadowWindParameters {
     main_variance: vec4<f32>,
     main_frequency: vec4<f32>,
     main_amplitude: vec4<f32>,
@@ -10,7 +10,7 @@ struct NativeShadowWindParameters {
     leaf_amplitude: vec4<f32>,
     branch_amplitude: vec4<f32>,
 }
-fn native_shadow_wind_position(p: NativeShadowWindParameters, time: f32,
+fn shadow_wind_position(p: ShadowWindParameters, time: f32,
     local_wind: vec2<f32>, leaf_strength: f32,
     position: vec3<f32>, normal_xy: vec2<f32>, color: vec3<f32>) -> vec3<f32>
 {

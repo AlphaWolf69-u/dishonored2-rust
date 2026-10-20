@@ -3,7 +3,7 @@ use super::{
     fs, reference_fov_from_projection, save_to_disk, screen_shadow_pass, shadow_pass, tome,
     transformed, view_to_game, world_mesh, NavigationState, NavigationWorld, Projection, SceneData,
     SceneRenderQueue, Screenshot, SnapshotPath, StreamingDiagnostics, SystemTime, TomeWorld,
-    ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_NEAR, UNIX_EPOCH,
+    DEFAULT_FAR, DEFAULT_NEAR, UNIX_EPOCH,
 };
 use bevy::prelude::*;
 
@@ -11,15 +11,15 @@ pub(super) fn snapshot_once(
     mut commands: Commands,
     request: Option<Res<SnapshotPath>>,
     time: Res<Time>,
-    native_screen: Option<Res<screen_shadow_pass::NativeScreenShadowFrame>>,
-    pipelines: Option<Res<shadow_pass::NativeShadowCaptureReadiness>>,
+    screen: Option<Res<screen_shadow_pass::ScreenShadowFrame>>,
+    pipelines: Option<Res<shadow_pass::ShadowCaptureReadiness>>,
     mut captured: Local<bool>,
     mut ready_since: Local<Option<f32>>,
 ) {
     let Some(request) = request else {
         return;
     };
-    let shadows_ready = native_screen
+    let shadows_ready = screen
         .as_ref()
         .is_none_or(|screen| screen.produced.load(std::sync::atomic::Ordering::Acquire) >= 30);
     let materials_ready = pipelines
@@ -136,14 +136,14 @@ pub(super) fn tome_camera_matrix_text(
         Err(error) => return format!("Tome camera matrix unavailable: {error}"),
     };
     let camera_pose = game_pose_from_view_transform(transform);
-    let matrix = match tome::original_world_visibility_query_matrix(
+    let matrix = match tome::world_visibility_query_matrix(
         reference_fov,
         width as u32,
         height as u32,
         1.0,
         camera_pose,
-        ORIGINAL_DEFAULT_NEAR,
-        ORIGINAL_DEFAULT_FAR,
+        DEFAULT_NEAR,
+        DEFAULT_FAR,
     ) {
         Ok(matrix) => matrix,
         Err(error) => return format!("Tome camera matrix unavailable: {error}"),

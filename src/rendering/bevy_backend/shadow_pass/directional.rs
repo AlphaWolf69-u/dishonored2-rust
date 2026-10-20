@@ -30,17 +30,17 @@ pub(super) fn encode_layer(
     target: &CachedTarget,
     physical_layer: usize,
     layer_index: usize,
-    layer: &NativeShadowLayer,
+    layer: &ShadowLayer,
     records: &[PreparedShadowRecord],
     pipelines: &ShadowPipelineStore,
-    receiver: Option<&NativeParallelReceiverVars>,
+    receiver: Option<&ParallelReceiverVars>,
 ) -> Result<Publication, String> {
     let temporary = &target.temporary[physical_layer];
     let mut remaining = directional_layer_draws(records, pipelines, layer_index);
     if remaining.is_empty()
-        && layer.cache == NativeShadowCacheOp::None
-        && matches!(layer.ops.depth, NativeShadowLoad::Load)
-        && matches!(layer.ops.stencil, NativeStencilLoad::Load)
+        && layer.cache == ShadowCacheOp::None
+        && matches!(layer.ops.depth, ShadowLoad::Load)
+        && matches!(layer.ops.stencil, StencilLoad::Load)
     {
         return Ok(Publication {
             emitted: false,
@@ -54,9 +54,9 @@ pub(super) fn encode_layer(
                 }),
         });
     }
-    let load = NativeShadowLayerOps {
-        depth: NativeShadowLoad::Load,
-        stencil: NativeStencilLoad::Load,
+    let load = ShadowLayerOps {
+        depth: ShadowLoad::Load,
+        stencil: StencilLoad::Load,
     };
     let mut publication = Publication {
         complete: true,
@@ -64,21 +64,21 @@ pub(super) fn encode_layer(
         cache: CacheUpdate::Unchanged,
     };
     match layer.cache {
-        NativeShadowCacheOp::None => {
-            draw_native_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+        ShadowCacheOp::None => {
+            draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
         }
-        NativeShadowCacheOp::Restore => {
+        ShadowCacheOp::Restore => {
             temporary.copy_resource_from(encoder, &target.static_cache[layer_index - 1])?;
-            draw_native_shadow_groups(encoder, temporary, pipelines, remaining, load)?;
+            draw_shadow_groups(encoder, temporary, pipelines, remaining, load)?;
         }
-        NativeShadowCacheOp::Store { static_instances } => {
+        ShadowCacheOp::Store { static_instances } => {
             let dynamic = remaining.split_off(static_instances);
-            draw_native_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+            draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
             target.static_cache[layer_index - 1].copy_resource_from(encoder, temporary)?;
             publication.cache = CacheUpdate::Written(None);
-            draw_native_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
+            draw_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
         }
-        NativeShadowCacheOp::Retained {
+        ShadowCacheOp::Retained {
             generation,
             static_instances,
         } => {
@@ -87,11 +87,11 @@ pub(super) fn encode_layer(
             if target.cache_valid[cache] && target.cache_generation[cache] == Some(generation) {
                 temporary.copy_resource_from(encoder, &target.static_cache[cache])?;
             } else {
-                draw_native_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+                draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
                 target.static_cache[cache].copy_resource_from(encoder, temporary)?;
                 publication.cache = CacheUpdate::Written(Some(generation));
             }
-            draw_native_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
+            draw_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
         }
     }
     // 32db10 full-rectangle copy fast path, AFTER the dynamic pass.
@@ -107,10 +107,10 @@ pub(super) fn record_layers(
     device: &RenderDevice,
     target: &CachedTarget,
     first_layer: usize,
-    layers: &[NativeShadowLayer],
+    layers: &[ShadowLayer],
     records: &[PreparedShadowRecord],
     pipelines: &ShadowPipelineStore,
-    receiver: Option<&NativeParallelReceiverVars>,
+    receiver: Option<&ParallelReceiverVars>,
 ) -> Vec<(usize, RecordedLayer)> {
     // Each slice has its own temporary and static cache. Only the atlas is
     // shared, and each encoder copies to a distinct physical array layer.

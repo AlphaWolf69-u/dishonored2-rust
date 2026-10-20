@@ -36,16 +36,16 @@ fn histogram(@builtin(global_invocation_id) id:vec3<u32>,@builtin(local_invocati
  if all(id.xy<dim) {
   let uv=(vec2<f32>(id.xy)+vec2(0.5))/vec2<f32>(dim);let d=vec2(0.5)/vec2<f32>(dim);
   let n=0.25*(sample_half(uv-d)+sample_half(uv+vec2(d.x,-d.y))+sample_half(uv+vec2(-d.x,d.y))+sample_half(uv+d));
-  let native_lum=n.w;
-  let l=unpack2x16float(pack2x16float(vec2(native_lum,0.0))).x*139.26;
+  let lum=n.w;
+  let l=unpack2x16float(pack2x16float(vec2(lum,0.0))).x*139.26;
   if l>=0.01 {atomicAdd(&local_bins[u32(clamp(floor(bucket(l)),0.0,127.0))],1u);}
  }
  workgroupBarrier();if lane<128u {atomicAdd(&bins[lane],atomicLoad(&local_bins[lane]));}
 }
 @compute @workgroup_size(1,1,1)
-fn adapt() {
+fn update_exposure() {
  var h:array<u32,128>;for(var i=0u;i<128u;i++){h[i]=atomicExchange(&bins[i],0u);}
- state=native_adapt(h,settings,state.luminance,clamp(globals.delta_time,0.01,1.0));
+ state=adapt(h,settings,state.luminance,clamp(globals.delta_time,0.01,1.0));
  // Bevy's HDR target already includes the fixed camera exposure. Replace it
  // with the native world-luminance exposure in the final grading stage.
  view.color_grading.exposure+=log2(1.0/(state.luminance*255.0*view.exposure));

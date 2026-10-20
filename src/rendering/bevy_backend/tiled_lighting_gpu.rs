@@ -19,7 +19,7 @@ use crate::tiled_lighting::{
 /// The shared render-world pipelines execute the original-backed shaders used
 /// by hardware parity tests and the eventual native pass; no per-frame compilation.
 #[derive(Resource)]
-pub struct NativeTlfPipelines {
+pub struct TlfPipelines {
     pub depth: ComputePipeline,
     pub cull: ComputePipeline,
     /// FUN_1402fc6a0's last-mip reduction/unprojection into the 64×64 CPU grid.
@@ -36,7 +36,7 @@ pub struct NativeTlfPipelines {
     pub shadow: ShaderModule,
 }
 
-impl NativeTlfPipelines {
+impl TlfPipelines {
     /// FUN_1402fcff0's unhackDepthBuffer program, after the source depth/stencil
     /// copy. Only stencil bit-zero == 1 is multiplied by the caller's resolved
     /// modelDepthHack.x; all ordinary-world pixels and stencil remain intact.
@@ -49,7 +49,7 @@ impl NativeTlfPipelines {
     ) -> Result<bevy::render::render_resource::RenderPipeline, String> {
         use bevy::render::render_resource::*;
         if !format.has_stencil_aspect() {
-            return Err("native depth unhack requires the copied stencil partition".into());
+            return Err("depth unhack requires the copied stencil partition".into());
         }
         let keep_equal = StencilFaceState {
             compare: CompareFunction::Equal,
@@ -58,7 +58,7 @@ impl NativeTlfPipelines {
             pass_op: StencilOperation::Keep,
         };
         Ok(device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native unhackDepthBuffer stencil-one pixels"),
+            label: Some("unhackDepthBuffer stencil-one pixels"),
             layout: None,
             vertex: RawVertexState {
                 module: &self.depth_copy_2d,
@@ -141,7 +141,7 @@ impl NativeTlfPipelines {
     }
 }
 
-impl FromWorld for NativeTlfPipelines {
+impl FromWorld for TlfPipelines {
     fn from_world(world: &mut World) -> Self {
         let device = world.resource::<RenderDevice>();
         let compile = |source: &'static str, entry: &'static str| {
@@ -188,7 +188,7 @@ impl FromWorld for NativeTlfPipelines {
                 "reduce_depth",
             ),
             depth_copy: device.create_and_validate_shader_module(ShaderModuleDescriptor {
-                label: Some("native depthcopy"),
+                label: Some("depthcopy"),
                 source: ShaderSource::Wgsl(
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
@@ -208,7 +208,7 @@ impl FromWorld for NativeTlfPipelines {
                 ),
             }),
             shadow: device.create_and_validate_shader_module(ShaderModuleDescriptor {
-                label: Some("native shadow sampling"),
+                label: Some("shadow sampling"),
                 source: ShaderSource::Wgsl(
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
@@ -229,30 +229,30 @@ impl FromWorld for NativeTlfPipelines {
 /// are unreachable only after both counter and head initialization.
 /// Light/shadow payload owners and material/shader pipeline integration remain
 /// outside this resource.
-pub struct NativeTlfBuffers {
+pub struct TlfBuffers {
     pub packets: Buffer,
     pub counter: Buffer,
     pub pool: Buffer,
     inputs: RenderTaskProperties<Buffer>,
 }
 
-impl NativeTlfBuffers {
+impl TlfBuffers {
     pub fn new(device: &RenderDevice) -> Self {
         let mut buffers = Self {
             packets: device.create_buffer(&BufferDescriptor {
-                label: Some("native TLF cull packets"),
+                label: Some("TLF cull packets"),
                 size: (LIGHT_BUFFER_CAPACITY * 48) as u64,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             counter: device.create_buffer(&BufferDescriptor {
-                label: Some("native TLF shared node counter"),
+                label: Some("TLF shared node counter"),
                 size: LIGHT_NODE_COUNTER_BYTES,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             pool: device.create_buffer(&BufferDescriptor {
-                label: Some("native TLF light-node pool"),
+                label: Some("TLF light-node pool"),
                 size: (LIGHT_NODE_POOL_CAPACITY * 4) as u64,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
@@ -281,10 +281,10 @@ impl NativeTlfBuffers {
     /// or packet stride are rejected rather than truncated.
     pub fn upload_cull_packets(&self, queue: &RenderQueue, words: &[u32]) -> Result<(), String> {
         if words.len() % 12 != 0 {
-            return Err("native TLF cull packets must contain 12 words each".into());
+            return Err("TLF cull packets must contain 12 words each".into());
         }
         if words.len() / 12 > LIGHT_BUFFER_CAPACITY {
-            return Err("native TLF cull packet count exceeds 448".into());
+            return Err("TLF cull packet count exceeds 448".into());
         }
         let bytes = words
             .iter()

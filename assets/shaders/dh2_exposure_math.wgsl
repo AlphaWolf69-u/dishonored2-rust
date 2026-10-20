@@ -2,7 +2,7 @@ struct Settings {range:vec4<f32>,adaptation:vec4<f32>,camera:vec4<f32>}
 struct State {engine:f32,luminance:f32,min_ldr:f32,max_ldr:f32,middle:f32,ev:f32,fstop:f32,peak:u32}
 fn bucket(l:f32)->f32 {return (8.685889638065036*log(l)+40.0)*(128.0/140.0);}
 fn luminance(b:f32)->f32 {return pow(10.0,0.05*(-40.0+b*(140.0/128.0)));}
-fn native_adapt(h:array<u32,128>,p:Settings,last:f32,dt:f32)->State {
+fn adapt(h:array<u32,128>,p:Settings,last:f32,dt:f32)->State {
  var result:State;
  let monitor=(8.685889638065036*log(255.0*p.adaptation.y))/(140.0/128.0);
  let clip=vec2<u32>(clamp(p.range.zw,vec2(0.0),vec2(1.0))*monitor);

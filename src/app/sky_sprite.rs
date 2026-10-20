@@ -1,7 +1,7 @@
 //! PostFX_Sun_Sprite: the environment's textured celestial disc, at far depth.
 use super::{
     entities, environment_sun_ray, game_to_view, material, texture_streaming, SceneData,
-    ORIGINAL_DEFAULT_FAR,
+    DEFAULT_FAR,
 };
 use bevy::{
     mesh::MeshVertexBufferLayoutRef,
@@ -194,7 +194,7 @@ fn spawn_authored(
         });
     let image = images.add(streamed.image);
     let material = materials.add(CelestialSprite {
-        position_size: (direction * ORIGINAL_DEFAULT_FAR * 0.9).extend(size),
+        position_size: (direction * DEFAULT_FAR * 0.9).extend(size),
         color: Vec4::from_array(color),
         image,
         additive: scalar("atm/worldfog/sunblendadditive", 1.)? != 0.0,

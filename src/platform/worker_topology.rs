@@ -1,15 +1,15 @@
 //! Original CPU topology reduction and local-query worker ownership.
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NativeCpuTopology {
+pub struct CpuTopology {
     pub words: [u32; 16],
 }
 
 ///0de070 reduces32-byte GetLogicalProcessorInformation records. Preserve
 ///the original cache-count behavior: a zero count remains zero while the
 ///descriptor is replaced; an already positive count is incremented.
-pub fn reduce_cpu_topology(records: &[u8]) -> Result<NativeCpuTopology, String> {
-    let mut result = NativeCpuTopology::default();
+pub fn reduce_cpu_topology(records: &[u8]) -> Result<CpuTopology, String> {
+    let mut result = CpuTopology::default();
     for record in records.chunks_exact(32) {
         let word = |at| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
         match word(8) {
@@ -36,7 +36,7 @@ pub fn reduce_cpu_topology(records: &[u8]) -> Result<NativeCpuTopology, String> 
             3 => result.words[0] = result.words[0].wrapping_add(1),
             value => {
                 return Err(format!(
-                    "unsupported native LOGICAL_PROCESSOR_RELATIONSHIP {value}"
+                    "unsupported LOGICAL_PROCESSOR_RELATIONSHIP {value}"
                 ))
             }
         }
@@ -46,13 +46,13 @@ pub fn reduce_cpu_topology(records: &[u8]) -> Result<NativeCpuTopology, String> 
 
 ///079c60 chooses physical cores minus one, clamped to2..15 workers.
 ///07a910 includes the caller;37ef90 adds its local-query job and caps at16.
-pub fn local_shadow_query_job_count(topology: &NativeCpuTopology) -> u32 {
+pub fn local_shadow_query_job_count(topology: &CpuTopology) -> u32 {
     let workers = (topology.words[1] as i32).wrapping_sub(1).clamp(2, 15);
     (workers + 2).min(16) as u32
 }
 
 #[cfg(target_os = "windows")]
-pub fn cpu_topology() -> Result<NativeCpuTopology, String> {
+pub fn cpu_topology() -> Result<CpuTopology, String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetLogicalProcessorInformation(buffer: *mut std::ffi::c_void, length: *mut u32) -> i32;
@@ -67,7 +67,7 @@ pub fn cpu_topology() -> Result<NativeCpuTopology, String> {
         };
         if unsafe { GetLogicalProcessorInformation(pointer, &mut length) } != 0 {
             if length as usize > storage.len() * 8 {
-                return Err("native CPU topology exceeds its supplied buffer".into());
+                return Err("CPU topology exceeds its supplied buffer".into());
             }
             let bytes = unsafe {
                 std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), length as usize)
@@ -83,15 +83,15 @@ pub fn cpu_topology() -> Result<NativeCpuTopology, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn cpu_topology() -> Result<NativeCpuTopology, String> {
-    Err("native CPU topology requires Windows".into())
+pub fn cpu_topology() -> Result<CpuTopology, String> {
+    Err("CPU topology requires Windows".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn topology_reduction_matches_original_instructions() {
+    fn topology_reduction_matches_instructions() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/cpu_topology_cases.txt"
@@ -111,7 +111,7 @@ mod tests {
             assert_eq!(
                 reduce_cpu_topology(&records).unwrap().words,
                 words[1 + count * 8..],
-                "native topology case{case}"
+                "topology case{case}"
             );
         }
     }

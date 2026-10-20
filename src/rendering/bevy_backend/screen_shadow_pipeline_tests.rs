@@ -4,8 +4,8 @@ use bevy::{
     render::{renderer::RenderQueue, storage::ShaderBuffer, RenderApp},
 };
 
-fn parameters() -> NativeScreenShadowUniform {
-    NativeScreenShadowUniform {
+fn parameters() -> ScreenShadowUniform {
+    ScreenShadowUniform {
         inverse_view_projection: [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W],
         unproject: Vec4::new(1.0, 0.0, 1.0, 0.0),
         camera_time: Vec4::new(0.0, 0.0, 2.0, 0.0),
@@ -65,16 +65,16 @@ fn screen_producer_requires_stencil_and_preserves_other_channels() {
 }
 
 #[test]
-fn original_dwao_offset_publication_keeps_order_and_signed_zero() {
+fn dwao_offset_publication_keeps_order_and_signed_zero() {
     let p =
-        NativeDwaoBlurUniform::from_owner([8.0, 8.0], [1.0, 0.0], 1.0, 0.1, 0.251379132).unwrap();
+        DwaoBlurUniform::from_owner([8.0, 8.0], [1.0, 0.0], 1.0, 0.1, 0.251379132).unwrap();
     assert_eq!(
         p.offset0.to_array().map(f32::to_bits),
         [-0.25f32, -0.0, -0.125, -0.0].map(f32::to_bits)
     );
     assert_eq!(p.offset1.to_array(), [0.125, 0.0, 0.25, 0.0]);
     assert_eq!(ShaderBuffer::from(p).data.unwrap().len(), 48);
-    assert!(NativeDwaoBlurUniform::from_owner([0.0, 8.0], [1.0, 0.0], 1.0, 0.1, 0.0).is_err());
+    assert!(DwaoBlurUniform::from_owner([0.0, 8.0], [1.0, 0.0], 1.0, 0.1, 0.0).is_err());
 }
 
 fn upload(device: &RenderDevice, value: impl Into<ShaderBuffer>, usage: BufferUsages) -> Buffer {
@@ -87,7 +87,7 @@ fn upload(device: &RenderDevice, value: impl Into<ShaderBuffer>, usage: BufferUs
 
 #[test]
 #[ignore = "requires graphics adapter; tests original reconstruction, cloud and bilateral shader paths"]
-fn native_screen_shadow_producer_and_bilateral_gpu() {
+fn screen_shadow_producer_and_bilateral_gpu() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -112,7 +112,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     app.finish();
     app.cleanup();
     let world = app.sub_app_mut(RenderApp).world_mut();
-    world.init_resource::<crate::tiled_lighting_gpu::NativeTlfPipelines>();
+    world.init_resource::<crate::tiled_lighting_gpu::TlfPipelines>();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
     let make_texture = |label, format, usage, width, height| {
@@ -139,7 +139,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         4,
     );
     let depth_view = depth.create_view(&TextureViewDescriptor::default());
-    let atlas = crate::shadow_pipeline::NativeShadowDepthArray::new(
+    let atlas = crate::shadow_pipeline::ShadowDepthArray::new(
         device,
         Extent3d {
             width: 4,
@@ -211,14 +211,14 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         min_filter: FilterMode::Linear,
         ..default()
     });
-    let comparison = crate::shadow_pipeline::native_shadow_comparison_sampler(device);
+    let comparison = crate::shadow_pipeline::shadow_comparison_sampler(device);
     let target = ColorTargetState {
         format: TextureFormat::Rgba32Float,
         blend: None,
         write_mask: ColorWrites::ALL,
     };
-    let passes = NativeScreenShadowPipelines::new(device, target.clone(), None, target);
-    let mut parallel = crate::shadow_sampling::NativeParallelSamplingUniform::default();
+    let passes = ScreenShadowPipelines::new(device, target.clone(), None, target);
+    let mut parallel = crate::shadow_sampling::ParallelSamplingUniform::default();
     let shadow_rows = [
         Vec4::new(0.5, 0.0, 0.0, 0.5),
         Vec4::new(0.0, -0.5, 0.0, 0.5),
@@ -607,9 +607,9 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         &packed_view,
     );
     let blur_parameters =
-        NativeDwaoBlurUniform::from_owner([4.0, 4.0], [1.0, 0.0], 1.0, 0.1, 0.251379132).unwrap();
+        DwaoBlurUniform::from_owner([4.0, 4.0], [1.0, 0.0], 1.0, 0.1, 0.251379132).unwrap();
     let blur_buffer = upload(device, blur_parameters, BufferUsages::UNIFORM);
-    let dwao = NativeDwaoBlurPipeline::new(
+    let dwao = DwaoBlurPipeline::new(
         device,
         &passes,
         ColorTargetState {
@@ -727,7 +727,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     // Execute BOTH original stencil partitions and prove that AO and the two
     // packed-depth channels survive. A depth-only camera buffer is not enough.
     let partition = make_texture(
-        "native main D32S8 screen partition",
+        "main D32S8 screen partition",
         TextureFormat::Depth32FloatStencil8,
         // Match the live main-Z owner, whose depth is also sampled by the
         // coarse-depth producer before the read-only stencil screen passes.
@@ -737,7 +737,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     );
     let partition_view = partition.create_view(&TextureViewDescriptor::default());
     use crate::shadow_pipeline::{
-        NativeOpaqueShadowDraw, NativeOpaqueShadowPipeline, NativeShadowScissor,
+        ShadowDepthDraw, ShadowDepthPipeline, ShadowScissor,
     };
     let position = [VertexAttribute {
         format: VertexFormat::Float32x3,
@@ -750,13 +750,13 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         attributes: &position,
     };
     let mut source_state = [0; 9];
-    crate::render_state::reset_native_render_state(&mut source_state);
+    crate::render_state::reset_render_state(&mut source_state);
     let (world_state, world_reference) =
         crate::render_state::main_depth_surface_state(source_state, 0.0);
     let (model_state, model_reference) =
         crate::render_state::main_depth_surface_state(source_state, 0.5);
     let adapter = world.resource::<bevy::render::renderer::RenderAdapter>();
-    let world_depth = NativeOpaqueShadowPipeline::new_main_opaque_depth(
+    let world_depth = ShadowDepthPipeline::new_main_opaque_depth(
         device,
         adapter,
         &main_layout,
@@ -766,7 +766,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         None,
     )
     .unwrap();
-    let model_depth = NativeOpaqueShadowPipeline::new_main_opaque_depth(
+    let model_depth = ShadowDepthPipeline::new_main_opaque_depth(
         device,
         adapter,
         &main_layout,
@@ -796,7 +796,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         .flat_map(f32::to_le_bytes)
         .collect();
     let model_vertices = device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("native main-Z rigid fixture vertices"),
+        label: Some("main-Z rigid fixture vertices"),
         contents: &vertex_bytes,
         usage: BufferUsages::VERTEX,
     });
@@ -805,11 +805,11 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         .flat_map(u16::to_le_bytes)
         .collect();
     let model_indices = device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("native main-Z rigid fixture indices"),
+        label: Some("main-Z rigid fixture indices"),
         contents: &index_bytes,
         usage: BufferUsages::INDEX,
     });
-    let draw = |binding, x| NativeOpaqueShadowDraw {
+    let draw = |binding, x| ShadowDepthDraw {
         model_state_offset: 0,
         model_state: binding,
         program_resources: None,
@@ -819,7 +819,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         indices: 0..3,
         base_vertex: 0,
         instances: 0..1,
-        scissor: NativeShadowScissor {
+        scissor: ShadowScissor {
             x,
             y: 0,
             width: 2,
@@ -837,13 +837,13 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         blend: None,
         write_mask: ColorWrites::ALL,
     };
-    let first = NativeScreenShadowPipelines::new(
+    let first = ScreenShadowPipelines::new(
         device,
         first_state.color,
         Some(first_state.depth),
         target.clone(),
     );
-    let second = NativeScreenShadowPipelines::new(
+    let second = ScreenShadowPipelines::new(
         device,
         second_state.color,
         Some(second_state.depth),
@@ -865,7 +865,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         &blur_x_view,
     );
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("native screen two-pass stencil fixture"),
+        label: Some("screen two-pass stencil fixture"),
     });
     {
         // The preceding DWAO sky case deliberately left sampled depth at zero.
@@ -1017,7 +1017,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     // The original unhackDepthBuffer draw changes only stencil-one depth.
     // Verify actual D32S8 depth bits and both stencil partitions, not D24
     // quantization or a CPU approximation of the shader.
-    let native_tlf = world.resource::<crate::tiled_lighting_gpu::NativeTlfPipelines>();
+    let tlf = world.resource::<crate::tiled_lighting_gpu::TlfPipelines>();
     let attributes = [
         VertexAttribute {
             format: VertexFormat::Float32x3,
@@ -1035,14 +1035,14 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
     };
-    assert!(native_tlf
+    assert!(tlf
         .unhack_depth_pipeline(
             device,
             TextureFormat::Depth32Float,
             std::slice::from_ref(&layout)
         )
         .is_err());
-    let unhack = native_tlf
+    let unhack = tlf
         .unhack_depth_pipeline(
             device,
             TextureFormat::Depth32FloatStencil8,
@@ -1068,7 +1068,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     let unhack_bind = device
         .wgpu_device()
         .create_bind_group(&BindGroupDescriptor {
-            label: Some("native depth unhack inputs"),
+            label: Some("depth unhack inputs"),
             layout: &unhack.get_bind_group_layout(0),
             entries: &[
                 BindGroupEntry {
@@ -1086,7 +1086,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
             ],
         });
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("native D32S8 depth unhack fixture"),
+        label: Some("D32S8 depth unhack fixture"),
     });
     {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -1152,7 +1152,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
             assert_eq!(
                 actual.to_bits(),
                 expected.to_bits(),
-                "native unhack depth pixel {x},{y}"
+                "unhack depth pixel {x},{y}"
             );
             assert_eq!(
                 bytes[1024 + y * 256 + x],
@@ -1173,13 +1173,13 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         64,
         64,
     );
-    let mut history = crate::coarse_depth::NativeCoarseDepthReadback::new(
+    let mut history = crate::coarse_depth::CoarseDepthReadback::new(
         device,
         crate::coarse_depth::INITIAL_COARSE_DEPTH_OWNER_INDEX,
     )
     .unwrap();
     assert_eq!(history.try_read(|_| 0u32).unwrap(), None);
-    assert!(crate::coarse_depth::NativeCoarseDepthReadback::new(device, 5).is_err());
+    assert!(crate::coarse_depth::CoarseDepthReadback::new(device, 5).is_err());
     for generation in 1..=9u32 {
         let raw: Vec<u8> = (0..4096)
             .flat_map(|pixel| {
@@ -1199,7 +1199,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
             coarse.size(),
         );
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("native coarseDepth persistent ring fixture"),
+            label: Some("coarseDepth persistent ring fixture"),
         });
         assert!(history.record_copy(&mut encoder, &coarse, false).unwrap());
         if generation > 1 {
@@ -1228,7 +1228,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
             Some((generation as f32).to_bits())
         );
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("native coarseDepth offscreen no-copy fixture"),
+            label: Some("coarseDepth offscreen no-copy fixture"),
         });
         assert!(!history.record_copy(&mut encoder, &depth, true).unwrap());
         assert_eq!(
@@ -1250,7 +1250,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         mip_size[1],
     );
     let generated = make_texture(
-        "native generated coarseDepth",
+        "generated coarseDepth",
         TextureFormat::Rg32Float,
         TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
         64,
@@ -1302,7 +1302,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     inverse[2][3] = -1.0;
     inverse[3][3] = 0.0;
     inverse[3][2] = 2.0;
-    let parameters = crate::coarse_depth::NativeCoarseDepthParameters::from_owner(
+    let parameters = crate::coarse_depth::CoarseDepthParameters::from_owner(
         mip_size,
         [0.85, 0.93],
         inverse,
@@ -1310,7 +1310,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     .unwrap();
     assert_eq!(parameters.source_max, [98, 63]);
     let uniform = device.create_buffer_with_data(&BufferInitDescriptor {
-        label: Some("native coarseDepth constants"),
+        label: Some("coarseDepth constants"),
         contents: &parameters.to_bytes(),
         usage: BufferUsages::UNIFORM,
     });
@@ -1319,8 +1319,8 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     let binding = device
         .wgpu_device()
         .create_bind_group(&BindGroupDescriptor {
-            label: Some("native coarseDepth producer"),
-            layout: &native_tlf.coarse_depth.get_bind_group_layout(0),
+            label: Some("coarseDepth producer"),
+            layout: &tlf.coarse_depth.get_bind_group_layout(0),
             entries: &[
                 BindGroupEntry {
                     binding: 0,
@@ -1337,14 +1337,14 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
             ],
         });
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("native coarseDepth generation and history"),
+        label: Some("coarseDepth generation and history"),
     });
     {
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
-            label: Some("native coarseDepthGen"),
+            label: Some("coarseDepthGen"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&native_tlf.coarse_depth);
+        pass.set_pipeline(&tlf.coarse_depth);
         pass.set_bind_group(0, &binding, &[]);
         pass.dispatch_workgroups(64, 64, 1);
     }
@@ -1379,7 +1379,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
                     assert_eq!(
                         pixels[(dy * 64 + dx) as usize].map(f32::to_bits),
                         expected.map(f32::to_bits),
-                        "native coarseDepth pixel {dx},{dy}"
+                        "coarseDepth pixel {dx},{dy}"
                     );
                 }
             }
@@ -1444,9 +1444,9 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         cache: None,
     });
     let pyramid =
-        crate::coarse_depth::NativeDepthPyramid::new(device, native_tlf, &input_depth).unwrap();
+        crate::coarse_depth::DepthPyramid::new(device, tlf, &input_depth).unwrap();
     assert_eq!(pyramid.last_mip_extent(), [2, 2]);
-    assert!(crate::coarse_depth::NativeDepthPyramid::new(device, native_tlf, &source).is_err());
+    assert!(crate::coarse_depth::DepthPyramid::new(device, tlf, &source).is_err());
     let mip_readback = device.create_buffer(&BufferDescriptor {
         label: Some("all four native depth mips"),
         size: 30 * 256,
@@ -1481,14 +1481,14 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     inverse[3][2] = 1.0;
     inverse[3][3] = 0.0;
     assert!(pyramid
-        .record(queue, &mut encoder, native_tlf, [28, 19], inverse)
+        .record(queue, &mut encoder, tlf, [28, 19], inverse)
         .is_err());
     let coverage = pyramid
-        .record(queue, &mut encoder, native_tlf, input_size, inverse)
+        .record(queue, &mut encoder, tlf, input_size, inverse)
         .unwrap();
     assert_eq!(coverage.written_mips, [[16, 16], [8, 8], [4, 4], [2, 2]]);
     assert!(
-        crate::coarse_depth::NativeCoarseDepthParameters::from_reduction(
+        crate::coarse_depth::CoarseDepthParameters::from_reduction(
             coverage,
             [1.0, 1.0],
             inverse
@@ -1566,7 +1566,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
                     assert_eq!(
                         actual,
                         half::f16::from_f32(expected[channel]).to_bits(),
-                        "native pyramid mip={mip} pixel={x},{y} channel={channel}"
+                        "pyramid mip={mip} pixel={x},{y} channel={channel}"
                     );
                 }
                 // Never feed the half-quantized texture values back to the next level.
@@ -1582,14 +1582,14 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
     // Old pixels can legitimately remain outside the written rectangle, but
     // the next consumer must not silently treat them as this frame's depth.
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("native cropped reduction coverage"),
+        label: Some("cropped reduction coverage"),
     });
     let coverage = pyramid
-        .record(queue, &mut encoder, native_tlf, [3, 3], inverse)
+        .record(queue, &mut encoder, tlf, [3, 3], inverse)
         .unwrap();
     assert_eq!(coverage.written_mips, [[8, 8], [4, 4], [2, 2], [1, 1]]);
     assert!(
-        crate::coarse_depth::NativeCoarseDepthParameters::from_reduction(
+        crate::coarse_depth::CoarseDepthParameters::from_reduction(
             coverage,
             [1.0, 1.0],
             inverse
@@ -1597,7 +1597,7 @@ fn native_screen_shadow_producer_and_bilateral_gpu() {
         .is_err()
     );
     assert_eq!(
-        crate::coarse_depth::NativeCoarseDepthParameters::from_reduction(
+        crate::coarse_depth::CoarseDepthParameters::from_reduction(
             coverage,
             [0.5, 0.5],
             inverse

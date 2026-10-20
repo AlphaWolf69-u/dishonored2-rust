@@ -112,7 +112,7 @@ pub struct Surface {
 }
 
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
-    crate::entities::native_declaration_text(bytes)
+    crate::entities::declaration_text(bytes)
         .lines()
         .filter_map(|line| {
             let line = line.split("//").next()?.trim();
@@ -574,7 +574,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_program_selects_native_default_and_authored_maps() {
+    fn absent_program_selects_default_and_authored_maps() {
         let s = Surface::parse(b"hasGlossMap 1\nhasMetallicMap 1\nmetallicMinMax {0,0.8,0,0}\nwardRoughness {0.3,1,0,0}\n");
         assert_eq!(s.main_program.as_deref(), Some("arkDefault"));
         assert_eq!(s.program(), Program::Default);
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_bc5_reconstructs_original_non_sqrt_z() {
+    fn signed_bc5_reconstructs_non_sqrt_z() {
         assert_eq!(unpack_bc5_normal_map([0.0, 0.0]), [0.0, 0.0, 1.0]);
         let normal = unpack_bc5_normal_map([0.5, -0.25]);
         let z = 1.001_f32 - 0.3125;
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn original_defaults_and_no_map_roughness() {
+    fn defaults_and_no_map_roughness() {
         let s = Surface::parse(b"{\nmainprogram arkDefault\n}\n");
         assert_eq!(s.ward, [0.0, 0.5, 0.0, 0.0]);
         assert_eq!(s.layers[0].mask_channel, 3);
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn omitted_layer_maps_use_native_black_defaults_and_preserve_overrides() {
+    fn omitted_layer_maps_use_black_defaults_and_preserve_overrides() {
         let s = Surface::parse(b"extraLayer 2\nhasMetallicMap 1\nhasGlossMap 1\nhasSpecularMap 1\nmetallicMap base_mt\nLayer2_MetallicMap coat_mt\nLayer1_GlossMap coat_g\n");
         let black = Some("ipr_constantColor(0,0,0,0)");
         assert_eq!(s.layers[0].metallic.as_deref(), Some("base_mt"));
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn all_standard_texture_roles_resolve_original_defaults() {
+    fn all_standard_texture_roles_resolve_defaults() {
         let s=Surface::parse(b"extraLayer 2\nhasBumpMap 1\nhasGlossMap 1\nhasMetallicMap 1\nhasSpecularMap 1\nhasOcclusionMap 1\nhasDetailBumpMap 1\nhasEmissiveMap 1\nhasEmissiveMaskMap 1\nemissiveIntensity 1\nuse_Layer0_ColorConstant 1\nLayer0_MaskMode 1\nLayer1_MaskMode 1\nLayer2_MaskMode 1\n");
         let bindings = s.texture_bindings(false);
         assert_eq!(bindings.len(), 22);

@@ -90,7 +90,7 @@ impl TileGrid {
     pub fn new(width: u32, height: u32, tile_dimension: u32) -> Result<Self, String> {
         if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
             return Err(
-                "native tiled-lighting view dimensions must be positive signed integers".into(),
+                "tiled-lighting view dimensions must be positive signed integers".into(),
             );
         }
         if !(2..=32).contains(&tile_dimension) {
@@ -154,7 +154,7 @@ pub fn visit_light_list(
     while count < max_light_count && head != END_OF_LIGHT_LIST {
         let node = *pool
             .get(head as usize)
-            .ok_or_else(|| format!("invalid native light-list node {head}"))?;
+            .ok_or_else(|| format!("invalid light-list node {head}"))?;
         visit(node.light_index());
         head = node.next();
         count += 1;
@@ -205,7 +205,7 @@ pub fn intersects_depth_bins(a: f32, b: f32, mask: u32, light_near_far: [f32; 2]
 
 /// Numerical inputs and independently executed original-HLSL GPU output.
 #[cfg(test)]
-pub(crate) fn original_depth_case(id: usize) -> (Vec<f32>, [f32; 2], [u32; 4]) {
+pub(crate) fn depth_case(id: usize) -> (Vec<f32>, [f32; 2], [u32; 4]) {
     let depths = (0..512)
         .map(|pixel| {
             if id == 0 {
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cull_packet_rounding_preserves_order_and_native_padding_fields() {
+    fn cull_packet_rounding_preserves_order_and_padding_fields() {
         let identity = [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires artifacts/native-tlf-current-packets.json converted with the live probe"]
-    fn cull_packets_match_completed_original_frame() {
+    fn cull_packets_match_completed_frame() {
         let fixture =
             std::fs::read_to_string("artifacts/native-tlf-live-packet-fixture.txt").unwrap();
         let mut rows = fixture.lines().map(|line| {
@@ -341,13 +341,13 @@ mod tests {
             assert_eq!(
                 packet.as_slice(),
                 &row[28..],
-                "native frame light/padding index {i}"
+                "frame light/padding index {i}"
             );
         }
     }
 
     #[test]
-    fn cull_packet_copy_and_affine_transform_match_original_machine_code() {
+    fn cull_packet_copy_and_affine_transform_match_machine_code() {
         let mut checked = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn gathered_light_filter_preserves_native_mode_and_type_rules() {
+    fn gathered_light_filter_preserves_mode_and_type_rules() {
         assert!(includes_local_light(0, 1, 0, 1));
         assert!(includes_local_light(0, 2, 3, 1));
         assert!(!includes_local_light(0, 0, 0, 1));
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_light_buffers_match_native_initializer_and_capture() {
+    fn renderer_light_buffers_match_initializer_and_capture() {
         assert_eq!(LIGHT_BUFFER_CAPACITY * 48, 21504);
         assert_eq!(
             LIGHT_NODE_POOL_CAPACITY * std::mem::size_of::<u32>(),
@@ -418,9 +418,9 @@ mod tests {
     }
 
     #[test]
-    fn depth_reduction_matches_original_hlsl() {
+    fn depth_reduction_matches_hlsl() {
         for id in 0..64 {
-            let (depths, params, words) = original_depth_case(id);
+            let (depths, params, words) = depth_case(id);
             let result = reduce_depth_tile(&depths, params);
             // FXC/D3D11 div differs from scalar division by one ULP. For a
             // constant-depth tile that changes its zero-width bin location;
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn original_depth_mask_retains_sky_but_excludes_it_from_bins() {
+    fn depth_mask_retains_sky_but_excludes_it_from_bins() {
         let p = [-0.1, 0.00001];
         let tile = reduce_depth_tile(&[1.0, 0.0, 0.5, 0.25], p);
         assert_eq!(
@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn native_pc_light_links_and_iteration_limit() {
+    fn pc_light_links_and_iteration_limit() {
         for index in 0..512 {
             let node = PackedLightNode::new(END_OF_LIGHT_LIST, index);
             assert_eq!(node.light_index(), index);

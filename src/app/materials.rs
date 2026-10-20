@@ -17,20 +17,20 @@ pub(super) struct ProbeExtension {
     #[storage(119, read_only)]
     pub(super) vertex_probes: Handle<ShaderBuffer>,
     #[storage(120, read_only)]
-    pub(super) native_shadow: Handle<ShaderBuffer>,
+    pub(super) shadow: Handle<ShaderBuffer>,
     #[storage(126, read_only)]
-    pub(super) native_local_shadow: Handle<ShaderBuffer>,
+    pub(super) local_shadow: Handle<ShaderBuffer>,
     #[texture(127, dimension = "2d_array", sample_type = "depth")]
     #[sampler(128, sampler_type = "comparison")]
-    pub(super) native_local_shadow_map: Option<Handle<Image>>,
+    pub(super) local_shadow_map: Option<Handle<Image>>,
     #[texture(121, dimension = "2d_array", sample_type = "depth")]
     #[sampler(122, sampler_type = "comparison")]
-    pub(super) native_shadow_map: Option<Handle<Image>>,
+    pub(super) shadow_map: Option<Handle<Image>>,
     #[texture(123)]
-    pub(super) native_screen_map: Option<Handle<Image>>,
+    pub(super) screen_map: Option<Handle<Image>>,
     #[texture(124)]
     #[sampler(125)]
-    pub(super) native_cloud_map: Option<Handle<Image>>,
+    pub(super) cloud_map: Option<Handle<Image>>,
     #[uniform(101)]
     pub(super) surface: surface_gpu::SurfaceUniform,
     #[texture(102)]
@@ -192,18 +192,18 @@ pub(super) fn authored_basis_pipeline(
     Ok(())
 }
 
-pub(super) fn specialize_native_vertex_lighting(
+pub(super) fn specialize_vertex_lighting(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
     key: surface_gpu::SurfaceKey,
 ) {
-    let native_lighting = matches!(key.0[6], 1 | 2 | 6)
+    let lighting = matches!(key.0[6], 1 | 2 | 6)
         && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
         && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
         && descriptor.fragment.as_ref().is_some_and(|fragment| {
             fragment.shader == PROBE_SHADER_HANDLE || fragment.shader == DECAL_SHADER_HANDLE
         });
-    if native_lighting {
+    if lighting {
         descriptor
             .vertex
             .shader_defs
@@ -252,9 +252,9 @@ impl MaterialExtension for ProbeExtension {
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(fragment) = descriptor.fragment.as_mut() {
-            fragment.shader_defs.push("DH2_NATIVE_LOCAL_SHADOWS".into());
+            fragment.shader_defs.push("DH2_LOCAL_SHADOWS".into());
         }
-        specialize_native_vertex_lighting(descriptor, layout, key.bind_group_data);
+        specialize_vertex_lighting(descriptor, layout, key.bind_group_data);
         specialize_surface(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)
     }
@@ -276,20 +276,20 @@ pub(super) struct DecalExtension {
     #[storage(119, read_only)]
     pub(super) vertex_probes: Handle<ShaderBuffer>,
     #[storage(120, read_only)]
-    pub(super) native_shadow: Handle<ShaderBuffer>,
+    pub(super) shadow: Handle<ShaderBuffer>,
     #[storage(126, read_only)]
-    pub(super) native_local_shadow: Handle<ShaderBuffer>,
+    pub(super) local_shadow: Handle<ShaderBuffer>,
     #[texture(127, dimension = "2d_array", sample_type = "depth")]
     #[sampler(128, sampler_type = "comparison")]
-    pub(super) native_local_shadow_map: Option<Handle<Image>>,
+    pub(super) local_shadow_map: Option<Handle<Image>>,
     #[texture(121, dimension = "2d_array", sample_type = "depth")]
     #[sampler(122, sampler_type = "comparison")]
-    pub(super) native_shadow_map: Option<Handle<Image>>,
+    pub(super) shadow_map: Option<Handle<Image>>,
     #[texture(123)]
-    pub(super) native_screen_map: Option<Handle<Image>>,
+    pub(super) screen_map: Option<Handle<Image>>,
     #[texture(124)]
     #[sampler(125)]
-    pub(super) native_cloud_map: Option<Handle<Image>>,
+    pub(super) cloud_map: Option<Handle<Image>>,
     #[uniform(101)]
     pub(super) surface: surface_gpu::SurfaceUniform,
     #[texture(102)]
@@ -364,12 +364,12 @@ pub(super) struct DecalExtension {
     pub(super) cloud_back_density: Option<Handle<Image>>,
 }
 
-pub(super) trait NativeImageAccess {
+pub(super) trait ImageAccess {
     fn image_mut(&mut self, role: surface_gpu::ImageRole) -> &mut Option<Handle<Image>>;
 }
-macro_rules! native_image_access {
+macro_rules! image_access {
     ($ty:ty) => {
-        impl NativeImageAccess for $ty {
+        impl ImageAccess for $ty {
             fn image_mut(&mut self, role: surface_gpu::ImageRole) -> &mut Option<Handle<Image>> {
                 match role.0 {
                     0 => &mut self.diffuse0,
@@ -409,10 +409,10 @@ macro_rules! native_image_access {
         }
     };
 }
-native_image_access!(ProbeExtension);
-native_image_access!(DecalExtension);
+image_access!(ProbeExtension);
+image_access!(DecalExtension);
 
-pub(super) trait NativeShadowImageAccess {
+pub(super) trait ShadowImageAccess {
     fn sync_shadow_images(
         &mut self,
         target: &Option<Handle<Image>>,
@@ -421,9 +421,9 @@ pub(super) trait NativeShadowImageAccess {
         local: &Option<Handle<Image>>,
     );
 }
-macro_rules! native_shadow_image_access {
+macro_rules! shadow_image_access {
     ($ty:ty) => {
-        impl NativeShadowImageAccess for $ty {
+        impl ShadowImageAccess for $ty {
             fn sync_shadow_images(
                 &mut self,
                 target: &Option<Handle<Image>>,
@@ -431,24 +431,24 @@ macro_rules! native_shadow_image_access {
                 cloud: &Option<Handle<Image>>,
                 local: &Option<Handle<Image>>,
             ) {
-                if &self.native_shadow_map != target {
-                    self.native_shadow_map = target.clone();
+                if &self.shadow_map != target {
+                    self.shadow_map = target.clone();
                 }
-                if &self.native_screen_map != screen {
-                    self.native_screen_map = screen.clone();
+                if &self.screen_map != screen {
+                    self.screen_map = screen.clone();
                 }
-                if &self.native_cloud_map != cloud {
-                    self.native_cloud_map = cloud.clone();
+                if &self.cloud_map != cloud {
+                    self.cloud_map = cloud.clone();
                 }
-                if &self.native_local_shadow_map != local {
-                    self.native_local_shadow_map = local.clone();
+                if &self.local_shadow_map != local {
+                    self.local_shadow_map = local.clone();
                 }
             }
         }
     };
 }
-native_shadow_image_access!(ProbeExtension);
-native_shadow_image_access!(DecalExtension);
+shadow_image_access!(ProbeExtension);
+shadow_image_access!(DecalExtension);
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub(super) struct DecalKey {
@@ -482,9 +482,9 @@ impl MaterialExtension for DecalExtension {
     ) -> Result<(), SpecializedMeshPipelineError> {
         descriptor.vertex.shader_defs.push("DH2_DECAL".into());
         if let Some(fragment) = descriptor.fragment.as_mut() {
-            fragment.shader_defs.push("DH2_NATIVE_LOCAL_SHADOWS".into());
+            fragment.shader_defs.push("DH2_LOCAL_SHADOWS".into());
         }
-        specialize_native_vertex_lighting(descriptor, layout, key.bind_group_data.surface);
+        specialize_vertex_lighting(descriptor, layout, key.bind_group_data.surface);
         specialize_surface(descriptor, key.bind_group_data.surface);
         authored_basis_pipeline(descriptor, layout)
     }

@@ -4,7 +4,7 @@ use bevy::render::{render_resource::*, renderer::RenderQueue, RenderApp};
 
 #[test]
 #[ignore = "requires graphics adapter and original installed world-wind stream-output fixtures"]
-fn native_world_wind_matches_installed_vertex_shader() {
+fn world_wind_matches_installed_vertex_shader() {
     run_world_wind_fixture(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -16,7 +16,7 @@ fn native_world_wind_matches_installed_vertex_shader() {
 
 #[test]
 #[ignore = "requires graphics adapter and installed shadow-gather zero-wind stream-output fixture"]
-fn native_world_shadow_zero_wind_matches_installed_vertex_shader() {
+fn world_shadow_zero_wind_matches_installed_vertex_shader() {
     run_world_wind_fixture(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -28,7 +28,7 @@ fn native_world_shadow_zero_wind_matches_installed_vertex_shader() {
 
 #[test]
 #[ignore = "requires graphics adapter and installed 51-slot world VS stream-output fixtures"]
-fn native_world_fixed_wind_matches_installed_vertex_shader() {
+fn world_fixed_wind_matches_installed_vertex_shader() {
     run_world_wind_fixture(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -59,13 +59,13 @@ fn run_world_wind_fixture(fixture: &str, fixed: bool) {
     };
     let bytes = |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
     let vp = words(rows.next().unwrap(), "VP");
-    let native = words(rows.next().unwrap(), "PARAMS");
-    assert_eq!(native.len(), 36);
+    let game = words(rows.next().unwrap(), "PARAMS");
+    assert_eq!(game.len(), 36);
     let mut view = Vec::new();
     for row in (0..4).rev() {
         view.extend_from_slice(&vp[row * 4..row * 4 + 4]);
     }
-    view.extend(native);
+    view.extend(game);
     assert_eq!(view.len() * 4, 208);
     let matrices: Vec<_> = (0..*matrix_count)
         .flat_map(|_| words(rows.next().unwrap(), "MATRIX"))
@@ -81,7 +81,7 @@ fn run_world_wind_fixture(fixture: &str, fixed: bool) {
     for _ in 0..*count {
         let c = words(rows.next().unwrap(), "CASE");
         assert_eq!(c.len(), 14);
-        // Scene uses NATIVE_VEGETATION_POSITION: original game axes.
+        // Scene uses VEGETATION_POSITION: original game axes.
         vertices.extend([
             c[0],
             c[1],
@@ -123,12 +123,12 @@ fn run_world_wind_fixture(fixture: &str, fixed: bool) {
         })
     };
     let state = buffer(
-        "native world wind view/material/time/offsets",
+        "world wind view/material/time/offsets",
         &view,
         BufferUsages::UNIFORM,
     );
     let ids = buffer("original remapped IDs", &indices, BufferUsages::STORAGE);
-    let matrices = buffer("native model rows", &matrices, BufferUsages::STORAGE);
+    let matrices = buffer("model rows", &matrices, BufferUsages::STORAGE);
     let winds = buffer(
         "distinct previous/current wind records",
         &winds,

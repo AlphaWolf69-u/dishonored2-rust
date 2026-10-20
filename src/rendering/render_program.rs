@@ -399,7 +399,7 @@ impl SerializedParameterBlock {
             return Err("not an integer render parameter".into());
         }
         let word = self.numeric_words(name, [declared_default, 0, 0, 0], fallback)?[0];
-        Ok(native_integer_word(word, declaration_flags) as i32)
+        Ok(integer_word(word, declaration_flags) as i32)
     }
 
     /// FUN_140342ce0: the unsigned getter validates subtype 0x20 but still
@@ -417,13 +417,13 @@ impl SerializedParameterBlock {
             return Err("not an unsigned integer render parameter".into());
         }
         let word = self.numeric_words(name, [declared_default, 0, 0, 0], fallback)?[0];
-        Ok(native_integer_word(word, declaration_flags))
+        Ok(integer_word(word, declaration_flags))
     }
 }
 
 // Reuse the exact token/parameter conversion without making the standalone
 // entities/archive tools depend on the renderer's wire-format module.
-pub(crate) use crate::entities::native_integer_word;
+pub(crate) use crate::entities::integer_word;
 
 /// Full wire data in 1402beb30. Parsing is NOT registry/checksum validation or
 /// GPU bank publication. Render/annotation state and category bytes stay raw
@@ -507,7 +507,7 @@ impl RenderProgramDefinition {
     /// 1402beb30 reads these 0x24 bytes straight into the native state at +8;
     /// unlike surrounding serialized words, there is NO byte swap. The x64
     /// state factories therefore consume nine little-endian memory words.
-    pub fn native_render_state(&self) -> [u32; 9] {
+    pub fn render_state(&self) -> [u32; 9] {
         std::array::from_fn(|i| {
             u32::from_le_bytes(self.render_state[i * 4..i * 4 + 4].try_into().unwrap())
         })
@@ -604,7 +604,7 @@ pub fn shader_variant_key(parameters: &[(&[u8], i32)]) -> Result<Vec<u8>, String
         key.push(b'[');
         value
             .checked_abs()
-            .ok_or("native shader parameter decimal formatting overflows")?;
+            .ok_or("shader parameter decimal formatting overflows")?;
         key.extend_from_slice(value.to_string().as_bytes());
         key.push(b']');
     }
@@ -647,7 +647,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integer_parameter_uses_declared_fallback_and_last_override_in_native_order() {
+    fn integer_parameter_uses_declared_fallback_and_last_override_in_order() {
         let entry = |name: &[u8], value: i32| SerializedParameter {
             name: name.to_vec(),
             kind: RenderParameterKind::Option,
@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn integer_parameter_matches_original_owned_memory_cases() {
+    fn integer_parameter_matches_owned_memory_cases() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -799,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_parameter_getters_match_original_executable() {
+    fn numeric_parameter_getters_match_executable() {
         fn block(fields: &mut impl Iterator<Item = u32>, count: usize) -> SerializedParameterBlock {
             SerializedParameterBlock {
                 flags: 0,
@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_types_use_original_ascii_comparison_and_actual_type_not_name() {
+    fn declaration_types_use_ascii_comparison_and_actual_type_not_name() {
         let types = [
             ("Vec", 0),
             ("Uniform", 0),
@@ -1012,10 +1012,10 @@ mod tests {
             }]
         );
         assert_eq!(data.render_state, [0x96; 36]);
-        let mut native_state_fixture = data.clone();
-        native_state_fixture.render_state = std::array::from_fn(|i| i as u8);
+        let mut state_fixture = data.clone();
+        state_fixture.render_state = std::array::from_fn(|i| i as u8);
         assert_eq!(
-            native_state_fixture.native_render_state(),
+            state_fixture.render_state(),
             [
                 0x03020100, 0x07060504, 0x0b0a0908, 0x0f0e0d0c, 0x13121110, 0x17161514, 0x1b1a1918,
                 0x1f1e1d1c, 0x23222120
@@ -1192,9 +1192,9 @@ mod tests {
                 .unwrap();
             assert_eq!(hash.len(), 8);
             let hash = u32::from_str_radix(hash, 16).unwrap();
-            let native_path = shader_binary_path(RenderProgramPlatform::Pc, program, hash);
-            assert_eq!(native_path.to_ascii_lowercase(), path);
-            let binary = catalog.read(&native_path).unwrap().unwrap();
+            let path = shader_binary_path(RenderProgramPlatform::Pc, program, hash);
+            assert_eq!(path.to_ascii_lowercase(), path);
+            let binary = catalog.read(&path).unwrap().unwrap();
             assert_eq!(Some(binary.len()), catalog.resource_size(&path));
             assert!(!binary.is_empty());
             checked += 1;
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn variant_names_preserve_native_order_case_integer_and_c_string_rules() {
+    fn variant_names_preserve_order_case_integer_and_c_string_rules() {
         let params: &[(&[u8], i32)] = &[
             (b"isShadow", 1),
             (b"useSkinning\0ignored", 0),

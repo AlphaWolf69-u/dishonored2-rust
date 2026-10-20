@@ -453,7 +453,7 @@ fn normalize_body_quaternion(quaternion: [f32; 4]) -> [f32; 4] {
 
 #[cfg(not(target_arch = "x86_64"))]
 fn normalize_body_quaternion(_quaternion: [f32; 4]) -> [f32; 4] {
-    unimplemented!("Original DH2 body normalization requires x86-64 RSQRTPS")
+    unimplemented!("DH2 body normalization requires x86-64 RSQRTPS")
 }
 
 /// FUN_140aa0390: quaternion to all twelve matrix lanes, including padding.
@@ -494,7 +494,7 @@ pub fn quaternion_basis(quaternion: [f32; 4]) -> [[f32; 4]; 3] {
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn quaternion_basis(_quaternion: [f32; 4]) -> [[f32; 4]; 3] {
-    unimplemented!("Original DH2 basis conversion requires x86-64 SSE")
+    unimplemented!("DH2 basis conversion requires x86-64 SSE")
 }
 
 /// FUN_140aa0360: the original basis/quaternion/basis round trip before body creation.
@@ -1681,7 +1681,7 @@ impl Affine {
 
 /// FUN_140cc3ba0 writes the original per-body byte classifier output.
 /// The byte codes remain raw: their higher-level meaning is not established.
-pub fn classify_original_body_rows(
+pub fn classify_body_rows(
     body_ids: &[u32],
     rows: &[u8],
     output: &mut [u8],
@@ -1726,7 +1726,7 @@ pub fn classify_original_body_rows(
 mod tests {
     use super::*;
     #[test]
-    fn original_body_row_classifier_preserves_branch_order_and_id_mask() {
+    fn body_row_classifier_preserves_branch_order_and_id_mask() {
         const STRIDE: usize = 0xb0;
         fn set_row(rows: &mut [u8], id: usize, flags: u32, row_byte: u8) {
             let start = id * STRIDE;
@@ -1743,17 +1743,17 @@ mod tests {
 
         let ids = [0, 1, 2, 3, 4, 5, 0x0100_0001];
         let mut output = [0xaa; 8];
-        classify_original_body_rows(&ids, &rows, &mut output).unwrap();
+        classify_body_rows(&ids, &rows, &mut output).unwrap();
         assert_eq!(output, [1, 0, 2, 4, 0, 3, 0, 0xaa]);
     }
 
     #[test]
-    fn original_body_row_classifier_checks_accessible_input_and_preserves_empty_call() {
+    fn body_row_classifier_checks_accessible_input_and_preserves_empty_call() {
         let mut output = [0x77];
-        classify_original_body_rows(&[], &[], &mut output).unwrap();
+        classify_body_rows(&[], &[], &mut output).unwrap();
         assert_eq!(output, [0x77]);
-        assert!(classify_original_body_rows(&[0], &[0; 0x49], &mut []).is_err());
-        assert!(classify_original_body_rows(&[1], &[0; 0xb0], &mut [0]).is_err());
+        assert!(classify_body_rows(&[0], &[0; 0x49], &mut []).is_err());
+        assert!(classify_body_rows(&[1], &[0; 0xb0], &mut [0]).is_err());
     }
 
     #[test]
@@ -1762,7 +1762,7 @@ mod tests {
     }
 
     #[test]
-    fn physics_shape_kinds_match_original_suffix_order() {
+    fn physics_shape_kinds_match_suffix_order() {
         assert_eq!(
             replace_shape_extension("folder.with.dot/fence.blueprint", "hkt"),
             "folder.with.dot/fence.hkt"
@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn physics_shape_comparison_and_kinds_match_native() {
+    fn physics_shape_comparison_and_kinds_match() {
         let cases = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/physics_shape_kind_cases.txt"
@@ -1845,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn physics_shape_recipe_matches_original_non_hd_builder() {
+    fn physics_shape_recipe_matches_non_hd_builder() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1873,7 +1873,7 @@ mod tests {
                     false
                 ),
                 Some(String::from_utf8(expected).unwrap()),
-                "native ordinary physics recipe {count}"
+                "ordinary physics recipe {count}"
             );
             count += 1;
         }
@@ -1887,7 +1887,7 @@ mod tests {
         assert_eq!(physics_shape_key("a", 0, [1.0; 3], f32::NAN, false), None);
     }
     #[test]
-    fn physics_hd_recipe_matches_original_builder() {
+    fn physics_hd_recipe_matches_builder() {
         let decode = |text: &str| -> String {
             if text == "-" {
                 return String::new();
@@ -1977,7 +1977,7 @@ mod tests {
         }
     }
     #[test]
-    fn rigid_body_basis_matches_native_conversions() {
+    fn rigid_body_basis_matches_conversions() {
         let mut matrices = 0;
         let mut quaternions = 0;
         let same = |actual: &[f32], expected: &[u32], line: &str| {
@@ -2048,7 +2048,7 @@ mod tests {
         assert!(primitive_has_surface(&[6, 6, 7, 8]));
     }
     #[test]
-    fn compressed_primitive_header_dispatch_matches_original() {
+    fn compressed_primitive_header_dispatch_matches() {
         assert_eq!(
             compressed_primitive_kind(&[0xde, 0xad, 0xde, 0xad]),
             CompressedPrimitiveKind::Empty
@@ -2099,7 +2099,7 @@ mod tests {
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 expected,
-                "native compressed bounds case{cases}"
+                "compressed bounds case{cases}"
             );
             cases += 1;
         }

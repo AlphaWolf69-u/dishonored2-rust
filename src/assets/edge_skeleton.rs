@@ -229,7 +229,7 @@ fn joint_local_matrix(pose: &JointRestPose) -> [[f32; 4]; 3] {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn native_scale_reciprocal(value: f32) -> f32 {
+fn scale_reciprocal(value: f32) -> f32 {
     use std::arch::x86_64::*;
     unsafe {
         let input = _mm_set_ss(value);
@@ -245,13 +245,13 @@ fn native_scale_reciprocal(value: f32) -> f32 {
 /// records at a time. Parent bit14 selects the supplied root transform;
 /// bit15 compensates its LOCAL scale in the rotational columns only.
 #[cfg(target_arch = "x86_64")]
-pub fn native_pose_matrices(
+pub fn pose_matrices(
     local: &[JointRestPose],
     hierarchy: &[[u16; 2]],
     root: &JointRestPose,
 ) -> Result<Vec<[[f32; 4]; 3]>, String> {
     if hierarchy.len() % 4 != 0 {
-        return Err("native Edge hierarchy lacks four-lane padding".into());
+        return Err("Edge hierarchy lacks four-lane padding".into());
     }
     let mut result = vec![[[0.0; 4]; 3]; local.len()];
     let mut ready = vec![false; local.len()];
@@ -262,20 +262,20 @@ pub fn native_pose_matrices(
             let joint = usize::from(joint);
             let pose = local
                 .get(joint)
-                .ok_or("native Edge hierarchy child is out of bounds")?;
+                .ok_or("Edge hierarchy child is out of bounds")?;
             let (parent_matrix, parent_scale) = if parent & 0x4000 != 0 {
                 (&root_matrix, root.scale)
             } else {
                 let parent = usize::from(parent & 0x3fff);
                 if !ready.get(parent).copied().unwrap_or(false) {
                     return Err(
-                        "native Edge hierarchy parent was not produced in a preceding group".into(),
+                        "Edge hierarchy parent was not produced in a preceding group".into(),
                     );
                 }
                 (&result[parent], local[parent].scale)
             };
             let reciprocal = if parent & 0x8000 != 0 {
-                parent_scale.map(native_scale_reciprocal)
+                parent_scale.map(scale_reciprocal)
             } else {
                 [1.0; 3]
             };
@@ -301,24 +301,24 @@ pub fn native_pose_matrices(
         }
     }
     if ready.iter().any(|ready| !*ready) {
-        return Err("native Edge hierarchy did not produce every joint".into());
+        return Err("Edge hierarchy did not produce every joint".into());
     }
     Ok(result)
 }
 
 /// 09b980 copies a native column-major 4x4 into the row-major 3x4 skin ABI.
-pub fn native_joint_matrix(columns: [[f32; 4]; 4]) -> [[f32; 4]; 3] {
+pub fn joint_matrix(columns: [[f32; 4]; 4]) -> [[f32; 4]; 3] {
     std::array::from_fn(|row| std::array::from_fn(|col| columns[col][row]))
 }
 
 /// 12e1d00, called by 24c340: pairwise current-joint * inverse-bind.
 /// Preserve Y*row1 + X*row0 + Z*row2, followed by the implicit affine row.
-pub fn native_skin_palette(
+pub fn skin_palette(
     current: &[[[f32; 4]; 3]],
     inverse: &[[[f32; 4]; 3]],
 ) -> Result<Vec<[[f32; 4]; 3]>, String> {
     if current.len() != inverse.len() {
-        return Err("native skin palette banks have different lengths".into());
+        return Err("skin palette banks have different lengths".into());
     }
     Ok(current
         .iter()
@@ -337,7 +337,7 @@ pub fn native_skin_palette(
 
 /// Installed skin VS order: start with weightY, MAD weightX, then Z/W and
 /// the optional second quartet. Offset is in joints, before multiplication3.
-pub fn native_vertex_skin_matrix(
+pub fn vertex_skin_matrix(
     palette: &[[[f32; 4]; 3]],
     offset: u32,
     indices: [u8; 8],
@@ -345,18 +345,18 @@ pub fn native_vertex_skin_matrix(
     influences: u8,
 ) -> Result<[[f32; 4]; 3], String> {
     if !matches!(influences, 4 | 8) {
-        return Err("native skin input must have four or eight weights".into());
+        return Err("skin input must have four or eight weights".into());
     }
     let mut matrices = [[[0.0; 4]; 3]; 8];
     for i in 0..usize::from(influences) {
         let joint = offset
             .checked_add(u32::from(indices[i]))
-            .ok_or("native skin joint index overflow")? as usize;
+            .ok_or("skin joint index overflow")? as usize;
         if let Some(matrix) = palette.get(joint) {
             matrices[i] = *matrix;
         } else if weights[i] != 0 {
             return Err(format!(
-                "native skin joint {joint} exceeds {} actual palette entries",
+                "skin joint {joint} exceeds {} actual palette entries",
                 palette.len()
             ));
         }
@@ -378,7 +378,7 @@ pub fn native_vertex_skin_matrix(
 mod tests {
     use super::*;
     #[test]
-    fn grouped_pose_matches_original_scale_compensation_and_root() {
+    fn grouped_pose_matches_scale_compensation_and_root() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/edge_pose_cases.txt"
@@ -400,7 +400,7 @@ mod tests {
             let hierarchy = (0..8)
                 .map(|i| [words[108 + i] as u16, (words[108 + i] >> 16) as u16])
                 .collect::<Vec<_>>();
-            let actual = native_pose_matrices(&local, &hierarchy, &root).unwrap();
+            let actual = pose_matrices(&local, &hierarchy, &root).unwrap();
             for joint in 0..8 {
                 for i in 0..12 {
                     assert_eq!(
@@ -413,7 +413,7 @@ mod tests {
         }
     }
     #[test]
-    fn native_joint_and_palette_match_original_executable() {
+    fn joint_and_palette_match_executable() {
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/skin_palette_cases.txt"
@@ -429,14 +429,14 @@ mod tests {
             let b = std::array::from_fn(|r| {
                 std::array::from_fn(|c| f32::from_bits(words[12 + r * 4 + c]))
             });
-            let actual = native_skin_palette(&[a], &[b]).unwrap()[0];
+            let actual = skin_palette(&[a], &[b]).unwrap()[0];
             for i in 0..12 {
                 assert_eq!(actual[i / 4][i % 4].to_bits(), words[24 + i]);
             }
             let columns = std::array::from_fn(|r| {
                 std::array::from_fn(|c| f32::from_bits(words[36 + r * 4 + c]))
             });
-            let actual = native_joint_matrix(columns);
+            let actual = joint_matrix(columns);
             for i in 0..12 {
                 assert_eq!(actual[i / 4][i % 4].to_bits(), words[52 + i]);
             }

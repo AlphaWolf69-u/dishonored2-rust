@@ -2,8 +2,8 @@
 use super::{
     archive, camera_projection, entities, game_settings, physworld, render_light, render_model,
     render_shadow, shadow_pass, tome, world_mesh, Aabb, FocusTarget, HashMap, Indices,
-    NativeViewSettings, PlacedModelQueryGroup, PrimitiveTopology, Projection, RenderAssetUsages,
-    DH2_BITANGENT, ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
+    ViewSettings, PlacedModelQueryGroup, PrimitiveTopology, Projection, RenderAssetUsages,
+    DH2_BITANGENT, DEFAULT_HORIZONTAL_FOV_DEGREES,
 };
 use bevy::prelude::*;
 
@@ -110,19 +110,19 @@ pub(super) fn f8_reference_fov(report: &str) -> Option<f32> {
     let value = report
         .lines()
         .find_map(|line| line.strip_prefix("Reference horizontal FOV degrees:"))
-        .map_or(Some(ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES), |text| {
+        .map_or(Some(DEFAULT_HORIZONTAL_FOV_DEGREES), |text| {
             text.trim().parse::<f32>().ok()
         })?;
     (value > 0.0).then_some(())?;
-    tome::original_render_vertical_fov_radians(value)
+    tome::render_vertical_fov_radians(value)
         .ok()
         .map(|_| value)
 }
 
 pub(super) fn reference_fov_from_projection(projection: &Projection) -> Result<f32, String> {
     if let Projection::Custom(custom) = projection {
-        if let Some(native) = custom.get::<camera_projection::NativeGameProjection>() {
-            return Ok(native.reference_horizontal_degrees);
+        if let Some(game) = custom.get::<camera_projection::GameProjection>() {
+            return Ok(game.reference_horizontal_degrees);
         }
     }
     let Projection::Perspective(perspective) = projection else {
@@ -136,16 +136,16 @@ pub(super) fn reference_fov_from_projection(projection: &Projection) -> Result<f
     Ok((2.0 * ((vertical * 0.5).tan() / 0.5625).atan()).to_degrees())
 }
 
-pub(super) fn native_view_distance_scale(
+pub(super) fn view_distance_scale(
     projection: &Projection,
     viewport: UVec2,
-    settings: Option<&NativeViewSettings>,
+    settings: Option<&ViewSettings>,
 ) -> Result<f32, String> {
     let settings = match settings {
         Some(settings) => settings.0.clone()?,
         None => game_settings::view_settings("")?,
     };
-    let horizontal = tome::original_render_fov_radians(
+    let horizontal = tome::render_fov_radians(
         reference_fov_from_projection(projection)?,
         viewport.x,
         viewport.y,
@@ -159,11 +159,11 @@ pub(super) fn native_view_distance_scale(
     ))
 }
 
-pub(super) fn original_light_preset(
+pub(super) fn light_preset(
     light: &entities::PlacedLight,
     linear_color: [f32; 3],
 ) -> Option<render_light::PresetOutput> {
-    let (cutoff, falloff) = original_light_distance(light.distance_cutoff, light.distance_falloff)?;
+    let (cutoff, falloff) = light_distance(light.distance_cutoff, light.distance_falloff)?;
     let preset = render_light::preset_index(light.preset.as_deref())?;
     let reflector = if preset == 11 {
         render_light::reflector_index(light.reflector_preset.as_deref())?
@@ -251,7 +251,7 @@ pub(super) fn authored_light_cosines(cutoff_degrees: f32, falloff_degrees: f32) 
     (cutoff, falloff)
 }
 
-pub(super) fn original_light_distance(cutoff: f32, falloff: f32) -> Option<(f32, f32)> {
+pub(super) fn light_distance(cutoff: f32, falloff: f32) -> Option<(f32, f32)> {
     if !cutoff.is_finite() || !falloff.is_finite() {
         return None;
     }
@@ -274,7 +274,7 @@ pub(super) fn preserved_half_point_angular_scale(cutoff_degrees: f32, falloff_de
 // FUN_140359990 builds the light projection; FUN_140232bc0 stores its inverse
 // at +0x130. FUN_14031bcc0 multiplies it by camera clip-from-world and tests the
 // transformed [0,1]^3 light volume through FUN_140109dd0 / FUN_14010a0d0.
-pub(super) fn original_local_light_clip_to_world(
+pub(super) fn local_light_clip_to_world(
     position: Vec3,
     rotation: [[f32; 3]; 3],
     kind: entities::LightType,
@@ -285,12 +285,12 @@ pub(super) fn original_local_light_clip_to_world(
         return None;
     }
 
-    let native_kind = if kind == entities::LightType::Spot {
+    let kind = if kind == entities::LightType::Spot {
         2
     } else {
         0
     };
-    let cosine = if native_kind == 2 {
+    let cosine = if kind == 2 {
         cutoff_cosine?
     } else {
         0.0
@@ -298,20 +298,20 @@ pub(super) fn original_local_light_clip_to_world(
     let (_, inverse) = render_shadow::local_light_volume_projection(
         view_to_game(position),
         rotation,
-        native_kind,
+        kind,
         range,
         cosine,
     )
     .ok()?;
-    let native = Mat4::from_cols_array_2d(&std::array::from_fn(|c| {
+    let game = Mat4::from_cols_array_2d(&std::array::from_fn(|c| {
         std::array::from_fn(|r| inverse[r][c])
     }));
     let game_to_host = Mat4::from_cols(Vec4::X, Vec4::new(0.0, 0.0, -1.0, 0.0), Vec4::Y, Vec4::W);
-    let clip_to_world = game_to_host * native;
+    let clip_to_world = game_to_host * game;
     clip_to_world.is_finite().then_some(clip_to_world)
 }
 
-pub(super) fn original_light_volume_intersects_camera(
+pub(super) fn light_volume_intersects_camera(
     clip_from_world: Mat4,
     clip_to_world: Mat4,
 ) -> Option<bool> {
@@ -677,7 +677,7 @@ pub(super) fn static_model_collision(
     (triangles, owners, matched, failed)
 }
 
-pub(super) fn native_render_indices(indices: &[u16]) -> Indices {
+pub(super) fn render_indices(indices: &[u16]) -> Indices {
     // FUN_1402c53e0 uses clockwise fronts (D3D FrontCounterClockwise=0).
     // Imported DH2 triangles are CW; Bevy's raster fronts are CCW. Convert
     // render indices once, preserving native normals and collision indices.
@@ -727,7 +727,7 @@ pub(super) fn mesh_from_points(points: &[Vec3], uvs: &[[f32; 2]], indices: &[u16
             .collect::<Vec<_>>(),
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
-    .with_inserted_indices(native_render_indices(indices))
+    .with_inserted_indices(render_indices(indices))
 }
 
 pub(super) fn mean_game_position(points: &[Vec3]) -> [f32; 3] {
@@ -778,7 +778,7 @@ pub(super) fn authored_mesh<const N: usize>(
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_attribute(DH2_BITANGENT, bitangents)
-    .with_inserted_indices(native_render_indices(indices));
+    .with_inserted_indices(render_indices(indices));
     if N == 16 {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
@@ -811,46 +811,46 @@ pub(super) fn source_mesh<const N: usize>(
 /// include axis conversion, placement and shear, and cannot supply those inputs.
 /// These additional attributes are uploaded only for actual vegetation programs;
 /// the forward mesh and its winding/UVs/basis remain unchanged.
-pub(super) fn retain_native_world_shadow_channels<const N: usize>(
+pub(super) fn retain_world_shadow_channels<const N: usize>(
     mesh: &mut Mesh,
     positions: &[[f32; 3]],
     packed: &[[u8; N]],
 ) -> Result<usize, String> {
     if N != 12 && N != 16 {
-        return Err(format!("unsupported native world channel stride {N}"));
+        return Err(format!("unsupported world channel stride {N}"));
     }
     if positions.len() != packed.len() || mesh.count_vertices() != positions.len() {
-        return Err("native world source/forward vertex counts disagree".into());
+        return Err("world source/forward vertex counts disagree".into());
     }
     let normals: Vec<[f32; 2]> = packed
         .iter()
         .map(|p| [p[4], p[5]].map(|b| ((b as i8 as f32) / 127.0).max(-1.0)))
         .collect();
-    mesh.insert_attribute(shadow_pass::NATIVE_VEGETATION_POSITION, positions.to_vec());
-    mesh.insert_attribute(shadow_pass::NATIVE_VEGETATION_NORMAL, normals);
+    mesh.insert_attribute(shadow_pass::VEGETATION_POSITION, positions.to_vec());
+    mesh.insert_attribute(shadow_pass::VEGETATION_NORMAL, normals);
     if N == 16 {
         let colors: Vec<[f32; 3]> = packed
             .iter()
             .map(|p| [p[12], p[13], p[14]].map(|b| b as f32 / 255.0))
             .collect();
-        mesh.insert_attribute(shadow_pass::NATIVE_VEGETATION_COLOR, colors);
+        mesh.insert_attribute(shadow_pass::VEGETATION_COLOR, colors);
     } else {
-        mesh.remove_attribute(shadow_pass::NATIVE_VEGETATION_COLOR);
+        mesh.remove_attribute(shadow_pass::VEGETATION_COLOR);
     }
     Ok(positions.len())
 }
 
-pub(super) fn retain_native_vegetation_channels<const N: usize>(
+pub(super) fn retain_vegetation_channels<const N: usize>(
     mesh: &mut Mesh,
     positions: &[[f32; 3]],
     packed: &[[u8; N]],
 ) -> Result<(), String> {
     if N != 16 {
         return Err(format!(
-            "native vegetation requires authored COLOR; {N}-byte channels have no COLOR"
+            "vegetation requires authored COLOR; {N}-byte channels have no COLOR"
         ));
     }
-    retain_native_world_shadow_channels(mesh, positions, packed).map(|_| ())
+    retain_world_shadow_channels(mesh, positions, packed).map(|_| ())
 }
 
 pub(super) fn needs_exact_world_mesh(

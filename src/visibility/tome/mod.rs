@@ -153,7 +153,7 @@ pub enum OrdinarySpatialQueryVolume {
 /// a query against the global Tome bounds. The four-corner form is produced
 /// by FUN_140a774a0 for the original corner-volume mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OriginalSpatialQueryVolume {
+pub enum SpatialQueryVolume {
     Bounds([[f32; 3]; 2]),
     FourCorners([[f32; 3]; 4]),
     Point([f32; 3]),
@@ -164,15 +164,15 @@ pub enum OriginalSpatialQueryVolume {
 /// accepts when all four input corners lie in the root; point mode tests the
 /// camera point inclusively. This is only the initializer's root gate, not
 /// the later stateful global-node traversal.
-pub fn original_query_accepts_tome_root(
+pub fn query_accepts_tome_root(
     tree: &SpatialTree,
-    volume: OriginalSpatialQueryVolume,
+    volume: SpatialQueryVolume,
 ) -> Result<bool, String> {
     let root = tree
         .bounds(0)
         .ok_or("Tome spatial tree has no root bounds")?;
     match volume {
-        OriginalSpatialQueryVolume::Bounds(query) => {
+        SpatialQueryVolume::Bounds(query) => {
             if query.iter().flatten().any(|value| !value.is_finite())
                 || (0..3).any(|axis| query[0][axis] > query[1][axis])
             {
@@ -181,7 +181,7 @@ pub fn original_query_accepts_tome_root(
             Ok((0..3)
                 .all(|axis| query[0][axis] <= root[0][axis] && root[1][axis] <= query[1][axis]))
         }
-        OriginalSpatialQueryVolume::FourCorners(corners) => {
+        SpatialQueryVolume::FourCorners(corners) => {
             if corners.iter().flatten().any(|value| !value.is_finite()) {
                 return Err("invalid original Tome query corners".into());
             }
@@ -189,7 +189,7 @@ pub fn original_query_accepts_tome_root(
                 (0..3).all(|axis| root[0][axis] <= corner[axis] && corner[axis] <= root[1][axis])
             }))
         }
-        OriginalSpatialQueryVolume::Point(point) => {
+        SpatialQueryVolume::Point(point) => {
             if point.iter().any(|value| !value.is_finite()) {
                 return Err("invalid original Tome query point".into());
             }
@@ -301,7 +301,7 @@ impl SpatialQueryBranchStack {
     /// Seed the original global split walk from the parsed Tome root record.
     /// Query-wide state arrays and the outer point/frustum tests are still
     /// initialized by their own FUN_140a80a50 stages.
-    pub fn from_original_root(tree: &SpatialTree) -> Result<Self, String> {
+    pub fn from_root(tree: &SpatialTree) -> Result<Self, String> {
         Ok(Self::new(tree.initial_query_branch_entry()?))
     }
 
@@ -629,16 +629,16 @@ impl DirectTomeQueryData {
 }
 
 /// FUN_140a82710 limits each candidate-processing batch to 0x20 entries.
-pub const ORIGINAL_OBJECT_QUERY_BATCH_SIZE: usize = 32;
+pub const OBJECT_QUERY_BATCH_SIZE: usize = 32;
 
 /// Query-context capacities passed by FUN_140a73820 to FUN_140a81500.
 /// FUN_140a81e20 allocates one 16-bit state per cell-state slot; FUN_140a85090
 /// uses the node count for its 0x18-byte cell work-node pool.
-pub const ORIGINAL_QUERY_WORK_NODE_COUNT: usize = 0x400;
-pub const ORIGINAL_QUERY_CELL_STATE_COUNT: usize = 0x1000;
+pub const QUERY_WORK_NODE_COUNT: usize = 0x400;
+pub const QUERY_CELL_STATE_COUNT: usize = 0x1000;
 /// FUN_140a85af0 clears 0xffe bytes at query +0xc80 before its per-record
 /// point-cell lookup, which is 0x7ff local u16 cell-state entries.
-pub const ORIGINAL_RECORD_CELL_STATE_COUNT: usize = 0x7ff;
+pub const RECORD_CELL_STATE_COUNT: usize = 0x7ff;
 
 fn word(bytes: &[u8], at: usize) -> Result<u32, String> {
     let data = bytes
@@ -782,7 +782,7 @@ pub fn object_bounds(bytes: &[u8], index: u32) -> Result<[[f32; 3]; 2], String> 
 /// FUN_140a81500's null distance descriptor selects 1.0, squared and splatted
 /// at query context +0x160. The Rust ordinary null-input path uses this value;
 /// renderer-supplied distance descriptors/overrides remain unsupported.
-pub const ORIGINAL_DEFAULT_OBJECT_DISTANCE_SCALE_SQUARED: f32 = 1.0;
+pub const DEFAULT_OBJECT_DISTANCE_SCALE_SQUARED: f32 = 1.0;
 
 /// FUN_140a81500 binds the optional header +0x48 distance table. Each object
 /// has a 32-byte record: lower XYZ / squared near, upper XYZ / squared far.
@@ -1519,12 +1519,12 @@ pub fn query_plane_geometry_from_rows(
 /// The three 22-plane regions end at 0x1e0/0x340/0x4a0 respectively. A larger
 /// slice cannot represent this original layout and is rejected before writes.
 /// Executable fixture: tests/fixtures/plane_initialization_cases.txt.
-pub fn initialize_native_plane_query(
+pub fn initialize_plane_query(
     context: &mut [u8; 0x590],
     planes: &[[f32; 4]],
 ) -> Result<(), String> {
     if planes.len() > 22 {
-        return Err("native plane-query context supports at most 22 planes".into());
+        return Err("plane-query context supports at most 22 planes".into());
     }
     for (offset, value) in [(0x580, 0u32), (0x584, 1), (0x4ac, planes.len() as u32)] {
         context[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -1662,18 +1662,18 @@ pub fn query_planes_contain_aabb(
 /// verified receiver state; it does not construct the native receiver volume
 /// or perform FUN_140a707e0's extrusion/distance setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeReceiverBoundsClass {
+pub enum ReceiverBoundsClass {
     Outside,
     Intersecting,
     Contained,
 }
 
-pub fn classify_native_receiver_bounds(
+pub fn classify_receiver_bounds(
     receiver_bounds: [[f32; 4]; 2],
     object_bounds: [[f32; 4]; 2],
     planes: &[[f32; 4]],
     active: &[usize],
-) -> Result<NativeReceiverBoundsClass, String> {
+) -> Result<ReceiverBoundsClass, String> {
     if receiver_bounds
         .iter()
         .flatten()
@@ -1684,15 +1684,15 @@ pub fn classify_native_receiver_bounds(
                 || object_bounds[0][axis] > object_bounds[1][axis]
         })
     {
-        return Err("invalid native receiver/object bounds".into());
+        return Err("invalid receiver/object bounds".into());
     }
     if !query_bounds_accepts_aabb(receiver_bounds, object_bounds, planes, active)? {
-        return Ok(NativeReceiverBoundsClass::Outside);
+        return Ok(ReceiverBoundsClass::Outside);
     }
     if query_planes_contain_aabb(planes, object_bounds, active)? {
-        Ok(NativeReceiverBoundsClass::Contained)
+        Ok(ReceiverBoundsClass::Contained)
     } else {
-        Ok(NativeReceiverBoundsClass::Intersecting)
+        Ok(ReceiverBoundsClass::Intersecting)
     }
 }
 
@@ -1701,7 +1701,7 @@ pub fn classify_native_receiver_bounds(
 /// A bounded descriptor or node+0x48 records must not be silently treated as
 /// an AABB-only query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeShadowDistancePath {
+pub enum ShadowDistancePath {
     /// Caller verified param_4 is null/has no positive +0x0c radius and every
     /// traversed node has a zero +0x48 distance-record offset.
     UnboundedNoAuxiliaryRecords,
@@ -1712,7 +1712,7 @@ pub enum NativeShadowDistancePath {
 /// Parent/child IDs consumed directly as byte offsets into FUN_140330c10's
 /// per-receiver caster mask. Keep these in the original traversal order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeShadowCasterSuppression {
+pub struct ShadowCasterSuppression {
     pub parent_id: u32,
     pub suppressed_child_id: u32,
 }
@@ -1724,11 +1724,11 @@ pub struct NativeShadowCasterSuppression {
 /// camera visibility output. It does not build FUN_140330c10's
 /// +0x1840/+0x1850 instance bounds or apply native per-node candidate filters.
 #[derive(Debug, Clone, Copy)]
-pub struct NativeShadowCasterAabbQueryInput<'a> {
-    pub receivers: &'a [shadow_caster::VerifiedShadowReceiverState<'a>],
+pub struct ShadowCasterAabbQueryInput<'a> {
+    pub receivers: &'a [shadow_caster::ShadowReceiverState<'a>],
     pub caster_enabled: &'a [bool],
-    pub parent_suppression: &'a [NativeShadowCasterSuppression],
-    pub distance_path: NativeShadowDistancePath,
+    pub parent_suppression: &'a [ShadowCasterSuppression],
+    pub distance_path: ShadowDistancePath,
 }
 
 /// Reusable full-Tome AABB candidate query. Object AABBs and authored IDs are
@@ -1739,14 +1739,14 @@ pub struct NativeShadowCasterAabbQueryInput<'a> {
 /// implements the bounded/per-node distance or receiver-depth branches, so
 /// neither is yet the complete gatherCaster result.
 #[derive(Debug)]
-pub struct NativeShadowCasterAabbQueryScratch {
+pub struct ShadowCasterAabbQueryScratch {
     object_count: usize,
     selected_by_receiver: Vec<Vec<u32>>,
     output_by_receiver: Vec<Vec<u32>>,
     active_ids: HashSet<u32>,
 }
 
-impl NativeShadowCasterAabbQueryScratch {
+impl ShadowCasterAabbQueryScratch {
     pub fn new(
         tome: &shadow_caster::ShadowCasterTome,
         receiver_count: usize,
@@ -1788,7 +1788,7 @@ impl NativeShadowCasterAabbQueryScratch {
     pub fn query_candidates<'a>(
         &'a mut self,
         tome: &shadow_caster::ShadowCasterTome,
-        input: NativeShadowCasterAabbQueryInput<'_>,
+        input: ShadowCasterAabbQueryInput<'_>,
     ) -> Result<&'a [Vec<u32>], String> {
         self.query_candidates_filtered(tome, input, |_| Ok(true))
     }
@@ -1805,7 +1805,7 @@ impl NativeShadowCasterAabbQueryScratch {
         tome: &shadow_caster::ShadowCasterTome,
         bytes: &[u8],
         receiver_direction: [f32; 3],
-        input: NativeShadowCasterAabbQueryInput<'_>,
+        input: ShadowCasterAabbQueryInput<'_>,
     ) -> Result<&'a [Vec<u32>], String> {
         let direction = object_count(bytes).and_then(|count| {
             if count != self.object_count {
@@ -1813,7 +1813,7 @@ impl NativeShadowCasterAabbQueryScratch {
                     "shadow direction tables belong to a different Tome object domain".into(),
                 );
             }
-            shadow_caster::NativeCasterDirection::from_receiver_direction(receiver_direction)
+            shadow_caster::CasterDirection::from_receiver_direction(receiver_direction)
         });
         let direction = match direction {
             Ok(direction) => direction,
@@ -1838,13 +1838,13 @@ impl NativeShadowCasterAabbQueryScratch {
     fn query_candidates_filtered<'a>(
         &'a mut self,
         tome: &shadow_caster::ShadowCasterTome,
-        input: NativeShadowCasterAabbQueryInput<'_>,
+        input: ShadowCasterAabbQueryInput<'_>,
         mut direction_allows: impl FnMut(u32) -> Result<bool, String>,
     ) -> Result<&'a [Vec<u32>], String> {
         self.reset_output();
 
-        if input.distance_path != NativeShadowDistancePath::UnboundedNoAuxiliaryRecords {
-            return Err("unsupported native shadow distance branch".into());
+        if input.distance_path != ShadowDistancePath::UnboundedNoAuxiliaryRecords {
+            return Err("unsupported shadow distance branch".into());
         }
         if tome.object_count() != self.object_count {
             return Err("shadow caster scratch belongs to a different Tome object domain".into());
@@ -1863,14 +1863,14 @@ impl NativeShadowCasterAabbQueryScratch {
                 .any(|value| !value.is_finite())
                 || (0..3).any(|axis| receiver.bounds[0][axis] > receiver.bounds[1][axis])
             {
-                return Err("invalid native shadow receiver bounds".into());
+                return Err("invalid shadow receiver bounds".into());
             }
             if receiver
                 .active_planes
                 .iter()
                 .any(|&index| index >= receiver.planes.len())
             {
-                return Err("invalid native shadow receiver plane index".into());
+                return Err("invalid shadow receiver plane index".into());
             }
         }
 
@@ -1911,25 +1911,25 @@ impl NativeShadowCasterAabbQueryScratch {
                         1.0,
                     ],
                 ];
-                let class = classify_native_receiver_bounds(
+                let class = classify_receiver_bounds(
                     receiver_bounds,
                     object_bounds,
                     receiver.planes,
                     receiver.active_planes,
                 )?;
-                if class != NativeReceiverBoundsClass::Outside && !direction_checked {
+                if class != ReceiverBoundsClass::Outside && !direction_checked {
                     if !direction_allows(object_index as u32)? {
                         break;
                     }
                     direction_checked = true;
                 }
                 match class {
-                    NativeReceiverBoundsClass::Outside => continue,
-                    NativeReceiverBoundsClass::Intersecting => {
+                    ReceiverBoundsClass::Outside => continue,
+                    ReceiverBoundsClass::Intersecting => {
                         self.selected_by_receiver[receiver_index][object_index / 32] |=
                             1 << (object_index % 32);
                     }
-                    NativeReceiverBoundsClass::Contained => {
+                    ReceiverBoundsClass::Contained => {
                         self.selected_by_receiver[receiver_index][object_index / 32] |=
                             1 << (object_index % 32);
                         break;
@@ -2736,8 +2736,8 @@ impl CellWorkNodePool {
 
     /// FUN_140a85090 reserves one exterior node through 140a84e90 before
     /// seeding any cell, even when no output depth descriptor is requested.
-    pub fn new_for_original_query() -> Result<Self, String> {
-        let mut pool = Self::new(ORIGINAL_QUERY_WORK_NODE_COUNT)?;
+    pub fn new_for_query() -> Result<Self, String> {
+        let mut pool = Self::new(QUERY_WORK_NODE_COUNT)?;
         let exterior = pool.free_head;
         pool.free_head = pool.nodes[exterior as usize].next();
         pool.nodes[exterior as usize].set_next(0);
@@ -3007,8 +3007,8 @@ impl SpatialCellWorklists {
 
     /// Create the per-record local cell-state buffer cleared by
     /// FUN_140a85af0 before its point-cell lookup.
-    pub fn new_for_original_query() -> Self {
-        Self::new(ORIGINAL_RECORD_CELL_STATE_COUNT)
+    pub fn new_for_query() -> Self {
+        Self::new(RECORD_CELL_STATE_COUNT)
     }
 
     /// Match FUN_140a85af0's per-record clearing of the local cell-state
@@ -4493,11 +4493,11 @@ fn project_clipped_query_aabb(
         })
     };
     let crossing = handle_w_crossing && corners.iter().any(|corner| corner[3] < 0.0);
-    native_projected_corner_bounds(corners, crossing)
+    projected_corner_bounds(corners, crossing)
 }
 
 #[cfg(target_arch = "x86_64")]
-fn native_projected_corner_bounds(corners: [[f32; 4]; 8], crossing: bool) -> [f32; 4] {
+fn projected_corner_bounds(corners: [[f32; 4]; 8], crossing: bool) -> [f32; 4] {
     use std::arch::x86_64::*;
     let minps = |a: f32, b: f32| if a < b { a } else { b };
     let maxps = |a: f32, b: f32| if a > b { a } else { b };
@@ -4892,7 +4892,7 @@ pub fn merge_render_query_outputs(
 }
 
 /// Default registered by the installed game for `umbra_accurateOcclusionThreshold`.
-pub const ORIGINAL_DEFAULT_GLOBAL_DISTANCE_THRESHOLD: f32 = 70.0;
+pub const DEFAULT_GLOBAL_DISTANCE_THRESHOLD: f32 = 70.0;
 
 pub fn ordinary_direct_tome_visible_objects(
     tree: &SpatialTree,
@@ -4966,8 +4966,8 @@ fn ordinary_direct_tome_visible_objects_inner(
         parsed_rows = SpatialCellSlotRows::parse(bytes)?;
         &parsed_rows
     };
-    let mut worklists = SpatialCellWorklists::new_for_original_query();
-    let mut pool = CellWorkNodePool::new_for_original_query()?;
+    let mut worklists = SpatialCellWorklists::new_for_query();
+    let mut pool = CellWorkNodePool::new_for_query()?;
     let mut coverage = VisitedCellCoverage::default();
     if let Some(started) = setup_started {
         diagnostics.cost_ns[0] += started.elapsed().as_nanos();
@@ -5024,7 +5024,7 @@ fn ordinary_direct_tome_visible_objects_inner(
     };
     output.cells = Some(VisibleCellIndexOutput::new(
         cell_count,
-        ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY,
+        VISIBLE_CELL_OUTPUT_CAPACITY,
     ));
     if let Some(started) = setup_started {
         diagnostics.cost_ns[0] += started.elapsed().as_nanos();
@@ -5413,11 +5413,11 @@ mod query_geometry;
 #[cfg(test)]
 use query_geometry::segment_intersects_aabb;
 pub use query_geometry::{
-    ORIGINAL_DEFAULT_QUERY_JOB_COUNT, ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE,
-    ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY, ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
-    original_render_fov_radians, original_render_perspective_rows, original_render_query_matrix,
-    original_render_vertical_fov_radians, original_world_query_job_count,
-    original_world_visibility_query_matrix, point_triangle_distance_squared, quad_intersects_aabb,
+    DEFAULT_QUERY_JOB_COUNT, DEFAULT_SCHEDULER_THREADING_MODE,
+    VISIBLE_CELL_OUTPUT_CAPACITY, WORLD_QUERY_OUTPUT_CAPACITY,
+    render_fov_radians, render_perspective_rows, render_query_matrix,
+    render_vertical_fov_radians, world_query_job_count,
+    world_visibility_query_matrix, point_triangle_distance_squared, quad_intersects_aabb,
     query_matrix_winding_flip, render_query_base_rows, render_query_job_tile,
     sphere_intersects_portal, stored_query_matrix_from_render_rows,
 };

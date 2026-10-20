@@ -150,7 +150,7 @@ fn initialize_base(record: &mut [u8; 0xe8]) {
     }
 }
 
-fn native_unit_clamp(value: f32) -> f32 {
+fn unit_clamp(value: f32) -> f32 {
     // COMISS/JBE preserves NaNs and signed zero, unlike f32::clamp.
     if value < 0.0 {
         0.0
@@ -187,8 +187,8 @@ pub fn fill_tlf_lighting_packet(
     ] {
         packet[dst] = word(src);
     }
-    packet[11] = native_unit_clamp(value(0x88)).to_bits();
-    packet[19] = native_unit_clamp(value(0xb0)).to_bits();
+    packet[11] = unit_clamp(value(0x88)).to_bits();
+    packet[19] = unit_clamp(value(0xb0)).to_bits();
     let flags = ((kind as u32) << 4 & 0x70)
         | u32::from(light[0] >> 7)
         | (u32::from(light[1]) << 3 & 8)
@@ -321,7 +321,7 @@ pub fn prepare_tlf_light_with_shadows(
     shadows: &mut [[u32; 36]],
 ) -> Result<(u32, Option<u64>), String> {
     if sides.len() > 0x00ff_ffff || shadows.len() < 0x100 || *used_shadows > 0x100 {
-        return Err("native TLF shadow side/count buffer is invalid".into());
+        return Err("TLF shadow side/count buffer is invalid".into());
     }
     let first = *used_shadows as usize;
     let result = prepare_tlf_lighting_packet(
@@ -403,7 +403,7 @@ pub fn convert(input: PresetInput) -> Option<PresetOutput> {
         13 => f32::from_bits(0x47af_a9dd),
         _ => unreachable!(),
     };
-    let back = native_unit_clamp(input.back_reflection);
+    let back = unit_clamp(input.back_reflection);
     if input.kind == 2 && back > 0.0 {
         let full_sphere = f32::from_bits(0x4149_0fdb);
         let cone = (1.0 - input.cutoff_cosine) * f32::from_bits(0x40c9_0fdb);
@@ -425,7 +425,7 @@ pub fn convert(input: PresetInput) -> Option<PresetOutput> {
     let intensity = energy / n;
     let color = input
         .color
-        .map(|value| native_unit_clamp(value) * intensity);
+        .map(|value| unit_clamp(value) * intensity);
     let radius = (energy * 2.0).sqrt();
     if input.kind != 3 && ![10, 12, 13].contains(&input.preset) && radius < input.cutoff {
         write_word(&mut record, 0x80, radius.to_bits());
@@ -449,7 +449,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sun_ground_color_matches_original_gpu_constants() {
+    fn sun_ground_color_matches_gpu_constants() {
         // Original EOTW event423 accumulatesh constant buffer, compared with
         // FUN_140017d30's authored-color conversion and CRT normalization.
         let actual = sun_ground_color([0.215861, 0.171441, 0.116971]);
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn tlf_caller_copies_position_and_admits_only_native_shadow_ranges() {
+    fn tlf_caller_copies_position_and_admits_only_shadow_ranges() {
         // 1402f76bc..1402f76ef: source bit2, minimum count, 256-entry end,
         // and view override; original position bytes at +28/+2c/+30.
         for (flags, header, start, disabled, expected_index, expected_end) in [
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn tlf_lighting_records_match_original_machine_code() {
+    fn tlf_lighting_records_match_machine_code() {
         let mut cases = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

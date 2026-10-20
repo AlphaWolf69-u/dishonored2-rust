@@ -1,5 +1,5 @@
 //! Original finite reverse-depth projection transported through Bevy's camera.
-//! FUN_140890b50/FUN_140890ac0 and original_render_perspective_rows define
+//! FUN_140890b50/FUN_140890ac0 and render_perspective_rows define
 //! the coefficients. An infinite host projection changes depth reduction even
 //! when the displayed scene appears the same. Full-game capture 2026-10-17:
 //! near=.01, far=7000, P22=1.42857334e-6, P23=.0100000137.
@@ -10,7 +10,7 @@ use bevy::{
 };
 
 #[derive(Clone, Debug)]
-pub struct NativeGameProjection {
+pub struct GameProjection {
     pub reference_horizontal_degrees: f32,
     pub near: f32,
     pub far: f32,
@@ -18,7 +18,7 @@ pub struct NativeGameProjection {
     height: u32,
 }
 
-impl NativeGameProjection {
+impl GameProjection {
     pub fn new(reference_horizontal_degrees: f32, near: f32, far: f32) -> Self {
         Self {
             reference_horizontal_degrees,
@@ -30,7 +30,7 @@ impl NativeGameProjection {
     }
 
     pub fn rows(&self) -> [[f32; 4]; 4] {
-        let (horizontal, vertical) = crate::tome::original_render_fov_radians(
+        let (horizontal, vertical) = crate::tome::render_fov_radians(
             self.reference_horizontal_degrees,
             self.width,
             self.height,
@@ -39,7 +39,7 @@ impl NativeGameProjection {
         .expect("valid native gameplay camera field of view and extent");
         let right = self.near * (horizontal * 0.5).tan();
         let top = self.near * (vertical * 0.5).tan();
-        crate::tome::original_render_perspective_rows(
+        crate::tome::render_perspective_rows(
             [-right, right],
             [-top, top],
             self.near,
@@ -50,7 +50,7 @@ impl NativeGameProjection {
 
     fn host_perspective(&self) -> PerspectiveProjection {
         PerspectiveProjection {
-            fov: crate::tome::original_render_vertical_fov_radians(
+            fov: crate::tome::render_vertical_fov_radians(
                 self.reference_horizontal_degrees,
             )
             .expect("valid native gameplay camera field of view"),
@@ -62,7 +62,7 @@ impl NativeGameProjection {
     }
 }
 
-impl CameraProjection for NativeGameProjection {
+impl CameraProjection for GameProjection {
     fn get_clip_from_view(&self) -> Mat4 {
         Mat4::from_cols_array_2d(&self.rows()).transpose()
     }
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn finite_projection_matches_full_game_depth_capture() {
-        let mut projection = NativeGameProjection::new(110.0, 0.01, 7000.0);
+        let mut projection = GameProjection::new(110.0, 0.01, 7000.0);
         projection.update(1920.0, 1080.0);
         let rows = projection.rows();
         assert_eq!(rows[0][0].to_bits(), 0.7002075910568237f32.to_bits());

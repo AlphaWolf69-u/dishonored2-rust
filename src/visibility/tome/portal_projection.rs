@@ -1,5 +1,5 @@
 //! Portal projection.
-use super::{PortalTileMask, native_projected_corner_bounds};
+use super::{PortalTileMask, projected_corner_bounds};
 
 /// Query-context matrix and six face-vector sets prepared by FUN_140a81500.
 /// Keep setup errors deferred until a clipped portal actually consumes them.
@@ -347,7 +347,7 @@ pub fn projected_portal_box_crossing_bounds(
         return Err("nonfinite homogeneous Tome portal box corner".into());
     }
 
-    Ok(Some(native_projected_corner_bounds(corners, true)))
+    Ok(Some(projected_corner_bounds(corners, true)))
 }
 
 /// Select the two FUN_140a85bd0 projected-bound paths from the record's

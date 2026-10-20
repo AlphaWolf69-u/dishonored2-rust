@@ -13,7 +13,7 @@ struct ScreenParallelData {
     quality: vec4<i32>,
 }
 
-struct NativeScreenShadowUniform {
+struct ScreenShadowUniform {
     // Logical original inverse VP rows; explicit dots avoid storage transposes.
     inverse_view_projection: array<vec4<f32>, 4>,
     // -inverseProjection[2].w, inverseProjection[3].z, [3].w, unused.
@@ -34,7 +34,7 @@ struct NativeScreenShadowUniform {
 }
 
 @group(0) @binding(0) var<storage, read> screen_parallel: ScreenParallelData;
-@group(0) @binding(1) var<uniform> screen: NativeScreenShadowUniform;
+@group(0) @binding(1) var<uniform> screen: ScreenShadowUniform;
 @group(0) @binding(2) var screen_depth: texture_depth_2d;
 @group(0) @binding(3) var screen_point: sampler;
 @group(0) @binding(4) var screen_atlas: texture_depth_2d_array;
@@ -68,7 +68,7 @@ fn screen_b8(p: vec2<u32>) -> u32 {
 // intersection::IntersectRaySphere. Its discriminant clamps to zero and
 // near hit clamps to zero; the other overload's SolveQuadratic is different.
 fn screen_cloud_visibility(position: vec3<f32>) -> f32 {
-    return native_fast_cloud_shadowing(position, screen_parallel.sun_direction.xyz,
+    return fast_cloud_shadowing(position, screen_parallel.sun_direction.xyz,
         screen.camera_time.w, screen.cloud_motion, screen.cloud_density, screen_cloud, screen_cloud_sampler);
 }
 
@@ -89,16 +89,16 @@ fn screen_cloud_visibility(position: vec3<f32>) -> f32 {
     }
     var visibility = 1.0;
     if screen.options.y != 0u {
-        let slice = native_parallel_shadow_slice(position,
+        let slice = parallel_shadow_slice(position,
             screen_parallel.view_depth_row, screen_parallel.cascade_fars);
         let options = screen_parallel.config.z;
         // Original screenShadows has no vertex normal and DISABLES normal
         // offset. Other resolved slope options/bias remain the owner's values.
-        let coordinates = native_shadow_offset(screen_parallel.world_to_shadow[slice],
+        let coordinates = shadow_offset(screen_parallel.world_to_shadow[slice],
             position, vec3(0.0), screen_parallel.sun_direction.xyz, true, false,
             (options & 2u) != 0u, (options & 4u) != 0u, (options & 8u) != 0u,
             screen_parallel.bias.x, screen_parallel.bias.y, screen_parallel.bias.z);
-        visibility = native_sample_directional_shadow(screen_atlas, screen_comparison,
+        visibility = sample_directional_shadow(screen_atlas, screen_comparison,
             coordinates, i32(slice), screen_parallel.shadow_size.xy, 2,
             screen_parallel.quality.y - 1);
     }

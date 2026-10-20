@@ -28,13 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         translation: [0.0; 3],
                         scale: [1.0; 3],
                     };
-                    match edge_skeleton::native_pose_matrices(
+                    match edge_skeleton::pose_matrices(
                         &skeleton.rest,
                         &skeleton.hierarchy,
                         &root,
                     ) {
                         Ok(current) => {
-                            let palette = edge_skeleton::native_skin_palette(
+                            let palette = edge_skeleton::skin_palette(
                                 &current,
                                 &skeleton.inverse_bind[..current.len()],
                             )?;

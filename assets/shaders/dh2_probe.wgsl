@@ -3,16 +3,16 @@
     forward_io::{VertexOutput, FragmentOutput},
     mesh_bindings::mesh,
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting_with_native_shadows, main_pass_post_lighting_processing},
+    pbr_functions::{alpha_discard, apply_pbr_lighting_with_shadows, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
     decal::clustered::apply_decals,
 }
 
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_native_shadow}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow}
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
-#import dh2_parallel_receiver::{native_parallel_directional_index, native_parallel_depth_visibility}
+#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility}
 #import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, linear_clamp, scaled_uv}
 #import dh2_sky::sky_colour
 #import dh2_surface::material_exposure
@@ -97,8 +97,8 @@ fn fragment(
         return out;
     }
     var diffuse_response=pbr_input.material.base_color.rgb;
-    var native_indirect=vec3<f32>(0.0);
-    var native_emissive=vec3<f32>(0.0);
+    var indirect=vec3<f32>(0.0);
+    var emissive=vec3<f32>(0.0);
     // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
     // Original arkWater requires a separate depth/HDR-dependent shader; do not
     // feed it through the default layered-material equations.
@@ -117,7 +117,7 @@ fn fragment(
 #endif
         let authored = evaluate_surface(uv, uv1, color);
         pbr_input.material.base_color = authored.albedo;
-        native_emissive=authored.emissive;
+        emissive=authored.emissive;
         diffuse_response=authored.diffuse_response;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
@@ -182,13 +182,13 @@ fn fragment(
 #else
         let bitangent = cross(vertex_output.world_normal, vertex_output.world_tangent.xyz) * vertex_output.world_tangent.w;
 #endif
-        let indirect = unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
+        let probe_irradiance = unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
             vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
             pbr_input.N, vertex_output.world_tangent.xyz, bitangent,
             vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
-        native_indirect = indirect * diffuse_response;
+        indirect = probe_irradiance * diffuse_response;
 #else
-        native_indirect = probe_diffuse(pbr_input.N, probe_index)
+        indirect = probe_diffuse(pbr_input.N, probe_index)
             * diffuse_response * pbr_input.diffuse_occlusion;
 #endif
     }
@@ -206,7 +206,7 @@ fn fragment(
         return out;
     }
     if #{DH2_TRACE_LIGHT_COMPONENT} == 8u {
-        out.color = vec4(native_indirect, 1.0);
+        out.color = vec4(indirect, 1.0);
         return out;
     }
 #endif
@@ -214,10 +214,10 @@ fn fragment(
         // Original lighting uses wsVertexNormal for the sun's shadow offset,
         // not the normal-map BRDF normal. The same light.m_shadow attenuates
         // both direct lobes; probes/emission/local lights remain untouched.
-        let visibility = native_parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
-            vertex_output.position.xy, compiled_native_shadow);
-        out.color = apply_pbr_lighting_with_native_shadows(pbr_input,
-            native_parallel_directional_index(), visibility, visibility, compiled_native_shadow, native_indirect);
+        let visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
+            vertex_output.position.xy, compiled_shadow);
+        out.color = apply_pbr_lighting_with_shadows(pbr_input,
+            parallel_directional_index(), visibility, visibility, compiled_shadow, indirect);
     } else {
         out.color = pbr_input.material.base_color;
         if compiled_misc.z==6u {
@@ -227,7 +227,7 @@ fn fragment(
         }
     }
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
-        out.color=vec4(out.color.rgb+native_emissive*139.26*view.exposure,out.color.a);
+        out.color=vec4(out.color.rgb+emissive*139.26*view.exposure,out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

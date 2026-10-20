@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let Some(bytes) = catalog.read(&path)? else {
                 continue;
             };
-            let text = entities::native_declaration_text(&bytes);
+            let text = entities::declaration_text(&bytes);
             if text.to_ascii_lowercase().contains("texture") {
                 println!(
                     "{}\t{}",
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let Some(bytes) = catalog.read(&path)? else {
                 continue;
             };
-            let text = entities::native_declaration_text(&bytes);
+            let text = entities::declaration_text(&bytes);
             if !text.to_ascii_lowercase().contains("texture") {
                 continue;
             }
@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             };
             materials += 1;
-            let text = entities::native_declaration_text(&bytes);
+            let text = entities::declaration_text(&bytes);
             let surface = material_surface::Surface::parse(&bytes);
             if matches!(
                 surface.program(),
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let format = if name.eq_ignore_ascii_case("_frameCapture") {
                     "runtime frame capture (not a catalog image)".into()
                 } else if name == "##PLACEHOLDERNAME##" {
-                    "native default-material template substitution".into()
+                    "game default-material template substitution".into()
                 } else if material::intrinsic_image_pixels(name).is_some() {
                     "intrinsic RGBA8".into()
                 } else if let Some(stem) = material::compiled_image_stem(&catalog, name) {
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .ok_or_else(|| format!("missing resource {path}"))?;
             println!(
                 "RESOURCE {path}\n{}",
-                entities::native_declaration_text(&bytes)
+                entities::declaration_text(&bytes)
             );
         }
         return Ok(());
@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let Some(bytes) = catalog.read(&path)? else {
                 continue;
             };
-            let text = entities::native_declaration_text(&bytes);
+            let text = entities::declaration_text(&bytes);
             let Some(line) = text.lines().find(|line| {
                 line.split_whitespace()
                     .next()

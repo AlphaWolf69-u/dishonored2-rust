@@ -37,7 +37,7 @@ impl StaticLightCasterQueries<'_> {
                 object_distance_scale: f32::MIN_POSITIVE,
                 winding_flip: tome::query_matrix_winding_flip(clip),
                 gate_states: Some(self.gates),
-                output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
             };
             let jobs = (0..self.job_count)
                 .map(|job| {
@@ -95,13 +95,13 @@ struct Node {
     right: Option<Box<Node>>,
 }
 
-pub struct NativeLocalWorldQuery {
+pub struct LocalWorldQuery {
     bounds: Vec<[[f32; 3]; 2]>,
     ids: Vec<u32>,
     root: Option<Box<Node>>,
 }
 
-impl NativeLocalWorldQuery {
+impl LocalWorldQuery {
     ///295fa0 builds293580/293800 with leaf threshold8, in visibility order.
     pub fn new(world: &world_mesh::WorldMesh) -> Self {
         Self::from_bounds(
@@ -147,7 +147,7 @@ impl NativeLocalWorldQuery {
     }
 
     fn visit_projection(&self, node: &Node, clip: &[f32; 16], near_depth: f32, mask: &mut [u8]) {
-        if render_model::native_transformed_aabb_clip_cull_at_depth(
+        if render_model::transformed_aabb_clip_cull_at_depth(
             clip,
             node.bounds[0],
             node.bounds[1],
@@ -177,7 +177,7 @@ impl NativeLocalWorldQuery {
         }
         for &id in &self.ids[node.range.clone()] {
             let b = self.bounds[id as usize];
-            if !render_model::native_transformed_aabb_clip_cull(clip, b[0], b[1]).culled {
+            if !render_model::transformed_aabb_clip_cull(clip, b[0], b[1]).culled {
                 mask[id as usize] = 1;
             }
         }
@@ -368,7 +368,7 @@ mod tests {
                     })
                 })
                 .collect();
-            let tree = NativeLocalWorldQuery::from_bounds(bounds);
+            let tree = LocalWorldQuery::from_bounds(bounds);
             let offset = 2 + count * 6;
             let clip = std::array::from_fn(|r| {
                 std::array::from_fn(|c| f32::from_bits(words[offset + r * 4 + c]))
@@ -405,7 +405,7 @@ mod tests {
         }
     }
     #[test]
-    fn native_world_tree_partition_and_local_masks_match_original() {
+    fn world_tree_partition_and_local_masks_match() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/local_world_tree_cases.txt"
@@ -430,7 +430,7 @@ mod tests {
                     })
                 })
                 .collect();
-            let tree = NativeLocalWorldQuery::from_bounds(bounds);
+            let tree = LocalWorldQuery::from_bounds(bounds);
             let mut actual = tree.ids.clone();
             serialize(tree.root.as_ref().unwrap(), &mut actual);
             assert_eq!(

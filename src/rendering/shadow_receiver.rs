@@ -13,13 +13,13 @@ use crate::{
         receiver_inverse_rows, receiver_orthographic_rows, ShadowMatrix,
     },
     tome::shadow_caster::{
-        extrude_native_receiver_planes, fill_receiver_depth_projection,
-        native_normalized_frustum_planes, NativeReceiverDepthProjection,
+        extrude_receiver_planes, fill_receiver_depth_projection,
+        normalized_frustum_planes, ReceiverDepthProjection,
     },
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct NativeReceiverInput<'a> {
+pub struct ReceiverInput<'a> {
     /// Original param_9 numeric selector. Only zero is implemented.
     pub flags: u32,
     /// Ordinary visibility clip rows (state +0).
@@ -58,15 +58,15 @@ pub struct NativeReceiverInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeReceiverStatus {
+pub enum ReceiverStatus {
     /// Geometric receiver volume was empty; projection/mask were not initialized.
     Empty,
     Initialized,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct NativeReceiverOutput {
-    pub status: NativeReceiverStatus,
+pub struct ReceiverOutput {
+    pub status: ReceiverStatus,
     pub distance: f32,
     pub finite_far: bool,
     pub cutoff: f32,
@@ -81,7 +81,7 @@ pub struct NativeReceiverOutput {
 /// Auxiliary view resolved by the native +0x1b4 dirty-view update.
 /// camera_position is auxiliary +0x140, not ordinary-state +0x4a0.
 #[derive(Debug, Clone, Copy)]
-pub struct NativeAuxiliaryReceiverInput {
+pub struct AuxiliaryReceiverInput {
     pub camera_clip_rows: ShadowMatrix,
     pub camera_position: [f32; 3],
     pub ray_direction: [f32; 3],
@@ -91,7 +91,7 @@ pub struct NativeAuxiliaryReceiverInput {
 /// Plane-only result: no ordinary bitmap/receiver rows/depth mask initialized.
 /// Source: chunk_000523.c:6876..6910,7029,7336 (FUN_140a707e0 param_3==0).
 #[derive(Debug, Clone, Copy)]
-pub struct NativeAuxiliaryReceiverOutput {
+pub struct AuxiliaryReceiverOutput {
     pub distance: f32,
     pub finite_far: bool,
     pub cutoff: f32,
@@ -105,8 +105,8 @@ pub struct NativeAuxiliaryReceiverOutput {
 /// Numeric flag-0 auxiliary path. None is native status 3 for an infinite-far
 /// view with no finite distance. Success cannot imply ordinary depth readiness.
 pub fn initialize_auxiliary_receiver(
-    input: NativeAuxiliaryReceiverInput,
-) -> Result<Option<NativeAuxiliaryReceiverOutput>, String> {
+    input: AuxiliaryReceiverInput,
+) -> Result<Option<AuxiliaryReceiverOutput>, String> {
     let output = receiver_planes(input)?;
     if !output.finite_far && !(output.distance < f32::MAX) {
         Ok(None)
@@ -116,8 +116,8 @@ pub fn initialize_auxiliary_receiver(
 }
 
 fn receiver_planes(
-    input: NativeAuxiliaryReceiverInput,
-) -> Result<NativeAuxiliaryReceiverOutput, String> {
+    input: AuxiliaryReceiverInput,
+) -> Result<AuxiliaryReceiverOutput, String> {
     if !input.maximum_distance.is_finite() {
         return Err("nonfinite native receiver maximum distance".into());
     }
@@ -127,11 +127,11 @@ fn receiver_planes(
         + input.ray_direction[2] * input.ray_direction[2])
         .sqrt();
     if !(ray_length > 0.0) || !ray_length.is_finite() {
-        return Err("invalid native receiver ray direction".into());
+        return Err("invalid receiver ray direction".into());
     }
     let inverse_length = 1.0 / ray_length;
     let direction = input.ray_direction.map(|value| value * inverse_length);
-    let (mut camera_planes, finite_far) = native_normalized_frustum_planes(input.camera_clip_rows);
+    let (mut camera_planes, finite_far) = normalized_frustum_planes(input.camera_clip_rows);
     let mut cutoff = 1.0;
     if distance < f32::MAX {
         // FUN_140a707e0 clips the frustum BEFORE extrusion and intersection.
@@ -165,8 +165,8 @@ fn receiver_planes(
     // Native 0x80f0 lanes are -(0 < coefficient), not IEEE sign bits.
     let far_plane_signs = far_plane.map(|value| if 0.0 < value { 0xff } else { 0 });
     let mut planes = [[0.0; 4]; 32];
-    let plane_count = extrude_native_receiver_planes(direction, &camera_planes, &mut planes);
-    Ok(NativeAuxiliaryReceiverOutput {
+    let plane_count = extrude_receiver_planes(direction, &camera_planes, &mut planes);
+    Ok(AuxiliaryReceiverOutput {
         distance,
         finite_far,
         cutoff,
@@ -180,15 +180,15 @@ fn receiver_planes(
 
 /// FUN_140a707e0's NUMERIC FLAG-0 path. Existing projection mask contents are
 /// preserved (the native routine max-rasterizes into caller-owned storage).
-pub fn initialize_native_receiver(
-    input: NativeReceiverInput<'_>,
-    projection: &mut NativeReceiverDepthProjection,
-) -> Result<NativeReceiverOutput, String> {
+pub fn initialize_receiver(
+    input: ReceiverInput<'_>,
+    projection: &mut ReceiverDepthProjection,
+) -> Result<ReceiverOutput, String> {
     if input.flags != 0 {
         return Err("FUN_140a707e0 flags other than numeric 0 are unsupported".into());
     }
     if input.maximum_depth.is_none() {
-        return Err("native receiver ordinary depth state is unavailable".into());
+        return Err("receiver ordinary depth state is unavailable".into());
     }
     if input
         .world_bounds
@@ -197,7 +197,7 @@ pub fn initialize_native_receiver(
         .any(|value| !value.is_finite())
         || (0..3).any(|axis| input.world_bounds[0][axis] > input.world_bounds[1][axis])
     {
-        return Err("invalid native receiver global Tome bounds".into());
+        return Err("invalid receiver global Tome bounds".into());
     }
     if input
         .dynamic_bounds
@@ -224,7 +224,7 @@ pub fn initialize_native_receiver(
         }
     }
 
-    let NativeAuxiliaryReceiverOutput {
+    let AuxiliaryReceiverOutput {
         finite_far,
         cutoff,
         camera_planes,
@@ -233,7 +233,7 @@ pub fn initialize_native_receiver(
         far_plane,
         far_plane_signs,
         ..
-    } = receiver_planes(NativeAuxiliaryReceiverInput {
+    } = receiver_planes(AuxiliaryReceiverInput {
         camera_clip_rows: input.camera_clip_rows,
         camera_position: input.camera_position,
         ray_direction: input.ray_direction,
@@ -246,8 +246,8 @@ pub fn initialize_native_receiver(
     let aligned = camera_aligned_receiver_rows(input.camera_clip_rows, input.ray_direction);
     let clipped = receiver_intersection_bounds(aligned, camera_planes, bounds);
     if !(clipped[0] < clipped[3] && clipped[1] < clipped[4] && clipped[2] < clipped[5]) {
-        return Ok(NativeReceiverOutput {
-            status: NativeReceiverStatus::Empty,
+        return Ok(ReceiverOutput {
+            status: ReceiverStatus::Empty,
             distance,
             finite_far,
             cutoff,
@@ -297,8 +297,8 @@ pub fn initialize_native_receiver(
         );
     }
 
-    Ok(NativeReceiverOutput {
-        status: NativeReceiverStatus::Initialized,
+    Ok(ReceiverOutput {
+        status: ReceiverStatus::Initialized,
         distance,
         finite_far,
         cutoff,

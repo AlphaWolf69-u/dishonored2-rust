@@ -1,8 +1,8 @@
 //! Light culling.
 use super::{
-    entities, original_light_volume_intersects_camera, render_light, tome, view_to_game, Instant,
-    LocalLightSphereBatch, OriginalLocalLightCull, OriginalLocalLightCullEnabled,
-    OriginalLocalLightCullStats, SceneRenderQueue, TomeWorld, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+    entities, light_volume_intersects_camera, render_light, tome, view_to_game, Instant,
+    LocalLightSphereBatch, LocalLightCull, LocalLightCullEnabled,
+    LocalLightCullStats, SceneRenderQueue, TomeWorld, LOCAL_LIGHT_MIN_AREA_PIXELS,
 };
 use bevy::prelude::*;
 
@@ -58,7 +58,7 @@ pub(super) fn projected_local_light_area_pixels(
 
 // FUN_140232bc0 retains the transformed canonical volume at +0x170.
 // This is not the position +/- range box used by the non-Umbra area gate.
-pub(super) fn original_light_projection_bounds(clip_to_world: Mat4) -> Option<(Vec3, Vec3)> {
+pub(super) fn light_projection_bounds(clip_to_world: Mat4) -> Option<(Vec3, Vec3)> {
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     for index in 0..8 {
@@ -77,7 +77,7 @@ pub(super) fn original_light_projection_bounds(clip_to_world: Mat4) -> Option<(V
     Some((min, max))
 }
 
-pub(super) fn original_light_proximity_from_cached_bounds(
+pub(super) fn light_proximity_from_cached_bounds(
     max_visible_range: f32,
     bounds: Option<(Vec3, Vec3)>,
 ) -> Option<(Vec3, f32)> {
@@ -93,17 +93,17 @@ pub(super) fn original_light_proximity_from_cached_bounds(
 }
 
 #[cfg(test)]
-pub(super) fn original_light_proximity_bounds(
+pub(super) fn light_proximity_bounds(
     max_visible_range: f32,
     clip_to_world: Option<Mat4>,
 ) -> Option<(Vec3, f32)> {
-    original_light_proximity_from_cached_bounds(
+    light_proximity_from_cached_bounds(
         max_visible_range,
-        clip_to_world.and_then(original_light_projection_bounds),
+        clip_to_world.and_then(light_projection_bounds),
     )
 }
 
-pub(super) fn original_light_proximity_pass(view_origin: Vec3, center: Vec3, radius: f32) -> bool {
+pub(super) fn light_proximity_pass(view_origin: Vec3, center: Vec3, radius: f32) -> bool {
     // FUN_14031bcc0 compares the maximum absolute component, not Euclidean distance.
     if !view_origin.is_finite() || !center.is_finite() || !radius.is_finite() || radius < 0.0 {
         return true;
@@ -114,7 +114,7 @@ pub(super) fn original_light_proximity_pass(view_origin: Vec3, center: Vec3, rad
 // FUN_1408812b0 hashes the assigned declaration's name into actor +0x4b0;
 // FUN_140881640 transfers it to +0x58 for static, nonparallel idLights.
 // Blueprint/runtime-generated identities are not supplied by this map parser.
-pub(super) fn original_local_light_id_pass(
+pub(super) fn local_light_id_pass(
     kind: entities::LightType,
     culling: entities::LightCulling,
     definition_name_hash: u32,
@@ -126,7 +126,7 @@ pub(super) fn original_local_light_id_pass(
             .is_none_or(|ids| tome::sorted_authored_id_index(ids, definition_name_hash).is_some())
 }
 
-pub(super) fn original_light_rgb_nonzero(color: [f32; 3]) -> bool {
+pub(super) fn light_rgb_nonzero(color: [f32; 3]) -> bool {
     color
         .into_iter()
         .fold(0, |bits, value| bits | value.to_bits())
@@ -135,30 +135,30 @@ pub(super) fn original_light_rgb_nonzero(color: [f32; 3]) -> bool {
 }
 
 // FUN_140232bc0's flag update; the owning-world update lifecycle is separate.
-pub(super) fn original_render_light_update_flags(
+pub(super) fn render_light_update_flags(
     primary: u8,
     previous: u8,
     updates: u32,
     color: [f32; 3],
 ) -> u8 {
     let active = updates != 0;
-    let eligible = active && primary & 1 != 0 && original_light_rgb_nonzero(color);
+    let eligible = active && primary & 1 != 0 && light_rgb_nonzero(color);
     (previous & 0xe7) | (u8::from(active) << 4) | (u8::from(eligible) << 3)
 }
 
-pub(super) fn cull_original_small_local_lights(
-    enabled: Res<OriginalLocalLightCullEnabled>,
+pub(super) fn cull_small_local_lights(
+    enabled: Res<LocalLightCullEnabled>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut lights: Query<(
         Entity,
-        &OriginalLocalLightCull,
+        &LocalLightCull,
         &GlobalTransform,
         &mut Visibility,
     )>,
     scene: Option<Res<SceneRenderQueue>>,
     tome_world: Option<Res<TomeWorld>>,
     mut batch: Local<LocalLightSphereBatch>,
-    mut stats: ResMut<OriginalLocalLightCullStats>,
+    mut stats: ResMut<LocalLightCullStats>,
 ) {
     stats.total = 0;
     stats.zero_preset_rgb = 0;
@@ -224,7 +224,7 @@ pub(super) fn cull_original_small_local_lights(
         stats.total += 1;
         stats.total_by_kind[kind_index] += 1;
         // Preset RGB does not establish the runtime record after actor +0x408 updates.
-        stats.zero_preset_rgb += usize::from(!original_light_rgb_nonzero(light.linear_color));
+        stats.zero_preset_rgb += usize::from(!light_rgb_nonzero(light.linear_color));
         stats.projection_bounds_unverified += usize::from(light.projection_bounds.is_none());
         let dynamic = light.culling == entities::LightCulling::DynamicPosition;
         stats.source_class_counts[usize::from(dynamic)] += 1;
@@ -242,7 +242,7 @@ pub(super) fn cull_original_small_local_lights(
             stats.static_name_hash_matches += 1;
         }
         let mut culled = false;
-        if !original_local_light_id_pass(
+        if !local_light_id_pass(
             light.kind,
             light.culling,
             light.definition_name_hash,
@@ -279,7 +279,7 @@ pub(super) fn cull_original_small_local_lights(
         } else if let Some((clip, viewport, view_origin)) = camera {
             let proximity_pass = match light.proximity_bounds {
                 Some((center, radius)) => {
-                    original_light_proximity_pass(view_origin, center, radius)
+                    light_proximity_pass(view_origin, center, radius)
                 }
                 None => {
                     stats.proximity_unverified += 1;
@@ -292,7 +292,7 @@ pub(super) fn cull_original_small_local_lights(
             } else if light
                 .clip_to_world
                 .and_then(|clip_to_world| {
-                    original_light_volume_intersects_camera(clip, clip_to_world)
+                    light_volume_intersects_camera(clip, clip_to_world)
                 })
                 .is_some_and(|intersects| !intersects)
             {
@@ -304,7 +304,7 @@ pub(super) fn cull_original_small_local_lights(
                 light.range,
                 viewport,
             )
-            .is_some_and(|area| area < ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS)
+            .is_some_and(|area| area < LOCAL_LIGHT_MIN_AREA_PIXELS)
             {
                 stats.area_culled += 1;
                 culled = true;
@@ -394,7 +394,7 @@ pub(super) fn cull_original_small_local_lights(
                 // Keep this unsupported allocator/budget path explicitly visible.
                 stats.sphere_unverified += batch.entities.len();
                 stats.sphere_error = Some(format!(
-                    "native sphere error {}: allocator/budget handling unsupported",
+                    "sphere error {}: allocator/budget handling unsupported",
                     result.error_code
                 ));
             }
@@ -415,7 +415,7 @@ pub(super) fn cull_original_small_local_lights(
                 }
                 let proximity_pass = match light.proximity_bounds {
                     Some((center, radius)) => {
-                        original_light_proximity_pass(view_origin, center, radius)
+                        light_proximity_pass(view_origin, center, radius)
                     }
                     None => {
                         stats.proximity_unverified += 1;
@@ -427,7 +427,7 @@ pub(super) fn cull_original_small_local_lights(
                     *visibility = Visibility::Hidden;
                 } else if light
                     .clip_to_world
-                    .and_then(|matrix| original_light_volume_intersects_camera(clip, matrix))
+                    .and_then(|matrix| light_volume_intersects_camera(clip, matrix))
                     .is_some_and(|hit| !hit)
                 {
                     stats.clip_culled += 1;

@@ -2,30 +2,30 @@
 use super::{
     archive, entities, env, material, material_surface, probe_lighting, render_program,
     render_state, shader_cache, surface_gpu, CachedMaterial, DecalExtension, DecalMaterial,
-    HashMap, MaterialHandle, NativeShadowMaterialInputs, NativeShadowMaterialParameters,
-    NativeShadowMaterials, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
+    HashMap, MaterialHandle, ShadowMaterialInputs, ShadowMaterialParameters,
+    ShadowMaterials, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
 };
 use bevy::prelude::*;
 
 /// Resolve the slot-admission fields from the same dictionaries as 1402d5210.
 /// In particular +0x48 bit4 is MAIN-fallback isDecal, not invisible. This is
 /// source selection only, not a claim that all other material flags are loaded.
-pub(super) fn resolve_native_shadow_source_inputs(
-    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+pub(super) fn resolve_shadow_source_inputs(
+    library: Option<&mut Result<shader_cache::ProgramLibrary, String>>,
     bytes: &[u8],
     program: &[u8],
     main_program: Option<&str>,
 ) -> Result<material::ShadowSourceInputs, String> {
     let mut source = material::shadow_source_inputs(bytes, program)?;
     let library = library
-        .ok_or("native program library is unavailable")?
+        .ok_or("program library is unavailable")?
         .as_mut()
-        .map_err(|error| format!("native program library: {error}"))?;
+        .map_err(|error| format!("program library: {error}"))?;
     let main = main_program.ok_or("shadow source owner has no main program")?;
     let state = library
         .definition(main.as_bytes())?
         .ok_or_else(|| format!("missing native main program {main}"))?
-        .native_render_state();
+        .render_state();
     // 1402d662d passes all nine MAIN words to 1402c3bc0. A line scan
     // misses compact state blocks and can mistake nested option names for
     // drawing commands, changing native shadow-bank admission.
@@ -35,7 +35,7 @@ pub(super) fn resolve_native_shadow_source_inputs(
     source.main_render_state = Some(material_state);
     // These constructor fields precede per-pass specialization. Read the
     // material dictionary, not a block already overwritten for shadow slot 10.
-    let overrides = native_material_option_overrides(library, bytes)?;
+    let overrides = material_option_overrides(library, bytes)?;
     let no_shadow = library.registered_option_value(&overrides, b"noShadow")? != 0;
     let is_decal = library.option_value(main.as_bytes(), &overrides, b"isDecal")? & 1 != 0;
     source.hair_type = library.option_value(main.as_bytes(), &overrides, b"hairType")? & 1 != 0;
@@ -82,8 +82,8 @@ pub(super) fn resolve_native_shadow_source_inputs(
 /// not the world bank2 pointer and not the subset of shader ABIs we support.
 /// All current level sources are resident; a missing cache row still requires
 /// the original runtime compile path and must not become `false` here.
-pub(super) fn resolve_native_shadow_slot_presence(
-    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+pub(super) fn resolve_shadow_slot_presence(
+    library: Option<&mut Result<shader_cache::ProgramLibrary, String>>,
     bytes: &[u8],
     source: &material::ShadowSourceInputs,
     main_program: Option<&str>,
@@ -98,23 +98,23 @@ pub(super) fn resolve_native_shadow_slot_presence(
         return Ok(false);
     }
     let library = library
-        .ok_or("native program library is unavailable")?
+        .ok_or("program library is unavailable")?
         .as_mut()
-        .map_err(|error| format!("native program library: {error}"))?;
-    let overrides = native_shadow_variant_overrides(library, bytes, source, main_program, name)?;
+        .map_err(|error| format!("program library: {error}"))?;
+    let overrides = shadow_variant_overrides(library, bytes, source, main_program, name)?;
     if library
         .serialized_variant(name.as_bytes(), &overrides)?
         .is_none()
     {
         return Err(format!(
-            "native base shadow slot needs runtime compilation: {name}"
+            "base shadow slot needs runtime compilation: {name}"
         ));
     }
     Ok(true)
 }
 
-pub(super) fn resolve_native_rigid_shadow_source(
-    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+pub(super) fn resolve_rigid_shadow_source(
+    library: Option<&mut Result<shader_cache::ProgramLibrary, String>>,
     bytes: &[u8],
     source: &material::ShadowSourceInputs,
     main_program: Option<&str>,
@@ -130,10 +130,10 @@ pub(super) fn resolve_native_rigid_shadow_source(
         return Ok(None);
     }
     let library = library
-        .ok_or("native program library is unavailable")?
+        .ok_or("program library is unavailable")?
         .as_mut()
-        .map_err(|error| format!("native program library: {error}"))?;
-    let overrides = native_shadow_variant_overrides(library, bytes, source, main_program, name)?;
+        .map_err(|error| format!("program library: {error}"))?;
+    let overrides = shadow_variant_overrides(library, bytes, source, main_program, name)?;
     library
         .rigid_shadow_source(name.as_bytes(), &overrides)?
         .map(Some)
@@ -143,8 +143,8 @@ pub(super) fn resolve_native_rigid_shadow_source(
 /// FUN_1402d5210 bank2 at 1402d66a0..1402d66f0. The direct-instancing
 /// exclusion is read BEFORE pass overrides and uses registered defaults,
 /// not a MAIN-fallback value. Resident absence is an error, not "no shadow".
-pub(super) fn resolve_native_world_shadow_source(
-    library: Option<&mut Result<shader_cache::NativeProgramLibrary, String>>,
+pub(super) fn resolve_world_shadow_source(
+    library: Option<&mut Result<shader_cache::ProgramLibrary, String>>,
     bytes: &[u8],
     source: &material::ShadowSourceInputs,
     main_program: Option<&str>,
@@ -159,17 +159,17 @@ pub(super) fn resolve_native_world_shadow_source(
         return Ok(None);
     }
     let library = library
-        .ok_or("native program library is unavailable")?
+        .ok_or("program library is unavailable")?
         .as_mut()
-        .map_err(|error| format!("native program library: {error}"))?;
-    let original = native_material_option_overrides(library, bytes)?;
-    let multi = library.registered_option_value(&original, b"useMultiInstancing")? != 0;
-    let direct = library.registered_option_value(&original, b"useDirectInstancing")? != 0;
+        .map_err(|error| format!("program library: {error}"))?;
+    let reference = material_option_overrides(library, bytes)?;
+    let multi = library.registered_option_value(&reference, b"useMultiInstancing")? != 0;
+    let direct = library.registered_option_value(&reference, b"useDirectInstancing")? != 0;
     if material::instancing_bank_override(2, multi, direct)?.is_none() {
         return Ok(None);
     }
     let mut overrides =
-        native_shadow_variant_overrides(library, bytes, source, main_program, name)?;
+        shadow_variant_overrides(library, bytes, source, main_program, name)?;
     let value = render_program::SerializedParameterValue::Words([1, 0, 0, 0]);
     if let Some(parameter) = overrides
         .parameters
@@ -192,13 +192,13 @@ pub(super) fn resolve_native_world_shadow_source(
         .ok_or_else(|| format!("no resident world shadow variant for {name}"))
 }
 
-pub(super) fn resolve_native_shadow_material_parameters(
-    library: &mut shader_cache::NativeProgramLibrary,
+pub(super) fn resolve_shadow_material_parameters(
+    library: &mut shader_cache::ProgramLibrary,
     catalog: &archive::Catalog,
     bytes: &[u8],
     class: shader_cache::CachedRigidShadowClass,
     model_depth: bool,
-) -> Result<NativeShadowMaterialParameters, String> {
+) -> Result<ShadowMaterialParameters, String> {
     use shader_cache::CachedRigidShadowClass;
     let names: &[&[u8]] = match class {
         CachedRigidShadowClass::Opaque | CachedRigidShadowClass::VistaAlpha => &[],
@@ -219,7 +219,7 @@ pub(super) fn resolve_native_shadow_material_parameters(
         names.push(b"modeldepthhack");
     }
     let values =
-        entities::material_float_parameters(&entities::native_declaration_text(bytes), |name| {
+        entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
             names.iter().any(|required| *required == name.as_bytes())
         })?;
     let overrides = render_program::SerializedParameterBlock {
@@ -245,21 +245,21 @@ pub(super) fn resolve_native_shadow_material_parameters(
                 .map(|words| (name.to_vec(), words))
         })
         .collect::<Result<_, _>>()?;
-    Ok(NativeShadowMaterialParameters::new(overrides, defaults))
+    Ok(ShadowMaterialParameters::new(overrides, defaults))
 }
 
-pub(super) fn native_material_option_overrides(
-    library: &shader_cache::NativeProgramLibrary,
+pub(super) fn material_option_overrides(
+    library: &shader_cache::ProgramLibrary,
     bytes: &[u8],
 ) -> Result<render_program::SerializedParameterBlock, String> {
     let values = material::material_option_parameters(bytes, |name| {
         library.parameter_kinds.get(name.as_bytes())
             == Some(&render_program::RenderParameterKind::Option)
     })?;
-    Ok(native_option_block(values))
+    Ok(option_block(values))
 }
 
-pub(super) fn native_option_block(
+pub(super) fn option_block(
     values: Vec<(String, i32)>,
 ) -> render_program::SerializedParameterBlock {
     render_program::SerializedParameterBlock {
@@ -275,20 +275,20 @@ pub(super) fn native_option_block(
     }
 }
 
-pub(super) fn native_shadow_variant_overrides(
-    library: &mut shader_cache::NativeProgramLibrary,
+pub(super) fn shadow_variant_overrides(
+    library: &mut shader_cache::ProgramLibrary,
     bytes: &[u8],
     source: &material::ShadowSourceInputs,
     main_program: Option<&str>,
     selected_program: &str,
 ) -> Result<render_program::SerializedParameterBlock, String> {
-    let original = native_material_option_overrides(library, bytes)?;
+    let reference = material_option_overrides(library, bytes)?;
     // Material +0x4b bit4 uses MAIN, even with an authored shadow source.
     let main = main_program.ok_or("shadow alpha-test owner has no main program")?;
-    let alpha_test = library.option_value(main.as_bytes(), &original, b"alphaTest")?;
+    let alpha_test = library.option_value(main.as_bytes(), &reference, b"alphaTest")?;
     // isDecal uses MAIN, but decalType is material/registered-default only.
-    let is_decal = library.option_value(main.as_bytes(), &original, b"isDecal")? & 1 != 0;
-    let decal_type = library.registered_option_value(&original, b"decalType")? as u32;
+    let is_decal = library.option_value(main.as_bytes(), &reference, b"isDecal")? & 1 != 0;
+    let decal_type = library.registered_option_value(&reference, b"decalType")? as u32;
     let is_alpha = material::shadow_is_alpha(
         source.main_blend_state,
         is_decal,
@@ -307,7 +307,7 @@ pub(super) fn native_shadow_variant_overrides(
     .into_iter()
     .try_fold(is_alpha, |combined, name| {
         library
-            .option_value(selected_program.as_bytes(), &original, name)
+            .option_value(selected_program.as_bytes(), &reference, name)
             .map(|value| combined | (value != 0))
     })?;
     let values = material::rigid_shadow_option_parameters(
@@ -320,7 +320,7 @@ pub(super) fn native_shadow_variant_overrides(
                 == Some(&render_program::RenderParameterKind::Option)
         },
     )?;
-    Ok(native_option_block(values))
+    Ok(option_block(values))
 }
 
 pub(super) struct MaterialResolver<'a> {
@@ -330,19 +330,19 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) vista_sun: [Vec4; 2],
     pub(super) environment: Option<&'a entities::EnvironmentRenderParameters>,
     pub(super) catalog: Option<&'a archive::Catalog>,
-    pub(super) native_programs: Option<&'a mut Result<shader_cache::NativeProgramLibrary, String>>,
+    pub(super) programs: Option<&'a mut Result<shader_cache::ProgramLibrary, String>>,
     pub(super) probe_materials: &'a mut Assets<ProbeMaterial>,
     pub(super) decal_materials: &'a mut Assets<DecalMaterial>,
     pub(super) probe_sh_buffers: &'a mut Assets<ShaderBuffer>,
     pub(super) probe_sh_buffer: Handle<ShaderBuffer>,
     pub(super) vertex_probe_buffer: Handle<ShaderBuffer>,
-    pub(super) native_shadow_buffer: Handle<ShaderBuffer>,
-    pub(super) native_local_shadow_buffer: Handle<ShaderBuffer>,
-    pub(super) native_shadow_map: Handle<Image>,
+    pub(super) shadow_buffer: Handle<ShaderBuffer>,
+    pub(super) local_shadow_buffer: Handle<ShaderBuffer>,
+    pub(super) shadow_map: Handle<Image>,
     pub(super) probe_sh_records: Vec<[Vec4; 9]>,
     pub(super) probes: Option<&'a probe_lighting::ProbeLightingSet>,
     pub(super) cache: HashMap<String, Option<CachedMaterial>>,
-    pub(super) shadow_materials: NativeShadowMaterials,
+    pub(super) shadow_materials: ShadowMaterials,
     pub(super) diffuse_image_slots: HashMap<String, usize>,
     pub(super) diffuse_image_paths: Vec<String>,
     pub(super) preferred_mip: Option<u8>,
@@ -356,13 +356,13 @@ pub(super) struct MaterialResolver<'a> {
 }
 
 pub(super) fn material_float_vectors<const N: usize>(
-    library: &mut shader_cache::NativeProgramLibrary,
+    library: &mut shader_cache::ProgramLibrary,
     catalog: &archive::Catalog,
     bytes: &[u8],
     names: [&str; N],
 ) -> Result<[[f32; 4]; N], String> {
     let values =
-        entities::material_float_parameters(&entities::native_declaration_text(bytes), |name| {
+        entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
             names.contains(&name)
         })?;
     let overrides = render_program::SerializedParameterBlock {
@@ -392,7 +392,7 @@ impl MaterialResolver<'_> {
         names: [&str; N],
     ) -> Result<[[f32; 4]; N], String> {
         let library = self
-            .native_programs
+            .programs
             .as_deref_mut()
             .ok_or("program library unavailable")?
             .as_mut()
@@ -401,14 +401,14 @@ impl MaterialResolver<'_> {
         material_float_vectors(library, catalog, bytes, names)
     }
 
-    pub(super) fn native_caster_admission(&mut self, path: &str) -> Result<u8, String> {
+    pub(super) fn caster_admission(&mut self, path: &str) -> Result<u8, String> {
         let catalog = self
             .catalog
-            .ok_or("native caster material catalog is unavailable")?;
+            .ok_or("caster material catalog is unavailable")?;
         let bytes = catalog
             .read(&format!("generated/decls/material/{path}.decl"))
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("native caster material is not indexed: {path}"))?;
+            .ok_or_else(|| format!("caster material is not indexed: {path}"))?;
         let main = material_surface::Surface::parse(&bytes).main_program;
         let program = main
             .as_ref()
@@ -419,18 +419,18 @@ impl MaterialResolver<'_> {
                         name.to_ascii_lowercase()
                     ))
                     .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("native MAIN program missing: {name}"))
+                    .ok_or_else(|| format!("MAIN program missing: {name}"))
             })
             .transpose()?
             .unwrap_or_default();
-        let source = resolve_native_shadow_source_inputs(
-            self.native_programs.as_deref_mut(),
+        let source = resolve_shadow_source_inputs(
+            self.programs.as_deref_mut(),
             &bytes,
             &program,
             main.as_deref(),
         )?;
-        let present = resolve_native_shadow_slot_presence(
-            self.native_programs.as_deref_mut(),
+        let present = resolve_shadow_slot_presence(
+            self.programs.as_deref_mut(),
             &bytes,
             &source,
             main.as_deref(),
@@ -503,7 +503,7 @@ impl MaterialResolver<'_> {
                 handle: cached.handle,
                 diffuse_image_slot: cached.diffuse_image_slot,
                 probe_index,
-                native_vertex_lighting: cached.native_vertex_lighting,
+                vertex_lighting: cached.vertex_lighting,
             });
         }
         let key = path.to_owned();
@@ -548,7 +548,7 @@ impl MaterialResolver<'_> {
                 );
                 // Registered Uniform int cloudProjOnFar defaults to zero.
                 let project = entities::material_float_parameters(
-                    &entities::native_declaration_text(bytes),
+                    &entities::declaration_text(bytes),
                     |n| n == "cloudprojonfar",
                 )?;
                 p[4].x = project
@@ -597,14 +597,14 @@ impl MaterialResolver<'_> {
             let parameters = (|| -> Result<_, String> {
                 use crate::rendering::vista;
                 let library = self
-                    .native_programs
+                    .programs
                     .as_deref_mut()
                     .ok_or("program library unavailable")?
                     .as_mut()
                     .map_err(|e| e.clone())?;
                 let catalog = self.catalog.ok_or("material catalog unavailable")?;
                 let values = entities::material_float_parameters(
-                    &entities::native_declaration_text(bytes),
+                    &entities::declaration_text(bytes),
                     |name| vista::PARAMETER_NAMES.contains(&name),
                 )?;
                 let overrides = render_program::SerializedParameterBlock {
@@ -642,12 +642,12 @@ impl MaterialResolver<'_> {
                 let clip = self.float_vectors(bytes, filling::CLIP_PARAMETER_NAMES)?;
                 let exposure = self.float_vectors(bytes, ["fx/auto_exposure_amount"])?[0][0];
                 let library = self
-                    .native_programs
+                    .programs
                     .as_deref_mut()
                     .unwrap()
                     .as_mut()
                     .map_err(|e| e.clone())?;
-                let overrides = native_material_option_overrides(library, bytes)?;
+                let overrides = material_option_overrides(library, bytes)?;
                 let mut option = |name: &[u8]| {
                     library.option_value(b"particle/filing_container", &overrides, name)
                 };
@@ -708,24 +708,24 @@ impl MaterialResolver<'_> {
         let program = program.as_deref().unwrap_or(&[]);
         if matches!(uniform.misc.z, 1 | 2 | 6) {
             let receiver = (|| -> Result<UVec4, String> {
-                let source = resolve_native_shadow_source_inputs(
-                    self.native_programs.as_deref_mut(),
+                let source = resolve_shadow_source_inputs(
+                    self.programs.as_deref_mut(),
                     bytes,
                     program,
                     surface.main_program.as_deref(),
                 )?;
                 let library = self
-                    .native_programs
+                    .programs
                     .as_deref_mut()
-                    .ok_or("native program library is unavailable")?
+                    .ok_or("program library is unavailable")?
                     .as_mut()
                     .map_err(|error| error.clone())?;
                 let main = surface
                     .main_program
                     .as_deref()
-                    .ok_or("native receiver MAIN is absent")?;
+                    .ok_or("receiver MAIN is absent")?;
                 let overrides =
-                    native_shadow_variant_overrides(library, bytes, &source, Some(main), main)?;
+                    shadow_variant_overrides(library, bytes, &source, Some(main), main)?;
                 let mut option =
                     |name: &[u8]| library.option_value(main.as_bytes(), &overrides, name);
                 let direct = option(b"noScreenShadows")? != 0;
@@ -742,9 +742,9 @@ impl MaterialResolver<'_> {
                 ))
             })();
             match receiver {
-                Ok(value) => uniform.native_shadow = value,
+                Ok(value) => uniform.shadow = value,
                 Err(error) => {
-                    eprintln!("Native forward shadow receiver unavailable for {path}: {error}")
+                    eprintln!("Forward shadow receiver unavailable for {path}: {error}")
                 }
             }
         }
@@ -762,7 +762,7 @@ impl MaterialResolver<'_> {
             | (u32::from(program_is_decal) << 1)
             | (u32::from(two_sided_lighting) << 2);
         if env::var("DH2_TRACE_MATERIAL").ok().as_deref() == Some(path) {
-            println!("NATIVE_MATERIAL {path}: {uniform:#?}");
+            println!("MATERIAL {path}: {uniform:#?}");
         }
         // Resolve this Uniform through the same token/registry path as every
         // other material parameter. Program/parameter names are case-insensitive;
@@ -851,7 +851,7 @@ impl MaterialResolver<'_> {
             cull_mode,
             ..default()
         };
-        let native_vertex_lighting = matches!(uniform.misc.z, 1 | 2 | 6);
+        let vertex_lighting = matches!(uniform.misc.z, 1 | 2 | 6);
         let handle = if is_decal {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
@@ -860,12 +860,12 @@ impl MaterialResolver<'_> {
                     bias: decal_bias,
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
-                    native_shadow: self.native_shadow_buffer.clone(),
-                    native_local_shadow: self.native_local_shadow_buffer.clone(),
-                    native_shadow_map: Some(self.native_shadow_map.clone()),
-                    native_local_shadow_map: Some(self.native_shadow_map.clone()),
-                    native_screen_map: None,
-                    native_cloud_map: None,
+                    shadow: self.shadow_buffer.clone(),
+                    local_shadow: self.local_shadow_buffer.clone(),
+                    shadow_map: Some(self.shadow_map.clone()),
+                    local_shadow_map: Some(self.shadow_map.clone()),
+                    screen_map: None,
+                    cloud_map: None,
                     surface: uniform,
                     diffuse0: None,
                     diffuse1: None,
@@ -909,12 +909,12 @@ impl MaterialResolver<'_> {
                     material_exposure: self.material_exposure.clone(),
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),
-                    native_shadow: self.native_shadow_buffer.clone(),
-                    native_local_shadow: self.native_local_shadow_buffer.clone(),
-                    native_local_shadow_map: Some(self.native_shadow_map.clone()),
-                    native_shadow_map: Some(self.native_shadow_map.clone()),
-                    native_screen_map: None,
-                    native_cloud_map: None,
+                    shadow: self.shadow_buffer.clone(),
+                    local_shadow: self.local_shadow_buffer.clone(),
+                    local_shadow_map: Some(self.shadow_map.clone()),
+                    shadow_map: Some(self.shadow_map.clone()),
+                    screen_map: None,
+                    cloud_map: None,
                     surface: uniform,
                     diffuse0: None,
                     diffuse1: None,
@@ -952,27 +952,27 @@ impl MaterialResolver<'_> {
                 },
             }))
         };
-        let shadow = resolve_native_shadow_source_inputs(
-            self.native_programs.as_deref_mut(),
+        let shadow = resolve_shadow_source_inputs(
+            self.programs.as_deref_mut(),
             bytes,
             program,
             surface.main_program.as_deref(),
         )
         .map(|source| {
-            let base_slot10_present = resolve_native_shadow_slot_presence(
-                self.native_programs.as_deref_mut(),
+            let base_slot10_present = resolve_shadow_slot_presence(
+                self.programs.as_deref_mut(),
                 bytes,
                 &source,
                 surface.main_program.as_deref(),
             );
-            let rigid_base_source = resolve_native_rigid_shadow_source(
-                self.native_programs.as_deref_mut(),
+            let rigid_base_source = resolve_rigid_shadow_source(
+                self.programs.as_deref_mut(),
                 bytes,
                 &source,
                 surface.main_program.as_deref(),
             );
-            let world_source = resolve_native_world_shadow_source(
-                self.native_programs.as_deref_mut(),
+            let world_source = resolve_world_shadow_source(
+                self.programs.as_deref_mut(),
                 bytes,
                 &source,
                 surface.main_program.as_deref(),
@@ -983,15 +983,15 @@ impl MaterialResolver<'_> {
                 Ok(Some(compiled)) => (|| {
                     let catalog = self
                         .catalog
-                        .ok_or("native world shadow parameter catalog is unavailable")?;
+                        .ok_or("world shadow parameter catalog is unavailable")?;
                     let library = self
-                        .native_programs
+                        .programs
                         .as_deref_mut()
-                        .ok_or("native program library is unavailable")?
+                        .ok_or("program library is unavailable")?
                         .as_mut()
                         .map_err(|error| error.clone())?;
                     let class = compiled.class.material_parameter_class();
-                    resolve_native_shadow_material_parameters(library, catalog, bytes, class, false)
+                    resolve_shadow_material_parameters(library, catalog, bytes, class, false)
                         .map(Some)
                 })(),
             };
@@ -1001,14 +1001,14 @@ impl MaterialResolver<'_> {
                 Ok(Some(compiled)) => (|| {
                     let catalog = self
                         .catalog
-                        .ok_or("native shadow parameter catalog is unavailable")?;
+                        .ok_or("shadow parameter catalog is unavailable")?;
                     let library = self
-                        .native_programs
+                        .programs
                         .as_deref_mut()
-                        .ok_or("native program library is unavailable")?
+                        .ok_or("program library is unavailable")?
                         .as_mut()
                         .map_err(|error| error.clone())?;
-                    resolve_native_shadow_material_parameters(
+                    resolve_shadow_material_parameters(
                         library,
                         catalog,
                         bytes,
@@ -1018,7 +1018,7 @@ impl MaterialResolver<'_> {
                     .map(Some)
                 })(),
             };
-            NativeShadowMaterialInputs {
+            ShadowMaterialInputs {
                 source,
                 rigid_base_source,
                 base_slot10_present,
@@ -1037,7 +1037,7 @@ impl MaterialResolver<'_> {
             handle,
             diffuse_image_slot,
             images,
-            native_vertex_lighting,
+            vertex_lighting,
         };
         self.cache.insert(key, Some(cached.clone()));
         let probe_index = self.append_probe_record(game_position);
@@ -1045,7 +1045,7 @@ impl MaterialResolver<'_> {
             handle: cached.handle,
             diffuse_image_slot: cached.diffuse_image_slot,
             probe_index,
-            native_vertex_lighting: cached.native_vertex_lighting,
+            vertex_lighting: cached.vertex_lighting,
         })
     }
 }

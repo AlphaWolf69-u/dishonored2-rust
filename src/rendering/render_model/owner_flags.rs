@@ -25,7 +25,7 @@ impl LocalShadowCacheControls {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeModelCasterInfo {
+pub struct ModelCasterInfo {
     pub flags: u8,
     /// The native producer leaves the preceding sphere unchanged when bit2
     /// is absent. No consumer may read a newly invented sphere in that case.
@@ -42,14 +42,14 @@ pub fn prepare_model_caster_info(
     flags_18bd: u8,
     skinned: bool,
     surfaces: impl IntoIterator<Item = (i32, u8)>,
-) -> NativeModelCasterInfo {
+) -> ModelCasterInfo {
     let mut flags = if skinned { 9 } else { 1 };
     let admitted = (flags_1c30 & 0x20 != 0 && flags_18bc & 8 != 0)
         || surfaces
             .into_iter()
             .any(|(vertices, material)| vertices > 0 && material & 1 != 0);
     if !admitted {
-        return NativeModelCasterInfo {
+        return ModelCasterInfo {
             flags,
             sphere: None,
         };
@@ -69,7 +69,7 @@ pub fn prepare_model_caster_info(
     if size < 1.0 && flags_18bc & 2 == 0 && flags_18bd & 8 == 0 {
         flags |= 4;
     }
-    NativeModelCasterInfo {
+    ModelCasterInfo {
         flags,
         sphere: Some([
             (bounds[0][0] + bounds[1][0]) * 0.5,
@@ -128,7 +128,7 @@ pub fn model_shadow_radial_sort_key(bounds: [[f32; 3]; 2], point: [f32; 3]) -> u
 
 ///10a350 mode0: strict point half-space mask. Row0 preserves its native
 ///Y+X summation, while rows1..3 use X+Y. Unordered comparisons stay false.
-pub fn native_point_clip_mask(matrix: &[[f32; 4]; 4], point: [f32; 3]) -> u8 {
+pub fn point_clip_mask(matrix: &[[f32; 4]; 4], point: [f32; 3]) -> u8 {
     let [x, y, z] = point;
     let p: [f32; 4] = std::array::from_fn(|r| {
         let a = matrix[r];
@@ -174,7 +174,7 @@ pub fn collect_local_model_casters(
     if view_flags & 2 != 0 {
         return Vec::new();
     }
-    let point_mask = native_point_clip_mask(camera_clip, point);
+    let point_mask = point_clip_mask(camera_clip, point);
     let clip = std::array::from_fn(|i| light_clip[i / 4][i % 4]);
     let mut selected = Vec::new();
     let mut keys = Vec::new();
@@ -182,7 +182,7 @@ pub fn collect_local_model_casters(
         if dynamic && record.camera_clip_mask & (record.camera_clip_mask ^ point_mask) != 0 {
             continue;
         }
-        if super::native_unit_aabb_clip_cull(&clip, record.bounds[0], record.bounds[1]).culled {
+        if super::unit_aabb_clip_cull(&clip, record.bounds[0], record.bounds[1]).culled {
             continue;
         }
         selected.push(index);
@@ -199,7 +199,7 @@ pub fn collect_local_model_casters(
 /// stable/unstable sort is not an equivalent tie policy.
 pub fn sort_model_shadow_records<T>(records: &mut [T], keys: &mut [u32]) -> Result<(), String> {
     if records.len() != keys.len() {
-        return Err("native model shadow records and keys differ in length".into());
+        return Err("model shadow records and keys differ in length".into());
     }
     if records.is_empty() {
         return Ok(());
@@ -400,7 +400,7 @@ pub fn set_actors_dynamic_caster_for_view(
 mod tests {
     use super::*;
     #[test]
-    fn model_owner_dirty_and_bounds_match_original_instructions() {
+    fn model_owner_dirty_and_bounds_match_instructions() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/model_owner_dirty_cases.txt"
@@ -449,12 +449,12 @@ mod tests {
                 queues.flag_40.first().copied().unwrap_or(u16::MAX) as u32,
                 queues.flag_20.first().copied().unwrap_or(u16::MAX) as u32,
             ]);
-            assert_eq!(actual, expected, "native model owner update case{case}");
+            assert_eq!(actual, expected, "model owner update case{case}");
         }
     }
 
     #[test]
-    fn local_model_collectors_match_original_unit_clip_masks_and_sorting() {
+    fn local_model_collectors_match_unit_clip_masks_and_sorting() {
         let mut cases = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -493,7 +493,7 @@ mod tests {
             assert_eq!(
                 actual.iter().map(|&v| v as u32).collect::<Vec<_>>(),
                 w[expected + 1..],
-                "native local model collector case{}",
+                "local model collector case{}",
                 w[0]
             );
             cases += 1;
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn model_shadow_margin_clip_matches_original() {
+    fn model_shadow_margin_clip_matches() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -517,7 +517,7 @@ mod tests {
             let matrix = std::array::from_fn(|i| f32::from_bits(w[i]));
             let minimum = std::array::from_fn(|i| f32::from_bits(w[16 + i]));
             let maximum = std::array::from_fn(|i| f32::from_bits(w[20 + i]));
-            let actual = super::super::native_transformed_aabb_clip_cull_at_depth(
+            let actual = super::super::transformed_aabb_clip_cull_at_depth(
                 &matrix,
                 minimum,
                 maximum,
@@ -525,12 +525,12 @@ mod tests {
             );
             assert_eq!(
                 actual.output_byte, w[25] as u8,
-                "native margin clip mask {count}"
+                "margin clip mask {count}"
             );
             assert_eq!(
                 actual.culled,
                 w[26] != 0,
-                "native margin clip result {count}"
+                "margin clip result {count}"
             );
             count += 1;
         }
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn model_shadow_radial_keys_and_tie_order_match_original() {
+    fn model_shadow_radial_keys_and_tie_order_match() {
         let (mut radial, mut sorting) = (0, 0);
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -558,7 +558,7 @@ mod tests {
                 assert_eq!(
                     model_shadow_radial_sort_key(bounds, point),
                     w[9],
-                    "native radial key {radial}"
+                    "radial key {radial}"
                 );
                 radial += 1;
             } else {
@@ -569,12 +569,12 @@ mod tests {
                 assert_eq!(
                     keys,
                     w[1 + count..1 + count * 2],
-                    "native paired sort keys {sorting}"
+                    "paired sort keys {sorting}"
                 );
                 assert_eq!(
                     records,
                     w[1 + count * 2..],
-                    "native tied-record order {sorting}"
+                    "tied-record order {sorting}"
                 );
                 sorting += 1;
             }
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn model_caster_publication_matches_original_bounds_producer() {
+    fn model_caster_publication_matches_bounds_producer() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -604,10 +604,10 @@ mod tests {
             assert_eq!(
                 actual.flags,
                 u8::try_from(w[17]).unwrap(),
-                "native publication {count}"
+                "publication {count}"
             );
             if let Some(sphere) = actual.sphere {
-                assert_eq!(sphere.map(f32::to_bits), w[18..22], "native sphere {count}");
+                assert_eq!(sphere.map(f32::to_bits), w[18..22], "sphere {count}");
             } else {
                 assert_eq!(w[18..22], [(-777.0f32).to_bits(); 4]);
             }
@@ -637,7 +637,7 @@ mod tests {
             assert_eq!(
                 actual.map(f32::to_bits),
                 Some(w[22]),
-                "native collected distance {count}"
+                "collected distance {count}"
             );
             count += 1;
         }
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_caster_dispatch_matches_complete_original_traversal() {
+    fn actor_caster_dispatch_matches_complete_traversal() {
         #[derive(Clone)]
         struct Actor {
             flags: u8,
@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn model_caster_owner_flags_match_original_setters_and_child_dispatch() {
+    fn model_caster_owner_flags_match_setters_and_child_dispatch() {
         assert!(!model_is_dynamic_caster(INITIAL_MODEL_CONTEXT_FLAGS_18BC));
         let mut leaf_count = 0;
         let mut parent_count = 0;

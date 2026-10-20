@@ -235,7 +235,7 @@ selection therefore caused otherwise valid floodlight shadows to disappear.
 The pairing now resolves to the verified opaque depth path. The installed Dust
 material audit checks every world material through the original compiled bank;
 set `DH2_AUDIT_LEVEL=dust_p_lowchaos` when running the ignored
-`native_world_shadow_sources_resolve_level_materials` test. All 1,141 materials
+`world_shadow_sources_resolve_level_materials` test. All 1,141 materials
 resolve, including 997 shadow-enabled variants. No material-name exceptions or
 unverified shader aliases are used.
 
@@ -390,3 +390,9 @@ Their preparation batch submits all copies before dependent asset systems run;
 wgpu returns staging chunks for reuse only after GPU completion. Destination
 buffers, uploaded bytes, resize rules and render order remain unchanged. This
 reduces temporary upload resource churn without changing game resource budgets.
+
+The gameplay performance overlay samples process memory once per second with
+the frame-rate display. `RAM` is the resident working set; `Private` is private
+committed memory and includes pages that may be paged out. These process counters
+include driver allocations charged to the process and are not GPU VRAM totals.
+Unavailable counters are shown explicitly rather than reported as zero.

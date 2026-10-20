@@ -21,7 +21,7 @@ pub fn instancing_bank_override(
         1 => Ok(Some(InstancingBankOverride::Direct)),
         2 if use_direct => Ok(None),
         2 => Ok(Some(InstancingBankOverride::Multi)),
-        _ => Err("native material has exactly three instancing banks".into()),
+        _ => Err("material has exactly three instancing banks".into()),
     }
 }
 
@@ -38,7 +38,7 @@ pub enum ShadowProgramSource {
 /// FUN_1402c3bc0's first render-target blend-enable bit. Blend operations do
 /// not participate: ONE/ZERO for both colour and alpha disables blending.
 /// This also defines the bit consumed at material +0x2c8 by 1402d5210.
-pub fn native_blend_enabled(state: u32) -> bool {
+pub fn blend_enabled(state: u32) -> bool {
     state & 0x1e != 2 || state & 0x1e0 != 0 || state & 0x7800 != 0x800 || state & 0x78000 != 0
 }
 
@@ -139,7 +139,7 @@ pub fn shadow_program_source(
     if override_present {
         return ShadowProgramSource::Authored;
     }
-    if (hair_type || !native_blend_enabled(main_blend_state)) && (!cloth_slot || cloth_enabled) {
+    if (hair_type || !blend_enabled(main_blend_state)) && (!cloth_slot || cloth_enabled) {
         ShadowProgramSource::MainProgram
     } else {
         ShadowProgramSource::Disabled
@@ -166,7 +166,7 @@ pub fn is_editor_helper(path: &str) -> bool {
 /// is a placeholder for a particle shader with distance fade and fx/diffuse.
 /// The viewer loads the full level, so these impostors must not be drawn over it.
 pub fn is_screen_gate_impostor(path: &str, bytes: &[u8]) -> bool {
-    let text = crate::entities::native_declaration_text(bytes);
+    let text = crate::entities::declaration_text(bytes);
     path.contains("/optim/screen_gates/")
         && text.lines().any(|line| {
             let mut fields = line.split_whitespace();
@@ -184,7 +184,7 @@ pub fn transparency(bytes: &[u8]) -> Transparency {
 /// Render-program declarations contain default options, parms and state before
 /// their HLSL blocks. A material need not repeat the program's blend state.
 fn render_fields(bytes: &[u8]) -> std::collections::HashMap<String, String> {
-    let text = crate::entities::native_declaration_text(bytes);
+    let text = crate::entities::declaration_text(bytes);
     let mut values = std::collections::HashMap::new();
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
@@ -211,7 +211,7 @@ pub fn material_option_parameters(
     // alphaTest pair may share a line with hasBumpMap; dropping the latter
     // selects a nonexistent specialization and blocks the whole shadow bank.
     crate::entities::material_integer_parameters(
-        &crate::entities::native_declaration_text(bytes),
+        &crate::entities::declaration_text(bytes),
         is_option,
     )
 }
@@ -224,20 +224,20 @@ pub fn material_option_parameters(
 /// This is not the complete parameter-block parser or the three-row bank.
 pub fn rigid_shadow_option_parameters(
     bytes: &[u8],
-    native_alpha_test: i32,
-    native_is_alpha: bool,
-    native_no_screen_shadows: bool,
+    alpha_test: i32,
+    is_alpha: bool,
+    no_screen_shadows: bool,
     is_option: impl FnMut(&str) -> bool,
 ) -> Result<Vec<(String, i32)>, String> {
     let mut options = material_option_parameters(bytes, is_option)?;
     // Last-wins overrides; signature order comes from the program handles.
-    options.push(("isAlpha".into(), i32::from(native_is_alpha)));
+    options.push(("isAlpha".into(), i32::from(is_alpha)));
     options.push((
         "noScreenShadows".into(),
-        i32::from(native_no_screen_shadows),
+        i32::from(no_screen_shadows),
     ));
     options.push(("isShadow".into(), 1));
-    if native_alpha_test & 1 != 0 {
+    if alpha_test & 1 != 0 {
         options.push(("forcePixelShader".into(), 1));
     }
     Ok(options)
@@ -326,7 +326,7 @@ pub fn shadow_blend_factor_state(bytes: &[u8], program: &[u8]) -> Result<u32, St
 /// The source-text wrapper above is useful without a resident library, but
 /// production must not replace the serialized program's state with defaults.
 pub fn shadow_blend_factor_overrides(mut word: u32, source: &[u8]) -> Result<u32, String> {
-    let text = crate::entities::native_declaration_text(source);
+    let text = crate::entities::declaration_text(source);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut tokens = line.split_whitespace();
@@ -369,7 +369,7 @@ pub fn shadow_blend_factor_overrides(mut word: u32, source: &[u8]) -> Result<u32
         }
         word = (word & !mask) | ((a | (b << 4)) << shift);
     }
-    word = (word & !1) | u32::from(native_blend_enabled(word));
+    word = (word & !1) | u32::from(blend_enabled(word));
     Ok(word)
 }
 
@@ -401,7 +401,7 @@ pub struct ShadowSourceInputs {
     /// Actual MAIN definition inherited by the material's drawing-state block
     /// (1402d662d -> 1402c3bc0, material +0x2c8). A textual source-only parse
     /// cannot supply the registered program's other eight words.
-    pub main_render_state: Option<crate::render_state::NativeRenderState>,
+    pub main_render_state: Option<crate::render_state::RenderState>,
     pub hair_type: bool,
     pub sky_type: u32,
     pub is_cloth: bool,
@@ -479,10 +479,10 @@ impl ShadowSourceInputs {
         slope_scale: f32,
         clamp: f32,
         depth_clip: u8,
-    ) -> Result<crate::render_state::NativeRenderState, String> {
+    ) -> Result<crate::render_state::RenderState, String> {
         let state = self
             .main_render_state
-            .ok_or("native world shadow material has no resolved MAIN drawing state")?;
+            .ok_or("game world shadow material has no resolved MAIN drawing state")?;
         Ok(crate::render_state::world_shadow_draw_state(
             state,
             surface_flags,
@@ -671,7 +671,7 @@ pub fn intrinsic_image_pixels(name: &str) -> Option<Vec<u8>> {
 }
 
 #[test]
-fn intrinsic_images_match_original_generator_pixels() {
+fn intrinsic_images_match_generator_pixels() {
     let default = intrinsic_image_pixels("_default").unwrap();
     assert_eq!(default.len(), 1024);
     // Original1402f5fc0 captured by analysis/probe_original_default_image.py:
@@ -698,7 +698,7 @@ fn intrinsic_images_match_original_generator_pixels() {
 }
 
 pub fn diffuse_image(bytes: &[u8]) -> Option<String> {
-    let text = crate::entities::native_declaration_text(bytes);
+    let text = crate::entities::declaration_text(bytes);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut fields = line.split_whitespace();
@@ -725,7 +725,7 @@ pub fn diffuse_image(bytes: &[u8]) -> Option<String> {
 
 /// Void's explicit layer-zero tint, expressed in linear colour space.
 pub fn layer0_color_constant(bytes: &[u8]) -> Option<[f32; 4]> {
-    let text = crate::entities::native_declaration_text(bytes);
+    let text = crate::entities::declaration_text(bytes);
     let mut enabled = false;
     let mut color = None;
     for line in text.lines() {
@@ -757,7 +757,7 @@ pub fn layer0_color_constant(bytes: &[u8]) -> Option<[f32; 4]> {
 
 /// Which packed vertex-colour channel masks layer zero, if the material uses one.
 pub fn layer0_vertex_mask_channel(bytes: &[u8]) -> Option<usize> {
-    let text = crate::entities::native_declaration_text(bytes);
+    let text = crate::entities::declaration_text(bytes);
     for line in text.lines() {
         let line = line.split("//").next().unwrap_or("").trim();
         let mut fields = line.split_whitespace();
@@ -780,7 +780,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_material_bank_overrides_preserve_skip_and_set_order() {
+    fn material_bank_overrides_preserve_skip_and_set_order() {
         use InstancingBankOverride::*;
         for (multi, direct, expected) in [
             (false, false, [Some(Unchanged), Some(Direct), Some(Multi)]),
@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_alpha_decal_suppression_matches_original_instructions() {
+    fn shadow_alpha_decal_suppression_matches_instructions() {
         // Captured by analysis/probe_original_shadow_alpha.py. Only the
         // original constructor's predicate blocks execute, not the whole ctor.
         let mut count = 0;
@@ -855,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_material_class_uses_main_presence_and_native_blend_bit() {
+    fn runtime_material_class_uses_main_presence_and_blend_bit() {
         for main in [false, true] {
             for implicit in [false, true] {
                 for invisible in [false, true] {
@@ -874,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn material_finalization_matches_original_three_bank_instructions() {
+    fn material_finalization_matches_three_bank_instructions() {
         // Only 1402d6eec..1402d6f39 executes in the probe: no constructor,
         // compiler callbacks, input or live game memory writes.
         let mut count = 0;
@@ -937,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn native_shadow_blend_factors_inherit_without_sort_inference() {
+    fn shadow_blend_factors_inherit_without_sort_inference() {
         let tokens = [
             "ZERO",
             "ONE",
@@ -962,9 +962,9 @@ mod tests {
         let default =
             shadow_blend_factor_state(b"stageSort sortTrans\nalphaCoverage 1\n", b"").unwrap();
         assert_eq!(default, 0x01e00802);
-        assert!(!native_blend_enabled(default));
+        assert!(!blend_enabled(default));
         let program = b"blend SRC_ALPHA ONE_MINUS_SRC_ALPHA\nalphaBlend ONE ZERO\nhlsl_prefix {\nblend invalid ignored\n";
-        assert!(native_blend_enabled(
+        assert!(blend_enabled(
             shadow_blend_factor_state(b"", program).unwrap()
         ));
         assert_eq!(
@@ -975,7 +975,7 @@ mod tests {
             shadow_blend_factor_state(b"alphaBlend SRC_COLOR ONE_MINUS_DST_COLOR\n", b"").unwrap();
         assert_eq!((remapped >> 11) & 15, 4);
         assert_eq!((remapped >> 15) & 15, 7);
-        assert!(native_blend_enabled(remapped));
+        assert!(blend_enabled(remapped));
         assert_eq!(
             authored_program_override(b"shadowProgram \"\"\n", "shadowProgram"),
             Some(String::new())
@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_source_retains_native_selector_bits_and_cloth_presence() {
+    fn shadow_source_retains_selector_bits_and_cloth_presence() {
         let program = b"Alpha/EnableRefraction 2\ntranslucency_hq/enable 1\nmaterialEffects/enable 3\nisCloth 1\n";
         let inputs = shadow_source_inputs(b"alphaTest 0\n", program).unwrap();
         assert_eq!(inputs.shadow_draw_flags49(), 0x43);
@@ -1115,7 +1115,7 @@ mod tests {
         );
     }
     #[test]
-    fn native_image_sources_preserve_options_and_program_token_spelling() {
+    fn image_sources_preserve_options_and_program_token_spelling() {
         assert_eq!(
             image_source_name("models/tree_d$nomips"),
             Some("models/tree_d$nomips.tga".into())
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(constant_color_pixels([f32::NAN; 4]), None);
     }
     #[test]
-    fn default_extension_matches_original_owned_string_cases() {
+    fn default_extension_matches_owned_string_cases() {
         let decode = |hex: &str| {
             if hex == "-" {
                 return String::new();
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn native_raster_culling_inherits_and_is_not_a_lighting_option() {
+    fn raster_culling_inherits_and_is_not_a_lighting_option() {
         assert_eq!(cull_mode_with_program(b"", b""), Ok(CullMode::Back));
         assert_eq!(
             cull_mode_with_program(b"state {\n}\n", b"cull FRONT\n"),
@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn rigid_shadow_options_keep_authored_values_and_native_last_writes() {
+    fn rigid_shadow_options_keep_authored_values_and_last_writes() {
         let bytes = b"useSkinning 0\nforcePixelShader 0\ndiffusemap not_a_number\n";
         let options = rigid_shadow_option_parameters(bytes, 1, false, false, |name| {
             matches!(
@@ -1300,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_option_inputs_are_not_overwritten_before_native_flag_resolution() {
+    fn shadow_option_inputs_are_not_overwritten_before_flag_resolution() {
         let bytes = b"noScreenShadows -2\ntranslucency/enable 3\nskyType 2\nisAlpha 0\n";
         let inputs = material_option_parameters(bytes, |_| true).unwrap();
         assert!(inputs.contains(&("noscreenshadows".into(), -2)));
@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn native_visibility_and_alpha_options_inherit_and_allow_explicit_overrides() {
+    fn visibility_and_alpha_options_inherit_and_allow_explicit_overrides() {
         let program =
             b"options {\ninvisible 1\nalphaTest 1\n}\nhlsl_prefix {\ninvisible 0\nalphaTest 0\n";
         assert!(program_option(b"", program, "invisible"));

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 /// (140135ff0/140136028: CMP byte,0x20; JG/JLE). Treating a raw 0xa0 as
 /// invalid UTF-8 instead changes an installed MAIN name into `arkDefault�`.
 /// Preserve quoted content and comment boundaries before decoding the text.
-pub fn native_declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     let needs_normalization =
         |byte: u8| byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace());
     if !bytes.iter().copied().any(needs_normalization) {
@@ -123,7 +123,7 @@ pub struct ShadowQualitySettings {
 
 /// Seven native `arkDeclMenuSectionOptionVisuals` LOD rows initialized by
 /// FUN_140509ae0; the runtime row-ID mapping remains unknown.
-pub const ORIGINAL_DEFAULT_LOD_DISTANCE_ROWS: [[f32; 4]; 7] = [[3.0, 6.0, 12.0, 20.0]; 7];
+pub const DEFAULT_LOD_DISTANCE_ROWS: [[f32; 4]; 7] = [[3.0, 6.0, 12.0, 20.0]; 7];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentBinding {
@@ -1012,7 +1012,7 @@ pub fn declaration_type_name(text: &str) -> Result<&str, String> {
 // 1401461c0. Kept in this lower-level module: entities is also compiled by
 // archive/analysis binaries which do not contain the render-program module.
 // CVTTSS2SI returns 0x80000000 for NaN/overflow, not Rust's saturation.
-pub(crate) fn native_integer_word(word: u32, declaration_flags: u32) -> u32 {
+pub(crate) fn integer_word(word: u32, declaration_flags: u32) -> u32 {
     if declaration_flags & 15 != 12 && declaration_flags & 0x30 == 0x30 {
         let value = f32::from_bits(word);
         if (-2147483648.0..2147483648.0).contains(&value) {
@@ -1047,7 +1047,7 @@ pub fn numeric_token_value(spelling: &str, flags: u32) -> Result<(u64, u32, u32)
                 as f32)
                 .to_bits()
         };
-        let integer = native_integer_word(word, 0x30) as i32 as i64 as u64;
+        let integer = integer_word(word, 0x30) as i32 as i64 as u64;
         return Ok((integer, word, cached));
     }
     let mut integer = 0u64;
@@ -1068,7 +1068,7 @@ pub fn numeric_token_value(spelling: &str, flags: u32) -> Result<(u64, u32, u32)
         // Their optional port is not part of this numeric value.
         for group in spelling.split(':').next().unwrap().split('.') {
             if group.is_empty() || group.len() > 3 || !group.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(format!("invalid native address token {spelling:?}"));
+                return Err(format!("invalid game address token {spelling:?}"));
             }
             for digit in group.bytes() {
                 integer = integer
@@ -1343,7 +1343,7 @@ pub fn declaration_option_default(text: &str) -> Result<i32, String> {
     }
     let digits = token.strip_prefix('-').unwrap_or(token);
     if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
-        return Err(format!("unsupported native option integer {token:?}"));
+        return Err(format!("unsupported option integer {token:?}"));
     }
     let value = token
         .parse::<i32>()
@@ -2383,7 +2383,7 @@ pub fn player_start(document: &Document) -> Option<PlayerStart> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn declaration_whitespace_matches_original_signed_byte_lexer() {
+    fn declaration_whitespace_matches_signed_byte_lexer() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2394,7 +2394,7 @@ mod tests {
             let parts: Vec<_> = line.split_whitespace().collect();
             let byte = u8::from_str_radix(parts[0], 16).unwrap();
             let source = [b"alpha".as_slice(), &[byte], b"beta".as_slice()].concat();
-            let text = super::native_declaration_text(&source);
+            let text = super::declaration_text(&source);
             let actual = super::declaration_lexemes(&text).unwrap();
             let expected: Vec<String> = parts[1..]
                 .iter()
@@ -2413,7 +2413,7 @@ mod tests {
         }
         assert_eq!(count, 160);
         let quoted = "name \"résumé\" // quote \" in a comment\nmainProgram arkDefault\u{a0}\n";
-        let text = super::native_declaration_text(quoted.as_bytes());
+        let text = super::declaration_text(quoted.as_bytes());
         assert!(text.contains("\"résumé\""));
         assert_eq!(
             super::declaration_lexemes(&text).unwrap(),
@@ -2423,7 +2423,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numeric_tokens_match_unmodified_original_converter() {
+    fn numeric_tokens_match_unmodified_converter() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2456,7 +2456,7 @@ mod tests {
     }
 
     #[test]
-    fn vector_initializers_follow_native_splat_zero_tail_and_sign_rules() {
+    fn vector_initializers_follow_splat_zero_tail_and_sign_rules() {
         let parse = |text| {
             declaration_float_vector_default(text)
                 .unwrap()
@@ -2657,7 +2657,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_scalar_parameter_uses_native_name_case_and_override_order() {
+    fn environment_scalar_parameter_uses_name_case_and_override_order() {
         let parameters = environment_render_parameters_with_inheritance(
             "current",
             r#"
@@ -2998,7 +2998,7 @@ entity { entityDef hanger { edit = { m_componentDecls = {
         assert_eq!(links[0].angular_friction, Some(1.0));
     }
     #[test]
-    fn omitted_rigid_body_fields_use_original_constructor_defaults() {
+    fn omitted_rigid_body_fields_use_constructor_defaults() {
         for fields in ["", "edit = {}"] {
             let text = format!(
                 r#"Version 6
@@ -3350,15 +3350,15 @@ entity { entityDef pickup { inherit = "entities/child.def"; edit = { spawnPositi
     }
 
     #[test]
-    fn native_lod_declaration_initializer_matches_all_seven_groups() {
+    fn lod_declaration_initializer_matches_all_seven_groups() {
         assert_eq!(
-            ORIGINAL_DEFAULT_LOD_DISTANCE_ROWS,
+            DEFAULT_LOD_DISTANCE_ROWS,
             [[3.0, 6.0, 12.0, 20.0]; 7]
         );
     }
 
     #[test]
-    fn visual_quality_values_match_original_enum_initializer() {
+    fn visual_quality_values_match_enum_initializer() {
         assert_eq!(visual_quality_preset_name(0), Some("VERY_LOW_QUALITY"));
         assert_eq!(visual_quality_preset_name(5), Some("ULTRA_QUALITY"));
         assert_eq!(visual_quality_preset_name(6), Some("AUTO_QUALITY"));

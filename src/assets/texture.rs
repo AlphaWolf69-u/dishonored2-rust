@@ -154,7 +154,7 @@ pub fn normalize_image_format(packed: &mut u32) -> Result<(), String> {
         &mut mapped,
     ) {
         if mapped == u32::MAX {
-            return Err("native image format conversion has unspecified output".into());
+            return Err("image format conversion has unspecified output".into());
         }
         *packed = (*packed & !0x1fe000) | ((mapped << 13) & 0x1fe000);
     }
@@ -203,7 +203,7 @@ impl ImageFormat {
             96 => Self::Bc6Signed,
             98 => Self::Bc7,
             99 => Self::Bc7Srgb,
-            _ => return Err(format!("unsupported native texture format {value}")),
+            _ => return Err(format!("unsupported texture format {value}")),
         })
     }
     pub fn block_bytes(self) -> usize {
@@ -1133,7 +1133,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_descriptor_mip_counts_match_original() {
+    fn image_descriptor_mip_counts_match() {
         let mut checked = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1154,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn image_formats_match_original() {
+    fn image_formats_match() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn image_priority_matches_every_native_byte_pair() {
+    fn image_priority_matches_every_byte_pair() {
         let mut checked = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1277,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn mip_update_queue_appends_original_16_byte_descriptors() {
+    fn mip_update_queue_appends_16_byte_descriptors() {
         assert_eq!(std::mem::size_of::<MipUpdateDescriptor>(), 16);
         let mut queue = MipUpdateQueue::new(2, 0, false).unwrap();
         assert_eq!(queue.push(mip_update(0x1122)), Some(0));
@@ -1287,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn mip_update_queue_growth_matches_original_increment_and_rounding() {
+    fn mip_update_queue_growth_matches_increment_and_rounding() {
         let mut rounded = MipUpdateQueue::new(5, 2, false).unwrap();
         for image in 0..5 {
             assert_eq!(rounded.push(mip_update(image)), Some(image as u32));
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn mip_update_queue_special_growth_switches_to_original_doubling_mode() {
+    fn mip_update_queue_special_growth_switches_to_doubling_mode() {
         let mut queue = MipUpdateQueue::new(2, 0xff, false).unwrap();
         assert_eq!(queue.push(mip_update(1)), Some(0));
         assert_eq!(queue.push(mip_update(2)), Some(1));
@@ -1340,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn next_mip_request_uses_original_candidate_and_upload_byte_fields() {
+    fn next_mip_request_uses_candidate_and_upload_byte_fields() {
         let mut queue = MipUpdateQueue::new(1, 0x40, false).unwrap();
         let mut state = MipResidency {
             resident: 1,
@@ -1408,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn next_mip_request_advances_image_even_when_original_queue_cannot_grow() {
+    fn next_mip_request_advances_image_even_when_queue_cannot_grow() {
         let mut queue = MipUpdateQueue::new(1, 0x40, false).unwrap();
         assert_eq!(queue.push(mip_update(0)), Some(0));
         let mut state = MipResidency {
@@ -1512,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn original_mip_drop_requests_wait_for_previous_update() {
+    fn mip_drop_requests_wait_for_previous_update() {
         let mut one = MipResidency {
             resident: 3,
             queued: 3,
@@ -1554,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_area_gate_matches_original_threshold() {
+    fn projected_area_gate_matches_threshold() {
         assert!(!next_mip_meets_projected_area(1023.0, 64, 64));
         assert!(next_mip_meets_projected_area(1024.0, 64, 64));
     }

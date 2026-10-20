@@ -36,15 +36,15 @@ pub(super) fn install(app: &mut bevy::app::SubApp) {
 fn sample(
     mut trace: ResMut<Trace>,
     local: Res<LocalGpu>,
-    sun: Res<NativeShadowSceneGpu>,
-    local_frame: Res<NativeLocalShadowSceneFrame>,
-    frame: Res<NativeShadowSceneFrame>,
-    readiness: Res<NativeShadowCaptureReadiness>,
-    sampling: Option<Res<crate::shadow_sampling::NativeLocalSamplingBuffer>>,
+    sun: Res<ShadowSceneGpu>,
+    local_frame: Res<LocalShadowSceneFrame>,
+    frame: Res<ShadowSceneFrame>,
+    readiness: Res<ShadowCaptureReadiness>,
+    sampling: Option<Res<crate::shadow_sampling::LocalSamplingBuffer>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     device: Res<RenderDevice>,
     mut context: RenderContext,
-    screen: Option<Res<crate::screen_shadow_pass::NativeScreenShadowFrame>>,
+    screen: Option<Res<crate::screen_shadow_pass::ScreenShadowFrame>>,
     images: Res<RenderAssets<GpuImage>>,
     views: Query<
         (
@@ -68,7 +68,7 @@ fn sample(
     if trace.tick < 120 {
         return;
     }
-    let NativeShadowSceneState::Ready {
+    let ShadowSceneState::Ready {
         target_image,
         receiver,
         ..
@@ -116,7 +116,7 @@ fn sample(
             return Err("invalid receiver trace points".into());
         }
         let uniform =
-            crate::shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(receiver)?;
+            crate::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(receiver)?;
         let parallel = ShaderBuffer::from(uniform);
         let parallel = device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("shadow trace sun"),
@@ -174,7 +174,7 @@ fn sample(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/shaders/dh2_parallel_receiver.wgsl"
         ))
-        .split("fn native_parallel_directional_index")
+        .split("fn parallel_directional_index")
         .next()
         .unwrap();
         let source = format!(
@@ -197,34 +197,34 @@ fn sample(
             @group(0) @binding(134) var color:texture_2d<f32>;
             @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>) {
                 if id.x>=arrayLength(&results) {return;}
-                let stride=14u+native_local[1];let p=points[id.x/stride].xyz;let lane=id.x%stride;
-                if lane>=11u+native_local[1] {
+                let stride=14u+local[1];let p=points[id.x/stride].xyz;let lane=id.x%stride;
+                if lane>=11u+local[1] {
                     let c=clip*vec4(p.x,p.z,-p.y,1.0);let ndc=c.xyz/c.w;
                     let xy=vec2<i32>((ndc.xy*vec2(0.5,-0.5)+vec2(0.5))*vec2<f32>(textureDimensions(screen)));
-                    if lane==11u+native_local[1] {results[id.x]=textureLoad(screen,xy,0);}
-                    else if lane==12u+native_local[1] {let z=textureLoad(depth,xy,0);results[id.x]=vec4(z,ndc.z,z-ndc.z,f32(xy.x));}
+                    if lane==11u+local[1] {results[id.x]=textureLoad(screen,xy,0);}
+                    else if lane==12u+local[1] {let z=textureLoad(depth,xy,0);results[id.x]=vec4(z,ndc.z,z-ndc.z,f32(xy.x));}
                     else {results[id.x]=textureLoad(color,xy,0);}
                     return;
                 }
-                if lane==0u {results[id.x]=vec4(f32(native_parallel_shadow_slice(p,native_parallel.view_depth_row,native_parallel.cascade_fars)),
-                    -dot(vec4(p,1.0),native_parallel.view_depth_row),f32(native_parallel.config.x),0.0);return;}
+                if lane==0u {results[id.x]=vec4(f32(parallel_shadow_slice(p,parallel.view_depth_row,parallel.cascade_fars)),
+                    -dot(vec4(p,1.0),parallel.view_depth_row),f32(parallel.config.x),0.0);return;}
                 if lane<=10u {
-                    let side=(lane-1u)%5u;let options=native_parallel.config.z;
-                    let c=native_shadow_offset(native_parallel.world_to_shadow[side],p,vec3(0.0),native_parallel.sun_direction.xyz,true,
-                        (options&1u)!=0u,(options&2u)!=0u,(options&4u)!=0u,(options&8u)!=0u,native_parallel.bias.x,native_parallel.bias.y,native_parallel.bias.z);
-                    if lane<=5u {let v=native_sample_directional_shadow(native_parallel_depth,native_parallel_comparison,c,i32(side),native_parallel.shadow_size.xy,native_parallel.quality.x,native_parallel.quality.y-1);
+                    let side=(lane-1u)%5u;let options=parallel.config.z;
+                    let c=shadow_offset(parallel.world_to_shadow[side],p,vec3(0.0),parallel.sun_direction.xyz,true,
+                        (options&1u)!=0u,(options&2u)!=0u,(options&4u)!=0u,(options&8u)!=0u,parallel.bias.x,parallel.bias.y,parallel.bias.z);
+                    if lane<=5u {let v=sample_directional_shadow(parallel_depth,parallel_comparison,c,i32(side),parallel.shadow_size.xy,parallel.quality.x,parallel.quality.y-1);
                         results[id.x]=vec4(v,c.xyz);}
-                    else {let xy=vec2<i32>(c.xy*native_parallel.shadow_size.xy);
-                        results[id.x]=vec4(textureLoad(native_parallel_depth,xy,i32(side),0),c.z,0.0,0.0);}
+                    else {let xy=vec2<i32>(c.xy*parallel.shadow_size.xy);
+                        results[id.x]=vec4(textureLoad(parallel_depth,xy,i32(side),0),c.z,0.0,0.0);}
                     return;
                 }
                 let light=lane-11u;
-                if native_local[16u+16u*light+1u]==0xffffffffu {results[id.x]=vec4(-1.0);return;}
+                if local[16u+16u*light+1u]==0xffffffffu {results[id.x]=vec4(-1.0);return;}
                 let host=vec3(p.x,p.z,-p.y);let n=vec3(0.0,1.0,0.0);
-                results[id.x]=vec4(native_local_visibility(light,host,n,vec4<u32>(0u,0u,2u,2u)),
-                    native_local_visibility(light,host,n,vec4<u32>(0u,1u,2u,2u)),
-                    native_local_visibility(light,host,n,vec4<u32>(0u,2u,2u,2u)),
-                    native_local_visibility(light,host,n,vec4<u32>(0u,15u,2u,2u)));
+                results[id.x]=vec4(local_visibility(light,host,n,vec4<u32>(0u,0u,2u,2u)),
+                    local_visibility(light,host,n,vec4<u32>(0u,1u,2u,2u)),
+                    local_visibility(light,host,n,vec4<u32>(0u,2u,2u,2u)),
+                    local_visibility(light,host,n,vec4<u32>(0u,15u,2u,2u)));
             }
         "#
         );
@@ -243,7 +243,7 @@ fn sample(
                     compilation_options: Default::default(),
                     cache: None,
                 });
-        let sampler = crate::shadow_pipeline::native_shadow_comparison_sampler(&device);
+        let sampler = crate::shadow_pipeline::shadow_comparison_sampler(&device);
         let group = device
             .wgpu_device()
             .create_bind_group(&BindGroupDescriptor {

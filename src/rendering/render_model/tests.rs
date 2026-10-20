@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn entity_clock_reset_and_getter_match_original_code() {
+fn entity_clock_reset_and_getter_match_code() {
     let mut count = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -53,7 +53,7 @@ fn entity_clock_reset_and_getter_match_original_code() {
 }
 
 #[test]
-fn model_shader_time_preserves_native_group_and_double_addition() {
+fn model_shader_time_preserves_group_and_double_addition() {
     for flags in 0..=u8::MAX {
         assert_eq!(
             model_shader_time_group(flags),
@@ -102,7 +102,7 @@ fn shadow_state_uses_published_mvp_winding_not_renderer_enablement() {
 }
 
 #[test]
-fn depth_owner_parent_and_local_refresh_keep_native_rules() {
+fn depth_owner_parent_and_local_refresh_keep_rules() {
     let root = parent_model_depth_state(None);
     assert_eq!(
         (root.dispatch_flags, root.model_mask, root.depth_hack),
@@ -133,7 +133,7 @@ fn depth_owner_parent_and_local_refresh_keep_native_rules() {
 }
 
 #[test]
-fn depth_owner_matches_original_three_node_trees() {
+fn depth_owner_matches_three_node_trees() {
     let mut count = 0;
     for (row, line) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -189,7 +189,7 @@ fn depth_owner_matches_original_three_node_trees() {
 }
 
 #[test]
-fn depth_owner_inheritance_preserves_original_nonzero_and_unit_rules() {
+fn depth_owner_inheritance_preserves_nonzero_and_unit_rules() {
     for parent in [0.0, -0.0, 1.0, 0.125, -2.0, f32::NAN] {
         for local in [0.0, -0.0, 1.0, 0.25, -3.0, f32::NAN] {
             for inherited_mask in [0, 1, 0xff] {
@@ -273,7 +273,7 @@ fn shadow_source_resolves_bank_not_capture_identifier() {
 }
 
 #[test]
-fn native_blend_enable_is_independent_of_sort_and_blend_operation() {
+fn blend_enable_is_independent_of_sort_and_blend_operation() {
     for source in 0..10u32 {
         for destination in 0..10u32 {
             for alpha_source in 0..10u32 {
@@ -286,12 +286,12 @@ fn native_blend_enable_is_independent_of_sort_and_blend_operation() {
                         || destination != 0
                         || alpha_source != 1
                         || alpha_destination != 0;
-                    assert_eq!(native_blend_enabled(word), expected);
+                    assert_eq!(blend_enabled(word), expected);
                     assert_eq!(
-                        native_blend_enabled(word | 0xffff_f601 & !0x7ffff),
+                        blend_enabled(word | 0xffff_f601 & !0x7ffff),
                         expected
                     );
-                    assert_eq!(native_blend_enabled(word | 0x180601), expected);
+                    assert_eq!(blend_enabled(word | 0x180601), expected);
                 }
             }
         }
@@ -299,7 +299,7 @@ fn native_blend_enable_is_independent_of_sort_and_blend_operation() {
 }
 
 #[test]
-fn shadow_model_draw_matches_original_program_state_branches() {
+fn shadow_model_draw_matches_program_state_branches() {
     // Original 329120 program/state instructions execute unchanged;
     // bounds/matrix and external renderer callees are intercepted.
     let default: Vec<u64> = (100..144).collect();
@@ -362,8 +362,8 @@ fn shadow_model_draw_matches_original_program_state_branches() {
 }
 
 #[test]
-fn depth_alpha_draw_matches_original_three_pass_dispatch() {
-    // probe_original_depth_alpha_draw.py executes unmodified 321860
+fn depth_alpha_draw_matches_three_pass_dispatch() {
+    // probe_depth_alpha_draw.py executes unmodified 321860
     // list/program/state branches with rendering/TLS callees intercepted.
     let default: Vec<u64> = (100..144).collect();
     let overrides: Vec<u64> = (1000..1330).collect();
@@ -394,20 +394,20 @@ fn depth_alpha_draw_matches_original_three_pass_dispatch() {
                 .unwrap(),
         };
         let actual = prepare_depth_alpha_draw(&surface, words[4] as u8).unwrap();
-        assert_eq!(actual.is_some(), words[14] != 0, "native row{index}");
+        assert_eq!(actual.is_some(), words[14] != 0, "row{index}");
         if let Some(actual) = actual {
             assert_eq!(
                 actual.program, words[15] as u64,
-                "native program row{index}"
+                "program row{index}"
             );
             assert_eq!(
                 actual.stencil_reference, words[16] as u8,
-                "native stencil row{index}"
+                "stencil row{index}"
             );
             assert_eq!(
                 actual.draw_state.as_slice(),
                 words[17..26].iter().map(|v| *v as u32).collect::<Vec<_>>(),
-                "native state row{index}"
+                "state row{index}"
             );
         }
         count += 1;
@@ -416,7 +416,7 @@ fn depth_alpha_draw_matches_original_three_pass_dispatch() {
 }
 
 #[test]
-fn depth_alpha_draw_selection_and_native_state_masks() {
+fn depth_alpha_draw_selection_and_state_masks() {
     let default: Vec<u64> = (100..144).collect();
     let overrides: Vec<u64> = (1000..1330).collect();
     let mut surface = DepthAlphaSurface {
@@ -502,9 +502,9 @@ fn depth_alpha_draw_selection_and_native_state_masks() {
 }
 
 #[test]
-fn native_multisample_getters_match_original() {
+fn multisample_getters_match() {
     assert_eq!(
-        original_renderer_sample_count(ORIGINAL_DEFAULT_MULTI_SAMPLES),
+        renderer_sample_count(DEFAULT_MULTI_SAMPLES),
         1
     );
     let fixture = include_str!(concat!(
@@ -516,7 +516,7 @@ fn native_multisample_getters_match_original() {
             .split_whitespace()
             .map(|word| word.parse::<i32>().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(original_renderer_sample_count(words[0]), words[2] as u32);
+        assert_eq!(renderer_sample_count(words[0]), words[2] as u32);
         // Entire FUN_14036b620 is integer equality against the raw setting,
         // not the clamped texture count. Rust's existing equality suffices.
         assert_eq!((words[0] == words[1]) as i32, words[3]);
@@ -524,33 +524,33 @@ fn native_multisample_getters_match_original() {
 }
 
 #[test]
-fn native_depth_draw_cache_reset_matches_conditional_two_qword_clear() {
+fn depth_draw_cache_reset_matches_conditional_two_qword_clear() {
     let mut bound = [1, 2, 3, 4];
-    reset_native_depth_draw_cache_if_bound(&mut bound);
+    reset_depth_draw_cache_if_bound(&mut bound);
     assert_eq!(bound, [0, 2, 3, 0]);
     let mut unbound = [0, 2, 3, 4];
-    reset_native_depth_draw_cache_if_bound(&mut unbound);
+    reset_depth_draw_cache_if_bound(&mut unbound);
     assert_eq!(unbound, [0, 2, 3, 4]);
 }
 
 #[test]
-fn native_indirect_pointer_helpers_apply_the_original_addends() {
+fn indirect_pointer_helpers_apply_the_addends() {
     let mut object = [0; 0x18];
     object[0x10..0x18].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
     assert_eq!(
-        native_indirect_pointer_plus_0x58(&object).unwrap(),
+        indirect_pointer_plus_0x58(&object).unwrap(),
         0x1234_5678_9abc_df48
     );
     assert_eq!(
-        native_indirect_pointer_plus_0x2d8(&object).unwrap(),
+        indirect_pointer_plus_0x2d8(&object).unwrap(),
         0x1234_5678_9abc_e1c8
     );
-    assert!(native_indirect_pointer_plus_0x58(&object[..0x17]).is_err());
+    assert!(indirect_pointer_plus_0x58(&object[..0x17]).is_err());
 }
 
 #[test]
-fn native_optional_parameter_writes_match_the_guard_and_call_order() {
-    let values = NativeOptionalParameterValues {
+fn optional_parameter_writes_match_the_guard_and_call_order() {
+    let values = OptionalParameterValues {
         gate_at_0x38: 0,
         indirect_gate_at_0x78: 0,
         word_at_0x90: 0x1111_2222,
@@ -558,25 +558,25 @@ fn native_optional_parameter_writes_match_the_guard_and_call_order() {
         word_at_0x8c: 0xbbbb_cccc,
     };
     let mut slots = [[0xdead_beef; 4]; 5];
-    assert!(write_native_optional_parameter_values(&mut slots, [0, 1, 2], values).unwrap());
+    assert!(write_optional_parameter_values(&mut slots, [0, 1, 2], values).unwrap());
     assert_eq!(slots[1], [0x1111_2222, 0, 0, 0]);
     assert_eq!(slots[2], values.words_at_0x94);
     assert_eq!(slots[3], [0xbbbb_cccc, 0, 0, 0]);
     let before = slots;
-    assert!(!write_native_optional_parameter_values(
+    assert!(!write_optional_parameter_values(
         &mut slots,
         [0, 1, 2],
-        NativeOptionalParameterValues {
+        OptionalParameterValues {
             gate_at_0x38: 1,
             ..values
         }
     )
     .unwrap());
     assert_eq!(slots, before);
-    assert!(!write_native_optional_parameter_values(
+    assert!(!write_optional_parameter_values(
         &mut slots,
         [0, 1, 2],
-        NativeOptionalParameterValues {
+        OptionalParameterValues {
             indirect_gate_at_0x78: 1,
             ..values
         }
@@ -586,9 +586,9 @@ fn native_optional_parameter_writes_match_the_guard_and_call_order() {
 }
 
 #[test]
-fn native_single_resource_bind_wraps_one_value_without_changing_arguments() {
+fn single_resource_bind_wraps_one_value_without_changing_arguments() {
     let mut observed = None;
-    call_native_resource_array_bind_with_one(
+    call_resource_array_bind_with_one(
         11,
         22,
         33,
@@ -601,7 +601,7 @@ fn native_single_resource_bind_wraps_one_value_without_changing_arguments() {
 }
 
 #[test]
-fn native_parameter_slot_writers_preserve_word_layout_and_order() {
+fn parameter_slot_writers_preserve_word_layout_and_order() {
     let entries = vec![(2, [1, 2, 3, 4]), (1, [5, 6, 7, 8]), (2, [9, 10, 11, 12])];
     let block = ParameterBlock {
         entries,
@@ -617,11 +617,11 @@ fn native_parameter_slot_writers_preserve_word_layout_and_order() {
     assert_eq!(slots[3], [9, 10, 11, 12]);
     assert_eq!(slots[4], [0xdead_beef; 4]);
 
-    write_native_parameter_u64(&mut slots, 1, 0xfedc_ba98_7654_3210).unwrap();
+    write_parameter_u64(&mut slots, 1, 0xfedc_ba98_7654_3210).unwrap();
     assert_eq!(slots[2], [0, 0, 0x7654_3210, 0xfedc_ba98]);
-    write_native_parameter_repeated_u32(&mut slots, 2, 0x8000_1234).unwrap();
+    write_parameter_repeated_u32(&mut slots, 2, 0x8000_1234).unwrap();
     assert_eq!(slots[3], [0x8000_1234; 4]);
-    write_native_parameter_4_words(
+    write_parameter_4_words(
         &mut slots,
         3,
         [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000],
@@ -631,13 +631,13 @@ fn native_parameter_slot_writers_preserve_word_layout_and_order() {
         slots[4],
         [0x1020_3040, 0x5060_7080, 0x90a0_b0c0, 0xd0e0_f000]
     );
-    write_native_parameter_u32(&mut slots, 0, 0xdead_cafe).unwrap();
+    write_parameter_u32(&mut slots, 0, 0xdead_cafe).unwrap();
     assert_eq!(slots[1], [0xdead_cafe, 0, 0, 0]);
-    write_native_parameter_u32(&mut slots, -1, 0x1234_5678).unwrap();
+    write_parameter_u32(&mut slots, -1, 0x1234_5678).unwrap();
     assert_eq!(slots[0], [0x1234_5678, 0, 0, 0]);
 
     let before = slots;
-    assert!(write_native_parameter_u64(&mut slots, -2, 1).is_err());
+    assert!(write_parameter_u64(&mut slots, -2, 1).is_err());
     assert_eq!(slots, before);
     let too_short = ParameterBlock {
         entries: vec![(0, [1; 4])],
@@ -651,22 +651,22 @@ fn native_parameter_slot_writers_preserve_word_layout_and_order() {
 }
 
 #[test]
-fn native_batch_row_first_qword_matches_the_native_accessor() {
+fn batch_row_first_qword_matches_the_accessor() {
     let mut row = [0; 14];
     row[0] = 0x7654_3210;
     row[1] = 0xfedc_ba98;
     assert_eq!(
-        first_qword_of_native_surface_batch_row(&row),
+        first_qword_of_surface_batch_row(&row),
         0xfedc_ba98_7654_3210
     );
-    let mut rows = NativeSurfaceBatchRowList::with_capacity(1, 0).unwrap();
+    let mut rows = SurfaceBatchRowList::with_capacity(1, 0).unwrap();
     let index = rows.push_zeroed_row(false, true).unwrap();
     *rows.row_mut(index).unwrap() = row;
     assert_eq!(rows.first_qword(index), Some(0xfedc_ba98_7654_3210));
 }
 
 #[test]
-fn constructor_range_matches_original_qword_store() {
+fn constructor_range_matches_qword_store() {
     let cases = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/model_info_default_cases.txt"
@@ -686,7 +686,7 @@ fn constructor_range_matches_original_qword_store() {
 }
 
 #[test]
-fn parameter_float_matches_original_global_defaults_and_overrides() {
+fn parameter_float_matches_global_defaults_and_overrides() {
     let mut checked = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -725,7 +725,7 @@ fn parameter_float_matches_original_global_defaults_and_overrides() {
 }
 
 #[test]
-fn parameter_removal_matches_original_paired_arrays() {
+fn parameter_removal_matches_paired_arrays() {
     let mut checked = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -776,7 +776,7 @@ fn parameter_removal_matches_original_paired_arrays() {
 }
 
 #[test]
-fn binding_compaction_and_selection_match_native() {
+fn binding_compaction_and_selection_match() {
     let mut operations = [0; 3];
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -898,8 +898,8 @@ fn prepared_material_groups_feed_the_existing_property_getter() {
     assert!(unsupported.filter(&[]).is_err());
 }
 
-fn lod_view() -> NativeLodViewParameters {
-    NativeLodViewParameters {
+fn lod_view() -> LodViewParameters {
+    LodViewParameters {
         primary_position: [0.0; 3],
         alternate_position: [0.0; 3],
         use_alternate_position: false,
@@ -911,18 +911,18 @@ fn lod_view() -> NativeLodViewParameters {
 }
 
 #[test]
-fn native_lod_fov_scale_uses_original_sine_of_half_fov() {
+fn lod_fov_scale_uses_sine_of_half_fov() {
     assert!(
-        (super::native_lod_fov_sin_half_squared(std::f32::consts::FRAC_PI_2) - 0.5).abs() < 1.0e-6
+        (super::lod_fov_sin_half_squared(std::f32::consts::FRAC_PI_2) - 0.5).abs() < 1.0e-6
     );
 }
 
 #[test]
-fn native_lod_mask_table_matches_all_sixteen_original_indices() {
+fn lod_mask_table_matches_all_sixteen_indices() {
     let expected = [0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0];
     for mask in 0u32..16 {
         let thresholds = std::array::from_fn(|bit| if mask & (1 << bit) != 0 { 2.0 } else { 0.0 });
-        let selected = super::native_lod_select_level(1.0, thresholds, 100.0);
+        let selected = super::lod_select_level(1.0, thresholds, 100.0);
         let expected = if mask == 0 {
             4
         } else {
@@ -933,7 +933,7 @@ fn native_lod_mask_table_matches_all_sixteen_original_indices() {
 }
 
 #[test]
-fn native_lod_position_levels_match_mask_and_far_boundaries() {
+fn lod_position_levels_match_mask_and_far_boundaries() {
     let view = lod_view();
     for (x, expected) in [
         (2.0, 0),
@@ -944,9 +944,9 @@ fn native_lod_position_levels_match_mask_and_far_boundaries() {
         (30.0, 4),
         (31.0, 5),
     ] {
-        let decision = super::native_lod_level_for_position(
+        let decision = super::lod_level_for_position(
             &view,
-            NativeLodPositionInput {
+            LodPositionInput {
                 position: [x, 0.0, 0.0],
                 current_optimal_level: expected,
             },
@@ -954,16 +954,16 @@ fn native_lod_position_levels_match_mask_and_far_boundaries() {
         assert_eq!(decision.optimal_level, expected, "x={x}");
         assert!(!decision.needs_update);
     }
-    let changed = super::native_lod_level_for_position(
+    let changed = super::lod_level_for_position(
         &view,
-        NativeLodPositionInput {
+        LodPositionInput {
             position: [2.0, 0.0, 0.0],
             current_optimal_level: 5,
         },
     );
     assert_eq!(
         changed,
-        NativeLodDecision {
+        LodDecision {
             optimal_level: 0,
             needs_update: true,
         }
@@ -971,15 +971,15 @@ fn native_lod_position_levels_match_mask_and_far_boundaries() {
 }
 
 #[test]
-fn native_lod_bounds_uses_largest_horizontal_half_extent() {
+fn lod_bounds_uses_largest_horizontal_half_extent() {
     let mut view = lod_view();
     view.primary_position = [5.0, 0.0, 0.0];
     view.level_distances_squared = [3.0, 6.0, 12.0, 20.0];
     view.far_distance_squared = 21.0;
     view.force_visible_distance_squared = 100.0;
-    let decision = super::native_lod_level_for_bounds(
+    let decision = super::lod_level_for_bounds(
         &view,
-        NativeLodBoundsInput {
+        LodBoundsInput {
             minimum: [-2.0, -1.0, 0.0],
             maximum: [2.0, 1.0, 0.0],
             flags_1c30: 1,
@@ -995,13 +995,13 @@ fn native_lod_bounds_uses_largest_horizontal_half_extent() {
 }
 
 #[test]
-fn native_lod_bounds_matches_force_visible_and_far_skip_tiers() {
+fn lod_bounds_matches_force_visible_and_far_skip_tiers() {
     let mut view = lod_view();
     view.primary_position = [10.0, 0.0, 0.0];
     view.force_visible_distance_squared = 10.0;
     view.level_distances_squared = [1.0, 2.0, 3.0, 4.0];
     view.far_distance_squared = 80.0;
-    let bounds = |flags_1c30, flags_1c31, bit_1_at_0xd0| NativeLodBoundsInput {
+    let bounds = |flags_1c30, flags_1c31, bit_1_at_0xd0| LodBoundsInput {
         minimum: [0.0; 3],
         maximum: [0.0; 3],
         flags_1c30,
@@ -1014,46 +1014,46 @@ fn native_lod_bounds_matches_force_visible_and_far_skip_tiers() {
     force_boundary_view.force_visible_distance_squared = 4.0;
     force_boundary_view.far_distance_squared = 100.0;
     let at_force_boundary =
-        super::native_lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
+        super::lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
     assert_eq!(at_force_boundary.optimal_level, 0);
     force_boundary_view.primary_position[0] = 2.01;
     let beyond_force_boundary =
-        super::native_lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
+        super::lod_level_for_bounds(&force_boundary_view, bounds(1, 0, false));
     assert_eq!(beyond_force_boundary.optimal_level, 6);
     assert_eq!(
-        super::native_lod_level_for_bounds(&view, bounds(1, 0, false)).optimal_level,
+        super::lod_level_for_bounds(&view, bounds(1, 0, false)).optimal_level,
         7
     );
     // The special flag bypasses the force-visible distance gate.
     assert_eq!(
-        super::native_lod_level_for_bounds(&view, bounds(0, 4, false)).optimal_level,
+        super::lod_level_for_bounds(&view, bounds(0, 4, false)).optimal_level,
         5
     );
     assert_eq!(
-        super::native_lod_level_for_bounds(&view, bounds(0, 8, false)).optimal_level,
+        super::lod_level_for_bounds(&view, bounds(0, 8, false)).optimal_level,
         5
     );
     assert_eq!(
-        super::native_lod_level_for_bounds(&view, bounds(1, 4, false)).optimal_level,
+        super::lod_level_for_bounds(&view, bounds(1, 4, false)).optimal_level,
         7
     );
     // FUN_140878d10's bit forces far tiers; equality at far² selects 6.
     view.far_distance_squared = 100.0;
     assert_eq!(
-        super::native_lod_level_for_bounds(&view, bounds(1, 0, true)).optimal_level,
+        super::lod_level_for_bounds(&view, bounds(1, 0, true)).optimal_level,
         6
     );
 }
 
 #[test]
-fn native_lod_uses_nearest_of_two_camera_positions() {
+fn lod_uses_nearest_of_two_camera_positions() {
     let mut view = lod_view();
     view.primary_position = [100.0, 0.0, 0.0];
     view.alternate_position = [1.0, 0.0, 0.0];
     view.use_alternate_position = true;
-    let decision = super::native_lod_level_for_position(
+    let decision = super::lod_level_for_position(
         &view,
-        NativeLodPositionInput {
+        LodPositionInput {
             position: [0.0, 0.0, 0.0],
             current_optimal_level: 0,
         },
@@ -1062,21 +1062,21 @@ fn native_lod_uses_nearest_of_two_camera_positions() {
 }
 
 #[test]
-fn native_lod_child_update_args_matches_original_flags() {
+fn lod_child_update_args_matches_flags() {
     assert_eq!(
-        super::native_lod_child_update_args(2, 4, -8),
-        Some(super::NativeLodChildUpdate {
+        super::lod_child_update_args(2, 4, -8),
+        Some(super::LodChildUpdate {
             previous_actual: 2,
             actual: 4,
         })
     );
-    assert_eq!(super::native_lod_child_update_args(2, 2, -8), None);
-    assert_eq!(super::native_lod_child_update_args(2, 4, 8), None);
-    assert_eq!(super::native_lod_child_update_args(2, 4, -12), None);
+    assert_eq!(super::lod_child_update_args(2, 2, -8), None);
+    assert_eq!(super::lod_child_update_args(2, 4, 8), None);
+    assert_eq!(super::lod_child_update_args(2, 4, -12), None);
 }
 
 #[test]
-fn native_lod_state_update_matches_requested_max_clamp() {
+fn lod_state_update_matches_requested_max_clamp() {
     for (previous, optimal, requested_max, expected_actual, changed) in [
         (3, 4, 8, 4, true),
         (4, 7, 4, 4, false),
@@ -1084,8 +1084,8 @@ fn native_lod_state_update_matches_requested_max_clamp() {
         (0, -1, 5, -1, true),
     ] {
         assert_eq!(
-            super::native_lod_level_update(previous, optimal, requested_max),
-            super::NativeLodLevelUpdate {
+            super::lod_level_update(previous, optimal, requested_max),
+            super::LodLevelUpdate {
                 optimal_level: optimal,
                 actual_level: expected_actual,
                 actual_changed: changed,
@@ -1095,14 +1095,14 @@ fn native_lod_state_update_matches_requested_max_clamp() {
 }
 
 #[test]
-fn native_static_model_lod_slot_matches_original_upper_cap() {
+fn static_model_lod_slot_matches_upper_cap() {
     for (requested, selected) in [(-1, -1), (0, 0), (1, 1), (2, 2), (7, 2)] {
-        assert_eq!(super::native_static_model_lod_slot(requested), selected);
+        assert_eq!(super::static_model_lod_slot(requested), selected);
     }
 }
 
 #[test]
-fn native_static_lod_refresh_branch_matches_original() {
+fn static_lod_refresh_branch_matches() {
     for (flags_d4, actual_level, expected) in [
         (0, 0, false),
         (0, 2, false),
@@ -1111,19 +1111,19 @@ fn native_static_lod_refresh_branch_matches_original() {
         (0x81, -1, true),
     ] {
         assert_eq!(
-            super::native_static_model_lod_refresh_required(flags_d4, actual_level),
+            super::static_model_lod_refresh_required(flags_d4, actual_level),
             expected
         );
     }
 }
 
 #[test]
-fn native_lod_manager_registration_gates_match_original() {
+fn lod_manager_registration_gates_match() {
     for flags_d2 in [0, 0x40] {
         for flags_d4 in [0, 1] {
             for flags_d1 in [0, 1] {
                 assert_eq!(
-                    super::native_lod_manager_registration_allowed(flags_d2, flags_d4, flags_d1),
+                    super::lod_manager_registration_allowed(flags_d2, flags_d4, flags_d1),
                     flags_d2 == 0 && flags_d4 == 0 && flags_d1 == 0
                 );
             }
@@ -1132,8 +1132,8 @@ fn native_lod_manager_registration_gates_match_original() {
 }
 
 #[test]
-fn native_lod_model_variant_eligibility_matches_type2_type3_type7_gates() {
-    use super::NativeLodModelPredicate as Predicate;
+fn lod_model_variant_eligibility_matches_type2_type3_type7_gates() {
+    use super::LodModelPredicate as Predicate;
     let no_variants = [None::<u32>, None, None];
     let only_lod0 = [Some(10_u32), None, None];
     let lod2 = [None, None, Some(30_u32)];
@@ -1184,23 +1184,23 @@ fn native_lod_model_variant_eligibility_matches_type2_type3_type7_gates() {
         (Predicate::Other, 0, &lod2, &[lod2][..], false),
     ] {
         assert_eq!(
-            super::native_lod_model_variant_eligible(predicate, count, single, grouped),
+            super::lod_model_variant_eligible(predicate, count, single, grouped),
             expected
         );
     }
 }
 
 #[test]
-fn native_lod_child_registration_eligibility_matches_flags_and_callback() {
-    assert!(super::native_lod_child_registration_eligible(-4, false));
-    assert!(!super::native_lod_child_registration_eligible(12, false));
-    assert!(!super::native_lod_child_registration_eligible(-8, false));
-    assert!(super::native_lod_child_registration_eligible(0, true));
+fn lod_child_registration_eligibility_matches_flags_and_callback() {
+    assert!(super::lod_child_registration_eligible(-4, false));
+    assert!(!super::lod_child_registration_eligible(12, false));
+    assert!(!super::lod_child_registration_eligible(-8, false));
+    assert!(super::lod_child_registration_eligible(0, true));
 }
 
 #[test]
-fn native_lod_registration_action_matches_model_and_child_branch() {
-    use super::NativeLodRegistrationAction as Action;
+fn lod_registration_action_matches_model_and_child_branch() {
+    use super::LodRegistrationAction as Action;
     for (has_model, model_variant, child, expected) in [
         (true, true, false, Action::BoundsList),
         (true, false, true, Action::BoundsList),
@@ -1210,79 +1210,79 @@ fn native_lod_registration_action_matches_model_and_child_branch() {
         (false, true, false, Action::SetLevel8),
     ] {
         assert_eq!(
-            super::native_lod_registration_action(has_model, model_variant, child),
+            super::lod_registration_action(has_model, model_variant, child),
             expected
         );
     }
 }
 
 #[test]
-fn native_relative_static_model_lod_slot_matches_original_clamps() {
+fn relative_static_model_lod_slot_matches_clamps() {
     for (actual, field_0x17c, selected) in [(3, 1, 2), (3, 4, 0), (8, 0, 2), (2, 2, 0)] {
         assert_eq!(
-            super::native_relative_static_model_lod_slot(actual, field_0x17c),
+            super::relative_static_model_lod_slot(actual, field_0x17c),
             selected
         );
     }
 }
 
 #[test]
-fn native_lod_model_action_matches_selector_dispatch() {
-    use super::{NativeLodModelAction as Action, NativeLodModelPredicate as Predicate};
+fn lod_model_action_matches_selector_dispatch() {
+    use super::{LodModelAction as Action, LodModelPredicate as Predicate};
     assert_eq!(
-        super::native_lod_model_action(3, 1, true, Predicate::Predicate2, 2, 0),
+        super::lod_model_action(3, 1, true, Predicate::Predicate2, 2, 0),
         Action::Predicate2 {
             selected_index: 1,
             callback_argument: 4,
         }
     );
     assert_eq!(
-        super::native_lod_model_action(3, 1, true, Predicate::Predicate2, 0, 0),
+        super::lod_model_action(3, 1, true, Predicate::Predicate2, 0, 0),
         Action::Predicate2 {
             selected_index: -1,
             callback_argument: 4,
         }
     );
     assert_eq!(
-        super::native_lod_model_action(3, 1, true, Predicate::Predicate3, 0, 0),
+        super::lod_model_action(3, 1, true, Predicate::Predicate3, 0, 0),
         Action::Predicate3 {
             static_model_slot: 2,
         }
     );
     assert_eq!(
-        super::native_lod_model_action(3, 1, true, Predicate::Predicate7, 0, 4),
+        super::lod_model_action(3, 1, true, Predicate::Predicate7, 0, 4),
         Action::Predicate7 {
             static_model_slot: 2,
             model_count: 4,
         }
     );
     assert_eq!(
-        super::native_lod_model_action(3, 1, true, Predicate::Predicate7, 0, 0),
+        super::lod_model_action(3, 1, true, Predicate::Predicate7, 0, 0),
         Action::None
     );
     assert_eq!(
-        super::native_lod_model_action(6, 0, true, Predicate::Predicate3, 0, 0),
+        super::lod_model_action(6, 0, true, Predicate::Predicate3, 0, 0),
         Action::None
     );
     assert_eq!(
-        super::native_lod_model_action(3, 1, false, Predicate::Predicate3, 0, 0),
+        super::lod_model_action(3, 1, false, Predicate::Predicate3, 0, 0),
         Action::None
     );
 }
 
 #[test]
-fn native_static_model_has_lod1_or_2_checks_only_nonzero_slots() {
-    assert!(!super::native_static_model_has_lod1_or_2(&[
+fn static_model_has_lod1_or_2_checks_only_nonzero_slots() {
+    assert!(!super::static_model_has_lod1_or_2(&[
         Some(10_u32),
         None,
         None,
     ]));
-    assert!(super::native_static_model_has_lod1_or_2(&[
+    assert!(super::static_model_has_lod1_or_2(&[
         None,
         Some(20_u32),
         None,
     ]));
-    assert!(super::native_static_model_has_lod1_or_2(&[
+    assert!(super::static_model_has_lod1_or_2(&[
         None,
         None,
         Some(30_u32),
@@ -1290,11 +1290,11 @@ fn native_static_model_has_lod1_or_2_checks_only_nonzero_slots() {
 }
 
 #[test]
-fn native_static_model_lod_switch_matches_pointer_and_surface_selection() {
-    use super::NativeStaticModelLodSwitch as Switch;
+fn static_model_lod_switch_matches_pointer_and_surface_selection() {
+    use super::StaticModelLodSwitch as Switch;
     let model_per_lod = [Some(10_u32), Some(20), Some(30)];
     assert_eq!(
-        super::native_static_model_lod_switch(4, &model_per_lod, Some(10)),
+        super::static_model_lod_switch(4, &model_per_lod, Some(10)),
         Some(Switch {
             slot: 2,
             selected_model: 30,
@@ -1305,21 +1305,21 @@ fn native_static_model_lod_switch_matches_pointer_and_surface_selection() {
         })
     );
     assert_eq!(
-        super::native_static_model_lod_switch(1, &model_per_lod, Some(20)),
+        super::static_model_lod_switch(1, &model_per_lod, Some(20)),
         None
     );
     assert_eq!(
-        super::native_static_model_lod_switch(2, &[Some(10), Some(20), None], Some(10)),
+        super::static_model_lod_switch(2, &[Some(10), Some(20), None], Some(10)),
         None
     );
     assert_eq!(
-        super::native_static_model_lod_switch(-1, &model_per_lod, Some(10)),
+        super::static_model_lod_switch(-1, &model_per_lod, Some(10)),
         None
     );
 }
 
 #[test]
-fn resource_union_matches_original() {
+fn resource_union_matches() {
     let mut checked = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1439,7 +1439,7 @@ fn helpers_match_installed_executable() {
 }
 
 #[test]
-fn registry_prefix_matches_installed_original_instructions() {
+fn registry_prefix_matches_installed_instructions() {
     let mut count = 0;
     for row in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1476,7 +1476,7 @@ fn registry_prefix_matches_installed_original_instructions() {
                 let camera =
                     std::array::from_fn(|axis| f32::from_bits(fields[7 + axis].parse().unwrap()));
                 let accepted = model_eligible(flags, shape) && in_model_region(camera, region);
-                assert_eq!(accepted, fields[10] == "1", "native registry case {count}");
+                assert_eq!(accepted, fields[10] == "1", "registry case {count}");
             }
             _ => panic!("unknown original registry case"),
         }
@@ -1489,7 +1489,7 @@ fn registry_prefix_matches_installed_original_instructions() {
 }
 
 #[test]
-fn geometry_matches_installed_original_operations() {
+fn geometry_matches_installed_operations() {
     let mut checked = 0;
     for line in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -1,37 +1,37 @@
 //! Launch.
 use super::{
     archive, auto_exposure, benchmark_frames, camera_controls, coarse_depth, collision_report,
-    cull_original_small_local_lights, entities, env, expanded_model_placements,
+    cull_small_local_lights, entities, env, expanded_model_placements,
     finish_streaming_diagnostics, frame_profile, game_affine_to_view, game_clock_runtime,
-    game_settings, game_to_view, initialize_native_parallel_shadow_owner, interact_pickup,
-    local_shadow_updates, native_shadow_target_dimensions, navigation, physworld, placed_transform,
-    placed_vertex, probe_lighting, publish_initial_native_whole_view_depth, render_light,
+    game_settings, game_to_view, initialize_parallel_shadow_owner, interact_pickup,
+    local_shadow_updates, shadow_target_dimensions, navigation, physworld, placed_transform,
+    placed_vertex, probe_lighting, publish_initial_whole_view_depth, render_light,
     report_prepared_diffuse_images, screen_shadow_pass, setup, shader_cache, shadow_pass,
     shadow_sampling, shadow_updates, show_frame_rate, snapshot_once, static_model_collision,
-    stream_visible_models, stream_visible_textures, sync_native_shadow_target, tome, transformed,
+    stream_visible_models, stream_visible_textures, sync_shadow_target, tome, transformed,
     update_coordinate_overlay, view_to_game, world_mesh, BenchmarkSeconds, DecalExtension,
-    DecalMaterial, DirectionalLightShadowMap, Instant, MaterialPlugin, NativeProgramCacheSource,
-    NativeShadowCasterWorld, NativeViewSettings, NavigationWorld, OriginalLocalLightCullEnabled,
-    OriginalLocalLightCullStats, PathBuf, PointLightShadowMap, PreparedImageMailbox,
+    DecalMaterial, DirectionalLightShadowMap, Instant, MaterialPlugin, ProgramCacheSource,
+    ShadowCasterWorld, ViewSettings, NavigationWorld, LocalLightCullEnabled,
+    LocalLightCullStats, PathBuf, PointLightShadowMap, PreparedImageMailbox,
     ProbeExtension, ProbeMaterial, Render, RenderApp, RenderSystems, SceneData, Shader,
     SnapshotPath, StreamingDiagnostics, TomeWorld, VisibilityElapsedTiming, VisibilitySystems,
     DECAL_SHADER_HANDLE, FILLING_SHADER_HANDLE, INDIRECT_SHADER_HANDLE,
-    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE,
+    LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE, PROBE_SHADER_HANDLE,
     SKY_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
 };
 use bevy::prelude::*;
 
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
-    let original_light_area_cull = env::var("DH2_ORIGINAL_LIGHT_AREA_CULL").as_deref() != Ok("0");
+    let light_area_cull = env::var("DH2_LIGHT_AREA_CULL").as_deref() != Ok("0");
     println!(
-        "Original local-light culling: {} (initial map Umbra candidates + non-Umbra fallback; fallback minimum {:.0} px; DH2_ORIGINAL_LIGHT_AREA_CULL=0 disables)",
-        if original_light_area_cull {
+        "Local-light culling: {} (initial map Umbra candidates + non-Umbra fallback; fallback minimum {:.0} px; DH2_LIGHT_AREA_CULL=0 disables)",
+        if light_area_cull {
             "enabled"
         } else {
             "disabled"
         },
-        ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+        LOCAL_LIGHT_MIN_AREA_PIXELS,
     );
     let startup = std::time::Instant::now();
     let game_base = Some(crate::assets::installation::game_base()?);
@@ -133,7 +133,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The original compiled programs live beside the archives in shaderCache,
     // not necessarily in generated/renderprogs2/*.vbin archive entries.
     let program_cache = match (game_base.as_deref(), catalog.as_ref()) {
-        (Some(base), Some(catalog)) => shader_cache::NativeProgramLibrary::open(
+        (Some(base), Some(catalog)) => shader_cache::ProgramLibrary::open(
             base,
             shader_cache::ShaderCacheBackend::Pc,
             catalog,
@@ -148,35 +148,35 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             library.cache.names.len(),
             library.parameter_kinds.len()
         ),
-        Err(error) => eprintln!("Native program cache unavailable: {error}"),
+        Err(error) => eprintln!("Program cache unavailable: {error}"),
     }
     // Resolve the user's ORIGINAL quality cvar and the installed declaration
     // once. No per-frame filesystem/catalog scans and no copied capture values.
-    let original_shadow_settings = game_settings::read_shadow_settings();
+    let shadow_settings = game_settings::read_shadow_settings();
     let rewrite_shadow_settings =
         crate::platform::rewrite_settings::RewriteShadowSettings::from_environment()?;
     println!(
         "Sun shadow caster minimum: {} m (0 restores authored game ranges)",
         rewrite_shadow_settings.minimum_sun_caster_extent
     );
-    let shadow_depth_bias_clamp = original_shadow_settings
+    let shadow_depth_bias_clamp = shadow_settings
         .as_ref()
         .ok()
         .map(|(_, settings)| settings.depth_bias_clamp);
-    let shadow_sort_ccw = original_shadow_settings
+    let shadow_sort_ccw = shadow_settings
         .as_ref()
         .ok()
         .map(|(_, settings)| settings.sort_shadows_ccw);
-    let mut shadow_cascade_controls = original_shadow_settings
+    let mut shadow_cascade_controls = shadow_settings
         .as_ref()
         .ok()
         .map(|(_, settings)| settings.cascade_controls);
-    let mut shadow_cascade_fars = original_shadow_settings
+    let mut shadow_cascade_fars = shadow_settings
         .as_ref()
         .ok()
         .and_then(|(_, settings)| settings.cascade_fars);
     let (shadow_quality_preset, shadow_quality, shadow_target_dimensions) = match (
-        original_shadow_settings,
+        shadow_settings,
         catalog.as_ref(),
     ) {
         (
@@ -195,22 +195,22 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 load_installed_shadow_quality(catalog, preset).map_err(std::io::Error::other)?;
             let target = settings
                 .as_ref()
-                .map(|quality| native_shadow_target_dimensions(parallel_slice_size, quality))
+                .map(|quality| shadow_target_dimensions(parallel_slice_size, quality))
                 .transpose()
                 .map_err(std::io::Error::other)?;
             println!(
-                "Native shadow quality from {}: preset={preset}, slice_size={parallel_slice_size}, depth_bias_clamp={depth_bias_clamp}, settings={settings:?}, target={target:?}",
+                "Shadow quality from {}: preset={preset}, slice_size={parallel_slice_size}, depth_bias_clamp={depth_bias_clamp}, settings={settings:?}, target={target:?}",
                 config_path.display()
             );
             (Some(preset), settings, target)
         }
         (Err(error), _) => {
-            eprintln!("Native shadow quality unavailable: {error}");
+            eprintln!("Shadow quality unavailable: {error}");
             (None, None, None)
         }
         _ => {
             eprintln!(
-                "Native shadow quality unavailable: original config setting or asset catalog missing"
+                "Shadow quality unavailable: original config setting or asset catalog missing"
             );
             (None, None, None)
         }
@@ -340,7 +340,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         probes.initialize_indirect_lighting(&parameters);
         println!(
-            "Native probe accumulation: {} probes, source-backed static/sun/occluded sky/per-probe ambient; sun_ground={:?}",
+            "Probe accumulation: {} probes, source-backed static/sun/occluded sky/per-probe ambient; sun_ground={:?}",
             probes.probes.len(),
             parameters.sun_ground_color
         );
@@ -403,12 +403,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         let query_data = tome::DirectTomeQueryData::parse(&tome_bytes, &tome_tree)?;
         let query_job_count = env::var("DH2_UMBRA_QUERY_JOBS")
             .map(|value| value.parse::<u32>())
-            .unwrap_or(Ok(tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT))?;
+            .unwrap_or(Ok(tome::DEFAULT_QUERY_JOB_COUNT))?;
         let threading_mode = env::var("DH2_SCHEDULER_THREADING_MODE")
             .map(|value| value.parse::<u32>())
-            .unwrap_or(Ok(tome::ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE))?;
+            .unwrap_or(Ok(tome::DEFAULT_SCHEDULER_THREADING_MODE))?;
         let query_job_count =
-            tome::original_world_query_job_count(query_job_count, threading_mode)?;
+            tome::world_query_job_count(query_job_count, threading_mode)?;
         println!(
             "Loaded original Tome from {}: {} spatial nodes, {} initially enabled gates; cell-slot rows {} Г— {} bits",
             tome_path.display(),
@@ -425,12 +425,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         match tome::shadow_caster::ShadowCasterTome::parse(&tome_bytes) {
             Ok(shadow_tome) => {
                 println!(
-                    "Native shadow Tome cache: {} original caster objects",
+                    "Shadow Tome cache: {} original caster objects",
                     shadow_tome.object_count()
                 );
-                app.insert_resource(NativeShadowCasterWorld(shadow_tome));
+                app.insert_resource(ShadowCasterWorld(shadow_tome));
             }
-            Err(error) => eprintln!("Native shadow Tome cache unavailable: {error}"),
+            Err(error) => eprintln!("Shadow Tome cache unavailable: {error}"),
         }
         let query_threads = env::var("DH2_TOME_QUERY_THREADS")
             .ok()
@@ -602,14 +602,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if env::var("DH2_NAV_PROBE").as_deref() == Ok("1") {
             let start = player_start.ok_or("navigation probe needs a player start")?;
-            let original = game_to_view(start.position);
-            let floor = world.floor_at(original, 0.5, 2.0);
-            let mut walker = navigation::Walker::new(original, &world);
+            let reference = game_to_view(start.position);
+            let floor = world.floor_at(reference, 0.5, 2.0);
+            let mut walker = navigation::Walker::new(reference, &world);
             for _ in 0..180 {
                 walker.step(&world, Vec3::ZERO, 0.0, 1.0 / 60.0, false);
             }
             println!(
-                "NAV PROBE spawn feet={original:?} floor={floor:?} after 3s={:?} supported={}",
+                "NAV PROBE spawn feet={reference:?} floor={floor:?} after 3s={:?} supported={}",
                 walker.feet, walker.supported
             );
             for (label, direction) in [
@@ -626,18 +626,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Vec3::new(start.forward_xy[1], 0.0, start.forward_xy[0]),
                 ),
             ] {
-                let mut walker = navigation::Walker::new(original, &world);
+                let mut walker = navigation::Walker::new(reference, &world);
                 for _ in 0..120 {
                     walker.step(&world, direction, 6.0, 1.0 / 60.0, false);
                 }
                 println!(
                     "NAV PROBE {label} after 2s: feet={:?}, displacement={:.2}m, supported={}",
                     walker.feet,
-                    walker.feet.distance(original),
+                    walker.feet.distance(reference),
                     walker.supported
                 );
             }
-            let mut jumper = navigation::Walker::new(original, &world);
+            let mut jumper = navigation::Walker::new(reference, &world);
             let initial_height = jumper.feet.y;
             let mut peak = initial_height;
             for frame in 0..180 {
@@ -697,7 +697,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
-    app.insert_resource(NativeProgramCacheSource(program_cache))
+    app.insert_resource(ProgramCacheSource(program_cache))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
         // light. Dense missions contain hundreds of authored lights, so keep
@@ -859,34 +859,34 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
-    app.add_plugins(auto_exposure::NativeExposurePlugin)
-        .add_plugins(game_clock_runtime::NativeClockRuntimePlugin)
-        .add_plugins(shadow_pass::NativeShadowScenePlugin)
-        .add_plugins(screen_shadow_pass::NativeScreenShadowScenePlugin)
-        .add_plugins(coarse_depth::NativeCoarseDepthPlugin)
+    app.add_plugins(auto_exposure::ExposurePlugin)
+        .add_plugins(game_clock_runtime::ClockRuntimePlugin)
+        .add_plugins(shadow_pass::ShadowScenePlugin)
+        .add_plugins(screen_shadow_pass::ScreenShadowScenePlugin)
+        .add_plugins(coarse_depth::CoarseDepthPlugin)
         .init_resource::<super::scene_queue::VisibleSceneInstances>()
-        .init_resource::<shadow_updates::NativeParallelShadowCpu>()
-        .init_resource::<local_shadow_updates::NativeLocalShadowCpu>()
-        .init_resource::<local_shadow_updates::NativeLocalShadowViewControls>()
-        .init_resource::<local_shadow_updates::NativeLocalShadowDraws>()
-        .init_resource::<shadow_updates::NativeParallelWorldDraws>()
-        .init_resource::<shadow_updates::NativeModelCasterFrame>()
-        .init_resource::<shadow_updates::NativeParallelModelDraws>()
-        .insert_resource(NativeViewSettings(view_settings))
+        .init_resource::<shadow_updates::ParallelShadowCpu>()
+        .init_resource::<local_shadow_updates::LocalShadowCpu>()
+        .init_resource::<local_shadow_updates::LocalShadowViewControls>()
+        .init_resource::<local_shadow_updates::LocalShadowDraws>()
+        .init_resource::<shadow_updates::ParallelWorldDraws>()
+        .init_resource::<shadow_updates::ModelCasterFrame>()
+        .init_resource::<shadow_updates::ParallelModelDraws>()
+        .insert_resource(ViewSettings(view_settings))
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .insert_resource(VisibilityElapsedTiming::default())
-        .insert_resource(OriginalLocalLightCullEnabled(original_light_area_cull))
-        .insert_resource(OriginalLocalLightCullStats::default())
+        .insert_resource(LocalLightCullEnabled(light_area_cull))
+        .insert_resource(LocalLightCullStats::default())
         .insert_resource(StreamingDiagnostics::new(&path))
         .add_systems(
             Startup,
             (
-                shadow_updates::initialize_native_screen_shadow_source,
+                shadow_updates::initialize_screen_shadow_source,
                 setup,
-                initialize_native_parallel_shadow_owner,
-                shadow_updates::initialize_native_parallel_receiver_source,
-                local_shadow_updates::initialize_native_local_shadow_owner,
+                initialize_parallel_shadow_owner,
+                shadow_updates::initialize_parallel_receiver_source,
+                local_shadow_updates::initialize_local_shadow_owner,
             )
                 .chain(),
         )
@@ -904,8 +904,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
-            publish_initial_native_whole_view_depth
-                .after(game_clock_runtime::NativeClockSystems::PublishView)
+            publish_initial_whole_view_depth
+                .after(game_clock_runtime::ClockSystems::PublishView)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
@@ -917,7 +917,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
-            cull_original_small_local_lights
+            cull_small_local_lights
                 .after(stream_visible_models)
                 .after(VisibilitySystems::UpdateFrusta)
                 .before(VisibilitySystems::VisibilityPropagate)
@@ -925,50 +925,50 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::prepare_native_parallel_shadow_cpu
+            shadow_updates::prepare_parallel_shadow_cpu
                 .after(stream_visible_models)
-                .after(shadow_updates::collect_native_model_casters)
-                .after(game_clock_runtime::NativeClockSystems::PublishView),
+                .after(shadow_updates::collect_model_casters)
+                .after(game_clock_runtime::ClockSystems::PublishView),
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::collect_native_model_casters.after(stream_visible_models),
+            shadow_updates::collect_model_casters.after(stream_visible_models),
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::prepare_native_parallel_world_draws
-                .after(shadow_updates::prepare_native_parallel_shadow_cpu)
+            shadow_updates::prepare_parallel_world_draws
+                .after(shadow_updates::prepare_parallel_shadow_cpu)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::prepare_native_parallel_model_draws
-                .after(shadow_updates::prepare_native_parallel_shadow_cpu),
+            shadow_updates::prepare_parallel_model_draws
+                .after(shadow_updates::prepare_parallel_shadow_cpu),
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::publish_native_parallel_shadow_frame
-                .after(shadow_updates::prepare_native_parallel_world_draws)
-                .after(shadow_updates::prepare_native_parallel_model_draws)
-                .after(publish_initial_native_whole_view_depth),
+            shadow_updates::publish_parallel_shadow_frame
+                .after(shadow_updates::prepare_parallel_world_draws)
+                .after(shadow_updates::prepare_parallel_model_draws)
+                .after(publish_initial_whole_view_depth),
         )
         .add_systems(
             PostUpdate,
-            shadow_updates::prepare_native_screen_shadow_frame
-                .after(shadow_updates::publish_native_parallel_shadow_frame)
+            shadow_updates::prepare_screen_shadow_frame
+                .after(shadow_updates::publish_parallel_shadow_frame)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
             PostUpdate,
-            local_shadow_updates::prepare_native_local_shadow_cpu
-                .after(cull_original_small_local_lights)
-                .after(shadow_updates::collect_native_model_casters)
+            local_shadow_updates::prepare_local_shadow_cpu
+                .after(cull_small_local_lights)
+                .after(shadow_updates::collect_model_casters)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
             PostUpdate,
-            local_shadow_updates::publish_native_local_shadow_draws
-                .after(local_shadow_updates::prepare_native_local_shadow_cpu)
+            local_shadow_updates::publish_local_shadow_draws
+                .after(local_shadow_updates::prepare_local_shadow_cpu)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
@@ -1031,11 +1031,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.add_systems(
         PostUpdate,
         (
-            sync_native_shadow_target::<ProbeExtension>,
-            sync_native_shadow_target::<DecalExtension>,
+            sync_shadow_target::<ProbeExtension>,
+            sync_shadow_target::<DecalExtension>,
         )
             .after(bevy::asset::AssetEventSystems)
-            .after(shadow_updates::publish_native_parallel_shadow_frame),
+            .after(shadow_updates::publish_parallel_shadow_frame),
     );
     let prepared_images = PreparedImageMailbox::default();
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {

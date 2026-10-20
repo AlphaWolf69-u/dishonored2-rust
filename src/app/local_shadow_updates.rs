@@ -1,26 +1,26 @@
 //! Native local-light CPU ownership. Projection/request publication is separate
 //! from GPU validity: this module never labels an undrawn atlas ready.
 use super::{
-    authored_light_cosines, build_native_world_layer, camera_projection, coarse_depth, entities,
+    authored_light_cosines, build_world_layer, camera_projection, coarse_depth, entities,
     env, frame_profile, game_clock, game_clock_runtime, game_pose_from_view_transform,
-    game_settings, local_caster_query, local_shadow_cache, original_light_preset, render_light,
+    game_settings, local_caster_query, local_shadow_cache, light_preset, render_light,
     render_model, render_shadow, shadow_pass, shadow_pipeline, shadow_updates, tiled_lighting,
-    tome, view_to_game, worker_topology, HashMap, NativeProgramCacheSource, NativeShadowMaterials,
-    NativeVegetationMeshInputs, NativeViewSettings, NativeWorldShadowDrawSettings,
-    NativeWorldShadowMeshSources, Projection, RenderSourcePlacements, SceneData, SceneRenderQueue,
+    tome, view_to_game, worker_topology, HashMap, ProgramCacheSource, ShadowMaterials,
+    VegetationMeshInputs, ViewSettings, WorldShadowDrawSettings,
+    WorldShadowMeshSources, Projection, RenderSourcePlacements, SceneData, SceneRenderQueue,
     ShaderBuffer, TomeWorld,
 };
 use bevy::prelude::*;
 
 #[derive(Component, Clone, Copy)]
-pub(super) struct NativeLocalLightSource(pub(super) usize);
+pub(super) struct LocalLightSource(pub(super) usize);
 
 #[derive(Resource, Default)]
-pub(super) struct NativeLocalShadowViewControls(
+pub(super) struct LocalShadowViewControls(
     pub(super) local_shadow_cache::LocalShadowCacheControls,
 );
 
-impl NativeLocalShadowViewControls {
+impl LocalShadowViewControls {
     /// Runtime actor owners supply their real graph and resolved actor list.
     /// The resulting view signals are consumed before the next local prepare.
     pub fn set_actors_dynamic_caster(
@@ -34,13 +34,13 @@ impl NativeLocalShadowViewControls {
 }
 
 #[derive(Resource)]
-pub(super) struct NativeLocalShadowOwner {
+pub(super) struct LocalShadowOwner {
     pub settings: game_settings::LocalShadowSettings,
     pub atlas_image: Handle<Image>,
     pub cache_image: Handle<Image>,
     pub atlas: render_shadow::ShadowAtlasAllocator,
     pub cache: local_shadow_cache::LocalShadowCache,
-    pub world_query: local_caster_query::NativeLocalWorldQuery,
+    pub world_query: local_caster_query::LocalWorldQuery,
     pub precomputed_world_casters: HashMap<usize, Vec<Vec<u32>>>,
     pub query_job_count: u32,
     pub hardware_bias_point: [f32; 3],
@@ -51,12 +51,12 @@ pub(super) struct NativeLocalShadowOwner {
     pub view_flags: u16,
 }
 
-pub(super) struct NativeLocalProjectedLight {
+pub(super) struct LocalProjectedLight {
     pub entity: Entity,
     pub request: render_shadow::LocalShadowRequest,
     pub clips: Vec<render_shadow::ShadowMatrix>,
     pub crops: Vec<[f32; 4]>,
-    pub sides: Vec<Option<NativeLocalShadowSide>>,
+    pub sides: Vec<Option<LocalShadowSide>>,
     pub receiver_sides: Vec<(render_shadow::AtlasAllocation, render_shadow::ShadowMatrix)>,
     pub bounds: [[f32; 3]; 2],
     pub world_casters: Vec<Vec<u32>>,
@@ -66,7 +66,7 @@ pub(super) struct NativeLocalProjectedLight {
     pub refresh_dynamic: bool,
 }
 
-pub(super) struct NativeLocalShadowSide {
+pub(super) struct LocalShadowSide {
     pub allocation: render_shadow::AtlasAllocation,
     pub geometry: render_shadow::LocalShadowSideGeometry,
     pub cache_key: u32,
@@ -77,8 +77,8 @@ pub(super) struct NativeLocalShadowSide {
 }
 
 #[derive(Resource, Default)]
-pub(super) struct NativeLocalShadowCpu {
-    pub current: Option<(u32, Vec<NativeLocalProjectedLight>)>,
+pub(super) struct LocalShadowCpu {
+    pub current: Option<(u32, Vec<LocalProjectedLight>)>,
     error: Option<String>,
     reported: bool,
     verified_parallel: bool,
@@ -178,11 +178,11 @@ struct LocalStaticInputs {
     models: Vec<(usize, usize)>,
     clocks: game_clock::GameplayViewClocks,
     dimensions: [u32; 2],
-    prepared: Option<(Vec<shadow_pass::NativeShadowInstance>, bool)>,
+    prepared: Option<(Vec<shadow_pass::ShadowInstance>, bool)>,
 }
 
 #[derive(Resource, Default)]
-pub(super) struct NativeLocalShadowDraws {
+pub(super) struct LocalShadowDraws {
     static_inputs: HashMap<u32, LocalStaticInputs>,
     matrices: Option<Handle<ShaderBuffer>>,
     error: Option<String>,
@@ -192,7 +192,7 @@ pub(super) struct NativeLocalShadowDraws {
 fn local_side_models(
     records: &[(usize, usize)],
     clip: render_shadow::ShadowMatrix,
-    sources: &shadow_updates::NativeModelShadowSources,
+    sources: &shadow_updates::ModelShadowSources,
 ) -> Vec<(usize, usize)> {
     let clip = std::array::from_fn(|i| clip[i / 4][i % 4]);
     //329120 repeats side-frustum admission after the whole-light collector.
@@ -201,29 +201,29 @@ fn local_side_models(
         .copied()
         .filter(|&(source, _)| {
             let bounds = sources.0[source].bounds;
-            !render_model::native_transformed_aabb_clip_cull(&clip, bounds[0], bounds[1]).culled
+            !render_model::transformed_aabb_clip_cull(&clip, bounds[0], bounds[1]).culled
         })
         .collect()
 }
 
-pub(super) fn publish_native_local_shadow_draws(
-    owner: Option<Res<NativeLocalShadowOwner>>,
-    cpu: Res<NativeLocalShadowCpu>,
+pub(super) fn publish_local_shadow_draws(
+    owner: Option<Res<LocalShadowOwner>>,
+    cpu: Res<LocalShadowCpu>,
     scene: Res<SceneData>,
-    sources: Res<NativeWorldShadowMeshSources>,
-    model_sources: Res<shadow_updates::NativeModelShadowSources>,
+    sources: Res<WorldShadowMeshSources>,
+    model_sources: Res<shadow_updates::ModelShadowSources>,
     placements: Res<RenderSourcePlacements>,
-    materials: Res<NativeShadowMaterials>,
+    materials: Res<ShadowMaterials>,
     meshes: Res<Assets<Mesh>>,
     images: Res<Assets<Image>>,
-    vegetation: Res<NativeVegetationMeshInputs>,
-    clocks: Res<game_clock_runtime::NativeGameplayViewClock>,
+    vegetation: Res<VegetationMeshInputs>,
+    clocks: Res<game_clock_runtime::GameplayViewClock>,
     queue: Res<SceneRenderQueue>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
-    mut draws: ResMut<NativeLocalShadowDraws>,
-    mut output: ResMut<shadow_pass::NativeLocalShadowSceneFrame>,
+    mut draws: ResMut<LocalShadowDraws>,
+    mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
     (completion, profile, mut commands): (
-        Res<shadow_pass::NativeLocalShadowCompletion>,
+        Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
     ),
@@ -234,19 +234,19 @@ pub(super) fn publish_native_local_shadow_draws(
         return;
     };
     let mut shadow_textures = super::scene_queue::ShadowTextureRequests::new(&queue);
-    let result = (|| -> Result<shadow_pass::NativeLocalShadowSubmission, String> {
+    let result = (|| -> Result<shadow_pass::LocalShadowSubmission, String> {
         let clocks = *clocks.clocks().map_err(str::to_owned)?;
         let quality = scene
             .shadow_quality
             .as_ref()
-            .ok_or("native local shadow quality is unavailable")?;
+            .ok_or("local shadow quality is unavailable")?;
         let sort_shadows_ccw = scene
             .shadow_sort_ccw
-            .ok_or("native WORLD shadow sorting setting is unavailable")?;
+            .ok_or("WORLD shadow sorting setting is unavailable")?;
         let completed = completion
             .0
             .lock()
-            .map_err(|_| "native local completion lock poisoned")?
+            .map_err(|_| "local completion lock poisoned")?
             .as_ref()
             .filter(|(_, atlas, cache, _)| {
                 *atlas == owner.atlas_image.id() && *cache == owner.cache_image.id()
@@ -298,7 +298,7 @@ pub(super) fn publish_native_local_shadow_draws(
         let matrices = draws.matrices.clone();
         let mut layers = Vec::new();
         let mut regions = Vec::new();
-        let admission = super::shadow_preparation::NativeWorldShadowAdmission::new(
+        let admission = super::shadow_preparation::WorldShadowAdmission::new(
             &scene.world,
             &sources,
             &materials,
@@ -334,13 +334,13 @@ pub(super) fn publish_native_local_shadow_draws(
                     &mut uncached
                 };
                 if input.prepared.is_none() {
-                    let target = shadow_pass::NativeParallelShadowTargetDimensions {
+                    let target = shadow_pass::ParallelShadowTargetDimensions {
                         width: input.dimensions[0],
                         height: input.dimensions[1],
                         layers: 1,
                         depth_32_bits: quality.depth_32_bits,
                     };
-                    let settings = NativeWorldShadowDrawSettings {
+                    let settings = WorldShadowDrawSettings {
                         dimensions: target,
                         hardware_bias: bias,
                         sort_shadows_ccw,
@@ -352,7 +352,7 @@ pub(super) fn publish_native_local_shadow_draws(
                     for &id in &input.world {
                         *mask
                             .get_mut(id as usize)
-                            .ok_or("native local WORLD ID exceeds world records")? = 1;
+                            .ok_or("local WORLD ID exceeds world records")? = 1;
                     }
                     let plans =
                         super::shadow_preparation::prepare_world_shadow_masks_with_admission(
@@ -371,7 +371,7 @@ pub(super) fn publish_native_local_shadow_draws(
                             ),
                             None,
                         )?;
-                    let models = shadow_updates::prepare_native_model_shadow_instances(
+                    let models = shadow_updates::prepare_model_shadow_instances(
                         &input.models,
                         input.clip,
                         bias,
@@ -387,7 +387,7 @@ pub(super) fn publish_native_local_shadow_draws(
                     )?;
                     let contains_models = !models.is_empty();
                     let mut built =
-                        build_native_world_layer(plans, matrices.as_ref(), target, &mut buffers)
+                        build_world_layer(plans, matrices.as_ref(), target, &mut buffers)
                             .instances;
                     built.extend(models);
                     input.prepared = Some((built, contains_models));
@@ -404,7 +404,7 @@ pub(super) fn publish_native_local_shadow_draws(
                 } else {
                     Vec::new()
                 };
-                instances.extend(shadow_updates::prepare_native_model_shadow_instances(
+                instances.extend(shadow_updates::prepare_model_shadow_instances(
                     &dynamic,
                     clip,
                     bias,
@@ -418,15 +418,15 @@ pub(super) fn publish_native_local_shadow_draws(
                     &vegetation,
                     &mut shadow_textures,
                 )?);
-                layers.push(shadow_pass::NativeShadowLayer {
-                    ops: shadow_pass::NativeShadowLayerOps {
-                        depth: shadow_pass::NativeShadowLoad::Load,
-                        stencil: shadow_pass::NativeStencilLoad::Load,
+                layers.push(shadow_pass::ShadowLayer {
+                    ops: shadow_pass::ShadowLayerOps {
+                        depth: shadow_pass::ShadowLoad::Load,
+                        stencil: shadow_pass::StencilLoad::Load,
                     },
-                    cache: shadow_pass::NativeShadowCacheOp::None,
+                    cache: shadow_pass::ShadowCacheOp::None,
                     instances,
                 });
-                regions.push(shadow_pass::NativeLocalShadowRegion {
+                regions.push(shadow_pass::LocalShadowRegion {
                     atlas: allocation,
                     cache,
                     static_instances,
@@ -435,15 +435,15 @@ pub(super) fn publish_native_local_shadow_draws(
                 });
             }
         }
-        let receiver = (|| -> Result<shadow_pass::NativeLocalShadowReceiver, String> {
+        let receiver = (|| -> Result<shadow_pass::LocalShadowReceiver, String> {
             let environment = scene
                 .environment_render_parameters
                 .as_ref()
-                .ok_or("native local receiver has no environment parameter owner")?;
+                .ok_or("local receiver has no environment parameter owner")?;
             let bias = render_shadow::parallel_shader_bias(environment, quality.depth_32_bits)?;
             let mut ordered = lights.iter().collect::<Vec<_>>();
             ordered.sort_by_key(|l| l.request.candidate.source);
-            let mut receiver = shadow_pass::NativeLocalShadowReceiver {
+            let mut receiver = shadow_pass::LocalShadowReceiver {
                 bias,
                 lights: Vec::new(),
                 shadows: Vec::new(),
@@ -478,7 +478,7 @@ pub(super) fn publish_native_local_shadow_draws(
                 let source = &scene.placed_lights[light.request.candidate.source];
                 receiver
                     .lights
-                    .push(shadow_pass::NativeLocalShadowReceiverLight {
+                    .push(shadow_pass::LocalShadowReceiverLight {
                         entity: light.entity,
                         kind: light.request.candidate.kind as u32,
                         position: source.position,
@@ -490,7 +490,7 @@ pub(super) fn publish_native_local_shadow_draws(
             }
             Ok(receiver)
         })();
-        Ok(shadow_pass::NativeLocalShadowSubmission {
+        Ok(shadow_pass::LocalShadowSubmission {
             revision: u64::from(*frame),
             atlas: owner.atlas_image.clone(),
             cache: owner.cache_image.clone(),
@@ -508,7 +508,7 @@ pub(super) fn publish_native_local_shadow_draws(
         Ok(frame) => {
             if draws.error.take().is_some() || !draws.reported {
                 println!(
-                    "Native local atlas submissions online: {} regions, {} draws",
+                    "Local atlas submissions online: {} regions, {} draws",
                     frame.regions.len(),
                     frame
                         .layers
@@ -522,34 +522,34 @@ pub(super) fn publish_native_local_shadow_draws(
         }
         Err(error) => {
             if draws.error.as_ref() != Some(&error) {
-                eprintln!("Native local atlas submissions pending: {error}");
+                eprintln!("Local atlas submissions pending: {error}");
                 draws.error = Some(error);
             }
         }
     }
 }
 
-pub(super) fn initialize_native_local_shadow_owner(
+pub(super) fn initialize_local_shadow_owner(
     mut commands: Commands,
     scene: Res<SceneData>,
     tome_world: Option<Res<TomeWorld>>,
-    view_settings: Res<NativeViewSettings>,
+    view_settings: Res<ViewSettings>,
     mut images: ResMut<Assets<Image>>,
-    mut programs: ResMut<NativeProgramCacheSource>,
+    mut programs: ResMut<ProgramCacheSource>,
 ) {
-    let result = (|| -> Result<NativeLocalShadowOwner, String> {
+    let result = (|| -> Result<LocalShadowOwner, String> {
         let (_, settings) = game_settings::read_local_shadow_settings()?;
         let quality = scene
             .shadow_quality
             .as_ref()
-            .ok_or("native local shadows have no selected original quality")?;
+            .ok_or("local shadows have no selected original quality")?;
         let parameters = scene
             .environment_render_parameters
             .as_ref()
-            .ok_or("native local shadow environment parameters are absent")?;
+            .ok_or("local shadow environment parameters are absent")?;
         let clamp = scene
             .shadow_depth_bias_clamp
-            .ok_or("native local shadow depth-bias clamp is absent")?;
+            .ok_or("local shadow depth-bias clamp is absent")?;
         let hardware_bias_point =
             render_shadow::local_hardware_bias(parameters, 0, quality.depth_32_bits, clamp)?;
         let hardware_bias_spot =
@@ -559,8 +559,8 @@ pub(super) fn initialize_native_local_shadow_owner(
             .as_mut()
             .map_err(|e| e.clone())?
             .definition(b"depthcopy")?
-            .ok_or("native depthCopy RPD is unavailable")?
-            .native_render_state();
+            .ok_or("depthCopy RPD is unavailable")?
+            .render_state();
         let format = match render_shadow::parallel_shadow_depth_format(quality.depth_32_bits)? {
             render_shadow::ParallelShadowDepthFormat::Depth16 => {
                 bevy::render::render_resource::TextureFormat::Depth16Unorm
@@ -631,7 +631,7 @@ pub(super) fn initialize_native_local_shadow_owner(
                     light.color[2].max(0.),
                 )
                 .to_linear();
-                let preset = original_light_preset(light, [color.red, color.green, color.blue])
+                let preset = light_preset(light, [color.red, color.green, color.blue])
                     .ok_or("local caster precomputation has no original light preset")?;
                 let near = light.shadow_near_plane.unwrap_or(0.1);
                 let clips = if kind == 2 {
@@ -659,18 +659,18 @@ pub(super) fn initialize_native_local_shadow_owner(
             }
         }
         println!(
-            "Native local caster precomputation: {} lights, task-pool jobs={query_job_count}, physical cores={}",
+            "Local caster precomputation: {} lights, task-pool jobs={query_job_count}, physical cores={}",
             precomputed_world_casters.len(),
             topology.words[1]
         );
-        Ok(NativeLocalShadowOwner {
+        Ok(LocalShadowOwner {
             settings,
             atlas_image,
             cache_image,
             atlas: render_shadow::ShadowAtlasAllocator::new(&roots, 0),
             cache: local_shadow_cache::LocalShadowCache::new(&[cache_roots]),
             view_flags: 0,
-            world_query: local_caster_query::NativeLocalWorldQuery::new(&scene.world),
+            world_query: local_caster_query::LocalWorldQuery::new(&scene.world),
             precomputed_world_casters,
             query_job_count,
             hardware_bias_point,
@@ -681,27 +681,27 @@ pub(super) fn initialize_native_local_shadow_owner(
     match result {
         Ok(owner) => {
             println!(
-                "Native local shadow targets allocated: atlas={:?}, cache={:?}; awaiting actual side draws",
+                "Local shadow targets allocated: atlas={:?}, cache={:?}; awaiting actual side draws",
                 owner.settings.atlas, owner.settings.cache
             );
             commands.insert_resource(owner);
         }
-        Err(error) => eprintln!("Native local shadow owner unavailable: {error}"),
+        Err(error) => eprintln!("Local shadow owner unavailable: {error}"),
     }
 }
 
-pub(super) fn prepare_native_local_shadow_cpu(
-    owner: Option<ResMut<NativeLocalShadowOwner>>,
+pub(super) fn prepare_local_shadow_cpu(
+    owner: Option<ResMut<LocalShadowOwner>>,
     scene: Res<SceneData>,
-    lights: Query<(Entity, &NativeLocalLightSource, &Visibility)>,
+    lights: Query<(Entity, &LocalLightSource, &Visibility)>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
-    coarse: Res<coarse_depth::NativeCoarseDepthMailbox>,
+    coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame: Res<bevy::diagnostic::FrameCount>,
-    mut cpu: ResMut<NativeLocalShadowCpu>,
-    model_frame: Res<shadow_updates::NativeModelCasterFrame>,
-    model_sources: Res<shadow_updates::NativeModelShadowSources>,
-    completion: Res<shadow_pass::NativeLocalShadowCompletion>,
-    mut view_controls: ResMut<NativeLocalShadowViewControls>,
+    mut cpu: ResMut<LocalShadowCpu>,
+    model_frame: Res<shadow_updates::ModelCasterFrame>,
+    model_sources: Res<shadow_updates::ModelShadowSources>,
+    completion: Res<shadow_pass::LocalShadowCompletion>,
+    mut view_controls: ResMut<LocalShadowViewControls>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(24));
@@ -719,21 +719,21 @@ pub(super) fn prepare_native_local_shadow_cpu(
     owner
         .cache
         .apply_view_controls(std::mem::take(&mut view_controls.0));
-    let result = (|| -> Result<Vec<NativeLocalProjectedLight>, String> {
+    let result = (|| -> Result<Vec<LocalProjectedLight>, String> {
         if owner.view_flags & 2 != 0 {
             return Ok(Vec::new());
         }
         let (camera, transform, projection) = cameras.single().map_err(|e| e.to_string())?;
         let Projection::Custom(custom) = projection else {
-            return Err("native local shadows have no original camera projection".into());
+            return Err("local shadows have no original camera projection".into());
         };
         let projection = custom
-            .get::<camera_projection::NativeGameProjection>()
-            .ok_or("native local shadow camera type is absent")?;
+            .get::<camera_projection::GameProjection>()
+            .ok_or("local shadow camera type is absent")?;
         let extent = camera
             .physical_viewport_size()
-            .ok_or("native local camera viewport is absent")?;
-        let horizontal_fov = tome::original_render_fov_radians(
+            .ok_or("local camera viewport is absent")?;
+        let horizontal_fov = tome::render_fov_radians(
             projection.reference_horizontal_degrees,
             extent.x,
             extent.y,
@@ -750,17 +750,17 @@ pub(super) fn prepare_native_local_shadow_cpu(
                 model_frame
                     .error
                     .clone()
-                    .unwrap_or("native local model collector is unavailable".into())
+                    .unwrap_or("local model collector is unavailable".into())
             })?;
         if *model_frame_number != frame.0 {
-            return Err("native local model collector belongs to another frame".into());
+            return Err("local model collector belongs to another frame".into());
         }
         let mut inverse_projection = [[0.0; 4]; 4];
         let mut inverse_vp = [[0.0; 4]; 4];
         if !render_shadow::invert_rows(&matrix, &mut inverse_projection)
             || !render_shadow::invert_rows(&vp, &mut inverse_vp)
         {
-            return Err("native local camera is singular".into());
+            return Err("local camera is singular".into());
         }
         let snapshot = coarse.latest()?;
         let pixels = snapshot
@@ -785,7 +785,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
             let light = scene
                 .placed_lights
                 .get(source.0)
-                .ok_or("native local light lost its authored source")?;
+                .ok_or("local light lost its authored source")?;
             let kind = match light.kind {
                 entities::LightType::Point => 0,
                 entities::LightType::HalfPoint => 1,
@@ -798,8 +798,8 @@ pub(super) fn prepare_native_local_shadow_cpu(
                 light.color[2].max(0.0),
             )
             .to_linear();
-            let preset = original_light_preset(light, [color.red, color.green, color.blue])
-                .ok_or("native local light preset is unresolved")?;
+            let preset = light_preset(light, [color.red, color.green, color.blue])
+                .ok_or("local light preset is unresolved")?;
             let quality = if kind != 2 || light.no_shadows {
                 0
             } else {
@@ -837,7 +837,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
         let quality = scene
             .shadow_quality
             .as_ref()
-            .ok_or("native local shadow quality is absent")?;
+            .ok_or("local shadow quality is absent")?;
         let (mut requests, _) = render_shadow::size_local_shadow_requests(
             &candidates,
             camera_position,
@@ -965,7 +965,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
                 }
             }
             println!(
-                "Native local preparation parallel verification: {} projections and caster lists bitwise equal to serial original helpers",
+                "Local preparation parallel verification: {} projections and caster lists bitwise equal to serial original helpers",
                 requests.len()
             );
             cpu.verified_parallel = true;
@@ -996,7 +996,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
             }
             let (clips, crops) = projected?;
             let id = u16::try_from(request.candidate.source)
-                .map_err(|_| "native local light registry exceeds16-bit identities")?;
+                .map_err(|_| "local light registry exceeds16-bit identities")?;
             let mut bounds = [
                 [f32::from_bits(0x7149f2ca); 3],
                 [f32::from_bits(0xf149f2ca); 3],
@@ -1052,7 +1052,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
                         .insert(0, key, cache_source, request.resolution[1] as u32, frame.0)
                         .cloned()
                 });
-                sides.push(Some(NativeLocalShadowSide {
+                sides.push(Some(LocalShadowSide {
                     allocation,
                     geometry,
                     cache_key: key,
@@ -1097,7 +1097,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
             let skip_dynamic = request.priority <= quality.local_partial_dynamic_threshold
                 && quality.local_partial_squared_distance < squared;
             let refresh_dynamic = request.candidate.flags[0] & 0x40 != 0 || !skip_dynamic;
-            output.push(NativeLocalProjectedLight {
+            output.push(LocalProjectedLight {
                 entity: sources[&request.candidate.source],
                 request,
                 clips,
@@ -1160,7 +1160,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
             }
             if cpu.error.take().is_some() || !cpu.reported {
                 println!(
-                    "Native local shadow CPU projections online: {} lights, {} sides; GPU submission pending",
+                    "Local shadow CPU projections online: {} lights, {} sides; GPU submission pending",
                     lights.len(),
                     lights.iter().map(|v| v.clips.len()).sum::<usize>()
                 );
@@ -1170,7 +1170,7 @@ pub(super) fn prepare_native_local_shadow_cpu(
         }
         Err(error) => {
             if cpu.error.as_ref() != Some(&error) {
-                eprintln!("Native local shadow CPU projections pending: {error}");
+                eprintln!("Local shadow CPU projections pending: {error}");
                 cpu.error = Some(error);
             }
         }
@@ -1214,7 +1214,7 @@ mod tests {
             assert_eq!(
                 (actual, &target.bits),
                 (changed, &expected),
-                "native captured raster{case}"
+                "captured raster{case}"
             );
             checked += 1;
         }
@@ -1250,7 +1250,7 @@ mod tests {
                 object_distance_scale: f32::MIN_POSITIVE,
                 winding_flip: tome::query_matrix_winding_flip(rows),
                 gate_states: Some(&gates),
-                output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
             };
             let jobs = (0..7)
                 .map(|job| {
@@ -1266,7 +1266,7 @@ mod tests {
             if actual != expected {
                 failures += 1;
                 eprintln!(
-                    "Native query{case}: actual{} original{} extra{:?} missing{:?}",
+                    "Query{case}: actual{} original{} extra{:?} missing{:?}",
                     actual.len(),
                     expected.len(),
                     actual.difference(&expected).collect::<Vec<_>>(),
@@ -1275,15 +1275,15 @@ mod tests {
                 for job in &jobs {
                     if let Some(error) = &job.diagnostics.error {
                         eprintln!(
-                            "Native query{case} job{} error: {error}",
+                            "Query{case} job{} error: {error}",
                             job.diagnostics.job_index
                         );
                     }
                 }
                 for &id in expected.difference(&actual) {
                     eprintln!(
-                        "Native query{case} missing{id} point_baked{} bounds{:?}",
-                        tome::shadow_caster::native_point_occlusion_visible(
+                        "Query{case} missing{id} point_baked{} bounds{:?}",
+                        tome::shadow_caster::point_occlusion_visible(
                             &bytes,
                             id,
                             input.camera_point,
@@ -1325,7 +1325,7 @@ mod tests {
             let face =
                 tome::admitted_link_portal_face(&bytes, record, link, direction, point, None)
                     .unwrap();
-            assert_eq!(face, Some(w[1] as u8), "native portal face case{case}");
+            assert_eq!(face, Some(w[1] as u8), "portal face case{case}");
             let bounds = if let Some(geometry) = tome::packed_link_geometry(link) {
                 tome::packed_link_query_bounds(&bytes, record, geometry).unwrap()
             } else {
@@ -1345,7 +1345,7 @@ mod tests {
             assert_eq!(
                 actual,
                 &w[38..66],
-                "native portal corner/face vectors case{case}"
+                "portal corner/face vectors case{case}"
             );
             let rect = std::array::from_fn(|i| w[66 + i] as u8);
             let incoming = tome::PortalTileMask::full(rect).unwrap();
@@ -1361,11 +1361,11 @@ mod tests {
                 i32::from(rect[3]) * 4,
             ];
             let actual=tome::projected_link_portal_transition(&bytes,record,link,face,matrix,winding,&setup.active_planes,viewport,&incoming).unwrap()
-                .unwrap_or_else(||panic!("native portal case{case} rejected: face{face:?} bounds{bounds:?} matrix{matrix:?} projected{projected:?} viewport{viewport:?}")).0;
+                .unwrap_or_else(||panic!("portal case{case} rejected: face{face:?} bounds{bounds:?} matrix{matrix:?} projected{projected:?} viewport{viewport:?}")).0;
             assert_eq!(
                 actual,
                 std::array::from_fn(|i| w[34 + i] as i32),
-                "native portal pixel rectangle case{case}"
+                "portal pixel rectangle case{case}"
             );
             count += 1;
         }
@@ -1380,7 +1380,7 @@ mod tests {
         let gates = tome::initial_gate_states(&bytes).unwrap();
         let bwm = world_mesh::parse(&fs::read("artifacts/eotw_p_lowchaos.bwm").unwrap()).unwrap();
         let raw = fs::read_to_string("artifacts/shadow-resume-local-light-casters.txt").unwrap();
-        let native_rows = fs::read_to_string("artifacts/shadow-resume-local-native-query-rows.txt")
+        let captured_query_rows = fs::read_to_string("artifacts/shadow-resume-local-native-query-rows.txt")
             .unwrap()
             .lines()
             .map(|line| {
@@ -1417,10 +1417,10 @@ mod tests {
             let rows = std::array::from_fn(|r| {
                 std::array::from_fn(|c| f32::from_bits(geometry_words[r * 4 + c]))
             });
-            let native_cells =
+            let cells =
                 fs::read_to_string("artifacts/shadow-resume-local-native-light6-cell-geometry.txt")
                     .unwrap();
-            for line in native_cells.lines() {
+            for line in cells.lines() {
                 let bits = line
                     .split_whitespace()
                     .map(|v| u32::from_str_radix(v, 16).unwrap())
@@ -1438,7 +1438,7 @@ mod tests {
                 assert_eq!(
                     actual,
                     &bits[4..],
-                    "native local query geometry viewport{viewport:?}"
+                    "local query geometry viewport{viewport:?}"
                 );
             }
         }
@@ -1454,20 +1454,20 @@ mod tests {
             object_distance_scale: f32::MIN_POSITIVE,
             winding_flip: tome::query_matrix_winding_flip(rows),
             gate_states: Some(&gates),
-            output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+            output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
         };
         let jobs = (0..7)
             .map(|job| tome::ordinary_direct_tome_render_job(&tree, &bytes, &data, &input, job, 7))
             .collect::<Vec<_>>();
         for job in &jobs {
             eprintln!(
-                "Native replay job{} cells{:?}",
+                "Replay job{} cells{:?}",
                 job.diagnostics.job_index, job.diagnostics.progress.processed_object_cells
             );
         }
         let output = tome::merge_render_query_outputs(&jobs).unwrap().unwrap();
         let mut mask = vec![false; bwm.visibility.len()];
-        let native_ids =
+        let ids =
             fs::read_to_string("artifacts/shadow-resume-local-tome-object-indices.txt")
                 .unwrap()
                 .split_whitespace()
@@ -1475,11 +1475,11 @@ mod tests {
                 .collect::<HashSet<_>>();
         let actual_ids = output.indices().iter().copied().collect::<HashSet<_>>();
         eprintln!(
-            "Native Tome objects actual{} original{} extra{:?} missing{:?}",
+            "Tome objects actual{} original{} extra{:?} missing{:?}",
             actual_ids.len(),
-            native_ids.len(),
-            actual_ids.difference(&native_ids).collect::<Vec<_>>(),
-            native_ids.difference(&actual_ids).collect::<Vec<_>>()
+            ids.len(),
+            actual_ids.difference(&ids).collect::<Vec<_>>(),
+            ids.difference(&actual_ids).collect::<Vec<_>>()
         );
         for &id in output.indices() {
             for &instance in &bwm.tome_object_instances[id as usize] {
@@ -1563,7 +1563,7 @@ mod tests {
             };
             let caster_lists = caster_queries.query_light(position, &clips).unwrap();
             for (side, (clip, expected)) in clips.iter().zip(expected.split(';')).enumerate() {
-                let captured = native_rows
+                let captured = captured_query_rows
                     .iter()
                     .filter(|(p, _)| *p == position.map(f32::to_bits))
                     .map(|(_, rows)| rows)
@@ -1572,7 +1572,7 @@ mod tests {
                     assert!(
                         captured.iter().any(|rows| clip.map(|r| r.map(f32::to_bits))
                             == rows.map(|r| r.map(f32::to_bits))),
-                        "native map-load light{light} side{side} projection"
+                        "map-load light{light} side{side} projection"
                     );
                 }
                 let expected = expected
@@ -1586,7 +1586,7 @@ mod tests {
                 let extra = actual.iter().filter(|id| !expected.contains(id)).count();
                 let missing = expected.iter().filter(|id| !actual.contains(id)).count();
                 eprintln!(
-                    "Native local light{light} side{side}: actual{} original{} extra{extra} missing{missing}",
+                    "Local light{light} side{side}: actual{} original{} extra{extra} missing{missing}",
                     actual.len(),
                     expected.len()
                 );
@@ -1625,7 +1625,7 @@ mod tests {
             Ok(catalog
                 .read(path)
                 .unwrap()
-                .map(|bytes| entities::native_declaration_text(&bytes).into_owned()))
+                .map(|bytes| entities::declaration_text(&bytes).into_owned()))
         })
         .unwrap();
         let raw =
@@ -1679,7 +1679,7 @@ mod tests {
                 if record[0] & 0x62 != flags[0] || record[1] & 1 != flags[1] {
                     mismatches += 1;
                     eprintln!(
-                        "FLAGS {} source={flags:?} original={:02x?}",
+                        "FLAGS {} source={flags:?} reference={:02x?}",
                         light.id,
                         &record[..2]
                     );
@@ -1688,7 +1688,7 @@ mod tests {
                 if word(0x68) != culling {
                     mismatches += 1;
                     eprintln!(
-                        "CULLING {} source{culling} original{}",
+                        "CULLING {} source{culling} reference{}",
                         light.id,
                         word(0x68)
                     );
@@ -1710,7 +1710,7 @@ mod tests {
         assert_eq!(mismatches, 0);
         assert!(
             ordered.windows(2).all(|w| w[0] < w[1]),
-            "native authored light gather order changed"
+            "game authored light gather order changed"
         );
     }
 }

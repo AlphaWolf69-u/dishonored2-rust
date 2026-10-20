@@ -14,7 +14,7 @@ struct PackedIrradiance {
 fn game_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x, -v.z, v.y); }
 
 // indirectLighting/common: no saturation of tetrahedral barycentrics.
-fn native_vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32>, 9> {
+fn vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32>, 9> {
     var sh: array<vec3<f32>, 9>;
     if (tag & 0x80000000u) == 0u {
         for (var i = 0u; i < 9u; i++) { sh[i] = probe_sh[tag][i].rgb; }
@@ -120,7 +120,7 @@ fn unpack_diffuse(packed: PackedIrradiance, direction: vec3<f32>, tangent: vec3<
 // lighting::NOTOUCHY_MapGlossAndMetalToLightingPipelineValue +
 // lightcontext::ComputeAmbientLighting, using fresnel's Ward diffuse integral.
 // Probe samples are irradiance; this conversion produces reflected radiance.
-fn native_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
+fn evaluate_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
     specular_tint:vec3<f32>, use_metallic_specular:bool,
     dielectric:vec3<f32>, metal_diffuse:vec3<f32>)->vec3<f32> {
     let gloss=1.0-roughness;

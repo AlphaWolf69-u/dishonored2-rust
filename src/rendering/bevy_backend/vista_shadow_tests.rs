@@ -4,7 +4,7 @@ use bevy::render::{render_resource::*, renderer::RenderQueue, RenderApp};
 
 #[test]
 #[ignore = "requires GPU; checks actual Vista raw-UV/wrap cutout raster and persistent depth"]
-fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
+fn world_vista_cutout_raster_uses_raw_uv_sampler() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -38,7 +38,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
             },
         ],
     };
-    let pipeline = NativeOpaqueShadowPipeline::new_world_vista_with_raster_state(
+    let pipeline = ShadowDepthPipeline::new_world_vista_with_raster_state(
         device,
         adapter,
         &layout,
@@ -96,7 +96,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
     ];
     // Deliberately zero Layer0: the ordinary cutout program would sample the
     // same texel everywhere. Vista must not perform that material MAD.
-    let cb = crate::shadow_pass::native_world_alpha_shadow_view_cb(&identity, 0, [0.; 4]);
+    let cb = crate::shadow_pass::world_alpha_shadow_view_cb(&identity, 0, [0.; 4]);
     let uniform = buffer("Vista bridge state", &cb, BufferUsages::UNIFORM);
     let model = pipeline
         .bind_prepared_model_state(device, &uniform)
@@ -135,7 +135,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
         },
         diffuse.size(),
     );
-    let sampler = native_shadow_vista_sampler(device);
+    let sampler = shadow_vista_sampler(device);
     let resources = pipeline
         .bind_world_alpha_instances(
             device,
@@ -148,12 +148,12 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
     // From the installed anisotropicsampler declaration, NOT capture defaults.
     let canonical = [0x2a, 0, 0, 0, 0, 0, 0, 13f32.to_bits(), 4f32.to_bits()];
     for global in [1., 4., 16.] {
-        let desc = crate::render_state::native_sampler_descriptor(&canonical, global);
+        let desc = crate::render_state::sampler_descriptor(&canonical, global);
         assert_eq!(&desc[..4], &[0x55, 1, 1, 1]);
         assert_eq!(desc[5], 4);
         assert_eq!(&desc[11..], &[0, 13f32.to_bits()]);
     }
-    let target = NativeShadowDepthArray::new_with_format(
+    let target = ShadowDepthArray::new_with_format(
         device,
         Extent3d {
             width: 4,
@@ -181,7 +181,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
                 store: StoreOp::Store,
             },
             None,
-            &[NativeOpaqueShadowDraw {
+            &[ShadowDepthDraw {
                 model_state_offset: 0,
                 model_state: &model,
                 program_resources: Some(&resources),
@@ -191,7 +191,7 @@ fn native_world_vista_cutout_raster_uses_original_raw_uv_sampler() {
                 indices: 0..3,
                 base_vertex: 0,
                 instances: 0..1,
-                scissor: NativeShadowScissor {
+                scissor: ShadowScissor {
                     x: 0,
                     y: 0,
                     width: 4,

@@ -15,7 +15,7 @@ use bevy::{
 /// Rewrite-authored transport of original named render parameters, not an
 /// assertion about the executable's constant-buffer binary layout.
 #[derive(Clone, Debug, ShaderType)]
-pub struct NativeScreenShadowUniform {
+pub struct ScreenShadowUniform {
     pub inverse_view_projection: [Vec4; 4],
     /// -inverseProjection[2].w, inverseProjection[3].z, [3].w, unused.
     pub unproject: Vec4,
@@ -34,7 +34,7 @@ pub struct NativeScreenShadowUniform {
     pub options: UVec4,
 }
 
-impl NativeScreenShadowUniform {
+impl ScreenShadowUniform {
     pub fn validate(&self) -> Result<(), String> {
         if self
             .inverse_view_projection
@@ -71,27 +71,27 @@ impl NativeScreenShadowUniform {
 
 /// Resolved state of one of FUN_14032c7f0's stencil-partitioned draws.
 /// The native factories are verified against the executable in render_state.rs.
-pub struct NativeScreenProducerState {
+pub struct ScreenProducerState {
     pub color: ColorTargetState,
     pub depth: DepthStencilState,
     pub stencil_reference: u32,
 }
 
 pub fn screen_producer_states(
-    source: crate::render_state::NativeRenderState,
+    source: crate::render_state::RenderState,
     color_format: TextureFormat,
     depth_format: TextureFormat,
-) -> Result<[NativeScreenProducerState; 2], String> {
-    use crate::render_state::{native_blend_state, screen_shadow_pass_states};
+) -> Result<[ScreenProducerState; 2], String> {
+    use crate::render_state::{blend_state, screen_shadow_pass_states};
     if !depth_format.has_stencil_aspect() {
-        return Err("native screen-shadow producer requires the original stencil partition".into());
+        return Err("screen-shadow producer requires the original stencil partition".into());
     }
-    let make = |state: crate::render_state::NativeRenderState| -> Result<NativeScreenProducerState, String> {
-        let blend = native_blend_state(&state).targets[0].unwrap();
-        Ok(NativeScreenProducerState {
+    let make = |state: crate::render_state::RenderState| -> Result<ScreenProducerState, String> {
+        let blend = blend_state(&state).targets[0].unwrap();
+        Ok(ScreenProducerState {
             color: ColorTargetState { format: color_format, blend: None,
                 write_mask: ColorWrites::from_bits_truncate(u32::from(blend.write_mask)) },
-            depth: crate::shadow_pipeline::native_depth_stencil_gpu(&state, depth_format)?,
+            depth: crate::shadow_pipeline::depth_stencil_gpu(&state, depth_format)?,
             stencil_reference: 1,
         })
     };
@@ -102,7 +102,7 @@ pub fn screen_producer_states(
 /// Persistent pipelines specialized by the actual owner target/depth state.
 /// The native callback writes only G, using stencil == 1 then != 1; AO and
 /// packed depth survive both draws. No depth/stencil-free live substitution.
-pub struct NativeScreenShadowPipelines {
+pub struct ScreenShadowPipelines {
     pub layout: BindGroupLayout,
     pub visibility: RenderPipeline,
     pub bilateral: RenderPipeline,
@@ -110,7 +110,7 @@ pub struct NativeScreenShadowPipelines {
     module: ShaderModule,
 }
 
-impl NativeScreenShadowPipelines {
+impl ScreenShadowPipelines {
     pub fn new(
         device: &RenderDevice,
         visibility_target: ColorTargetState,
@@ -320,9 +320,9 @@ impl NativeScreenShadowPipelines {
     ) {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some(if bilateral {
-                "native screen shadow bilateral"
+                "screen shadow bilateral"
             } else {
-                "native screen shadow visibility"
+                "screen shadow visibility"
             }),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: destination,
@@ -373,7 +373,7 @@ impl NativeScreenShadowPipelines {
         destination: &TextureView,
     ) {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("native shadow linear-depth transport"),
+            label: Some("shadow linear-depth transport"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: destination,
                 depth_slice: None,
@@ -398,13 +398,13 @@ impl NativeScreenShadowPipelines {
 /// program. The shader's Gaussian weights are fixed in its declaration;
 /// DWAO/BlurWeights and centre-weight parameters are unused there.
 #[derive(Clone, Debug, ShaderType)]
-pub struct NativeDwaoBlurUniform {
+pub struct DwaoBlurUniform {
     pub offset0: Vec4,
     pub offset1: Vec4,
     pub parameters: Vec4,
 }
 
-impl NativeDwaoBlurUniform {
+impl DwaoBlurUniform {
     pub fn from_owner(
         extent: [f32; 2],
         direction: [f32; 2],
@@ -439,20 +439,20 @@ impl NativeDwaoBlurUniform {
 /// Default screen-shadow callback's depth-rejecting AO/shadow Gaussian blur.
 /// This is DISTINCT from screenshadows/bilateralblur. The original program
 /// enables depth testing; its resolved depth state/view are mandatory inputs.
-pub struct NativeDwaoBlurPipeline {
+pub struct DwaoBlurPipeline {
     layout: BindGroupLayout,
     pipeline: RenderPipeline,
 }
 
-impl NativeDwaoBlurPipeline {
+impl DwaoBlurPipeline {
     pub fn new(
         device: &RenderDevice,
-        shared: &NativeScreenShadowPipelines,
+        shared: &ScreenShadowPipelines,
         target: ColorTargetState,
         depth: DepthStencilState,
     ) -> Self {
         let layout = device.create_bind_group_layout(
-            "native DWAO blur offsets",
+            "DWAO blur offsets",
             &[BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -465,7 +465,7 @@ impl NativeDwaoBlurPipeline {
             }],
         );
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("native depth-rejecting screen shadow blur"),
+            label: Some("depth-rejecting screen shadow blur"),
             bind_group_layouts: &[Some(&shared.layout), Some(&layout)],
             immediate_size: 0,
         });

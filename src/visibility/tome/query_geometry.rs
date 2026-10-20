@@ -31,7 +31,7 @@ pub fn render_query_base_rows(projection: [[f32; 4]; 4], pose: [[f32; 4]; 4]) ->
 /// aspect, the camera pose in Tome/game coordinates, and the renderer near/far
 /// values. The caller remains responsible for selecting custom or subrect
 /// projection branches when those are active.
-pub fn original_render_query_matrix(
+pub fn render_query_matrix(
     horizontal_reference_degrees: f32,
     render_width: u32,
     render_height: u32,
@@ -48,7 +48,7 @@ pub fn original_render_query_matrix(
     {
         return Err("invalid original render-query camera input".into());
     }
-    let (horizontal_fov, vertical_fov) = original_render_fov_radians(
+    let (horizontal_fov, vertical_fov) = render_fov_radians(
         horizontal_reference_degrees,
         render_width,
         render_height,
@@ -56,7 +56,7 @@ pub fn original_render_query_matrix(
     )?;
     let right = near * (horizontal_fov * 0.5).tan();
     let top = near * (vertical_fov * 0.5).tan();
-    let projection = original_render_perspective_rows([-right, right], [-top, top], near, far)?;
+    let projection = render_perspective_rows([-right, right], [-top, top], near, far)?;
     Ok(render_query_base_rows(projection, camera_pose))
 }
 
@@ -65,7 +65,7 @@ pub fn original_render_query_matrix(
 /// The render projection is reverse depth, while this query uses near=0 and
 /// far=1 in clip space. The replacement also reverses the 4x4 determinant
 /// sign used by FUN_140a77560 to choose portal winding.
-pub fn original_world_visibility_query_matrix(
+pub fn world_visibility_query_matrix(
     horizontal_reference_degrees: f32,
     render_width: u32,
     render_height: u32,
@@ -82,7 +82,7 @@ pub fn original_world_visibility_query_matrix(
     {
         return Err("invalid world visibility depth limits".into());
     }
-    let (horizontal_fov, vertical_fov) = original_render_fov_radians(
+    let (horizontal_fov, vertical_fov) = render_fov_radians(
         horizontal_reference_degrees,
         render_width,
         render_height,
@@ -90,7 +90,7 @@ pub fn original_world_visibility_query_matrix(
     )?;
     let right = near * (horizontal_fov * 0.5).tan();
     let top = near * (vertical_fov * 0.5).tan();
-    let mut projection = original_render_perspective_rows([-right, right], [-top, top], near, far)?;
+    let mut projection = render_perspective_rows([-right, right], [-top, top], near, far)?;
     // 0x141b26854 is 7000.0f32, the original far fallback for this path.
     let query_far = if far <= near { 7000.0 } else { far };
     let denominator = query_far - near;
@@ -130,7 +130,7 @@ pub fn stored_query_matrix_from_render_rows(rows: [[f32; 4]; 4]) -> [[f32; 4]; 4
 /// reverse depth: the near plane maps to 1 and the finite far plane maps to 0.
 /// A far value no greater than near selects the executable's infinite-far
 /// branch.
-pub fn original_render_perspective_rows(
+pub fn render_perspective_rows(
     horizontal_bounds: [f32; 2],
     vertical_bounds: [f32; 2],
     near: f32,
@@ -179,7 +179,7 @@ pub fn original_render_perspective_rows(
 /// FOV, then derives horizontal FOV from the active viewport width, height,
 /// and pixel aspect. The width/height/pixel-aspect inputs come from the
 /// renderer state fields read by FUN_140890ac0/FUN_1408908b0.
-pub fn original_render_fov_radians(
+pub fn render_fov_radians(
     horizontal_reference_degrees: f32,
     render_width: u32,
     render_height: u32,
@@ -195,14 +195,14 @@ pub fn original_render_fov_radians(
         return Err("invalid original render-view FOV inputs".into());
     }
 
-    let vertical = original_render_vertical_fov_radians(horizontal_reference_degrees)?;
+    let vertical = render_vertical_fov_radians(horizontal_reference_degrees)?;
     let aspect = (render_width as f32 * pixel_aspect) / render_height as f32;
     let horizontal = 2.0 * ((vertical * 0.5).tan() * aspect).atan();
     Ok((horizontal, vertical))
 }
 
 /// FUN_140890b50's vertical-FOV conversion from the horizontal reference CVar.
-pub fn original_render_vertical_fov_radians(
+pub fn render_vertical_fov_radians(
     horizontal_reference_degrees: f32,
 ) -> Result<f32, String> {
     if !horizontal_reference_degrees.is_finite()
@@ -260,16 +260,16 @@ pub fn render_query_job_tile(job: u32, count: u32) -> Result<[i32; 4], String> {
 
 /// CVar registrations FUN_141379390/FUN_1413665e0: defaults 12 and 2.
 /// DAT_141af3a2c is the ASCII string "12", not a numeric/one-digit field.
-pub const ORIGINAL_DEFAULT_QUERY_JOB_COUNT: u32 = 12;
-pub const ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE: u32 = 2;
+pub const DEFAULT_QUERY_JOB_COUNT: u32 = 12;
+pub const DEFAULT_SCHEDULER_THREADING_MODE: u32 = 2;
 /// FUN_14037e1d0's world-object buffer, separate from its visible-cell buffer.
-pub const ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY: usize = 0x10000;
+pub const WORLD_QUERY_OUTPUT_CAPACITY: usize = 0x10000;
 /// FUN_14037e1d0 supplies this second list to the later light query.
-pub const ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY: usize = 0x8000;
+pub const VISIBLE_CELL_OUTPUT_CAPACITY: usize = 0x8000;
 
 /// FUN_14037ef90's ordinary world-query branch (caller param_12 = 1).
 /// The CVar permits 1..32; dispatch caps it at 16 and mode 0 forces one job.
-pub fn original_world_query_job_count(configured: u32, threading_mode: u32) -> Result<u32, String> {
+pub fn world_query_job_count(configured: u32, threading_mode: u32) -> Result<u32, String> {
     if !(1..=32).contains(&configured) || threading_mode > 2 {
         return Err("invalid original Umbra job count or scheduler threading mode".into());
     }

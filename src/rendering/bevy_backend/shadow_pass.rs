@@ -6,9 +6,9 @@
 //! infer cascade/cache policy, or enable Bevy light shadows.
 
 use crate::shadow_pipeline::{
-    native_shadow_alpha_sampler, native_shadow_vista_sampler, NativeOpaqueShadowDraw,
-    NativeOpaqueShadowPipeline, NativeShadowDepthArray, NativeShadowDepthProgram,
-    NativeShadowScissor,
+    shadow_alpha_sampler, shadow_vista_sampler, ShadowDepthDraw,
+    ShadowDepthPipeline, ShadowDepthArray, ShadowDepthProgram,
+    ShadowScissor,
 };
 use bevy::platform::collections::HashMap;
 mod directional;
@@ -44,16 +44,16 @@ mod local;
 #[path = "shadow_pass/prepared_cache.rs"]
 mod prepared_cache;
 pub use local::{
-    NativeLocalShadowCompletion, NativeLocalShadowReceiver, NativeLocalShadowReceiverLight,
-    NativeLocalShadowRegion, NativeLocalShadowSceneFrame, NativeLocalShadowSubmission,
-    NativeShadowCaptureReadiness,
+    LocalShadowCompletion, LocalShadowReceiver, LocalShadowReceiverLight,
+    LocalShadowRegion, LocalShadowSceneFrame, LocalShadowSubmission,
+    ShadowCaptureReadiness,
 };
 
 /// A resolved original shader *class*, not a transient RenderDoc resource ID.
 /// The opaque class is evidenced by VS hash be596c78-7b23f0b2-921af52f-29b1e602.
 /// The CPU owner must resolve the original program bank before selecting it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum NativeShadowProgram {
+pub enum ShadowProgram {
     Skinned {
         influences: u8,
         alpha: bool,
@@ -75,35 +75,35 @@ pub enum NativeShadowProgram {
 /// Actual raw diffuse image and resolved Layer0 coordinate data from the
 /// original material owner. No forward alpha cutoff/tint is used here.
 #[derive(Clone, Debug)]
-pub struct NativeShadowAlphaMaterial {
+pub struct ShadowAlphaMaterial {
     pub diffuse: Handle<Image>,
     pub uv_set: u32,
     pub uv_scale_bias: [f32; 4],
 }
 
 // GPU transport equality must retain signed zero and NaN payload words.
-impl PartialEq for NativeShadowAlphaMaterial {
+impl PartialEq for ShadowAlphaMaterial {
     fn eq(&self, other: &Self) -> bool {
         self.diffuse == other.diffuse
             && self.uv_set == other.uv_set
             && self.uv_scale_bias.map(f32::to_bits) == other.uv_scale_bias.map(f32::to_bits)
     }
 }
-impl Eq for NativeShadowAlphaMaterial {}
+impl Eq for ShadowAlphaMaterial {}
 
-pub const NATIVE_SHADOW_INSTANCE_BYTES: usize = 80;
-pub const NATIVE_WORLD_SHADOW_INSTANCE_BYTES: usize = 96;
-pub const NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES: usize = 208;
+pub const SHADOW_INSTANCE_BYTES: usize = 80;
+pub const WORLD_SHADOW_INSTANCE_BYTES: usize = 96;
+pub const VEGETATION_SHADOW_INSTANCE_BYTES: usize = 208;
 
 /// These attributes distinguish original local vegetation inputs from the
 /// forward mesh's baked position, transformed normal and color/tint.
-pub const NATIVE_VEGETATION_NORMAL: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeVegetationNormal",
+pub const VEGETATION_NORMAL: MeshVertexAttribute = MeshVertexAttribute::new(
+    "VegetationNormal",
     0x4448_3201,
     bevy::render::render_resource::VertexFormat::Float32x2,
 );
-pub const NATIVE_VEGETATION_COLOR: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeVegetationColor",
+pub const VEGETATION_COLOR: MeshVertexAttribute = MeshVertexAttribute::new(
+    "VegetationColor",
     0x4448_3202,
     bevy::render::render_resource::VertexFormat::Float32x3,
 );
@@ -111,36 +111,36 @@ pub const NATIVE_VEGETATION_COLOR: MeshVertexAttribute = MeshVertexAttribute::ne
 /// Shared by native model/world programs: original MVP rows require original
 /// local game coordinates, including when forward positions were axis-swapped
 /// or baked to preserve affine shear.
-pub const NATIVE_VEGETATION_POSITION: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeVegetationPosition",
+pub const VEGETATION_POSITION: MeshVertexAttribute = MeshVertexAttribute::new(
+    "VegetationPosition",
     0x4448_3203,
     bevy::render::render_resource::VertexFormat::Float32x3,
 );
 
-pub const NATIVE_SKIN_INDICES_0: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeSkinIndices0",
+pub const SKIN_INDICES_0: MeshVertexAttribute = MeshVertexAttribute::new(
+    "SkinIndices0",
     0x4448_3210,
     bevy::render::render_resource::VertexFormat::Uint8x4,
 );
-pub const NATIVE_SKIN_WEIGHTS_0: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeSkinWeights0",
+pub const SKIN_WEIGHTS_0: MeshVertexAttribute = MeshVertexAttribute::new(
+    "SkinWeights0",
     0x4448_3211,
     bevy::render::render_resource::VertexFormat::Unorm8x4,
 );
-pub const NATIVE_SKIN_INDICES_1: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeSkinIndices1",
+pub const SKIN_INDICES_1: MeshVertexAttribute = MeshVertexAttribute::new(
+    "SkinIndices1",
     0x4448_3212,
     bevy::render::render_resource::VertexFormat::Uint8x4,
 );
-pub const NATIVE_SKIN_WEIGHTS_1: MeshVertexAttribute = MeshVertexAttribute::new(
-    "NativeSkinWeights1",
+pub const SKIN_WEIGHTS_1: MeshVertexAttribute = MeshVertexAttribute::new(
+    "SkinWeights1",
     0x4448_3213,
     bevy::render::render_resource::VertexFormat::Unorm8x4,
 );
 
 /// Bridge-owned packing; native VS families use different CB offsets for
 /// these same named inputs. This is deliberately not a native CB memcpy.
-pub fn native_skin_shadow_instance_cb(
+pub fn skin_shadow_instance_cb(
     rows: &[[f32; 4]; 4],
     offset: u32,
     depth: f32,
@@ -168,24 +168,24 @@ pub fn native_skin_shadow_instance_cb(
 /// The payload ABI is explicit: an 80-byte rigid record cannot become a wind
 /// record by padding it or supplying a zero/default clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NativeShadowInstanceConstants {
+pub enum ShadowInstanceConstants {
     Skinned {
         constants: [u8; 112],
         palette: Handle<ShaderBuffer>,
     },
-    Rigid([u8; NATIVE_SHADOW_INSTANCE_BYTES]),
+    Rigid([u8; SHADOW_INSTANCE_BYTES]),
     /// The owner validates all low-24-bit IDs against its original matrix
     /// array before publishing. The 96-byte bridge record stores VP W/Z/Y/X,
     /// the actual remap offset and the alpha family's UV block. It is not a
     /// rigid model/depth-hack block or a memcpy of the native split CB slots.
     World {
-        constants: [u8; NATIVE_WORLD_SHADOW_INSTANCE_BYTES],
+        constants: [u8; WORLD_SHADOW_INSTANCE_BYTES],
         visible_indices: Handle<ShaderBuffer>,
         matrices: Handle<ShaderBuffer>,
         instance_count: u32,
     },
     WorldVegetation {
-        constants: [u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES],
+        constants: [u8; VEGETATION_SHADOW_INSTANCE_BYTES],
         visible_indices: Handle<ShaderBuffer>,
         matrices: Handle<ShaderBuffer>,
         /// Present only for the original 63-slot wind-buffer variant.
@@ -193,10 +193,10 @@ pub enum NativeShadowInstanceConstants {
         winds: Option<Handle<ShaderBuffer>>,
         instance_count: u32,
     },
-    Vegetation([u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES]),
+    Vegetation([u8; VEGETATION_SHADOW_INSTANCE_BYTES]),
 }
 
-impl NativeShadowInstanceConstants {
+impl ShadowInstanceConstants {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Skinned { constants, .. } => constants,
@@ -208,14 +208,14 @@ impl NativeShadowInstanceConstants {
     }
 }
 
-impl From<[u8; NATIVE_SHADOW_INSTANCE_BYTES]> for NativeShadowInstanceConstants {
-    fn from(bytes: [u8; NATIVE_SHADOW_INSTANCE_BYTES]) -> Self {
+impl From<[u8; SHADOW_INSTANCE_BYTES]> for ShadowInstanceConstants {
+    fn from(bytes: [u8; SHADOW_INSTANCE_BYTES]) -> Self {
         Self::Rigid(bytes)
     }
 }
 
-impl From<[u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES]> for NativeShadowInstanceConstants {
-    fn from(bytes: [u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES]) -> Self {
+impl From<[u8; VEGETATION_SHADOW_INSTANCE_BYTES]> for ShadowInstanceConstants {
+    fn from(bytes: [u8; VEGETATION_SHADOW_INSTANCE_BYTES]) -> Self {
         Self::Vegetation(bytes)
     }
 }
@@ -223,7 +223,7 @@ impl From<[u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES]> for NativeShadowInstanc
 /// Actual resolved vegetanim parameters. Defaults/overrides are resolved by
 /// the material owner; none are substituted in the renderer.
 #[derive(Clone, Debug)]
-pub struct NativeVegetationShadowParameters {
+pub struct VegetationShadowParameters {
     pub main_variation: [f32; 4],
     pub main_frequency: [f32; 4],
     pub main_amplitude: [f32; 4],
@@ -236,14 +236,14 @@ pub struct NativeVegetationShadowParameters {
 /// Installed VS14200's 208-byte CB: UV, seven wind vectors, Z/Y/X/W rows,
 /// then the model's selected localTime float2 and depth multiplier. The time
 /// is supplied by its CPU owner, not inferred from Bevy's clock or forced to zero.
-pub fn native_vegetation_shadow_instance_cb(
+pub fn vegetation_shadow_instance_cb(
     uv_scale_bias: [f32; 4],
-    wind: &NativeVegetationShadowParameters,
+    wind: &VegetationShadowParameters,
     mvp_rows: &[[f32; 4]; 4],
     local_time: [f32; 2],
     model_depth_multiplier: f32,
-) -> [u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES] {
-    let mut bytes = [0; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES];
+) -> [u8; VEGETATION_SHADOW_INSTANCE_BYTES] {
+    let mut bytes = [0; VEGETATION_SHADOW_INSTANCE_BYTES];
     let vectors = [
         uv_scale_bias,
         wind.main_variation,
@@ -272,15 +272,15 @@ pub fn native_vegetation_shadow_instance_cb(
 
 /// Installed world-wind ABI: VP W/Z/Y/X then original 144-byte CB2.
 /// The remap and wind offsets are independent native packet offsets.
-pub fn native_world_vegetation_shadow_view_cb(
+pub fn world_vegetation_shadow_view_cb(
     rows: &[[f32; 4]; 4],
     uv: [f32; 4],
-    wind: &NativeVegetationShadowParameters,
+    wind: &VegetationShadowParameters,
     time: [f32; 2],
     instance_offset: u32,
     wind_offset: u32,
-) -> [u8; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES] {
-    let mut bytes = [0; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES];
+) -> [u8; VEGETATION_SHADOW_INSTANCE_BYTES] {
+    let mut bytes = [0; VEGETATION_SHADOW_INSTANCE_BYTES];
     let vectors = [
         rows[3],
         rows[2],
@@ -307,11 +307,11 @@ pub fn native_world_vegetation_shadow_view_cb(
 /// record (unused alpha UV space remains zero). Unlike rigid models,
 /// useMultiInstancing has no modelDepthHack.
 /// Native packet.start supplies offset; packet.end-start supplies draw count.
-pub fn native_world_shadow_view_cb(
+pub fn world_shadow_view_cb(
     view_projection_rows: &[[f32; 4]; 4],
     instance_buffer_offset: u32,
-) -> [u8; NATIVE_WORLD_SHADOW_INSTANCE_BYTES] {
-    let mut bytes = [0; NATIVE_WORLD_SHADOW_INSTANCE_BYTES];
+) -> [u8; WORLD_SHADOW_INSTANCE_BYTES] {
+    let mut bytes = [0; WORLD_SHADOW_INSTANCE_BYTES];
     for (word, value) in view_projection_rows.iter().rev().flatten().enumerate() {
         bytes[word * 4..word * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
@@ -321,12 +321,12 @@ pub fn native_world_shadow_view_cb(
 
 /// Same world record, including the actual installed alpha program's UV block.
 /// These are bridge offsets, not a memcpy of the native two CB slots.
-pub fn native_world_alpha_shadow_view_cb(
+pub fn world_alpha_shadow_view_cb(
     view_projection_rows: &[[f32; 4]; 4],
     instance_buffer_offset: u32,
     uv_scale_bias: [f32; 4],
-) -> [u8; NATIVE_WORLD_SHADOW_INSTANCE_BYTES] {
-    let mut bytes = native_world_shadow_view_cb(view_projection_rows, instance_buffer_offset);
+) -> [u8; WORLD_SHADOW_INSTANCE_BYTES] {
+    let mut bytes = world_shadow_view_cb(view_projection_rows, instance_buffer_offset);
     for (word, value) in uv_scale_bias.iter().enumerate() {
         bytes[80 + word * 4..84 + word * 4].copy_from_slice(&value.to_le_bytes());
     }
@@ -340,11 +340,11 @@ pub fn native_world_alpha_shadow_view_cb(
 /// matrix block plus a separate 16-byte UV block. Do not memcpy a native alpha
 /// CB into this function's output or interpret its 80 bytes as that native ABI.
 /// Callers supply the original MVP and clip-depth multiplier.
-pub fn native_shadow_instance_cb(
+pub fn shadow_instance_cb(
     mvp_rows: &[[f32; 4]; 4],
     model_depth_multiplier: f32,
-) -> [u8; NATIVE_SHADOW_INSTANCE_BYTES] {
-    let mut bytes = [0; NATIVE_SHADOW_INSTANCE_BYTES];
+) -> [u8; SHADOW_INSTANCE_BYTES] {
+    let mut bytes = [0; SHADOW_INSTANCE_BYTES];
     for (word, value) in mvp_rows
         .iter()
         .rev()
@@ -360,7 +360,7 @@ pub fn native_shadow_instance_cb(
 
 /// Caller-owned target dimensions. No fallback resolution or format downgrade is made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeParallelShadowTargetDimensions {
+pub struct ParallelShadowTargetDimensions {
     pub width: u32,
     pub height: u32,
     pub layers: u32,
@@ -370,7 +370,7 @@ pub struct NativeParallelShadowTargetDimensions {
 /// The exact receiver/cascade inputs consumed by the original directional shader path.
 /// These values are supplied by the native CPU owner; this bridge does not synthesize them.
 #[derive(Clone, Debug, PartialEq)]
-pub struct NativeParallelReceiverVars {
+pub struct ParallelReceiverVars {
     /// Resolved original compile branch, not an inferred opaque/alpha flag.
     pub path: crate::render_shadow::ParallelShadowReceiverPath,
     /// N cascade matrices plus the separate whole-view matrix.
@@ -384,10 +384,10 @@ pub struct NativeParallelReceiverVars {
     /// Chosen sun in the host renderer's directional-light array.
     pub directional_light_index: u32,
     /// Actual original shadowCommon options/parameters, not shader defaults.
-    pub offset: crate::shadow_sampling::NativeShadowOffsetParameters,
+    pub offset: crate::shadow_sampling::ShadowOffsetParameters,
 }
 
-impl NativeParallelReceiverVars {
+impl ParallelReceiverVars {
     /// FUN_140330c10 loads the count-indexed distance from
     /// `plVar20[1]+0xafc+DAT_14397a2f8*4` and passes it through
     /// FUN_140a70710 to FUN_140a707e0 as param_8. The captured four-cascade
@@ -405,26 +405,26 @@ impl NativeParallelReceiverVars {
             .world_to_shadow
             .len()
             .checked_sub(1)
-            .ok_or("native receiver has no whole-view record")?;
+            .ok_or("receiver has no whole-view record")?;
         if !(1..=4).contains(&cascade_count) {
-            return Err("native receiver cascade count must be 1..=4".into());
+            return Err("receiver cascade count must be 1..=4".into());
         }
         let maximum_distance = self.cascade_fars[cascade_count - 1];
         if !maximum_distance.is_finite() {
-            return Err("native receiver maximum distance is nonfinite".into());
+            return Err("receiver maximum distance is nonfinite".into());
         }
         Ok(maximum_distance)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum NativeShadowLoad {
+pub enum ShadowLoad {
     Load,
     Clear(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeStencilLoad {
+pub enum StencilLoad {
     Load,
     Clear(u32),
 }
@@ -435,7 +435,7 @@ pub enum NativeStencilLoad {
 /// and RETURNS from its static pass when reuse_static_cache is true; the
 /// preserve-depth dynamic pass is a separate submission. A static refresh
 /// stores its completed target into cache[layer-1] before that dynamic pass.
-/// NativeShadowCacheOp represents those GPU store/restore operations separately
+/// ShadowCacheOp represents those GPU store/restore operations separately
 /// from the attachment loads below. Load alone is not a cache restore.
 /// FUN_1402bb270 forwards the two +0x130 resources to context vtable +0x178:
 /// ID3D11DeviceContext::CopyResource, slot47. Adjacent +0x170 has the exact
@@ -447,22 +447,22 @@ pub enum NativeStencilLoad {
 /// depth-copy pass. CachedTarget keeps separate submission surfaces and caches;
 /// its cache transfers preserve the original texels before atlas publication.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeShadowLayerOps {
-    pub depth: NativeShadowLoad,
-    pub stencil: NativeStencilLoad,
+pub struct ShadowLayerOps {
+    pub depth: ShadowLoad,
+    pub stencil: StencilLoad,
 }
 
 /// A single instance of a resolved original model-shadow program.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeShadowInstance {
+pub struct ShadowInstance {
     pub mesh: Handle<Mesh>,
     /// Program-specific variables from the actual owner. Rigid records use
-    /// native_shadow_instance_cb; wind records use the full 208-byte encoder.
-    pub per_instance_cb: NativeShadowInstanceConstants,
+    /// shadow_instance_cb; wind records use the full 208-byte encoder.
+    pub per_instance_cb: ShadowInstanceConstants,
     /// Shader class resolved from this model's original program bank. A capture
     /// resource number (e.g. 17296) is not an engine program identifier.
-    pub program: NativeShadowProgram,
-    pub alpha_material: Option<NativeShadowAlphaMaterial>,
+    pub program: ShadowProgram,
+    pub alpha_material: Option<ShadowAlphaMaterial>,
     /// Actual mesh representation and resolved original program culling.
     /// Imported game meshes have already converted native CW indices to CCW.
     pub front_face: FrontFace,
@@ -470,13 +470,13 @@ pub struct NativeShadowInstance {
     pub draw_state: [u32; 9],
     /// Dynamic reference supplied by the native pass owner, not a shader flag.
     pub stencil_reference: u32,
-    pub scissor: NativeShadowScissor,
+    pub scissor: ShadowScissor,
 }
 
 /// Operations of the static submission of FUN_14032ee50. The dynamic
 /// preserve-depth submission follows it; it is never saved in the static cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NativeShadowCacheOp {
+pub enum ShadowCacheOp {
     #[default]
     None,
     /// Restore cache[layer-1], then render only this frame's dynamic instances.
@@ -495,15 +495,15 @@ pub enum NativeShadowCacheOp {
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeShadowLayer {
-    pub ops: NativeShadowLayerOps,
-    pub cache: NativeShadowCacheOp,
+pub struct ShadowLayer {
+    pub ops: ShadowLayerOps,
+    pub cache: ShadowCacheOp,
     /// Native submission order, static before dynamic for a cache refresh.
-    pub instances: Vec<NativeShadowInstance>,
+    pub instances: Vec<ShadowInstance>,
 }
 
 #[derive(Clone, Debug)]
-pub enum NativeShadowSceneState {
+pub enum ShadowSceneState {
     /// Bindings must resolve to neutral visibility (factor 1); no shadow map is fabricated.
     Disabled,
     /// CPU owner has not yet published a usable target/cascade state.
@@ -513,15 +513,15 @@ pub enum NativeShadowSceneState {
     /// cascade layers are not fabricated and sampling remains disabled.
     WholeViewDepth {
         target_image: Handle<Image>,
-        dimensions: NativeParallelShadowTargetDimensions,
-        layer: NativeShadowLayer,
+        dimensions: ParallelShadowTargetDimensions,
+        layer: ShadowLayer,
     },
     Ready {
         target_image: Handle<Image>,
-        dimensions: NativeParallelShadowTargetDimensions,
-        receiver: NativeParallelReceiverVars,
+        dimensions: ParallelShadowTargetDimensions,
+        receiver: ParallelReceiverVars,
         /// Published draw lists are immutable across main/render extraction.
-        layers: Arc<Vec<NativeShadowLayer>>,
+        layers: Arc<Vec<ShadowLayer>>,
     },
 }
 
@@ -543,16 +543,16 @@ pub enum NativeShadowSceneState {
 /// publication preserves the screen route; it does not enable the direct hook
 /// or stand in for the separate screen-shadow producer.
 #[derive(Resource, Clone, ExtractResource)]
-pub struct NativeShadowSceneFrame {
+pub struct ShadowSceneFrame {
     pub revision: u64,
-    pub state: NativeShadowSceneState,
+    pub state: ShadowSceneState,
 }
 
-impl Default for NativeShadowSceneFrame {
+impl Default for ShadowSceneFrame {
     fn default() -> Self {
         Self {
             revision: 0,
-            state: NativeShadowSceneState::Disabled,
+            state: ShadowSceneState::Disabled,
         }
     }
 }
@@ -561,15 +561,15 @@ impl Default for NativeShadowSceneFrame {
 /// live publisher to retain that completed atlas layer without rebuilding and
 /// uploading its ten thousand immutable draw records on every camera frame.
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct NativeShadowSceneCompletion(
-    Arc<Mutex<Option<(AssetId<Image>, NativeParallelShadowTargetDimensions)>>>,
+pub struct ShadowSceneCompletion(
+    Arc<Mutex<Option<(AssetId<Image>, ParallelShadowTargetDimensions)>>>,
 );
 
-impl NativeShadowSceneCompletion {
+impl ShadowSceneCompletion {
     pub fn whole_view_completed(
         &self,
         target: &Handle<Image>,
-        dimensions: NativeParallelShadowTargetDimensions,
+        dimensions: ParallelShadowTargetDimensions,
     ) -> bool {
         self.0
             .lock()
@@ -578,7 +578,7 @@ impl NativeShadowSceneCompletion {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct NativeShadowSceneGpu {
+pub(crate) struct ShadowSceneGpu {
     last_revision: Option<u64>,
     targets: HashMap<AssetId<Image>, CachedTarget>,
     pipelines: ShadowPipelineStore,
@@ -601,19 +601,19 @@ pub(crate) struct NativeShadowSceneGpu {
     sampling_bytes: Vec<u8>,
 }
 
-impl NativeShadowSceneGpu {
+impl ShadowSceneGpu {
     pub(crate) fn completed_revision(&self, revision: u64) -> bool {
         self.last_revision == Some(revision)
     }
 }
 
 struct CachedTarget {
-    dimensions: NativeParallelShadowTargetDimensions,
-    array: NativeShadowDepthArray,
+    dimensions: ParallelShadowTargetDimensions,
+    array: ShadowDepthArray,
     /// Separate static/dynamic submission surfaces, then copied to the atlas.
-    temporary: Vec<NativeShadowDepthArray>,
+    temporary: Vec<ShadowDepthArray>,
     /// Original cache[layer-1], excluding cascade0 and the auxiliary whole view.
-    static_cache: Vec<NativeShadowDepthArray>,
+    static_cache: Vec<ShadowDepthArray>,
     cache_valid: Vec<bool>,
     cache_generation: Vec<Option<u64>>,
     layer_valid: Vec<bool>,
@@ -622,8 +622,8 @@ struct CachedTarget {
 impl CachedTarget {
     fn new(
         device: &RenderDevice,
-        dimensions: NativeParallelShadowTargetDimensions,
-        array: NativeShadowDepthArray,
+        dimensions: ParallelShadowTargetDimensions,
+        array: ShadowDepthArray,
     ) -> Result<Self, String> {
         let size = bevy::render::render_resource::Extent3d {
             width: dimensions.width,
@@ -631,14 +631,14 @@ impl CachedTarget {
             depth_or_array_layers: 1,
         };
         let allocate = |label| {
-            NativeShadowDepthArray::new_with_format(device, size, array.texture.format(), label)
+            ShadowDepthArray::new_with_format(device, size, array.texture.format(), label)
         };
         let temporary = (0..dimensions.layers)
-            .map(|_| allocate("native directional slice temporary"))
+            .map(|_| allocate("directional slice temporary"))
             .collect::<Result<Vec<_>, _>>()?;
         let cache_count = dimensions.layers.saturating_sub(2) as usize;
         let static_cache = (0..cache_count)
-            .map(|_| allocate("native directional static cache"))
+            .map(|_| allocate("directional static cache"))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             dimensions,
@@ -651,9 +651,9 @@ impl CachedTarget {
         })
     }
 
-    fn validate_cache_sources(&self, layers: &[NativeShadowLayer]) -> Result<(), String> {
+    fn validate_cache_sources(&self, layers: &[ShadowLayer]) -> Result<(), String> {
         for (index, layer) in layers.iter().enumerate() {
-            if layer.cache == NativeShadowCacheOp::Restore
+            if layer.cache == ShadowCacheOp::Restore
                 && !self
                     .cache_valid
                     .get(index.wrapping_sub(1))
@@ -661,7 +661,7 @@ impl CachedTarget {
                     .unwrap_or(false)
             {
                 return Err(format!(
-                    "native directional layer {index} has no completed static cache"
+                    "directional layer {index} has no completed static cache"
                 ));
             }
         }
@@ -675,7 +675,7 @@ struct PipelineKey {
     depth_32_bits: bool,
     front_face: FrontFace,
     cull_mode: Option<Face>,
-    program: NativeShadowProgram,
+    program: ShadowProgram,
     alpha_uv: Option<u32>,
     draw_state: [u32; 9],
     stencil_reference: u32,
@@ -683,7 +683,7 @@ struct PipelineKey {
 
 struct CachedPipeline {
     layout: MeshVertexBufferLayoutRef,
-    pipeline: NativeOpaqueShadowPipeline,
+    pipeline: ShadowDepthPipeline,
     // One descriptor selects this program's records by dynamic ring offset.
     binding: Option<BindGroup>,
     alpha_materials: HashMap<(AssetId<Image>, [u32; 4]), CachedAlphaMaterial>,
@@ -713,39 +713,39 @@ impl CachedPipeline {
     }
 }
 
-pub struct NativeShadowScenePlugin;
+pub struct ShadowScenePlugin;
 
-impl Plugin for NativeShadowScenePlugin {
+impl Plugin for ShadowScenePlugin {
     fn build(&self, app: &mut App) {
         local::install(app);
-        app.init_resource::<NativeShadowSceneFrame>()
-            .init_resource::<NativeShadowSceneCompletion>()
-            .add_plugins(ExtractResourcePlugin::<NativeShadowSceneFrame>::default())
-            .add_plugins(ExtractResourcePlugin::<NativeShadowSceneCompletion>::default())
+        app.init_resource::<ShadowSceneFrame>()
+            .init_resource::<ShadowSceneCompletion>()
+            .add_plugins(ExtractResourcePlugin::<ShadowSceneFrame>::default())
+            .add_plugins(ExtractResourcePlugin::<ShadowSceneCompletion>::default())
             .add_plugins(ExtractResourcePlugin::<
-                crate::shadow_sampling::NativeParallelSamplingBuffer,
+                crate::shadow_sampling::ParallelSamplingBuffer,
             >::default());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
-            .init_resource::<NativeShadowSceneGpu>()
+            .init_resource::<ShadowSceneGpu>()
             .add_systems(
                 Render,
                 prepare_shadow_uniform_ring.in_set(RenderSystems::PrepareResources),
             )
             .add_systems(
                 Core3d,
-                render_native_shadow_scene.before(Core3dSystems::MainPass),
+                render_shadow_scene.before(Core3dSystems::MainPass),
             );
     }
 }
 
 fn prepare_shadow_uniform_ring(
-    frame: Res<NativeShadowSceneFrame>,
+    frame: Res<ShadowSceneFrame>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
-    mut gpu: ResMut<NativeShadowSceneGpu>,
+    mut gpu: ResMut<ShadowSceneGpu>,
 ) {
     // Repeated views/extractions of the same cached owner generation do not
     // rewrite every instance CB. Failed submissions retain the old revision
@@ -754,18 +754,18 @@ fn prepare_shadow_uniform_ring(
         return;
     }
     let layers = match &frame.state {
-        NativeShadowSceneState::Ready { layers, .. } => layers.as_slice(),
-        NativeShadowSceneState::WholeViewDepth { layer, .. } => std::slice::from_ref(layer),
+        ShadowSceneState::Ready { layers, .. } => layers.as_slice(),
+        ShadowSceneState::WholeViewDepth { layer, .. } => std::slice::from_ref(layer),
         _ => return,
     };
-    upload_native_shadow_uniform_ring(layers, &device, &queue, &mut gpu);
+    upload_shadow_uniform_ring(layers, &device, &queue, &mut gpu);
 }
 
-fn upload_native_shadow_uniform_ring(
-    layers: &[NativeShadowLayer],
+fn upload_shadow_uniform_ring(
+    layers: &[ShadowLayer],
     device: &RenderDevice,
     queue: &RenderQueue,
-    gpu: &mut NativeShadowSceneGpu,
+    gpu: &mut ShadowSceneGpu,
 ) {
     let draw_count: usize = layers.iter().map(|layer| layer.instances.len()).sum();
     let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
@@ -797,7 +797,7 @@ fn upload_native_shadow_uniform_ring(
             return;
         };
         gpu.uniform_ring = Some(device.create_buffer(&BufferDescriptor {
-            label: Some("native shadow program-specific instance ring"),
+            label: Some("shadow program-specific instance ring"),
             size,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -823,11 +823,11 @@ struct ShadowUniformRecord {
 }
 
 fn pack_shadow_uniform(
-    instance: &NativeShadowInstance,
+    instance: &ShadowInstance,
     stride: usize,
     compact_world: bool,
     bytes: &mut Vec<u8>,
-    world_slots: &mut HashMap<[u8; NATIVE_WORLD_SHADOW_INSTANCE_BYTES], usize>,
+    world_slots: &mut HashMap<[u8; WORLD_SHADOW_INSTANCE_BYTES], usize>,
 ) -> ShadowUniformRecord {
     let append = |bytes: &mut Vec<u8>, constants: &[u8]| {
         let slot = bytes.len() / stride;
@@ -838,13 +838,13 @@ fn pack_shadow_uniform(
     let normalize = compact_world
         && matches!(
             instance.program,
-            NativeShadowProgram::WorldOpaque
-                | NativeShadowProgram::WorldAlphaTested
-                | NativeShadowProgram::WorldVistaAlpha
+            ShadowProgram::WorldOpaque
+                | ShadowProgram::WorldAlphaTested
+                | ShadowProgram::WorldVistaAlpha
         );
     if let (
         true,
-        NativeShadowInstanceConstants::World {
+        ShadowInstanceConstants::World {
             constants,
             instance_count,
             ..
@@ -867,8 +867,8 @@ fn pack_shadow_uniform(
         }
     }
     let count = match &instance.per_instance_cb {
-        NativeShadowInstanceConstants::World { instance_count, .. }
-        | NativeShadowInstanceConstants::WorldVegetation { instance_count, .. } => *instance_count,
+        ShadowInstanceConstants::World { instance_count, .. }
+        | ShadowInstanceConstants::WorldVegetation { instance_count, .. } => *instance_count,
         _ => 1,
     };
     ShadowUniformRecord {
@@ -877,14 +877,14 @@ fn pack_shadow_uniform(
     }
 }
 
-fn render_native_shadow_scene(
-    frame: Res<NativeShadowSceneFrame>,
-    completion: Res<NativeShadowSceneCompletion>,
-    mut gpu: ResMut<NativeShadowSceneGpu>,
+fn render_shadow_scene(
+    frame: Res<ShadowSceneFrame>,
+    completion: Res<ShadowSceneCompletion>,
+    mut gpu: ResMut<ShadowSceneGpu>,
     allocator: Res<MeshAllocator>,
     meshes: Res<RenderAssets<RenderMesh>>,
     images: Res<RenderAssets<GpuImage>>,
-    sampling_handle: Option<Res<crate::shadow_sampling::NativeParallelSamplingBuffer>>,
+    sampling_handle: Option<Res<crate::shadow_sampling::ParallelSamplingBuffer>>,
     sampling_buffers: Res<RenderAssets<GpuShaderBuffer>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
@@ -897,7 +897,7 @@ fn render_native_shadow_scene(
         .as_ref()
         .and_then(|handle| sampling_buffers.get(handle.buffer.id()));
     let (target_image, dimensions, receiver, layers, first_layer) = match &frame.state {
-        NativeShadowSceneState::Ready {
+        ShadowSceneState::Ready {
             target_image,
             dimensions,
             receiver,
@@ -909,7 +909,7 @@ fn render_native_shadow_scene(
             layers.as_slice(),
             0,
         ),
-        NativeShadowSceneState::WholeViewDepth {
+        ShadowSceneState::WholeViewDepth {
             target_image,
             dimensions,
             layer,
@@ -925,7 +925,7 @@ fn render_native_shadow_scene(
                 &mut gpu,
                 sampling,
                 &queue,
-                crate::shadow_sampling::NativeParallelSamplingUniform::default(),
+                crate::shadow_sampling::ParallelSamplingUniform::default(),
             );
             gpu.last_revision = None;
             return;
@@ -935,7 +935,7 @@ fn render_native_shadow_scene(
         && gpu.last_revision != Some(frame.revision)
     {
         eprintln!(
-            "Native shadow GPU revision={} layers={} draws={} pipelines={} target_ready={}",
+            "Shadow GPU revision={} layers={} draws={} pipelines={} target_ready={}",
             frame.revision,
             layers.len(),
             layers
@@ -946,7 +946,7 @@ fn render_native_shadow_scene(
             gpu.targets.contains_key(&target_image.id())
         );
         if let Some(target) = gpu.targets.get(&target_image.id()) {
-            eprintln!("Native shadow valid layers: {:?}", target.layer_valid);
+            eprintln!("Shadow valid layers: {:?}", target.layer_valid);
         }
     }
     if gpu.last_revision == Some(frame.revision) {
@@ -957,7 +957,7 @@ fn render_native_shadow_scene(
         &mut gpu,
         sampling,
         &queue,
-        crate::shadow_sampling::NativeParallelSamplingUniform::default(),
+        crate::shadow_sampling::ParallelSamplingUniform::default(),
     );
     if receiver.is_some() && sampling.is_none() {
         return; // Complete receiver publication retries after PrepareAssets.
@@ -967,7 +967,7 @@ fn render_native_shadow_scene(
         None => validate_whole_view_depth(*dimensions, &layers[0]),
     };
     if let Err(error) = validation {
-        bevy::log::error!("native shadow frame rejected: {error}");
+        bevy::log::error!("shadow frame rejected: {error}");
         return;
     }
 
@@ -983,7 +983,7 @@ fn render_native_shadow_scene(
     };
     if image.texture.format() != expected_format || image.texture.size() != expected_size {
         bevy::log::error!(
-            "native shadow Image allocation disagrees with its owner dimensions/format"
+            "shadow Image allocation disagrees with its owner dimensions/format"
         );
         return;
     }
@@ -992,7 +992,7 @@ fn render_native_shadow_scene(
         .get(&target_id)
         .is_none_or(|target| target.array.texture.id() != image.texture.id());
     if replace {
-        match NativeShadowDepthArray::from_owned_texture(
+        match ShadowDepthArray::from_owned_texture(
             image.texture.clone(),
             "persistent native directional shadow Image",
         ) {
@@ -1003,7 +1003,7 @@ fn render_native_shadow_scene(
                         Ok(target) => target,
                         Err(error) => {
                             bevy::log::error!(
-                                "native directional cache allocation failed: {error}"
+                                "directional cache allocation failed: {error}"
                             );
                             return;
                         }
@@ -1011,7 +1011,7 @@ fn render_native_shadow_scene(
                 );
             }
             Err(error) => {
-                bevy::log::error!("native shadow target unavailable: {error}");
+                bevy::log::error!("shadow target unavailable: {error}");
                 return;
             }
         }
@@ -1021,13 +1021,13 @@ fn render_native_shadow_scene(
     };
     if target.dimensions != *dimensions {
         bevy::log::error!(
-            "native shadow target handle was reused with different dimensions; refusing per-frame recreation"
+            "shadow target handle was reused with different dimensions; refusing per-frame recreation"
         );
         return;
     }
 
     if let Err(error) = target.validate_cache_sources(layers) {
-        bevy::log::error!("native shadow cache unavailable: {error}");
+        bevy::log::error!("shadow cache unavailable: {error}");
         return;
     }
     if !target
@@ -1037,7 +1037,7 @@ fn render_native_shadow_scene(
         .contains(bevy::render::render_resource::TextureUsages::COPY_DST)
     {
         bevy::log::error!(
-            "native shadow atlas owner did not allocate final-copy destination usage"
+            "shadow atlas owner did not allocate final-copy destination usage"
         );
         return;
     }
@@ -1047,11 +1047,11 @@ fn render_native_shadow_scene(
     };
     let uniform_stride = gpu.uniform_stride;
     let records_span = profile.as_deref().map(|p| p.measure(29));
-    let Some(records) = prepare_native_shadow_records(
+    let Some(records) = prepare_shadow_records(
         layers,
         dimensions.depth_32_bits,
         match &frame.state {
-            NativeShadowSceneState::Ready { layers, .. } => Some(layers),
+            ShadowSceneState::Ready { layers, .. } => Some(layers),
             _ => None,
         },
         uniform_buffer,
@@ -1069,7 +1069,7 @@ fn render_native_shadow_scene(
     drop(records_span);
     let _encoding_span = profile.as_deref().map(|p| p.measure(30));
 
-    let NativeShadowSceneGpu {
+    let ShadowSceneGpu {
         targets, pipelines, ..
     } = &mut *gpu;
     let target = targets
@@ -1077,7 +1077,7 @@ fn render_native_shadow_scene(
         .expect("target prepared before draws");
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
-    let span = diagnostics.time_span(context.command_encoder(), "native_directional_shadows");
+    let span = diagnostics.time_span(context.command_encoder(), "directional_shadows");
     let mut complete = true;
     if std::env::var("DH2_PARALLEL_SHADOW_ENCODING").as_deref() != Ok("0") {
         let encoded = directional::record_layers(
@@ -1131,7 +1131,7 @@ fn render_native_shadow_scene(
         }
     }
     span.end(context.command_encoder());
-    if matches!(frame.state, NativeShadowSceneState::WholeViewDepth { .. }) {
+    if matches!(frame.state, ShadowSceneState::WholeViewDepth { .. }) {
         if let Ok(mut done) = completion.0.lock() {
             *done = Some((target_id, *dimensions));
         }
@@ -1143,7 +1143,7 @@ fn render_native_shadow_scene(
       // Texture and bind-group handles stay stable while these 432 bytes change.
     if let Some(receiver) = receiver {
         let sampling_value =
-            crate::shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(receiver)
+            crate::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(receiver)
                 .expect("receiver route validated before submitting any layer");
         publish_sampling(&mut gpu, sampling, &queue, sampling_value);
     } // Whole-view depth submission never enables an incomplete receiver.
@@ -1179,7 +1179,7 @@ struct ShadowMeshAllocation {
 
 struct PreparedShadowRecord {
     layer: usize,
-    scissor: NativeShadowScissor,
+    scissor: ShadowScissor,
     pipeline: PipelineId,
     uniform_offset: u32,
     instances: std::ops::Range<u32>,
@@ -1188,8 +1188,8 @@ struct PreparedShadowRecord {
 }
 
 impl PreparedShadowRecord {
-    fn draw<'a>(&'a self, pipelines: &'a ShadowPipelineStore) -> NativeOpaqueShadowDraw<'a> {
-        NativeOpaqueShadowDraw {
+    fn draw<'a>(&'a self, pipelines: &'a ShadowPipelineStore) -> ShadowDepthDraw<'a> {
+        ShadowDepthDraw {
             model_state_offset: self.uniform_offset,
             model_state: pipelines
                 .by_id(self.pipeline)
@@ -1210,13 +1210,13 @@ impl PreparedShadowRecord {
 
 /// Shared asset validation and program binding for directional and local
 /// submissions. A missing resource rejects the entire prepared submission.
-fn prepare_native_shadow_records(
-    layers: &[NativeShadowLayer],
+fn prepare_shadow_records(
+    layers: &[ShadowLayer],
     depth_32_bits: bool,
-    shared_layers: Option<&Arc<Vec<NativeShadowLayer>>>,
+    shared_layers: Option<&Arc<Vec<ShadowLayer>>>,
     uniform_buffer: Buffer,
     uniform_stride: u64,
-    gpu: &mut NativeShadowSceneGpu,
+    gpu: &mut ShadowSceneGpu,
     allocator: &Res<MeshAllocator>,
     meshes: &Res<RenderAssets<RenderMesh>>,
     images: &Res<RenderAssets<GpuImage>>,
@@ -1287,7 +1287,7 @@ fn prepare_native_shadow_records(
     };
     let reused_allocation = recycled.capacity() != 0;
     let ring_id = uniform_buffer.id();
-    let fresh = prepare_native_shadow_records_fresh(
+    let fresh = prepare_shadow_records_fresh(
         layers,
         depth_32_bits,
         uniform_buffer,
@@ -1330,12 +1330,12 @@ fn prepare_native_shadow_records(
     Some(fresh)
 }
 
-fn prepare_native_shadow_records_fresh(
-    layers: &[NativeShadowLayer],
+fn prepare_shadow_records_fresh(
+    layers: &[ShadowLayer],
     depth_32_bits: bool,
     uniform_buffer: Buffer,
     uniform_stride: u64,
-    gpu: &mut NativeShadowSceneGpu,
+    gpu: &mut ShadowSceneGpu,
     allocator: &Res<MeshAllocator>,
     meshes: &Res<RenderAssets<RenderMesh>>,
     images: &RenderAssets<GpuImage>,
@@ -1358,7 +1358,7 @@ fn prepare_native_shadow_records_fresh(
         cache_meshes,
     );
     let mut timings = (std::env::var("DH2_PROFILE_SHADOW_RECORDS").as_deref() == Ok("1"))
-        .then(|| ([0u128; 3], HashMap::<NativeShadowProgram, usize>::new()));
+        .then(|| ([0u128; 3], HashMap::<ShadowProgram, usize>::new()));
     let result = prepare_shadow_records_with_bindings(
         layers,
         depth_32_bits,
@@ -1444,11 +1444,11 @@ fn reuse_shadow_resource_binding(
 }
 
 fn prepare_shadow_records_with_bindings(
-    layers: &[NativeShadowLayer],
+    layers: &[ShadowLayer],
     depth_32_bits: bool,
     uniform_buffer: Buffer,
     uniform_stride: u64,
-    mut gpu: &mut NativeShadowSceneGpu,
+    mut gpu: &mut ShadowSceneGpu,
     allocator: &MeshAllocator,
     meshes: &RenderAssets<RenderMesh>,
     images: &RenderAssets<GpuImage>,
@@ -1458,7 +1458,7 @@ fn prepare_shadow_records_with_bindings(
     previous: &mut HashMap<ShadowResourceKey, BindGroup>,
     resource_bindings: &mut HashMap<ShadowResourceKey, BindGroup>,
     mesh_allocations: &mut mesh_allocations::MeshAllocationCache,
-    mut timings: Option<&mut ([u128; 3], HashMap<NativeShadowProgram, usize>)>,
+    mut timings: Option<&mut ([u128; 3], HashMap<ShadowProgram, usize>)>,
     mut records: Vec<PreparedShadowRecord>,
 ) -> Option<Vec<PreparedShadowRecord>> {
     let count: usize = layers.iter().map(|layer| layer.instances.len()).sum();
@@ -1533,7 +1533,7 @@ fn prepare_shadow_records_with_bindings(
                     id
                 }
                 Err(error) => {
-                    bevy::log::error!("native shadow pipeline unavailable: {error}");
+                    bevy::log::error!("shadow pipeline unavailable: {error}");
                     return None;
                 }
             },
@@ -1545,22 +1545,22 @@ fn prepare_shadow_records_with_bindings(
         let alpha_sampler = instance.alpha_material.as_ref().map(|_| {
             if matches!(
                 instance.program,
-                NativeShadowProgram::WorldVistaAlpha | NativeShadowProgram::RigidVistaAlpha
+                ShadowProgram::WorldVistaAlpha | ShadowProgram::RigidVistaAlpha
             ) || matches!(
                 instance.program,
-                NativeShadowProgram::Skinned { dither: true, .. }
+                ShadowProgram::Skinned { dither: true, .. }
             ) {
                 gpu.vista_sampler
-                    .get_or_insert_with(|| native_shadow_vista_sampler(&device))
+                    .get_or_insert_with(|| shadow_vista_sampler(&device))
                     .clone()
             } else {
                 gpu.alpha_sampler
-                    .get_or_insert_with(|| native_shadow_alpha_sampler(&device))
+                    .get_or_insert_with(|| shadow_alpha_sampler(&device))
                     .clone()
             }
         });
         let cached = gpu.pipelines.by_id_mut(pipeline);
-        let alpha_binding = if let NativeShadowInstanceConstants::Skinned { palette, .. } =
+        let alpha_binding = if let ShadowInstanceConstants::Skinned { palette, .. } =
             &instance.per_instance_cb
         {
             let Some(palette) = sampling_buffers.get(palette.id()) else {
@@ -1593,11 +1593,11 @@ fn prepare_shadow_records_with_bindings(
             match binding {
                 Ok(binding) => Some(binding),
                 Err(error) => {
-                    bevy::log::error!("native skin resources unavailable: {error}");
+                    bevy::log::error!("skin resources unavailable: {error}");
                     return None;
                 }
             }
-        } else if let NativeShadowInstanceConstants::WorldVegetation {
+        } else if let ShadowInstanceConstants::WorldVegetation {
             constants,
             visible_indices,
             matrices,
@@ -1635,7 +1635,7 @@ fn prepare_shadow_records_with_bindings(
                     .and_then(|end| end.checked_mul(stride))
                     .is_none_or(|end| end > buffer_size)
                 {
-                    bevy::log::error!("native world vegetation packet exceeds its owner buffer");
+                    bevy::log::error!("world vegetation packet exceeds its owner buffer");
                     return None;
                 }
             }
@@ -1681,11 +1681,11 @@ fn prepare_shadow_records_with_bindings(
             match binding {
                 Ok(binding) => Some(binding),
                 Err(error) => {
-                    bevy::log::error!("native world vegetation unavailable: {error}");
+                    bevy::log::error!("world vegetation unavailable: {error}");
                     return None;
                 }
             }
-        } else if let NativeShadowInstanceConstants::World {
+        } else if let ShadowInstanceConstants::World {
             constants,
             visible_indices,
             matrices,
@@ -1695,7 +1695,7 @@ fn prepare_shadow_records_with_bindings(
             let Some((ids, transforms)) = world_buffers(visible_indices.id(), matrices.id()) else {
                 if std::env::var_os("DH2_TRACE_SHADOW_SUBMISSION").is_some() {
                     eprintln!(
-                        "Native shadow pending IDs={:?} matrices={:?}",
+                        "Shadow pending IDs={:?} matrices={:?}",
                         visible_indices.id(),
                         matrices.id()
                     );
@@ -1708,7 +1708,7 @@ fn prepare_shadow_records_with_bindings(
                 .and_then(|end| end.checked_mul(4))
                 .is_none_or(|end| end > ids.buffer.size())
             {
-                bevy::log::error!("native world shadow packet exceeds visible-ID buffer");
+                bevy::log::error!("world shadow packet exceeds visible-ID buffer");
                 return None;
             }
             let diffuse = if let Some(material) = &instance.alpha_material {
@@ -1752,14 +1752,14 @@ fn prepare_shadow_records_with_bindings(
             match binding {
                 Ok(binding) => Some(binding),
                 Err(error) => {
-                    bevy::log::error!("native world shadow buffers unavailable: {error}");
+                    bevy::log::error!("world shadow buffers unavailable: {error}");
                     return None;
                 }
             }
         } else if let Some(material) = &instance.alpha_material {
             let Some(diffuse) = images.get(material.diffuse.id()) else {
                 bevy::log::error!(
-                    "native shadow diffuse {:?} has no GPU image; retrying whole layer",
+                    "shadow diffuse {:?} has no GPU image; retrying whole layer",
                     material.diffuse.id()
                 );
                 return None;
@@ -1774,7 +1774,7 @@ fn prepare_shadow_records_with_bindings(
             ) {
                 Ok(binding) => Some(binding),
                 Err(error) => {
-                    bevy::log::error!("native shadow alpha material unavailable: {error}");
+                    bevy::log::error!("shadow alpha material unavailable: {error}");
                     return None;
                 }
             }
@@ -1786,7 +1786,7 @@ fn prepare_shadow_records_with_bindings(
             started = Some(std::time::Instant::now());
         }
         if let Err(error) = ensure_uniform_binding(cached, &uniform_buffer, &device) {
-            bevy::log::error!("native shadow uniform binding unavailable: {error}");
+            bevy::log::error!("shadow uniform binding unavailable: {error}");
             return None;
         }
         let record = PreparedShadowRecord {
@@ -1817,7 +1817,7 @@ fn directional_layer_draws<'a>(
     records: &'a [PreparedShadowRecord],
     pipelines: &'a ShadowPipelineStore,
     layer_index: usize,
-) -> Vec<(PipelineId, NativeOpaqueShadowDraw<'a>)> {
+) -> Vec<(PipelineId, ShadowDepthDraw<'a>)> {
     let start = records.partition_point(|record| record.layer < layer_index);
     let end = records.partition_point(|record| record.layer <= layer_index);
     records[start..end]
@@ -1829,16 +1829,16 @@ fn directional_layer_draws<'a>(
 /// Preserve the publisher's native order. Grouping unrelated instances in a
 /// HashMap reordered tied-depth and stencil draws, and crossed static/dynamic
 /// cache boundaries. Pipeline changes share the attachment pass in that order.
-fn draw_native_shadow_groups<'a>(
+fn draw_shadow_groups<'a>(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
-    temporary: &NativeShadowDepthArray,
+    temporary: &ShadowDepthArray,
     pipelines: &ShadowPipelineStore,
-    draws: Vec<(PipelineId, NativeOpaqueShadowDraw<'a>)>,
-    requested: NativeShadowLayerOps,
+    draws: Vec<(PipelineId, ShadowDepthDraw<'a>)>,
+    requested: ShadowLayerOps,
 ) -> Result<(), String> {
     if draws.is_empty() {
-        if matches!(requested.depth, NativeShadowLoad::Clear(_))
-            || matches!(requested.stencil, NativeStencilLoad::Clear(_))
+        if matches!(requested.depth, ShadowLoad::Clear(_))
+            || matches!(requested.stencil, StencilLoad::Clear(_))
         {
             clear_empty_layer(encoder, temporary, 0, requested);
         }
@@ -1853,14 +1853,14 @@ fn draw_native_shadow_groups<'a>(
         true,
         temporary.texture.format().has_stencil_aspect(),
     );
-    NativeOpaqueShadowPipeline::draw_layer_sequence(encoder, temporary, 0, ops.0, ops.1, &sequence)
+    ShadowDepthPipeline::draw_layer_sequence(encoder, temporary, 0, ops.0, ops.1, &sequence)
 }
 
 fn publish_sampling(
-    gpu: &mut NativeShadowSceneGpu,
+    gpu: &mut ShadowSceneGpu,
     prepared: Option<&GpuShaderBuffer>,
     queue: &RenderQueue,
-    value: crate::shadow_sampling::NativeParallelSamplingUniform,
+    value: crate::shadow_sampling::ParallelSamplingUniform,
 ) {
     let buffer = prepared
         .map(|value| value.buffer.clone())
@@ -1872,7 +1872,7 @@ fn publish_sampling(
         .data
         .expect("typed receiver transport");
     if buffer.size() < bytes.len() as u64 {
-        bevy::log::error!("native receiver transport buffer is smaller than its owner schema");
+        bevy::log::error!("receiver transport buffer is smaller than its owner schema");
         return;
     }
     if gpu
@@ -1888,12 +1888,12 @@ fn publish_sampling(
 }
 
 fn validate_frame(
-    dimensions: NativeParallelShadowTargetDimensions,
-    receiver: &NativeParallelReceiverVars,
-    layers: &[NativeShadowLayer],
+    dimensions: ParallelShadowTargetDimensions,
+    receiver: &ParallelReceiverVars,
+    layers: &[ShadowLayer],
 ) -> Result<(), String> {
     if dimensions.width == 0 || dimensions.height == 0 || dimensions.layers == 0 {
-        return Err("native shadow target dimensions must be nonzero".into());
+        return Err("shadow target dimensions must be nonzero".into());
     }
     // 36f8a0 allocates N+1: N cascades plus the whole-view shadow from
     // 334170/32de00. shadow::ComputeParallelShadow selects sum(step(fars,Z)),
@@ -1902,14 +1902,14 @@ fn validate_frame(
     let cascade_count = dimensions.layers.saturating_sub(1) as usize;
     if !(1..=4).contains(&cascade_count) {
         return Err(
-            "native directional target requires 1..=4 cascades plus its auxiliary shadow layer"
+            "directional target requires 1..=4 cascades plus its auxiliary shadow layer"
                 .into(),
         );
     }
     if layers.len() != dimensions.layers as usize
         || receiver.world_to_shadow.len() != dimensions.layers as usize
     {
-        return Err("native shadow frame requires draw and receiver records for cascades AND the auxiliary layer".into());
+        return Err("shadow frame requires draw and receiver records for cascades AND the auxiliary layer".into());
     }
     receiver.receiver_maximum_distance()?;
     if receiver.cascade_fars[cascade_count..]
@@ -1917,13 +1917,13 @@ fn validate_frame(
         .any(|&far| far != f32::MAX)
     {
         return Err(
-            "native unused cascade splits must retain their initialized FLT_MAX values".into(),
+            "unused cascade splits must retain their initialized FLT_MAX values".into(),
         );
     }
     if receiver.shadow_size != [dimensions.width as f32, dimensions.height as f32] {
-        return Err("native directional receiver size does not match target dimensions".into());
+        return Err("directional receiver size does not match target dimensions".into());
     }
-    crate::shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(receiver)?;
+    crate::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(receiver)?;
     if !receiver
         .shadow_size
         .iter()
@@ -1932,38 +1932,38 @@ fn validate_frame(
         || !receiver.cascade_fars.iter().all(|v| v.is_finite())
     {
         return Err(
-            "native directional receiver variables must be finite and have positive shadow size"
+            "directional receiver variables must be finite and have positive shadow size"
                 .into(),
         );
     }
     for (index, layer) in layers.iter().enumerate() {
         match layer.cache {
-            NativeShadowCacheOp::None => {}
-            NativeShadowCacheOp::Restore
-            | NativeShadowCacheOp::Store { .. }
-            | NativeShadowCacheOp::Retained { .. }
+            ShadowCacheOp::None => {}
+            ShadowCacheOp::Restore
+            | ShadowCacheOp::Store { .. }
+            | ShadowCacheOp::Retained { .. }
                 if index == 0 || index >= cascade_count =>
             {
-                return Err("native static cache excludes cascade0 and the auxiliary layer".into());
+                return Err("static cache excludes cascade0 and the auxiliary layer".into());
             }
-            NativeShadowCacheOp::Restore => {
-                if !matches!(layer.ops.depth, NativeShadowLoad::Load)
-                    || !matches!(layer.ops.stencil, NativeStencilLoad::Load)
+            ShadowCacheOp::Restore => {
+                if !matches!(layer.ops.depth, ShadowLoad::Load)
+                    || !matches!(layer.ops.stencil, StencilLoad::Load)
                 {
                     return Err(
-                        "native cache restore must precede a preserve-depth dynamic pass".into(),
+                        "cache restore must precede a preserve-depth dynamic pass".into(),
                     );
                 }
             }
-            NativeShadowCacheOp::Store { static_instances }
-            | NativeShadowCacheOp::Retained {
+            ShadowCacheOp::Store { static_instances }
+            | ShadowCacheOp::Retained {
                 static_instances, ..
             } => {
                 if static_instances > layer.instances.len()
-                    || !matches!(layer.ops.depth, NativeShadowLoad::Clear(_))
+                    || !matches!(layer.ops.depth, ShadowLoad::Clear(_))
                 {
                     return Err(
-                        "native cache refresh needs a clear and a valid static/dynamic boundary"
+                        "cache refresh needs a clear and a valid static/dynamic boundary"
                             .into(),
                     );
                 }
@@ -1974,45 +1974,45 @@ fn validate_frame(
 }
 
 fn validate_whole_view_depth(
-    dimensions: NativeParallelShadowTargetDimensions,
-    layer: &NativeShadowLayer,
+    dimensions: ParallelShadowTargetDimensions,
+    layer: &ShadowLayer,
 ) -> Result<(), String> {
     if dimensions.width == 0 || dimensions.height == 0 || !(2..=5).contains(&dimensions.layers) {
         return Err("whole-view depth needs the actual directional target dimensions".into());
     }
-    if layer.cache != NativeShadowCacheOp::None {
+    if layer.cache != ShadowCacheOp::None {
         return Err("the whole-view shadow has no per-cascade static-cache entry".into());
     }
     validate_instances(dimensions, std::slice::from_ref(layer))
 }
 
 fn validate_instances(
-    dimensions: NativeParallelShadowTargetDimensions,
-    layers: &[NativeShadowLayer],
+    dimensions: ParallelShadowTargetDimensions,
+    layers: &[ShadowLayer],
 ) -> Result<(), String> {
     for layer in layers {
         for instance in &layer.instances {
             match (instance.program, &instance.alpha_material) {
                 (
-                    NativeShadowProgram::RigidOpaque
-                    | NativeShadowProgram::WorldOpaque
-                    | NativeShadowProgram::Skinned { alpha: false, .. },
+                    ShadowProgram::RigidOpaque
+                    | ShadowProgram::WorldOpaque
+                    | ShadowProgram::Skinned { alpha: false, .. },
                     None,
                 ) => {}
                 (
-                    NativeShadowProgram::RigidAlphaTested
-                    | NativeShadowProgram::RigidVistaAlpha
-                    | NativeShadowProgram::Vegetation
-                    | NativeShadowProgram::WorldAlphaTested
-                    | NativeShadowProgram::WorldVistaAlpha
-                    | NativeShadowProgram::WorldVegetation
-                    | NativeShadowProgram::WorldVegetationFixed
-                    | NativeShadowProgram::Skinned { alpha: true, .. },
+                    ShadowProgram::RigidAlphaTested
+                    | ShadowProgram::RigidVistaAlpha
+                    | ShadowProgram::Vegetation
+                    | ShadowProgram::WorldAlphaTested
+                    | ShadowProgram::WorldVistaAlpha
+                    | ShadowProgram::WorldVegetation
+                    | ShadowProgram::WorldVegetationFixed
+                    | ShadowProgram::Skinned { alpha: true, .. },
                     Some(material),
                 ) => {
                     if material.uv_set > 1 || !material.uv_scale_bias.iter().all(|v| v.is_finite())
                     {
-                        return Err("native alpha shadow needs a resolved UV0/UV1 stream and finite scale/bias".into());
+                        return Err("alpha shadow needs a resolved UV0/UV1 stream and finite scale/bias".into());
                     }
                 }
                 _ => {
@@ -2024,35 +2024,35 @@ fn validate_instances(
             }
             match (&instance.per_instance_cb, instance.program) {
                 (
-                    NativeShadowInstanceConstants::Skinned { constants, .. },
-                    NativeShadowProgram::Skinned {
+                    ShadowInstanceConstants::Skinned { constants, .. },
+                    ShadowProgram::Skinned {
                         influences,
                         alpha,
                         dither,
                     },
                 ) => {
                     if !matches!(influences, 4 | 8) || (dither && !alpha) {
-                        return Err("unsupported native skin class".into());
+                        return Err("unsupported skin class".into());
                     }
                     if let Some(material) = &instance.alpha_material {
                         for (i, value) in material.uv_scale_bias.iter().enumerate() {
                             if constants[96 + i * 4..100 + i * 4] != value.to_le_bytes() {
-                                return Err("native skin UV parameters disagree".into());
+                                return Err("skin UV parameters disagree".into());
                             }
                         }
                     }
                 }
                 (
-                    NativeShadowInstanceConstants::WorldVegetation {
+                    ShadowInstanceConstants::WorldVegetation {
                         constants,
                         instance_count,
                         winds,
                         ..
                     },
-                    NativeShadowProgram::WorldVegetation
-                    | NativeShadowProgram::WorldVegetationFixed,
+                    ShadowProgram::WorldVegetation
+                    | ShadowProgram::WorldVegetationFixed,
                 ) => {
-                    if winds.is_some() != (instance.program == NativeShadowProgram::WorldVegetation)
+                    if winds.is_some() != (instance.program == ShadowProgram::WorldVegetation)
                     {
                         return Err(
                             "world vegetation program and wind-buffer ownership differ".into()
@@ -2071,14 +2071,14 @@ fn validate_instances(
                     }
                 }
                 (
-                    NativeShadowInstanceConstants::World {
+                    ShadowInstanceConstants::World {
                         constants,
                         instance_count,
                         ..
                     },
-                    NativeShadowProgram::WorldOpaque
-                    | NativeShadowProgram::WorldAlphaTested
-                    | NativeShadowProgram::WorldVistaAlpha,
+                    ShadowProgram::WorldOpaque
+                    | ShadowProgram::WorldAlphaTested
+                    | ShadowProgram::WorldVistaAlpha,
                 ) => {
                     if let Some(material) = &instance.alpha_material {
                         for (word, value) in material.uv_scale_bias.iter().enumerate() {
@@ -2090,18 +2090,18 @@ fn validate_instances(
                         }
                     }
                     if *instance_count == 0 {
-                        return Err("native world shadow packet must contain instances".into());
+                        return Err("world shadow packet must contain instances".into());
                     }
                 }
                 (
-                    NativeShadowInstanceConstants::Rigid(_),
-                    NativeShadowProgram::RigidOpaque
-                    | NativeShadowProgram::RigidAlphaTested
-                    | NativeShadowProgram::RigidVistaAlpha,
+                    ShadowInstanceConstants::Rigid(_),
+                    ShadowProgram::RigidOpaque
+                    | ShadowProgram::RigidAlphaTested
+                    | ShadowProgram::RigidVistaAlpha,
                 ) => {}
                 (
-                    NativeShadowInstanceConstants::Vegetation(bytes),
-                    NativeShadowProgram::Vegetation,
+                    ShadowInstanceConstants::Vegetation(bytes),
+                    ShadowProgram::Vegetation,
                 ) => {
                     let material = instance
                         .alpha_material
@@ -2112,12 +2112,12 @@ fn validate_instances(
                         .zip(material.uv_scale_bias)
                         .any(|(bytes, value)| bytes != value.to_le_bytes())
                     {
-                        return Err("native vegetation UV variables disagree with its 208-byte instance record".into());
+                        return Err("vegetation UV variables disagree with its 208-byte instance record".into());
                     }
                 }
                 _ => {
                     return Err(
-                        "native shadow program and instance constant layout disagree".into(),
+                        "shadow program and instance constant layout disagree".into(),
                     );
                 }
             }
@@ -2133,20 +2133,20 @@ fn validate_instances(
                     .checked_add(scissor.height)
                     .is_none_or(|bottom| bottom > dimensions.height)
             {
-                return Err(format!("native shadow scissor outside target: {scissor:?}"));
+                return Err(format!("shadow scissor outside target: {scissor:?}"));
             }
         }
     }
     Ok(())
 }
 
-fn instance_uniform_stride(layers: &[NativeShadowLayer], alignment: u64) -> u64 {
+fn instance_uniform_stride(layers: &[ShadowLayer], alignment: u64) -> u64 {
     let bytes = layers
         .iter()
         .flat_map(|layer| &layer.instances)
         .map(|instance| instance.per_instance_cb.as_bytes().len() as u64)
         .max()
-        .unwrap_or(NATIVE_SHADOW_INSTANCE_BYTES as u64);
+        .unwrap_or(SHADOW_INSTANCE_BYTES as u64);
     let alignment = alignment.max(1);
     bytes.div_ceil(alignment) * alignment
 }
@@ -2158,24 +2158,24 @@ fn hash_layout(layout: &MeshVertexBufferLayoutRef) -> u64 {
     hasher.finish()
 }
 
-fn native_caster_position(program: NativeShadowProgram) -> MeshVertexAttribute {
+fn caster_position(program: ShadowProgram) -> MeshVertexAttribute {
     match program {
-        NativeShadowProgram::WorldOpaque
-        | NativeShadowProgram::WorldAlphaTested
-        | NativeShadowProgram::WorldVistaAlpha
-        | NativeShadowProgram::WorldVegetation
-        | NativeShadowProgram::WorldVegetationFixed
-        | NativeShadowProgram::Vegetation
-        | NativeShadowProgram::RigidOpaque
-        | NativeShadowProgram::RigidAlphaTested
-        | NativeShadowProgram::RigidVistaAlpha
-        | NativeShadowProgram::Skinned { .. } => NATIVE_VEGETATION_POSITION,
+        ShadowProgram::WorldOpaque
+        | ShadowProgram::WorldAlphaTested
+        | ShadowProgram::WorldVistaAlpha
+        | ShadowProgram::WorldVegetation
+        | ShadowProgram::WorldVegetationFixed
+        | ShadowProgram::Vegetation
+        | ShadowProgram::RigidOpaque
+        | ShadowProgram::RigidAlphaTested
+        | ShadowProgram::RigidVistaAlpha
+        | ShadowProgram::Skinned { .. } => VEGETATION_POSITION,
         _ => Mesh::ATTRIBUTE_POSITION,
     }
 }
 
 fn ensure_pipeline(
-    gpu: &mut NativeShadowSceneGpu,
+    gpu: &mut ShadowSceneGpu,
     key: PipelineKey,
     layout: MeshVertexBufferLayoutRef,
     device: &RenderDevice,
@@ -2186,81 +2186,81 @@ fn ensure_pipeline(
     }
     if std::env::var_os("DH2_TRACE_SHADOW_SUBMISSION").is_some() {
         eprintln!(
-            "Native shadow GPU creating pipeline {} {:?} {:?}",
+            "Shadow GPU creating pipeline {} {:?} {:?}",
             gpu.pipelines.len(),
             key.program,
             key.draw_state
         );
     }
-    let position = native_caster_position(key.program);
+    let position = caster_position(key.program);
     let mut attributes = vec![position.at_shader_location(0)];
     if let Some(uv_set) = key.alpha_uv {
         attributes.push(
             match uv_set {
                 0 => Mesh::ATTRIBUTE_UV_0,
                 1 => Mesh::ATTRIBUTE_UV_1,
-                _ => return Err("unsupported native layer-zero shadow UV stream".into()),
+                _ => return Err("unsupported layer-zero shadow UV stream".into()),
             }
             .at_shader_location(1),
         );
     }
     if matches!(
         key.program,
-        NativeShadowProgram::Vegetation
-            | NativeShadowProgram::WorldVegetation
-            | NativeShadowProgram::WorldVegetationFixed
+        ShadowProgram::Vegetation
+            | ShadowProgram::WorldVegetation
+            | ShadowProgram::WorldVegetationFixed
     ) {
-        attributes.push(NATIVE_VEGETATION_COLOR.at_shader_location(2));
-        attributes.push(NATIVE_VEGETATION_NORMAL.at_shader_location(3));
+        attributes.push(VEGETATION_COLOR.at_shader_location(2));
+        attributes.push(VEGETATION_NORMAL.at_shader_location(3));
     }
-    if let NativeShadowProgram::Skinned { .. } = key.program {
+    if let ShadowProgram::Skinned { .. } = key.program {
         if key.alpha_uv.is_none() {
             attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(1));
         }
         attributes.extend([
-            NATIVE_SKIN_INDICES_0.at_shader_location(2),
-            NATIVE_SKIN_WEIGHTS_0.at_shader_location(3),
-            NATIVE_SKIN_INDICES_1.at_shader_location(4),
-            NATIVE_SKIN_WEIGHTS_1.at_shader_location(5),
+            SKIN_INDICES_0.at_shader_location(2),
+            SKIN_WEIGHTS_0.at_shader_location(3),
+            SKIN_INDICES_1.at_shader_location(4),
+            SKIN_WEIGHTS_1.at_shader_location(5),
         ]);
     }
     let position_layout = layout.0.get_layout(&attributes).map_err(|error| {
-        format!("native caster mesh lacks position/selected UV stream: {error}")
+        format!("caster mesh lacks position/selected UV stream: {error}")
     })?;
     let raw = RawVertexBufferLayout {
         array_stride: position_layout.array_stride,
         step_mode: if position_layout.step_mode == VertexStepMode::Vertex {
             bevy::render::render_resource::VertexStepMode::Vertex
         } else {
-            return Err("native opaque shadow position stream must be per-vertex".into());
+            return Err("opaque shadow position stream must be per-vertex".into());
         },
         attributes: &position_layout.attributes,
     };
     let program = match key.program {
-        NativeShadowProgram::Skinned {
+        ShadowProgram::Skinned {
             influences,
             alpha,
             dither,
-        } => NativeShadowDepthProgram::Skinned {
+        } => ShadowDepthProgram::Skinned {
             influences,
             alpha,
             dither,
         },
-        NativeShadowProgram::RigidOpaque => NativeShadowDepthProgram::Opaque,
-        NativeShadowProgram::WorldOpaque => NativeShadowDepthProgram::WorldOpaque,
-        NativeShadowProgram::WorldAlphaTested => NativeShadowDepthProgram::WorldAlpha,
-        NativeShadowProgram::WorldVistaAlpha => NativeShadowDepthProgram::WorldVistaAlpha,
-        NativeShadowProgram::WorldVegetation => NativeShadowDepthProgram::WorldVegetation,
-        NativeShadowProgram::WorldVegetationFixed => NativeShadowDepthProgram::WorldVegetationFixed,
-        NativeShadowProgram::RigidAlphaTested | NativeShadowProgram::RigidVistaAlpha => {
-            NativeShadowDepthProgram::RigidAlpha
+        ShadowProgram::RigidOpaque => ShadowDepthProgram::Opaque,
+        ShadowProgram::WorldOpaque => ShadowDepthProgram::WorldOpaque,
+        ShadowProgram::WorldAlphaTested => ShadowDepthProgram::WorldAlpha,
+        ShadowProgram::WorldVistaAlpha => ShadowDepthProgram::WorldVistaAlpha,
+        ShadowProgram::WorldVegetation => ShadowDepthProgram::WorldVegetation,
+        ShadowProgram::WorldVegetationFixed => ShadowDepthProgram::WorldVegetationFixed,
+        ShadowProgram::RigidAlphaTested | ShadowProgram::RigidVistaAlpha => {
+            ShadowDepthProgram::RigidAlpha
         }
-        NativeShadowProgram::Vegetation => NativeShadowDepthProgram::Vegetation,
-        NativeShadowProgram::Unsupported(_) => {
+        ShadowProgram::Vegetation => ShadowDepthProgram::Vegetation,
+        ShadowProgram::Unsupported(_) => {
             return Err("unresolved native shadow program".into());
         }
     };
-    let pipeline = NativeOpaqueShadowPipeline::new_prepared_shadow_depth(
+    let pipeline = ShadowDepthPipeline::new_prepared_shadow_depth(
         device,
         adapter,
         &raw,
@@ -2282,7 +2282,7 @@ fn ensure_pipeline(
     );
     if std::env::var_os("DH2_TRACE_SHADOW_SUBMISSION").is_some() {
         eprintln!(
-            "Native shadow GPU prepared {} pipelines",
+            "Shadow GPU prepared {} pipelines",
             gpu.pipelines.len()
         );
     }
@@ -2291,8 +2291,8 @@ fn ensure_pipeline(
 
 fn ensure_alpha_material(
     cached: &mut CachedPipeline,
-    program: NativeShadowProgram,
-    material: &NativeShadowAlphaMaterial,
+    program: ShadowProgram,
+    material: &ShadowAlphaMaterial,
     image: &GpuImage,
     sampler: &Sampler,
     device: &RenderDevice,
@@ -2308,11 +2308,11 @@ fn ensure_alpha_material(
                 dimension != bevy::render::render_resource::TextureViewDimension::D2
             })
     {
-        return Err("native rigid shadow diffuse requires the resolved 2D image".into());
+        return Err("rigid shadow diffuse requires the resolved 2D image".into());
     }
     // Vegetation reads its UV variables from the instance CB, not a fabricated
     // second UV uniform. Its material binding can be shared across model clocks.
-    let uv_key = if program == NativeShadowProgram::Vegetation {
+    let uv_key = if program == ShadowProgram::Vegetation {
         [0; 4]
     } else {
         material.uv_scale_bias.map(f32::to_bits)
@@ -2324,7 +2324,7 @@ fn ensure_alpha_material(
         .is_none_or(|entry| entry.view.id() != image.texture_view.id())
     {
         let (uv_buffer, binding) = match program {
-            NativeShadowProgram::RigidAlphaTested | NativeShadowProgram::RigidVistaAlpha => {
+            ShadowProgram::RigidAlphaTested | ShadowProgram::RigidVistaAlpha => {
                 let uv_buffer = device.create_buffer_with_data(&BufferInitDescriptor {
                     label: Some("persistent native layer-zero shadow scale/bias"),
                     contents: &material
@@ -2342,13 +2342,13 @@ fn ensure_alpha_material(
                 )?;
                 (Some(uv_buffer), binding)
             }
-            NativeShadowProgram::Vegetation => (
+            ShadowProgram::Vegetation => (
                 None,
                 cached
                     .pipeline
                     .bind_vegetation_material(device, &image.texture_view, sampler)?,
             ),
-            _ => return Err("native shadow material requires a resolved cutout program".into()),
+            _ => return Err("shadow material requires a resolved cutout program".into()),
         };
         cached.alpha_materials.insert(
             key,
@@ -2387,17 +2387,17 @@ fn parallel_target_format(depth_32_bits: bool) -> bevy::render::render_resource:
 }
 
 fn layer_operations(
-    ops: NativeShadowLayerOps,
+    ops: ShadowLayerOps,
     first: bool,
     has_stencil: bool,
 ) -> (Operations<f32>, Option<Operations<u32>>) {
     let depth = if first {
         match ops.depth {
-            NativeShadowLoad::Load => Operations {
+            ShadowLoad::Load => Operations {
                 load: LoadOp::Load,
                 store: StoreOp::Store,
             },
-            NativeShadowLoad::Clear(value) => Operations {
+            ShadowLoad::Clear(value) => Operations {
                 load: LoadOp::Clear(value),
                 store: StoreOp::Store,
             },
@@ -2412,11 +2412,11 @@ fn layer_operations(
         None
     } else if first {
         Some(match ops.stencil {
-            NativeStencilLoad::Load => Operations {
+            StencilLoad::Load => Operations {
                 load: LoadOp::Load,
                 store: StoreOp::Store,
             },
-            NativeStencilLoad::Clear(value) => Operations {
+            StencilLoad::Clear(value) => Operations {
                 load: LoadOp::Clear(value),
                 store: StoreOp::Store,
             },
@@ -2432,23 +2432,23 @@ fn layer_operations(
 
 fn clear_empty_layer(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
-    target: &NativeShadowDepthArray,
+    target: &ShadowDepthArray,
     layer: u32,
-    ops: NativeShadowLayerOps,
+    ops: ShadowLayerOps,
 ) {
     let Some(view) = target.layers.get(layer as usize) else {
         return;
     };
     let depth = match ops.depth {
-        NativeShadowLoad::Load => LoadOp::Load,
-        NativeShadowLoad::Clear(value) => LoadOp::Clear(value),
+        ShadowLoad::Load => LoadOp::Load,
+        ShadowLoad::Clear(value) => LoadOp::Clear(value),
     };
     let stencil = match ops.stencil {
-        NativeStencilLoad::Load => LoadOp::Load,
-        NativeStencilLoad::Clear(value) => LoadOp::Clear(value),
+        StencilLoad::Load => LoadOp::Load,
+        StencilLoad::Clear(value) => LoadOp::Clear(value),
     };
     let _pass = encoder.begin_render_pass(&bevy::render::render_resource::RenderPassDescriptor {
-        label: Some("native shadow explicit empty-layer operation"),
+        label: Some("shadow explicit empty-layer operation"),
         color_attachments: &[],
         depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
             view,
@@ -2488,7 +2488,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let f = |i| f32::from_bits(w[i]);
             let rows = std::array::from_fn(|r| std::array::from_fn(|c| f(r * 4 + c)));
-            let cb = native_shadow_instance_cb(&rows, f(16));
+            let cb = shadow_instance_cb(&rows, f(16));
             let p = [f(17), f(18), f(19), 1.0];
             let dot = |offset: usize| {
                 let row: [f32; 4] = std::array::from_fn(|i| {
@@ -2500,7 +2500,7 @@ mod tests {
             assert_eq!(
                 [dot(48), dot(32), dot(16) * depth, dot(0)].map(f32::to_bits),
                 w[20..],
-                "native liquid/Vista position{count}"
+                "liquid/Vista position{count}"
             );
             count += 1;
         }
@@ -2509,15 +2509,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipeline_cache_does_not_alias_native_depth_stencil_or_raster_state() {
+    fn pipeline_cache_does_not_alias_depth_stencil_or_raster_state() {
         let mut state = [0; 9];
-        crate::render_state::reset_native_render_state(&mut state);
+        crate::render_state::reset_render_state(&mut state);
         let key = PipelineKey {
             layout: 0,
             depth_32_bits: false,
             front_face: FrontFace::Ccw,
             cull_mode: Some(Face::Back),
-            program: NativeShadowProgram::WorldOpaque,
+            program: ShadowProgram::WorldOpaque,
             alpha_uv: None,
             draw_state: state,
             stencil_reference: 0,
@@ -2527,14 +2527,14 @@ mod tests {
             changed.draw_state[word] ^= 1;
             assert_ne!(
                 key, changed,
-                "native state word {word} must not alias a cached pipeline"
+                "state word {word} must not alias a cached pipeline"
             );
         }
         let mut changed = key;
         changed.stencil_reference = 71;
         assert_ne!(
             key, changed,
-            "native stencil reference must survive submission"
+            "stencil reference must survive submission"
         );
     }
 
@@ -2544,7 +2544,7 @@ mod tests {
             std::array::from_fn(|column| f32::from_bits(0x3f80_0000 + (row * 4 + column) as u32))
         });
         let multiplier = f32::from_bits(0x8000_0000);
-        let bytes = native_shadow_instance_cb(&rows, multiplier);
+        let bytes = shadow_instance_cb(&rows, multiplier);
         for (word, value) in rows.iter().rev().flatten().enumerate() {
             assert_eq!(&bytes[word * 4..word * 4 + 4], &value.to_le_bytes());
         }
@@ -2553,8 +2553,8 @@ mod tests {
     }
 
     #[test]
-    fn vegetation_instance_cb_keeps_native_layout_and_model_time() {
-        let wind = NativeVegetationShadowParameters {
+    fn vegetation_instance_cb_keeps_layout_and_model_time() {
+        let wind = VegetationShadowParameters {
             main_variation: [1.0; 4],
             main_frequency: [2.0; 4],
             main_amplitude: [3.0; 4],
@@ -2566,7 +2566,7 @@ mod tests {
         let rows = [[8.0; 4], [9.0; 4], [10.0; 4], [11.0; 4]];
         let uv = [0.5, 2.0, -0.0, -1.0];
         let time = [16_777_218.0, -0.0];
-        let cb = native_vegetation_shadow_instance_cb(uv, &wind, &rows, time, 0.75);
+        let cb = vegetation_shadow_instance_cb(uv, &wind, &rows, time, 0.75);
         let vectors = [
             uv,
             wind.main_variation,
@@ -2592,11 +2592,11 @@ mod tests {
         assert_eq!(&cb[200..204], &0.75f32.to_le_bytes());
         assert_eq!(&cb[204..], &[0; 4]);
 
-        let instance = NativeShadowInstance {
+        let instance = ShadowInstance {
             mesh: Handle::default(),
             per_instance_cb: cb.into(),
-            program: NativeShadowProgram::Vegetation,
-            alpha_material: Some(NativeShadowAlphaMaterial {
+            program: ShadowProgram::Vegetation,
+            alpha_material: Some(ShadowAlphaMaterial {
                 diffuse: Handle::default(),
                 uv_set: 0,
                 uv_scale_bias: uv,
@@ -2605,7 +2605,7 @@ mod tests {
             cull_mode: Some(Face::Back),
             draw_state: [0; 9],
             stencil_reference: 0,
-            scissor: NativeShadowScissor {
+            scissor: ShadowScissor {
                 x: 0,
                 y: 0,
                 width: 32,
@@ -2613,17 +2613,17 @@ mod tests {
             },
         };
         let mut layers = vec![
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Load,
-                    stencil: NativeStencilLoad::Load
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Load,
+                    stencil: StencilLoad::Load
                 },
                 instances: vec![instance],
             };
             2
         ];
-        let dimensions = NativeParallelShadowTargetDimensions {
+        let dimensions = ParallelShadowTargetDimensions {
             width: 32,
             height: 32,
             layers: 2,
@@ -2636,7 +2636,7 @@ mod tests {
                 208u64.div_ceil(alignment) * alignment
             );
         }
-        layers[0].instances[0].per_instance_cb = [0; NATIVE_SHADOW_INSTANCE_BYTES].into();
+        layers[0].instances[0].per_instance_cb = [0; SHADOW_INSTANCE_BYTES].into();
         assert!(validate_frame(dimensions, &receiver(), &layers)
             .unwrap_err()
             .contains("constant layout"));
@@ -2654,11 +2654,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .uv_scale_bias = uv;
-        layers[0].instances[0].program = NativeShadowProgram::RigidAlphaTested;
+        layers[0].instances[0].program = ShadowProgram::RigidAlphaTested;
         assert!(validate_frame(dimensions, &receiver(), &layers)
             .unwrap_err()
             .contains("constant layout"));
-        layers[0].instances[0].per_instance_cb = [0; NATIVE_SHADOW_INSTANCE_BYTES].into();
+        layers[0].instances[0].per_instance_cb = [0; SHADOW_INSTANCE_BYTES].into();
         validate_frame(dimensions, &receiver(), &layers).unwrap();
         assert_eq!(
             instance_uniform_stride(&layers, 64),
@@ -2671,7 +2671,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires GPU; verifies render-world mixed instance ring and native material routing"]
-    fn native_scene_program_uniform_routing_gpu() {
+    fn scene_program_uniform_routing_gpu() {
         use bevy::ecs::system::RunSystemOnce;
         use bevy::prelude::*;
         use bevy::render::{render_resource::*, RenderApp};
@@ -2689,13 +2689,13 @@ mod tests {
         app.finish();
         app.cleanup();
         let world = app.sub_app_mut(RenderApp).world_mut();
-        let material = NativeShadowAlphaMaterial {
+        let material = ShadowAlphaMaterial {
             diffuse: Handle::default(),
             uv_set: 0,
             uv_scale_bias: [2.0, 0.5, -0.25, 0.125],
         };
         // Synthetic owner records test ABI/routing, not a fabricated live frame.
-        let make_instance = |program, constants| NativeShadowInstance {
+        let make_instance = |program, constants| ShadowInstance {
             mesh: Handle::default(),
             per_instance_cb: constants,
             program,
@@ -2704,44 +2704,44 @@ mod tests {
             cull_mode: None,
             draw_state: [0; 9],
             stencil_reference: 0,
-            scissor: NativeShadowScissor {
+            scissor: ShadowScissor {
                 x: 0,
                 y: 0,
                 width: 32,
                 height: 32,
             },
         };
-        let mut wind_cb = [0x5a; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES];
+        let mut wind_cb = [0x5a; VEGETATION_SHADOW_INSTANCE_BYTES];
         for (component, value) in material.uv_scale_bias.iter().enumerate() {
             wind_cb[component * 4..component * 4 + 4].copy_from_slice(&value.to_le_bytes());
         }
-        let rigid_cb = [0xa5; NATIVE_SHADOW_INSTANCE_BYTES];
+        let rigid_cb = [0xa5; SHADOW_INSTANCE_BYTES];
         let layers = vec![
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Clear(1.0),
-                    stencil: NativeStencilLoad::Load,
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Clear(1.0),
+                    stencil: StencilLoad::Load,
                 },
                 instances: vec![
-                    make_instance(NativeShadowProgram::RigidAlphaTested, rigid_cb.into()),
-                    make_instance(NativeShadowProgram::Vegetation, wind_cb.into()),
+                    make_instance(ShadowProgram::RigidAlphaTested, rigid_cb.into()),
+                    make_instance(ShadowProgram::Vegetation, wind_cb.into()),
                 ],
             },
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Load,
-                    stencil: NativeStencilLoad::Load,
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Load,
+                    stencil: StencilLoad::Load,
                 },
                 instances: Vec::new(),
             },
         ];
-        world.insert_resource(NativeShadowSceneFrame {
+        world.insert_resource(ShadowSceneFrame {
             revision: 1,
-            state: NativeShadowSceneState::Ready {
+            state: ShadowSceneState::Ready {
                 target_image: Handle::default(),
-                dimensions: NativeParallelShadowTargetDimensions {
+                dimensions: ParallelShadowTargetDimensions {
                     width: 32,
                     height: 32,
                     layers: 2,
@@ -2751,9 +2751,9 @@ mod tests {
                 layers: layers.into(),
             },
         });
-        world.init_resource::<NativeShadowSceneGpu>();
+        world.init_resource::<ShadowSceneGpu>();
         world.run_system_once(prepare_shadow_uniform_ring).unwrap();
-        let mut gpu = world.remove_resource::<NativeShadowSceneGpu>().unwrap();
+        let mut gpu = world.remove_resource::<ShadowSceneGpu>().unwrap();
         let device = world.resource::<RenderDevice>();
         let adapter = world.resource::<RenderAdapter>();
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
@@ -2772,13 +2772,13 @@ mod tests {
         );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[10.0, 20.0, 30.0]; 3]);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; 3]);
-        mesh.insert_attribute(NATIVE_VEGETATION_POSITION, vec![[0.0, 0.0, 0.0]; 3]);
-        mesh.insert_attribute(NATIVE_VEGETATION_COLOR, vec![[0.25, 0.5, 0.75]; 3]);
-        mesh.insert_attribute(NATIVE_VEGETATION_NORMAL, vec![[0.0, 1.0]; 3]);
+        mesh.insert_attribute(VEGETATION_POSITION, vec![[0.0, 0.0, 0.0]; 3]);
+        mesh.insert_attribute(VEGETATION_COLOR, vec![[0.25, 0.5, 0.75]; 3]);
+        mesh.insert_attribute(VEGETATION_NORMAL, vec![[0.0, 1.0]; 3]);
         let mut layouts = bevy::mesh::MeshVertexBufferLayouts::default();
         let layout = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         let descriptor = TextureDescriptor {
-            label: Some("native scene material routing fixture"),
+            label: Some("scene material routing fixture"),
             size: Extent3d {
                 width: 1,
                 height: 1,
@@ -2792,7 +2792,7 @@ mod tests {
             view_formats: &[],
         };
         let texture = device.create_texture(&descriptor);
-        let sampler = native_shadow_alpha_sampler(device);
+        let sampler = shadow_alpha_sampler(device);
         let image = GpuImage {
             texture_view: texture.create_view(&TextureViewDescriptor::default()),
             texture,
@@ -2802,12 +2802,12 @@ mod tests {
             had_data: false,
         };
         let mut prepared_state = [0; 9];
-        crate::render_state::reset_native_render_state(&mut prepared_state);
+        crate::render_state::reset_render_state(&mut prepared_state);
         for program in [
-            NativeShadowProgram::RigidOpaque,
-            NativeShadowProgram::RigidAlphaTested,
-            NativeShadowProgram::RigidVistaAlpha,
-            NativeShadowProgram::Vegetation,
+            ShadowProgram::RigidOpaque,
+            ShadowProgram::RigidAlphaTested,
+            ShadowProgram::RigidVistaAlpha,
+            ShadowProgram::Vegetation,
         ] {
             let key = PipelineKey {
                 layout: hash_layout(&layout),
@@ -2815,7 +2815,7 @@ mod tests {
                 front_face: FrontFace::Ccw,
                 cull_mode: None,
                 program,
-                alpha_uv: (program != NativeShadowProgram::RigidOpaque).then_some(0),
+                alpha_uv: (program != ShadowProgram::RigidOpaque).then_some(0),
                 draw_state: prepared_state,
                 stencil_reference: 0,
             };
@@ -2826,7 +2826,7 @@ mod tests {
             // All ring offsets share a descriptor, including late frame slots.
             ensure_uniform_binding(cached, &ring, device).unwrap();
             assert_eq!(cached.binding.as_ref().unwrap().id(), shared);
-            if program != NativeShadowProgram::RigidOpaque {
+            if program != ShadowProgram::RigidOpaque {
                 ensure_alpha_material(cached, program, &material, &image, &sampler, device)
                     .unwrap();
                 assert_eq!(cached.alpha_materials.len(), 1);
@@ -2840,11 +2840,11 @@ mod tests {
                         .is_some(),
                     matches!(
                         program,
-                        NativeShadowProgram::RigidAlphaTested
-                            | NativeShadowProgram::RigidVistaAlpha
+                        ShadowProgram::RigidAlphaTested
+                            | ShadowProgram::RigidVistaAlpha
                     )
                 );
-                if program == NativeShadowProgram::Vegetation {
+                if program == ShadowProgram::Vegetation {
                     let mut other = material.clone();
                     other.uv_scale_bias[0] = 3.0;
                     ensure_alpha_material(cached, program, &other, &image, &sampler, device)
@@ -2888,14 +2888,14 @@ mod tests {
             4,
             "same mesh/layout must not alias different native programs"
         );
-        mesh.remove_attribute(NATIVE_VEGETATION_POSITION);
+        mesh.remove_attribute(VEGETATION_POSITION);
         let missing_raw = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         let key = PipelineKey {
             layout: hash_layout(&missing_raw),
             depth_32_bits: false,
             front_face: FrontFace::Ccw,
             cull_mode: None,
-            program: NativeShadowProgram::Vegetation,
+            program: ShadowProgram::Vegetation,
             alpha_uv: Some(0),
             draw_state: prepared_state,
             stencil_reference: 0,
@@ -2906,8 +2906,8 @@ mod tests {
         );
     }
 
-    fn receiver() -> NativeParallelReceiverVars {
-        NativeParallelReceiverVars {
+    fn receiver() -> ParallelReceiverVars {
+        ParallelReceiverVars {
             path: crate::render_shadow::ParallelShadowReceiverPath::DirectVisibility,
             world_to_shadow: vec![[[0.0; 4]; 4]; 2],
             view_row2: [0.0; 4],
@@ -2916,7 +2916,7 @@ mod tests {
             light_quality: 0,
             filtering_quality: 0,
             directional_light_index: 0,
-            offset: crate::shadow_sampling::NativeShadowOffsetParameters {
+            offset: crate::shadow_sampling::ShadowOffsetParameters {
                 sun_direction: [0.0, 0.0, -1.0],
                 use_normal_offset: false,
                 use_slope_scale: false,
@@ -2947,17 +2947,17 @@ mod tests {
     #[test]
     fn parallel_target_uses_actual_16_or_24_plus_stencil_format() {
         use bevy::render::render_resource::TextureFormat;
-        let layer = NativeShadowLayer {
-            cache: NativeShadowCacheOp::None,
-            ops: NativeShadowLayerOps {
-                depth: NativeShadowLoad::Clear(1.0),
-                stencil: NativeStencilLoad::Clear(0),
+        let layer = ShadowLayer {
+            cache: ShadowCacheOp::None,
+            ops: ShadowLayerOps {
+                depth: ShadowLoad::Clear(1.0),
+                stencil: StencilLoad::Clear(0),
             },
             instances: vec![],
         };
         let layers = [layer.clone(), layer];
         for depth_32_bits in [false, true] {
-            let dims = NativeParallelShadowTargetDimensions {
+            let dims = ParallelShadowTargetDimensions {
                 width: 32,
                 height: 32,
                 layers: 2,
@@ -2985,26 +2985,26 @@ mod tests {
         let mut layouts = bevy::mesh::MeshVertexBufferLayouts::default();
         let baked = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         let programs = [
-            NativeShadowProgram::WorldOpaque,
-            NativeShadowProgram::WorldAlphaTested,
-            NativeShadowProgram::WorldVistaAlpha,
-            NativeShadowProgram::WorldVegetation,
-            NativeShadowProgram::WorldVegetationFixed,
-            NativeShadowProgram::RigidOpaque,
-            NativeShadowProgram::RigidAlphaTested,
+            ShadowProgram::WorldOpaque,
+            ShadowProgram::WorldAlphaTested,
+            ShadowProgram::WorldVistaAlpha,
+            ShadowProgram::WorldVegetation,
+            ShadowProgram::WorldVegetationFixed,
+            ShadowProgram::RigidOpaque,
+            ShadowProgram::RigidAlphaTested,
         ];
         for program in programs {
-            let attribute = native_caster_position(program).at_shader_location(0);
+            let attribute = caster_position(program).at_shader_location(0);
             assert!(
                 baked.0.get_layout(&[attribute]).is_err(),
                 "{program:?} must not apply its matrix buffer to baked positions"
             );
         }
-        mesh.insert_attribute(NATIVE_VEGETATION_POSITION, vec![[1.0f32, 2.0, 3.0]; 3]);
+        mesh.insert_attribute(VEGETATION_POSITION, vec![[1.0f32, 2.0, 3.0]; 3]);
         let raw = mesh.get_mesh_vertex_buffer_layout(&mut layouts);
         for program in programs {
             raw.0
-                .get_layout(&[native_caster_position(program).at_shader_location(0)])
+                .get_layout(&[caster_position(program).at_shader_location(0)])
                 .unwrap();
         }
         baked
@@ -3014,8 +3014,8 @@ mod tests {
     }
 
     #[test]
-    fn native_static_cache_requires_real_cascade_clear_and_split() {
-        let dims = NativeParallelShadowTargetDimensions {
+    fn static_cache_requires_real_cascade_clear_and_split() {
+        let dims = ParallelShadowTargetDimensions {
             width: 32,
             height: 32,
             layers: 3,
@@ -3025,43 +3025,43 @@ mod tests {
         vars.world_to_shadow.push(vars.world_to_shadow[0]);
         vars.cascade_fars = [10.0, 20.0, f32::MAX, f32::MAX];
         let mut layers = vec![
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Load,
-                    stencil: NativeStencilLoad::Load,
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Load,
+                    stencil: StencilLoad::Load,
                 },
                 instances: vec![],
             };
             3
         ];
-        layers[1].cache = NativeShadowCacheOp::Restore;
+        layers[1].cache = ShadowCacheOp::Restore;
         validate_frame(dims, &vars, &layers).unwrap();
-        layers[0].cache = NativeShadowCacheOp::Restore;
+        layers[0].cache = ShadowCacheOp::Restore;
         assert!(validate_frame(dims, &vars, &layers)
             .unwrap_err()
             .contains("excludes cascade0"));
-        layers[0].cache = NativeShadowCacheOp::None;
-        layers[2].cache = NativeShadowCacheOp::Restore;
+        layers[0].cache = ShadowCacheOp::None;
+        layers[2].cache = ShadowCacheOp::Restore;
         assert!(validate_frame(dims, &vars, &layers)
             .unwrap_err()
             .contains("auxiliary"));
-        layers[2].cache = NativeShadowCacheOp::None;
-        layers[1].ops.depth = NativeShadowLoad::Clear(1.0);
+        layers[2].cache = ShadowCacheOp::None;
+        layers[1].ops.depth = ShadowLoad::Clear(1.0);
         assert!(validate_frame(dims, &vars, &layers)
             .unwrap_err()
             .contains("preserve-depth"));
-        layers[1].cache = NativeShadowCacheOp::Store {
+        layers[1].cache = ShadowCacheOp::Store {
             static_instances: 1,
         };
         assert!(validate_frame(dims, &vars, &layers)
             .unwrap_err()
             .contains("boundary"));
-        layers[1].cache = NativeShadowCacheOp::Store {
+        layers[1].cache = ShadowCacheOp::Store {
             static_instances: 0,
         };
         validate_frame(dims, &vars, &layers).unwrap();
-        layers[1].ops.depth = NativeShadowLoad::Load;
+        layers[1].ops.depth = ShadowLoad::Load;
         assert!(validate_frame(dims, &vars, &layers)
             .unwrap_err()
             .contains("needs a clear"));
@@ -3069,18 +3069,18 @@ mod tests {
 
     #[test]
     fn screen_receiver_can_produce_atlas_without_enabling_direct_hook() {
-        let dims = NativeParallelShadowTargetDimensions {
+        let dims = ParallelShadowTargetDimensions {
             width: 32,
             height: 32,
             layers: 2,
             depth_32_bits: true,
         };
         let layers = vec![
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Clear(1.0),
-                    stencil: NativeStencilLoad::Clear(0),
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Clear(1.0),
+                    stencil: StencilLoad::Clear(0),
                 },
                 instances: vec![],
             };
@@ -3090,14 +3090,14 @@ mod tests {
         vars.path = crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace;
         validate_frame(dims, &vars, &layers).unwrap();
         let packed =
-            crate::shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(&vars)
+            crate::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(&vars)
                 .unwrap();
         assert_eq!(
             packed.config.x, 2,
             "the screen producer owns opaque visibility"
         );
         assert!(
-            crate::shadow_sampling::NativeParallelSamplingUniform::from_receiver(&vars).is_err()
+            crate::shadow_sampling::ParallelSamplingUniform::from_receiver(&vars).is_err()
         );
     }
 
@@ -3110,7 +3110,7 @@ mod tests {
                 cascade_count,
             )
             .unwrap();
-            let dims = NativeParallelShadowTargetDimensions {
+            let dims = ParallelShadowTargetDimensions {
                 width: target.side,
                 height: target.side,
                 layers: target.layers,
@@ -3123,11 +3123,11 @@ mod tests {
                 .copy_from_slice(&[4.0, 12.0, 30.0, 75.0][..cascade_count as usize]);
             vars.shadow_size = [target.side as f32; 2];
             let mut draws = vec![
-                NativeShadowLayer {
-                    cache: NativeShadowCacheOp::None,
-                    ops: NativeShadowLayerOps {
-                        depth: NativeShadowLoad::Load,
-                        stencil: NativeStencilLoad::Load
+                ShadowLayer {
+                    cache: ShadowCacheOp::None,
+                    ops: ShadowLayerOps {
+                        depth: ShadowLoad::Load,
+                        stencil: StencilLoad::Load
                     },
                     instances: vec![],
                 };
@@ -3160,28 +3160,28 @@ mod tests {
 
     #[test]
     fn capture_resource_number_does_not_classify_an_engine_program() {
-        let dims = NativeParallelShadowTargetDimensions {
+        let dims = ParallelShadowTargetDimensions {
             width: 32,
             height: 32,
             layers: 2,
             depth_32_bits: true,
         };
-        let layers = [NativeShadowLayer {
-            cache: NativeShadowCacheOp::None,
-            ops: NativeShadowLayerOps {
-                depth: NativeShadowLoad::Load,
-                stencil: NativeStencilLoad::Load,
+        let layers = [ShadowLayer {
+            cache: ShadowCacheOp::None,
+            ops: ShadowLayerOps {
+                depth: ShadowLoad::Load,
+                stencil: StencilLoad::Load,
             },
-            instances: vec![NativeShadowInstance {
+            instances: vec![ShadowInstance {
                 mesh: Handle::default(),
-                per_instance_cb: [0; NATIVE_SHADOW_INSTANCE_BYTES].into(),
-                program: NativeShadowProgram::Unsupported(17_296),
+                per_instance_cb: [0; SHADOW_INSTANCE_BYTES].into(),
+                program: ShadowProgram::Unsupported(17_296),
                 alpha_material: None,
                 front_face: FrontFace::Ccw,
                 cull_mode: Some(Face::Back),
                 draw_state: [0; 9],
                 stencil_reference: 0,
-                scissor: NativeShadowScissor {
+                scissor: ShadowScissor {
                     x: 0,
                     y: 0,
                     width: 32,
@@ -3193,11 +3193,11 @@ mod tests {
         // explicitly retains the cached image and has no new draws this frame.
         let mut layers = vec![
             layers[0].clone(),
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::None,
-                ops: NativeShadowLayerOps {
-                    depth: NativeShadowLoad::Load,
-                    stencil: NativeStencilLoad::Load,
+            ShadowLayer {
+                cache: ShadowCacheOp::None,
+                ops: ShadowLayerOps {
+                    depth: ShadowLoad::Load,
+                    stencil: StencilLoad::Load,
                 },
                 instances: vec![],
             },
@@ -3205,14 +3205,14 @@ mod tests {
         assert!(validate_frame(dims, &receiver(), &layers)
             .unwrap_err()
             .contains("shader class"));
-        layers[0].instances[0].program = NativeShadowProgram::RigidOpaque;
+        layers[0].instances[0].program = ShadowProgram::RigidOpaque;
         validate_frame(dims, &receiver(), &layers).unwrap();
-        layers[0].instances[0].program = NativeShadowProgram::RigidAlphaTested;
+        layers[0].instances[0].program = ShadowProgram::RigidAlphaTested;
         assert!(
             validate_frame(dims, &receiver(), &layers).is_err(),
             "no missing-diffuse fallback"
         );
-        layers[0].instances[0].alpha_material = Some(NativeShadowAlphaMaterial {
+        layers[0].instances[0].alpha_material = Some(ShadowAlphaMaterial {
             diffuse: Handle::default(),
             uv_set: 1,
             uv_scale_bias: [1.0, 1.0, 0.0, 0.0],
@@ -3235,9 +3235,9 @@ mod tests {
 
     #[test]
     fn clear_is_explicit_and_stencil_only_exists_in_32_bit_target() {
-        let layer = NativeShadowLayerOps {
-            depth: NativeShadowLoad::Clear(1.0),
-            stencil: NativeStencilLoad::Clear(0),
+        let layer = ShadowLayerOps {
+            depth: ShadowLoad::Clear(1.0),
+            stencil: StencilLoad::Clear(0),
         };
         for has_stencil in [false, true] {
             let reused = layer_operations(layer, false, has_stencil);
@@ -3256,13 +3256,13 @@ mod tests {
     #[test]
     fn disabled_and_unavailable_are_explicit_neutral_states() {
         assert!(matches!(
-            NativeShadowSceneFrame::default().state,
-            NativeShadowSceneState::Disabled
+            ShadowSceneFrame::default().state,
+            ShadowSceneState::Disabled
         ));
-        let unavailable = NativeShadowSceneState::Unavailable("owner not ready".into());
+        let unavailable = ShadowSceneState::Unavailable("owner not ready".into());
         assert!(matches!(
             unavailable,
-            NativeShadowSceneState::Unavailable(_)
+            ShadowSceneState::Unavailable(_)
         ));
     }
 }

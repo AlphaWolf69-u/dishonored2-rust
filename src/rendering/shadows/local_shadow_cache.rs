@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(cache.insert(0, 12, source, 16, 4).unwrap().allocation.id, 2);
     }
     #[test]
-    fn cache_lifetime_matches_original_insert_lookup_and_invalidation() {
+    fn cache_lifetime_matches_insert_lookup_and_invalidation() {
         let mut cache = LocalShadowCache::new(&vec![vec![[0, 0, 63, 63]; 2]; 2]);
         let mut hits = 0;
         for (case, line) in include_str!(concat!(
@@ -296,7 +296,7 @@ mod tests {
             assert_eq!(
                 u32::from(result),
                 expected[0],
-                "native cache operation {tag} case{case}"
+                "cache operation {tag} case{case}"
             );
             let mut snapshot = vec![cache.banks.iter().map(BTreeMap::len).sum::<usize>() as u32];
             for (bank, entries) in cache.banks.iter().enumerate() {
@@ -316,7 +316,7 @@ mod tests {
             assert_eq!(
                 snapshot,
                 expected[1..],
-                "native cache metadata/atlas state after {tag} case{case}"
+                "cache metadata/atlas state after {tag} case{case}"
             );
         }
         assert!(

@@ -4,7 +4,7 @@ use bevy::render::{render_resource::*, renderer::RenderQueue, RenderApp};
 
 #[test]
 #[ignore = "requires graphics adapter; compares actual installed D3D11 world VS with WGSL"]
-fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
+fn world_shadow_vertex_installed_dxbc_gpu_parity() {
     let mut rows = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/world_shadow_vertex_cases.txt"
@@ -75,7 +75,7 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
                 + f64::from(f32::from_bits(projection[row * 4 + 3])).abs();
             roundoff_bounds.push(2.0 * gamma * magnitude);
         }
-        // The live pipeline selects NativeVegetationPosition, which retains
+        // The live pipeline selects VegetationPosition, which retains
         // these original local values independently of the forward mesh.
         positions.extend_from_slice(&fields[..4]);
         expected.extend_from_slice(&fields[4..]);
@@ -105,13 +105,13 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
             usage,
         })
     };
-    let view = buffer("native world VP/offset", &view, BufferUsages::UNIFORM);
+    let view = buffer("world VP/offset", &view, BufferUsages::UNIFORM);
     let matrices = buffer(
         "native 48-byte matrix records",
         &matrices,
         BufferUsages::STORAGE,
     );
-    let indices = buffer("native visible ID remap", &indices, BufferUsages::STORAGE);
+    let indices = buffer("visible ID remap", &indices, BufferUsages::STORAGE);
     let positions = buffer(
         "original local shadow coordinates",
         &positions,
@@ -122,7 +122,7 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
         offset: 0,
         shader_location: 0,
     }];
-    let raster = NativeOpaqueShadowPipeline::new_world_with_raster_state(
+    let raster = ShadowDepthPipeline::new_world_with_raster_state(
         device,
         adapter,
         &RawVertexBufferLayout {
@@ -162,7 +162,7 @@ fn native_world_shadow_vertex_installed_dxbc_gpu_parity() {
             shader_location: 3,
         },
     ];
-    let wind_pipeline = NativeOpaqueShadowPipeline::new_world_vegetation_with_raster_state(
+    let wind_pipeline = ShadowDepthPipeline::new_world_vegetation_with_raster_state(
         device,
         adapter,
         &RawVertexBufferLayout {

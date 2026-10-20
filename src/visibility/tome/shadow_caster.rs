@@ -7,8 +7,8 @@
 //! the native receiver initializer or decode unverified instance flag bits.
 
 use super::{
-    NativeReceiverBoundsClass, VisibleObjectIndexOutput, active_query_planes_into,
-    append_object_ids_for_index, classify_native_receiver_bounds, float, object_bounds,
+    ReceiverBoundsClass, VisibleObjectIndexOutput, active_query_planes_into,
+    append_object_ids_for_index, classify_receiver_bounds, float, object_bounds,
     object_count, object_distance_bounds, object_distance_rejection_mask,
     query_bounds_accepts_aabb, recorded_bounds, word,
 };
@@ -16,7 +16,7 @@ use std::ops::Range;
 
 /// Typed ownership of the fields FUN_140a71f80 modifies in its opaque owner.
 /// The mask is persistent caller-owned storage; this function does not clear it.
-pub struct NativeReceiverDepthProjection {
+pub struct ReceiverDepthProjection {
     pub receiver_rows: [[f32; 4]; 4],
     pub transposed_rows: [[f32; 4]; 4],
     pub mask: Box<[u16; 128 * 128]>,
@@ -24,7 +24,7 @@ pub struct NativeReceiverDepthProjection {
 
 /// FUN_140a71f80: build four receiver-space depth segments per coarse tile.
 pub fn fill_receiver_depth_projection(
-    state: &mut NativeReceiverDepthProjection,
+    state: &mut ReceiverDepthProjection,
     depths: &[f32; 4096],
     camera_inverse_rows: [[f32; 4]; 4],
     receiver_rows: [[f32; 4]; 4],
@@ -152,7 +152,7 @@ pub fn rasterize_receiver_depth_mask(
 /// Native factors are 64 / 128 / 65534, with UV endpoint offsets [0,0,1,1]
 /// at 0x141e68080. Native acceptance is STRICTLY threshold < stored depth.
 pub fn receiver_depth_allows_aabb(
-    state: &NativeReceiverDepthProjection,
+    state: &ReceiverDepthProjection,
     bounds: [[f32; 3]; 2],
 ) -> Result<bool, String> {
     let mut lower = [0.0; 3];
@@ -224,7 +224,7 @@ pub fn coarse_receiver_depth(depths: &[f32; 4096]) -> [f32; 256] {
 /// FUN_140a872a0: the original normalized camera planes and finite-far
 /// flag used by the receiver-volume initializer. Preserve its unordered
 /// comparison behavior and coefficient operand order.
-pub fn native_normalized_frustum_planes(rows: [[f32; 4]; 4]) -> ([[f32; 4]; 6], bool) {
+pub fn normalized_frustum_planes(rows: [[f32; 4]; 4]) -> ([[f32; 4]; 6], bool) {
     let mut planes = super::query_planes_from_rows(rows, rows);
     let [x, y, z, _] = planes[1];
     let far_length = (y * y + x * x + z * z).sqrt();
@@ -236,9 +236,9 @@ pub fn native_normalized_frustum_planes(rows: [[f32; 4]; 4]) -> ([[f32; 4]; 6], 
         let reciprocal = 1.0 / (x * x + y * y + z * z).sqrt();
         for (axis, value) in plane.iter_mut().enumerate() {
             *value = if index >= 4 && axis < 3 {
-                native_mulss(*value, reciprocal)
+                mulss(*value, reciprocal)
             } else {
-                native_mulss(reciprocal, *value)
+                mulss(reciprocal, *value)
             };
         }
     }
@@ -248,7 +248,7 @@ pub fn native_normalized_frustum_planes(rows: [[f32; 4]; 4]) -> ([[f32; 4]; 6], 
 /// FUN_140a87720: intersect the six frustum planes in the original corner
 /// order. Keep the cofactor order and the two final swaps; the extrusion's
 /// fixed face/edge topology consumes precisely this layout.
-pub fn native_frustum_plane_corners(planes: &[[f32; 4]; 6]) -> [[f32; 3]; 8] {
+pub fn frustum_plane_corners(planes: &[[f32; 4]; 6]) -> [[f32; 3]; 8] {
     let mut corners = [[0.0; 3]; 8];
     for (index, point) in corners.iter_mut().enumerate() {
         let a = planes[index >> 2];
@@ -281,7 +281,7 @@ pub fn native_frustum_plane_corners(planes: &[[f32; 4]; 6]) -> [[f32; 3]; 8] {
 /// FUN_140a88460: retain facing frustum planes and add the silhouette-edge
 /// planes of its extrusion along the light direction. No guessed shadow box.
 /// Only the returned prefix is written; the caller owns all other plane slots.
-pub fn extrude_native_receiver_planes(
+pub fn extrude_receiver_planes(
     direction: [f32; 3],
     planes: &[[f32; 4]; 6],
     output: &mut [[f32; 4]; 32],
@@ -296,7 +296,7 @@ pub fn extrude_native_receiver_planes(
             count += 1;
         }
     }
-    let corners = native_frustum_plane_corners(planes);
+    let corners = frustum_plane_corners(planes);
     let difference = |a: usize, b: usize| {
         std::array::from_fn::<_, 3, _>(|axis| corners[a][axis] - corners[b][axis])
     };
@@ -369,7 +369,7 @@ pub fn extrude_native_receiver_planes(
         let mut plane = [normal[0], normal[1], normal[2], offset];
         if length != 0.0 {
             let reciprocal = (1.0f64 / f64::from(length)) as f32;
-            plane = plane.map(|value| native_mulss(reciprocal, value));
+            plane = plane.map(|value| mulss(reciprocal, value));
         }
         output[count] = plane;
         count += 1;
@@ -380,7 +380,7 @@ pub fn extrude_native_receiver_planes(
 /// Preserve the native MULSS destination/source NaN selection. Rust's scalar
 /// multiplication permits operand commuting; 140a88fa4..140a88fb2 does not.
 #[inline]
-fn native_mulss(mut left: f32, right: f32) -> f32 {
+fn mulss(mut left: f32, right: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
@@ -394,7 +394,7 @@ fn native_mulss(mut left: f32, right: f32) -> f32 {
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (left, right);
-        panic!("Original receiver MULSS normalization requires x86_64")
+        panic!("Receiver MULSS normalization requires x86_64")
     }
 }
 
@@ -406,13 +406,13 @@ fn difference_from_point(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 /// The receiver's direction is negated before selecting the dominant axis.
 /// Keep the original tie order, CVTT truncation, and un-clamped 16x16 bins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeCasterDirection {
+pub struct CasterDirection {
     pub face: u32,
     pub x: i32,
     pub y: i32,
 }
 
-impl NativeCasterDirection {
+impl CasterDirection {
     #[inline(always)]
     pub fn from_receiver_direction(direction: [f32; 3]) -> Result<Self, String> {
         if direction.iter().any(|value| !value.is_finite()) {
@@ -464,7 +464,7 @@ impl NativeCasterDirection {
             || !(0..=16).contains(&self.x)
             || !(0..=16).contains(&self.y)
         {
-            return Err("native caster direction/object index out of range".into());
+            return Err("caster direction/object index out of range".into());
         }
         let flags = word(bytes, 0x10)? & 3;
         if flags == 0 {
@@ -476,7 +476,7 @@ impl NativeCasterDirection {
         } else {
             let records = word(bytes, 0x13c)? as usize;
             if records == 0 {
-                return Err("native caster direction record table is absent".into());
+                return Err("caster direction record table is absent".into());
             }
             let record = records + index as usize * 0x40 + self.face as usize * 8;
             bin * i64::from(word(bytes, 0x148)?) * 4 + i64::from(word(bytes, record)? as i32) * 4
@@ -485,7 +485,7 @@ impl NativeCasterDirection {
             usize::try_from(bit_at).map_err(|_| "negative native caster direction bit offset")?;
         let bits = word(bytes, 0x140)? as usize;
         if bits == 0 {
-            return Err("native caster direction bit table is absent".into());
+            return Err("caster direction bit table is absent".into());
         }
         let packed = word(bytes, bits + (bit_at >> 5) * 4)? >> (bit_at & 31);
         if flags & 2 != 0 {
@@ -495,15 +495,15 @@ impl NativeCasterDirection {
         let record = records + index as usize * 0x40 + self.face as usize * 8;
         let palette_at = word(bytes, 0x144)? as usize;
         if palette_at == 0 {
-            return Err("native caster direction palette is absent".into());
+            return Err("caster direction palette is absent".into());
         }
         let palette_index = u64::from(word(bytes, record + 4)?) + u64::from(packed & 15);
         let at = palette_at
             .checked_add(
                 usize::try_from(palette_index * 2)
-                    .map_err(|_| "native caster direction palette offset overflow")?,
+                    .map_err(|_| "caster direction palette offset overflow")?,
             )
-            .ok_or("native caster direction palette offset overflow")?;
+            .ok_or("caster direction palette offset overflow")?;
         let value = bytes
             .get(at..at + 2)
             .ok_or("truncated native caster direction palette")?;
@@ -516,7 +516,7 @@ impl NativeCasterDirection {
 ///the palette word is a truncated float distance (bits shifted left16).
 ///The query's near-plane displacement is added before the radial test.
 #[inline(always)]
-pub fn native_point_occlusion_visible(
+pub fn point_occlusion_visible(
     bytes: &[u8],
     index: u32,
     point: [f32; 3],
@@ -526,15 +526,15 @@ pub fn native_point_occlusion_visible(
         return Ok(true);
     }
     if index as usize >= object_count(bytes)? {
-        return Err("native point occlusion object is outside the Tome".into());
+        return Err("point occlusion object is outside the Tome".into());
     }
     let records = word(bytes, 0x13c)? as usize;
     if records == 0 {
-        return Err("native point occlusion record table is absent".into());
+        return Err("point occlusion record table is absent".into());
     }
     let record = records
         .checked_add(index as usize * 64)
-        .ok_or("native point occlusion record overflow")?;
+        .ok_or("point occlusion record overflow")?;
     let origin = [
         float(bytes, record + 48)?,
         float(bytes, record + 52)?,
@@ -547,7 +547,7 @@ pub fn native_point_occlusion_visible(
     } else {
         if absolute[2] <= absolute[0] { 0 } else { 2 }
     };
-    let direction = NativeCasterDirection::from_receiver_direction(
+    let direction = CasterDirection::from_receiver_direction(
         delta.map(|value| f32::from_bits(value.to_bits() ^ 0x80000000)),
     )?;
     let face_record = record + direction.face as usize * 8;
@@ -558,16 +558,16 @@ pub fn native_point_occlusion_visible(
     let bits = word(bytes, 0x140)? as usize;
     let palette = word(bytes, 0x144)? as usize;
     if bits == 0 || palette == 0 {
-        return Err("native point occlusion bit/palette table is absent".into());
+        return Err("point occlusion bit/palette table is absent".into());
     }
     let nibble = (word(bytes, bits + (bit >> 5) * 4)? >> (bit & 31)) & 15;
     let entry = u64::from(word(bytes, face_record + 4)?) + u64::from(nibble);
     let at = palette
         .checked_add(
             usize::try_from(entry * 2)
-                .map_err(|_| "native point occlusion palette offset overflow")?,
+                .map_err(|_| "point occlusion palette offset overflow")?,
         )
-        .ok_or("native point occlusion palette overflow")?;
+        .ok_or("point occlusion palette overflow")?;
     let value = bytes
         .get(at..at + 2)
         .ok_or("truncated native point occlusion palette")?;
@@ -578,7 +578,7 @@ pub fn native_point_occlusion_visible(
 
 /// FUN_140a70620: distribute aligned blocks, then assign the unaligned tail
 /// to the original last nonempty worker. Shadow gather passes alignment 2.
-pub fn native_aligned_job_range(
+pub fn aligned_job_range(
     job: u32,
     jobs: u32,
     count: u32,
@@ -590,7 +590,7 @@ pub fn native_aligned_job_range(
             .iter()
             .any(|&value| value > i32::MAX as u32)
     {
-        return Err("invalid native aligned job range".into());
+        return Err("invalid aligned job range".into());
     }
     if jobs == 0 || count == 0 {
         return Ok(0..0);
@@ -618,7 +618,7 @@ pub fn native_aligned_job_range(
 /// FUN_140a73bf0's optional 20-byte object-distance descriptor. The final
 /// flag selects the descriptor's center instead of the receiver camera.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NativeShadowDistanceDescriptor {
+pub struct ShadowDistanceDescriptor {
     pub center: [f32; 3],
     pub radius: f32,
     pub override_center: bool,
@@ -626,18 +626,18 @@ pub struct NativeShadowDistanceDescriptor {
 
 /// The distance test alone, not a replacement for the full caster query.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NativeShadowObjectDistanceQuery {
+pub struct ShadowObjectDistanceQuery {
     pub point: [f32; 3],
     pub scale_squared: [f32; 4],
 }
 
-impl NativeShadowObjectDistanceQuery {
+impl ShadowObjectDistanceQuery {
     /// FUN_140a73bf0: receiver camera at +0x86a0, not its ray at +0x86ac.
     /// Nonpositive radii select the original default 1.0. Unordered radii
     /// survive the native ordered <= comparison; do not sanitize their NaNs.
     pub fn from_descriptor(
         receiver_camera: [f32; 3],
-        descriptor: Option<NativeShadowDistanceDescriptor>,
+        descriptor: Option<ShadowDistanceDescriptor>,
     ) -> Self {
         let radius = match descriptor {
             Some(value) if !(value.radius <= 0.0) => value.radius,
@@ -726,18 +726,18 @@ impl ShadowCasterTome {
 /// to the same original receiver/cascade test. This type does not derive the
 /// receiver extrusion, distance flags, or +0x1840/+0x1850 instance inputs.
 #[derive(Debug, Clone, Copy)]
-pub struct VerifiedShadowReceiverState<'a> {
+pub struct ShadowReceiverState<'a> {
     pub bounds: [[f32; 3]; 2],
     pub planes: &'a [[f32; 4]],
     pub active_planes: &'a [usize],
 }
 
-impl<'a> VerifiedShadowReceiverState<'a> {
+impl<'a> ShadowReceiverState<'a> {
     /// FUN_140a707e0 passes the extruded planes to FUN_140a77b10. That
     /// initializer leaves the world-space query bounds at +/-FLT_MAX.
     /// The receiver's finite fitting box is in light space and cannot be
     /// used as a world-space broad phase for this query.
-    pub fn from_native_planes(planes: &'a [[f32; 4]], active_planes: &'a [usize]) -> Self {
+    pub fn from_planes(planes: &'a [[f32; 4]], active_planes: &'a [usize]) -> Self {
         assert!(planes.len() <= 22 && active_planes.len() == planes.len());
         Self {
             bounds: [[-f32::MAX; 3], [f32::MAX; 3]],
@@ -751,20 +751,20 @@ impl<'a> VerifiedShadowReceiverState<'a> {
 /// calls FUN_140a77560 with offset=[0,0,0], job=0, jobs=1 and partition=0.
 /// This owns only the geometry consumed by caster tests, not its portal scratch.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeShadowFrustumQuery {
+pub struct ShadowFrustumQuery {
     pub planes: [[f32; 4]; 6],
     pub bounds: [[f32; 4]; 2],
 }
 
-impl NativeShadowFrustumQuery {
+impl ShadowFrustumQuery {
     pub fn from_projection_rows(rows: [[f32; 4]; 4]) -> Result<Self, String> {
         let (planes, bounds) = super::query_plane_geometry_from_rows(rows, rows, [0.0; 3])?;
         Ok(Self { planes, bounds })
     }
 
-    pub fn as_receiver(&self) -> VerifiedShadowReceiverState<'_> {
+    pub fn as_receiver(&self) -> ShadowReceiverState<'_> {
         const FRESH_PLANES: [usize; 6] = [0, 1, 2, 3, 4, 5];
-        VerifiedShadowReceiverState {
+        ShadowReceiverState {
             bounds: self.bounds.map(|row| [row[0], row[1], row[2]]),
             planes: &self.planes,
             active_planes: &FRESH_PLANES,
@@ -775,7 +775,7 @@ impl NativeShadowFrustumQuery {
 /// A global-mode FUN_140a73bf0 hit and the parallel auxiliary output mask.
 /// The index is global even when the caller dispatches several aligned jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeGlobalShadowCasterHit {
+pub struct GlobalShadowCasterHit {
     pub tome_index: u32,
     pub cascade_mask: u32,
 }
@@ -784,11 +784,11 @@ pub struct NativeGlobalShadowCasterHit {
 /// These are independent of ordinary camera visibility. Storage is retained
 /// across frames; the caller clears it once, merges every job, then applies
 /// FUN_140330c10's ordered parent suppression before submitting any draws.
-pub struct NativeShadowInstanceMasks {
+pub struct ShadowInstanceMasks {
     masks: Vec<Vec<u8>>,
 }
 
-impl NativeShadowInstanceMasks {
+impl ShadowInstanceMasks {
     pub fn new(instance_count: usize, cascade_count: usize) -> Self {
         Self {
             masks: (0..cascade_count)
@@ -827,7 +827,7 @@ impl NativeShadowInstanceMasks {
     /// authored object IDs are not a replacement for these renderer indices.
     pub fn publish(
         &mut self,
-        hits: &[NativeGlobalShadowCasterHit],
+        hits: &[GlobalShadowCasterHit],
         tome_object_instances: &[Vec<usize>],
     ) -> Result<(), String> {
         let result = (|| {
@@ -898,13 +898,13 @@ impl NativeShadowInstanceMasks {
 /// Receiver states must be freshly initialized (all plane indices in order),
 /// not the reduced lists produced for a previously visited spatial node.
 #[derive(Clone, Copy)]
-pub struct NativeGlobalShadowCasterInput<'a> {
+pub struct GlobalShadowCasterInput<'a> {
     pub source: &'a [u8],
-    pub primary: VerifiedShadowReceiverState<'a>,
-    pub cascades: &'a [VerifiedShadowReceiverState<'a>],
-    pub distance: NativeShadowObjectDistanceQuery,
-    pub direction: NativeCasterDirection,
-    pub depth: Option<&'a NativeReceiverDepthProjection>,
+    pub primary: ShadowReceiverState<'a>,
+    pub cascades: &'a [ShadowReceiverState<'a>],
+    pub distance: ShadowObjectDistanceQuery,
+    pub direction: CasterDirection,
+    pub depth: Option<&'a ReceiverDepthProjection>,
     pub job: u32,
     pub jobs: u32,
 }
@@ -912,15 +912,15 @@ pub struct NativeGlobalShadowCasterInput<'a> {
 /// Original global gather scratch, retained across camera updates. Unlike the
 /// older AABB-only candidate query, this evaluates distance records, baked
 /// direction tables and receiver depth before publishing one index/mask pair.
-pub struct NativeGlobalShadowCasterScratch {
+pub struct GlobalShadowCasterScratch {
     object_count: usize,
     primary_active: Vec<usize>,
     cascade_active: Vec<Vec<usize>>,
     cascade_enabled: Vec<bool>,
-    output: Vec<NativeGlobalShadowCasterHit>,
+    output: Vec<GlobalShadowCasterHit>,
 }
 
-impl NativeGlobalShadowCasterScratch {
+impl GlobalShadowCasterScratch {
     pub fn new(object_count: usize, cascade_count: usize) -> Self {
         Self {
             object_count,
@@ -937,8 +937,8 @@ impl NativeGlobalShadowCasterScratch {
     pub fn gather<'a>(
         &'a mut self,
         tome: &ShadowCasterTome,
-        input: &NativeGlobalShadowCasterInput<'_>,
-    ) -> Result<&'a [NativeGlobalShadowCasterHit], String> {
+        input: &GlobalShadowCasterInput<'_>,
+    ) -> Result<&'a [GlobalShadowCasterHit], String> {
         self.output.clear();
         if tome.object_count() != self.object_count
             || object_count(input.source)? != self.object_count
@@ -952,7 +952,7 @@ impl NativeGlobalShadowCasterScratch {
         }
         let bounds4 = |bounds: [[f32; 3]; 2]| bounds.map(|p| [p[0], p[1], p[2], 1.0]);
         let root = bounds4(recorded_bounds(input.source, 0x14)?);
-        let fresh = |receiver: VerifiedShadowReceiverState<'_>| {
+        let fresh = |receiver: ShadowReceiverState<'_>| {
             receiver.planes.len() <= 22
                 && receiver.active_planes.len() == receiver.planes.len()
                 && receiver
@@ -984,7 +984,7 @@ impl NativeGlobalShadowCasterScratch {
             )?;
             active_query_planes_into(receiver.planes, root, &mut self.cascade_active[index]);
         }
-        let range = native_aligned_job_range(input.job, input.jobs, self.object_count as u32, 2)?;
+        let range = aligned_job_range(input.job, input.jobs, self.object_count as u32, 2)?;
         for index in range {
             let object = &tome.objects[index];
             if !input.distance.accepts(object.distance_record) {
@@ -1021,7 +1021,7 @@ impl NativeGlobalShadowCasterScratch {
                 }
             }
             if cascade_mask != 0 {
-                self.output.push(NativeGlobalShadowCasterHit {
+                self.output.push(GlobalShadowCasterHit {
                     tome_index: index as u32,
                     cascade_mask,
                 });
@@ -1089,7 +1089,7 @@ impl ShadowCasterSelectionScratch {
         tome: &ShadowCasterTome,
         visible: &VisibleObjectIndexOutput,
         caster_enabled: &[bool],
-        receivers: &[VerifiedShadowReceiverState<'_>],
+        receivers: &[ShadowReceiverState<'_>],
         parent_suppression_edges: &[ParentSuppressionEdge],
     ) -> Result<&'a [Vec<u32>], String> {
         self.seen.fill(0);
@@ -1171,17 +1171,17 @@ impl ShadowCasterSelectionScratch {
                         1.0,
                     ],
                 ];
-                match classify_native_receiver_bounds(
+                match classify_receiver_bounds(
                     receiver_bounds,
                     input_bounds,
                     receiver.planes,
                     receiver.active_planes,
                 )? {
-                    NativeReceiverBoundsClass::Outside => continue,
-                    NativeReceiverBoundsClass::Intersecting => {
+                    ReceiverBoundsClass::Outside => continue,
+                    ReceiverBoundsClass::Intersecting => {
                         self.selected_by_receiver[receiver_index][object_index / 32] |= bit;
                     }
-                    NativeReceiverBoundsClass::Contained => {
+                    ReceiverBoundsClass::Contained => {
                         self.selected_by_receiver[receiver_index][object_index / 32] |= bit;
                         // FUN_140a76f30's containment result stops this
                         // candidate's later receiver/cascade tests.
@@ -1193,16 +1193,16 @@ impl ShadowCasterSelectionScratch {
 
         // Evaluate the verified one-level suppression edges against the
         // unsuppressed mask; chained graphs fail closed above.
-        for (selected, original) in self
+        for (selected, reference) in self
             .selected_by_receiver
             .iter_mut()
             .zip(&mut self.pre_suppression_by_receiver)
         {
-            original.copy_from_slice(selected);
+            reference.copy_from_slice(selected);
             for edge in parent_suppression_edges {
                 let parent = edge.parent_index as usize;
                 let child = edge.suppressed_child_index as usize;
-                let parent_selected = original[parent / 32] & (1u32 << (parent % 32)) != 0;
+                let parent_selected = reference[parent / 32] & (1u32 << (parent % 32)) != 0;
                 if parent_selected {
                     selected[child / 32] &= !(1u32 << (child % 32));
                 }
@@ -1232,16 +1232,16 @@ mod tests {
 
     #[test]
     fn caster_publication_uses_world_groups_and_keeps_cascades_separate() {
-        let mut masks = NativeShadowInstanceMasks::new(6, 3);
+        let mut masks = ShadowInstanceMasks::new(6, 3);
         let groups = vec![vec![4, 1], vec![], vec![0, 2, 5]];
         masks
             .publish(
                 &[
-                    NativeGlobalShadowCasterHit {
+                    GlobalShadowCasterHit {
                         tome_index: 0,
                         cascade_mask: 0b101,
                     },
-                    NativeGlobalShadowCasterHit {
+                    GlobalShadowCasterHit {
                         tome_index: 1,
                         cascade_mask: 7,
                     },
@@ -1252,7 +1252,7 @@ mod tests {
         // A second job accumulates; the empty group did not invent an ID.
         masks
             .publish(
-                &[NativeGlobalShadowCasterHit {
+                &[GlobalShadowCasterHit {
                     tome_index: 2,
                     cascade_mask: 0b010,
                 }],
@@ -1285,17 +1285,17 @@ mod tests {
     #[test]
     fn caster_parent_suppression_preserves_serialized_order() {
         let groups = vec![vec![0, 1, 2]];
-        let hits = [NativeGlobalShadowCasterHit {
+        let hits = [GlobalShadowCasterHit {
             tome_index: 0,
             cascade_mask: 1,
         }];
-        let mut forward = NativeShadowInstanceMasks::new(3, 1);
+        let mut forward = ShadowInstanceMasks::new(3, 1);
         forward.publish(&hits, &groups).unwrap();
         forward
             .suppress_parents([(0, &[1][..]), (1, &[2][..])])
             .unwrap();
         assert_eq!(forward.masks(), &[vec![1, 0, 1]]);
-        let mut reverse = NativeShadowInstanceMasks::new(3, 1);
+        let mut reverse = ShadowInstanceMasks::new(3, 1);
         reverse.publish(&hits, &groups).unwrap();
         reverse
             .suppress_parents([(1, &[2][..]), (0, &[1][..])])
@@ -1305,8 +1305,8 @@ mod tests {
 
     #[test]
     fn malformed_caster_publication_cannot_leave_partial_or_old_masks() {
-        let mut masks = NativeShadowInstanceMasks::new(2, 1);
-        let hit = [NativeGlobalShadowCasterHit {
+        let mut masks = ShadowInstanceMasks::new(2, 1);
+        let hit = [GlobalShadowCasterHit {
             tome_index: 0,
             cascade_mask: 1,
         }];
@@ -1317,7 +1317,7 @@ mod tests {
         assert!(
             masks
                 .publish(
-                    &[NativeGlobalShadowCasterHit {
+                    &[GlobalShadowCasterHit {
                         tome_index: 1,
                         cascade_mask: 1
                     },],
@@ -1361,7 +1361,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires local original cascade context snapshots"]
-    fn native_cascade_plane_geometry_matches_original_contexts() {
+    fn cascade_plane_geometry_matches_contexts() {
         let source =
             std::fs::read_to_string("artifacts/original-cascade-plane-geometry.txt").unwrap();
         let mut count = 0;
@@ -1374,7 +1374,7 @@ mod tests {
             let rows = std::array::from_fn(|row| {
                 std::array::from_fn(|column| f32::from_bits(words[row * 4 + column]))
             });
-            let query = NativeShadowFrustumQuery::from_projection_rows(rows).unwrap();
+            let query = ShadowFrustumQuery::from_projection_rows(rows).unwrap();
             let actual = query
                 .planes
                 .into_iter()
@@ -1382,7 +1382,7 @@ mod tests {
                 .chain(query.bounds.into_iter().flatten())
                 .map(f32::to_bits)
                 .collect::<Vec<_>>();
-            assert_eq!(actual, words[16..], "native cascade geometry {count}");
+            assert_eq!(actual, words[16..], "cascade geometry {count}");
             assert_eq!(query.as_receiver().active_planes, [0, 1, 2, 3, 4, 5]);
             count += 1;
         }
@@ -1393,7 +1393,7 @@ mod tests {
     /// Local original data is deliberately outside the source tree.
     #[test]
     #[ignore = "requires paired original gameplay caster capture and converter"]
-    fn global_shadow_gather_matches_paired_original_gameplay() {
+    fn global_shadow_gather_matches_paired_gameplay() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let capture = std::env::var("DH2_SHADOW_CASTER_CAPTURE")
             .unwrap_or_else(|_| "artifacts/original-shadow-caster-paired-input.bin".into());
@@ -1424,7 +1424,7 @@ mod tests {
             None
         } else {
             assert_eq!(descriptor.len(), 20);
-            Some(NativeShadowDistanceDescriptor {
+            Some(ShadowDistanceDescriptor {
                 center: std::array::from_fn(|axis| f32_at(descriptor, axis * 4)),
                 radius: f32_at(descriptor, 12),
                 override_center: descriptor[16] != 0,
@@ -1448,7 +1448,7 @@ mod tests {
             (bounds, planes, active)
         };
         let (bounds, planes, active) = read_context(&receiver[0x8110..0x86a0]);
-        let primary = VerifiedShadowReceiverState::from_native_planes(&planes, &active);
+        let primary = ShadowReceiverState::from_planes(&planes, &active);
         assert_eq!(
             primary.bounds, bounds,
             "live plane-only handoff must match the original query, not the receiver fitting box"
@@ -1461,13 +1461,13 @@ mod tests {
             .collect();
         let cascades: Vec<_> = contexts
             .iter()
-            .map(|(bounds, planes, active)| VerifiedShadowReceiverState {
+            .map(|(bounds, planes, active)| ShadowReceiverState {
                 bounds: *bounds,
                 planes,
                 active_planes: active,
             })
             .collect();
-        let depth = (receiver[0x86b8] != 0).then(|| NativeReceiverDepthProjection {
+        let depth = (receiver[0x86b8] != 0).then(|| ReceiverDepthProjection {
             receiver_rows: std::array::from_fn(|row| {
                 std::array::from_fn(|column| f32_at(receiver, row * 16 + column * 4))
             }),
@@ -1482,15 +1482,15 @@ mod tests {
                 )
             })),
         });
-        let input = NativeGlobalShadowCasterInput {
+        let input = GlobalShadowCasterInput {
             source: &source,
             primary,
             cascades: &cascades,
-            distance: NativeShadowObjectDistanceQuery::from_descriptor(
+            distance: ShadowObjectDistanceQuery::from_descriptor(
                 std::array::from_fn(|axis| f32_at(receiver, 0x86a0 + axis * 4)),
                 descriptor,
             ),
-            direction: NativeCasterDirection::from_receiver_direction(std::array::from_fn(
+            direction: CasterDirection::from_receiver_direction(std::array::from_fn(
                 |axis| f32_at(receiver, 0x86ac + axis * 4),
             ))
             .unwrap(),
@@ -1498,12 +1498,12 @@ mod tests {
             job,
             jobs,
         };
-        let mut scratch = NativeGlobalShadowCasterScratch::new(tome.object_count(), count);
+        let mut scratch = GlobalShadowCasterScratch::new(tome.object_count(), count);
         let actual = scratch.gather(&tome, &input).unwrap();
         let output_at = at + descriptor_len;
         assert_eq!(bytes.len(), output_at + output_count * 8);
         let expected: Vec<_> = (0..output_count)
-            .map(|index| NativeGlobalShadowCasterHit {
+            .map(|index| GlobalShadowCasterHit {
                 tome_index: u32_at(&bytes, output_at + index * 4),
                 cascade_mask: u32_at(&bytes, output_at + output_count * 4 + index * 4),
             })
@@ -1531,36 +1531,36 @@ mod tests {
         let primary_planes = box_planes(primary_bounds);
         let second_planes = box_planes(second_bounds);
         let indices = [0, 1, 2, 3, 4, 5];
-        let primary = VerifiedShadowReceiverState {
+        let primary = ShadowReceiverState {
             bounds: primary_bounds,
             planes: &primary_planes,
             active_planes: &indices,
         };
         let cascades = [
             primary,
-            VerifiedShadowReceiverState {
+            ShadowReceiverState {
                 bounds: second_bounds,
                 planes: &second_planes,
                 active_planes: &indices,
             },
         ];
-        let mut input = NativeGlobalShadowCasterInput {
+        let mut input = GlobalShadowCasterInput {
             source: &bytes,
             primary,
             cascades: &cascades,
-            distance: NativeShadowObjectDistanceQuery::from_descriptor([0.0; 3], None),
-            direction: NativeCasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
+            distance: ShadowObjectDistanceQuery::from_descriptor([0.0; 3], None),
+            direction: CasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
             depth: None,
             job: 0,
             jobs: 1,
         };
-        let mut scratch = NativeGlobalShadowCasterScratch::new(tome.object_count(), cascades.len());
+        let mut scratch = GlobalShadowCasterScratch::new(tome.object_count(), cascades.len());
         let expected = vec![
-            NativeGlobalShadowCasterHit {
+            GlobalShadowCasterHit {
                 tome_index: 1,
                 cascade_mask: 1,
             },
-            NativeGlobalShadowCasterHit {
+            GlobalShadowCasterHit {
                 tome_index: 2,
                 cascade_mask: 3,
             },
@@ -1598,7 +1598,7 @@ mod tests {
         let identity = std::array::from_fn(|row| {
             std::array::from_fn(|column| if row == column { 1.0 } else { 0.0 })
         });
-        let depth = NativeReceiverDepthProjection {
+        let depth = ReceiverDepthProjection {
             receiver_rows: identity,
             transposed_rows: identity,
             mask: Box::new([0; 128 * 128]),
@@ -1607,7 +1607,7 @@ mod tests {
         input.jobs = 1;
         input.depth = Some(&depth);
         assert!(scratch.gather(&tome, &input).unwrap().is_empty());
-        let unoccluded = NativeReceiverDepthProjection {
+        let unoccluded = ReceiverDepthProjection {
             receiver_rows: identity,
             transposed_rows: identity,
             mask: Box::new([u16::MAX; 128 * 128]),
@@ -1650,26 +1650,26 @@ mod tests {
         let bounds = [[-4.0, -2.0, -2.0], [4.0, 2.0, 2.0]];
         let planes = box_planes(bounds);
         let indices = [0, 1, 2, 3, 4, 5];
-        let receiver = VerifiedShadowReceiverState {
+        let receiver = ShadowReceiverState {
             bounds,
             planes: &planes,
             active_planes: &indices,
         };
         let cascades = [receiver];
-        let mut input = NativeGlobalShadowCasterInput {
+        let mut input = GlobalShadowCasterInput {
             source: &bytes,
             primary: receiver,
             cascades: &cascades,
-            distance: NativeShadowObjectDistanceQuery::from_descriptor([0.0; 3], None),
-            direction: NativeCasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
+            distance: ShadowObjectDistanceQuery::from_descriptor([0.0; 3], None),
+            direction: CasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
             depth: None,
             job: 0,
             jobs: 1,
         };
-        let mut scratch = NativeGlobalShadowCasterScratch::new(3, 1);
+        let mut scratch = GlobalShadowCasterScratch::new(3, 1);
         assert_eq!(
             scratch.gather(&tome, &input).unwrap(),
-            [NativeGlobalShadowCasterHit {
+            [GlobalShadowCasterHit {
                 tome_index: 2,
                 cascade_mask: 1
             }]
@@ -1686,7 +1686,7 @@ mod tests {
         let identity = std::array::from_fn(|row| {
             std::array::from_fn(|column| if row == column { 1.0 } else { 0.0 })
         });
-        let mut state = NativeReceiverDepthProjection {
+        let mut state = ReceiverDepthProjection {
             receiver_rows: identity,
             transposed_rows: identity,
             mask: Box::new([0; 128 * 128]),
@@ -1711,7 +1711,7 @@ mod tests {
         let identity = std::array::from_fn(|row| {
             std::array::from_fn(|column| if row == column { 1.0 } else { 0.0 })
         });
-        let mut state = NativeReceiverDepthProjection {
+        let mut state = ReceiverDepthProjection {
             receiver_rows: identity,
             transposed_rows: identity,
             mask: Box::new([65535; 128 * 128]),
@@ -1723,36 +1723,36 @@ mod tests {
     }
 
     #[test]
-    fn shadow_distance_descriptor_preserves_native_defaults_and_center() {
+    fn shadow_distance_descriptor_preserves_defaults_and_center() {
         let camera = [19.0, -23.0, 7.0];
-        let mut descriptor = NativeShadowDistanceDescriptor {
+        let mut descriptor = ShadowDistanceDescriptor {
             center: [-1.0, 2.0, 3.0],
             radius: 0.6,
             override_center: false,
         };
-        let query = NativeShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor));
+        let query = ShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor));
         assert_eq!(query.point, camera);
         assert_eq!(query.scale_squared, [0.6f32 * 0.6; 4]);
         descriptor.override_center = true;
         assert_eq!(
-            NativeShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor)).point,
+            ShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor)).point,
             descriptor.center
         );
         for radius in [0.0, -0.0, -1.0] {
             descriptor.radius = radius;
             assert_eq!(
-                NativeShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor))
+                ShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor))
                     .scale_squared,
                 [1.0; 4]
             );
         }
         assert_eq!(
-            NativeShadowObjectDistanceQuery::from_descriptor(camera, None).point,
+            ShadowObjectDistanceQuery::from_descriptor(camera, None).point,
             camera
         );
         descriptor.radius = f32::from_bits(0x7fc00123);
         assert!(
-            NativeShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor))
+            ShadowObjectDistanceQuery::from_descriptor(camera, Some(descriptor))
                 .scale_squared
                 .iter()
                 .all(|value| value.is_nan())
@@ -1760,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_distance_filter_reuses_original_executable_cases() {
+    fn shadow_distance_filter_reuses_executable_cases() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1778,7 +1778,7 @@ mod tests {
                 std::array::from_fn(|axis| f32::from_bits(words[4 + row * 4 + axis]))
             });
             let scale_squared = std::array::from_fn(|axis| f32::from_bits(words[12 + axis]));
-            let query = NativeShadowObjectDistanceQuery {
+            let query = ShadowObjectDistanceQuery {
                 point,
                 scale_squared,
             };
@@ -1841,7 +1841,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_depth_projection_matches_original_executable() {
+    fn receiver_depth_projection_matches_executable() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1861,7 +1861,7 @@ mod tests {
                 })
             };
             let depths = std::array::from_fn(|index| f32::from_bits(words[33 + index]));
-            let mut state = NativeReceiverDepthProjection {
+            let mut state = ReceiverDepthProjection {
                 receiver_rows: [[12.25; 4]; 4],
                 transposed_rows: [[12.25; 4]; 4],
                 mask: Box::new([seed; 128 * 128]),
@@ -1899,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_depth_mask_matches_original_executable() {
+    fn receiver_depth_mask_matches_executable() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1934,7 +1934,7 @@ mod tests {
     }
 
     #[test]
-    fn coarse_receiver_depth_matches_original_executable() {
+    fn coarse_receiver_depth_matches_executable() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1962,7 +1962,7 @@ mod tests {
     }
 
     #[test]
-    fn native_normalized_frustum_matches_original_executable() {
+    fn normalized_frustum_matches_executable() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/shadow_frustum_plane_cases.txt");
         let rows = std::fs::read_to_string(path)
@@ -1977,7 +1977,7 @@ mod tests {
             let matrix = std::array::from_fn(|row| {
                 std::array::from_fn(|column| f32::from_bits(words[row * 4 + column]))
             });
-            let (planes, finite_far) = native_normalized_frustum_planes(matrix);
+            let (planes, finite_far) = normalized_frustum_planes(matrix);
             assert_eq!(
                 u32::from(finite_far),
                 words[40],
@@ -1996,7 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn native_receiver_geometry_matches_original_executable() {
+    fn receiver_geometry_matches_executable() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/shadow_receiver_geometry_cases.txt");
         let rows = std::fs::read_to_string(path)
@@ -2012,7 +2012,7 @@ mod tests {
             let planes = std::array::from_fn(|plane| {
                 std::array::from_fn(|axis| f32::from_bits(words[3 + plane * 4 + axis]))
             });
-            let corners = native_frustum_plane_corners(&planes);
+            let corners = frustum_plane_corners(&planes);
             for (index, value) in corners.iter().flatten().enumerate() {
                 assert_eq!(
                     value.to_bits(),
@@ -2021,7 +2021,7 @@ mod tests {
                 );
             }
             let mut output = [[12.25; 4]; 32];
-            let count = extrude_native_receiver_planes(direction, &planes, &mut output);
+            let count = extrude_receiver_planes(direction, &planes, &mut output);
             assert_eq!(
                 count, words[51] as usize,
                 "original receiver count case {case}"
@@ -2046,86 +2046,86 @@ mod tests {
         let planes = box_planes(receiver);
         let active = [0, 1, 2, 3, 4, 5];
         assert_eq!(
-            classify_native_receiver_bounds(
+            classify_receiver_bounds(
                 bounds4(receiver),
                 bounds4([[-0.25; 3], [0.25; 3]]),
                 &planes,
                 &active,
             )
             .unwrap(),
-            NativeReceiverBoundsClass::Contained
+            ReceiverBoundsClass::Contained
         );
         assert_eq!(
-            classify_native_receiver_bounds(
+            classify_receiver_bounds(
                 bounds4(receiver),
                 bounds4([[0.5, -0.1, -0.1], [1.5, 0.1, 0.1]]),
                 &planes,
                 &active,
             )
             .unwrap(),
-            NativeReceiverBoundsClass::Intersecting
+            ReceiverBoundsClass::Intersecting
         );
         assert_eq!(
-            classify_native_receiver_bounds(
+            classify_receiver_bounds(
                 bounds4(receiver),
                 bounds4([[2.0, -0.1, -0.1], [2.5, 0.1, 0.1]]),
                 &planes,
                 &active,
             )
             .unwrap(),
-            NativeReceiverBoundsClass::Outside
+            ReceiverBoundsClass::Outside
         );
     }
 
     #[test]
-    fn native_direction_keeps_axis_ties_and_unclamped_bins() {
+    fn direction_keeps_axis_ties_and_unclamped_bins() {
         assert_eq!(
-            NativeCasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
-            NativeCasterDirection {
+            CasterDirection::from_receiver_direction([0.0; 3]).unwrap(),
+            CasterDirection {
                 face: 0,
                 x: 0,
                 y: 0
             }
         );
         assert_eq!(
-            NativeCasterDirection::from_receiver_direction([1.0, 0.0, 0.0]).unwrap(),
-            NativeCasterDirection {
+            CasterDirection::from_receiver_direction([1.0, 0.0, 0.0]).unwrap(),
+            CasterDirection {
                 face: 0,
                 x: 8,
                 y: 8
             }
         );
         assert_eq!(
-            NativeCasterDirection::from_receiver_direction([-1.0, -1.0, -1.0]).unwrap(),
-            NativeCasterDirection {
+            CasterDirection::from_receiver_direction([-1.0, -1.0, -1.0]).unwrap(),
+            CasterDirection {
                 face: 1,
                 x: 16,
                 y: 16
             }
         );
         assert_eq!(
-            NativeCasterDirection::from_receiver_direction([0.0, -1.0, -1.0]).unwrap(),
-            NativeCasterDirection {
+            CasterDirection::from_receiver_direction([0.0, -1.0, -1.0]).unwrap(),
+            CasterDirection {
                 face: 3,
                 x: 16,
                 y: 8
             }
         );
         assert_eq!(
-            NativeCasterDirection::from_receiver_direction([0.07612236, -0.4317113, -0.89879405,])
+            CasterDirection::from_receiver_direction([0.07612236, -0.4317113, -0.89879405,])
                 .unwrap(),
-            NativeCasterDirection {
+            CasterDirection {
                 face: 5,
                 x: 7,
                 y: 11
             }
         );
-        assert!(NativeCasterDirection::from_receiver_direction([f32::NAN, 0.0, 0.0]).is_err());
+        assert!(CasterDirection::from_receiver_direction([f32::NAN, 0.0, 0.0]).is_err());
     }
 
     #[test]
-    fn native_direction_decodes_palette_and_dense_forms() {
-        let direction = NativeCasterDirection {
+    fn direction_decodes_palette_and_dense_forms() {
+        let direction = CasterDirection {
             face: 2,
             x: 3,
             y: 1,
@@ -2159,7 +2159,7 @@ mod tests {
     }
 
     #[test]
-    fn native_jobs_match_original_executable_cases() {
+    fn jobs_match_executable_cases() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/shadow_job_cases.txt");
         let rows = std::fs::read_to_string(path).expect("missing tracked shadow job fixture");
@@ -2172,7 +2172,7 @@ mod tests {
                 values[4] as usize..(values[4] + values[5]) as usize
             };
             assert_eq!(
-                native_aligned_job_range(values[0], values[1], values[2], values[3]).unwrap(),
+                aligned_job_range(values[0], values[1], values[2], values[3]).unwrap(),
                 expected,
                 "original job case {row}"
             );
@@ -2182,19 +2182,19 @@ mod tests {
     }
 
     #[test]
-    fn native_jobs_preserve_alignment_and_short_worker_tail() {
-        assert_eq!(native_aligned_job_range(0, 8, 70753, 2).unwrap(), 0..8844);
+    fn jobs_preserve_alignment_and_short_worker_tail() {
+        assert_eq!(aligned_job_range(0, 8, 70753, 2).unwrap(), 0..8844);
         assert_eq!(
-            native_aligned_job_range(7, 8, 70753, 2).unwrap(),
+            aligned_job_range(7, 8, 70753, 2).unwrap(),
             61908..70753
         );
-        assert_eq!(native_aligned_job_range(0, 8, 1, 2).unwrap(), 0..1);
-        assert_eq!(native_aligned_job_range(7, 8, 1, 2).unwrap(), 0..0);
-        assert_eq!(native_aligned_job_range(2, 8, 5, 2).unwrap(), 4..5);
-        assert_eq!(native_aligned_job_range(7, 8, 5, 2).unwrap(), 0..0);
-        assert_eq!(native_aligned_job_range(0, 0, 5, 2).unwrap(), 0..0);
-        assert!(native_aligned_job_range(8, 8, 70753, 2).is_err());
-        assert!(native_aligned_job_range(0, 8, 70753, 0).is_err());
+        assert_eq!(aligned_job_range(0, 8, 1, 2).unwrap(), 0..1);
+        assert_eq!(aligned_job_range(7, 8, 1, 2).unwrap(), 0..0);
+        assert_eq!(aligned_job_range(2, 8, 5, 2).unwrap(), 4..5);
+        assert_eq!(aligned_job_range(7, 8, 5, 2).unwrap(), 0..0);
+        assert_eq!(aligned_job_range(0, 0, 5, 2).unwrap(), 0..0);
+        assert!(aligned_job_range(8, 8, 70753, 2).is_err());
+        assert!(aligned_job_range(0, 8, 70753, 0).is_err());
     }
 
     #[test]
@@ -2209,12 +2209,12 @@ mod tests {
         let narrow_planes = box_planes(narrow);
         let broad_planes = box_planes(broad);
         let receivers = [
-            VerifiedShadowReceiverState {
+            ShadowReceiverState {
                 bounds: narrow,
                 planes: &narrow_planes,
                 active_planes: &[0, 1, 2, 3, 4, 5],
             },
-            VerifiedShadowReceiverState {
+            ShadowReceiverState {
                 bounds: broad,
                 planes: &broad_planes,
                 active_planes: &[0, 1, 2, 3, 4, 5],
@@ -2263,7 +2263,7 @@ mod tests {
         let tome = ShadowCasterTome::parse(&bytes).unwrap();
         let bounds = [[-1.0; 3], [1.0; 3]];
         let planes = box_planes(bounds);
-        let receivers = [VerifiedShadowReceiverState {
+        let receivers = [ShadowReceiverState {
             bounds,
             planes: &planes,
             active_planes: &[0, 1, 2, 3, 4, 5],

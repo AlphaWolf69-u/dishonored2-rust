@@ -7,24 +7,24 @@ use bevy::render::{
 };
 
 #[test]
-fn prepared_shadow_raster_preserves_native_faces_after_index_conversion() {
+fn prepared_shadow_raster_preserves_faces_after_index_conversion() {
     for cull_bits in 0..4 {
-        for native_ccw in [false, true] {
+        for ccw in [false, true] {
             let mut state = [0; 9];
-            state[5] = (cull_bits << 24) | (u32::from(native_ccw) << 27);
+            state[5] = (cull_bits << 24) | (u32::from(ccw) << 27);
             let expected_cull = match cull_bits {
                 0 => None,
                 1 => Some(Face::Front),
                 _ => Some(Face::Back),
             };
             for reversed in [false, true] {
-                let (front, cull) = native_shadow_mesh_raster(&state, reversed);
+                let (front, cull) = shadow_mesh_raster(&state, reversed);
                 assert_eq!(cull, expected_cull);
                 for triangle_ccw in [false, true] {
                     let imported_ccw = triangle_ccw ^ reversed;
                     assert_eq!(
                         imported_ccw == (front == FrontFace::Ccw),
-                        triangle_ccw == native_ccw
+                        triangle_ccw == ccw
                     );
                 }
             }
@@ -53,7 +53,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
     let adapter = world.resource::<RenderAdapter>();
     let queue = world.resource::<RenderQueue>();
     let cases = 5 + 2 * 2 * 2;
-    let target = NativeShadowDepthArray::new(
+    let target = ShadowDepthArray::new(
         device,
         Extent3d {
             width: 2,
@@ -93,11 +93,11 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
         std::array::from_fn(|row| std::array::from_fn(|col| if row == col { 1.0 } else { 0.0 }));
     let model = device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("prepared native state actual model constants"),
-        contents: &crate::shadow_pass::native_shadow_instance_cb(&identity, 1.0),
+        contents: &crate::shadow_pass::shadow_instance_cb(&identity, 1.0),
         usage: BufferUsages::UNIFORM,
     });
     let mut state = [0; 9];
-    crate::render_state::reset_native_render_state(&mut state);
+    crate::render_state::reset_render_state(&mut state);
     // Native bitfield values come from the executable-verified state decoder:
     // compare=1 LESS, compare=4 GREATER; word5 bits3/4/5 enable depth/write/stencil.
     state[5] = (state[5] & !7) | 1;
@@ -110,13 +110,13 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
     states[4][4] &= !((7 << 17) | (7 << 29));
     // Every native front convention / FRONT or BACK cull combination is
     // submitted with both original and reversed index streams.
-    for native_ccw in [false, true] {
+    for ccw in [false, true] {
         for cull_bits in [1, 2] {
             for _reversed in [false, true] {
                 let mut raster = state;
                 raster[5] = (raster[5] & !((3 << 24) | (1 << 27)))
                     | (cull_bits << 24)
-                    | (u32::from(native_ccw) << 27);
+                    | (u32::from(ccw) << 27);
                 states.push(raster);
             }
         }
@@ -128,9 +128,9 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
             let (front, cull) = if case < 5 {
                 (FrontFace::Ccw, None)
             } else {
-                native_shadow_mesh_raster(state, (case - 5) % 2 != 0)
+                shadow_mesh_raster(state, (case - 5) % 2 != 0)
             };
-            NativeOpaqueShadowPipeline::new_prepared_shadow_depth(
+            ShadowDepthPipeline::new_prepared_shadow_depth(
                 device,
                 adapter,
                 &layout,
@@ -139,7 +139,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
                 target.texture.format(),
                 front,
                 cull,
-                NativeShadowDepthProgram::Opaque,
+                ShadowDepthProgram::Opaque,
             )
             .unwrap()
         })
@@ -149,7 +149,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
         .map(|pipeline| pipeline.bind_prepared_model_state(device, &model).unwrap())
         .collect();
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("native prepared state depth/write/stencil cases"),
+        label: Some("prepared state depth/write/stencil cases"),
     });
     for (layer, (pipeline, binding)) in pipelines.iter().zip(&bindings).enumerate() {
         pipeline
@@ -165,7 +165,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
                     load: LoadOp::Clear(0),
                     store: StoreOp::Store,
                 }),
-                &[NativeOpaqueShadowDraw {
+                &[ShadowDepthDraw {
                     model_state_offset: 0,
                     model_state: binding,
                     program_resources: None,
@@ -179,7 +179,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
                     },
                     base_vertex: 0,
                     instances: 0..1,
-                    scissor: NativeShadowScissor {
+                    scissor: ShadowScissor {
                         x: 0,
                         y: 0,
                         width: 2,
@@ -281,7 +281,7 @@ fn prepared_shadow_state_controls_actual_depth_pixels() {
     assert_eq!(
         &pixels[5..],
         &[0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5],
-        "native front/back selection must survive imported index reversal: {pixels:?}"
+        "front/back selection must survive imported index reversal: {pixels:?}"
     );
     drop(mapped);
     readback.unmap();
@@ -323,7 +323,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
     let identity = std::array::from_fn(|r| std::array::from_fn(|c| if r == c { 1. } else { 0. }));
     let model = device.create_buffer_with_data(&BufferInitDescriptor {
         label: None,
-        contents: &crate::shadow_pass::native_shadow_instance_cb(&identity, 1.),
+        contents: &crate::shadow_pass::shadow_instance_cb(&identity, 1.),
         usage: BufferUsages::UNIFORM,
     });
     let attributes = [VertexAttribute {
@@ -337,13 +337,13 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
         attributes: &attributes,
     };
     let mut state = [0; 9];
-    crate::render_state::reset_native_render_state(&mut state);
+    crate::render_state::reset_render_state(&mut state);
     state[5] = (state[5] & !7) | 1;
     for format in [
         TextureFormat::Depth16Unorm,
         TextureFormat::Depth24PlusStencil8,
     ] {
-        let target = NativeShadowDepthArray::new_with_format(
+        let target = ShadowDepthArray::new_with_format(
             device,
             Extent3d {
                 width: 8,
@@ -354,7 +354,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
             "local atlas viewport fixture",
         )
         .unwrap();
-        let pipeline = NativeOpaqueShadowPipeline::new_prepared_shadow_depth(
+        let pipeline = ShadowDepthPipeline::new_prepared_shadow_depth(
             device,
             adapter,
             &layout,
@@ -363,7 +363,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
             format,
             FrontFace::Ccw,
             None,
-            NativeShadowDepthProgram::Opaque,
+            ShadowDepthProgram::Opaque,
         )
         .unwrap();
         let binding = pipeline.bind_prepared_model_state(device, &model).unwrap();
@@ -387,13 +387,13 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
                 .unwrap();
         }
         let regions = [
-            NativeShadowScissor {
+            ShadowScissor {
                 x: 1,
                 y: 1,
                 width: 2,
                 height: 2,
             },
-            NativeShadowScissor {
+            ShadowScissor {
                 x: 5,
                 y: 3,
                 width: 2,
@@ -401,7 +401,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
             },
         ];
         for region in regions {
-            let draw = NativeOpaqueShadowDraw {
+            let draw = ShadowDepthDraw {
                 model_state_offset: 0,
                 model_state: &binding,
                 program_resources: None,
@@ -413,7 +413,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
                 instances: 0..1,
                 scissor: region,
             };
-            NativeOpaqueShadowPipeline::draw_layer_region_sequence(
+            ShadowDepthPipeline::draw_layer_region_sequence(
                 &mut encoder,
                 &target,
                 1,
@@ -422,11 +422,11 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
             )
             .unwrap();
         }
-        assert!(NativeOpaqueShadowPipeline::draw_layer_region_sequence(
+        assert!(ShadowDepthPipeline::draw_layer_region_sequence(
             &mut encoder,
             &target,
             1,
-            NativeShadowScissor {
+            ShadowScissor {
                 x: 7,
                 y: 0,
                 width: 2,
@@ -525,7 +525,7 @@ fn local_atlas_region_draws_preserve_viewport_depth_and_neighbor_pixels() {
                 });
             assert!(
                 (actual - expected).abs() <= 1. / 65535.,
-                "native local viewport {format:?} pixel{index}: {actual} vs{expected}"
+                "local viewport {format:?} pixel{index}: {actual} vs{expected}"
             );
         }
         drop(mapped);

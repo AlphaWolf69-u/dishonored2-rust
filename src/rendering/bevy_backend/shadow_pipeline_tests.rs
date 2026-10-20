@@ -7,7 +7,7 @@ use bevy::render::{
 };
 
 #[test]
-fn native_gpu_depth_stencil_preserves_all_operations_and_disabled_tests() {
+fn gpu_depth_stencil_preserves_all_operations_and_disabled_tests() {
     let expected = [
         StencilOperation::Keep,
         StencilOperation::Zero,
@@ -20,7 +20,7 @@ fn native_gpu_depth_stencil_preserves_all_operations_and_disabled_tests() {
     ];
     for code in 0..8u32 {
         let mut state = [0; 9];
-        crate::render_state::reset_native_render_state(&mut state);
+        crate::render_state::reset_render_state(&mut state);
         state[4] = (code << 8)
             | (code << 11)
             | (code << 14)
@@ -30,25 +30,25 @@ fn native_gpu_depth_stencil_preserves_all_operations_and_disabled_tests() {
             | (code << 26)
             | (7 << 29);
         state[5] |= 32;
-        let gpu = native_depth_stencil_gpu(&state, TextureFormat::Depth32FloatStencil8).unwrap();
+        let gpu = depth_stencil_gpu(&state, TextureFormat::Depth32FloatStencil8).unwrap();
         for face in [gpu.stencil.front, gpu.stencil.back] {
             assert_eq!(face.compare, CompareFunction::Always);
             assert_eq!(face.fail_op, expected[code as usize]);
             assert_eq!(face.depth_fail_op, expected[code as usize]);
             assert_eq!(face.pass_op, expected[code as usize]);
         }
-        assert!(native_depth_stencil_gpu(&state, TextureFormat::Depth32Float).is_err());
+        assert!(depth_stencil_gpu(&state, TextureFormat::Depth32Float).is_err());
         state[5] &= !(8 | 32);
-        let disabled = native_depth_stencil_gpu(&state, TextureFormat::Depth32Float).unwrap();
+        let disabled = depth_stencil_gpu(&state, TextureFormat::Depth32Float).unwrap();
         assert_eq!(disabled.depth_compare, Some(CompareFunction::Always));
         assert_eq!(disabled.depth_write_enabled, Some(false));
         assert_eq!(disabled.stencil, StencilState::default());
     }
-    assert!(native_depth_stencil_gpu(&[0; 9], TextureFormat::Rgba8Unorm).is_err());
+    assert!(depth_stencil_gpu(&[0; 9], TextureFormat::Rgba8Unorm).is_err());
 }
 
 #[test]
-fn native_shadow_opaque_rejects_unsupported_depth_bias_clamp() {
+fn shadow_opaque_rejects_unsupported_depth_bias_clamp() {
     let captured_bias = DepthBiasState {
         constant: 80,
         slope_scale: 5.0,
@@ -57,7 +57,7 @@ fn native_shadow_opaque_rejects_unsupported_depth_bias_clamp() {
     let error = validate_opaque_depth_bias(captured_bias, DownlevelFlags::empty()).unwrap_err();
     assert_eq!(
         error,
-        "native opaque shadow depth-bias clamp 1000 is unsupported: adapter lacks DownlevelFlags::DEPTH_BIAS_CLAMP"
+        "opaque shadow depth-bias clamp 1000 is unsupported: adapter lacks DownlevelFlags::DEPTH_BIAS_CLAMP"
     );
     assert!(validate_opaque_depth_bias(
         DepthBiasState {
@@ -71,7 +71,7 @@ fn native_shadow_opaque_rejects_unsupported_depth_bias_clamp() {
 
 #[test]
 #[ignore = "requires a graphics adapter; verifies native D16/D24S8 layer views and linear/Less/clamp sampling"]
-fn native_shadow_depth_array_and_sampler_gpu() {
+fn shadow_depth_array_and_sampler_gpu() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -97,28 +97,28 @@ fn native_shadow_depth_array_and_sampler_gpu() {
         TextureFormat::Depth16Unorm,
         TextureFormat::Depth24PlusStencil8,
     ] {
-        let depths = NativeShadowDepthArray::new_with_format(
+        let depths = ShadowDepthArray::new_with_format(
             device,
             size,
             format,
-            "native shadow storage fixture",
+            "shadow storage fixture",
         )
         .unwrap();
         assert_eq!(depths.texture.format(), format);
-        let copied_cache = NativeShadowDepthArray::new_with_format(
+        let copied_cache = ShadowDepthArray::new_with_format(
             device,
             size,
             format,
             "whole-resource native static cache fixture",
         )
         .unwrap();
-        let image_alias = NativeShadowDepthArray::from_owned_texture(
+        let image_alias = ShadowDepthArray::from_owned_texture(
             depths.texture.clone(),
             "shadow attachment aliases sampled image",
         )
         .unwrap();
         assert_eq!(image_alias.texture.id(), depths.texture.id());
-        let parallel = NativeShadowDepthArray::parallel(
+        let parallel = ShadowDepthArray::parallel(
             device,
             256,
             0,
@@ -130,7 +130,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
         assert_eq!(parallel.texture.format(), format);
         assert_eq!(depths.layers.len(), 2);
         assert!(
-            NativeShadowDepthArray::new(device, Extent3d { width: 0, ..size }, "invalid").is_err()
+            ShadowDepthArray::new(device, Extent3d { width: 0, ..size }, "invalid").is_err()
         );
         let fill = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("shadow depth storage fixture fill"),
@@ -149,7 +149,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
             ),
         });
         let fill_pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native D24S8 fixture fill"),
+            label: Some("D24S8 fixture fill"),
             layout: None,
             vertex: RawVertexState {
                 module: &fill,
@@ -176,7 +176,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
             }),
         });
         let probe = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("native comparison sampler fixture"),
+            label: Some("comparison sampler fixture"),
             source: ShaderSource::Wgsl(
                 r#"
             @group(0) @binding(0) var depth: texture_depth_2d_array;
@@ -199,14 +199,14 @@ fn native_shadow_depth_array_and_sampler_gpu() {
             device
                 .wgpu_device()
                 .create_compute_pipeline(&RawComputePipelineDescriptor {
-                    label: Some("native shadow sampler probe"),
+                    label: Some("shadow sampler probe"),
                     layout: None,
                     module: &probe,
                     entry_point: Some("main"),
                     compilation_options: default(),
                     cache: None,
                 });
-        let sampler = native_shadow_comparison_sampler(device);
+        let sampler = shadow_comparison_sampler(device);
         let result = device.create_buffer(&BufferDescriptor {
             label: None,
             size: 48,
@@ -250,7 +250,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
                 .is_err(),
             "aliased resources cannot copy onto themselves"
         );
-        let wrong_size = NativeShadowDepthArray::new_with_format(
+        let wrong_size = ShadowDepthArray::new_with_format(
             device,
             Extent3d {
                 depth_or_array_layers: 1,
@@ -271,7 +271,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
         } else {
             TextureFormat::Depth16Unorm
         };
-        let wrong_format = NativeShadowDepthArray::new_with_format(
+        let wrong_format = ShadowDepthArray::new_with_format(
             device,
             size,
             other_format,
@@ -327,14 +327,14 @@ fn native_shadow_depth_array_and_sampler_gpu() {
         // Native topology: slice -> one-layer temporary -> whole static cache;
         // dynamic changes only the temporary. Next frame restores the static
         // resource, then transfers its final subresource to the sampled atlas.
-        let static_snapshot = NativeShadowDepthArray::new_with_format(
+        let static_snapshot = ShadowDepthArray::new_with_format(
             device,
             Extent3d {
                 depth_or_array_layers: 1,
                 ..size
             },
             format,
-            "native separate static snapshot fixture",
+            "separate static snapshot fixture",
         )
         .unwrap();
         assert!(depths
@@ -454,7 +454,7 @@ fn native_shadow_depth_array_and_sampler_gpu() {
 
 #[test]
 #[ignore = "requires a graphics adapter; verifies the original rigid-opaque indexed D24S8 shadow draw and clip-depth transform"]
-fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
+fn shadow_indexed_draws_and_alpha_match_depth_paths() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -478,14 +478,14 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         depth_or_array_layers: 1,
     };
     let depths =
-        NativeShadowDepthArray::new(device, size, "opaque shadow draw depth target").unwrap();
+        ShadowDepthArray::new(device, size, "opaque shadow draw depth target").unwrap();
     let attributes = [VertexAttribute {
         format: VertexFormat::Float32x3,
         offset: 0,
         shader_location: 0,
     }];
     let vertex_layout = RawVertexBufferLayout {
-        array_stride: NATIVE_SHADOW_OPAQUE_VERTEX_STRIDE,
+        array_stride: SHADOW_OPAQUE_VERTEX_STRIDE,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
     };
@@ -494,7 +494,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         slope_scale: 5.0,
         clamp: 1000.0,
     };
-    let pipeline = match NativeOpaqueShadowPipeline::new(device, adapter, &vertex_layout, bias) {
+    let pipeline = match ShadowDepthPipeline::new(device, adapter, &vertex_layout, bias) {
         Ok(pipeline) => pipeline,
         Err(error)
             if !adapter
@@ -508,7 +508,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
             );
             return;
         }
-        Err(error) => panic!("native opaque shadow pipeline creation failed: {error}"),
+        Err(error) => panic!("opaque shadow pipeline creation failed: {error}"),
     };
 
     // A 32-byte native vertex record; the other five floats are deliberately
@@ -537,7 +537,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     });
     // Native CB order w,z,y,x,depthhack,padding. The captured shader applies
     // depthhack after its z-row dot: (0.25*0.5 + 0.25)*2 = 0.75.
-    let state_record = crate::shadow_pass::native_shadow_instance_cb(
+    let state_record = crate::shadow_pass::shadow_instance_cb(
         &[
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -575,10 +575,10 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
     };
-    // game.rs::native_render_indices reverses imported native triangles once;
+    // game.rs::render_indices reverses imported native triangles once;
     // test that the same owner allocation renders with the corresponding CCW
     // raster state instead of accidentally culling every native front face.
-    let owner_pipeline = NativeOpaqueShadowPipeline::new_with_raster_state(
+    let owner_pipeline = ShadowDepthPipeline::new_with_raster_state(
         device,
         adapter,
         &owner_layout,
@@ -612,7 +612,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     let owner_model_state = owner_pipeline
         .bind_prepared_model_state_at(device, &state, state_offset)
         .unwrap();
-    let draw = NativeOpaqueShadowDraw {
+    let draw = ShadowDepthDraw {
         model_state_offset: state_offset as u32,
         model_state: &model_state,
         program_resources: None,
@@ -622,7 +622,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         indices: 0..3,
         base_vertex: 0,
         instances: 0..1,
-        scissor: NativeShadowScissor {
+        scissor: ShadowScissor {
             x: 0,
             y: 0,
             width: 4,
@@ -656,7 +656,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
                 compilation_options: default(),
                 cache: None,
             });
-    let sampler = native_shadow_comparison_sampler(device);
+    let sampler = shadow_comparison_sampler(device);
     let result = device.create_buffer(&BufferDescriptor {
         label: Some("opaque shadow depth comparison results"),
         size: 8,
@@ -750,7 +750,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         )
         .unwrap();
     probe_depth(&mut encoder, 16);
-    let owner_draw = NativeOpaqueShadowDraw {
+    let owner_draw = ShadowDepthDraw {
         model_state_offset: 0,
         model_state: &owner_model_state,
         program_resources: None,
@@ -760,7 +760,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         indices: 0..3,
         base_vertex: 0,
         instances: 0..1,
-        scissor: NativeShadowScissor {
+        scissor: ShadowScissor {
             x: 0,
             y: 0,
             width: 4,
@@ -799,7 +799,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         step_mode: VertexStepMode::Vertex,
         attributes: &alpha_attributes,
     };
-    let alpha_pipeline = NativeOpaqueShadowPipeline::new_alpha_with_raster_state(
+    let alpha_pipeline = ShadowDepthPipeline::new_alpha_with_raster_state(
         device,
         adapter,
         &alpha_layout,
@@ -813,7 +813,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         .bind_prepared_model_state_at(device, &state, state_offset)
         .unwrap();
     let diffuse = device.create_texture(&TextureDescriptor {
-        label: Some("native raw shadow-alpha fixture"),
+        label: Some("raw shadow-alpha fixture"),
         size: Extent3d {
             width: 2,
             height: 1,
@@ -857,14 +857,14 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     for (case, u) in [0.25_f32, 0.5, 0.75].into_iter().enumerate() {
         let uv = [0.0_f32, 0.0, u, 0.5];
         let uv_state = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("native selected layer-zero transform fixture"),
+            label: Some("selected layer-zero transform fixture"),
             contents: &uv.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
             usage: BufferUsages::UNIFORM,
         });
         let material = alpha_pipeline
             .bind_alpha_material(device, &diffuse_view, &bilinear, &uv_state)
             .unwrap();
-        let draw = NativeOpaqueShadowDraw {
+        let draw = ShadowDepthDraw {
             model_state_offset: 0,
             model_state: &alpha_model,
             program_resources: Some(&material),
@@ -874,7 +874,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
             indices: 0..3,
             base_vertex: 0,
             instances: 0..1,
-            scissor: NativeShadowScissor {
+            scissor: ShadowScissor {
                 x: 0,
                 y: 0,
                 width: 4,
@@ -924,7 +924,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
     let large_uv_material = alpha_pipeline
         .bind_alpha_material(device, &diffuse_view, &bilinear, &large_uv)
         .unwrap();
-    let large_uv_draw = NativeOpaqueShadowDraw {
+    let large_uv_draw = ShadowDepthDraw {
         model_state_offset: 0,
         model_state: &alpha_model,
         program_resources: Some(&large_uv_material),
@@ -934,7 +934,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
         indices: 0..3,
         base_vertex: 0,
         instances: 0..1,
-        scissor: NativeShadowScissor {
+        scissor: ShadowScissor {
             x: 0,
             y: 0,
             width: 4,
@@ -985,7 +985,7 @@ fn native_shadow_indexed_draws_and_alpha_match_original_depth_paths() {
 
 #[test]
 #[ignore = "requires a graphics adapter; compares original D3D11 HLSL weighted-PCF results against WGSL on synthetic D24 checker/ramp layers"]
-fn native_shadow_pcf_original_hlsl_gpu_parity() {
+fn shadow_pcf_hlsl_gpu_parity() {
     let mut depth_codes = vec![0_u32; 2 * 8 * 8];
     let mut depth_layers = 0;
     let mut positions = Vec::<f32>::new();
@@ -1048,7 +1048,7 @@ fn native_shadow_pcf_original_hlsl_gpu_parity() {
     let world = app.sub_app_mut(RenderApp).world_mut();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let depths = NativeShadowDepthArray::new(
+    let depths = ShadowDepthArray::new(
         device,
         Extent3d {
             width: 8,
@@ -1131,7 +1131,7 @@ fn native_shadow_pcf_original_hlsl_gpu_parity() {
         @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             let p = positions[id.x];
             let s = settings[id.x];
-            results[id.x] = native_shadow_pcf(
+            results[id.x] = shadow_pcf(
                 map, comparison, p.xyz, i32(s.x), vec2<f32>(8.0), i32(s.y));
         }
     "#
@@ -1183,7 +1183,7 @@ fn native_shadow_pcf_original_hlsl_gpu_parity() {
         usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let sampler = native_shadow_comparison_sampler(device);
+    let sampler = shadow_comparison_sampler(device);
     let fill_parameter = |layer: u32| {
         device.create_buffer_with_data(&BufferInitDescriptor {
             label: Some("synthetic D24 layer selector"),
@@ -1327,7 +1327,7 @@ fn native_shadow_pcf_original_hlsl_gpu_parity() {
 }
 #[test]
 #[ignore = "requires a graphics adapter; verifies original light-quality/filter dispatch and distinct fallbacks"]
-fn native_shadow_quality_dispatch_gpu() {
+fn shadow_quality_dispatch_gpu() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -1344,7 +1344,7 @@ fn native_shadow_quality_dispatch_gpu() {
     let world = app.sub_app_mut(RenderApp).world_mut();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let depths = NativeShadowDepthArray::new(
+    let depths = ShadowDepthArray::new(
         device,
         Extent3d {
             width: 4,
@@ -1366,19 +1366,19 @@ fn native_shadow_quality_dispatch_gpu() {
         @group(0) @binding(2) var<storage, read_write> result: array<f32>;
         @compute @workgroup_size(1) fn main() {
             for (var q=0; q<3; q++) {
-                result[u32(q)] = f32(native_shadow_selected_filter(2, q));
-                result[u32(3+q)] = f32(native_shadow_selected_filter(1, q));
-                result[u32(6+q)] = f32(native_shadow_selected_filter(0, q));
+                result[u32(q)] = f32(shadow_selected_filter(2, q));
+                result[u32(3+q)] = f32(shadow_selected_filter(1, q));
+                result[u32(6+q)] = f32(shadow_selected_filter(0, q));
             }
             let p=vec4<f32>(0.5,0.5,0.5,1.0); let size=vec2<f32>(4.0);
-            result[9] = native_sample_directional_shadow(map, comparison, p, 0, size, -1, 2);
-            result[10] = native_sample_local_shadow(map, comparison, p, 0, size, -1, 2);
-            result[11] = native_sample_directional_shadow(map, comparison, p, 0, size, 2, 2);
-            result[12] = native_sample_local_shadow(map, comparison, p, 0, size, 1, 2);
-            result[13] = native_sample_directional_shadow(map, comparison, p, 0, size, 3, 2);
-            result[14] = native_sample_local_shadow(map, comparison, p, 0, size, 3, 2);
-            result[15] = f32(native_shadow_selected_filter(2, -1));
-            result[16] = native_sample_directional_shadow(map, comparison, p, 0, size, 2, -1);
+            result[9] = sample_directional_shadow(map, comparison, p, 0, size, -1, 2);
+            result[10] = sample_local_shadow(map, comparison, p, 0, size, -1, 2);
+            result[11] = sample_directional_shadow(map, comparison, p, 0, size, 2, 2);
+            result[12] = sample_local_shadow(map, comparison, p, 0, size, 1, 2);
+            result[13] = sample_directional_shadow(map, comparison, p, 0, size, 3, 2);
+            result[14] = sample_local_shadow(map, comparison, p, 0, size, 3, 2);
+            result[15] = f32(shadow_selected_filter(2, -1));
+            result[16] = sample_directional_shadow(map, comparison, p, 0, size, 2, -1);
         }
     "#
     );
@@ -1408,7 +1408,7 @@ fn native_shadow_quality_dispatch_gpu() {
         usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let sampler = native_shadow_comparison_sampler(device);
+    let sampler = shadow_comparison_sampler(device);
     let bindings = device
         .wgpu_device()
         .create_bind_group(&BindGroupDescriptor {

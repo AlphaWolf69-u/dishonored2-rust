@@ -5,7 +5,7 @@ use bevy::{
     render::{render_resource::*, renderer::PendingCommandBuffers},
 };
 
-fn gpu_image(array: &NativeShadowDepthArray, sampler: Sampler) -> GpuImage {
+fn gpu_image(array: &ShadowDepthArray, sampler: Sampler) -> GpuImage {
     GpuImage {
         texture: array.texture.clone(),
         texture_view: array.sampled.clone(),
@@ -63,7 +63,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
         })
         .collect();
     let world = app.sub_app_mut(RenderApp).world_mut();
-    world.init_resource::<NativeLocalShadowCompletion>();
+    world.init_resource::<LocalShadowCompletion>();
     // GPU resources normally initialize in the render schedule; this fixture
     // invokes the owner systems directly without running that schedule.
     world.init_resource::<bevy::render::mesh::allocator::MeshAllocatorSettings>();
@@ -77,7 +77,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
 
     let device = world.resource::<RenderDevice>().clone();
     let queue = world.resource::<RenderQueue>().clone();
-    let sampler = crate::shadow_pipeline::native_shadow_comparison_sampler(&device);
+    let sampler = crate::shadow_pipeline::shadow_comparison_sampler(&device);
     let probe_shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
         label: Some("atlas numerical readback"),
         source: ShaderSource::Wgsl(
@@ -124,13 +124,13 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
         };
         let mut atlases: Vec<_> = (0..2)
             .map(|_| {
-                NativeShadowDepthArray::new_with_format(&device, size, format, "test atlas")
+                ShadowDepthArray::new_with_format(&device, size, format, "test atlas")
                     .unwrap()
             })
             .collect();
         let caches: Vec<_> = (0..2)
             .map(|_| {
-                NativeShadowDepthArray::new_with_format(&device, size, format, "test cache")
+                ShadowDepthArray::new_with_format(&device, size, format, "test cache")
                     .unwrap()
             })
             .collect();
@@ -138,12 +138,12 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
             .map(|i| {
                 let mut owner = LocalGpu::default();
                 owner.arrays = Some((
-                    NativeShadowDepthArray::from_owned_texture(
+                    ShadowDepthArray::from_owned_texture(
                         atlases[i].texture.clone(),
                         "owner atlas",
                     )
                     .unwrap(),
-                    NativeShadowDepthArray::from_owned_texture(
+                    ShadowDepthArray::from_owned_texture(
                         caches[i].texture.clone(),
                         "owner cache",
                     )
@@ -186,7 +186,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
             );
         }
         let mut copy_state = [0; 9];
-        crate::render_state::reset_native_render_state(&mut copy_state);
+        crate::render_state::reset_render_state(&mut copy_state);
         let mut reuse_frames = 0;
         for stage in 0..12 {
             let rect = if stage < 2 {
@@ -196,7 +196,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
             };
             if stage == 5 || stage == 10 {
                 for i in 0..2 {
-                    atlases[i] = NativeShadowDepthArray::new_with_format(
+                    atlases[i] = ShadowDepthArray::new_with_format(
                         &device,
                         size,
                         format,
@@ -218,8 +218,8 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                     owner.valid.clear();
                 }
                 world.insert_resource(owner);
-                world.insert_resource(NativeLocalShadowSceneFrame(Some(
-                    NativeLocalShadowSubmission {
+                world.insert_resource(LocalShadowSceneFrame(Some(
+                    LocalShadowSubmission {
                         revision: stage + 1,
                         atlas: handles[i * 2].clone(),
                         cache: handles[i * 2 + 1].clone(),
@@ -227,15 +227,15 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                         cache_extent: [8, 8, 1],
                         depth_32_bits: format.has_stencil_aspect(),
                         copy_state,
-                        layers: vec![NativeShadowLayer {
-                            cache: NativeShadowCacheOp::None,
-                            ops: NativeShadowLayerOps {
-                                depth: NativeShadowLoad::Clear(1.),
-                                stencil: NativeStencilLoad::Clear(0),
+                        layers: vec![ShadowLayer {
+                            cache: ShadowCacheOp::None,
+                            ops: ShadowLayerOps {
+                                depth: ShadowLoad::Clear(1.),
+                                stencil: StencilLoad::Clear(0),
                             },
                             instances: Vec::new(),
                         }],
-                        regions: vec![NativeLocalShadowRegion {
+                        regions: vec![LocalShadowRegion {
                             atlas: AtlasAllocation {
                                 id: 2,
                                 slice: 0,
@@ -250,7 +250,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                             contains_models: false,
                             static_prepared: true,
                         }],
-                        receiver: Ok(NativeLocalShadowReceiver {
+                        receiver: Ok(LocalShadowReceiver {
                             bias: [0.; 3],
                             lights: Vec::new(),
                             shadows: Vec::new(),
@@ -259,7 +259,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                     .into(),
                 )));
                 if stage >= 8 {
-                    let mut frame = world.resource_mut::<NativeLocalShadowSceneFrame>();
+                    let mut frame = world.resource_mut::<LocalShadowSceneFrame>();
                     let frame = Arc::make_mut(frame.0.as_mut().unwrap());
                     frame.layers.clear();
                     frame.regions.clear();
@@ -271,7 +271,7 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                 assert_eq!(pending.is_empty(), reused, "stage={stage} owner={i}");
                 queue.submit(pending);
                 let done = world
-                    .resource::<NativeLocalShadowCompletion>()
+                    .resource::<LocalShadowCompletion>()
                     .0
                     .lock()
                     .unwrap()

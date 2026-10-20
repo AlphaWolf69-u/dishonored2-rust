@@ -1,5 +1,5 @@
 //! Texture streaming.
-use super::NativeImageAccess;
+use super::ImageAccess;
 use super::{
     archive, entities, material, mpsc, render_state, surface_gpu, texture, Arc, AssetId,
     DecalMaterial, Extent3d, GpuImage, ImageAddressMode, ImageSampler, ImageSamplerDescriptor,
@@ -460,7 +460,7 @@ pub(super) fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     }
 }
 
-pub(super) fn native_surface_sampler_image(
+pub(super) fn surface_sampler_image(
     catalog: Option<&archive::Catalog>,
 ) -> Result<Image, String> {
     // Installed anisotropicSampler declaration; FUN_1402d9300 canonicalizes
@@ -471,7 +471,7 @@ pub(super) fn native_surface_sampler_image(
             .read("generated/decls/renderparm/anisotropicsampler.decl")
             .map_err(|e| e.to_string())?
             .ok_or("missing native anisotropic sampler")?;
-        for line in entities::native_declaration_text(&bytes).lines() {
+        for line in entities::declaration_text(&bytes).lines() {
             let mut words = line.split_whitespace();
             let Some(key) = words.next() else {
                 continue;
@@ -498,14 +498,14 @@ pub(super) fn native_surface_sampler_image(
                         .map_err(|e| e.to_string())?
                 }
                 "{" | "}" => {}
-                _ => return Err(format!("unsupported native sampler field {key}")),
+                _ => return Err(format!("unsupported sampler field {key}")),
             }
         }
     }
     // With mipFilter=ANISO, native378280 uses the declaration's own limit,
     // independently of image_anisotropy. The descriptor port has768 oracles.
     // Native default MaxLOD DAT_141b1a400 is13.0, verified in installed EXE.
-    let descriptor = render_state::native_sampler_descriptor(
+    let descriptor = render_state::sampler_descriptor(
         &[
             0x2a,
             0,
@@ -521,7 +521,7 @@ pub(super) fn native_surface_sampler_image(
     );
     let anisotropy = u16::try_from(descriptor[5]).map_err(|e| e.to_string())?;
     if !(1..=16).contains(&anisotropy) {
-        return Err("native anisotropy exceeds device-supported range".into());
+        return Err("anisotropy exceeds device-supported range".into());
     }
     let mut image = Image::new_fill(
         Extent3d::default(),
@@ -645,7 +645,7 @@ pub(super) fn stream_visible_textures(
         &queue,
         visible_instances.as_deref(),
         |instance| {
-            if let Some(slots) = queue.native_material_images.get(&instance.material) {
+            if let Some(slots) = queue.material_images.get(&instance.material) {
                 for &slot in slots {
                     requested[slot] = true;
                 }
@@ -656,7 +656,7 @@ pub(super) fn stream_visible_textures(
             }
         },
     );
-    for &slot in &queue.native_shadow_diffuse_slots {
+    for &slot in &queue.shadow_diffuse_slots {
         if let Some(needed) = requested.get_mut(slot) {
             *needed = true;
         }

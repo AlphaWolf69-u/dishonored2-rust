@@ -1,10 +1,10 @@
 use super::*;
 
-pub(super) fn world_instance(offset: u32, count: u32) -> NativeShadowInstance {
-    NativeShadowInstance {
+pub(super) fn world_instance(offset: u32, count: u32) -> ShadowInstance {
+    ShadowInstance {
         mesh: Handle::default(),
-        per_instance_cb: NativeShadowInstanceConstants::World {
-            constants: native_world_shadow_view_cb(
+        per_instance_cb: ShadowInstanceConstants::World {
+            constants: world_shadow_view_cb(
                 &[
                     [1., 0., 0., 0.],
                     [0., 1., 0., 0.],
@@ -17,13 +17,13 @@ pub(super) fn world_instance(offset: u32, count: u32) -> NativeShadowInstance {
             matrices: Handle::default(),
             instance_count: count,
         },
-        program: NativeShadowProgram::WorldOpaque,
+        program: ShadowProgram::WorldOpaque,
         alpha_material: None,
         front_face: FrontFace::Ccw,
         cull_mode: None,
         draw_state: [0; 9],
         stencil_reference: 0,
-        scissor: NativeShadowScissor {
+        scissor: ShadowScissor {
             x: 0,
             y: 0,
             width: 32,
@@ -46,7 +46,7 @@ fn compact_world_uniforms_preserve_packet_ranges_and_raw_constants() {
     expected[64..68].fill(0);
     assert_eq!(&bytes[..96], &expected);
     let mut other = second.clone();
-    if let NativeShadowInstanceConstants::World { constants, .. } = &mut other.per_instance_cb {
+    if let ShadowInstanceConstants::World { constants, .. } = &mut other.per_instance_cb {
         constants[80..84].copy_from_slice(&0x8000_0000u32.to_le_bytes());
         constants[84..88].copy_from_slice(&0x7fc0_0123u32.to_le_bytes());
     }
@@ -71,8 +71,8 @@ fn compact_world_uniforms_preserve_packet_ranges_and_raw_constants() {
     );
     // Wind has a second independent offset; this optimization leaves its ABI alone.
     let mut wind = first.clone();
-    wind.program = NativeShadowProgram::WorldVegetation;
-    wind.per_instance_cb = NativeShadowInstanceConstants::WorldVegetation {
+    wind.program = ShadowProgram::WorldVegetation;
+    wind.per_instance_cb = ShadowInstanceConstants::WorldVegetation {
         constants: [0x55; 208],
         visible_indices: Handle::default(),
         matrices: Handle::default(),
@@ -154,7 +154,7 @@ fn compact_world_uniforms_preserve_instanced_shadow_depth_gpu() {
         BufferUsages::UNIFORM,
     );
     let compact = make_buffer("shared zero-offset CB", &packed, BufferUsages::UNIFORM);
-    let pipeline = NativeOpaqueShadowPipeline::new_world_with_raster_state(
+    let pipeline = ShadowDepthPipeline::new_world_with_raster_state(
         device,
         adapter,
         &RawVertexBufferLayout {
@@ -190,7 +190,7 @@ fn compact_world_uniforms_preserve_instanced_shadow_depth_gpu() {
             .bind_prepared_model_state(device, &compact)
             .unwrap(),
     ];
-    let depth = NativeShadowDepthArray::new_with_format(
+    let depth = ShadowDepthArray::new_with_format(
         device,
         Extent3d {
             width: 32,
@@ -209,7 +209,7 @@ fn compact_world_uniforms_preserve_instanced_shadow_depth_gpu() {
     });
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
     for layer in 0..2 {
-        let draw = NativeOpaqueShadowDraw {
+        let draw = ShadowDepthDraw {
             model_state_offset: 0,
             model_state: &states[if layer == 0 { 0 } else { 2 }],
             program_resources: Some(&resources),
@@ -221,13 +221,13 @@ fn compact_world_uniforms_preserve_instanced_shadow_depth_gpu() {
             instances: if layer == 0 { 0..1 } else { 5..6 },
             scissor: owner.scissor,
         };
-        let second_draw = NativeOpaqueShadowDraw {
+        let second_draw = ShadowDepthDraw {
             model_state: &states[if layer == 0 { 1 } else { 2 }],
             instances: if layer == 0 { 0..2 } else { 6..8 },
             indices: draw.indices.clone(),
             ..draw
         };
-        NativeOpaqueShadowPipeline::draw_layer_sequence(
+        ShadowDepthPipeline::draw_layer_sequence(
             &mut encoder,
             &depth,
             layer,

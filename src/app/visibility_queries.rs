@@ -1,10 +1,10 @@
 //! Visibility queries.
 use super::{
     apply_placed_model_queries, bwm_lod_visibility_counts, game_pose_from_view_transform,
-    game_settings, native_view_distance_scale, reference_fov_from_projection, tome, view_to_game,
-    Instant, MaterialHandle, MeshTag, NativeViewSettings, PickupState, PickupVisual,
+    game_settings, view_distance_scale, reference_fov_from_projection, tome, view_to_game,
+    Instant, MaterialHandle, MeshTag, ViewSettings, PickupState, PickupVisual,
     PlacedModelQueries, Projection, RenderSuppressionGroup, SceneRenderQueue, StreamingDiagnostics,
-    TomeWorld, VisibilityElapsedTiming, ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_NEAR,
+    TomeWorld, VisibilityElapsedTiming, DEFAULT_FAR, DEFAULT_NEAR,
 };
 use bevy::prelude::*;
 
@@ -40,10 +40,10 @@ pub(super) fn run_tome_render_jobs(
         })
     };
     let actual = dispatch(world.query_job_count);
-    if world.query_job_count != tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT
+    if world.query_job_count != tome::DEFAULT_QUERY_JOB_COUNT
         && std::env::var("DH2_VERIFY_TOME_QUERY_JOBS").as_deref() == Ok("1")
     {
-        let expected = dispatch(tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT);
+        let expected = dispatch(tome::DEFAULT_QUERY_JOB_COUNT);
         verify_tome_job_outputs(&actual, &expected);
     }
     actual
@@ -210,7 +210,7 @@ pub(super) fn stream_visible_models(
     mut last_tome_error: Local<Option<String>>,
     mut query_cache: Local<TomeRenderQueryCache>,
     mut updates: Local<VisibilityUpdateScratch>,
-    view_settings: Option<Res<NativeViewSettings>>,
+    view_settings: Option<Res<ViewSettings>>,
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
 ) {
@@ -263,14 +263,14 @@ pub(super) fn stream_visible_models(
             let query_started = Instant::now();
             let query = reference_fov_from_projection(projection)
                 .and_then(|reference_fov| {
-                    tome::original_world_visibility_query_matrix(
+                    tome::world_visibility_query_matrix(
                         reference_fov,
                         viewport.x,
                         viewport.y,
                         1.0,
                         game_pose_from_view_transform(transform),
-                        ORIGINAL_DEFAULT_NEAR,
-                        ORIGINAL_DEFAULT_FAR,
+                        DEFAULT_NEAR,
+                        DEFAULT_FAR,
                     )
                 })
                 .and_then(|rows| {
@@ -286,7 +286,7 @@ pub(super) fn stream_visible_models(
                         initial_tile_rect: [0, 0, 8, 16],
                         camera_imprecision: [query_settings.umbra_distance_imprecision; 3],
                         global_distance_threshold: query_settings.umbra_accurate_threshold,
-                        object_distance_scale: native_view_distance_scale(
+                        object_distance_scale: view_distance_scale(
                             projection,
                             viewport,
                             view_settings.as_deref(),
@@ -295,7 +295,7 @@ pub(super) fn stream_visible_models(
                         minimum_area_metric: 25.0 / (viewport.x as f32 * viewport.y as f32),
                         winding_flip: tome::query_matrix_winding_flip(rows),
                         gate_states: Some(&tome_world.gate_states),
-                        output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+                        output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
                     };
                     let key = TomeRenderQueryKey::new(&input, tome_world.query_job_count);
                     if query_cache.matches(&key, tome_world.is_changed()) {
@@ -365,7 +365,7 @@ pub(super) fn stream_visible_models(
                                         output.indices(),
                                         output.area_metrics(),
                                         &scene.instances,
-                                        &scene.native_material_images,
+                                        &scene.material_images,
                                         scene.diffuse_image_demands.len(),
                                     );
                                 }
@@ -383,7 +383,7 @@ pub(super) fn stream_visible_models(
                                     output.area_metrics(),
                                     &scene.instances,
                                     &scene.diffuse_image_demands,
-                                    &scene.native_material_images,
+                                    &scene.material_images,
                                 )
                                 .map(|_| ())
                         })

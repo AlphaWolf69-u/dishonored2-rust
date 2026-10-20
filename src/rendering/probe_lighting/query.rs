@@ -173,7 +173,7 @@ pub fn select(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
 mod tests {
     use super::*;
     #[test]
-    fn visibility_aware_cell_ranking_matches_original_executable() {
+    fn visibility_aware_cell_ranking_matches_executable() {
         for (i, line) in include_str!("query_cases.txt").lines().enumerate() {
             let mut fields = line.split_whitespace();
             let expected_kind = fields.next().unwrap().parse::<usize>().unwrap();

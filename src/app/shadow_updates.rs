@@ -2,13 +2,13 @@
 //! Rendering consumes these masks, never the color-visible instance list.
 use super::{
     camera_projection, coarse_depth, frame_profile, game_clock, game_clock_runtime,
-    game_pose_from_view_transform, material, native_material_option_overrides,
-    native_view_distance_scale, placed_direction, read_streamed_diffuse_at_target, render_model,
+    game_pose_from_view_transform, material, material_option_overrides,
+    view_distance_scale, placed_direction, read_streamed_diffuse_at_target, render_model,
     render_program, render_shadow, screen_shadow_pass, screen_shadow_pipeline, shader_cache,
     shadow_pass, shadow_pipeline, shadow_receiver, shadow_sampling, tome, view_to_game, Arc,
-    Extent3d, NativeParallelShadowOwner, NativeProgramCacheSource, NativeShadowCasterWorld,
-    NativeShadowMaterials, NativeShadowModelBoundsSources, NativeVegetationMeshInputs,
-    NativeViewSettings, NativeWorldShadowMeshSources, PickupState, Projection, RenderModelSurface,
+    Extent3d, ParallelShadowOwner, ProgramCacheSource, ShadowCasterWorld,
+    ShadowMaterials, ShadowModelBoundsSources, VegetationMeshInputs,
+    ViewSettings, WorldShadowMeshSources, PickupState, Projection, RenderModelSurface,
     RenderSourcePlacements, SceneData, SceneRenderQueue, ShaderBuffer, TextureDimension,
     TextureFormat, TextureReadTarget, TomeWorld,
 };
@@ -16,15 +16,15 @@ use bevy::prelude::*;
 mod query_cache;
 
 use tome::shadow_caster::{
-    NativeCasterDirection, NativeGlobalShadowCasterInput, NativeGlobalShadowCasterScratch,
-    NativeReceiverDepthProjection, NativeShadowDistanceDescriptor, NativeShadowFrustumQuery,
-    NativeShadowInstanceMasks, NativeShadowObjectDistanceQuery, VerifiedShadowReceiverState,
+    CasterDirection, GlobalShadowCasterInput, GlobalShadowCasterScratch,
+    ReceiverDepthProjection, ShadowDistanceDescriptor, ShadowFrustumQuery,
+    ShadowInstanceMasks, ShadowObjectDistanceQuery, ShadowReceiverState,
 };
 
 #[derive(Resource, Default)]
-pub(super) struct NativeModelShadowSources(pub(super) Vec<NativeModelShadowSource>);
+pub(super) struct ModelShadowSources(pub(super) Vec<ModelShadowSource>);
 
-pub(super) struct NativeModelShadowSource {
+pub(super) struct ModelShadowSource {
     pub placement: usize,
     pub bounds: [[f32; 3]; 2],
     pub skinned: bool,
@@ -34,16 +34,16 @@ pub(super) struct NativeModelShadowSource {
     pub flags_1c30: u8,
     pub flags_18bc: u8,
     pub flags_18bd: u8,
-    pub skinning: Option<Result<Arc<NativeRestSkinning>, String>>,
+    pub skinning: Option<Result<Arc<RestSkinning>, String>>,
 }
 
-pub(super) struct NativeRestSkinning {
+pub(super) struct RestSkinning {
     pub palette: Handle<ShaderBuffer>,
     pub matrices: Vec<[[f32; 4]; 3]>,
 }
 
 #[derive(Clone)]
-pub(super) struct NativeModelShadowCaster {
+pub(super) struct ModelShadowCaster {
     pub source: usize,
     pub instances: Vec<usize>,
     pub flags: u8,
@@ -53,25 +53,25 @@ pub(super) struct NativeModelShadowCaster {
 }
 
 #[derive(Resource, Default)]
-pub(super) struct NativeModelCasterFrame {
-    pub current: Option<(u32, Arc<Vec<NativeModelShadowCaster>>)>,
+pub(super) struct ModelCasterFrame {
+    pub current: Option<(u32, Arc<Vec<ModelShadowCaster>>)>,
     pub error: Option<String>,
     reported: bool,
 }
 
-pub(super) fn collect_native_model_casters(
-    sources: Res<NativeModelShadowSources>,
+pub(super) fn collect_model_casters(
+    sources: Res<ModelShadowSources>,
     scene: Res<SceneData>,
     queue: Res<SceneRenderQueue>,
     pickups: Res<PickupState>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
-    mut output: ResMut<NativeModelCasterFrame>,
+    mut output: ResMut<ModelCasterFrame>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(26));
     output.current = None;
-    let result = (|| -> Result<Vec<NativeModelShadowCaster>, String> {
+    let result = (|| -> Result<Vec<ModelShadowCaster>, String> {
         let (transform, projection) = cameras.single().map_err(|error| error.to_string())?;
         let camera_view = tome::render_query_base_rows(
             Mat4::IDENTITY.to_cols_array_2d(),
@@ -79,20 +79,20 @@ pub(super) fn collect_native_model_casters(
         );
         let mut inverse_view = [[0.0; 4]; 4];
         if !render_shadow::invert_rows(&camera_view, &mut inverse_view) {
-            return Err("native caster camera view is singular".into());
+            return Err("caster camera view is singular".into());
         }
         let Projection::Custom(custom) = projection else {
-            return Err("native model caster camera is unavailable".into());
+            return Err("model caster camera is unavailable".into());
         };
         let projection = custom
-            .get::<camera_projection::NativeGameProjection>()
-            .ok_or("native model caster projection type is unavailable")?;
+            .get::<camera_projection::GameProjection>()
+            .ok_or("model caster projection type is unavailable")?;
         let clip = render_shadow::multiply_rows(projection.rows(), camera_view);
         let clip: [f32; 16] = std::array::from_fn(|i| clip[i / 4][i % 4]);
         let cull_distance = scene
             .shadow_quality
             .as_ref()
-            .ok_or("native caster quality is unavailable")?
+            .ok_or("caster quality is unavailable")?
             .cull_distance;
         let mut collected = Vec::new();
         for (source_index, source) in sources.0.iter().enumerate() {
@@ -143,16 +143,16 @@ pub(super) fn collect_native_model_casters(
                         RenderModelSurface::Bmodel{placement,surface:actual}
                         |RenderModelSurface::Bmd6{placement,surface:actual,..}=>placement==source.placement && actual==*surface,
                         _=>false,
-                    })).ok_or_else(||format!("native model caster placement {} surface {surface} lacks an independently retained draw mesh",source.placement))?;
+                    })).ok_or_else(||format!("model caster placement {} surface {surface} lacks an independently retained draw mesh",source.placement))?;
                 instances.push(instance);
             }
             if !instances.is_empty() {
-                collected.push(NativeModelShadowCaster {
+                collected.push(ModelShadowCaster {
                     source: source_index,
                     instances,
                     flags: info.flags,
                     sort_distance,
-                    camera_clip_mask: render_model::native_transformed_aabb_clip_cull(
+                    camera_clip_mask: render_model::transformed_aabb_clip_cull(
                         &clip,
                         source.bounds[0],
                         source.bounds[1],
@@ -168,7 +168,7 @@ pub(super) fn collect_native_model_casters(
         Ok(casters) => {
             if output.error.take().is_some() || !output.reported {
                 println!(
-                    "Native model caster collection online: {} owners, {} surfaces",
+                    "Model caster collection online: {} owners, {} surfaces",
                     casters.len(),
                     casters
                         .iter()
@@ -181,7 +181,7 @@ pub(super) fn collect_native_model_casters(
         }
         Err(error) => {
             if output.error.as_ref() != Some(&error) {
-                eprintln!("Native model caster collection pending: {error}");
+                eprintln!("Model caster collection pending: {error}");
                 output.error = Some(error);
             }
         }
@@ -189,44 +189,44 @@ pub(super) fn collect_native_model_casters(
 }
 
 #[derive(Resource)]
-pub(super) struct NativeParallelShadowCpu {
+pub(super) struct ParallelShadowCpu {
     pub prepared: render_shadow::ParallelShadowPrepareState,
-    pub current: Option<NativeParallelCasterFrame>,
+    pub current: Option<ParallelCasterFrame>,
     reset_frame: Option<u32>,
     initialized: [bool; 4],
-    gather: Vec<NativeGlobalShadowCasterScratch>,
+    gather: Vec<GlobalShadowCasterScratch>,
     gather_verified: bool,
     gather_cache: query_cache::CasterQueryCache,
     projection_cache: Vec<query_cache::ProjectionMaskCache>,
-    masks: Option<NativeShadowInstanceMasks>,
+    masks: Option<ShadowInstanceMasks>,
     gather_count: usize,
-    world_query: Option<crate::local_caster_query::NativeLocalWorldQuery>,
+    world_query: Option<crate::local_caster_query::LocalWorldQuery>,
     shadow_extent: crate::rendering::environment::EnvironmentScalar,
-    static_frames: Vec<Option<Arc<NativeStaticShadowFrame>>>,
+    static_frames: Vec<Option<Arc<StaticShadowFrame>>>,
     last_error: Option<String>,
 }
 
-pub(super) struct NativeParallelCasterFrame {
+pub(super) struct ParallelCasterFrame {
     pub frame: u32,
     pub masks: Vec<Vec<u8>>,
-    pub receiver: shadow_receiver::NativeReceiverOutput,
+    pub receiver: shadow_receiver::ReceiverOutput,
     pub slice_plans: Vec<render_shadow::ParallelShadowSlicePlan>,
     pub camera_view: render_shadow::ShadowMatrix,
     pub initialized: [bool; 4],
-    pub static_frames: Vec<Option<Arc<NativeStaticShadowFrame>>>,
+    pub static_frames: Vec<Option<Arc<StaticShadowFrame>>>,
     pub local_time: [f32; 2],
-    pub models: Option<Arc<Vec<NativeModelShadowCaster>>>,
+    pub models: Option<Arc<Vec<ModelShadowCaster>>>,
     pub clocks: game_clock::GameplayViewClocks,
 }
 
-pub(super) struct NativeStaticShadowFrame {
+pub(super) struct StaticShadowFrame {
     pub frame: u32,
     pub mask: Vec<u8>,
     pub clip: render_shadow::ShadowMatrix,
     pub local_time: [f32; 2],
 }
 
-impl Default for NativeParallelShadowCpu {
+impl Default for ParallelShadowCpu {
     fn default() -> Self {
         Self {
             prepared: render_shadow::ParallelShadowPrepareState::new(),
@@ -253,26 +253,26 @@ impl Default for NativeParallelShadowCpu {
 /// alone cannot authorize receiver sampling: the model collector must finish
 /// before the combined scene frame can be published.
 #[derive(Resource, Default)]
-pub(super) struct NativeParallelWorldDraws {
-    pub current: Option<(u32, Vec<shadow_pass::NativeShadowLayer>)>,
+pub(super) struct ParallelWorldDraws {
+    pub current: Option<(u32, Vec<shadow_pass::ShadowLayer>)>,
     matrices: Option<Handle<ShaderBuffer>>,
-    static_layers: Vec<Option<(u32, shadow_pass::NativeShadowLayer)>>,
+    static_layers: Vec<Option<(u32, shadow_pass::ShadowLayer)>>,
     uploads: Vec<Vec<super::shadow_preparation::WorldShadowUpload>>,
     static_uploads: Vec<Vec<super::shadow_preparation::WorldShadowUpload>>,
     last_error: Option<String>,
 }
 
 #[derive(Resource, Default)]
-pub(super) struct NativeParallelModelDraws {
-    pub current: Option<(u32, Vec<Vec<shadow_pass::NativeShadowInstance>>)>,
+pub(super) struct ParallelModelDraws {
+    pub current: Option<(u32, Vec<Vec<shadow_pass::ShadowInstance>>)>,
     last_error: Option<String>,
     reported: bool,
 }
 
 #[derive(Resource)]
-pub(super) struct NativeParallelReceiverSource(Result<NativeParallelReceiverCompile, String>);
+pub(super) struct ParallelReceiverSource(Result<ParallelReceiverCompile, String>);
 
-struct NativeParallelReceiverCompile {
+struct ParallelReceiverCompile {
     filtering_quality: i32,
     slope_scale: bool,
     slope_bias: bool,
@@ -280,8 +280,8 @@ struct NativeParallelReceiverCompile {
 }
 
 #[derive(Resource)]
-pub(super) struct NativeScreenShadowSource(Result<NativeScreenShadowParameters, String>);
-struct NativeScreenShadowParameters {
+pub(super) struct ScreenShadowSource(Result<ScreenShadowParameters, String>);
+struct ScreenShadowParameters {
     producer: [u32; 9],
     blur: [u32; 9],
     step: f32,
@@ -291,22 +291,22 @@ struct NativeScreenShadowParameters {
     cloud_enabled: bool,
 }
 
-pub(super) fn initialize_native_screen_shadow_source(
+pub(super) fn initialize_screen_shadow_source(
     mut commands: Commands,
     scene: Res<SceneData>,
-    mut programs: ResMut<NativeProgramCacheSource>,
+    mut programs: ResMut<ProgramCacheSource>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let result = (|| -> Result<(NativeScreenShadowParameters, Handle<Image>), String> {
+    let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>), String> {
         let library = programs.0.as_mut().map_err(|error| error.clone())?;
         let catalog = scene
             .catalog
             .as_ref()
-            .ok_or("native screen catalog is unavailable")?;
+            .ok_or("screen catalog is unavailable")?;
         let environment = scene
             .environment_render_parameters
             .as_ref()
-            .ok_or("native screen environment is unavailable")?;
+            .ok_or("screen environment is unavailable")?;
         let empty = render_program::SerializedParameterBlock {
             flags: 0,
             parameters: Vec::new(),
@@ -334,7 +334,7 @@ pub(super) fn initialize_native_screen_shadow_source(
         let step = scalar("screenShadows/stepSize")?;
         let cloud_name = environment
             .parameter("env/atm/sky/cloudShadow")
-            .ok_or("native cloud texture owner is unavailable")?
+            .ok_or("cloud texture owner is unavailable")?
             .trim()
             .trim_matches('"');
         let cloud = if cloud_name.eq_ignore_ascii_case("_black") {
@@ -353,13 +353,13 @@ pub(super) fn initialize_native_screen_shadow_source(
             ))
         } else {
             let stem = material::compiled_image_stem(catalog, cloud_name)
-                .ok_or_else(|| format!("native cloud image source unresolved: {cloud_name}"))?;
+                .ok_or_else(|| format!("game cloud image source unresolved: {cloud_name}"))?;
             let mut loaded = read_streamed_diffuse_at_target(
                 catalog,
                 &stem,
                 TextureReadTarget::Initial(Some(0)),
             )?
-            .ok_or("native cloud authored mip0 is unavailable")?;
+            .ok_or("game cloud authored mip0 is unavailable")?;
             loaded.image.data = Some(
                 loaded
                     .uploads
@@ -371,7 +371,7 @@ pub(super) fn initialize_native_screen_shadow_source(
         };
         images
             .get_mut(&cloud)
-            .ok_or("native cloud image allocation failed")?
+            .ok_or("game cloud image allocation failed")?
             .sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
             address_mode_u: bevy::image::ImageAddressMode::Repeat,
             address_mode_v: bevy::image::ImageAddressMode::Repeat,
@@ -382,20 +382,20 @@ pub(super) fn initialize_native_screen_shadow_source(
         let material = catalog
             .read("generated/decls/material/screenshadows.material.decl")
             .map_err(|e| e.to_string())?
-            .ok_or("native screen material is unavailable")?;
-        let overrides = native_material_option_overrides(library, &material)?;
+            .ok_or("game screen material is unavailable")?;
+        let overrides = material_option_overrides(library, &material)?;
         let jitter =
             library.option_value(b"screenshadows", &overrides, b"screenshadows/useJitter")? != 0;
         let producer = library
             .definition(b"screenshadows")?
-            .ok_or("native screen RPD is unavailable")?
-            .native_render_state();
+            .ok_or("game screen RPD is unavailable")?
+            .render_state();
         let blur = library
             .definition(b"postfx_dwaoblur")?
-            .ok_or("native DWAO blur RPD is unavailable")?
-            .native_render_state();
+            .ok_or("game DWAO blur RPD is unavailable")?
+            .render_state();
         Ok((
-            NativeScreenShadowParameters {
+            ScreenShadowParameters {
                 producer,
                 blur,
                 step,
@@ -409,26 +409,26 @@ pub(super) fn initialize_native_screen_shadow_source(
     })();
     match result {
         Ok((parameters, cloud)) => {
-            commands.insert_resource(screen_shadow_pass::NativeScreenShadowFrame {
+            commands.insert_resource(screen_shadow_pass::ScreenShadowFrame {
                 output: images.add(screen_shadow_pass::visibility_image(1, 1)),
                 cloud,
                 current: None,
                 produced: Default::default(),
             });
-            commands.insert_resource(NativeScreenShadowSource(Ok(parameters)));
+            commands.insert_resource(ScreenShadowSource(Ok(parameters)));
         }
         Err(error) => {
-            eprintln!("Native screen source unavailable: {error}");
-            commands.insert_resource(NativeScreenShadowSource(Err(error)));
+            eprintln!("Screen source unavailable: {error}");
+            commands.insert_resource(ScreenShadowSource(Err(error)));
         }
     }
 }
 
-pub(super) fn prepare_native_screen_shadow_frame(
-    source: Res<NativeScreenShadowSource>,
-    cpu: Res<NativeParallelShadowCpu>,
-    frame: Res<shadow_pass::NativeShadowSceneFrame>,
-    mut screen: Option<ResMut<screen_shadow_pass::NativeScreenShadowFrame>>,
+pub(super) fn prepare_screen_shadow_frame(
+    source: Res<ScreenShadowSource>,
+    cpu: Res<ParallelShadowCpu>,
+    frame: Res<shadow_pass::ShadowSceneFrame>,
+    mut screen: Option<ResMut<screen_shadow_pass::ScreenShadowFrame>>,
     cameras: Query<(&Transform, &Projection, &Camera), With<Camera3d>>,
     mut images: ResMut<Assets<Image>>,
     mut last_error: Local<Option<String>>,
@@ -437,22 +437,22 @@ pub(super) fn prepare_native_screen_shadow_frame(
         return;
     };
     screen.current = None;
-    let result = (|| -> Result<screen_shadow_pass::NativeScreenShadowView, String> {
+    let result = (|| -> Result<screen_shadow_pass::ScreenShadowView, String> {
         let source = source.0.as_ref().map_err(Clone::clone)?;
-        let shadow_pass::NativeShadowSceneState::Ready { .. } = &frame.state else {
-            return Err("native directional atlas pending".into());
+        let shadow_pass::ShadowSceneState::Ready { .. } = &frame.state else {
+            return Err("game directional atlas pending".into());
         };
         let cpu = cpu
             .current
             .as_ref()
-            .ok_or("native current view is absent")?;
+            .ok_or("game current view is absent")?;
         let (transform, projection, camera) = cameras.single().map_err(|e| e.to_string())?;
         let Projection::Custom(custom) = projection else {
-            return Err("native screen projection is unavailable".into());
+            return Err("game screen projection is unavailable".into());
         };
         let projection = custom
-            .get::<camera_projection::NativeGameProjection>()
-            .ok_or("native screen projection type is unavailable")?
+            .get::<camera_projection::GameProjection>()
+            .ok_or("game screen projection type is unavailable")?
             .rows();
         let mut inverse = [[0.0; 4]; 4];
         let mut inverse_projection = [[0.0; 4]; 4];
@@ -461,11 +461,11 @@ pub(super) fn prepare_native_screen_shadow_frame(
             &mut inverse,
         ) || !render_shadow::invert_rows(&projection, &mut inverse_projection)
         {
-            return Err("native screen view is singular".into());
+            return Err("game screen view is singular".into());
         }
         let extent = camera
             .physical_viewport_size()
-            .ok_or("native screen extent is unavailable")?;
+            .ok_or("game screen extent is unavailable")?;
         let size = Extent3d {
             width: extent.x,
             height: extent.y,
@@ -473,7 +473,7 @@ pub(super) fn prepare_native_screen_shadow_frame(
         };
         if images
             .get(&screen.output)
-            .ok_or("native screen image is unavailable")?
+            .ok_or("game screen image is unavailable")?
             .texture_descriptor
             .size
             != size
@@ -487,7 +487,7 @@ pub(super) fn prepare_native_screen_shadow_frame(
         }
         let position = view_to_game(transform.translation);
         let world_time = cpu.clocks.view_shader_times(1).world_time[0];
-        let parameters = screen_shadow_pipeline::NativeScreenShadowUniform {
+        let parameters = screen_shadow_pipeline::ScreenShadowUniform {
             inverse_view_projection: inverse.map(Vec4::from_array),
             unproject: Vec4::new(
                 -inverse_projection[2][3],
@@ -509,7 +509,7 @@ pub(super) fn prepare_native_screen_shadow_frame(
             ),
         };
         parameters.validate()?;
-        Ok(screen_shadow_pass::NativeScreenShadowView {
+        Ok(screen_shadow_pass::ScreenShadowView {
             revision: frame.revision,
             parameters,
             producer_state: source.producer,
@@ -523,44 +523,44 @@ pub(super) fn prepare_native_screen_shadow_frame(
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                eprintln!("Native screen frame pending: {error}");
+                eprintln!("Screen frame pending: {error}");
                 *last_error = Some(error);
             }
         }
     }
 }
 
-pub(super) fn initialize_native_parallel_receiver_source(
+pub(super) fn initialize_parallel_receiver_source(
     mut commands: Commands,
-    mut programs: ResMut<NativeProgramCacheSource>,
+    mut programs: ResMut<ProgramCacheSource>,
 ) {
-    let result = (|| -> Result<NativeParallelReceiverCompile, String> {
+    let result = (|| -> Result<ParallelReceiverCompile, String> {
         let library = programs.0.as_mut().map_err(|error| error.clone())?;
         let empty = render_program::SerializedParameterBlock {
             flags: 0,
             parameters: Vec::new(),
         };
         let mut option = |name: &[u8]| library.option_value(b"screenshadows", &empty, name);
-        Ok(NativeParallelReceiverCompile {
+        Ok(ParallelReceiverCompile {
             filtering_quality: option(b"shadowFilteringQuality")?,
             slope_scale: option(b"shadow/useSlopeScale")? != 0,
             slope_bias: option(b"shadow/useSlopeScaleBias")? != 0,
             slope_post_projection: option(b"shadow/slopeScaleIsPostProjection")? != 0,
         })
     })();
-    commands.insert_resource(NativeParallelReceiverSource(result));
+    commands.insert_resource(ParallelReceiverSource(result));
 }
 
-pub(super) fn publish_native_parallel_shadow_frame(
-    owner: Option<Res<NativeParallelShadowOwner>>,
-    cpu: Res<NativeParallelShadowCpu>,
-    mut world: ResMut<NativeParallelWorldDraws>,
-    mut models: ResMut<NativeParallelModelDraws>,
-    receiver_source: Res<NativeParallelReceiverSource>,
+pub(super) fn publish_parallel_shadow_frame(
+    owner: Option<Res<ParallelShadowOwner>>,
+    cpu: Res<ParallelShadowCpu>,
+    mut world: ResMut<ParallelWorldDraws>,
+    mut models: ResMut<ParallelModelDraws>,
+    receiver_source: Res<ParallelReceiverSource>,
     scene: Res<SceneData>,
     lights: Query<&DirectionalLight>,
-    completion: Res<shadow_pass::NativeShadowSceneCompletion>,
-    mut output: ResMut<shadow_pass::NativeShadowSceneFrame>,
+    completion: Res<shadow_pass::ShadowSceneCompletion>,
+    mut output: ResMut<shadow_pass::ShadowSceneFrame>,
     mut last_error: Local<Option<String>>,
 ) {
     let Some(owner) = owner else {
@@ -571,27 +571,27 @@ pub(super) fn publish_native_parallel_shadow_frame(
     if !completion.whole_view_completed(&owner.target_image, owner.dimensions) {
         return;
     }
-    let result=(||->Result<shadow_pass::NativeParallelReceiverVars,String>{
-        let frame=cpu.current.as_ref().ok_or("native CPU frame is unavailable")?;
+    let result=(||->Result<shadow_pass::ParallelReceiverVars,String>{
+        let frame=cpu.current.as_ref().ok_or("game CPU frame is unavailable")?;
         let source=receiver_source.0.as_ref().map_err(Clone::clone)?;
-        let (world_frame,world)=world.current.as_ref().ok_or("native world submissions are unavailable")?;
-        let (model_frame,models)=models.current.as_ref().ok_or("native model submissions are unavailable")?;
+        let (world_frame,world)=world.current.as_ref().ok_or("game world submissions are unavailable")?;
+        let (model_frame,models)=models.current.as_ref().ok_or("game model submissions are unavailable")?;
         if *world_frame!=frame.frame || *model_frame!=frame.frame || world.len()!=models.len() {
-            return Err("native directional submissions belong to different view frames".into());
+            return Err("game directional submissions belong to different view frames".into());
         }
         // One directional light has a proven GPU-array index of zero. A
         // multiple-sun view must bind the renderer's actual chosen index.
-        if lights.iter().count()!=1 {return Err("native sun requires the actual directional GPU-array index in a multiple-light view".into());}
-        let environment=scene.environment_lighting.ok_or("native receiver environment is unavailable")?;
+        if lights.iter().count()!=1 {return Err("game sun requires the actual directional GPU-array index in a multiple-light view".into());}
+        let environment=scene.environment_lighting.ok_or("game receiver environment is unavailable")?;
         let direction=render_shadow::environment_sun_direction(
-            environment.sun_theta_degrees.ok_or("native sun theta is unavailable")?,
-            environment.sun_phi_degrees.ok_or("native sun phi is unavailable")?);
+            environment.sun_theta_degrees.ok_or("game sun theta is unavailable")?,
+            environment.sun_phi_degrees.ok_or("game sun phi is unavailable")?);
         let count=world.len();
         let mut matrices=cpu.prepared.cascades[..count].iter().map(|cascade|cascade.atlas).collect::<Vec<_>>();
         matrices.push(owner.whole_view.atlas);
         let mut fars=[f32::MAX;4];
         fars[..count].copy_from_slice(&cpu.prepared.fars[..count]);
-        let receiver=shadow_pass::NativeParallelReceiverVars {
+        let receiver=shadow_pass::ParallelReceiverVars {
             // This publication owns the screenShadows ComputeParallelShadow
             // call. Its explicit zero-normal path must not enable the direct
             // forward hook before the screen producer finishes.
@@ -600,16 +600,16 @@ pub(super) fn publish_native_parallel_shadow_frame(
             shadow_size:[owner.dimensions.width as f32,owner.dimensions.height as f32],
             light_quality:2, // HIGH_QUALITY in installed global.decl/screenshadows.
             filtering_quality:source.filtering_quality,directional_light_index:0,
-            offset:shadow_sampling::NativeShadowOffsetParameters {
+            offset:shadow_sampling::ShadowOffsetParameters {
                 sun_direction:direction,use_normal_offset:false,use_slope_scale:source.slope_scale,
                 use_slope_bias:source.slope_bias,slope_post_projection:source.slope_post_projection,
                 use_uv_normal_offset:false,normal_offset:owner.shader_bias[1],
                 bias:owner.shader_bias[0],slope_bias:owner.shader_bias[2],
             },
         };
-        shadow_sampling::NativeParallelSamplingUniform::from_owner_receiver(&receiver)?;
+        shadow_sampling::ParallelSamplingUniform::from_owner_receiver(&receiver)?;
         if std::env::var_os("DH2_TRACE_SHADOW_GEOMETRY").is_some() && frame.frame%300==0 {
-            eprintln!("Native directional geometry frame={} fars={fars:?} view={:?} sun={direction:?} matrices={:?} counts={:?}",
+            eprintln!("Directional geometry frame={} fars={fars:?} view={:?} sun={direction:?} matrices={:?} counts={:?}",
                 frame.frame,frame.camera_view,receiver.world_to_shadow,
                 frame.masks.iter().map(|mask|mask.iter().filter(|&&v|v!=0).count()).collect::<Vec<_>>());
         }
@@ -618,8 +618,8 @@ pub(super) fn publish_native_parallel_shadow_frame(
     match result {
         Ok(receiver) => {
             let Some(revision) = output.revision.checked_add(1) else {
-                output.state = shadow_pass::NativeShadowSceneState::Unavailable(
-                    "native frame revision overflow".into(),
+                output.state = shadow_pass::ShadowSceneState::Unavailable(
+                    "game frame revision overflow".into(),
                 );
                 return;
             };
@@ -629,22 +629,22 @@ pub(super) fn publish_native_parallel_shadow_frame(
             for (layer, models) in layers.iter_mut().zip(models.current.take().unwrap().1) {
                 layer.instances.extend(models);
             }
-            layers.push(shadow_pass::NativeShadowLayer {
-                ops: shadow_pass::NativeShadowLayerOps {
-                    depth: shadow_pass::NativeShadowLoad::Load,
-                    stencil: shadow_pass::NativeStencilLoad::Load,
+            layers.push(shadow_pass::ShadowLayer {
+                ops: shadow_pass::ShadowLayerOps {
+                    depth: shadow_pass::ShadowLoad::Load,
+                    stencil: shadow_pass::StencilLoad::Load,
                 },
-                cache: shadow_pass::NativeShadowCacheOp::None,
+                cache: shadow_pass::ShadowCacheOp::None,
                 instances: Vec::new(),
             });
             if last_error.take().is_some()
                 || !matches!(
                     output.state,
-                    shadow_pass::NativeShadowSceneState::Ready { .. }
+                    shadow_pass::ShadowSceneState::Ready { .. }
                 )
             {
                 println!(
-                    "Native directional atlas frame online: {} layers, {} current draws",
+                    "Directional atlas frame online: {} layers, {} current draws",
                     layers.len(),
                     layers
                         .iter()
@@ -653,7 +653,7 @@ pub(super) fn publish_native_parallel_shadow_frame(
                 );
             }
             output.revision = revision;
-            output.state = shadow_pass::NativeShadowSceneState::Ready {
+            output.state = shadow_pass::ShadowSceneState::Ready {
                 target_image: owner.target_image.clone(),
                 dimensions: owner.dimensions,
                 receiver,
@@ -662,28 +662,28 @@ pub(super) fn publish_native_parallel_shadow_frame(
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                eprintln!("Native directional atlas frame pending: {error}");
+                eprintln!("Directional atlas frame pending: {error}");
                 *last_error = Some(error.clone());
             }
-            output.state = shadow_pass::NativeShadowSceneState::Unavailable(error);
+            output.state = shadow_pass::ShadowSceneState::Unavailable(error);
         }
     }
 }
 
-pub(super) fn prepare_native_model_shadow_instances(
+pub(super) fn prepare_model_shadow_instances(
     records: &[(usize, usize)],
     clip: render_shadow::ShadowMatrix,
     hardware_bias: [f32; 3],
     margin: f32,
     dimensions: [u32; 2],
     clocks: &game_clock::GameplayViewClocks,
-    sources: &NativeModelShadowSources,
+    sources: &ModelShadowSources,
     placements: &RenderSourcePlacements,
-    materials: &NativeShadowMaterials,
+    materials: &ShadowMaterials,
     images: &Assets<Image>,
-    vegetation: &NativeVegetationMeshInputs,
+    vegetation: &VegetationMeshInputs,
     queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
-) -> Result<Vec<shadow_pass::NativeShadowInstance>, String> {
+) -> Result<Vec<shadow_pass::ShadowInstance>, String> {
     let mut instances = Vec::with_capacity(records.len());
     for &(source_id, index) in records {
         let source = &sources.0[source_id];
@@ -691,11 +691,11 @@ pub(super) fn prepare_native_model_shadow_instances(
         let mesh = instance.mesh.clone();
         let provenance = instance
             .source
-            .ok_or("native model draw lost source provenance")?;
+            .ok_or("game model draw lost source provenance")?;
         let inputs = materials
             .0
             .get(&instance.material)
-            .ok_or("native model material owner is absent")?
+            .ok_or("game model material owner is absent")?
             .as_ref()
             .map_err(Clone::clone)?;
         // CPU declarations9/10 contain skin lanes even when the
@@ -706,7 +706,7 @@ pub(super) fn prepare_native_model_shadow_instances(
             .as_ref()
             .map_err(|error| {
                 format!(
-                    "native model placement {} ({}): {error}",
+                    "game model placement {} ({}): {error}",
                     source.placement,
                     placements
                         .0
@@ -716,21 +716,21 @@ pub(super) fn prepare_native_model_shadow_instances(
                 )
             })?
             .as_ref()
-            .ok_or("native admitted model has no resolved default slot10")?;
+            .ok_or("game admitted model has no resolved default slot10")?;
         let parameters = inputs
             .parameters
             .as_ref()
             .map_err(Clone::clone)?
             .as_ref()
-            .ok_or("native model parameter block is absent")?;
+            .ok_or("game model parameter block is absent")?;
         let multiplier = parameters.vector(b"modeldepthhack", None)?[0];
         if !multiplier.is_finite() {
-            return Err("native model depth multiplier is non-finite".into());
+            return Err("game model depth multiplier is non-finite".into());
         }
         let placement = placements
             .0
             .get(source.placement)
-            .ok_or("native model placement owner is absent")?;
+            .ok_or("game model placement owner is absent")?;
         let affine =
             render_model::affine_rows(placement.position, placement.rotation, placement.scale);
         let model = [affine[0], affine[1], affine[2], [0.0, 0.0, 0.0, 1.0]];
@@ -740,7 +740,7 @@ pub(super) fn prepare_native_model_shadow_instances(
             inputs
                 .source
                 .main_render_state
-                .ok_or("native model MAIN draw state is absent")?,
+                .ok_or("game model MAIN draw state is absent")?,
             hardware_bias,
             margin,
             render_shadow::model_mvp_winding_flipped(&mvp),
@@ -753,31 +753,31 @@ pub(super) fn prepare_native_model_shadow_instances(
         } else {
             instance.transform.to_matrix().determinant() < 0.0
         };
-        let (front_face, cull_mode) = shadow_pipeline::native_shadow_mesh_raster(&state, !flipped);
+        let (front_face, cull_mode) = shadow_pipeline::shadow_mesh_raster(&state, !flipped);
         let class = program.class;
         let alpha = if class != shader_cache::CachedRigidShadowClass::Opaque {
             let slot = inputs
                 .diffuse_image_slot
-                .ok_or("native model cutout has no original diffuse image")?;
+                .ok_or("game model cutout has no reference diffuse image")?;
             queue.request_shadow_diffuse(slot);
             let diffuse = queue
                 .diffuse_image_handles
                 .get(slot)
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
-                    format!("native model shadow diffuse slot {slot} awaits texture streaming")
+                    format!("game model shadow diffuse slot {slot} awaits texture streaming")
                 })?;
             if images.get(diffuse).is_none() {
-                return Err("native model diffuse asset is not resident".into());
+                return Err("game model diffuse asset is not resident".into());
             }
-            Some(shadow_pass::NativeShadowAlphaMaterial {
+            Some(shadow_pass::ShadowAlphaMaterial {
                 diffuse: diffuse.clone(),
                 uv_set: if class == shader_cache::CachedRigidShadowClass::VistaAlpha {
                     0
                 } else {
                     inputs
                         .world_uv_set
-                        .ok_or("native model Layer0 UV selector is absent")?
+                        .ok_or("game model Layer0 UV selector is absent")?
                 },
                 uv_scale_bias: if class == shader_cache::CachedRigidShadowClass::VistaAlpha {
                     [1.0, 1.0, 0.0, 0.0]
@@ -795,25 +795,25 @@ pub(super) fn prepare_native_model_shadow_instances(
                 ..
             } = provenance.surface
             else {
-                return Err("native skin shader has no MD6 vertex source".into());
+                return Err("game skin shader has no MD6 vertex source".into());
             };
             if skin_influences != program.skin_influences {
-                return Err("native skin stream and selected shader weight counts disagree".into());
+                return Err("game skin stream and selected shader weight counts disagree".into());
             }
             let skinning = source
                 .skinning
                 .as_ref()
-                .ok_or("native skin owner has no palette source")?
+                .ok_or("game skin owner has no palette source")?
                 .as_ref()
                 .map_err(Clone::clone)?;
             (
-                shadow_pass::NativeShadowProgram::Skinned {
+                shadow_pass::ShadowProgram::Skinned {
                     influences: program.skin_influences,
                     alpha: alpha.is_some(),
                     dither: program.alpha_dither,
                 },
-                shadow_pass::NativeShadowInstanceConstants::Skinned {
-                    constants: shadow_pass::native_skin_shadow_instance_cb(
+                shadow_pass::ShadowInstanceConstants::Skinned {
+                    constants: shadow_pass::skin_shadow_instance_cb(
                         &mvp,
                         matrix_offset,
                         multiplier,
@@ -825,28 +825,28 @@ pub(super) fn prepare_native_model_shadow_instances(
         } else {
             match class {
                 shader_cache::CachedRigidShadowClass::Opaque => (
-                    shadow_pass::NativeShadowProgram::RigidOpaque,
-                    shadow_pass::NativeShadowInstanceConstants::Rigid(
-                        shadow_pass::native_shadow_instance_cb(&mvp, multiplier),
+                    shadow_pass::ShadowProgram::RigidOpaque,
+                    shadow_pass::ShadowInstanceConstants::Rigid(
+                        shadow_pass::shadow_instance_cb(&mvp, multiplier),
                     ),
                 ),
                 shader_cache::CachedRigidShadowClass::AlphaTested => (
-                    shadow_pass::NativeShadowProgram::RigidAlphaTested,
-                    shadow_pass::NativeShadowInstanceConstants::Rigid(
-                        shadow_pass::native_shadow_instance_cb(&mvp, multiplier),
+                    shadow_pass::ShadowProgram::RigidAlphaTested,
+                    shadow_pass::ShadowInstanceConstants::Rigid(
+                        shadow_pass::shadow_instance_cb(&mvp, multiplier),
                     ),
                 ),
                 shader_cache::CachedRigidShadowClass::VistaAlpha => (
-                    shadow_pass::NativeShadowProgram::RigidVistaAlpha,
-                    shadow_pass::NativeShadowInstanceConstants::Rigid(
-                        shadow_pass::native_shadow_instance_cb(&mvp, multiplier),
+                    shadow_pass::ShadowProgram::RigidVistaAlpha,
+                    shadow_pass::ShadowInstanceConstants::Rigid(
+                        shadow_pass::shadow_instance_cb(&mvp, multiplier),
                     ),
                 ),
                 shader_cache::CachedRigidShadowClass::Vegetation => {
                     vegetation
                         .0
                         .get(&mesh.id())
-                        .ok_or("native model wind channels are absent")?
+                        .ok_or("game model wind channels are absent")?
                         .as_ref()
                         .map_err(Clone::clone)?;
                     // Initial model constructor selects group0, with
@@ -854,11 +854,11 @@ pub(super) fn prepare_native_model_shadow_instances(
                     // update the actual owner before changing this path.
                     let time = clocks
                         .model_local_time(0.0, 4)
-                        .ok_or("native initial model clock is unavailable")?;
+                        .ok_or("game initial model clock is unavailable")?;
                     (
-                        shadow_pass::NativeShadowProgram::Vegetation,
-                        shadow_pass::NativeShadowInstanceConstants::Vegetation(
-                            shadow_pass::native_vegetation_shadow_instance_cb(
+                        shadow_pass::ShadowProgram::Vegetation,
+                        shadow_pass::ShadowInstanceConstants::Vegetation(
+                            shadow_pass::vegetation_shadow_instance_cb(
                                 alpha.as_ref().unwrap().uv_scale_bias,
                                 &parameters.vegetation(None)?,
                                 &mvp,
@@ -870,7 +870,7 @@ pub(super) fn prepare_native_model_shadow_instances(
                 }
             }
         };
-        instances.push(shadow_pass::NativeShadowInstance {
+        instances.push(shadow_pass::ShadowInstance {
             mesh,
             per_instance_cb: constants,
             program,
@@ -879,7 +879,7 @@ pub(super) fn prepare_native_model_shadow_instances(
             cull_mode,
             draw_state: state,
             stencil_reference: 0,
-            scissor: shadow_pipeline::NativeShadowScissor {
+            scissor: shadow_pipeline::ShadowScissor {
                 x: 0,
                 y: 0,
                 width: dimensions[0],
@@ -959,17 +959,17 @@ mod layer_preparation_tests {
     }
 }
 
-pub(super) fn prepare_native_parallel_model_draws(
-    cpu: Res<NativeParallelShadowCpu>,
-    owner: Option<Res<NativeParallelShadowOwner>>,
-    sources: Res<NativeModelShadowSources>,
+pub(super) fn prepare_parallel_model_draws(
+    cpu: Res<ParallelShadowCpu>,
+    owner: Option<Res<ParallelShadowOwner>>,
+    sources: Res<ModelShadowSources>,
     placements: Res<RenderSourcePlacements>,
-    materials: Res<NativeShadowMaterials>,
+    materials: Res<ShadowMaterials>,
     images: Res<Assets<Image>>,
-    vegetation: Res<NativeVegetationMeshInputs>,
+    vegetation: Res<VegetationMeshInputs>,
     queue: Res<SceneRenderQueue>,
     mut commands: Commands,
-    mut output: ResMut<NativeParallelModelDraws>,
+    mut output: ResMut<ParallelModelDraws>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(23));
@@ -978,14 +978,14 @@ pub(super) fn prepare_native_parallel_model_draws(
         return;
     };
     let mut shadow_textures = super::scene_queue::ShadowTextureRequests::new(&queue);
-    let result = (|| -> Result<Vec<Vec<shadow_pass::NativeShadowInstance>>, String> {
+    let result = (|| -> Result<Vec<Vec<shadow_pass::ShadowInstance>>, String> {
         let casters = frame
             .models
             .as_ref()
-            .ok_or("native model collector has no matching frame")?;
+            .ok_or("game model collector has no matching frame")?;
         let count = frame.masks.len();
         if frame.initialized[..count].iter().any(|&ready| !ready) {
-            return Err("native model draws await cascade initialization".into());
+            return Err("game model draws await cascade initialization".into());
         }
         let partial = owner.cascade_controls.partial_dynamic_update;
         let preceding = if count >= 2 {
@@ -1015,7 +1015,7 @@ pub(super) fn prepare_native_parallel_model_draws(
         let maximum = if partial { authored } else { f32::MAX };
         let results = prepare_shadow_layers(count, |layer| {
             let mut requests = super::scene_queue::ShadowTextureRequests::new(&queue);
-            let result = (|| -> Result<Vec<shadow_pass::NativeShadowInstance>, String> {
+            let result = (|| -> Result<Vec<shadow_pass::ShadowInstance>, String> {
                 let mut instances = Vec::new();
                 if frame.slice_plans[layer].skip
                     || (layer == count - 1 && limited && queue.static_world_model_present)
@@ -1025,7 +1025,7 @@ pub(super) fn prepare_native_parallel_model_draws(
                 let cascade = &cpu.prepared.cascades[layer];
                 let margin = cascade.depth_offset;
                 if !margin.is_finite() {
-                    return Err("native directional model clip margin is non-finite".into());
+                    return Err("game directional model clip margin is non-finite".into());
                 }
                 let clip: [f32; 16] = std::array::from_fn(|i| cascade.clip[i / 4][i % 4]);
                 // FUN_140328260 runs separately for both model buckets. Both
@@ -1039,14 +1039,14 @@ pub(super) fn prepare_native_parallel_model_draws(
                     }) {
                         let source = &sources.0[caster.source];
                         let culled = if margin < 0.0 {
-                            render_model::native_transformed_aabb_clip_cull_at_depth(
+                            render_model::transformed_aabb_clip_cull_at_depth(
                                 &clip,
                                 source.bounds[0],
                                 source.bounds[1],
                                 margin,
                             )
                         } else {
-                            render_model::native_transformed_aabb_clip_cull(
+                            render_model::transformed_aabb_clip_cull(
                                 &clip,
                                 source.bounds[0],
                                 source.bounds[1],
@@ -1066,7 +1066,7 @@ pub(super) fn prepare_native_parallel_model_draws(
                         }
                     }
                     render_model::sort_model_shadow_records(&mut records, &mut keys)?;
-                    instances.extend(prepare_native_model_shadow_instances(
+                    instances.extend(prepare_model_shadow_instances(
                         &records,
                         cascade.clip,
                         owner.hardware_bias,
@@ -1092,7 +1092,7 @@ pub(super) fn prepare_native_parallel_model_draws(
         Ok(layers) => {
             if output.last_error.take().is_some() || !output.reported {
                 println!(
-                    "Native model shadow submissions online: {} draws",
+                    "Model shadow submissions online: {} draws",
                     layers.iter().map(Vec::len).sum::<usize>()
                 );
                 output.reported = true;
@@ -1101,25 +1101,25 @@ pub(super) fn prepare_native_parallel_model_draws(
         }
         Err(error) => {
             if output.last_error.as_ref() != Some(&error) {
-                eprintln!("Native model shadow submissions pending: {error}");
+                eprintln!("Model shadow submissions pending: {error}");
                 output.last_error = Some(error);
             }
         }
     }
 }
 
-pub(super) fn prepare_native_parallel_world_draws(
-    cpu: Res<NativeParallelShadowCpu>,
-    owner: Option<Res<NativeParallelShadowOwner>>,
+pub(super) fn prepare_parallel_world_draws(
+    cpu: Res<ParallelShadowCpu>,
+    owner: Option<Res<ParallelShadowOwner>>,
     scene: Res<SceneData>,
-    sources: Res<NativeWorldShadowMeshSources>,
-    materials: Res<NativeShadowMaterials>,
+    sources: Res<WorldShadowMeshSources>,
+    materials: Res<ShadowMaterials>,
     meshes: Res<Assets<Mesh>>,
     images: Res<Assets<Image>>,
     queue: Res<SceneRenderQueue>,
     mut commands: Commands,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
-    mut draws: ResMut<NativeParallelWorldDraws>,
+    mut draws: ResMut<ParallelWorldDraws>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(22));
@@ -1128,16 +1128,16 @@ pub(super) fn prepare_native_parallel_world_draws(
         return;
     };
     let mut shadow_textures = super::scene_queue::ShadowTextureRequests::new(&queue);
-    let admission = super::shadow_preparation::NativeWorldShadowAdmission::new(
+    let admission = super::shadow_preparation::WorldShadowAdmission::new(
         &scene.world,
         &sources,
         &materials,
     );
 
-    let result = (|| -> Result<Vec<shadow_pass::NativeShadowLayer>, String> {
+    let result = (|| -> Result<Vec<shadow_pass::ShadowLayer>, String> {
         let count = frame.masks.len();
         if frame.initialized[..count].iter().any(|&ready| !ready) {
-            return Err("native world draws await initialized cascade projections".into());
+            return Err("game world draws await initialized cascade projections".into());
         }
         if draws.static_layers.len() != count {
             draws.static_layers = (0..count).map(|_| None).collect();
@@ -1155,7 +1155,7 @@ pub(super) fn prepare_native_parallel_world_draws(
                 let cached = plan.write_static_cache || plan.reuse_static_cache;
                 let (mask, clip, time, generation) = if cached {
                     let retained = frame.static_frames[layer].as_ref().ok_or_else(|| {
-                        format!("native layer {layer} has no retained static source frame")
+                        format!("game layer {layer} has no retained static source frame")
                     })?;
                     (
                         &retained.mask,
@@ -1204,12 +1204,12 @@ pub(super) fn prepare_native_parallel_world_draws(
         let mut layers = Vec::with_capacity(count);
         for (layer, prepared) in plans.into_iter().enumerate() {
             let Some((generation, prepared)) = prepared else {
-                layers.push(shadow_pass::NativeShadowLayer {
-                    ops: shadow_pass::NativeShadowLayerOps {
-                        depth: shadow_pass::NativeShadowLoad::Load,
-                        stencil: shadow_pass::NativeStencilLoad::Load,
+                layers.push(shadow_pass::ShadowLayer {
+                    ops: shadow_pass::ShadowLayerOps {
+                        depth: shadow_pass::ShadowLoad::Load,
+                        stencil: shadow_pass::StencilLoad::Load,
                     },
-                    cache: shadow_pass::NativeShadowCacheOp::None,
+                    cache: shadow_pass::ShadowCacheOp::None,
                     instances: Vec::new(),
                 });
                 continue;
@@ -1235,7 +1235,7 @@ pub(super) fn prepare_native_parallel_world_draws(
                 None => draws.static_layers[layer].as_ref().unwrap().1.clone(),
             };
             if cached {
-                built.cache = shadow_pass::NativeShadowCacheOp::Retained {
+                built.cache = shadow_pass::ShadowCacheOp::Retained {
                     generation: u64::from(generation),
                     static_instances: built.instances.len(),
                 };
@@ -1250,7 +1250,7 @@ pub(super) fn prepare_native_parallel_world_draws(
         Ok(layers) => {
             if draws.last_error.take().is_some() {
                 println!(
-                    "Native parallel BWM submissions online: {} cascades, {} draws",
+                    "Parallel BWM submissions online: {} cascades, {} draws",
                     layers.len(),
                     layers
                         .iter()
@@ -1262,28 +1262,28 @@ pub(super) fn prepare_native_parallel_world_draws(
         }
         Err(error) => {
             if draws.last_error.as_ref() != Some(&error) {
-                eprintln!("Native parallel BWM submissions pending: {error}");
+                eprintln!("Parallel BWM submissions pending: {error}");
                 draws.last_error = Some(error);
             }
         }
     }
 }
 
-pub(super) fn prepare_native_parallel_shadow_cpu(
-    owner: Option<Res<NativeParallelShadowOwner>>,
+pub(super) fn prepare_parallel_shadow_cpu(
+    owner: Option<Res<ParallelShadowOwner>>,
     scene: Res<SceneData>,
     queue: Res<SceneRenderQueue>,
     world: Option<Res<TomeWorld>>,
-    caster_world: Option<Res<NativeShadowCasterWorld>>,
-    model_bounds: Res<NativeShadowModelBoundsSources>,
+    caster_world: Option<Res<ShadowCasterWorld>>,
+    model_bounds: Res<ShadowModelBoundsSources>,
     pickups: Res<PickupState>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
-    coarse: Res<coarse_depth::NativeCoarseDepthMailbox>,
+    coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
-    settings: Res<NativeViewSettings>,
-    clocks: Res<game_clock_runtime::NativeGameplayViewClock>,
-    model_frame: Res<NativeModelCasterFrame>,
-    mut cpu: ResMut<NativeParallelShadowCpu>,
+    settings: Res<ViewSettings>,
+    clocks: Res<game_clock_runtime::GameplayViewClock>,
+    model_frame: Res<ModelCasterFrame>,
+    mut cpu: ResMut<ParallelShadowCpu>,
     mut receiver_dumped: Local<bool>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
 ) {
@@ -1300,27 +1300,27 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
     );
     let cache_queries = std::env::var("DH2_CACHE_SHADOW_QUERIES").as_deref() != Ok("0");
     let verify_queries = std::env::var("DH2_VERIFY_SHADOW_QUERY_CACHE").as_deref() == Ok("1");
-    let result = (|| -> Result<NativeParallelCasterFrame, String> {
+    let result = (|| -> Result<ParallelCasterFrame, String> {
         let world = world
             .as_deref()
-            .ok_or("native caster gather has no Tome owner")?;
+            .ok_or("game caster gather has no Tome owner")?;
         let caster_world = caster_world
             .as_deref()
-            .ok_or("native caster Tome cache is unavailable")?;
+            .ok_or("game caster Tome cache is unavailable")?;
         let (camera, transform, projection) = cameras.single().map_err(|e| e.to_string())?;
         let host_projection = projection;
         let Projection::Custom(custom) = projection else {
             return Err(
-                "native cascade fitting requires the original finite camera projection".into(),
+                "game cascade fitting requires the reference finite camera projection".into(),
             );
         };
         let projection = custom
-            .get::<camera_projection::NativeGameProjection>()
-            .ok_or("native gameplay projection type is unavailable")?;
+            .get::<camera_projection::GameProjection>()
+            .ok_or("game gameplay projection type is unavailable")?;
         let camera_projection = projection.rows();
         let mut inverse_projection = [[0.0; 4]; 4];
         if !render_shadow::invert_rows(&camera_projection, &mut inverse_projection) {
-            return Err("native gameplay projection is singular".into());
+            return Err("game gameplay projection is singular".into());
         }
         let pose = game_pose_from_view_transform(transform);
         let authored_shadow_near = cpu.shadow_extent.update(
@@ -1342,17 +1342,17 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             .layers
             .checked_sub(1)
             .filter(|count| (1..=4).contains(count))
-            .ok_or("native atlas has no cascade layers")? as usize;
+            .ok_or("game atlas has no cascade layers")? as usize;
         let controls = owner.cascade_controls;
         let effective_far = if controls.tighten_parallel_shadows {
             let snapshot = coarse
                 .latest()?
-                .ok_or("native adaptive GPU depth has not mapped yet")?;
+                .ok_or("game adaptive GPU depth has not mapped yet")?;
             let viewport = camera
                 .physical_viewport_size()
-                .ok_or("native camera has no viewport")?;
+                .ok_or("game camera has no viewport")?;
             if snapshot.metadata.source_extent != [viewport.x, viewport.y] {
-                return Err("native adaptive GPU depth awaits the resized camera target".into());
+                return Err("game adaptive GPU depth awaits the resized camera target".into());
             }
             // For count1 the preceding relocated pointer's high word is a
             // positive subnormal. Its projected threshold exceeds every
@@ -1389,7 +1389,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
         };
         if std::env::var_os("DH2_TRACE_SHADOW_GEOMETRY").is_some() && frame_count.0 % 300 == 0 {
             eprintln!(
-                "Native adaptive candidate frame={} far={effective_far}",
+                "Adaptive candidate frame={} far={effective_far}",
                 frame_count.0
             );
         }
@@ -1414,14 +1414,14 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
         };
         let environment = scene
             .environment_lighting
-            .ok_or("native shadow sun is unavailable")?;
+            .ok_or("game shadow sun is unavailable")?;
         let toward_sun = render_shadow::environment_sun_direction(
             environment
                 .sun_theta_degrees
-                .ok_or("native sun theta is unavailable")?,
+                .ok_or("game sun theta is unavailable")?,
             environment
                 .sun_phi_degrees
-                .ok_or("native sun phi is unavailable")?,
+                .ok_or("game sun phi is unavailable")?,
         );
         let previous = cpu.prepared.fars;
         let fit_span = profile.as_deref().map(|p| p.measure(38));
@@ -1458,30 +1458,30 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             .shadow_ordinary_query
             .as_ref()
             .and_then(|output| output.state.as_ref())
-            .ok_or("native receiver has no valid merged ordinary query")?;
+            .ok_or("game receiver has no valid merged ordinary query")?;
         let depth = ordinary
             .depth_grid
             .as_deref()
-            .ok_or("native ordinary query has no depth grid")?;
+            .ok_or("game ordinary query has no depth grid")?;
         let viewport = camera
             .physical_viewport_size()
-            .ok_or("native camera has no viewport")?;
-        let scale = native_view_distance_scale(host_projection, viewport, Some(&settings))?;
-        let distance = (scale != 1.0).then_some(NativeShadowDistanceDescriptor {
+            .ok_or("game camera has no viewport")?;
+        let scale = view_distance_scale(host_projection, viewport, Some(&settings))?;
+        let distance = (scale != 1.0).then_some(ShadowDistanceDescriptor {
             center: [0.0; 3],
             radius: scale,
             override_center: false,
         });
         let dynamic_bounds = model_bounds.active_bounds(&queue, &pickups)?;
         let ray = toward_sun.map(|value| f32::from_bits(value.to_bits() ^ 0x8000_0000));
-        let mut depth_projection = NativeReceiverDepthProjection {
+        let mut depth_projection = ReceiverDepthProjection {
             receiver_rows: [[0.0; 4]; 4],
             transposed_rows: [[0.0; 4]; 4],
             mask: Box::new([0; 128 * 128]),
         };
         let receiver_span = profile.as_deref().map(|p| p.measure(39));
-        let receiver = shadow_receiver::initialize_native_receiver(
-            shadow_receiver::NativeReceiverInput {
+        let receiver = shadow_receiver::initialize_receiver(
+            shadow_receiver::ReceiverInput {
                 flags: 0,
                 camera_clip_rows: ordinary.render_rows,
                 camera_position: ordinary.camera_point,
@@ -1530,24 +1530,24 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             }
         }
         if cpu.masks.is_none() {
-            cpu.masks = Some(NativeShadowInstanceMasks::new(
+            cpu.masks = Some(ShadowInstanceMasks::new(
                 scene.world.visibility.len(),
                 count,
             ));
             cpu.static_frames = (0..count).map(|_| None).collect();
         }
         cpu.masks.as_mut().unwrap().clear();
-        if receiver.status == shadow_receiver::NativeReceiverStatus::Initialized {
+        if receiver.status == shadow_receiver::ReceiverStatus::Initialized {
             // An uninitialized, skipped slice cannot contribute a submission.
             // Prune only those independent tests, then restore physical bits.
             let active: Vec<usize> = (0..count).filter(|&index| cpu.initialized[index]).collect();
             if active.is_empty() {
-                return Err("native cascade initialization is pending".into());
+                return Err("game cascade initialization is pending".into());
             }
             let cascades = active
                 .iter()
                 .map(|&index| {
-                    NativeShadowFrustumQuery::from_projection_rows(
+                    ShadowFrustumQuery::from_projection_rows(
                         cpu.prepared.cascades[index].caster_clip,
                     )
                 })
@@ -1555,7 +1555,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             if cpu.gather_count != active.len() {
                 cpu.gather = (0..8)
                     .map(|_| {
-                        NativeGlobalShadowCasterScratch::new(
+                        GlobalShadowCasterScratch::new(
                             caster_world.0.object_count(),
                             active.len(),
                         )
@@ -1565,21 +1565,21 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             }
             let cascades = cascades
                 .iter()
-                .map(NativeShadowFrustumQuery::as_receiver)
+                .map(ShadowFrustumQuery::as_receiver)
                 .collect::<Vec<_>>();
             let planes: Vec<usize> = (0..receiver.plane_count).collect();
-            let primary = VerifiedShadowReceiverState::from_native_planes(
+            let primary = ShadowReceiverState::from_planes(
                 &receiver.planes[..receiver.plane_count],
                 &planes,
             );
-            let direction = NativeCasterDirection::from_receiver_direction(ray)?;
+            let direction = CasterDirection::from_receiver_direction(ray)?;
             // 330c10 dispatches eight gatherCaster jobs (32a690), each with
             // independent TLS scratch. Preserve their exact aligned ranges,
             // then merge in job order before the native parent suppression.
             let object_distance =
-                NativeShadowObjectDistanceQuery::from_descriptor(ordinary.camera_point, distance);
+                ShadowObjectDistanceQuery::from_descriptor(ordinary.camera_point, distance);
             let gather_span = profile.as_deref().map(|p| p.measure(40));
-            let common_input = NativeGlobalShadowCasterInput {
+            let common_input = GlobalShadowCasterInput {
                 source: &world.bytes,
                 primary,
                 cascades: &cascades,
@@ -1598,10 +1598,10 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 )
             });
             let cached = key.as_ref().and_then(|key| cpu.gather_cache.get(key));
-            let force_original = verify_queries
+            let force_fresh_query = verify_queries
                 || (!cpu.gather_verified
                     && std::env::var_os("DH2_VERIFY_PARALLEL_CASTER_JOBS").is_some());
-            if let Some(cached) = cached.as_ref().filter(|_| !force_original) {
+            if let Some(cached) = cached.as_ref().filter(|_| !force_fresh_query) {
                 for hits in cached.iter() {
                     cpu.masks
                         .as_mut()
@@ -1618,7 +1618,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                                 scratch
                                     .gather(
                                         caster_tome,
-                                        &NativeGlobalShadowCasterInput {
+                                        &GlobalShadowCasterInput {
                                             job: job as u32,
                                             ..common_input
                                         },
@@ -1632,14 +1632,14 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 if !cpu.gather_verified
                     && std::env::var_os("DH2_VERIFY_PARALLEL_CASTER_JOBS").is_some()
                 {
-                    let mut serial = NativeGlobalShadowCasterScratch::new(
+                    let mut serial = GlobalShadowCasterScratch::new(
                         caster_world.0.object_count(),
                         active.len(),
                     );
                     for (job, result) in &gathered {
                         let expected = serial.gather(
                             &caster_world.0,
-                            &NativeGlobalShadowCasterInput {
+                            &GlobalShadowCasterInput {
                                 job: *job as u32,
                                 ..common_input
                             },
@@ -1681,7 +1681,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                     assert_eq!(
                         cached.as_ref(),
                         &physical_results,
-                        "cached caster query differs from original eight-job gather"
+                        "cached caster query differs from reference eight-job gather"
                     );
                 }
                 if let Some(key) = key {
@@ -1707,7 +1707,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             )?;
         }
         if cpu.world_query.is_none() {
-            cpu.world_query = Some(crate::local_caster_query::NativeLocalWorldQuery::new(
+            cpu.world_query = Some(crate::local_caster_query::LocalWorldQuery::new(
                 &scene.world,
             ));
             cpu.projection_cache.clear();
@@ -1720,7 +1720,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 let clip = cascade.clip;
                 let margin = cascade.depth_offset;
                 let broad = if cache_queries {
-                    let NativeParallelShadowCpu {
+                    let ParallelShadowCpu {
                         world_query,
                         projection_cache,
                         ..
@@ -1793,7 +1793,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
             .collect();
         for (layer, plan) in slice_plans.iter().enumerate() {
             if plan.write_static_cache && cpu.initialized[layer] {
-                cpu.static_frames[layer] = Some(Arc::new(NativeStaticShadowFrame {
+                cpu.static_frames[layer] = Some(Arc::new(StaticShadowFrame {
                     frame: frame_count.0,
                     mask: cpu.masks.as_ref().unwrap().masks()[layer].clone(),
                     clip: cpu.prepared.cascades[layer].clip,
@@ -1801,7 +1801,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
                 }));
             }
         }
-        Ok(NativeParallelCasterFrame {
+        Ok(ParallelCasterFrame {
             frame: frame_count.0,
             masks: cpu.masks.as_ref().unwrap().masks().to_vec(),
             receiver,
@@ -1818,7 +1818,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
         Ok(frame) => {
             if cpu.last_error.take().is_some() {
                 println!(
-                    "Native parallel CPU frame online: {} cascades, {} world caster selections",
+                    "Parallel CPU frame online: {} cascades, {} world caster selections",
                     frame.masks.len(),
                     frame
                         .masks
@@ -1832,7 +1832,7 @@ pub(super) fn prepare_native_parallel_shadow_cpu(
         }
         Err(error) => {
             if cpu.last_error.as_ref() != Some(&error) {
-                eprintln!("Native parallel CPU frame pending: {error}");
+                eprintln!("Parallel CPU frame pending: {error}");
                 cpu.last_error = Some(error);
             }
         }

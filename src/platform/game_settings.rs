@@ -56,7 +56,7 @@ fn quoted_multi_value<'a>(source: &'a str, name: &str) -> Result<Option<&'a str>
 
 /// The original `%f` conversions accept a valid numeric prefix and ignore
 /// trailing characters, unlike Rust's all-or-nothing float parser.
-fn original_float_prefix(value: &str) -> Option<f32> {
+fn float_prefix(value: &str) -> Option<f32> {
     let value = value.trim_start();
     (1..=value.len())
         .rev()
@@ -64,13 +64,13 @@ fn original_float_prefix(value: &str) -> Option<f32> {
         .find_map(|prefix| prefix.parse::<f32>().ok())
 }
 
-fn original_four_float_cvar(value: &str) -> Option<[f32; 4]> {
+fn four_float_cvar(value: &str) -> Option<[f32; 4]> {
     let mut values = value.split_ascii_whitespace();
     Some([
-        original_float_prefix(values.next()?)?,
-        original_float_prefix(values.next()?)?,
-        original_float_prefix(values.next()?)?,
-        original_float_prefix(values.next()?)?,
+        float_prefix(values.next()?)?,
+        float_prefix(values.next()?)?,
+        float_prefix(values.next()?)?,
+        float_prefix(values.next()?)?,
     ])
 }
 
@@ -133,7 +133,7 @@ impl Default for ShadowCascadeControls {
 /// FUN_140102cb0 converts a float CVar with `_atof_l` (1411b578c), then
 /// normalizes malformed trailing text through `FUN_140143c70`. Preserve the
 /// numeric prefix rather than Rust's all-or-nothing `f32::parse` behavior.
-fn original_float_cvar(value: &str) -> f32 {
+fn float_cvar(value: &str) -> f32 {
     let value = value.trim_start();
     (0..=value.len())
         .rev()
@@ -143,7 +143,7 @@ fn original_float_cvar(value: &str) -> f32 {
 }
 
 /// Native Windows strtol(base10) result, before the caller's range clamp.
-fn original_integer_cvar(value: &str) -> i32 {
+fn integer_cvar(value: &str) -> i32 {
     let mut bytes = value
         .bytes()
         .skip_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
@@ -164,38 +164,38 @@ fn original_integer_cvar(value: &str) -> i32 {
 }
 
 fn parallel_slice_size(value: &str) -> u32 {
-    original_integer_cvar(value).clamp(256, 16384) as u32
+    integer_cvar(value).clamp(256, 16384) as u32
 }
 
 pub fn shadow_settings(source: &str) -> Result<ShadowSettings, String> {
     Ok(ShadowSettings {
         quality_preset: shadow_quality_preset(source)?,
         cascade_fars: quoted_multi_value(source, "r_shadowCascadeFars")?
-            .and_then(original_four_float_cvar),
+            .and_then(four_float_cvar),
         parallel_slice_size: quoted_setting(source, "r_shadowParallelSliceSize")?
             .map(parallel_slice_size)
-            .unwrap_or(crate::render_shadow::ORIGINAL_PARALLEL_SLICE_SIZE),
+            .unwrap_or(crate::render_shadow::PARALLEL_SLICE_SIZE),
         // FUN_141372dc0 registers r_depthBiasClamp with this default.
         depth_bias_clamp: quoted_setting(source, "r_depthBiasClamp")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(1000.0),
         // FUN_1413647f0: native integer CVar default "1". The shadow
         // submission tests the resulting integer for nonzero, not ==1.
         sort_shadows_ccw: quoted_setting(source, "r_sortShadowsCCW")?
-            .map(original_integer_cvar)
+            .map(integer_cvar)
             .unwrap_or(1)
             != 0,
         cascade_controls: ShadowCascadeControls {
             tighten_parallel_shadows: quoted_setting(source, "r_tightenParallelShadows")?
-                .map(original_integer_cvar)
+                .map(integer_cvar)
                 .unwrap_or(1)
                 != 0,
             partial_dynamic_update: quoted_setting(source, "r_shadowParallelPartialDynaUpdate")?
-                .map(original_integer_cvar)
+                .map(integer_cvar)
                 .unwrap_or(1)
                 != 0,
             partial_slice_update: quoted_setting(source, "r_shadowParallelPartialSliceUpdate")?
-                .map(original_integer_cvar)
+                .map(integer_cvar)
                 .unwrap_or(1)
                 != 0,
         },
@@ -218,7 +218,7 @@ pub fn local_shadow_settings(source: &str) -> Result<LocalShadowSettings, String
     let integer = |name: &str, default| {
         Ok::<_, String>(
             quoted_setting(source, name)?
-                .map(original_integer_cvar)
+                .map(integer_cvar)
                 .unwrap_or(default),
         )
     };
@@ -257,7 +257,7 @@ pub enum ImageFilter {
 }
 
 impl ImageFilter {
-    pub fn from_native_token(value: &str) -> Result<Self, String> {
+    pub fn from_token(value: &str) -> Result<Self, String> {
         if value.eq_ignore_ascii_case("linear") {
             Ok(Self::Linear)
         } else if value.eq_ignore_ascii_case("point") {
@@ -289,19 +289,19 @@ pub struct ImageSamplingSettings {
 /// Remaining original sampler path: FUN_1402d9300 parses sampler declarations
 /// then dispatches PTR_PTR_1422fda18 vtable +0x30, now resolved offline to
 /// FUN_140378280. Its descriptor arithmetic is implemented/tested separately
-/// by render_state::native_sampler_descriptor (768 original executions).
+/// by render_state::sampler_descriptor (768 original executions).
 /// Cache/mutex/allocation/device interfaces and FUN_1402d9850's address-token
 /// decoder are not integrated. FUN_1402eb6f0's image-cache lookup and
 /// FUN_1402eb750's allocation/locking owner are not covered by this parser.
 pub fn image_sampling_settings(source: &str) -> Result<ImageSamplingSettings, String> {
     let filter = |name| {
         quoted_setting(source, name)?
-            .map(ImageFilter::from_native_token)
+            .map(ImageFilter::from_token)
             .transpose()
             .map(|value| value.unwrap_or(ImageFilter::Linear))
     };
     let anisotropy = quoted_setting(source, "image_anisotropy")?
-        .map(original_float_cvar)
+        .map(float_cvar)
         .unwrap_or(1.0);
     Ok(ImageSamplingSettings {
         min_filter: filter("image_minFilter")?,
@@ -309,7 +309,7 @@ pub fn image_sampling_settings(source: &str) -> Result<ImageSamplingSettings, St
         mip_filter: filter("image_mipFilter")?,
         max_anisotropy: if anisotropy < 1.0 { 1.0 } else { anisotropy },
         mip_lod_bias: quoted_setting(source, "image_lodbias")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(0.0),
     })
 }
@@ -458,23 +458,23 @@ pub fn view_settings(source: &str) -> Result<ViewSettings, String> {
     Ok(ViewSettings {
         // FUN_141392b10: default 80, limits at 141c8e8a4/8a8 = 65/110.
         horizontal_fov_degrees: quoted_setting(source, "ark_fieldOfView")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(80.0)
             .clamp(65.0, 110.0),
         // FUN_1413759f0: default "1.0f", min/max 358637bd/49742400.
         lod_zoom_multiplier: quoted_setting(source, "r_lodZoomMultiplicator")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(1.0)
             .clamp(f32::from_bits(0x3586_37bd), f32::from_bits(0x4974_2400)),
         umbra_gate_visibility_ratio: quoted_setting(source, "r_umbraGateVisibilityRatio")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(1.0),
         //141379340/1413792f0 register unbounded float CVars "0.f"/"70.f".
         umbra_distance_imprecision: quoted_setting(source, "umbra_distance")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(0.0),
         umbra_accurate_threshold: quoted_setting(source, "umbra_accurateOcclusionThreshold")?
-            .map(original_float_cvar)
+            .map(float_cvar)
             .unwrap_or(70.0),
     })
 }
@@ -563,7 +563,7 @@ mod tests {
     }
     use super::*;
     #[test]
-    fn image_sampling_uses_registered_defaults_and_native_lower_bound() {
+    fn image_sampling_uses_registered_defaults_and_lower_bound() {
         let defaults = image_sampling_settings("").unwrap();
         assert_eq!(
             defaults,
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_size_uses_native_integer_prefix_and_range() {
+    fn slice_size_uses_integer_prefix_and_range() {
         for (source, expected) in [
             ("2048", 2048),
             ("+1024", 1024),
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn native_shadow_sort_control_retains_integer_prefix_and_nonzero_semantics() {
+    fn shadow_sort_control_retains_integer_prefix_and_nonzero_semantics() {
         for (value, expected) in [
             ("0", false),
             ("1", true),
@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn cascade_controls_preserve_native_names_defaults_and_integer_semantics() {
+    fn cascade_controls_preserve_names_defaults_and_integer_semantics() {
         assert_eq!(
             shadow_settings("").unwrap().cascade_controls,
             ShadowCascadeControls {
@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn native_cascade_far_cvar_parses_four_sscanf_style_float_prefixes() {
+    fn cascade_far_cvar_parses_four_sscanf_style_float_prefixes() {
         assert_eq!(shadow_settings("").unwrap().cascade_fars, None);
         assert_eq!(
             shadow_settings("r_shadowCascadeFars \"3 15 45 90\"")
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires installed original Saved Games configuration"]
-    fn original_configuration_resolves_without_modification() {
+    fn configuration_resolves_without_modification() {
         let (path, preset) = read_shadow_quality_preset().unwrap().unwrap();
         assert!(path.is_file());
         assert!(preset <= 6);

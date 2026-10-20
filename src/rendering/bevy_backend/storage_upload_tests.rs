@@ -71,7 +71,7 @@ fn shader_buffer_updates_preserve_gpu_data_and_order() {
         };
         let ids: Vec<_> = handles.iter().map(|h| gpu_buffer(&app, h).id()).collect();
         queue.write_buffer(&gpu_buffer(&app, &gpu_owned), 0, &[0x5a; 16]);
-        let original_gpu_id = gpu_buffer(&app, &gpu_owned).id();
+        let previous_gpu_id = gpu_buffer(&app, &gpu_owned).id();
         let readback = device.create_buffer(&BufferDescriptor {
             label: Some("shader buffer epochs readback"),
             size: 32 * 16 * 8 + 32,
@@ -114,7 +114,7 @@ fn shader_buffer_updates_preserve_gpu_data_and_order() {
             queue.submit([encoder.finish()]);
         }
         let resized = gpu_buffer(&app, &gpu_owned);
-        assert_ne!(resized.id(), original_gpu_id);
+        assert_ne!(resized.id(), previous_gpu_id);
         let mut encoder = device.create_command_encoder(&default());
         encoder.copy_buffer_to_buffer(&resized, 0, &readback, 32 * 16 * 8, 32);
         queue.submit([encoder.finish()]);

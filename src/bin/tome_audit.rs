@@ -476,7 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            println!("Decoded Tome object candidates: {streamed_candidate_count} across {local_cells} cells in batches up to {}; all runs and object indices valid", tome::ORIGINAL_OBJECT_QUERY_BATCH_SIZE);
+            println!("Decoded Tome object candidates: {streamed_candidate_count} across {local_cells} cells in batches up to {}; all runs and object indices valid", tome::OBJECT_QUERY_BATCH_SIZE);
         }
         if verify_traversal {
             println!("Traversal record classes: {} normal spatial references, {} flagged, {} out-of-range normal references",
@@ -538,7 +538,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         if let Some(leaf) = tree.leaf_for_point([point[0], point[1], point[2]]) {
             let bounds = tree.bounds(leaf).unwrap();
-            println!("Original global split-tree leaf: index {leaf}, record offset {:?}, bounds {:?} .. {:?}",
+            println!("Global split-tree leaf: index {leaf}, record offset {:?}, bounds {:?} .. {:?}",
                 tree.record_offset(leaf), bounds[0], bounds[1]);
             if let Some(offset) = tree.record_offset(leaf).filter(|&offset| offset != 0) {
                 let (center, tolerance) = tome::direct_link_query_quantization(
@@ -556,7 +556,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match cells.cell_for_point(&bytes, [point[0], point[1], point[2]]) {
                     Ok(Some(cell)) => {
                         let candidates = cells.object_candidates(&bytes, cell.cell_index)?;
-                        println!("Original local cell: node {}, leaf rank {}, cell index {}, cell ID {}, {} traversal records, {} object candidates, bounds {:?} .. {:?}",
+                        println!("Local cell: node {}, leaf rank {}, cell index {}, cell ID {}, {} traversal records, {} object candidates, bounds {:?} .. {:?}",
                             cell.tree_node, cell.leaf_rank, cell.cell_index, cell.cell_id,
                             cell.link_count, candidates.len(), cell.bounds[0], cell.bounds[1]);
                         println!("Candidate Tome object indices: {candidates:?}");
@@ -736,7 +736,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .filter(|&&index| !std::mem::replace(&mut covered[index], true))
             .count();
-        println!("Original post-Tome BWM lists: counts {auxiliary_counts:?}, new instances {auxiliary_new:?}; separate spatial list adds {spatial_new}; {} instances absent from all decoded lists",
+        println!("Post-Tome BWM lists: counts {auxiliary_counts:?}, new instances {auxiliary_new:?}; separate spatial list adds {spatial_new}; {} instances absent from all decoded lists",
             covered.iter().filter(|&&value| !value).count());
         let mut group_parents = std::collections::HashSet::new();
         let mut group_children = std::collections::HashSet::new();

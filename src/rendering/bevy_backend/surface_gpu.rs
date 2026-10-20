@@ -17,7 +17,7 @@ pub struct SurfaceUniform {
     pub flags: UVec4,
     pub misc: UVec4,
     /// Original forward receiver route, offset compile flags, filtering, light quality.
-    pub native_shadow: UVec4,
+    pub shadow: UVec4,
     pub specular_dielectric: Vec4,
     pub diffuse_metal: Vec4,
     pub specular_reuse: UVec4,
@@ -87,10 +87,10 @@ impl From<&SurfaceUniform> for SurfaceKey {
             surface.misc.z,
             surface.misc.w,
             u32::from(surface.alpha.y != 0.0),
-            surface.native_shadow.x,
-            surface.native_shadow.y,
-            surface.native_shadow.z,
-            surface.native_shadow.w,
+            surface.shadow.x,
+            surface.shadow.y,
+            surface.shadow.z,
+            surface.shadow.w,
             surface.specular_reuse.w,
             surface.filling_flags.x,
             u32::from(surface.misc.z == 7 || (surface.misc.z == 8 && surface.sky[4].x != 0.0)),
@@ -153,7 +153,7 @@ impl From<&Surface> for SurfaceUniform {
                 s.program() as u32,
                 u32::from(s.alpha_test),
             ),
-            native_shadow: UVec4::new(3, 0, 0, 0),
+            shadow: UVec4::new(3, 0, 0, 0),
             specular_dielectric: Vec3::from_array(s.specular_dielectric).extend(0.0),
             diffuse_metal: Vec3::from_array(s.diffuse_metal).extend(0.0),
             specular_reuse: UVec4::new(
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn native_specular_inputs_reach_uniforms_and_pipeline_key() {
+    fn specular_inputs_reach_uniforms_and_pipeline_key() {
         let surface=Surface::parse(b"hasSpecularMap 1\nextraLayer 2\nspecularMap original.tga\nLayer1_specularReuseLayer 1\nLayer2_specularReuseLayer 2\nspecularTintDielectric {0.02,0.03,0.07}\ndiffuseAlbedoMetallic {0.01,0.02,0.03}\n");
         let uniform = SurfaceUniform::from(&surface);
         assert_eq!(surface.layers[0].specular.as_deref(), Some("original.tga"));
@@ -296,12 +296,12 @@ mod tests {
     }
 
     #[test]
-    fn original_shadow_compile_options_select_distinct_pipelines() {
+    fn shadow_compile_options_select_distinct_pipelines() {
         let uniform = SurfaceUniform::from(&Surface::parse(b"mainProgram arkDefault\n"));
         let key = SurfaceKey::from(&uniform);
         for component in 0..4 {
             let mut changed = uniform.clone();
-            changed.native_shadow[component] ^= 1;
+            changed.shadow[component] ^= 1;
             assert_ne!(
                 SurfaceKey::from(&changed),
                 key,

@@ -1,13 +1,13 @@
 //! Original local atlas/cache submission, using the shared native draw binder.
 use super::*;
 use crate::render_shadow::AtlasAllocation;
-use crate::shadow_depth_copy::NativeShadowDepthCopy;
+use crate::shadow_depth_copy::ShadowDepthCopy;
 use std::collections::HashMap;
 #[path = "local/receiver_trace.rs"]
 mod receiver_trace;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeLocalShadowRegion {
+pub struct LocalShadowRegion {
     pub atlas: AtlasAllocation,
     pub cache: Option<AtlasAllocation>,
     pub static_instances: usize,
@@ -16,7 +16,7 @@ pub struct NativeLocalShadowRegion {
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeLocalShadowSubmission {
+pub struct LocalShadowSubmission {
     pub revision: u64,
     pub atlas: Handle<Image>,
     pub cache: Handle<Image>,
@@ -24,13 +24,13 @@ pub struct NativeLocalShadowSubmission {
     pub cache_extent: [u32; 3],
     pub depth_32_bits: bool,
     pub copy_state: [u32; 9],
-    pub layers: Vec<NativeShadowLayer>,
-    pub regions: Vec<NativeLocalShadowRegion>,
-    pub receiver: Result<NativeLocalShadowReceiver, String>,
+    pub layers: Vec<ShadowLayer>,
+    pub regions: Vec<LocalShadowRegion>,
+    pub receiver: Result<LocalShadowReceiver, String>,
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeLocalShadowReceiverLight {
+pub struct LocalShadowReceiverLight {
     pub entity: Entity,
     pub kind: u32,
     pub position: [f32; 3],
@@ -41,32 +41,32 @@ pub struct NativeLocalShadowReceiverLight {
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeLocalShadowReceiver {
+pub struct LocalShadowReceiver {
     pub bias: [f32; 3],
-    pub lights: Vec<NativeLocalShadowReceiverLight>,
+    pub lights: Vec<LocalShadowReceiverLight>,
     pub shadows: Vec<[u32; 36]>,
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 // A publication owns its immutable generation until both worlds release it.
 // Extracting it must not clone every local caster's CB and asset handles.
-pub struct NativeLocalShadowSceneFrame(pub Option<Arc<NativeLocalShadowSubmission>>);
+pub struct LocalShadowSceneFrame(pub Option<Arc<LocalShadowSubmission>>);
 
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct NativeLocalShadowCompletion(
+pub struct LocalShadowCompletion(
     pub Arc<Mutex<Option<(u64, AssetId<Image>, AssetId<Image>, HashMap<u32, bool>)>>>,
 );
 
 /// Forward pipeline readiness gates depth publication and diagnostic captures.
 /// Atlas completion alone cannot establish drawable forward geometry.
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct NativeShadowCaptureReadiness(pub Arc<std::sync::atomic::AtomicU32>);
+pub struct ShadowCaptureReadiness(pub Arc<std::sync::atomic::AtomicU32>);
 
 #[derive(Resource, Default)]
 struct LocalGpu {
-    programs: NativeShadowSceneGpu,
-    arrays: Option<(NativeShadowDepthArray, NativeShadowDepthArray)>,
-    copy: Option<([u32; 9], NativeShadowDepthCopy)>,
+    programs: ShadowSceneGpu,
+    arrays: Option<(ShadowDepthArray, ShadowDepthArray)>,
+    copy: Option<([u32; 9], ShadowDepthCopy)>,
     valid: HashMap<u32, bool>,
     receiver_error: Option<String>,
     receiver_reported: bool,
@@ -82,11 +82,11 @@ struct RetainedLocalAtlas {
     atlas: bevy::render::render_resource::TextureId,
     cache: bevy::render::render_resource::TextureId,
     copy_state: [u32; 9],
-    regions: Vec<NativeLocalShadowRegion>,
+    regions: Vec<LocalShadowRegion>,
 }
 impl RetainedLocalAtlas {
     fn idle(
-        frame: &NativeLocalShadowSubmission,
+        frame: &LocalShadowSubmission,
         atlas: bevy::render::render_resource::TextureId,
         cache: bevy::render::render_resource::TextureId,
         valid: &HashMap<u32, bool>,
@@ -111,14 +111,14 @@ impl RetainedLocalAtlas {
 }
 
 pub(super) fn install(app: &mut App) {
-    app.init_resource::<NativeLocalShadowSceneFrame>()
-        .init_resource::<NativeLocalShadowCompletion>()
-        .init_resource::<NativeShadowCaptureReadiness>()
-        .add_plugins(ExtractResourcePlugin::<NativeShadowCaptureReadiness>::default())
-        .add_plugins(ExtractResourcePlugin::<NativeLocalShadowSceneFrame>::default())
-        .add_plugins(ExtractResourcePlugin::<NativeLocalShadowCompletion>::default())
+    app.init_resource::<LocalShadowSceneFrame>()
+        .init_resource::<LocalShadowCompletion>()
+        .init_resource::<ShadowCaptureReadiness>()
+        .add_plugins(ExtractResourcePlugin::<ShadowCaptureReadiness>::default())
+        .add_plugins(ExtractResourcePlugin::<LocalShadowSceneFrame>::default())
+        .add_plugins(ExtractResourcePlugin::<LocalShadowCompletion>::default())
         .add_plugins(ExtractResourcePlugin::<
-            crate::shadow_sampling::NativeLocalSamplingBuffer,
+            crate::shadow_sampling::LocalSamplingBuffer,
         >::default());
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
@@ -151,7 +151,7 @@ struct HdrTrace {
 fn trace_hdr(
     mut trace: ResMut<HdrTrace>,
     gpu: Res<LocalGpu>,
-    readiness: Res<NativeShadowCaptureReadiness>,
+    readiness: Res<ShadowCaptureReadiness>,
     targets: Query<&bevy::render::view::ViewTarget>,
     device: Res<RenderDevice>,
     mut context: RenderContext,
@@ -176,7 +176,7 @@ fn trace_hdr(
         return;
     }
     use bevy::render::render_resource::*;
-    let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:Some("native shadow HDR diagnostic"),source:ShaderSource::Wgsl(r#"
+    let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:Some("shadow HDR diagnostic"),source:ShaderSource::Wgsl(r#"
         @group(0) @binding(0) var hdr:texture_2d<f32>;
         @group(0) @binding(1) var<storage,read_write> values:array<vec4<f32>>;
         @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
@@ -187,7 +187,7 @@ fn trace_hdr(
     let pipeline = device
         .wgpu_device()
         .create_compute_pipeline(&RawComputePipelineDescriptor {
-            label: Some("native shadow HDR diagnostic"),
+            label: Some("shadow HDR diagnostic"),
             layout: None,
             module: &shader,
             entry_point: Some("main"),
@@ -246,7 +246,7 @@ fn map_hdr_trace(mut trace: ResMut<HdrTrace>) {
         bevy::render::render_resource::MapMode::Read,
         move |result| {
             if let Err(error) = result {
-                eprintln!("Native HDR diagnostic mapping failed: {error}");
+                eprintln!("HDR diagnostic mapping failed: {error}");
                 return;
             }
             let mapped = callback.slice(..).get_mapped_range();
@@ -260,10 +260,10 @@ fn map_hdr_trace(mut trace: ResMut<HdrTrace>) {
                     rgba.map(f32::to_bits)
                 ));
             }
-            eprintln!("Native HDR before tonemapping:\n{text}");
+            eprintln!("HDR before tonemapping:\n{text}");
             if let Some(path) = std::env::var_os("DH2_TRACE_HDR") {
                 if let Err(error) = std::fs::write(path, &text) {
-                    eprintln!("Native HDR diagnostic write failed: {error}");
+                    eprintln!("HDR diagnostic write failed: {error}");
                 }
             }
             drop(mapped);
@@ -294,7 +294,7 @@ fn trace_material_readiness(
         }
     }
     eprintln!(
-        "Native material readiness: {} bindings, pipelines ready/error/pending={counts:?}",
+        "Material readiness: {} bindings, pipelines ready/error/pending={counts:?}",
         materials.len()
     );
     if let Some(keys) = depth_keys {
@@ -307,7 +307,7 @@ fn trace_material_readiness(
 }
 
 fn update_capture_readiness(
-    readiness: Res<NativeShadowCaptureReadiness>,
+    readiness: Res<ShadowCaptureReadiness>,
     materials: Res<bevy::pbr::RenderMaterialBindings>,
     pipelines: Res<bevy::render::render_resource::PipelineCache>,
 ) {
@@ -328,7 +328,7 @@ fn update_capture_readiness(
 }
 
 fn prepare(
-    frame: Res<NativeLocalShadowSceneFrame>,
+    frame: Res<LocalShadowSceneFrame>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut gpu: ResMut<LocalGpu>,
@@ -339,12 +339,12 @@ fn prepare(
     if gpu.programs.last_revision == Some(frame.revision) {
         return;
     }
-    upload_native_shadow_uniform_ring(&frame.layers, &device, &queue, &mut gpu.programs);
+    upload_shadow_uniform_ring(&frame.layers, &device, &queue, &mut gpu.programs);
 }
 
 fn draw(
-    frame: Res<NativeLocalShadowSceneFrame>,
-    completion: Res<NativeLocalShadowCompletion>,
+    frame: Res<LocalShadowSceneFrame>,
+    completion: Res<LocalShadowCompletion>,
     mut gpu: ResMut<LocalGpu>,
     allocator: Res<MeshAllocator>,
     meshes: Res<RenderAssets<RenderMesh>>,
@@ -353,7 +353,7 @@ fn draw(
     device: Res<RenderDevice>,
     adapter: Res<RenderAdapter>,
     mut context: RenderContext,
-    sampling: Option<Res<crate::shadow_sampling::NativeLocalSamplingBuffer>>,
+    sampling: Option<Res<crate::shadow_sampling::LocalSamplingBuffer>>,
     queue: Res<RenderQueue>,
     light_indices: Res<bevy::pbr::GlobalClusterableObjectMeta>,
     entities: Query<
@@ -379,7 +379,7 @@ fn draw(
         queue.write_buffer(&buffer.buffer, 0, &0u32.to_le_bytes());
     }
     if frame.layers.len() != frame.regions.len() {
-        bevy::log::error!("native local region/draw count mismatch");
+        bevy::log::error!("local region/draw count mismatch");
         return;
     }
     let (Some(atlas), Some(cache)) = (images.get(frame.atlas.id()), images.get(frame.cache.id()))
@@ -396,7 +396,7 @@ fn draw(
                     depth_or_array_layers: extent[2],
                 })
         {
-            bevy::log::error!("native local atlas allocation differs from its owner");
+            bevy::log::error!("local atlas allocation differs from its owner");
             return;
         }
     }
@@ -405,13 +405,13 @@ fn draw(
     });
     if replace {
         let result =
-            NativeShadowDepthArray::from_owned_texture(atlas.texture.clone(), "native local atlas")
+            ShadowDepthArray::from_owned_texture(atlas.texture.clone(), "local atlas")
                 .and_then(|a| {
                     Ok((
                         a,
-                        NativeShadowDepthArray::from_owned_texture(
+                        ShadowDepthArray::from_owned_texture(
                             cache.texture.clone(),
-                            "native local static cache",
+                            "local static cache",
                         )?,
                     ))
                 });
@@ -432,7 +432,7 @@ fn draw(
         .as_ref()
         .is_none_or(|(state, _)| *state != frame.copy_state)
     {
-        match NativeShadowDepthCopy::new(&device, format, frame.copy_state, false) {
+        match ShadowDepthCopy::new(&device, format, frame.copy_state, false) {
             Ok(copy) => gpu.copy = Some((frame.copy_state, copy)),
             Err(error) => {
                 bevy::log::error!("{error}");
@@ -456,7 +456,7 @@ fn draw(
         return;
     };
     let stride = gpu.programs.uniform_stride;
-    let Some(records) = prepare_native_shadow_records(
+    let Some(records) = prepare_shadow_records(
         &frame.layers,
         frame.depth_32_bits,
         None,
@@ -501,12 +501,12 @@ fn draw(
     } else {
         let diagnostics = context.diagnostic_recorder();
         let diagnostics = diagnostics.as_deref();
-        let span = diagnostics.time_span(context.command_encoder(), "native_local_shadows");
+        let span = diagnostics.time_span(context.command_encoder(), "local_shadows");
         let encoder = context.command_encoder();
         //32d6e0 clears each complete atlas slice once, before static regions.
-        let clear = NativeShadowLayerOps {
-            depth: NativeShadowLoad::Clear(1.0),
-            stencil: NativeStencilLoad::Clear(0),
+        let clear = ShadowLayerOps {
+            depth: ShadowLoad::Clear(1.0),
+            stencil: StencilLoad::Clear(0),
         };
         for slice in 0..atlas.size.depth_or_array_layers {
             clear_empty_layer(encoder, atlas, slice, clear);
@@ -523,7 +523,7 @@ fn draw(
                     draws.push((record.pipeline, record.draw(&programs.pipelines)));
                 }
                 if region.static_instances > draws.len() {
-                    return Err("native local static/dynamic boundary exceeds draws".into());
+                    return Err("local static/dynamic boundary exceeds draws".into());
                 }
                 let mut dynamic = draws.split_off(region.static_instances);
                 if let Some(allocation) = region.cache {
@@ -577,7 +577,7 @@ fn draw(
         result
     };
     if let Err(error) = result {
-        bevy::log::error!("native local atlas submission failed: {error}");
+        bevy::log::error!("local atlas submission failed: {error}");
         return;
     }
     *retained_atlas = idle_atlas;
@@ -597,7 +597,7 @@ fn draw(
     }
     if programs.last_revision.is_none() {
         println!(
-            "Native local shadow GPU atlas online: {} regions, {} completed static cache allocations",
+            "Local shadow GPU atlas online: {} regions, {} completed static cache allocations",
             frame.regions.len(),
             valid.len()
         );
@@ -605,12 +605,12 @@ fn draw(
     programs.last_revision = Some(frame.revision);
     let result = (|| -> Result<(), String> {
         let (sampling, buffer) =
-            sampling.ok_or("native local receiver transport awaits GPU preparation")?;
+            sampling.ok_or("local receiver transport awaits GPU preparation")?;
         let receiver = frame.receiver.as_ref().map_err(Clone::clone)?;
         let capacity = sampling.light_capacity as usize;
         let mut words =
             vec![0; crate::shadow_sampling::local_sampling_word_count(sampling.light_capacity)];
-        words[0] = u32::from(std::env::var_os("DH2_DISABLE_NATIVE_LOCAL_RECEIVER").is_none());
+        words[0] = u32::from(std::env::var_os("DH2_DISABLE_LOCAL_RECEIVER").is_none());
         words[1] = sampling.light_capacity;
         words[2] = receiver.shadows.len() as u32;
         words[4..6].copy_from_slice(
@@ -636,7 +636,7 @@ fn draw(
             };
             if index >= capacity {
                 return Err(
-                    "native local receiver light index exceeds its owned transport capacity".into(),
+                    "local receiver light index exceeds its owned transport capacity".into(),
                 );
             }
             let record = &mut words[16 + index * 16..16 + (index + 1) * 16];
@@ -657,18 +657,18 @@ fn draw(
         if !gpu.receiver_reported {
             if let Some(path) = std::env::var_os("DH2_CAPTURE_LOCAL_RECEIVER") {
                 std::fs::write(path, &bytes)
-                    .map_err(|e| format!("native local receiver capture: {e}"))?;
+                    .map_err(|e| format!("local receiver capture: {e}"))?;
             }
         }
         if buffer.buffer.size() < bytes.len() as u64 {
             return Err(
-                "native local receiver GPU buffer is smaller than the published schema".into(),
+                "local receiver GPU buffer is smaller than the published schema".into(),
             );
         }
         queue.write_buffer(&buffer.buffer, 0, &bytes);
         if !gpu.receiver_reported {
             println!(
-                "Native local shadow receiver online: {matched} actual clustered light indices, {} native shadow records",
+                "Local shadow receiver online: {matched} actual clustered light indices, {} native shadow records",
                 receiver.shadows.len()
             );
             gpu.receiver_reported = true;
@@ -679,7 +679,7 @@ fn draw(
         Ok(()) => gpu.receiver_error = None,
         Err(error) => {
             if gpu.receiver_error.as_ref() != Some(&error) {
-                bevy::log::warn!("Native local shadow receiver pending: {error}");
+                bevy::log::warn!("Local shadow receiver pending: {error}");
                 gpu.receiver_error = Some(error);
             }
         }
@@ -688,13 +688,13 @@ fn draw(
 
 fn draw_region(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
-    target: &NativeShadowDepthArray,
+    target: &ShadowDepthArray,
     allocation: AtlasAllocation,
     pipelines: &ShadowPipelineStore,
-    draws: &mut [(PipelineId, NativeOpaqueShadowDraw<'_>)],
+    draws: &mut [(PipelineId, ShadowDepthDraw<'_>)],
 ) -> Result<(), String> {
     let [x, y, x1, y1] = allocation.rect;
-    let scissor = NativeShadowScissor {
+    let scissor = ShadowScissor {
         x: x as u32,
         y: y as u32,
         width: (x1 - x + 1) as u32,
@@ -707,7 +707,7 @@ fn draw_region(
         .iter()
         .map(|(key, draw)| (&pipelines.by_id(*key).pipeline, &*draw))
         .collect::<Vec<_>>();
-    NativeOpaqueShadowPipeline::draw_layer_region_sequence(
+    ShadowDepthPipeline::draw_layer_region_sequence(
         encoder,
         target,
         allocation.slice as u32,

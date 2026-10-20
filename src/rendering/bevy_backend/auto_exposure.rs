@@ -16,12 +16,12 @@ use bevy::{
 use std::collections::HashMap;
 #[derive(Component, Clone, Copy, ExtractComponent, ShaderType, Debug)]
 #[require(bevy::camera::Hdr)]
-pub struct NativeExposure {
+pub struct ExposureParameters {
     pub range: Vec4,      // min/max world luminance, clip shadows/highlights
     pub adaptation: Vec4, // EV, white level, speed up/down
     pub camera: Vec4,     // reference camera FPS, F-stop bias, custom EV
 }
-impl NativeExposure {
+impl ExposureParameters {
     pub fn from_parameters(
         p: &crate::entities::EnvironmentRenderParameters,
     ) -> Result<Self, String> {
@@ -60,7 +60,7 @@ impl NativeExposure {
         Ok(settings)
     }
 }
-pub struct NativeExposurePlugin;
+pub struct ExposurePlugin;
 /// The gameplay view's previous adaptation state is also read by particle
 /// materials. Other views retain independent adaptation unless explicitly linked.
 #[derive(Component, Clone, ExtractComponent)]
@@ -79,7 +79,7 @@ struct Pipelines {
 #[derive(Resource, Default)]
 struct Views(HashMap<Entity, GpuView>);
 struct GpuView {
-    settings: UniformBuffer<NativeExposure>,
+    settings: UniformBuffer<ExposureParameters>,
     histogram: Buffer,
     state: Buffer,
     tick: u64,
@@ -87,7 +87,7 @@ struct GpuView {
 }
 #[derive(Resource, Default)]
 struct TraceCopies(Vec<(Buffer, u64, f64, std::path::PathBuf)>);
-impl Plugin for NativeExposurePlugin {
+impl Plugin for ExposurePlugin {
     fn build(&self, app: &mut App) {
         let shader = app
             .world_mut()
@@ -106,7 +106,7 @@ impl Plugin for NativeExposurePlugin {
                 ),
                 "shaders/dh2_exposure.wgsl",
             ));
-        app.add_plugins(ExtractComponentPlugin::<NativeExposure>::default());
+        app.add_plugins(ExtractComponentPlugin::<ExposureParameters>::default());
         app.add_plugins(ExtractComponentPlugin::<MaterialExposure>::default());
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -128,12 +128,12 @@ impl Plugin for NativeExposurePlugin {
 fn initialize(mut commands: Commands, shader: Res<ShaderHandle>, cache: Res<PipelineCache>) {
     use binding_types::*;
     let layout = BindGroupLayoutDescriptor::new(
-        "native exposure",
+        "exposure",
         &BindGroupLayoutEntries::sequential(
             ShaderStages::COMPUTE,
             (
                 uniform_buffer::<GlobalsUniform>(false),
-                uniform_buffer::<NativeExposure>(false),
+                uniform_buffer::<ExposureParameters>(false),
                 texture_2d(TextureSampleType::Float { filterable: false }),
                 storage_buffer_sized(false, std::num::NonZeroU64::new(512)),
                 storage_buffer_sized(false, std::num::NonZeroU64::new(32)),
@@ -143,7 +143,7 @@ fn initialize(mut commands: Commands, shader: Res<ShaderHandle>, cache: Res<Pipe
     );
     let make = |entry: &str| {
         cache.queue_compute_pipeline(ComputePipelineDescriptor {
-            label: Some(format!("native exposure {entry}").into()),
+            label: Some(format!("exposure {entry}").into()),
             layout: vec![layout.clone()],
             shader: shader.0.clone(),
             entry_point: Some(entry.to_owned().into()),
@@ -152,7 +152,7 @@ fn initialize(mut commands: Commands, shader: Res<ShaderHandle>, cache: Res<Pipe
     };
     commands.insert_resource(Pipelines {
         histogram: make("histogram"),
-        adapt: make("adapt"),
+        adapt: make("update_exposure"),
         layout,
     });
 }
@@ -160,7 +160,7 @@ fn expose(
     view: ViewQuery<(
         &ViewUniformOffset,
         &ViewTarget,
-        &NativeExposure,
+        &ExposureParameters,
         &bevy::render::camera::ExtractedCamera,
         Option<&MaterialExposure>,
     )>,
@@ -179,7 +179,7 @@ fn expose(
     let (offset, target, settings, camera, material_exposure) = view.into_inner();
     assert!(
         camera.hdr,
-        "native exposure requires an HDR camera before display tonemapping"
+        "exposure requires an HDR camera before display tonemapping"
     );
     let (Some(histogram), Some(adapt)) = (
         cache.get_compute_pipeline(pipelines.histogram),
@@ -189,20 +189,20 @@ fn expose(
     };
     let gpu = views.0.entry(entity).or_insert_with(|| {
         eprintln!(
-            "Native exposure HDR pipeline online: {:?}",
+            "Exposure HDR pipeline online: {:?}",
             target.main_texture().format()
         );
         GpuView {
             settings: UniformBuffer::from(*settings),
             histogram: device.create_buffer(&BufferDescriptor {
-                label: Some("native exposure histogram"),
+                label: Some("exposure histogram"),
                 size: 512,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
             // FUN_140370dc0, flags0xb: engine and luminance factors1, other words0.
             state: device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("native exposure state"),
+                label: Some("exposure state"),
                 contents: &[1.0_f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
                     .into_iter()
                     .flat_map(f32::to_le_bytes)
@@ -248,7 +248,7 @@ fn expose(
         let mut pass = context
             .command_encoder()
             .begin_compute_pass(&ComputePassDescriptor {
-                label: Some("native exposure"),
+                label: Some("exposure"),
                 ..default()
             });
         pass.set_bind_group(0, &group, &[offset.offset]);
@@ -261,7 +261,7 @@ fn expose(
     if let Some(path) = std::env::var_os("DH2_TRACE_EXPOSURE") {
         if gpu.tick <= 30 || gpu.tick % 60 == 0 {
             let staging = device.create_buffer(&BufferDescriptor {
-                label: Some("native exposure numerical trace"),
+                label: Some("exposure numerical trace"),
                 size: 32,
                 usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                 mapped_at_creation: false,
@@ -321,12 +321,12 @@ pub fn verify_gpu_math(app: &mut App) {
  let id=tid.x;var h:array<u32,128>;for(var b=0u;b<128u;b++) {h[b]=select(select((b*13u+id*7u)%31u,1000u,b==(id*17u)%128u),0u,id==0u);}
  let p=Settings(vec4(select(0.03,1.0,(id&1u)!=0u),select(2000.0,500.0,(id&1u)!=0u),f32(id%4u)*0.1,1.0-f32(id%3u)*0.1),
  vec4(f32(i32(id%7u)-3)*0.5,f32(id%3u)+1.0,0.99,0.8),vec4(30.0,0.0,0.0,0.0));
- let r=native_adapt(h,p,f32(id%6u)*0.5,f32(id%5u+1u)*0.016);
+ let r=adapt(h,p,f32(id%6u)*0.5,f32(id%5u+1u)*0.016);
  output[id*2u]=vec4(r.engine,r.luminance,r.min_ldr,r.max_ldr);output[id*2u+1u]=vec4(r.middle,r.ev,r.fstop,f32(r.peak));
  }"#
     );
     let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-        label: Some("native exposure parity"),
+        label: Some("exposure parity"),
         source: ShaderSource::Wgsl(source.into()),
     });
     let pipeline = device
@@ -394,7 +394,7 @@ pub fn verify_gpu_math(app: &mut App) {
         let actual = f32::from_le_bytes(chunk.try_into().unwrap());
         assert!(
             (actual - e).abs() < 0.00003 * e.abs().max(1.0),
-            "native exposure case{} field{}: {actual} != {e}",
+            "exposure case{} field{}: {actual} != {e}",
             i / 8,
             i % 8
         );

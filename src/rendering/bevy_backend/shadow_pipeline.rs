@@ -21,14 +21,14 @@ use bevy::{
     image::{Image, ImageSampler},
 };
 
-pub struct NativeShadowDepthArray {
+pub struct ShadowDepthArray {
     pub texture: Texture,
     pub sampled: TextureView,
     pub layers: Vec<TextureView>,
     pub size: Extent3d,
 }
 
-impl NativeShadowDepthArray {
+impl ShadowDepthArray {
     /// Allocate from the actual native quality/CVar owner, not a capture.
     /// Native false/true image templates resolve to D16 / D24S8 respectively;
     /// the "32 bits" CVar includes stencil and does not request D32F.
@@ -77,7 +77,7 @@ impl NativeShadowDepthArray {
             format,
             TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
         ) {
-            return Err("unsupported native parallel shadow depth-array format".into());
+            return Err("unsupported parallel shadow depth-array format".into());
         }
         let limits = device.limits();
         if size.width == 0
@@ -87,7 +87,7 @@ impl NativeShadowDepthArray {
             || size.height > limits.max_texture_dimension_2d
             || size.depth_or_array_layers > limits.max_texture_array_layers
         {
-            return Err("invalid native shadow depth-array dimensions".into());
+            return Err("invalid shadow depth-array dimensions".into());
         }
         // Native shadow descriptors explicitly request one mip. The shared
         // original finalizer therefore preserves all four fields (2e98a0).
@@ -127,18 +127,18 @@ impl NativeShadowDepthArray {
         source: &Self,
     ) -> Result<(), String> {
         if self.texture.id() == source.texture.id() {
-            return Err("native shadow cache cannot copy a resource onto itself".into());
+            return Err("shadow cache cannot copy a resource onto itself".into());
         }
         if self.size != source.size || self.texture.format() != source.texture.format() {
             return Err(
-                "native whole-resource shadow copy requires matching format and dimensions".into(),
+                "whole-resource shadow copy requires matching format and dimensions".into(),
             );
         }
         if !source.texture.usage().contains(TextureUsages::COPY_SRC)
             || !self.texture.usage().contains(TextureUsages::COPY_DST)
         {
             return Err(
-                "native shadow cache owner did not allocate copy source/destination usage".into(),
+                "shadow cache owner did not allocate copy source/destination usage".into(),
             );
         }
         encoder.copy_texture_to_texture(
@@ -166,15 +166,15 @@ impl NativeShadowDepthArray {
             || self.size.height != source.size.height
             || self.texture.format() != source.texture.format()
         {
-            return Err("native full-layer copy requires matching in-range subresources".into());
+            return Err("full-layer copy requires matching in-range subresources".into());
         }
         if self.texture.id() == source.texture.id() {
-            return Err("native layer copy requires distinct owner resources".into());
+            return Err("layer copy requires distinct owner resources".into());
         }
         if !source.texture.usage().contains(TextureUsages::COPY_SRC)
             || !self.texture.usage().contains(TextureUsages::COPY_DST)
         {
-            return Err("native layer copy owner did not allocate copy usage".into());
+            return Err("layer copy owner did not allocate copy usage".into());
         }
         let mut input = source.texture.as_image_copy();
         input.origin.z = source_layer;
@@ -206,7 +206,7 @@ impl NativeShadowDepthArray {
                 .usage()
                 .contains(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING)
         {
-            return Err("invalid native shadow image allocation".into());
+            return Err("invalid shadow image allocation".into());
         }
         let sampled = texture.create_view(&TextureViewDescriptor {
             label: Some(label),
@@ -236,13 +236,13 @@ impl NativeShadowDepthArray {
 
 /// The original hardware-PCF sampler. The optimized 3x3/5x5 shader coefficients
 /// rely on bilinear comparison filtering; a point sampler gives the wrong kernel.
-pub fn native_shadow_comparison_sampler(device: &RenderDevice) -> Sampler {
-    device.create_sampler(&native_shadow_comparison_descriptor())
+pub fn shadow_comparison_sampler(device: &RenderDevice) -> Sampler {
+    device.create_sampler(&shadow_comparison_descriptor())
 }
 
-pub fn native_shadow_comparison_descriptor() -> SamplerDescriptor<'static> {
+pub fn shadow_comparison_descriptor() -> SamplerDescriptor<'static> {
     SamplerDescriptor {
-        label: Some("native shadow linear/Less/clamp comparison"),
+        label: Some("shadow linear/Less/clamp comparison"),
         address_mode_u: AddressMode::ClampToEdge,
         address_mode_v: AddressMode::ClampToEdge,
         address_mode_w: AddressMode::Repeat,
@@ -268,7 +268,7 @@ pub fn shadow_depth_image(size: Extent3d, format: TextureFormat) -> Result<Image
             TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
         )
     {
-        return Err("invalid native shadow depth-image descriptor".into());
+        return Err("invalid shadow depth-image descriptor".into());
     }
     let mut image = Image::new_uninit(
         size,
@@ -285,16 +285,16 @@ pub fn shadow_depth_image(size: Extent3d, format: TextureFormat) -> Result<Image
         aspect: TextureAspect::DepthOnly,
         ..Default::default()
     });
-    image.sampler = ImageSampler::Descriptor(native_shadow_comparison_descriptor().into());
+    image.sampler = ImageSampler::Descriptor(shadow_comparison_descriptor().into());
     Ok(image)
 }
 
 /// Original `bilinearsampler.decl`: linear min/mag, point mip, wrap U/V/W.
 /// RenderDoc smp_bilinearsampler descriptor confirms LOD 0..13, no bias or
 /// comparison. Shadow alpha must not reuse the forward anisotropic sampler.
-pub fn native_shadow_alpha_sampler(device: &RenderDevice) -> Sampler {
+pub fn shadow_alpha_sampler(device: &RenderDevice) -> Sampler {
     device.create_sampler(&SamplerDescriptor {
-        label: Some("native shadow diffuse bilinear/wrap sampler"),
+        label: Some("shadow diffuse bilinear/wrap sampler"),
         address_mode_u: AddressMode::Repeat,
         address_mode_v: AddressMode::Repeat,
         address_mode_w: AddressMode::Repeat,
@@ -310,9 +310,9 @@ pub fn native_shadow_alpha_sampler(device: &RenderDevice) -> Sampler {
 /// filters ANISO, WRAP U/V/W and MaxAnisotropy 4. FUN_140378280 uses that own
 /// value when mip-filter code is 2; it is NOT inferred from a capture or the
 /// user's image_anisotropy. Original default LOD range is 0..13, no compare.
-pub fn native_shadow_vista_sampler(device: &RenderDevice) -> Sampler {
+pub fn shadow_vista_sampler(device: &RenderDevice) -> Sampler {
     device.create_sampler(&SamplerDescriptor {
-        label: Some("native Vista diffuse explicit anisotropicsampler"),
+        label: Some("Vista diffuse explicit anisotropicsampler"),
         address_mode_u: AddressMode::Repeat,
         address_mode_v: AddressMode::Repeat,
         address_mode_w: AddressMode::Repeat,
@@ -343,8 +343,8 @@ use std::{num::NonZeroU64, ops::Range};
 
 /// Stride of the captured fixture, not a shader requirement. The position-only
 /// native program can use the existing rewrite mesh owner's layout unchanged.
-pub const NATIVE_SHADOW_OPAQUE_VERTEX_STRIDE: u64 = 32;
-const NATIVE_SHADOW_PER_INSTANCE_BYTES: u64 = 80;
+pub const SHADOW_OPAQUE_VERTEX_STRIDE: u64 = 32;
+const SHADOW_PER_INSTANCE_BYTES: u64 = 80;
 
 /// Translate the original D3D raster faces to the caller's actual index data.
 /// Native front-CCW/cull values are decoded by the executable-verified state
@@ -352,11 +352,11 @@ const NATIVE_SHADOW_PER_INSTANCE_BYTES: u64 = 80;
 /// front convention exactly once, without changing which native face is culled.
 /// World callers must use the FINAL state after the object's +0x10 surface
 /// flag, not the material's unmodified cull convention.
-pub fn native_shadow_mesh_raster(
-    state: &crate::render_state::NativeRenderState,
+pub fn shadow_mesh_raster(
+    state: &crate::render_state::RenderState,
     indices_reversed: bool,
 ) -> (FrontFace, Option<Face>) {
-    let raster = crate::render_state::native_raster_state(state);
+    let raster = crate::render_state::raster_state(state);
     let front = if raster.front_counter_clockwise ^ indices_reversed {
         FrontFace::Ccw
     } else {
@@ -366,7 +366,7 @@ pub fn native_shadow_mesh_raster(
         1 => None,
         2 => Some(Face::Front),
         3 => Some(Face::Back),
-        _ => unreachable!("native raster decoder returns D3D cull modes 1..3"),
+        _ => unreachable!("raster decoder returns D3D cull modes 1..3"),
     };
     (front, cull)
 }
@@ -374,14 +374,14 @@ pub fn native_shadow_mesh_raster(
 /// Translate the verified native descriptor into the platform's equivalent
 /// depth/stencil operations. Disabled native tests must not start writing depth
 /// merely because their ignored write-mask field is set.
-pub fn native_depth_stencil_gpu(
-    state: &crate::render_state::NativeRenderState,
+pub fn depth_stencil_gpu(
+    state: &crate::render_state::RenderState,
     format: TextureFormat,
 ) -> Result<DepthStencilState, String> {
-    let depth = crate::render_state::native_depth_stencil_state(state);
-    let raster = crate::render_state::native_raster_state(state);
+    let depth = crate::render_state::depth_stencil_state(state);
+    let raster = crate::render_state::raster_state(state);
     if !format.has_depth_aspect() || (depth.stencil_enabled && !format.has_stencil_aspect()) {
-        return Err("native depth/stencil state and actual target aspects differ".into());
+        return Err("depth/stencil state and actual target aspects differ".into());
     }
     let compare = |code| match code {
         1 => CompareFunction::Never,
@@ -403,11 +403,11 @@ pub fn native_depth_stencil_gpu(
         8 => StencilOperation::DecrementWrap,
         _ => StencilOperation::Keep,
     };
-    let face = |native: crate::render_state::NativeStencilFace| StencilFaceState {
-        compare: compare(native.compare),
-        fail_op: operation(native.fail),
-        depth_fail_op: operation(native.depth_fail),
-        pass_op: operation(native.pass),
+    let face = |game: crate::render_state::StencilFace| StencilFaceState {
+        compare: compare(game.compare),
+        fail_op: operation(game.fail),
+        depth_fail_op: operation(game.depth_fail),
+        pass_op: operation(game.pass),
     };
     Ok(DepthStencilState {
         format,
@@ -438,7 +438,7 @@ pub fn native_depth_stencil_gpu(
 /// A native depth draw with caller-prepared model state and vertex streams.
 /// Index format, ranges and scissor are explicit. Rigid opaque/cutout and the
 /// verified vegetation program are supported; skin/paraboloid remain unmapped.
-pub struct NativeOpaqueShadowDraw<'a> {
+pub struct ShadowDepthDraw<'a> {
     pub model_state: &'a BindGroup,
     /// Byte offset in the shared per-frame constant ring. Static bindings use 0.
     pub model_state_offset: u32,
@@ -451,12 +451,12 @@ pub struct NativeOpaqueShadowDraw<'a> {
     pub indices: Range<u32>,
     pub base_vertex: i32,
     pub instances: Range<u32>,
-    pub scissor: NativeShadowScissor,
+    pub scissor: ShadowScissor,
 }
 
 /// Scissor-on raster state captured for the native model-shadow draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeShadowScissor {
+pub struct ShadowScissor {
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -465,7 +465,7 @@ pub struct NativeShadowScissor {
 
 /// Verified native vertex/fragment pairs; layout is part of each program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeShadowDepthProgram {
+pub enum ShadowDepthProgram {
     Skinned {
         influences: u8,
         alpha: bool,
@@ -484,11 +484,11 @@ pub enum NativeShadowDepthProgram {
     Vegetation,
 }
 
-impl NativeShadowDepthProgram {
+impl ShadowDepthProgram {
     pub fn model_uniform_bytes(self) -> u64 {
         match self {
             Self::Skinned { .. } => 112,
-            Self::Opaque | Self::RigidAlpha => NATIVE_SHADOW_PER_INSTANCE_BYTES,
+            Self::Opaque | Self::RigidAlpha => SHADOW_PER_INSTANCE_BYTES,
             Self::WorldOpaque | Self::WorldAlpha | Self::WorldVistaAlpha => 96,
             Self::Vegetation | Self::WorldVegetation | Self::WorldVegetationFixed => 208,
         }
@@ -499,7 +499,7 @@ impl NativeShadowDepthProgram {
 /// instead of allocating a descriptor for every draw/program combination.
 fn shadow_pipeline_layout(
     device: &RenderDevice,
-    program: NativeShadowDepthProgram,
+    program: ShadowDepthProgram,
 ) -> PipelineLayout {
     let uniform = |binding, bytes, dynamic| BindGroupLayoutEntry {
         binding,
@@ -542,22 +542,22 @@ fn shadow_pipeline_layout(
         &[uniform(0, program.model_uniform_bytes(), true)],
     );
     let entries = match program {
-        NativeShadowDepthProgram::Opaque => Vec::new(),
-        NativeShadowDepthProgram::RigidAlpha => vec![texture(0), sampler(1), uniform(2, 16, false)],
-        NativeShadowDepthProgram::Vegetation => vec![texture(0), sampler(1)],
-        NativeShadowDepthProgram::WorldOpaque => vec![storage(0), storage(1)],
-        NativeShadowDepthProgram::WorldAlpha
-        | NativeShadowDepthProgram::WorldVistaAlpha
-        | NativeShadowDepthProgram::WorldVegetationFixed => {
+        ShadowDepthProgram::Opaque => Vec::new(),
+        ShadowDepthProgram::RigidAlpha => vec![texture(0), sampler(1), uniform(2, 16, false)],
+        ShadowDepthProgram::Vegetation => vec![texture(0), sampler(1)],
+        ShadowDepthProgram::WorldOpaque => vec![storage(0), storage(1)],
+        ShadowDepthProgram::WorldAlpha
+        | ShadowDepthProgram::WorldVistaAlpha
+        | ShadowDepthProgram::WorldVegetationFixed => {
             vec![storage(0), storage(1), texture(2), sampler(3)]
         }
-        NativeShadowDepthProgram::WorldVegetation => {
+        ShadowDepthProgram::WorldVegetation => {
             vec![storage(0), storage(1), texture(2), sampler(3), storage(4)]
         }
-        NativeShadowDepthProgram::Skinned { alpha: true, .. } => {
+        ShadowDepthProgram::Skinned { alpha: true, .. } => {
             vec![storage(0), texture(1), sampler(2)]
         }
-        NativeShadowDepthProgram::Skinned { alpha: false, .. } => vec![storage(0)],
+        ShadowDepthProgram::Skinned { alpha: false, .. } => vec![storage(0)],
     };
     let resources = (!entries.is_empty())
         .then(|| device.create_bind_group_layout("shadow program resources", &entries));
@@ -572,17 +572,16 @@ fn shadow_pipeline_layout(
     })
 }
 
-/// Cached native depth pipeline. The legacy type name is retained for existing
-/// owners; the explicit program controls vertex streams and uniform layout.
-pub struct NativeOpaqueShadowPipeline {
+/// Cached shadow depth pipeline. The program selects vertex streams and uniform layout.
+pub struct ShadowDepthPipeline {
     pipeline: RenderPipeline,
     format: TextureFormat,
     alpha_test: bool,
-    program: NativeShadowDepthProgram,
+    program: ShadowDepthProgram,
     stencil_reference: u32,
 }
 
-impl NativeOpaqueShadowPipeline {
+impl ShadowDepthPipeline {
     /// Build the original-backed opaque vertex pipeline. Bias and the complete
     /// owner vertex layout are explicit inputs, not defaults. The capture used
     /// `DepthBiasState { constant: 80, slope_scale: 5.0, clamp: 1000.0 }`; this
@@ -643,7 +642,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::Opaque,
+            ShadowDepthProgram::Opaque,
             None,
         )
     }
@@ -668,7 +667,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::WorldOpaque,
+            ShadowDepthProgram::WorldOpaque,
             None,
         )
     }
@@ -692,7 +691,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::WorldAlpha,
+            ShadowDepthProgram::WorldAlpha,
             None,
         )
     }
@@ -716,7 +715,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::WorldVistaAlpha,
+            ShadowDepthProgram::WorldVistaAlpha,
             None,
         )
     }
@@ -738,7 +737,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::WorldVegetation,
+            ShadowDepthProgram::WorldVegetation,
             None,
         )
     }
@@ -760,7 +759,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::WorldVegetationFixed,
+            ShadowDepthProgram::WorldVegetationFixed,
             None,
         )
     }
@@ -784,7 +783,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::RigidAlpha,
+            ShadowDepthProgram::RigidAlpha,
             None,
         )
     }
@@ -809,7 +808,7 @@ impl NativeOpaqueShadowPipeline {
             format,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::Vegetation,
+            ShadowDepthProgram::Vegetation,
             None,
         )
     }
@@ -822,7 +821,7 @@ impl NativeOpaqueShadowPipeline {
         device: &RenderDevice,
         adapter: &RenderAdapter,
         vertex_layout: &RawVertexBufferLayout<'_>,
-        state: &crate::render_state::NativeRenderState,
+        state: &crate::render_state::RenderState,
         stencil_reference: u32,
         front_face: FrontFace,
         cull_mode: Option<Face>,
@@ -836,7 +835,7 @@ impl NativeOpaqueShadowPipeline {
             TextureFormat::Depth32FloatStencil8,
             front_face,
             cull_mode,
-            NativeShadowDepthProgram::Opaque,
+            ShadowDepthProgram::Opaque,
         )
     }
 
@@ -849,21 +848,21 @@ impl NativeOpaqueShadowPipeline {
         device: &RenderDevice,
         adapter: &RenderAdapter,
         vertex_layout: &RawVertexBufferLayout<'_>,
-        state: &crate::render_state::NativeRenderState,
+        state: &crate::render_state::RenderState,
         stencil_reference: u32,
         format: TextureFormat,
         front_face: FrontFace,
         cull_mode: Option<Face>,
-        program: NativeShadowDepthProgram,
+        program: ShadowDepthProgram,
     ) -> Result<Self, String> {
         use bevy::render::settings::WgpuFeatures;
         let features = device.wgpu_device().features();
         if format == TextureFormat::Depth32FloatStencil8
             && !features.contains(WgpuFeatures::DEPTH32FLOAT_STENCIL8)
         {
-            return Err("native depth requires enabled DEPTH32FLOAT_STENCIL8".into());
+            return Err("depth requires enabled DEPTH32FLOAT_STENCIL8".into());
         }
-        let raster = crate::render_state::native_raster_state(state);
+        let raster = crate::render_state::raster_state(state);
         let polygon_mode = if raster.fill_mode == 2 {
             PolygonMode::Line
         } else {
@@ -871,13 +870,13 @@ impl NativeOpaqueShadowPipeline {
         };
         if polygon_mode == PolygonMode::Line && !features.contains(WgpuFeatures::POLYGON_MODE_LINE)
         {
-            return Err("native wireframe depth requires enabled POLYGON_MODE_LINE".into());
+            return Err("wireframe depth requires enabled POLYGON_MODE_LINE".into());
         }
         if !raster.depth_clip && !features.contains(WgpuFeatures::DEPTH_CLIP_CONTROL) {
-            return Err("native unclipped depth requires enabled DEPTH_CLIP_CONTROL".into());
+            return Err("unclipped depth requires enabled DEPTH_CLIP_CONTROL".into());
         }
         if raster.antialiased_line {
-            return Err("native antialiased-line depth rasterization is not mapped".into());
+            return Err("antialiased-line depth rasterization is not mapped".into());
         }
         let primitive = PrimitiveState {
             front_face,
@@ -886,7 +885,7 @@ impl NativeOpaqueShadowPipeline {
             unclipped_depth: !raster.depth_clip,
             ..Default::default()
         };
-        let depth = native_depth_stencil_gpu(state, format)?;
+        let depth = depth_stencil_gpu(state, format)?;
         let mut pipeline = Self::with_program(
             device,
             adapter,
@@ -910,7 +909,7 @@ impl NativeOpaqueShadowPipeline {
         format: TextureFormat,
         front_face: FrontFace,
         cull_mode: Option<Face>,
-        program: NativeShadowDepthProgram,
+        program: ShadowDepthProgram,
         resolved_state: Option<(DepthStencilState, PrimitiveState)>,
     ) -> Result<Self, String> {
         if !matches!(
@@ -918,23 +917,23 @@ impl NativeOpaqueShadowPipeline {
             TextureFormat::Depth16Unorm | TextureFormat::Depth24PlusStencil8
         ) && !(resolved_state.is_some() && format == TextureFormat::Depth32FloatStencil8)
         {
-            return Err("unsupported native rigid depth format".into());
+            return Err("unsupported rigid depth format".into());
         }
         let alpha_test = matches!(
             program,
-            NativeShadowDepthProgram::Skinned { alpha: true, .. }
-                | NativeShadowDepthProgram::RigidAlpha
-                | NativeShadowDepthProgram::Vegetation
-                | NativeShadowDepthProgram::WorldAlpha
-                | NativeShadowDepthProgram::WorldVegetation
-                | NativeShadowDepthProgram::WorldVegetationFixed
-                | NativeShadowDepthProgram::WorldVistaAlpha
+            ShadowDepthProgram::Skinned { alpha: true, .. }
+                | ShadowDepthProgram::RigidAlpha
+                | ShadowDepthProgram::Vegetation
+                | ShadowDepthProgram::WorldAlpha
+                | ShadowDepthProgram::WorldVegetation
+                | ShadowDepthProgram::WorldVegetationFixed
+                | ShadowDepthProgram::WorldVistaAlpha
         );
         if matches!(
             program,
-            NativeShadowDepthProgram::Vegetation
-                | NativeShadowDepthProgram::WorldVegetation
-                | NativeShadowDepthProgram::WorldVegetationFixed
+            ShadowDepthProgram::Vegetation
+                | ShadowDepthProgram::WorldVegetation
+                | ShadowDepthProgram::WorldVegetationFixed
         ) {
             validate_vegetation_vertex_layout(vertex_layout)?;
         } else {
@@ -943,14 +942,14 @@ impl NativeOpaqueShadowPipeline {
                 validate_alpha_vertex_layout(vertex_layout)?;
             }
         }
-        if let NativeShadowDepthProgram::Skinned {
+        if let ShadowDepthProgram::Skinned {
             influences,
             alpha,
             dither,
         } = program
         {
             if !matches!(influences, 4 | 8) || (dither && !alpha) {
-                return Err("unsupported native skin shader inputs".into());
+                return Err("unsupported skin shader inputs".into());
             }
             for (location, format) in [
                 (2, VertexFormat::Uint8x4),
@@ -964,7 +963,7 @@ impl NativeOpaqueShadowPipeline {
                     .any(|a| a.shader_location == location && a.format == format)
                 {
                     return Err(
-                        "native skin shader requires original UINT8 joints and UNORM8 weights"
+                        "skin shader requires original UINT8 joints and UNORM8 weights"
                             .into(),
                     );
                 }
@@ -997,21 +996,21 @@ impl NativeOpaqueShadowPipeline {
             ))
         );
         let helpers = match program {
-            NativeShadowDepthProgram::WorldVegetation
-            | NativeShadowDepthProgram::WorldVegetationFixed => world_wind_helpers,
-            NativeShadowDepthProgram::WorldOpaque
-            | NativeShadowDepthProgram::WorldAlpha
-            | NativeShadowDepthProgram::WorldVistaAlpha => include_str!(concat!(
+            ShadowDepthProgram::WorldVegetation
+            | ShadowDepthProgram::WorldVegetationFixed => world_wind_helpers,
+            ShadowDepthProgram::WorldOpaque
+            | ShadowDepthProgram::WorldAlpha
+            | ShadowDepthProgram::WorldVistaAlpha => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/assets/shaders/dh2_shadow_world_project.wgsl"
             )),
-            NativeShadowDepthProgram::Vegetation => include_str!(concat!(
+            ShadowDepthProgram::Vegetation => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/assets/shaders/dh2_shadow_wind.wgsl"
             )),
             _ => "",
         };
-        let skin_defines = if let NativeShadowDepthProgram::Skinned {
+        let skin_defines = if let ShadowDepthProgram::Skinned {
             influences, dither, ..
         } = program
         {
@@ -1022,38 +1021,38 @@ impl NativeOpaqueShadowPipeline {
         let shader_source = format!(
             "{skin_defines}{helpers}\n{}",
             match program {
-                NativeShadowDepthProgram::Skinned { .. } => include_str!(concat!(
+                ShadowDepthProgram::Skinned { .. } => include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/assets/shaders/dh2_shadow_skin.wgsl"
                 )),
-                NativeShadowDepthProgram::Opaque => {
+                ShadowDepthProgram::Opaque => {
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
                         "/assets/shaders/dh2_shadow_opaque.wgsl"
                     ))
                 }
-                NativeShadowDepthProgram::WorldOpaque
-                | NativeShadowDepthProgram::WorldAlpha
-                | NativeShadowDepthProgram::WorldVistaAlpha => {
+                ShadowDepthProgram::WorldOpaque
+                | ShadowDepthProgram::WorldAlpha
+                | ShadowDepthProgram::WorldVistaAlpha => {
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
                         "/assets/shaders/dh2_shadow_world.wgsl"
                     ))
                 }
-                NativeShadowDepthProgram::WorldVegetation
-                | NativeShadowDepthProgram::WorldVegetationFixed => {
+                ShadowDepthProgram::WorldVegetation
+                | ShadowDepthProgram::WorldVegetationFixed => {
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
                         "/assets/shaders/dh2_shadow_world_vegetation.wgsl"
                     ))
                 }
-                NativeShadowDepthProgram::RigidAlpha => {
+                ShadowDepthProgram::RigidAlpha => {
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
                         "/assets/shaders/dh2_shadow_alpha.wgsl"
                     ))
                 }
-                NativeShadowDepthProgram::Vegetation => {
+                ShadowDepthProgram::Vegetation => {
                     include_str!(concat!(
                         env!("CARGO_MANIFEST_DIR"),
                         "/assets/shaders/dh2_shadow_vegetation.wgsl"
@@ -1062,23 +1061,23 @@ impl NativeOpaqueShadowPipeline {
             }
         );
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("native resolved shadow vertex program"),
+            label: Some("resolved shadow vertex program"),
             source: ShaderSource::Wgsl(shader_source.into()),
         });
         let layout = shadow_pipeline_layout(device, program);
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native resolved rigid depth pipeline"),
+            label: Some("resolved rigid depth pipeline"),
             layout: Some(&layout),
             vertex: RawVertexState {
                 module: &shader,
                 entry_point: Some(
                     if matches!(
                         program,
-                        NativeShadowDepthProgram::WorldAlpha
-                            | NativeShadowDepthProgram::WorldVistaAlpha
+                        ShadowDepthProgram::WorldAlpha
+                            | ShadowDepthProgram::WorldVistaAlpha
                     ) {
                         "vertex_alpha"
-                    } else if program == NativeShadowDepthProgram::WorldVegetationFixed {
+                    } else if program == ShadowDepthProgram::WorldVegetationFixed {
                         "vertex_fixed"
                     } else {
                         "vertex"
@@ -1089,7 +1088,7 @@ impl NativeOpaqueShadowPipeline {
             },
             fragment: alpha_test.then_some(RawFragmentState {
                 module: &shader,
-                entry_point: Some(if program == NativeShadowDepthProgram::WorldVistaAlpha {
+                entry_point: Some(if program == ShadowDepthProgram::WorldVistaAlpha {
                     "fragment_vista"
                 } else {
                     "fragment"
@@ -1124,7 +1123,7 @@ impl NativeOpaqueShadowPipeline {
         palette: &Buffer,
         diffuse: Option<(&TextureView, &Sampler)>,
     ) -> Result<BindGroup, String> {
-        let NativeShadowDepthProgram::Skinned { alpha, .. } = self.program else {
+        let ShadowDepthProgram::Skinned { alpha, .. } = self.program else {
             return Err("skin palette needs a skin program".into());
         };
         if alpha != diffuse.is_some()
@@ -1132,7 +1131,7 @@ impl NativeOpaqueShadowPipeline {
             || palette.size() % 48 != 0
             || !palette.usage().contains(BufferUsages::STORAGE)
         {
-            return Err("native skin palette/material layout mismatch".into());
+            return Err("skin palette/material layout mismatch".into());
         }
         let mut entries = vec![BindGroupEntry {
             binding: 0,
@@ -1150,7 +1149,7 @@ impl NativeOpaqueShadowPipeline {
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native skeletal shadow palette/material"),
+                label: Some("skeletal shadow palette/material"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &entries,
             },
@@ -1166,7 +1165,7 @@ impl NativeOpaqueShadowPipeline {
         diffuse: &TextureView,
         sampler: &Sampler,
     ) -> Result<BindGroup, String> {
-        if self.program != NativeShadowDepthProgram::WorldVegetation {
+        if self.program != ShadowDepthProgram::WorldVegetation {
             return Err("world wind buffers require the installed world vegetation program".into());
         }
         for (buffer, stride) in [(visible_indices, 4), (matrices, 48), (winds, 32)] {
@@ -1179,7 +1178,7 @@ impl NativeOpaqueShadowPipeline {
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native world vegetation remap/matrices/current-wind/diffuse"),
+                label: Some("world vegetation remap/matrices/current-wind/diffuse"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &[
                     BindGroupEntry {
@@ -1213,7 +1212,7 @@ impl NativeOpaqueShadowPipeline {
         visible_indices: &Buffer,
         matrices: &Buffer,
     ) -> Result<BindGroup, String> {
-        if self.program != NativeShadowDepthProgram::WorldOpaque {
+        if self.program != ShadowDepthProgram::WorldOpaque {
             return Err(
                 "world instance buffers require the native multi-instancing program".into(),
             );
@@ -1225,11 +1224,11 @@ impl NativeOpaqueShadowPipeline {
             || !visible_indices.usage().contains(BufferUsages::STORAGE)
             || !matrices.usage().contains(BufferUsages::STORAGE)
         {
-            return Err("native world shadows need uint32 IDs and 48-byte MatrixInstanceType storage records".into());
+            return Err("world shadows need uint32 IDs and 48-byte MatrixInstanceType storage records".into());
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native world shadow visible IDs and matrices"),
+                label: Some("world shadow visible IDs and matrices"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &[
                     BindGroupEntry {
@@ -1256,9 +1255,9 @@ impl NativeOpaqueShadowPipeline {
     ) -> Result<BindGroup, String> {
         if !matches!(
             self.program,
-            NativeShadowDepthProgram::WorldAlpha
-                | NativeShadowDepthProgram::WorldVegetationFixed
-                | NativeShadowDepthProgram::WorldVistaAlpha
+            ShadowDepthProgram::WorldAlpha
+                | ShadowDepthProgram::WorldVegetationFixed
+                | ShadowDepthProgram::WorldVistaAlpha
         ) {
             return Err(
                 "world alpha resources require a compatible installed world program".into(),
@@ -1271,11 +1270,11 @@ impl NativeOpaqueShadowPipeline {
             || !visible_indices.usage().contains(BufferUsages::STORAGE)
             || !matrices.usage().contains(BufferUsages::STORAGE)
         {
-            return Err("invalid native world cutout instance/UV buffers".into());
+            return Err("invalid world cutout instance/UV buffers".into());
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native world cutout IDs/matrices/diffuse/UV"),
+                label: Some("world cutout IDs/matrices/diffuse/UV"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &[
                     BindGroupEntry {
@@ -1309,7 +1308,7 @@ impl NativeOpaqueShadowPipeline {
         sampler: &Sampler,
         uv_scale_bias: &Buffer,
     ) -> Result<BindGroup, String> {
-        if self.program != NativeShadowDepthProgram::RigidAlpha {
+        if self.program != ShadowDepthProgram::RigidAlpha {
             return Err(
                 "separate layer-zero UV binding requires the rigid alpha shadow program".into(),
             );
@@ -1319,7 +1318,7 @@ impl NativeOpaqueShadowPipeline {
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native rigid shadow diffuse-alpha material"),
+                label: Some("rigid shadow diffuse-alpha material"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &[
                     BindGroupEntry {
@@ -1352,14 +1351,14 @@ impl NativeOpaqueShadowPipeline {
         diffuse: &TextureView,
         sampler: &Sampler,
     ) -> Result<BindGroup, String> {
-        if self.program != NativeShadowDepthProgram::Vegetation {
+        if self.program != ShadowDepthProgram::Vegetation {
             return Err(
                 "vegetation material binding requires the vegetation shadow program".into(),
             );
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native vegetation shadow diffuse/bilinear material"),
+                label: Some("vegetation shadow diffuse/bilinear material"),
                 layout: &self.pipeline.get_bind_group_layout(1),
                 entries: &[
                     BindGroupEntry {
@@ -1410,15 +1409,15 @@ impl NativeOpaqueShadowPipeline {
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         if offset % alignment != 0 {
             return Err(format!(
-                "native opaque shadow PerInstanceCB offset {offset} is not aligned to {alignment} bytes"
+                "opaque shadow PerInstanceCB offset {offset} is not aligned to {alignment} bytes"
             ));
         }
         if !prepared_model_state.usage().contains(BufferUsages::UNIFORM) {
-            return Err("native opaque shadow PerInstanceCB buffer lacks UNIFORM usage".into());
+            return Err("opaque shadow PerInstanceCB buffer lacks UNIFORM usage".into());
         }
         Ok(BindGroup::from(device.wgpu_device().create_bind_group(
             &BindGroupDescriptor {
-                label: Some("native opaque shadow prepared PerInstanceCB"),
+                label: Some("opaque shadow prepared PerInstanceCB"),
                 layout: &self.pipeline.get_bind_group_layout(0),
                 entries: &[BindGroupEntry {
                     binding: 0,
@@ -1441,21 +1440,21 @@ impl NativeOpaqueShadowPipeline {
     pub fn draw_layer(
         &self,
         encoder: &mut CommandEncoder,
-        depths: &NativeShadowDepthArray,
+        depths: &ShadowDepthArray,
         layer: u32,
         depth_ops: Operations<f32>,
         stencil_ops: Option<Operations<u32>>,
-        draws: &[NativeOpaqueShadowDraw<'_>],
+        draws: &[ShadowDepthDraw<'_>],
     ) -> Result<(), String> {
         if depths.texture.format() != self.format {
-            return Err("native shadow pipeline and depth-array formats differ".into());
+            return Err("shadow pipeline and depth-array formats differ".into());
         }
         if self.format == TextureFormat::Depth16Unorm && stencil_ops.is_some() {
-            return Err("native D16 parallel shadow target has no stencil aspect".into());
+            return Err("D16 parallel shadow target has no stencil aspect".into());
         }
         let Some(view) = depths.layers.get(layer as usize) else {
             return Err(format!(
-                "native opaque shadow layer {layer} is outside {} cached layers",
+                "opaque shadow layer {layer} is outside {} cached layers",
                 depths.layers.len()
             ));
         };
@@ -1478,7 +1477,7 @@ impl NativeOpaqueShadowPipeline {
         dimensions: [u32; 2],
         depth_ops: Operations<f32>,
         stencil_ops: Option<Operations<u32>>,
-        draws: &[NativeOpaqueShadowDraw<'_>],
+        draws: &[ShadowDepthDraw<'_>],
     ) -> Result<(), String> {
         let sequence: Vec<_> = draws.iter().map(|draw| (self, draw)).collect();
         Self::draw_depth_sequence(
@@ -1496,25 +1495,25 @@ impl NativeOpaqueShadowPipeline {
     /// passes. Keep one attachment open until the native cache/copy boundary.
     pub fn draw_layer_sequence(
         encoder: &mut CommandEncoder,
-        depths: &NativeShadowDepthArray,
+        depths: &ShadowDepthArray,
         layer: u32,
         depth_ops: Operations<f32>,
         stencil_ops: Option<Operations<u32>>,
-        draws: &[(&Self, &NativeOpaqueShadowDraw<'_>)],
+        draws: &[(&Self, &ShadowDepthDraw<'_>)],
     ) -> Result<(), String> {
         if draws
             .iter()
             .any(|(pipeline, _)| pipeline.format != depths.texture.format())
         {
-            return Err("native shadow pipeline and depth-array formats differ".into());
+            return Err("shadow pipeline and depth-array formats differ".into());
         }
         if depths.texture.format() == TextureFormat::Depth16Unorm && stencil_ops.is_some() {
-            return Err("native D16 parallel shadow target has no stencil aspect".into());
+            return Err("D16 parallel shadow target has no stencil aspect".into());
         }
         let view = depths
             .layers
             .get(layer as usize)
-            .ok_or("native shadow sequence layer is absent")?;
+            .ok_or("shadow sequence layer is absent")?;
         Self::draw_depth_sequence(
             encoder,
             view,
@@ -1531,21 +1530,21 @@ impl NativeOpaqueShadowPipeline {
     ///to32d6e0's whole-atlas boundary; a region draw must retain its peers.
     pub fn draw_layer_region_sequence(
         encoder: &mut CommandEncoder,
-        depths: &NativeShadowDepthArray,
+        depths: &ShadowDepthArray,
         layer: u32,
-        viewport: NativeShadowScissor,
-        draws: &[(&Self, &NativeOpaqueShadowDraw<'_>)],
+        viewport: ShadowScissor,
+        draws: &[(&Self, &ShadowDepthDraw<'_>)],
     ) -> Result<(), String> {
         if draws
             .iter()
             .any(|(pipeline, _)| pipeline.format != depths.texture.format())
         {
-            return Err("native local shadow pipeline and atlas formats differ".into());
+            return Err("local shadow pipeline and atlas formats differ".into());
         }
         let view = depths
             .layers
             .get(layer as usize)
-            .ok_or("native local shadow atlas layer is absent")?;
+            .ok_or("local shadow atlas layer is absent")?;
         Self::draw_depth_sequence(
             encoder,
             view,
@@ -1567,10 +1566,10 @@ impl NativeOpaqueShadowPipeline {
         encoder: &mut CommandEncoder,
         view: &TextureView,
         dimensions: [u32; 2],
-        viewport: Option<NativeShadowScissor>,
+        viewport: Option<ShadowScissor>,
         depth_ops: Operations<f32>,
         stencil_ops: Option<Operations<u32>>,
-        draws: &[(&Self, &NativeOpaqueShadowDraw<'_>)],
+        draws: &[(&Self, &ShadowDepthDraw<'_>)],
     ) -> Result<(), String> {
         if let Some(region) = viewport {
             if region.width == 0
@@ -1584,15 +1583,15 @@ impl NativeOpaqueShadowPipeline {
                     .checked_add(region.height)
                     .is_none_or(|v| v > dimensions[1])
             {
-                return Err("native local shadow viewport is outside its atlas layer".into());
+                return Err("local shadow viewport is outside its atlas layer".into());
             }
         }
         for (pipeline, draw) in draws {
             let needs_resources = pipeline.alpha_test
-                || pipeline.program == NativeShadowDepthProgram::WorldOpaque
-                || matches!(pipeline.program, NativeShadowDepthProgram::Skinned { .. });
+                || pipeline.program == ShadowDepthProgram::WorldOpaque
+                || matches!(pipeline.program, ShadowDepthProgram::Skinned { .. });
             if needs_resources != draw.program_resources.is_some() {
-                return Err("native shadow draw and program resource bindings differ".into());
+                return Err("shadow draw and program resource bindings differ".into());
             }
             let scissor = draw.scissor;
             let right = scissor.x.checked_add(scissor.width);
@@ -1603,7 +1602,7 @@ impl NativeOpaqueShadowPipeline {
                 || bottom.is_none_or(|bottom| bottom > dimensions[1])
             {
                 return Err(format!(
-                    "native opaque shadow scissor is outside layer: {scissor:?}"
+                    "opaque shadow scissor is outside layer: {scissor:?}"
                 ));
             }
             if draw.indices.start >= draw.indices.end
@@ -1611,7 +1610,7 @@ impl NativeOpaqueShadowPipeline {
                 || draw.instances.start >= draw.instances.end
             {
                 return Err(
-                    "native opaque shadow requires nonempty indexed triangle and instance ranges"
+                    "opaque shadow requires nonempty indexed triangle and instance ranges"
                         .into(),
                 );
             }
@@ -1626,7 +1625,7 @@ impl NativeOpaqueShadowPipeline {
             return Ok(());
         }
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("native opaque model-shadow layer draws"),
+            label: Some("opaque model-shadow layer draws"),
             color_attachments: &[],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view,
@@ -1705,11 +1704,11 @@ fn validate_opaque_depth_bias(
     adapter_flags: DownlevelFlags,
 ) -> Result<(), String> {
     if !bias.slope_scale.is_finite() || !bias.clamp.is_finite() {
-        return Err("native opaque shadow depth bias must be finite".into());
+        return Err("opaque shadow depth bias must be finite".into());
     }
     if bias.clamp != 0.0 && !adapter_flags.contains(DownlevelFlags::DEPTH_BIAS_CLAMP) {
         return Err(format!(
-            "native opaque shadow depth-bias clamp {} is unsupported: adapter lacks DownlevelFlags::DEPTH_BIAS_CLAMP",
+            "opaque shadow depth-bias clamp {} is unsupported: adapter lacks DownlevelFlags::DEPTH_BIAS_CLAMP",
             bias.clamp
         ));
     }
@@ -1719,11 +1718,11 @@ fn validate_opaque_depth_bias(
 fn validate_opaque_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(), String> {
     if layout.array_stride == 0 || layout.array_stride % 4 != 0 {
         return Err(
-            "native opaque shadow vertex stride must be nonzero and four-byte aligned".into(),
+            "opaque shadow vertex stride must be nonzero and four-byte aligned".into(),
         );
     }
     if layout.step_mode != VertexStepMode::Vertex {
-        return Err("native opaque shadow position stream must use per-vertex stepping".into());
+        return Err("opaque shadow position stream must use per-vertex stepping".into());
     }
     let positions: Vec<&VertexAttribute> = layout
         .attributes
@@ -1739,7 +1738,7 @@ fn validate_opaque_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(
             .is_none_or(|end| end > layout.array_stride)
     {
         return Err(
-            "native opaque shadow requires one aligned Float32x3 position at location 0 within the owner's stride"
+            "opaque shadow requires one aligned Float32x3 position at location 0 within the owner's stride"
                 .into(),
         );
     }

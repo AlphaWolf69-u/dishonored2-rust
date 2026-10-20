@@ -177,7 +177,7 @@ pub fn parallel_shadow_layer_can_be_selected(fars: [f32; 4], layer: usize) -> bo
 pub fn parallel_shadow_slice_plan(input: &ParallelShadowSliceInput) -> ParallelShadowSlicePlan {
     assert!(
         (1..=4).contains(&input.count) && input.layer < input.count,
-        "native parallel shadow layer must lie in its 1..=4 cascade bank"
+        "parallel shadow layer must lie in its 1..=4 cascade bank"
     );
     let near = if input.layer == 0 {
         input.camera_near
@@ -366,7 +366,7 @@ impl CascadeFarInput {
 pub fn update_cascade_fars(state: &mut CascadeFarState, input: &CascadeFarInput) -> [f32; 4] {
     assert!(
         (1..=4).contains(&input.count),
-        "native shadow cascade count must be 1..=4"
+        "shadow cascade count must be 1..=4"
     );
     const MODIFIED: u32 = 1 << 18;
     let reloaded = state.authored_cvar_flags & MODIFIED != 0;
@@ -425,7 +425,7 @@ pub fn cascade_fars(
 ) -> [f32; 4] {
     assert!(
         (1..=4).contains(&count),
-        "native shadow cascade count must be 1..=4"
+        "shadow cascade count must be 1..=4"
     );
     let mut result = authored;
     if far != -1.0 {
@@ -476,7 +476,7 @@ pub fn cascade_fars(
 /// FUN_140017d30 reads environment theta/phi, not the parallel entity's yaw.
 /// This vector points toward the sun; FUN_14032b280/140330c10 negate it for
 /// shadow extrusion. Preserve the executable's degree conversion and wrap.
-/// CRT sin/cos equivalence is checked by original_sun_direction_cases.txt.
+/// CRT sin/cos equivalence is checked by sun_direction_cases.txt.
 pub fn environment_sun_direction(theta_degrees: f32, phi_degrees: f32) -> [f32; 3] {
     let wrap = |degrees: f32| {
         let angle = degrees * f32::from_bits(0x3c8e_fa35);
@@ -522,7 +522,7 @@ pub fn parallel_shadow_receiver_path(
     }
 }
 
-pub const ORIGINAL_PARALLEL_SLICE_SIZE: u32 = 2048;
+pub const PARALLEL_SLICE_SIZE: u32 = 2048;
 
 /// FUN_140371254 allocates square slices using the configured size divided
 /// by 1 << r_shadowParallelResolutionDividerLevel, and reserves count + 1
@@ -586,7 +586,7 @@ pub fn parallel_shadow_depth_format(
         56 => Ok(ParallelShadowDepthFormat::Depth16), // DXGI_R16_UNORM
         44 => Ok(ParallelShadowDepthFormat::Depth24Stencil8), // DXGI_R24G8_TYPELESS
         mapped => Err(format!(
-            "unsupported native parallel shadow image format {mapped}"
+            "unsupported parallel shadow image format {mapped}"
         )),
     }
 }
@@ -663,7 +663,7 @@ pub fn adaptive_directional_far(
         return Ok(-1.0);
     }
     let depths = depth_maxima
-        .ok_or_else(|| "native adaptive shadow far needs the 64x64 depth owner".to_owned())?;
+        .ok_or_else(|| "adaptive shadow far needs the 64x64 depth owner".to_owned())?;
     let project = |far: f32| {
         let z = -far;
         let z_zero = projection[2][1] * 0.0 + projection[2][0] * 0.0;
@@ -705,7 +705,7 @@ pub fn adaptive_directional_far(
     let far = -(z / w) + 0.5;
     if far.is_nan() {
         return Err(
-            "native adaptive shadow unprojection produced NaN; CRT math-error path is not mapped"
+            "adaptive shadow unprojection produced NaN; CRT math-error path is not mapped"
                 .into(),
         );
     }
@@ -1166,7 +1166,7 @@ pub fn receiver_intersection_bounds(
             scene_bounds[axis + if index & (1 << axis) == 0 { 0 } else { 3 }]
         })
     }));
-    let camera = collect(crate::tome::shadow_caster::native_frustum_plane_corners(
+    let camera = collect(crate::tome::shadow_caster::frustum_plane_corners(
         &camera_planes,
     ));
     std::array::from_fn(|axis| {
@@ -1419,7 +1419,7 @@ pub fn local_shadow_resolution(
 /// preserving original equal/unordered permutations. Difference comparison
 /// matters: infinity minus itself is unordered, unlike comparing infinities.
 pub fn sort_local_shadow_priorities<T>(records: &mut [T], priority: impl Fn(&T) -> f32) {
-    crate::world_mesh::sort_native_shadow_records(records, |a, b| {
+    crate::world_mesh::sort_shadow_records(records, |a, b| {
         (priority(a) - priority(b)).partial_cmp(&0.0)
     });
 }
@@ -1574,7 +1574,7 @@ pub fn size_local_shadow_requests(
 
 /// FUN_14010e6a0's three principal-axis matrices. Unsupported axes leave the
 /// caller's matrix untouched, represented here by None.
-pub fn native_axis_rotation(axis: i32, angle: f32) -> Option<[[f32; 3]; 3]> {
+pub fn axis_rotation(axis: i32, angle: f32) -> Option<[[f32; 3]; 3]> {
     let sine = angle.sin();
     let cosine = angle.cos();
     Some(match axis {
@@ -1586,7 +1586,7 @@ pub fn native_axis_rotation(axis: i32, angle: f32) -> Option<[[f32; 3]; 3]> {
 }
 
 /// FUN_14000dce0's explicit three-term row product, used by split spots.
-pub fn native_basis_product(left: [[f32; 3]; 3], right: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+pub fn basis_product(left: [[f32; 3]; 3], right: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     std::array::from_fn(|r| {
         std::array::from_fn(|c| {
             (left[r][1] * right[1][c] + left[r][0] * right[0][c]) + left[r][2] * right[2][c]
@@ -1623,7 +1623,7 @@ pub fn prepare_spot_projections(
     scratch: &mut ProjectionFitScratch,
 ) -> Result<Vec<ShadowMatrix>, String> {
     if !matches!(input.side_count, 1 | 2) || rectangles.len() != input.side_count {
-        return Err("native spot projection requires its actual one/two side crop bank".into());
+        return Err("spot projection requires its actual one/two side crop bank".into());
     }
     let cosine = input.cutoff_cosine;
     let vertical = (1.0 - cosine * cosine).sqrt() / cosine;
@@ -1642,8 +1642,8 @@ pub fn prepare_spot_projections(
         (
             tangent,
             vec![
-                native_basis_product(native_axis_rotation(2, -angle).unwrap(), input.basis),
-                native_basis_product(native_axis_rotation(2, angle).unwrap(), input.basis),
+                basis_product(axis_rotation(2, -angle).unwrap(), input.basis),
+                basis_product(axis_rotation(2, angle).unwrap(), input.basis),
             ],
         )
     } else {
@@ -1676,7 +1676,7 @@ fn fit_local_shadow_projection(
     if mode < 1 {
         return Ok(clip);
     }
-    let camera = camera.ok_or("native fitted local shadow has no matching camera owner")?;
+    let camera = camera.ok_or("fitted local shadow has no matching camera owner")?;
     let planes = if mode == 2 {
         spot_receiver_planes(
             clip,
@@ -1687,7 +1687,7 @@ fn fit_local_shadow_projection(
             camera.near,
             camera
                 .coarse
-                .ok_or("native local fit mode2 has no coarseDepth source")?,
+                .ok_or("local fit mode2 has no coarseDepth source")?,
         )
         .unwrap_or(camera.planes)
     } else {
@@ -1702,7 +1702,7 @@ fn fit_local_shadow_projection(
 
 /// FUN_140331640's six initialized forward/left/up bases, passed through the
 /// same FUN_140109cc0 view builder as spots. Native side order is retained.
-pub fn native_omni_face_view(position: [f32; 3], face: usize) -> Result<ShadowMatrix, String> {
+pub fn omni_face_view(position: [f32; 3], face: usize) -> Result<ShadowMatrix, String> {
     const BASES: [[[f32; 3]; 3]; 6] = [
         [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
         [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
@@ -1715,7 +1715,7 @@ pub fn native_omni_face_view(position: [f32; 3], face: usize) -> Result<ShadowMa
         position,
         *BASES
             .get(face)
-            .ok_or("native omni face is outside its six-side bank")?,
+            .ok_or("omni face is outside its six-side bank")?,
     ))
 }
 
@@ -1735,7 +1735,7 @@ pub fn prepare_omni_projections(
     for face in 0..6 {
         output[face] = fit_local_shadow_projection(
             projection,
-            native_omni_face_view(position, face)?,
+            omni_face_view(position, face)?,
             fit_mode,
             camera,
             &mut rectangles[face],
@@ -1806,10 +1806,10 @@ pub fn local_shadow_side_geometry(
 ) -> Result<Option<LocalShadowSideGeometry>, String> {
     let mut inverse = [[0.0; 4]; 4];
     if !invert_rows(&clip, &mut inverse) {
-        return Err("native local shadow side projection is singular".into());
+        return Err("local shadow side projection is singular".into());
     }
     let camera = multiply_rows(camera_clip, inverse);
-    if crate::render_model::native_transformed_aabb_clip_cull(
+    if crate::render_model::transformed_aabb_clip_cull(
         &std::array::from_fn(|i| camera[i / 4][i % 4]),
         [-1.0, -1.0, 0.0],
         [1.0; 3],
@@ -1821,7 +1821,7 @@ pub fn local_shadow_side_geometry(
     let atlas = local_shadow_side_atlas(clip, allocation, atlas_extent);
     let mut inverse_atlas = [[0.0; 4]; 4];
     if !invert_rows(&atlas, &mut inverse_atlas) {
-        return Err("native local shadow atlas projection is singular".into());
+        return Err("local shadow atlas projection is singular".into());
     }
     let mut bounds = [
         [f32::from_bits(0x7149_f2ca); 3],
@@ -2290,7 +2290,7 @@ impl ParallelShadowPrepareState {
         projection_input: &DirectionalProjectionInput,
     ) -> Result<[bool; 4], String> {
         if far_input.count != projection_input.count || !(1..=4).contains(&far_input.count) {
-            return Err("native parallel prepare split/projection counts disagree".into());
+            return Err("parallel prepare split/projection counts disagree".into());
         }
         let mut far_input = *far_input;
         far_input.slice_nears = self.fars;
@@ -2312,7 +2312,7 @@ impl ParallelShadowPrepareState {
             .checked_sub(1)
             .and_then(|index| self.fars.get(index))
             .copied()
-            .ok_or_else(|| "native receiver cascade count must be 1..=4".into())
+            .ok_or_else(|| "receiver cascade count must be 1..=4".into())
     }
 }
 
@@ -2325,7 +2325,7 @@ pub fn update_directional_projections(
     cascades: &mut [DirectionalCascade; 4],
 ) -> Result<[bool; 4], String> {
     if !(1..=4).contains(&input.count) || input.resolution <= 0 {
-        return Err("invalid native directional cascade count/resolution".into());
+        return Err("invalid directional cascade count/resolution".into());
     }
     let mut inverse_camera_view = [[0.0; 4]; 4];
     if !invert_rows(&input.camera_view, &mut inverse_camera_view) {
@@ -2513,7 +2513,7 @@ pub fn whole_view_shadow_projection(
     resolution: i32,
 ) -> Result<DirectionalCascade, String> {
     if resolution <= 0 || !(shadow_near > 0.0) {
-        return Err("invalid native whole-view shadow resolution/near".into());
+        return Err("invalid whole-view shadow resolution/near".into());
     }
     let mut view = directional_rotation_rows(direction);
     let mut inverse = [[0.0; 4]; 4];
@@ -2564,7 +2564,7 @@ pub fn whole_view_shadow_projection(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn whole_local_light_volume_matches_original_projection_and_inverse() {
+    fn whole_local_light_volume_matches_projection_and_inverse() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2588,14 +2588,14 @@ mod tests {
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 w[15..],
-                "native whole-light volume case{count}"
+                "whole-light volume case{count}"
             );
             count += 1;
         }
         assert_eq!(count, 256);
     }
     #[test]
-    fn local_side_preparation_matches_original_culls_cache_slots_and_bounds() {
+    fn local_side_preparation_matches_culls_cache_slots_and_bounds() {
         let mut scratch = super::ProjectionFitScratch::default();
         let mut survivors = 0;
         let mut failures = 0;
@@ -2737,7 +2737,7 @@ mod tests {
                         .map(|v| v.to_bits())
                         .collect::<Vec<_>>(),
                     w[at + 26..at + 42],
-                    "native forward atlas matrix including culled face case{case} side{side}"
+                    "forward atlas matrix including culled face case{case} side{side}"
                 );
                 if let Some(geometry) = geometry {
                     any = true;
@@ -2745,7 +2745,7 @@ mod tests {
                     assert_eq!(
                         super::local_shadow_cache_slot(kind, count, side),
                         w[at + 1],
-                        "native local cache slot case{case} side{side}"
+                        "local cache slot case{case} side{side}"
                     );
                     assert_eq!(
                         [
@@ -2766,7 +2766,7 @@ mod tests {
                             .map(|v| v.to_bits())
                             .collect::<Vec<_>>(),
                         w[at + 26..at + 42],
-                        "native local atlas matrix case{case} side{side}"
+                        "local atlas matrix case{case} side{side}"
                     );
                     assert_eq!(
                         geometry
@@ -2776,7 +2776,7 @@ mod tests {
                             .map(|v| v.to_bits())
                             .collect::<Vec<_>>(),
                         w[at + 42..at + 58],
-                        "native local inverse atlas case{case} side{side}"
+                        "local inverse atlas case{case} side{side}"
                     );
                     for i in 0..3 {
                         bounds[0][i] = if bounds[0][i] < geometry.bounds[0][i] {
@@ -2797,7 +2797,7 @@ mod tests {
             assert_eq!(
                 u32::from(!any),
                 w[3],
-                "native all-cache-hit result with no cache allocator case{case}"
+                "all-cache-hit result with no cache allocator case{case}"
             );
             assert_eq!(
                 bounds
@@ -2806,13 +2806,13 @@ mod tests {
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 w[107..113],
-                "native local surviving frustum bounds case{case}"
+                "local surviving frustum bounds case{case}"
             );
         }
         assert!(survivors > 500 && failures > 50);
     }
     #[test]
-    fn local_shadow_sizing_matches_original_atlas_trials_and_upgrades() {
+    fn local_shadow_sizing_matches_atlas_trials_and_upgrades() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/local_shadow_sizing_cases.txt"
@@ -2902,7 +2902,7 @@ mod tests {
         }
     }
     #[test]
-    fn local_shadow_helpers_match_original_resolution_and_fitted_sides() {
+    fn local_shadow_helpers_match_resolution_and_fitted_sides() {
         let mut counts = [0; 7];
         let mut fit_scratch = super::ProjectionFitScratch::default();
         for (case, line) in include_str!(concat!(
@@ -2948,7 +2948,7 @@ mod tests {
                     counts[0] += 1;
                 }
                 "AXIS" => {
-                    let actual = super::native_axis_rotation(words[0] as i32, value(1))
+                    let actual = super::axis_rotation(words[0] as i32, value(1))
                         .unwrap_or([[12.25; 3]; 3]);
                     assert_eq!(
                         actual
@@ -2962,7 +2962,7 @@ mod tests {
                     counts[1] += 1;
                 }
                 "BASIS" => {
-                    let actual = super::native_basis_product(basis(0), basis(9));
+                    let actual = super::basis_product(basis(0), basis(9));
                     assert_eq!(
                         actual
                             .iter()
@@ -2976,7 +2976,7 @@ mod tests {
                 }
                 "CUBE" => {
                     let output =
-                        super::native_omni_face_view(vector(0), words[3] as usize).unwrap();
+                        super::omni_face_view(vector(0), words[3] as usize).unwrap();
                     assert_eq!(
                         output
                             .iter()
@@ -2998,7 +2998,7 @@ mod tests {
                     assert_eq!(
                         records,
                         words[1 + count..],
-                        "native local priority tie/unordered order case{case}"
+                        "local priority tie/unordered order case{case}"
                     );
                     counts[6] += 1;
                 }
@@ -3132,7 +3132,7 @@ mod tests {
     }
 
     #[test]
-    fn spot_receiver_planes_match_original_coarse_r_selection() {
+    fn spot_receiver_planes_match_coarse_r_selection() {
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/spot_receiver_planes_cases.txt"
@@ -3185,7 +3185,7 @@ mod tests {
         }
     }
     #[test]
-    fn shadow_view_flag_matches_original_scalar_prefixes_and_signed_predicate() {
+    fn shadow_view_flag_matches_scalar_prefixes_and_signed_predicate() {
         let mut cases = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3202,12 +3202,12 @@ mod tests {
                 unreachable!()
             };
             assert_eq!(reset, u32::from(RESET_VIEW_SHADOW_FLAG));
-            assert_eq!(copied, source, "native copy must preserve all eight bits");
+            assert_eq!(copied, source, "copy must preserve all eight bits");
             let expected = if forced != 0 { 1 } else { copied as u8 };
             assert_eq!(
                 prepared_shadow_view_flag(source as u8, frame, baseline),
                 expected,
-                "native source={source:x}, frame={frame:x}, baseline={baseline:x}"
+                "source={source:x}, frame={frame:x}, baseline={baseline:x}"
             );
             cases += 1;
         }
@@ -3217,7 +3217,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_mvp_winding_matches_original_executable() {
+    fn model_mvp_winding_matches_executable() {
         let mut checked = 0;
         for (line_number, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3244,7 +3244,7 @@ mod tests {
     }
 
     #[test]
-    fn whole_view_bounds_follow_original_owner_selection() {
+    fn whole_view_bounds_follow_owner_selection() {
         let world = [[-100.0, -200.0, -300.0], [400.0, 500.0, 600.0]];
         for authored in [
             [[0.0; 3]; 2],
@@ -3270,7 +3270,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_box_bounds_match_original_machine_code() {
+    fn projected_box_bounds_match_machine_code() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3303,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn whole_view_projection_matches_original_machine_code() {
+    fn whole_view_projection_matches_machine_code() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3346,7 +3346,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_far_matches_original_scan_unprojection_and_ceil() {
+    fn adaptive_far_matches_scan_unprojection_and_ceil() {
         let mut cases = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3453,7 +3453,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_receiver_uses_original_compiled_branch_precedence() {
+    fn parallel_receiver_uses_compiled_branch_precedence() {
         use ParallelShadowReceiverPath::*;
         assert_eq!(parallel_shadow_receiver_path(false, false), ScreenSpace);
         assert_eq!(parallel_shadow_receiver_path(true, false), DirectVisibility);
@@ -3503,7 +3503,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_slice_policy_matches_original_machine_code() {
+    fn parallel_slice_policy_matches_machine_code() {
         let mut checked = 0;
         for (line_number, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3546,7 +3546,7 @@ mod tests {
             assert_eq!(
                 actual,
                 w[14..],
-                "native policy fixture line {line_number}: {input:?}"
+                "policy fixture line {line_number}: {input:?}"
             );
             checked += 1;
         }
@@ -3554,8 +3554,8 @@ mod tests {
     }
 
     #[test]
-    fn parallel_target_uses_native_cvar_allocation_and_extra_layer() {
-        for slice_size in [256, 257, 1024, ORIGINAL_PARALLEL_SLICE_SIZE, 16384] {
+    fn parallel_target_uses_cvar_allocation_and_extra_layer() {
+        for slice_size in [256, 257, 1024, PARALLEL_SLICE_SIZE, 16384] {
             for divider in 0..=2 {
                 for count in 1..=4 {
                     let target =
@@ -3583,7 +3583,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_depth_setting_maps_original_templates_not_its_name() {
+    fn parallel_depth_setting_maps_templates_not_its_name() {
         assert_eq!(
             parallel_shadow_depth_format(false).unwrap(),
             ParallelShadowDepthFormat::Depth16
@@ -3602,7 +3602,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_owner_resource_names_match_original_callsite_hashes() {
+    fn directional_owner_resource_names_match_callsite_hashes() {
         use crate::render_resource::resource_name_key;
         for (name, expected) in [
             ("default", 0xa4719e7a),
@@ -3615,7 +3615,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_atlas_matches_original_allocation_free_and_projection_stream() {
+    fn shadow_atlas_matches_allocation_free_and_projection_stream() {
         let banks = [
             [[0, 0, 63, 31]; 2],
             [[-20, 5, 43, 36]; 2],
@@ -3677,7 +3677,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_sun_direction_matches_original_crt_math() {
+    fn environment_sun_direction_matches_crt_math() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3702,7 +3702,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_intersection_matches_original_machine_code_bitwise() {
+    fn receiver_intersection_matches_machine_code_bitwise() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3741,7 +3741,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_basis_leaves_match_original_machine_code_bitwise() {
+    fn receiver_basis_leaves_match_machine_code_bitwise() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3788,7 +3788,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_matrix_leaves_match_original_machine_code_bitwise() {
+    fn shadow_matrix_leaves_match_machine_code_bitwise() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3848,7 +3848,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_builder_and_retention_match_original_bitwise() {
+    fn directional_builder_and_retention_match_bitwise() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3928,7 +3928,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_parallel_prepare_handoff_matches_original_executable() {
+    fn persistent_parallel_prepare_handoff_matches_executable() {
         let mut cases = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3936,7 +3936,7 @@ mod tests {
         ))
         .lines()
         {
-            assert_original_parallel_prepare_case(line, cases);
+            assert_parallel_prepare_case(line, cases);
             cases += 1;
         }
         assert_eq!(cases, 384);
@@ -3947,7 +3947,7 @@ mod tests {
     fn live_parallel_prepare_matches_full_game_depth_and_state() {
         let source =
             std::fs::read_to_string("artifacts/shadow-resume-original-prepare-replay.txt").unwrap();
-        assert_original_parallel_prepare_case(source.trim(), 0);
+        assert_parallel_prepare_case(source.trim(), 0);
         let words: Vec<f32> = source
             .split_whitespace()
             .map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap()))
@@ -3970,7 +3970,7 @@ mod tests {
         );
     }
 
-    fn assert_original_parallel_prepare_case(line: &str, cases: usize) {
+    fn assert_parallel_prepare_case(line: &str, cases: usize) {
         let words: Vec<u32> = line
             .split_whitespace()
             .map(|word| u32::from_str_radix(word, 16).unwrap())
@@ -4069,7 +4069,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_matrix_leaves_match_original_bitwise() {
+    fn directional_matrix_leaves_match_bitwise() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -4129,7 +4129,7 @@ mod tests {
     }
 
     #[test]
-    fn plane_intersection_and_projection_fit_match_original_bitwise() {
+    fn plane_intersection_and_projection_fit_match_bitwise() {
         let mut scratch = ProjectionFitScratch::default();
         let mut count = 0;
         for line in include_str!(concat!(
@@ -4326,7 +4326,7 @@ mod tests {
     }
 
     #[test]
-    fn cascade_owner_matches_original_non_reload_execution() {
+    fn cascade_owner_matches_non_reload_execution() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -4387,7 +4387,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_four_cascade_splits_match_original_frame() {
+    fn captured_four_cascade_splits_match_frame() {
         let expected = [4.9492321, 12.2474489, 30.3077316, 75.0];
         let result = cascade_fars(
             [4.0, 12.0, 30.0, 75.0],
@@ -4399,10 +4399,10 @@ mod tests {
             false,
             0,
         );
-        for (actual, original) in result.into_iter().zip(expected) {
+        for (actual, reference) in result.into_iter().zip(expected) {
             assert!(
-                (actual - original).abs() <= 0.000004,
-                "{actual} != {original}"
+                (actual - reference).abs() <= 0.000004,
+                "{actual} != {reference}"
             );
         }
     }

@@ -7,10 +7,10 @@
 //! 1402c4e10, 1402c4e80. Values below are the original D3D11 enums.
 //! The renderer's hash/cache binding shortcut is not implemented here.
 
-pub type NativeRenderState = [u32; 9];
+pub type RenderState = [u32; 9];
 
 /// FUN_1402c4dd0 resets the decoded fields, retaining unused blend bits.
-pub fn reset_native_render_state(state: &mut NativeRenderState) {
+pub fn reset_render_state(state: &mut RenderState) {
     for target in &mut state[..4] {
         *target = (*target & 0xffe0_0802) | 0x01e0_0802;
     }
@@ -24,11 +24,11 @@ pub fn reset_native_render_state(state: &mut NativeRenderState) {
 /// unsupported until the original collector's concatenation is verified.
 pub fn material_render_state(
     source: &str,
-    base: NativeRenderState,
-) -> Result<NativeRenderState, String> {
+    base: RenderState,
+) -> Result<RenderState, String> {
     let tokens = crate::entities::declaration_lexemes(source)?;
     if tokens.first() != Some(&"{") {
-        return Err("native material declaration must start with {".into());
+        return Err("material declaration must start with {".into());
     }
     let mut depth = 0usize;
     let mut index = 0;
@@ -40,7 +40,7 @@ pub fn material_render_state(
                 return Err("multiple native material state blocks are unresolved".into());
             }
             if tokens.get(index + 1) != Some(&"{") {
-                return Err("native material state must start with {".into());
+                return Err("material state must start with {".into());
             }
             let start = index + 1;
             let mut end = start + 1;
@@ -56,7 +56,7 @@ pub fn material_render_state(
             if braces != 0 {
                 return Err("Unexpected EOF in state block".into());
             }
-            state = Some(parse_native_render_state(
+            state = Some(parse_render_state(
                 &tokens[start..end].join(" "),
                 Some(base),
             )?);
@@ -85,10 +85,10 @@ pub fn material_render_state(
 /// not a freshly reset state. None is the original explicit null-base branch.
 /// Lexer diagnostic/recovery side effects on malformed input are not emulated;
 /// unsupported/malformed blocks return an error instead of publishing a state.
-pub fn parse_native_render_state(
+pub fn parse_render_state(
     source: &str,
-    base: Option<NativeRenderState>,
-) -> Result<NativeRenderState, String> {
+    base: Option<RenderState>,
+) -> Result<RenderState, String> {
     fn take<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Result<&'a str, String> {
         tokens
             .next()
@@ -106,7 +106,7 @@ pub fn parse_native_render_state(
             .iter()
             .find(|(name, _)| *name == token)
             .map(|(_, value)| *value)
-            .ok_or_else(|| format!("invalid native drawing-state value {token:?}"))
+            .ok_or_else(|| format!("invalid drawing-state value {token:?}"))
     }
     fn comparison(token: &str) -> Result<u32, String> {
         named(
@@ -149,11 +149,11 @@ pub fn parse_native_render_state(
     }
     let mut tokens = crate::entities::declaration_lexemes(source)?.into_iter();
     if take(&mut tokens)? != "{" {
-        return Err("native drawing state must start with {".into());
+        return Err("drawing state must start with {".into());
     }
     let mut state = base.unwrap_or_else(|| {
         let mut value = [0; 9];
-        reset_native_render_state(&mut value);
+        reset_render_state(&mut value);
         value
     });
     loop {
@@ -161,7 +161,7 @@ pub fn parse_native_render_state(
         match key.as_str() {
             "}" => {
                 state[0] =
-                    (state[0] & !1) | u32::from(crate::material::native_blend_enabled(state[0]));
+                    (state[0] & !1) | u32::from(crate::material::blend_enabled(state[0]));
                 return Ok(state);
             }
             "blend" | "alphablend" => {
@@ -197,7 +197,7 @@ pub fn parse_native_render_state(
             "alphacoverage" | "depthwrite" | "depthenable" | "colorwrite" | "alphawrite" => {
                 let value = take(&mut tokens)?
                     .parse::<i32>()
-                    .map_err(|_| format!("invalid native integer for {key}"))?
+                    .map_err(|_| format!("invalid integer for {key}"))?
                     != 0;
                 let (word, mask) = match key.as_str() {
                     "alphacoverage" => (4, 1),
@@ -231,7 +231,7 @@ pub fn parse_native_render_state(
                 state[4] = (state[4] & !(7 << shift)) | (value << shift);
                 state[5] |= 0x20;
             }
-            _ => return Err(format!("unsupported native drawing-state option {key:?}")),
+            _ => return Err(format!("unsupported drawing-state option {key:?}")),
         }
     }
 }
@@ -239,15 +239,15 @@ pub fn parse_native_render_state(
 /// FUN_140319900's surface-facing override. Only the surface's low bit
 /// replaces raster FrontCounterClockwise; all other state bits survive.
 pub fn prepared_surface_state(
-    mut state: NativeRenderState,
+    mut state: RenderState,
     surface_flags: u8,
-) -> NativeRenderState {
+) -> RenderState {
     state[5] ^= ((u32::from(surface_flags) << 27) ^ state[5]) & 0x0800_0000;
     state
 }
 
 /// Original CVTTSS2SI result, including INT_MIN on NaN/out-of-range.
-fn native_cvtt_f32(value: f32) -> u32 {
+fn cvtt_f32(value: f32) -> u32 {
     if value >= -2147483648.0 && value < 2147483648.0 {
         value as i32 as u32
     } else {
@@ -260,16 +260,16 @@ fn native_cvtt_f32(value: f32) -> u32 {
 /// source blend/stencil/cull bits not in the masks survive. Globals are
 /// explicit owner inputs, not guessed renderer defaults.
 pub fn world_shadow_draw_state(
-    source: NativeRenderState,
+    source: RenderState,
     surface_flags: u8,
     depth_bias: f32,
     slope_scale: f32,
     clamp: f32,
     depth_clip: u8,
-) -> NativeRenderState {
+) -> RenderState {
     let mut state = prepared_surface_state(source, surface_flags);
     state[0] &= 0xfe1f_fffe;
-    state[6] = native_cvtt_f32(depth_bias);
+    state[6] = cvtt_f32(depth_bias);
     state[8] = slope_scale.to_bits();
     state[5] = (state[5] & 0xefff_fff9) | (u32::from(depth_clip & 1) << 28) | 1;
     state[7] = clamp.to_bits();
@@ -279,7 +279,7 @@ pub fn world_shadow_draw_state(
 /// Literal state leaves adjacent to the world-shadow override. Keeping their
 /// native addresses avoids assigning an unverified pass/category meaning.
 /// FUN_1402934e0; the two-byte store starts at byte0x15, not a word boundary.
-pub fn world_state_2934e0(mut state: NativeRenderState) -> NativeRenderState {
+pub fn world_state_2934e0(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xfcff_ffea) | 0x22;
     state[4] = (state[4] & 0xff) | 0xe80e_8000;
     state[5] = (state[5] & !0x00ff_ff00) | 0x0004_0000;
@@ -288,13 +288,13 @@ pub fn world_state_2934e0(mut state: NativeRenderState) -> NativeRenderState {
 
 /// FUN_140293500. FUN_1402934b0 additionally invokes 3253f0/3253d0;
 /// those callbacks are not covered by this leaf.
-pub fn world_state_293500(mut state: NativeRenderState) -> NativeRenderState {
+pub fn world_state_293500(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xffff_ffee) | 6;
     state
 }
 
 /// FUN_140293510.
-pub fn world_state_293510(mut state: NativeRenderState) -> NativeRenderState {
+pub fn world_state_293510(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xffff_ffee) | 0xe;
     state[4] |= 2;
     state[0] = (state[0] & 0xffff_f8a9) | 0xa9;
@@ -303,7 +303,7 @@ pub fn world_state_293510(mut state: NativeRenderState) -> NativeRenderState {
 }
 
 /// FUN_140293540; caller supplies actual DAT_1432f8cac.
-pub fn world_state_293540(state: NativeRenderState, clamp: f32) -> NativeRenderState {
+pub fn world_state_293540(state: RenderState, clamp: f32) -> RenderState {
     let mut state = world_state_293500(state);
     state[6] = 0;
     state[8] = 0x3ca3_d70a;
@@ -312,7 +312,7 @@ pub fn world_state_293540(state: NativeRenderState, clamp: f32) -> NativeRenderS
 }
 
 /// FUN_140293570.
-pub fn world_state_293570(mut state: NativeRenderState) -> NativeRenderState {
+pub fn world_state_293570(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xffff_ffea) | 2;
     state
 }
@@ -323,9 +323,9 @@ pub fn world_state_293570(mut state: NativeRenderState) -> NativeRenderState {
 /// The original source render state is otherwise retained, including depth.
 /// This is the draw-state subset, not the callback's resource/copy lifecycle.
 pub fn main_depth_surface_state(
-    mut state: NativeRenderState,
+    mut state: RenderState,
     model_depth_hack: f32,
-) -> (NativeRenderState, u8) {
+) -> (RenderState, u8) {
     state[0] = (state[0] & 0xfeff_f802) | 0x00e0_0002;
     let hacked = model_depth_hack > 0.0;
     if hacked {
@@ -336,7 +336,7 @@ pub fn main_depth_surface_state(
 }
 
 /// FUN_1402c4e10, including its out-of-range ALWAYS branch.
-pub fn native_compare_function(code: u32) -> u32 {
+pub fn compare_function(code: u32) -> u32 {
     if code < 7 {
         code + 1
     } else {
@@ -345,7 +345,7 @@ pub fn native_compare_function(code: u32) -> u32 {
 }
 
 /// FUN_1402c4e80, including its out-of-range KEEP branch.
-pub fn native_stencil_operation(code: u32) -> u32 {
+pub fn stencil_operation(code: u32) -> u32 {
     if (1..=7).contains(&code) {
         code + 1
     } else {
@@ -368,7 +368,7 @@ fn blend_operation(code: u32) -> u32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeBlendTarget {
+pub struct BlendTarget {
     pub enabled: bool,
     pub color_source: u32,
     pub color_destination: u32,
@@ -379,7 +379,7 @@ pub struct NativeBlendTarget {
     pub write_mask: u8,
 }
 
-impl NativeBlendTarget {
+impl BlendTarget {
     pub fn from_word(word: u32) -> Self {
         Self {
             enabled: word & 1 != 0,
@@ -407,25 +407,25 @@ impl NativeBlendTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeBlendState {
+pub struct BlendState {
     pub alpha_to_coverage: bool,
     pub independent_blend: bool,
     /// Targets 1..7 are not initialized/used by the native factory when
     /// IndependentBlendEnable is false; do not invent values for them.
-    pub targets: [Option<NativeBlendTarget>; 8],
+    pub targets: [Option<BlendTarget>; 8],
 }
 
-pub fn native_blend_state(state: &NativeRenderState) -> NativeBlendState {
+pub fn blend_state(state: &RenderState) -> BlendState {
     let independent_blend = state[4] & 2 != 0;
     let mut targets = [None; 8];
-    targets[0] = Some(NativeBlendTarget::from_word(state[0]));
+    targets[0] = Some(BlendTarget::from_word(state[0]));
     if independent_blend {
         for (target, word) in targets[1..4].iter_mut().zip(&state[1..4]) {
-            *target = Some(NativeBlendTarget::from_word(*word));
+            *target = Some(BlendTarget::from_word(*word));
         }
-        targets[4..].fill(Some(NativeBlendTarget::UNUSED_INDEPENDENT_TARGET));
+        targets[4..].fill(Some(BlendTarget::UNUSED_INDEPENDENT_TARGET));
     }
-    NativeBlendState {
+    BlendState {
         alpha_to_coverage: state[4] & 1 != 0,
         independent_blend,
         targets,
@@ -433,7 +433,7 @@ pub fn native_blend_state(state: &NativeRenderState) -> NativeBlendState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeStencilFace {
+pub struct StencilFace {
     pub fail: u32,
     pub depth_fail: u32,
     pub pass: u32,
@@ -441,44 +441,44 @@ pub struct NativeStencilFace {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeDepthStencilState {
+pub struct DepthStencilState {
     pub depth_enabled: bool,
     pub depth_write: bool,
     pub depth_compare: u32,
     pub stencil_enabled: bool,
     pub stencil_read_mask: u8,
     pub stencil_write_mask: u8,
-    pub front: NativeStencilFace,
-    pub back: NativeStencilFace,
+    pub front: StencilFace,
+    pub back: StencilFace,
 }
 
-pub fn native_depth_stencil_state(state: &NativeRenderState) -> NativeDepthStencilState {
+pub fn depth_stencil_state(state: &RenderState) -> DepthStencilState {
     let stencil = state[4];
     let depth = state[5];
-    NativeDepthStencilState {
+    DepthStencilState {
         depth_enabled: depth & 8 != 0,
         depth_write: depth & 16 != 0,
-        depth_compare: native_compare_function(depth & 7),
+        depth_compare: compare_function(depth & 7),
         stencil_enabled: depth & 32 != 0,
         stencil_read_mask: (depth >> 8) as u8,
         stencil_write_mask: (depth >> 16) as u8,
-        front: NativeStencilFace {
-            fail: native_stencil_operation(stencil >> 8 & 7),
-            depth_fail: native_stencil_operation(stencil >> 11 & 7),
-            pass: native_stencil_operation(stencil >> 14 & 7),
-            compare: native_compare_function(stencil >> 17 & 7),
+        front: StencilFace {
+            fail: stencil_operation(stencil >> 8 & 7),
+            depth_fail: stencil_operation(stencil >> 11 & 7),
+            pass: stencil_operation(stencil >> 14 & 7),
+            compare: compare_function(stencil >> 17 & 7),
         },
-        back: NativeStencilFace {
-            fail: native_stencil_operation(stencil >> 20 & 7),
-            depth_fail: native_stencil_operation(stencil >> 23 & 7),
-            pass: native_stencil_operation(stencil >> 26 & 7),
-            compare: native_compare_function(stencil >> 29),
+        back: StencilFace {
+            fail: stencil_operation(stencil >> 20 & 7),
+            depth_fail: stencil_operation(stencil >> 23 & 7),
+            pass: stencil_operation(stencil >> 26 & 7),
+            compare: compare_function(stencil >> 29),
         },
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeRasterState {
+pub struct RasterState {
     pub fill_mode: u32,
     pub cull_mode: u32,
     pub front_counter_clockwise: bool,
@@ -491,9 +491,9 @@ pub struct NativeRasterState {
     pub antialiased_line: bool,
 }
 
-pub fn native_raster_state(state: &NativeRenderState) -> NativeRasterState {
+pub fn raster_state(state: &RenderState) -> RasterState {
     let raster = state[5];
-    NativeRasterState {
+    RasterState {
         fill_mode: (!(raster >> 26) & 1) | 2,
         cull_mode: match raster >> 24 & 3 {
             0 => 1,
@@ -515,7 +515,7 @@ pub fn native_raster_state(state: &NativeRenderState) -> NativeRasterState {
 /// AO and packed depth, write only G, and use read-only depth/KEEP stencil.
 /// First stencil == 1; second stencil != 1 (read mask 1). The callback
 /// supplies reference 1 to FUN_1402bb470 for BOTH draws.
-pub fn screen_shadow_pass_states(source: NativeRenderState) -> [NativeRenderState; 2] {
+pub fn screen_shadow_pass_states(source: RenderState) -> [RenderState; 2] {
     let mut first = source;
     first[0] = (first[0] & 0xfe5f_fffe) | 0x0040_0000;
     first[5] = (first[5] & 0xfc01_01ef) | 0x0001_012f;
@@ -530,7 +530,7 @@ pub fn screen_shadow_pass_states(source: NativeRenderState) -> [NativeRenderStat
 /// thirteen-word D3D11_SAMPLER_DESC, preserving all float bits. This does not
 /// implement the function's cache, lock, device creation or disabled-renderer
 /// path. 768 offline original executions verify the reduction independently.
-pub fn native_sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) -> [u32; 13] {
+pub fn sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) -> [u32; 13] {
     let flags = canonical[0];
     let comparison = (flags >> 12) & 7;
     let min = (flags >> 2) & 3;
@@ -548,10 +548,10 @@ pub fn native_sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) ->
             1
         } else {
             filter = 0x55;
-            native_cvtt_f32(own)
+            cvtt_f32(own)
         }
     } else {
-        native_cvtt_f32(image_anisotropy)
+        cvtt_f32(image_anisotropy)
     };
     let address = |shift: u32| match (flags >> shift) & 3u32 {
         0 => 1, // WRAP
@@ -578,11 +578,11 @@ pub fn native_sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) ->
 }
 
 #[cfg(test)]
-mod native_parser_tests {
+mod parser_tests {
     use super::*;
 
     #[test]
-    fn state_parser_matches_original_token_stream_kernel() {
+    fn state_parser_matches_token_stream_kernel() {
         fn words(text: &str) -> [u32; 9] {
             text.split_whitespace()
                 .map(|word| u32::from_str_radix(word, 16).unwrap())
@@ -605,7 +605,7 @@ mod native_parser_tests {
             let expected = words(columns.next().unwrap());
             assert!(columns.next().is_none());
             assert_eq!(
-                parse_native_render_state(source, base).unwrap(),
+                parse_render_state(source, base).unwrap(),
                 expected,
                 "original token-stream kernel case {index}: {source}"
             );
@@ -629,7 +629,7 @@ mod native_parser_tests {
         ];
         let source = "{ options { blend ONE state 1 } parms { cull FRONT } state { blend SRC_ALPHA ONE_MINUS_SRC_ALPHA depthWrite 0 cull NONE } mainProgram arkdefault }";
         let actual = material_render_state(source, base).unwrap();
-        let expected = parse_native_render_state(
+        let expected = parse_render_state(
             "{ blend SRC_ALPHA ONE_MINUS_SRC_ALPHA depthWrite 0 cull NONE }",
             Some(base),
         )
@@ -646,9 +646,9 @@ mod native_parser_tests {
 
     #[test]
     fn state_parser_shares_comment_rules_and_rejects_unresolved_input() {
-        let plain = parse_native_render_state("{ blend ONE ZERO cull FRONT }", None).unwrap();
+        let plain = parse_render_state("{ blend ONE ZERO cull FRONT }", None).unwrap();
         assert_eq!(
-            parse_native_render_state(
+            parse_render_state(
                 "/* header */ { blend /* a */ ONE ZERO // b\n cull FRONT }",
                 None
             )
@@ -663,7 +663,7 @@ mod native_parser_tests {
             "{ unsupported 1 }",
             "{ depthWrite maybe }",
         ] {
-            assert!(parse_native_render_state(source, None).is_err(), "{source}");
+            assert!(parse_render_state(source, None).is_err(), "{source}");
         }
     }
 }
@@ -673,7 +673,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn world_state_leaves_match_full_original_execution() {
+    fn world_state_leaves_match_full_execution() {
         let mut cases = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn sampler_descriptors_match_original_executable() {
+    fn sampler_descriptors_match_executable() {
         let mut count = 0;
         for (case, line) in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -730,7 +730,7 @@ mod tests {
             assert_eq!(words.len(), 23);
             let input: [u32; 9] = words[1..10].try_into().unwrap();
             assert_eq!(
-                native_sampler_descriptor(&input, f32::from_bits(words[0])),
+                sampler_descriptor(&input, f32::from_bits(words[0])),
                 words[10..],
                 "original sampler case {case}"
             );
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn main_depth_stencil_bit_tracks_actual_depth_hack_not_mesh_type() {
         let mut source = [0; 9];
-        reset_native_render_state(&mut source);
+        reset_render_state(&mut source);
         for hack in [0.0, -0.0, -1.0, f32::NEG_INFINITY, f32::NAN] {
             let (state, reference) = main_depth_surface_state(source, hack);
             assert_eq!(reference, 0);
@@ -750,7 +750,7 @@ mod tests {
         }
         for hack in [f32::MIN_POSITIVE, 0.01, 1.0, f32::INFINITY] {
             let (state, reference) = main_depth_surface_state(source, hack);
-            let depth = native_depth_stencil_state(&state);
+            let depth = depth_stencil_state(&state);
             assert_eq!(reference, 1);
             assert!(depth.stencil_enabled);
             assert_eq!((depth.stencil_read_mask, depth.stencil_write_mask), (1, 1));
@@ -761,18 +761,18 @@ mod tests {
             }
             assert_eq!(
                 depth.depth_compare,
-                native_depth_stencil_state(&source).depth_compare
+                depth_stencil_state(&source).depth_compare
             );
             assert_eq!(
                 depth.depth_write,
-                native_depth_stencil_state(&source).depth_write
+                depth_stencil_state(&source).depth_write
             );
             assert_eq!(&state[6..], &source[6..]);
         }
         for flags in 0..=255 {
             let state = prepared_surface_state([u32::MAX; 9], flags);
             assert_eq!(
-                native_raster_state(&state).front_counter_clockwise,
+                raster_state(&state).front_counter_clockwise,
                 flags & 1 != 0
             );
             assert_eq!(state[5] & !0x0800_0000, u32::MAX & !0x0800_0000);
@@ -784,28 +784,28 @@ mod tests {
     }
 
     #[test]
-    fn enum_defaults_match_native_switches() {
+    fn enum_defaults_match_switches() {
         for code in 0..256 {
             assert_eq!(
-                native_compare_function(code),
+                compare_function(code),
                 if code < 7 { code + 1 } else { 8 }
             );
             assert_eq!(
-                native_stencil_operation(code),
+                stencil_operation(code),
                 if (1..=7).contains(&code) { code + 1 } else { 1 }
             );
         }
     }
 
     #[test]
-    fn native_screen_draws_only_green_and_split_stencil_bit_one() {
+    fn screen_draws_only_green_and_split_stencil_bit_one() {
         for source in [[0; 9], [u32::MAX; 9], [0xdead_beef; 9]] {
             let passes = screen_shadow_pass_states(source);
             for (index, state) in passes.iter().enumerate() {
-                let blend = native_blend_state(state).targets[0].unwrap();
+                let blend = blend_state(state).targets[0].unwrap();
                 assert!(!blend.enabled);
                 assert_eq!(blend.write_mask, 2);
-                let depth = native_depth_stencil_state(state);
+                let depth = depth_stencil_state(state);
                 assert!(depth.depth_enabled);
                 assert!(!depth.depth_write);
                 assert_eq!(depth.depth_compare, 8);
@@ -821,14 +821,14 @@ mod tests {
                     (depth.back.fail, depth.back.depth_fail, depth.back.pass),
                     (1, 1, 1)
                 );
-                assert_eq!(native_raster_state(state).cull_mode, 1);
+                assert_eq!(raster_state(state).cull_mode, 1);
                 assert_eq!(&state[6..], &source[6..]);
             }
         }
     }
 
     #[test]
-    fn all_three_factories_match_original_machine_code() {
+    fn all_three_factories_match_machine_code() {
         let mut cases = 0;
         let mut enums = 0;
         let mut resets = 0;
@@ -842,23 +842,23 @@ mod tests {
             let kind = parts.next().unwrap();
             let values: Vec<u32> = parts.map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
             if kind == "ENUM" {
-                assert_eq!(native_compare_function(values[0]), values[1]);
-                assert_eq!(native_stencil_operation(values[0]), values[2]);
+                assert_eq!(compare_function(values[0]), values[1]);
+                assert_eq!(stencil_operation(values[0]), values[2]);
                 enums += 1;
                 continue;
             }
-            let mut state: NativeRenderState = values[..9].try_into().unwrap();
+            let mut state: RenderState = values[..9].try_into().unwrap();
             if kind == "RESET" {
-                reset_native_render_state(&mut state);
+                reset_render_state(&mut state);
                 assert_eq!(
                     state.as_slice(),
                     &values[9..],
-                    "native state reset case {resets}"
+                    "state reset case {resets}"
                 );
                 resets += 1;
                 continue;
             }
-            let blend = native_blend_state(&state);
+            let blend = blend_state(&state);
             let mut actual = state.to_vec();
             actual.extend([
                 u32::from(blend.alpha_to_coverage),
@@ -876,7 +876,7 @@ mod tests {
                     u32::from(target.write_mask),
                 ]);
             }
-            let depth = native_depth_stencil_state(&state);
+            let depth = depth_stencil_state(&state);
             actual.extend([
                 u32::from(depth.depth_enabled),
                 u32::from(depth.depth_write),
@@ -888,7 +888,7 @@ mod tests {
             for face in [depth.front, depth.back] {
                 actual.extend([face.fail, face.depth_fail, face.pass, face.compare]);
             }
-            let raster = native_raster_state(&state);
+            let raster = raster_state(&state);
             actual.extend([
                 raster.fill_mode,
                 raster.cull_mode,
@@ -901,25 +901,25 @@ mod tests {
                 u32::from(raster.multisample),
                 u32::from(raster.antialiased_line),
             ]);
-            assert_eq!(actual, values, "native descriptor case {cases}");
+            assert_eq!(actual, values, "descriptor case {cases}");
             cases += 1;
         }
         assert_eq!((cases, enums, resets), (1286, 259, 1026));
     }
 
     #[test]
-    fn independent_target_tail_is_native_default_not_target_zero() {
+    fn independent_target_tail_is_default_not_target_zero() {
         let mut state = [0; 9];
         state[4] = 3;
-        let blend = native_blend_state(&state);
+        let blend = blend_state(&state);
         assert!(blend.alpha_to_coverage && blend.independent_blend);
         assert_eq!(blend.targets[0].unwrap().write_mask, 0);
         assert_eq!(
             blend.targets[4].unwrap(),
-            NativeBlendTarget::UNUSED_INDEPENDENT_TARGET
+            BlendTarget::UNUSED_INDEPENDENT_TARGET
         );
         state[4] = 0;
-        assert!(native_blend_state(&state).targets[1..]
+        assert!(blend_state(&state).targets[1..]
             .iter()
             .all(Option::is_none));
     }

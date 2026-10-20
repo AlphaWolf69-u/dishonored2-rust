@@ -9,7 +9,7 @@ pub(super) struct PreparedRecordCache {
     ring: BufferId,
     stride: u64,
     depth_32_bits: bool,
-    layers: Arc<Vec<NativeShadowLayer>>,
+    layers: Arc<Vec<ShadowLayer>>,
     uniforms: Vec<ShadowUniformRecord>,
     buffers: Vec<(AssetId<ShaderBuffer>, BufferId, u64)>,
     images: Vec<(AssetId<Image>, TextureViewId)>,
@@ -18,7 +18,7 @@ pub(super) struct PreparedRecordCache {
 
 impl PreparedRecordCache {
     pub fn new(
-        layers: Arc<Vec<NativeShadowLayer>>,
+        layers: Arc<Vec<ShadowLayer>>,
         geometry_epoch: (u32, u32),
         resource_epoch: (u32, u32),
         ring: BufferId,
@@ -44,15 +44,15 @@ impl PreparedRecordCache {
                 }
             }
             let resources = match &instance.per_instance_cb {
-                NativeShadowInstanceConstants::Skinned { palette, .. } => {
+                ShadowInstanceConstants::Skinned { palette, .. } => {
                     [Some(palette.id()), None, None]
                 }
-                NativeShadowInstanceConstants::World {
+                ShadowInstanceConstants::World {
                     visible_indices,
                     matrices,
                     ..
                 } => [Some(visible_indices.id()), Some(matrices.id()), None],
-                NativeShadowInstanceConstants::WorldVegetation {
+                ShadowInstanceConstants::WorldVegetation {
                     visible_indices,
                     matrices,
                     winds,
@@ -62,8 +62,8 @@ impl PreparedRecordCache {
                     Some(matrices.id()),
                     winds.as_ref().map(Handle::id),
                 ],
-                NativeShadowInstanceConstants::Rigid(_)
-                | NativeShadowInstanceConstants::Vegetation(_) => continue,
+                ShadowInstanceConstants::Rigid(_)
+                | ShadowInstanceConstants::Vegetation(_) => continue,
             };
             if last_buffers != Some(resources) {
                 buffer_ids.extend(resources.into_iter().flatten());
@@ -96,7 +96,7 @@ impl PreparedRecordCache {
 
     pub fn matches(
         &mut self,
-        layers: &[NativeShadowLayer],
+        layers: &[ShadowLayer],
         geometry_epoch: (u32, u32),
         resource_epoch: (u32, u32),
         ring: BufferId,
@@ -143,8 +143,8 @@ impl PreparedRecordCache {
 /// CB bytes are uploaded on every frame independently of these descriptors.
 /// Preserve the offsets/counts used by CPU bounds validation, and every field
 /// which changes pipeline, resources, geometry, scissor or draw order.
-fn same_descriptor(a: &NativeShadowInstance, b: &NativeShadowInstance) -> bool {
-    let NativeShadowInstance {
+fn same_descriptor(a: &ShadowInstance, b: &ShadowInstance) -> bool {
+    let ShadowInstance {
         mesh,
         per_instance_cb,
         program,
@@ -166,7 +166,7 @@ fn same_descriptor(a: &NativeShadowInstance, b: &NativeShadowInstance) -> bool {
     {
         return false;
     }
-    use NativeShadowInstanceConstants::*;
+    use ShadowInstanceConstants::*;
     match (per_instance_cb, &b.per_instance_cb) {
         (Rigid(_), Rigid(_)) | (Vegetation(_), Vegetation(_)) => true,
         (Skinned { palette: a, .. }, Skinned { palette: b, .. }) => a == b,
@@ -236,16 +236,16 @@ mod tests {
     #[test]
     fn wind_descriptor_reuse_keeps_validated_offsets_but_not_live_clock() {
         let mut a = super::super::uniform_tests::world_instance(0, 1);
-        a.program = NativeShadowProgram::WorldVegetation;
-        a.per_instance_cb = NativeShadowInstanceConstants::WorldVegetation {
-            constants: [0; NATIVE_VEGETATION_SHADOW_INSTANCE_BYTES],
+        a.program = ShadowProgram::WorldVegetation;
+        a.per_instance_cb = ShadowInstanceConstants::WorldVegetation {
+            constants: [0; VEGETATION_SHADOW_INSTANCE_BYTES],
             visible_indices: Handle::default(),
             matrices: Handle::default(),
             winds: None,
             instance_count: 1,
         };
         let mut b = a.clone();
-        if let NativeShadowInstanceConstants::WorldVegetation { constants, .. } =
+        if let ShadowInstanceConstants::WorldVegetation { constants, .. } =
             &mut b.per_instance_cb
         {
             constants[192..196].copy_from_slice(&3.5f32.to_le_bytes());
@@ -256,7 +256,7 @@ mod tests {
         );
         for offset in [200, 204] {
             let mut shifted = b.clone();
-            if let NativeShadowInstanceConstants::WorldVegetation { constants, .. } =
+            if let ShadowInstanceConstants::WorldVegetation { constants, .. } =
                 &mut shifted.per_instance_cb
             {
                 constants[offset] = 1;
@@ -271,11 +271,11 @@ mod tests {
     }
 
     #[derive(Resource)]
-    struct Input(Vec<NativeShadowLayer>);
+    struct Input(Vec<ShadowLayer>);
 
     fn draw(
         input: Res<Input>,
-        mut gpu: ResMut<NativeShadowSceneGpu>,
+        mut gpu: ResMut<ShadowSceneGpu>,
         allocator: Res<MeshAllocator>,
         meshes: Res<RenderAssets<RenderMesh>>,
         images: Res<RenderAssets<GpuImage>>,
@@ -285,10 +285,10 @@ mod tests {
         adapter: Res<RenderAdapter>,
     ) -> Option<Vec<u16>> {
         let layers = Arc::new(input.0.clone());
-        upload_native_shadow_uniform_ring(&layers, &device, &queue, &mut gpu);
+        upload_shadow_uniform_ring(&layers, &device, &queue, &mut gpu);
         let ring = gpu.uniform_ring.as_ref()?.clone();
         let stride = gpu.uniform_stride;
-        let records = prepare_native_shadow_records(
+        let records = prepare_shadow_records(
             &layers,
             false,
             Some(&layers),
@@ -302,7 +302,7 @@ mod tests {
             &device,
             &adapter,
         )?;
-        let depth = NativeShadowDepthArray::new_with_format(
+        let depth = ShadowDepthArray::new_with_format(
             &device,
             Extent3d {
                 width: 32,
@@ -321,7 +321,7 @@ mod tests {
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         let draws = directional_layer_draws(&records, &gpu.pipelines, 1);
-        draw_native_shadow_groups(&mut encoder, &depth, &gpu.pipelines, draws, input.0[1].ops)
+        draw_shadow_groups(&mut encoder, &depth, &gpu.pipelines, draws, input.0[1].ops)
             .unwrap();
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
@@ -418,7 +418,7 @@ mod tests {
                 [shift, 0.7, 0.3],
             ];
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices.clone());
-            mesh.insert_attribute(NATIVE_VEGETATION_POSITION, vertices);
+            mesh.insert_attribute(VEGETATION_POSITION, vertices);
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.5, 0.5]; 3]);
             mesh.insert_indices(bevy::mesh::Indices::U16(vec![0, 1, 2]));
             mesh
@@ -458,13 +458,13 @@ mod tests {
             app.update();
         }
         let world = app.sub_app_mut(RenderApp).world_mut();
-        world.init_resource::<NativeShadowSceneGpu>();
+        world.init_resource::<ShadowSceneGpu>();
         let mut instance = super::super::uniform_tests::world_instance(0, 1);
         instance.mesh = mesh.clone();
-        crate::render_state::reset_native_render_state(&mut instance.draw_state);
+        crate::render_state::reset_render_state(&mut instance.draw_state);
         // Executable-verified LESS comparator, matching this fixture's clear 1.
         instance.draw_state[5] = (instance.draw_state[5] & !7) | 1;
-        if let NativeShadowInstanceConstants::World {
+        if let ShadowInstanceConstants::World {
             visible_indices,
             matrices: transforms,
             ..
@@ -473,18 +473,18 @@ mod tests {
             *visible_indices = ids.clone();
             *transforms = matrices.clone();
         }
-        let empty = NativeShadowLayer {
-            cache: NativeShadowCacheOp::None,
-            ops: NativeShadowLayerOps {
-                depth: NativeShadowLoad::Clear(1.),
-                stencil: NativeStencilLoad::Load,
+        let empty = ShadowLayer {
+            cache: ShadowCacheOp::None,
+            ops: ShadowLayerOps {
+                depth: ShadowLoad::Clear(1.),
+                stencil: StencilLoad::Load,
             },
             instances: Vec::new(),
         };
         world.insert_resource(Input(vec![
             empty.clone(),
-            NativeShadowLayer {
-                cache: NativeShadowCacheOp::Retained {
+            ShadowLayer {
+                cache: ShadowCacheOp::Retained {
                     generation: 7,
                     static_instances: 0,
                 },
@@ -503,7 +503,7 @@ mod tests {
             let gpu = app
                 .sub_app(RenderApp)
                 .world()
-                .resource::<NativeShadowSceneGpu>();
+                .resource::<ShadowSceneGpu>();
             (gpu.prepared_hits, gpu.prepared_misses)
         };
         let first = run(&mut app).unwrap();
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(
             app.sub_app(RenderApp)
                 .world()
-                .resource::<NativeShadowSceneGpu>()
+                .resource::<ShadowSceneGpu>()
                 .prepared_records
                 .as_ref()
                 .unwrap()
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(
             app.sub_app(RenderApp)
                 .world()
-                .resource::<NativeShadowSceneGpu>()
+                .resource::<ShadowSceneGpu>()
                 .prepared_records
                 .as_ref()
                 .unwrap()
@@ -561,14 +561,14 @@ mod tests {
             .world_mut()
             .resource_mut::<Input>()
             .0[1]
-            .cache = NativeShadowCacheOp::Store {
+            .cache = ShadowCacheOp::Store {
             static_instances: 0,
         };
         let before = counts(&app).0;
         assert_eq!(run(&mut app).unwrap(), first);
         assert!(counts(&app).0 > before);
         // Projection bytes change, but the same bound ring must supply fresh depth.
-        if let NativeShadowInstanceConstants::World { constants, .. } = &mut app
+        if let ShadowInstanceConstants::World { constants, .. } = &mut app
             .sub_app_mut(RenderApp)
             .world_mut()
             .resource_mut::<Input>()
@@ -585,7 +585,7 @@ mod tests {
         );
         assert!(counts(&app).0 >= 2);
         // Remap offset is a validated draw input, not an ignored matrix byte.
-        if let NativeShadowInstanceConstants::World { constants, .. } = &mut app
+        if let ShadowInstanceConstants::World { constants, .. } = &mut app
             .sub_app_mut(RenderApp)
             .world_mut()
             .resource_mut::<Input>()
@@ -599,7 +599,7 @@ mod tests {
             run(&mut app).is_none(),
             "invalid remap range must reject cached preparation"
         );
-        if let NativeShadowInstanceConstants::World { constants, .. } = &mut app
+        if let ShadowInstanceConstants::World { constants, .. } = &mut app
             .sub_app_mut(RenderApp)
             .world_mut()
             .resource_mut::<Input>()
@@ -674,13 +674,13 @@ mod tests {
                 .world_mut()
                 .resource_mut::<Input>();
             let instance = &mut input.0[1].instances[0];
-            instance.program = NativeShadowProgram::WorldAlphaTested;
-            instance.alpha_material = Some(NativeShadowAlphaMaterial {
+            instance.program = ShadowProgram::WorldAlphaTested;
+            instance.alpha_material = Some(ShadowAlphaMaterial {
                 diffuse: image.clone(),
                 uv_set: 0,
                 uv_scale_bias: [1., 1., 0., 0.],
             });
-            if let NativeShadowInstanceConstants::World { constants, .. } =
+            if let ShadowInstanceConstants::World { constants, .. } =
                 &mut instance.per_instance_cb
             {
                 for (i, v) in [1f32, 1., 0., 0.].iter().enumerate() {
@@ -705,7 +705,7 @@ mod tests {
         let before = counts(&app).1;
         app.sub_app_mut(RenderApp)
             .world_mut()
-            .resource_mut::<NativeShadowSceneGpu>()
+            .resource_mut::<ShadowSceneGpu>()
             .uniform_ring = None;
         assert!(run(&mut app).unwrap().iter().all(|&v| v == u16::MAX));
         assert!(
@@ -723,7 +723,7 @@ mod tests {
         assert!(
             app.sub_app(RenderApp)
                 .world()
-                .resource::<NativeShadowSceneGpu>()
+                .resource::<ShadowSceneGpu>()
                 .prepared_recycles
                 > 0,
             "resource replacement must exercise recycled draw storage on a successful cache miss"

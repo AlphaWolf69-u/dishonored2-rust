@@ -599,7 +599,7 @@ mod tests {
             {
                 assert!(
                     (actual - expected).abs() <= 3e-5 * expected.abs().max(1.0),
-                    "native HLSL case{id} field{index}: {actual} != {expected}"
+                    "HLSL case{id} field{index}: {actual} != {expected}"
                 );
             }
         }
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn color_conversion_uses_native_chroma_range() {
+    fn color_conversion_uses_chroma_range() {
         assert_eq!(rgb_to_ycocg([1.0, 0.0, 0.0]), [0.25, 1.0, -0.5]);
         assert_eq!(ycocg_to_rgb([0.25, 1.0, -0.5]), [1.0, 0.0, 0.0]);
         let packed = PackedIrradiance::pack([[0.0; 3]; 4]);

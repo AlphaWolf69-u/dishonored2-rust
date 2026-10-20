@@ -8,7 +8,7 @@
 }
 
 #ifdef DH2_VERTEX_PROBE
-#import dh2_indirect::{native_vertex_sh, pack_vertex_irradiance}
+#import dh2_indirect::{vertex_sh, pack_vertex_irradiance}
 #endif
 
 #ifdef DH2_DECAL
@@ -135,7 +135,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif
 
 #ifdef DH2_VERTEX_PROBE
-    let sh = native_vertex_sh(mesh[vertex_no_morph.instance_index].tag,
+    let sh = vertex_sh(mesh[vertex_no_morph.instance_index].tag,
         vertex_no_morph.index - mesh[vertex_no_morph.instance_index].first_vertex_index,
         out.world_position.xyz);
 #ifdef DH2_AUTHORED_BASIS

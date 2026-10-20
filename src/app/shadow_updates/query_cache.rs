@@ -1,12 +1,12 @@
 //! Host memoization of immutable, fully specified caster queries. Raw float
 //! words are compared; no camera-motion threshold or elapsed-time assumption.
 use crate::tome::shadow_caster::{
-    NativeCasterDirection, NativeGlobalShadowCasterHit, NativeGlobalShadowCasterInput,
-    NativeReceiverDepthProjection, NativeShadowObjectDistanceQuery, VerifiedShadowReceiverState,
+    CasterDirection, GlobalShadowCasterHit, GlobalShadowCasterInput,
+    ReceiverDepthProjection, ShadowObjectDistanceQuery, ShadowReceiverState,
 };
 use std::sync::Arc;
 
-pub(super) type CasterResults = Arc<Vec<Vec<NativeGlobalShadowCasterHit>>>;
+pub(super) type CasterResults = Arc<Vec<Vec<GlobalShadowCasterHit>>>;
 
 #[derive(PartialEq, Eq)]
 struct ReceiverKey {
@@ -15,8 +15,8 @@ struct ReceiverKey {
     active: Vec<usize>,
 }
 impl ReceiverKey {
-    fn new(input: VerifiedShadowReceiverState<'_>) -> Self {
-        let VerifiedShadowReceiverState {
+    fn new(input: ShadowReceiverState<'_>) -> Self {
+        let ShadowReceiverState {
             bounds,
             planes,
             active_planes,
@@ -35,8 +35,8 @@ struct DepthKey {
     mask: Box<[u16; 128 * 128]>,
 }
 impl DepthKey {
-    fn new(input: &NativeReceiverDepthProjection) -> Self {
-        let NativeReceiverDepthProjection {
+    fn new(input: &ReceiverDepthProjection) -> Self {
+        let ReceiverDepthProjection {
             receiver_rows,
             transposed_rows,
             mask,
@@ -57,7 +57,7 @@ pub(super) struct CasterQueryKey {
     primary: ReceiverKey,
     cascades: Vec<ReceiverKey>,
     distance: ([u32; 3], [u32; 4]),
-    direction: NativeCasterDirection,
+    direction: CasterDirection,
     depth: Option<DepthKey>,
     job: u32,
     jobs: u32,
@@ -68,12 +68,12 @@ impl CasterQueryKey {
     /// Immutable source/parsed-Tome owners are identified by address and their
     /// Bevy resource change versions, so an in-place source edit invalidates.
     pub(super) fn new(
-        input: NativeGlobalShadowCasterInput<'_>,
+        input: GlobalShadowCasterInput<'_>,
         source_versions: (u32, u32),
         parsed_tome: usize,
         physical: &[usize],
     ) -> Self {
-        let NativeGlobalShadowCasterInput {
+        let GlobalShadowCasterInput {
             source,
             primary,
             cascades,
@@ -83,7 +83,7 @@ impl CasterQueryKey {
             job,
             jobs,
         } = input;
-        let NativeShadowObjectDistanceQuery {
+        let ShadowObjectDistanceQuery {
             point,
             scale_squared,
         } = distance;
@@ -168,26 +168,26 @@ mod tests {
     fn caster_key_captures_depth_versions_planes_partitions_and_raw_float_words() {
         let source = [0u8; 32];
         let planes = [[1.0, 0.0, 0.0, f32::from_bits(0x7fc01234)]];
-        let primary = VerifiedShadowReceiverState {
+        let primary = ShadowReceiverState {
             bounds: [[0.0; 3]; 2],
             planes: &planes,
             active_planes: &[0],
         };
         let cascades = [primary];
-        let mut depth = NativeReceiverDepthProjection {
+        let mut depth = ReceiverDepthProjection {
             receiver_rows: [[0.0; 4]; 4],
             transposed_rows: [[0.0; 4]; 4],
             mask: Box::new([0; 128 * 128]),
         };
-        let input = NativeGlobalShadowCasterInput {
+        let input = GlobalShadowCasterInput {
             source: &source,
             primary,
             cascades: &cascades,
-            distance: NativeShadowObjectDistanceQuery {
+            distance: ShadowObjectDistanceQuery {
                 point: [0.0; 3],
                 scale_squared: [1.0; 4],
             },
-            direction: NativeCasterDirection {
+            direction: CasterDirection {
                 face: 1,
                 x: 2,
                 y: 3,
@@ -197,7 +197,7 @@ mod tests {
             jobs: 8,
         };
         let key = CasterQueryKey::new(
-            NativeGlobalShadowCasterInput {
+            GlobalShadowCasterInput {
                 depth: Some(&depth),
                 ..input
             },
@@ -207,7 +207,7 @@ mod tests {
         );
         assert!(
             key == CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     depth: Some(&depth),
                     ..input
                 },
@@ -218,7 +218,7 @@ mod tests {
         );
         assert!(
             key != CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     depth: Some(&depth),
                     ..input
                 },
@@ -229,7 +229,7 @@ mod tests {
         );
         assert!(
             key != CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     depth: Some(&depth),
                     ..input
                 },
@@ -240,7 +240,7 @@ mod tests {
         );
         assert!(
             key != CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     depth: Some(&depth),
                     ..input
                 },
@@ -251,13 +251,13 @@ mod tests {
         );
         assert!(key != CasterQueryKey::new(input, (1, 2), 3, &[0]));
         let changed_planes = [[1.0, 0.0, 0.0, f32::from_bits(0x7fc01235)]];
-        let changed_primary = VerifiedShadowReceiverState {
+        let changed_primary = ShadowReceiverState {
             planes: &changed_planes,
             ..primary
         };
         assert!(
             key != CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     primary: changed_primary,
                     depth: Some(&depth),
                     ..input
@@ -267,13 +267,13 @@ mod tests {
                 &[0]
             )
         );
-        let mut changed = NativeGlobalShadowCasterInput {
+        let mut changed = GlobalShadowCasterInput {
             depth: Some(&depth),
             ..input
         };
         changed.distance.point[0] = -0.0;
         assert!(key != CasterQueryKey::new(changed, (1, 2), 3, &[0]));
-        let mut changed = NativeGlobalShadowCasterInput {
+        let mut changed = GlobalShadowCasterInput {
             depth: Some(&depth),
             ..input
         };
@@ -282,7 +282,7 @@ mod tests {
         depth.mask[1023] = 1;
         assert!(
             key != CasterQueryKey::new(
-                NativeGlobalShadowCasterInput {
+                GlobalShadowCasterInput {
                     depth: Some(&depth),
                     ..input
                 },
@@ -293,7 +293,7 @@ mod tests {
         );
         let mut cache = CasterQueryCache::default();
         assert!(cache.get(&key).is_none());
-        let results = Arc::new(vec![vec![NativeGlobalShadowCasterHit {
+        let results = Arc::new(vec![vec![GlobalShadowCasterHit {
             tome_index: 7,
             cascade_mask: 1,
         }]]);
@@ -302,7 +302,7 @@ mod tests {
         assert!(cache.get(&same).is_none());
         depth.mask[1023] = 0;
         let same = CasterQueryKey::new(
-            NativeGlobalShadowCasterInput {
+            GlobalShadowCasterInput {
                 depth: Some(&depth),
                 ..input
             },

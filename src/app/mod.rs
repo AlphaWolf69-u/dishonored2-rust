@@ -50,38 +50,38 @@ mod shadow_updates;
 mod state;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
-    FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, NativeShadowCasterWorld,
-    NativeViewSettings, NavigationState, NavigationWorld, OriginalLocalLightCull,
-    OriginalLocalLightCullEnabled, OriginalLocalLightCullStats, PickupInstance, PickupState,
+    FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, ShadowCasterWorld,
+    ViewSettings, NavigationState, NavigationWorld, LocalLightCull,
+    LocalLightCullEnabled, LocalLightCullStats, PickupInstance, PickupState,
     PickupVisual, ProbeMaterial, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, ResolvedMaterial, SceneData, SnapshotPath, StreamingDiagnostics,
     TomeWorld, VisibilityElapsedTiming, DECAL_SHADER_HANDLE, FILLING_SHADER_HANDLE,
-    INDIRECT_SHADER_HANDLE, ORIGINAL_DEFAULT_FAR, ORIGINAL_DEFAULT_HORIZONTAL_FOV_DEGREES,
-    ORIGINAL_DEFAULT_NEAR, ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE,
+    INDIRECT_SHADER_HANDLE, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES,
+    DEFAULT_NEAR, LOCAL_LIGHT_MIN_AREA_PIXELS, PROBE_PREPASS_SHADER_HANDLE,
     PROBE_SHADER_HANDLE, SKY_SHADER_HANDLE, SURFACE_SHADER_HANDLE, VISTA_SHADER_HANDLE,
 };
 mod shadow_preparation;
 use shadow_preparation::{
-    apply_native_rest_pose, build_native_world_layer, initialize_native_parallel_shadow_owner,
-    native_rest_skinning, native_shadow_target_dimensions, publish_initial_native_whole_view_depth,
-    retain_native_model_shadow_position, retain_native_skin_inputs, sync_native_shadow_target,
-    CachedMaterial, NativeParallelShadowOwner, NativeProgramCacheSource,
-    NativeShadowMaterialInputs, NativeShadowMaterialParameters, NativeShadowMaterials,
-    NativeVegetationMeshInputs, NativeWorldShadowDrawSettings, NativeWorldShadowMeshSources,
+    apply_rest_pose, build_world_layer, initialize_parallel_shadow_owner,
+    rest_skinning, shadow_target_dimensions, publish_initial_whole_view_depth,
+    retain_model_shadow_position, retain_skin_inputs, sync_shadow_target,
+    CachedMaterial, ParallelShadowOwner, ProgramCacheSource,
+    ShadowMaterialInputs, ShadowMaterialParameters, ShadowMaterials,
+    VegetationMeshInputs, WorldShadowDrawSettings, WorldShadowMeshSources,
 };
 mod materials;
 mod sky_sprite;
 use materials::{
-    DecalExtension, NativeImageAccess, NativeShadowImageAccess, ProbeExtension, DH2_BITANGENT,
+    DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT,
 };
 mod scene_queue;
 use scene_queue::{
-    bwm_lod_visibility_counts, NativeShadowModelBoundsSource, NativeShadowModelBoundsSources,
+    bwm_lod_visibility_counts, ShadowModelBoundsSource, ShadowModelBoundsSources,
     PlacedModelQueries, PlacedModelQueryGroup, RenderSuppressionGroup, SceneRenderQueue,
 };
 mod texture_streaming;
 use texture_streaming::{
-    native_surface_sampler_image, read_streamed_diffuse_at_target, report_prepared_diffuse_images,
+    surface_sampler_image, read_streamed_diffuse_at_target, report_prepared_diffuse_images,
     stream_visible_textures, DiffuseMipState, PreparedImageMailbox, TextureReadTarget,
     TextureReadWorker,
 };
@@ -93,15 +93,15 @@ use view_geometry::{
     authored_mesh, authored_world_bounds, environment_sun_ray, expanded_model_placements,
     f8_camera_pose, f8_reference_fov, game_affine_to_view, game_to_view,
     initial_placed_model_query, light_backend_intensity, mean_game_position,
-    native_view_distance_scale, needs_exact_world_mesh, original_light_distance,
-    original_light_preset, original_light_volume_intersects_camera,
-    original_local_light_clip_to_world, placed_direction, placed_transform, placed_vertex,
+    view_distance_scale, needs_exact_world_mesh, light_distance,
+    light_preset, light_volume_intersects_camera,
+    local_light_clip_to_world, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, reference_fov_from_projection, render_bounds,
-    retain_native_vegetation_channels, retain_native_world_shadow_channels, source_mesh,
+    retain_vegetation_channels, retain_world_shadow_channels, source_mesh,
     static_model_collision, transformed, transformed_direction, view_of, view_to_game, Bounds,
 };
 mod material_loading;
-use material_loading::{native_material_option_overrides, MaterialResolver};
+use material_loading::{material_option_overrides, MaterialResolver};
 mod setup;
 use setup::setup;
 mod controls;
@@ -112,10 +112,10 @@ mod visibility_queries;
 use visibility_queries::stream_visible_models;
 mod light_culling;
 #[cfg(test)]
-use light_culling::original_light_proximity_bounds;
+use light_culling::light_proximity_bounds;
 use light_culling::{
-    cull_original_small_local_lights, local_light_kind_index, original_light_projection_bounds,
-    original_light_proximity_from_cached_bounds,
+    cull_small_local_lights, local_light_kind_index, light_projection_bounds,
+    light_proximity_from_cached_bounds,
 };
 mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};

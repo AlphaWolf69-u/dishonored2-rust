@@ -4,10 +4,10 @@ use crate::tome::NoDepthAabbQuery;
 /// FUN_141374630 registers r_multiSamples="0" (no multisampled FBO).
 /// FUN_140347410 copies the setting into renderer state. This default must
 /// not inherit Bevy's four-sample default.
-pub const ORIGINAL_DEFAULT_MULTI_SAMPLES: i32 = 0;
+pub const DEFAULT_MULTI_SAMPLES: i32 = 0;
 
 /// FUN_140346720: the physical texture sample count is at least one.
-pub fn original_renderer_sample_count(configured: i32) -> u32 {
+pub fn renderer_sample_count(configured: i32) -> u32 {
     configured.max(1) as u32
 }
 
@@ -149,7 +149,7 @@ pub fn surface_key_find_rightmost_equal(
         return Ok(-1);
     }
     if entries.is_empty() {
-        return Err("native surface key search reads entry zero from an empty slice".to_owned());
+        return Err("surface key search reads entry zero from an empty slice".to_owned());
     }
     if count > 0 && count as usize > entries.len() {
         return Err("surface sort count exceeds its supplied entries".to_owned());
@@ -185,7 +185,7 @@ pub fn surface_key_lower_bound(
         return Ok(0);
     }
     let Some(entries) = entries else {
-        return Err("native surface lower-bound search received a null list".to_owned());
+        return Err("surface lower-bound search received a null list".to_owned());
     };
     if count as usize > entries.len() {
         return Err("surface sort count exceeds its supplied entries".to_owned());
@@ -283,7 +283,7 @@ pub fn prepare_depth_alpha_draw(
     pass: u8,
 ) -> Result<Option<DepthAlphaDrawPlan>, String> {
     if pass > 2 {
-        return Err("native depth-alpha pass must be 0, 1 or 2".to_owned());
+        return Err("depth-alpha pass must be 0, 1 or 2".to_owned());
     }
     let alpha = surface.flags49 & 1 != 0;
     let program = if pass == 2 {
@@ -328,7 +328,7 @@ pub fn prepare_depth_alpha_draw(
 }
 
 // Shared declaration logic also serves the asset-audit tools; no renderer dependency.
-pub use crate::material::{native_blend_enabled, shadow_program_source, ShadowProgramSource};
+pub use crate::material::{blend_enabled, shadow_program_source, ShadowProgramSource};
 
 /// FUN_140329120's dynamic-model program/state preparation only. The existing
 /// pointer-bank selector is identical; shadow slots are 10/11. Bounds testing,
@@ -346,7 +346,7 @@ pub struct ShadowModelDrawPlan {
 /// FUN_140268b10 selects `m_staticModelPerLOD[slot]`: values at least 2 use
 /// slot 2, while negative values are left unchanged by the original branch.
 /// Callers must prove the returned slot is nonnegative before indexing.
-pub const fn native_static_model_lod_slot(slot: i32) -> i32 {
+pub const fn static_model_lod_slot(slot: i32) -> i32 {
     if slot < 2 {
         slot
     } else {
@@ -356,14 +356,14 @@ pub const fn native_static_model_lod_slot(slot: i32) -> i32 {
 
 /// Port of FUN_140268780: slots 1 and 2 at native offsets `+0x1c70` and
 /// `+0x1c78` are tested for non-null; slot 0 is deliberately not considered.
-pub fn native_static_model_has_lod1_or_2<T>(model_per_lod: &[Option<T>; 3]) -> bool {
+pub fn static_model_has_lod1_or_2<T>(model_per_lod: &[Option<T>; 3]) -> bool {
     model_per_lod[1].is_some() || model_per_lod[2].is_some()
 }
 
 /// State change requested by FUN_140268b10. `surface_list_byte_offset` is
 /// relative to the native per-LOD surface-list base at `+0x1c90`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeStaticModelLodSwitch<T> {
+pub struct StaticModelLodSwitch<T> {
     pub slot: usize,
     pub selected_model: T,
     pub surface_list_byte_offset: usize,
@@ -378,17 +378,17 @@ pub struct NativeStaticModelLodSwitch<T> {
 /// `+0x28` with argument 0. This returns that source-backed action; the owner
 /// still applies pointers and invokes the callbacks. Invalid negative slots
 /// are declined instead of performing native unchecked pointer arithmetic.
-pub fn native_static_model_lod_switch<T: Copy + Eq>(
+pub fn static_model_lod_switch<T: Copy + Eq>(
     requested_slot: i32,
     model_per_lod: &[Option<T>; 3],
     active_model: Option<T>,
-) -> Option<NativeStaticModelLodSwitch<T>> {
-    let slot = usize::try_from(native_static_model_lod_slot(requested_slot)).ok()?;
+) -> Option<StaticModelLodSwitch<T>> {
+    let slot = usize::try_from(static_model_lod_slot(requested_slot)).ok()?;
     let selected_model = model_per_lod[slot]?;
     if active_model == Some(selected_model) {
         return None;
     }
-    Some(NativeStaticModelLodSwitch {
+    Some(StaticModelLodSwitch {
         slot,
         selected_model,
         surface_list_byte_offset: slot * 0x10,
@@ -400,13 +400,13 @@ pub fn native_static_model_lod_switch<T: Copy + Eq>(
 
 /// FUN_14087c730 refreshes static-model LOD only when `+0xd4 & 1` and
 /// `+0x294 != 0`.
-pub const fn native_static_model_lod_refresh_required(flags_d4: u8, actual_level: i32) -> bool {
+pub const fn static_model_lod_refresh_required(flags_d4: u8, actual_level: i32) -> bool {
     flags_d4 & 1 != 0 && actual_level != 0
 }
 
 /// FUN_14087c730 registers with the dynamic LOD manager only when all three
 /// native gates are clear: `+0xd2 & 0x40`, `+0xd4 & 1`, and `+0xd1 & 1`.
-pub const fn native_lod_manager_registration_allowed(
+pub const fn lod_manager_registration_allowed(
     flags_d2: u8,
     flags_d4: u8,
     flags_d1: u8,
@@ -416,7 +416,7 @@ pub const fn native_lod_manager_registration_allowed(
 
 /// Destination/action after FUN_14064cd70 has evaluated model and child gates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeLodRegistrationAction {
+pub enum LodRegistrationAction {
     PositionList,
     BoundsList,
     SetLevel8,
@@ -426,35 +426,35 @@ pub enum NativeLodRegistrationAction {
 /// Ports FUN_14064cd70's final classification branch. The caller must provide
 /// the outcomes of its native model/child eligibility checks; this does not
 /// perform those checks or push into the manager's lists.
-pub const fn native_lod_registration_action(
+pub const fn lod_registration_action(
     has_model_pointer: bool,
     model_variant_eligible: bool,
     child_eligible: bool,
-) -> NativeLodRegistrationAction {
+) -> LodRegistrationAction {
     let model_eligible = has_model_pointer && model_variant_eligible;
     if model_eligible || child_eligible {
         if has_model_pointer {
-            NativeLodRegistrationAction::BoundsList
+            LodRegistrationAction::BoundsList
         } else {
-            NativeLodRegistrationAction::PositionList
+            LodRegistrationAction::PositionList
         }
     } else if !has_model_pointer {
-        NativeLodRegistrationAction::SetLevel8
+        LodRegistrationAction::SetLevel8
     } else {
-        NativeLodRegistrationAction::NoAction
+        LodRegistrationAction::NoAction
     }
 }
 
 /// FUN_1408792e0 subtracts the integer at object offset +0x17c, clamps to
 /// 0..4, then FUN_140268b10 caps the static-model array slot at 2.
-pub fn native_relative_static_model_lod_slot(actual_level: i32, field_0x17c: i32) -> i32 {
-    native_static_model_lod_slot(actual_level.wrapping_sub(field_0x17c).clamp(0, 4))
+pub fn relative_static_model_lod_slot(actual_level: i32, field_0x17c: i32) -> i32 {
+    static_model_lod_slot(actual_level.wrapping_sub(field_0x17c).clamp(0, 4))
 }
 
 /// Results of FUN_1408792e0's three virtual render-model predicates. These
 /// labels mirror the native predicate arguments, not inferred C++ class names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeLodModelPredicate {
+pub enum LodModelPredicate {
     Predicate2,
     Predicate3,
     Predicate7,
@@ -465,28 +465,28 @@ pub enum NativeLodModelPredicate {
 /// count at `[model + 0x1fe8] + 0x70`; predicate 3 checks this model's LOD slots
 /// 1/2, and predicate 7 accepts any listed model with either slot present.
 /// The caller resolves the native virtual predicate and list into these inputs.
-pub fn native_lod_model_variant_eligible<T>(
-    predicate: NativeLodModelPredicate,
+pub fn lod_model_variant_eligible<T>(
+    predicate: LodModelPredicate,
     predicate2_raw_count: u32,
     predicate3_model_per_lod: &[Option<T>; 3],
     predicate7_models_per_lod: &[[Option<T>; 3]],
 ) -> bool {
     match predicate {
-        NativeLodModelPredicate::Predicate2 => predicate2_raw_count & 0x00ff_ffff > 1,
-        NativeLodModelPredicate::Predicate3 => {
-            native_static_model_has_lod1_or_2(predicate3_model_per_lod)
+        LodModelPredicate::Predicate2 => predicate2_raw_count & 0x00ff_ffff > 1,
+        LodModelPredicate::Predicate3 => {
+            static_model_has_lod1_or_2(predicate3_model_per_lod)
         }
-        NativeLodModelPredicate::Predicate7 => predicate7_models_per_lod
+        LodModelPredicate::Predicate7 => predicate7_models_per_lod
             .iter()
-            .any(native_static_model_has_lod1_or_2),
-        NativeLodModelPredicate::Other => false,
+            .any(static_model_has_lod1_or_2),
+        LodModelPredicate::Other => false,
     }
 }
 
 /// Child-side gate in FUN_14064cd70. The flag path requires both low bits
 /// encoded in mask 0x0c and a negative signed value; otherwise native falls
 /// back to the child's vtable +0x60 result.
-pub const fn native_lod_child_registration_eligible(
+pub const fn lod_child_registration_eligible(
     field_0x1c: i32,
     vtable_0x60_returns_nonzero: bool,
 ) -> bool {
@@ -496,7 +496,7 @@ pub const fn native_lod_child_registration_eligible(
 /// Observable model-selection action from FUN_1408792e0. Applying model
 /// pointers, surfaces, and virtual callbacks remains the native owner's job.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeLodModelAction {
+pub enum LodModelAction {
     None,
     Predicate2 {
         selected_index: i32,
@@ -515,51 +515,51 @@ pub enum NativeLodModelAction {
 /// null check; counts are the native low-24-bit list counts. Predicate2 stores
 /// an index capped to count-1 and calls vtable +0x28 with argument 4; Predicate3
 /// selects one static-model slot; Predicate7 applies the slot to every entry.
-pub fn native_lod_model_action(
+pub fn lod_model_action(
     actual_level: i32,
     field_0x17c: i32,
     has_active_model: bool,
-    predicate: NativeLodModelPredicate,
+    predicate: LodModelPredicate,
     predicate2_model_count: u32,
     predicate7_model_count: u32,
-) -> NativeLodModelAction {
+) -> LodModelAction {
     if actual_level >= 6 || !has_active_model {
-        return NativeLodModelAction::None;
+        return LodModelAction::None;
     }
     let requested_index = actual_level.wrapping_sub(field_0x17c).clamp(0, 4);
     match predicate {
-        NativeLodModelPredicate::Predicate2 => {
+        LodModelPredicate::Predicate2 => {
             let last_index = ((predicate2_model_count & 0x00ff_ffff) as i32).wrapping_sub(1);
-            NativeLodModelAction::Predicate2 {
+            LodModelAction::Predicate2 {
                 selected_index: requested_index.min(last_index),
                 callback_argument: 4,
             }
         }
-        NativeLodModelPredicate::Predicate3 => NativeLodModelAction::Predicate3 {
-            static_model_slot: native_static_model_lod_slot(requested_index),
+        LodModelPredicate::Predicate3 => LodModelAction::Predicate3 {
+            static_model_slot: static_model_lod_slot(requested_index),
         },
-        NativeLodModelPredicate::Predicate7 => {
+        LodModelPredicate::Predicate7 => {
             let model_count = predicate7_model_count & 0x00ff_ffff;
             if model_count == 0 {
-                NativeLodModelAction::None
+                LodModelAction::None
             } else {
-                NativeLodModelAction::Predicate7 {
-                    static_model_slot: native_static_model_lod_slot(requested_index),
+                LodModelAction::Predicate7 {
+                    static_model_slot: static_model_lod_slot(requested_index),
                     model_count,
                 }
             }
         }
-        NativeLodModelPredicate::Other => NativeLodModelAction::None,
+        LodModelPredicate::Other => LodModelAction::None,
     }
 }
 
-const NATIVE_LOD_MASK_TO_LEVEL: [u8; 16] = [0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0];
+const LOD_MASK_TO_LEVEL: [u8; 16] = [0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0];
 
 /// Per-view values prepared by FUN_14064cff0. Distance fields are already
 /// squared exactly as in the native batch input; the native CVar defaults and
 /// selected preset are owned by a different path.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeLodViewParameters {
+pub struct LodViewParameters {
     pub primary_position: [f32; 3],
     pub alternate_position: [f32; 3],
     pub use_alternate_position: bool,
@@ -572,7 +572,7 @@ pub struct NativeLodViewParameters {
 /// Numeric fields read by FUN_14064c1a0. This is a value snapshot, not a claim
 /// about the native object's type or layout.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeLodBoundsInput {
+pub struct LodBoundsInput {
     pub minimum: [f32; 3],
     pub maximum: [f32; 3],
     pub flags_1c30: u8,
@@ -583,7 +583,7 @@ pub struct NativeLodBoundsInput {
 
 /// Numeric fields read by FUN_14064c3a0 from its position-list entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeLodPositionInput {
+pub struct LodPositionInput {
     pub position: [f32; 3],
     pub current_optimal_level: i32,
 }
@@ -591,13 +591,13 @@ pub struct NativeLodPositionInput {
 /// One evaluator result. The native caller ORs `needs_update` into its batch
 /// dirty byte; it later publishes the new optimal level through FUN_14087bb70.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeLodDecision {
+pub struct LodDecision {
     pub optimal_level: i32,
     pub needs_update: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeLodLevelUpdate {
+pub struct LodLevelUpdate {
     pub optimal_level: i32,
     pub actual_level: i32,
     pub actual_changed: bool,
@@ -605,13 +605,13 @@ pub struct NativeLodLevelUpdate {
 
 /// FUN_14087bb70 calls each child's virtual +0x68 only when its +0x1c field
 /// satisfies `(byte_field & 0x0c) > 7 && signed_field < 0`, and actual changes.
-pub const fn native_lod_child_update_args(
+pub const fn lod_child_update_args(
     previous_actual: i32,
     actual: i32,
     child_field_1c: i32,
-) -> Option<NativeLodChildUpdate> {
+) -> Option<LodChildUpdate> {
     if previous_actual != actual && child_field_1c < 0 && (child_field_1c as u8 & 0x0c) > 7 {
-        Some(NativeLodChildUpdate {
+        Some(LodChildUpdate {
             previous_actual,
             actual,
         })
@@ -622,24 +622,24 @@ pub const fn native_lod_child_update_args(
 
 /// Previous/current actual LOD levels passed to the child's virtual +0x68.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeLodChildUpdate {
+pub struct LodChildUpdate {
     pub previous_actual: i32,
     pub actual: i32,
 }
 
 /// Pure state update from FUN_14087bb70: store `optimal` and set actual to
 /// min(optimal, requested_max); object rebuilds/notifications are separate.
-pub const fn native_lod_level_update(
+pub const fn lod_level_update(
     previous_actual: i32,
     optimal: i32,
     requested_max: i32,
-) -> NativeLodLevelUpdate {
+) -> LodLevelUpdate {
     let actual_level = if optimal < requested_max {
         optimal
     } else {
         requested_max
     };
-    NativeLodLevelUpdate {
+    LodLevelUpdate {
         optimal_level: optimal,
         actual_level,
         actual_changed: previous_actual != actual_level,
@@ -647,22 +647,22 @@ pub const fn native_lod_level_update(
 }
 
 /// FUN_14064cff0 computes this from its view FOV before launching either batch.
-pub fn native_lod_fov_sin_half_squared(fov_radians: f32) -> f32 {
+pub fn lod_fov_sin_half_squared(fov_radians: f32) -> f32 {
     let sine = ((fov_radians * 0.5) as f64).sin() as f32;
     sine * sine
 }
 
-fn native_lod_distance_squared(point: [f32; 3], camera: [f32; 3]) -> f32 {
+fn lod_distance_squared(point: [f32; 3], camera: [f32; 3]) -> f32 {
     let dy = point[1] - camera[1];
     let dx = point[0] - camera[0];
     let dz = point[2] - camera[2];
     dy * dy + dx * dx + dz * dz
 }
 
-fn native_lod_min_view_distance_squared(point: [f32; 3], view: &NativeLodViewParameters) -> f32 {
-    let primary = native_lod_distance_squared(point, view.primary_position);
+fn lod_min_view_distance_squared(point: [f32; 3], view: &LodViewParameters) -> f32 {
+    let primary = lod_distance_squared(point, view.primary_position);
     if view.use_alternate_position {
-        let alternate = native_lod_distance_squared(point, view.alternate_position);
+        let alternate = lod_distance_squared(point, view.alternate_position);
         if alternate <= primary {
             return alternate;
         }
@@ -670,7 +670,7 @@ fn native_lod_min_view_distance_squared(point: [f32; 3], view: &NativeLodViewPar
     primary
 }
 
-fn native_lod_select_level(
+fn lod_select_level(
     fov_scaled_distance_squared: f32,
     level_distances_squared: [f32; 4],
     far_distance_squared: f32,
@@ -680,7 +680,7 @@ fn native_lod_select_level(
         mask |= usize::from(fov_scaled_distance_squared < threshold) << index;
     }
     if mask != 0 {
-        NATIVE_LOD_MASK_TO_LEVEL[mask] as i32
+        LOD_MASK_TO_LEVEL[mask] as i32
     } else if far_distance_squared < fov_scaled_distance_squared {
         5
     } else {
@@ -690,16 +690,16 @@ fn native_lod_select_level(
 
 /// FUN_14064c1a0: bounds-aware camera-distance evaluator. Native bounds and
 /// flag names are unresolved; the fields deliberately retain source offsets.
-pub fn native_lod_level_for_bounds(
-    view: &NativeLodViewParameters,
-    input: NativeLodBoundsInput,
-) -> NativeLodDecision {
+pub fn lod_level_for_bounds(
+    view: &LodViewParameters,
+    input: LodBoundsInput,
+) -> LodDecision {
     let center = [
         (input.minimum[0] + input.maximum[0]) * 0.5,
         (input.minimum[1] + input.maximum[1]) * 0.5,
         (input.minimum[2] + input.maximum[2]) * 0.5,
     ];
-    let mut distance_squared = native_lod_min_view_distance_squared(center, view);
+    let mut distance_squared = lod_min_view_distance_squared(center, view);
     let extent_y = input.maximum[1] - input.minimum[1];
     let extent_x = input.maximum[0] - input.minimum[0];
     let largest_horizontal_extent = if extent_x <= extent_y {
@@ -714,7 +714,7 @@ pub fn native_lod_level_for_bounds(
     let normal_path = (special_flags || distance_squared <= view.force_visible_distance_squared)
         && !input.bit_1_at_0xd0;
     let optimal_level = if normal_path {
-        native_lod_select_level(
+        lod_select_level(
             distance_squared * view.fov_sin_half_squared,
             view.level_distances_squared,
             view.far_distance_squared,
@@ -724,24 +724,24 @@ pub fn native_lod_level_for_bounds(
     } else {
         6
     };
-    NativeLodDecision {
+    LodDecision {
         optimal_level,
         needs_update: optimal_level != input.current_optimal_level,
     }
 }
 
 /// FUN_14064c3a0: direct-position camera-distance evaluator.
-pub fn native_lod_level_for_position(
-    view: &NativeLodViewParameters,
-    input: NativeLodPositionInput,
-) -> NativeLodDecision {
-    let distance_squared = native_lod_min_view_distance_squared(input.position, view);
-    let optimal_level = native_lod_select_level(
+pub fn lod_level_for_position(
+    view: &LodViewParameters,
+    input: LodPositionInput,
+) -> LodDecision {
+    let distance_squared = lod_min_view_distance_squared(input.position, view);
+    let optimal_level = lod_select_level(
         distance_squared * view.fov_sin_half_squared,
         view.level_distances_squared,
         view.far_distance_squared,
     );
-    NativeLodDecision {
+    LodDecision {
         optimal_level,
         needs_update: optimal_level != input.current_optimal_level,
     }
@@ -889,22 +889,22 @@ pub fn reserve_surface_candidate_row_index(
 /// by its initializer stay deterministically zero here; whole-row equivalence
 /// awaits confirming that downstream consumers ignore those gaps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeSurfaceCandidateRow {
+pub struct SurfaceCandidateRow {
     pub bytes: [u8; 0xa8],
 }
 
-pub fn native_surface_candidate_row_default() -> NativeSurfaceCandidateRow {
+pub fn surface_candidate_row_default() -> SurfaceCandidateRow {
     let mut bytes = [0; 0xa8];
     bytes[1] = 0xff;
     bytes[0x6c..0x70].copy_from_slice(&u32::MAX.to_le_bytes());
     bytes[0x74..0x7c].copy_from_slice(&0x7f7f_ffff_u64.to_le_bytes());
     bytes[0x94..0x98].copy_from_slice(&0x3f80_0000_u32.to_le_bytes());
-    NativeSurfaceCandidateRow { bytes }
+    SurfaceCandidateRow { bytes }
 }
 
-impl Default for NativeSurfaceCandidateRow {
+impl Default for SurfaceCandidateRow {
     fn default() -> Self {
-        native_surface_candidate_row_default()
+        surface_candidate_row_default()
     }
 }
 
@@ -915,24 +915,24 @@ impl Default for NativeSurfaceCandidateRow {
 /// requested size, copy only the live prefix, then release the old Vec. A
 /// failed reserve leaves the original storage untouched, like the native call.
 pub fn reallocate_surface_candidate_rows(
-    rows: &mut Vec<NativeSurfaceCandidateRow>,
+    rows: &mut Vec<SurfaceCandidateRow>,
     live_count: u32,
     requested_capacity: u32,
 ) -> Result<(), String> {
     if requested_capacity > 0x00ff_ffff {
-        return Err("native surface candidate capacity exceeds 24 bits".to_owned());
+        return Err("surface candidate capacity exceeds 24 bits".to_owned());
     }
     let copy_count = (live_count as usize).min(requested_capacity as usize);
     if copy_count > rows.len() {
-        return Err("native surface live count exceeds supplied rows".to_owned());
+        return Err("surface live count exceeds supplied rows".to_owned());
     }
     let mut replacement = Vec::new();
     replacement
         .try_reserve_exact(requested_capacity as usize)
-        .map_err(|error| format!("native surface row allocation failed: {error}"))?;
+        .map_err(|error| format!("surface row allocation failed: {error}"))?;
     replacement.resize(
         requested_capacity as usize,
-        NativeSurfaceCandidateRow::default(),
+        SurfaceCandidateRow::default(),
     );
     replacement[..copy_count].copy_from_slice(&rows[..copy_count]);
     *rows = replacement;
@@ -940,21 +940,21 @@ pub fn reallocate_surface_candidate_rows(
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct NativeSurfaceCandidateRows {
-    rows: Vec<NativeSurfaceCandidateRow>,
+pub struct SurfaceCandidateRows {
+    rows: Vec<SurfaceCandidateRow>,
     count_word: u32,
     capacity_word: u32,
 }
 
-impl NativeSurfaceCandidateRows {
+impl SurfaceCandidateRows {
     pub fn with_capacity(capacity: u32, low_flags: u8) -> Result<Self, String> {
         if capacity > 0x00ff_ffff {
-            return Err("native surface candidate capacity exceeds 24 bits".to_owned());
+            return Err("surface candidate capacity exceeds 24 bits".to_owned());
         }
         let mut rows = Vec::new();
         rows.try_reserve_exact(capacity as usize)
-            .map_err(|error| format!("native surface row allocation failed: {error}"))?;
-        rows.resize(capacity as usize, NativeSurfaceCandidateRow::default());
+            .map_err(|error| format!("surface row allocation failed: {error}"))?;
+        rows.resize(capacity as usize, SurfaceCandidateRow::default());
         Ok(Self {
             rows,
             count_word: 0,
@@ -964,7 +964,7 @@ impl NativeSurfaceCandidateRows {
 
     pub fn append(
         &mut self,
-        row: NativeSurfaceCandidateRow,
+        row: SurfaceCandidateRow,
         grow_one_at_a_time: bool,
     ) -> Result<u32, String> {
         const COUNT_MASK: u32 = 0x00ff_ffff;
@@ -987,17 +987,17 @@ impl NativeSurfaceCandidateRows {
             allocation_succeeds,
         );
         if index == u32::MAX {
-            return Err("native surface candidate append failed".to_owned());
+            return Err("surface candidate append failed".to_owned());
         }
         let slot = self
             .rows
             .get_mut(index as usize)
-            .ok_or_else(|| "native surface candidate index exceeds allocated rows".to_owned())?;
+            .ok_or_else(|| "surface candidate index exceeds allocated rows".to_owned())?;
         *slot = row;
         Ok(index)
     }
 
-    pub fn rows(&self) -> &[NativeSurfaceCandidateRow] {
+    pub fn rows(&self) -> &[SurfaceCandidateRow] {
         &self.rows
     }
 
@@ -1015,21 +1015,21 @@ impl NativeSurfaceCandidateRows {
 }
 
 /// FUN_140675c50: allocate and zero one native 8-byte pointer-list slot per capacity unit.
-pub fn allocate_zeroed_native_surface_pointers(capacity: u32) -> Result<Vec<u64>, String> {
+pub fn allocate_zeroed_surface_pointers(capacity: u32) -> Result<Vec<u64>, String> {
     if capacity > 0x00ff_ffff {
-        return Err("native surface pointer capacity exceeds 24 bits".to_owned());
+        return Err("surface pointer capacity exceeds 24 bits".to_owned());
     }
     let mut slots = Vec::new();
     slots
         .try_reserve_exact(capacity as usize)
-        .map_err(|error| format!("native surface pointer allocation failed: {error}"))?;
+        .map_err(|error| format!("surface pointer allocation failed: {error}"))?;
     slots.resize(capacity as usize, 0);
     Ok(slots)
 }
 
 /// FUN_1403a0000: allocate zeroed replacement slots, copy the live prefix,
 /// and publish the native growth header. Caller supplies a growth capacity.
-pub fn reallocate_native_surface_pointers(
+pub fn reallocate_surface_pointers(
     slots: &mut Vec<u64>,
     live_count: u32,
     capacity_word: &mut u32,
@@ -1037,9 +1037,9 @@ pub fn reallocate_native_surface_pointers(
 ) -> Result<(), String> {
     if new_capacity > 0x00ff_ffff || live_count > new_capacity || live_count as usize > slots.len()
     {
-        return Err("native surface pointer reallocation metadata is out of range".to_owned());
+        return Err("surface pointer reallocation metadata is out of range".to_owned());
     }
-    let mut replacement = allocate_zeroed_native_surface_pointers(new_capacity)?;
+    let mut replacement = allocate_zeroed_surface_pointers(new_capacity)?;
     replacement[..live_count as usize].copy_from_slice(&slots[..live_count as usize]);
     *slots = replacement;
     *capacity_word = new_capacity.wrapping_shl(8) | 0x3f;
@@ -1050,16 +1050,16 @@ pub fn reallocate_native_surface_pointers(
 /// FUN_14033a9e0/FUN_140646e80 path. The logical capacity dispatch is shared;
 /// Rust Vec replaces engine allocator ownership and OOM side effects.
 #[derive(Clone, Debug, Default)]
-pub struct NativeSurfacePointerList {
+pub struct SurfacePointerList {
     slots: Vec<u64>,
     count_word: u32,
     capacity_word: u32,
 }
 
-impl NativeSurfacePointerList {
+impl SurfacePointerList {
     pub fn with_capacity(capacity: u32, low_flags: u8) -> Result<Self, String> {
         Ok(Self {
-            slots: allocate_zeroed_native_surface_pointers(capacity)?,
+            slots: allocate_zeroed_surface_pointers(capacity)?,
             count_word: 0,
             capacity_word: capacity.wrapping_shl(8) | u32::from(low_flags),
         })
@@ -1084,7 +1084,7 @@ impl NativeSurfacePointerList {
         }
         let requested = requested as u32;
         if requested > 0x00ff_ffff {
-            return Err("native surface pointer capacity exceeds 24 bits".to_owned());
+            return Err("surface pointer capacity exceeds 24 bits".to_owned());
         }
         let old_capacity = self.capacity_word >> 8;
         if requested == old_capacity {
@@ -1094,11 +1094,11 @@ impl NativeSurfacePointerList {
         if allocation_mode == 3 && old_capacity < requested {
             let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
             if count > old_capacity || count as usize > self.slots.len() {
-                return Err("native specialized surface pointer count exceeds storage".to_owned());
+                return Err("specialized surface pointer count exceeds storage".to_owned());
             }
             let flags = self.capacity_word as u8;
             if allocation_succeeds {
-                let _ = reallocate_native_surface_pointers(
+                let _ = reallocate_surface_pointers(
                     &mut self.slots,
                     count,
                     &mut self.capacity_word,
@@ -1116,7 +1116,7 @@ impl NativeSurfacePointerList {
             self.slots = Vec::new();
             return Ok(false);
         }
-        let mut replacement = match allocate_zeroed_native_surface_pointers(requested) {
+        let mut replacement = match allocate_zeroed_surface_pointers(requested) {
             Ok(replacement) => replacement,
             Err(_) => {
                 self.slots = Vec::new();
@@ -1125,7 +1125,7 @@ impl NativeSurfacePointerList {
         };
         let copied = count.min(requested) as usize;
         if copied > self.slots.len() {
-            return Err("native surface pointer count exceeds supplied storage".to_owned());
+            return Err("surface pointer count exceeds supplied storage".to_owned());
         }
         replacement[..copied].copy_from_slice(&self.slots[..copied]);
         self.slots = replacement;
@@ -1147,7 +1147,7 @@ impl NativeSurfacePointerList {
         let old_count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
         let old_capacity = self.capacity_word >> 8;
         if old_count > old_capacity || old_capacity as usize != self.slots.len() {
-            return Err("native surface pointer list metadata disagrees with storage".to_owned());
+            return Err("surface pointer list metadata disagrees with storage".to_owned());
         }
         let index = if (requested_index as i32) < 0 {
             0
@@ -1158,14 +1158,14 @@ impl NativeSurfacePointerList {
             let requested =
                 surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
             if requested <= old_capacity || requested > 0x00ff_ffff {
-                return Err("native surface pointer growth exceeds packed capacity".to_owned());
+                return Err("surface pointer growth exceeds packed capacity".to_owned());
             }
             if !self.set_capacity(requested as i32, true)? {
-                return Err("native surface pointer allocator rejected growth mode".to_owned());
+                return Err("surface pointer allocator rejected growth mode".to_owned());
             }
             if self.capacity() as usize != self.slots.len() {
                 return Err(
-                    "native surface pointer allocation left a short backing array".to_owned(),
+                    "surface pointer allocation left a short backing array".to_owned(),
                 );
             }
         }
@@ -1176,7 +1176,7 @@ impl NativeSurfacePointerList {
             true,
         );
         if appended != old_count {
-            return Err("native surface pointer count reservation failed".to_owned());
+            return Err("surface pointer count reservation failed".to_owned());
         }
         for destination in (index as usize..old_count as usize).rev() {
             self.slots[destination + 1] = self.slots[destination];
@@ -1204,22 +1204,22 @@ impl NativeSurfacePointerList {
 
 /// FUN_140335360 stores 0x38-byte rows in this packed list. Fourteen raw
 /// u32 lanes preserve the row bytes without guessing their mixed field types.
-pub type NativeSurfaceBatchRow = [u32; 14];
+pub type SurfaceBatchRow = [u32; 14];
 
 /// FUN_1401d9090 returns the first qword of its native row pointer.
-pub fn first_qword_of_native_surface_batch_row(row: &NativeSurfaceBatchRow) -> u64 {
+pub fn first_qword_of_surface_batch_row(row: &SurfaceBatchRow) -> u64 {
     u64::from(row[0]) | (u64::from(row[1]) << 32)
 }
 
-fn allocate_zeroed_native_surface_rows(
+fn allocate_zeroed_surface_rows(
     capacity: u32,
-) -> Result<Vec<NativeSurfaceBatchRow>, String> {
+) -> Result<Vec<SurfaceBatchRow>, String> {
     if capacity > 0x00ff_ffff {
-        return Err("native surface row capacity exceeds 24 bits".to_owned());
+        return Err("surface row capacity exceeds 24 bits".to_owned());
     }
     let mut rows = Vec::new();
     rows.try_reserve_exact(capacity as usize)
-        .map_err(|error| format!("native surface row allocation failed: {error}"))?;
+        .map_err(|error| format!("surface row allocation failed: {error}"))?;
     rows.resize(capacity as usize, [0; 14]);
     Ok(rows)
 }
@@ -1228,16 +1228,16 @@ fn allocate_zeroed_native_surface_rows(
 /// FUN_14033dd60/FUN_14033ac90. This models logical row storage; engine
 /// allocator tags/ownership remain outside the Rust Vec representation.
 #[derive(Clone, Debug, Default)]
-pub struct NativeSurfaceBatchRowList {
-    rows: Vec<NativeSurfaceBatchRow>,
+pub struct SurfaceBatchRowList {
+    rows: Vec<SurfaceBatchRow>,
     count_word: u32,
     capacity_word: u32,
 }
 
-impl NativeSurfaceBatchRowList {
+impl SurfaceBatchRowList {
     pub fn with_capacity(capacity: u32, low_flags: u8) -> Result<Self, String> {
         Ok(Self {
-            rows: allocate_zeroed_native_surface_rows(capacity)?,
+            rows: allocate_zeroed_surface_rows(capacity)?,
             count_word: 0,
             capacity_word: capacity.wrapping_shl(8) | u32::from(low_flags),
         })
@@ -1260,7 +1260,7 @@ impl NativeSurfaceBatchRowList {
         }
         let requested = requested as u32;
         if requested > 0x00ff_ffff {
-            return Err("native surface row capacity exceeds 24 bits".to_owned());
+            return Err("surface row capacity exceeds 24 bits".to_owned());
         }
         let old_capacity = self.capacity_word >> 8;
         if requested == old_capacity {
@@ -1270,11 +1270,11 @@ impl NativeSurfaceBatchRowList {
         if allocation_mode == 3 && old_capacity < requested {
             let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
             if count > old_capacity || count as usize > self.rows.len() {
-                return Err("native specialized surface row count exceeds storage".to_owned());
+                return Err("specialized surface row count exceeds storage".to_owned());
             }
             let flags = self.capacity_word as u8;
             if allocation_succeeds {
-                if let Ok(mut replacement) = allocate_zeroed_native_surface_rows(requested) {
+                if let Ok(mut replacement) = allocate_zeroed_surface_rows(requested) {
                     replacement[..count as usize].copy_from_slice(&self.rows[..count as usize]);
                     self.rows = replacement;
                 }
@@ -1290,7 +1290,7 @@ impl NativeSurfaceBatchRowList {
             self.rows = Vec::new();
             return Ok(false);
         }
-        let mut replacement = match allocate_zeroed_native_surface_rows(requested) {
+        let mut replacement = match allocate_zeroed_surface_rows(requested) {
             Ok(replacement) => replacement,
             Err(_) => {
                 self.rows = Vec::new();
@@ -1299,7 +1299,7 @@ impl NativeSurfaceBatchRowList {
         };
         let copied = count.min(requested) as usize;
         if copied > self.rows.len() {
-            return Err("native surface row count exceeds supplied storage".to_owned());
+            return Err("surface row count exceeds supplied storage".to_owned());
         }
         replacement[..copied].copy_from_slice(&self.rows[..copied]);
         self.rows = replacement;
@@ -1319,19 +1319,19 @@ impl NativeSurfaceBatchRowList {
         let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
         let capacity = self.capacity_word >> 8;
         if count > capacity || capacity as usize != self.rows.len() {
-            return Err("native surface row-list metadata disagrees with storage".to_owned());
+            return Err("surface row-list metadata disagrees with storage".to_owned());
         }
         if count == capacity {
             let requested =
                 surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
             if requested <= capacity || requested > 0x00ff_ffff {
-                return Err("native surface row growth exceeds packed capacity".to_owned());
+                return Err("surface row growth exceeds packed capacity".to_owned());
             }
             if !self.set_capacity(requested as i32, allocation_succeeds)? {
-                return Err("native surface row allocator rejected growth mode".to_owned());
+                return Err("surface row allocator rejected growth mode".to_owned());
             }
             if self.capacity_word >> 8 != self.rows.len() as u32 {
-                return Err("native surface row allocation left a short backing array".to_owned());
+                return Err("surface row allocation left a short backing array".to_owned());
             }
         }
         let index = self.count_word & SURFACE_ARRAY_COUNT_MASK;
@@ -1340,13 +1340,13 @@ impl NativeSurfaceBatchRowList {
         Ok(index)
     }
 
-    pub fn rows(&self) -> &[NativeSurfaceBatchRow] {
+    pub fn rows(&self) -> &[SurfaceBatchRow] {
         self.rows
             .get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize)
             .unwrap_or(&[])
     }
 
-    pub fn row_mut(&mut self, index: u32) -> Option<&mut NativeSurfaceBatchRow> {
+    pub fn row_mut(&mut self, index: u32) -> Option<&mut SurfaceBatchRow> {
         if index >= (self.count_word & SURFACE_ARRAY_COUNT_MASK) {
             return None;
         }
@@ -1356,7 +1356,7 @@ impl NativeSurfaceBatchRowList {
     pub fn first_qword(&self, index: u32) -> Option<u64> {
         self.rows()
             .get(index as usize)
-            .map(first_qword_of_native_surface_batch_row)
+            .map(first_qword_of_surface_batch_row)
     }
 
     pub fn count(&self) -> u32 {
@@ -1371,7 +1371,7 @@ impl NativeSurfaceBatchRowList {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeSurfaceSortedInsert {
+pub enum SurfaceSortedInsert {
     Existing { index: u32 },
     Inserted { index: u32 },
 }
@@ -1379,31 +1379,31 @@ pub enum NativeSurfaceSortedInsert {
 /// Compose FUN_14033e520, FUN_14033f0f0 and FUN_14033a9e0: suppress an
 /// existing equal surface key; otherwise insert its pointer at the native
 /// lower bound while keeping the key and pointer arrays aligned.
-pub fn insert_native_sorted_surface_pointer<'a>(
+pub fn insert_sorted_surface_pointer<'a>(
     sorted_keys: &mut Vec<SurfaceSortKeyView<'a>>,
-    pointers: &mut NativeSurfacePointerList,
+    pointers: &mut SurfacePointerList,
     target: SurfaceSortKeyView<'a>,
     pointer: u64,
     grow_one_at_a_time: bool,
-) -> Result<NativeSurfaceSortedInsert, String> {
+) -> Result<SurfaceSortedInsert, String> {
     if pointers.count() as usize != sorted_keys.len() {
-        return Err("native surface key and pointer lists have different counts".to_owned());
+        return Err("surface key and pointer lists have different counts".to_owned());
     }
     let count = i32::try_from(sorted_keys.len())
-        .map_err(|_| "native surface sorted list exceeds signed count".to_owned())?;
+        .map_err(|_| "surface sorted list exceeds signed count".to_owned())?;
     let existing = surface_key_find_rightmost_equal(Some(sorted_keys), count, &target)?;
     if existing >= 0 {
-        return Ok(NativeSurfaceSortedInsert::Existing {
+        return Ok(SurfaceSortedInsert::Existing {
             index: existing as u32,
         });
     }
     let index = surface_key_lower_bound(Some(sorted_keys), count, &target)? as usize;
     sorted_keys
         .try_reserve(1)
-        .map_err(|error| format!("native surface key allocation failed: {error}"))?;
+        .map_err(|error| format!("surface key allocation failed: {error}"))?;
     pointers.insert(index as u32, pointer, grow_one_at_a_time)?;
     sorted_keys.insert(index, target);
-    Ok(NativeSurfaceSortedInsert::Inserted {
+    Ok(SurfaceSortedInsert::Inserted {
         index: index as u32,
     })
 }
@@ -1412,7 +1412,7 @@ pub fn insert_native_sorted_surface_pointer<'a>(
 /// as the empty-chain sentinel; this safe view models logical bucket links,
 /// not the engine allocator's tag/pool or owner lifetime.
 #[derive(Clone, Debug)]
-pub struct NativeSurfaceHashIndex {
+pub struct SurfaceHashIndex {
     bucket_count: u32,
     chain_capacity: u32,
     growth_granularity: u32,
@@ -1422,7 +1422,7 @@ pub struct NativeSurfaceHashIndex {
     next_indices: Vec<u32>,
 }
 
-impl NativeSurfaceHashIndex {
+impl SurfaceHashIndex {
     /// Construct the native reset state: both pointers refer to the sentinel.
     pub fn lazy(
         bucket_count: u32,
@@ -1430,7 +1430,7 @@ impl NativeSurfaceHashIndex {
         growth_granularity: u32,
     ) -> Result<Self, String> {
         if bucket_count == 0 || bucket_count > i32::MAX as u32 || chain_capacity > i32::MAX as u32 {
-            return Err("native surface HashIndex capacities are out of range".to_owned());
+            return Err("surface HashIndex capacities are out of range".to_owned());
         }
         Ok(Self {
             bucket_count,
@@ -1465,16 +1465,16 @@ impl NativeSurfaceHashIndex {
     /// and derive the bucket mask from hash capacity.
     pub fn reset(&mut self, bucket_count: u32, chain_capacity: u32) -> Result<(), String> {
         if bucket_count == 0 || bucket_count > i32::MAX as u32 || chain_capacity > i32::MAX as u32 {
-            return Err("native surface HashIndex capacities are out of range".to_owned());
+            return Err("surface HashIndex capacities are out of range".to_owned());
         }
         let mut buckets = Vec::new();
         buckets
             .try_reserve_exact(bucket_count as usize)
-            .map_err(|error| format!("native surface hash allocation failed: {error}"))?;
+            .map_err(|error| format!("surface hash allocation failed: {error}"))?;
         buckets.resize(bucket_count as usize, u32::MAX);
         let mut next = Vec::new();
         next.try_reserve_exact(chain_capacity as usize)
-            .map_err(|error| format!("native surface chain allocation failed: {error}"))?;
+            .map_err(|error| format!("surface chain allocation failed: {error}"))?;
         next.resize(chain_capacity as usize, u32::MAX);
         self.clear();
         self.bucket_count = bucket_count;
@@ -1503,15 +1503,15 @@ impl NativeSurfaceHashIndex {
             let rounded = requested
                 .checked_sub(1)
                 .and_then(|value| value.checked_add(granularity))
-                .ok_or_else(|| "native surface chain capacity overflow".to_owned())?;
+                .ok_or_else(|| "surface chain capacity overflow".to_owned())?;
             rounded - rounded % granularity
         };
         if capacity > i32::MAX as u32 {
-            return Err("native surface chain capacity exceeds signed native range".to_owned());
+            return Err("surface chain capacity exceeds signed native range".to_owned());
         }
         self.next_indices
             .try_reserve_exact((capacity - self.chain_capacity) as usize)
-            .map_err(|error| format!("native surface chain growth failed: {error}"))?;
+            .map_err(|error| format!("surface chain growth failed: {error}"))?;
         self.next_indices.resize(capacity as usize, u32::MAX);
         self.chain_capacity = capacity;
         Ok(())
@@ -1521,30 +1521,30 @@ impl NativeSurfaceHashIndex {
     /// needed, then prepend this index to the key's masked bucket chain.
     pub fn insert(&mut self, key: u32, index: i32) -> Result<(), String> {
         let index = u32::try_from(index)
-            .map_err(|_| "native surface HashIndex insertion index is negative".to_owned())?;
+            .map_err(|_| "surface HashIndex insertion index is negative".to_owned())?;
         if self.bucket_heads.is_empty() {
             let requested = self.chain_capacity.max(
                 index
                     .checked_add(1)
-                    .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?,
+                    .ok_or_else(|| "surface HashIndex index overflow".to_owned())?,
             );
             self.reset(self.bucket_count, requested)?;
         } else if self.chain_capacity <= index {
             self.grow_chain(
                 index
                     .checked_add(1)
-                    .ok_or_else(|| "native surface HashIndex index overflow".to_owned())?,
+                    .ok_or_else(|| "surface HashIndex index overflow".to_owned())?,
             )?;
         }
         let bucket = (key & self.bucket_mask) as usize;
         let head = self
             .bucket_heads
             .get_mut(bucket)
-            .ok_or_else(|| "native surface HashIndex bucket exceeds storage".to_owned())?;
+            .ok_or_else(|| "surface HashIndex bucket exceeds storage".to_owned())?;
         let next = self
             .next_indices
             .get_mut(index as usize)
-            .ok_or_else(|| "native surface HashIndex index exceeds storage".to_owned())?;
+            .ok_or_else(|| "surface HashIndex index exceeds storage".to_owned())?;
         *next = *head;
         *head = index;
         Ok(())
@@ -1558,17 +1558,17 @@ impl NativeSurfaceHashIndex {
         let mut current = *self
             .bucket_heads
             .get(bucket)
-            .ok_or_else(|| "native surface HashIndex bucket exceeds storage".to_owned())?;
+            .ok_or_else(|| "surface HashIndex bucket exceeds storage".to_owned())?;
         let mut result = Vec::new();
         while current != u32::MAX {
             if result.len() >= self.next_indices.len() {
-                return Err("native surface HashIndex chain is cyclic".to_owned());
+                return Err("surface HashIndex chain is cyclic".to_owned());
             }
             result.push(current);
             current = *self
                 .next_indices
                 .get(current as usize)
-                .ok_or_else(|| "native surface HashIndex link exceeds storage".to_owned())?;
+                .ok_or_else(|| "surface HashIndex link exceeds storage".to_owned())?;
         }
         Ok(result)
     }
@@ -1593,7 +1593,7 @@ impl NativeSurfaceHashIndex {
 /// FUN_140359bd0 input scalars after reading the original pointer graph. Field
 /// names preserve observed offsets rather than asserting a native Rust layout.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct NativeSurfaceCandidateSortFields {
+pub struct SurfaceCandidateSortFields {
     pub candidate_material_pointer: u64,
     pub owner_sort_value_1bb0: u64,
     pub surface_resource_value_00: u64,
@@ -1612,8 +1612,8 @@ pub struct NativeSurfaceCandidateSortFields {
 /// FUN_140359bd0: create the seven-qword auxiliary sort payload copied into
 /// candidate-row +0x40..+0x77. Padding bytes are zeroed; native stack padding
 /// is unspecified and is not claimed to match.
-pub fn native_surface_candidate_sort_payload(
-    fields: &NativeSurfaceCandidateSortFields,
+pub fn surface_candidate_sort_payload(
+    fields: &SurfaceCandidateSortFields,
 ) -> [u8; 0x38] {
     let mut bytes = [0; 0x38];
     bytes[0x00..0x08].copy_from_slice(&fields.candidate_material_pointer.to_le_bytes());
@@ -1637,7 +1637,7 @@ pub fn native_surface_candidate_sort_payload(
 
 /// FUN_14033b350's observed 0xa8-byte candidate-row write branch.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeSurfaceCandidateBranchFields {
+pub struct SurfaceCandidateBranchFields {
     pub owner_byte_1c31: u8,
     pub global_byte_77b0: u8,
     pub context_pointer: u64,
@@ -1651,10 +1651,10 @@ pub struct NativeSurfaceCandidateBranchFields {
     pub auxiliary_payload: [u8; 0x38],
 }
 
-pub fn native_surface_candidate_branch_row(
-    fields: &NativeSurfaceCandidateBranchFields,
-) -> NativeSurfaceCandidateRow {
-    let mut row = native_surface_candidate_row_default();
+pub fn surface_candidate_branch_row(
+    fields: &SurfaceCandidateBranchFields,
+) -> SurfaceCandidateRow {
+    let mut row = surface_candidate_row_default();
     row.bytes[0] = ((fields.owner_byte_1c31 >> 1) & 1) ^ fields.global_byte_77b0;
     row.bytes[1] = 0xff;
     row.bytes[0x08..0x10].copy_from_slice(&fields.context_pointer.to_le_bytes());
@@ -1671,7 +1671,7 @@ pub fn native_surface_candidate_branch_row(
 
 /// FUN_14010a0d0's output for the default `param_4 == 0` clip constants.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeAabbClipCullResult {
+pub struct AabbClipCullResult {
     pub outside_plane_mask: u8,
     pub output_byte: u8,
     pub culled: bool,
@@ -1680,43 +1680,43 @@ pub struct NativeAabbClipCullResult {
 /// FUN_14010a0d0 with its default mode: transform the eight AABB corners and
 /// accumulate the six initialized plane bits (1,2,4,8,16,32). The native
 /// result is a cull flag: true if any plane has no corner in its half-space.
-pub fn native_transformed_aabb_clip_cull(
+pub fn transformed_aabb_clip_cull(
     matrix: &[f32; 16],
     minimum: [f32; 3],
     maximum: [f32; 3],
-) -> NativeAabbClipCullResult {
-    native_transformed_aabb_clip_cull_at_depth(matrix, minimum, maximum, 0.0)
+) -> AabbClipCullResult {
+    transformed_aabb_clip_cull_at_depth(matrix, minimum, maximum, 0.0)
 }
 
 /// FUN_140109e40's explicit near-depth threshold. Directional model draws
 /// use this when their retained projection depth offset is negative.
-pub fn native_transformed_aabb_clip_cull_at_depth(
+pub fn transformed_aabb_clip_cull_at_depth(
     matrix: &[f32; 16],
     minimum: [f32; 3],
     maximum: [f32; 3],
     near_depth: f32,
-) -> NativeAabbClipCullResult {
-    native_transformed_aabb_clip_cull_bounds(matrix, minimum, maximum, near_depth, false)
+) -> AabbClipCullResult {
+    transformed_aabb_clip_cull_bounds(matrix, minimum, maximum, near_depth, false)
 }
 
 ///10a0d0 mode1 uses zero, rather than -W, for the X/Y lower planes.
 ///Local model collection tests the light's unit-volume matrix in this mode.
-pub fn native_unit_aabb_clip_cull(
+pub fn unit_aabb_clip_cull(
     matrix: &[f32; 16],
     minimum: [f32; 3],
     maximum: [f32; 3],
-) -> NativeAabbClipCullResult {
-    native_transformed_aabb_clip_cull_bounds(matrix, minimum, maximum, 0.0, true)
+) -> AabbClipCullResult {
+    transformed_aabb_clip_cull_bounds(matrix, minimum, maximum, 0.0, true)
 }
 
 #[inline]
-fn native_transformed_aabb_clip_cull_bounds(
+fn transformed_aabb_clip_cull_bounds(
     matrix: &[f32; 16],
     minimum: [f32; 3],
     maximum: [f32; 3],
     near_depth: f32,
     unit_xy: bool,
-) -> NativeAabbClipCullResult {
+) -> AabbClipCullResult {
     #[cfg(target_arch = "x86_64")]
     {
         // SSE is part of the x86-64 baseline. Each lane is one original
@@ -1738,7 +1738,7 @@ unsafe fn aabb_clip_cull_sse(
     maximum: [f32; 3],
     near_depth: f32,
     unit_xy: bool,
-) -> NativeAabbClipCullResult {
+) -> AabbClipCullResult {
     use core::arch::x86_64::*;
     // All array accesses have fixed, in-range indices; these operations use
     // registers, with no alignment assumptions or changes to the FP mode.
@@ -1785,7 +1785,7 @@ unsafe fn aabb_clip_cull_sse(
                 mask | (u8::from(value != 0) << bit)
             });
         let outside_plane_mask = inside_mask ^ 0x3f;
-        NativeAabbClipCullResult {
+        AabbClipCullResult {
             outside_plane_mask,
             output_byte: outside_plane_mask,
             culled: inside_mask != 0x3f,
@@ -1800,7 +1800,7 @@ fn aabb_clip_cull_scalar(
     maximum: [f32; 3],
     near_depth: f32,
     unit_xy: bool,
-) -> NativeAabbClipCullResult {
+) -> AabbClipCullResult {
     let mut corners = [[0.0_f32; 4]; 8];
     for (index, corner) in corners.iter_mut().enumerate() {
         let x = if index & 1 == 0 {
@@ -1848,7 +1848,7 @@ fn aabb_clip_cull_scalar(
         }
     }
     let outside_plane_mask = inside_mask ^ 0x3f;
-    NativeAabbClipCullResult {
+    AabbClipCullResult {
         outside_plane_mask,
         output_byte: outside_plane_mask,
         culled: inside_mask != 0x3f,
@@ -1858,7 +1858,7 @@ fn aabb_clip_cull_scalar(
 /// FUN_14033b280: return the selected input-surface indices and mode byte.
 /// The count is the native packed header's low 24 bits; filtering preserves
 /// original ascending order.
-pub fn native_surface_candidate_iteration_indices(
+pub fn surface_candidate_iteration_indices(
     packed_count: u32,
     context_flags_18bc: u8,
     pass_filter: i32,
@@ -1873,7 +1873,7 @@ pub fn native_surface_candidate_iteration_indices(
     if pass_filter < 0 {
         indices
             .try_reserve_exact(count as usize)
-            .map_err(|error| format!("native surface iteration allocation failed: {error}"))?;
+            .map_err(|error| format!("surface iteration allocation failed: {error}"))?;
         indices.extend(0..count);
     } else if (pass_filter as u32) < count {
         indices.push(pass_filter as u32);
@@ -1885,7 +1885,7 @@ pub fn native_surface_candidate_iteration_indices(
 /// surfaceContainer records. `packed_count` is the native list header's +8
 /// word; only its low 24 bits are the record count. The mode flag selects the
 /// FUN_14033b350 branch but does not suppress row visits.
-pub fn visit_native_surface_container_rows(
+pub fn visit_surface_container_rows(
     rows: &[u8],
     packed_count: u32,
     context_flags_18bc: u8,
@@ -1900,9 +1900,9 @@ pub fn visit_native_surface_container_rows(
     };
     let required = (count as usize)
         .checked_mul(0x80)
-        .ok_or_else(|| "native surface container byte length overflow".to_owned())?;
+        .ok_or_else(|| "surface container byte length overflow".to_owned())?;
     if required > rows.len() {
-        return Err("native surface container is shorter than its packed record count".to_owned());
+        return Err("surface container is shorter than its packed record count".to_owned());
     }
 
     let mut visited = 0;
@@ -1923,7 +1923,7 @@ pub fn visit_native_surface_container_rows(
 /// normal depth-pass or program ID. Pointer lookups and FUN_140109dd0 are
 /// supplied as measured results; this helper does not select depth occluders.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct NativeSurfaceCandidateBranchGates {
+pub struct SurfaceCandidateBranchGates {
     pub material_pointer_present: bool,
     pub surface_pointer_30_present: bool,
     pub optional_pointer_78_value: Option<i32>,
@@ -1936,8 +1936,8 @@ pub struct NativeSurfaceCandidateBranchGates {
     pub candidate_parameter_lookup_present: bool,
 }
 
-pub fn native_surface_candidate_category_key(
-    gates: &NativeSurfaceCandidateBranchGates,
+pub fn surface_candidate_category_key(
+    gates: &SurfaceCandidateBranchGates,
     material_flags_4a: u8,
     feature_bits: u32,
 ) -> Option<u32> {
@@ -1969,8 +1969,8 @@ pub fn native_surface_candidate_category_key(
 
 /// Resolve FUN_14033b350's optional FUN_140109dd0 test using the exact default
 /// clip mode, then apply the remaining observed material/category gates.
-pub fn native_surface_candidate_category_key_with_bounds(
-    gates: &NativeSurfaceCandidateBranchGates,
+pub fn surface_candidate_category_key_with_bounds(
+    gates: &SurfaceCandidateBranchGates,
     material_flags_4a: u8,
     feature_bits: u32,
     matrix: &[f32; 16],
@@ -1980,17 +1980,17 @@ pub fn native_surface_candidate_category_key_with_bounds(
     let mut resolved = *gates;
     if resolved.mode != 0 && !resolved.surface_pointer_40_present {
         resolved.helper_140109dd0_returns_nonzero =
-            native_transformed_aabb_clip_cull(matrix, minimum, maximum).culled;
+            transformed_aabb_clip_cull(matrix, minimum, maximum).culled;
     }
-    native_surface_candidate_category_key(&resolved, material_flags_4a, feature_bits)
+    surface_candidate_category_key(&resolved, material_flags_4a, feature_bits)
 }
 
 /// Inputs from one measured FUN_14033b350 surface branch. The caller must
 /// supply source-backed fields; this does not infer runtime pointers or flags.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeSurfaceCandidateInput {
-    pub branch_fields: NativeSurfaceCandidateBranchFields,
-    pub gates: NativeSurfaceCandidateBranchGates,
+pub struct SurfaceCandidateInput {
+    pub branch_fields: SurfaceCandidateBranchFields,
+    pub gates: SurfaceCandidateBranchGates,
     pub material_flags_4a: u8,
     pub feature_bits: u32,
     pub clip_matrix: [f32; 16],
@@ -2000,13 +2000,13 @@ pub struct NativeSurfaceCandidateInput {
 /// Port the observed candidate branch as one operation: apply eligibility,
 /// write the 0xa8 row, append it, then prepend the row index to its category
 /// HashIndex chain. Other FUN_14033b350 branches remain distinct.
-pub fn append_native_surface_candidate_if_eligible(
-    input: &NativeSurfaceCandidateInput,
-    rows: &mut NativeSurfaceCandidateRows,
-    hash_index: &mut NativeSurfaceHashIndex,
+pub fn append_surface_candidate_if_eligible(
+    input: &SurfaceCandidateInput,
+    rows: &mut SurfaceCandidateRows,
+    hash_index: &mut SurfaceHashIndex,
     grow_one_at_a_time: bool,
 ) -> Result<Option<u32>, String> {
-    let Some(category_key) = native_surface_candidate_category_key_with_bounds(
+    let Some(category_key) = surface_candidate_category_key_with_bounds(
         &input.gates,
         input.material_flags_4a,
         input.feature_bits,
@@ -2016,7 +2016,7 @@ pub fn append_native_surface_candidate_if_eligible(
     ) else {
         return Ok(None);
     };
-    let row = native_surface_candidate_branch_row(&input.branch_fields);
+    let row = surface_candidate_branch_row(&input.branch_fields);
     append_surface_candidate_to_hash(rows, hash_index, category_key, row, grow_one_at_a_time)
         .map(Some)
 }
@@ -2024,10 +2024,10 @@ pub fn append_native_surface_candidate_if_eligible(
 /// Append one candidate row, then insert its index into the native bucket
 /// chain, matching FUN_14033b350's call order.
 pub fn append_surface_candidate_to_hash(
-    rows: &mut NativeSurfaceCandidateRows,
-    hash_index: &mut NativeSurfaceHashIndex,
+    rows: &mut SurfaceCandidateRows,
+    hash_index: &mut SurfaceHashIndex,
     category_key: u32,
-    row: NativeSurfaceCandidateRow,
+    row: SurfaceCandidateRow,
     grow_one_at_a_time: bool,
 ) -> Result<u32, String> {
     let index = rows.append(row, grow_one_at_a_time)?;
@@ -2047,10 +2047,10 @@ pub fn insert_preallocated_surface_pointer(
 ) -> Result<u32, String> {
     let count = *packed_count & SURFACE_ARRAY_COUNT_MASK;
     if count >= capacity {
-        return Err("native surface pointer vector growth is required".to_owned());
+        return Err("surface pointer vector growth is required".to_owned());
     }
     if capacity as usize > slots.len() || count as usize >= slots.len() {
-        return Err("native surface pointer vector metadata exceeds supplied storage".to_owned());
+        return Err("surface pointer vector metadata exceeds supplied storage".to_owned());
     }
     let index = if requested_index < 0 {
         0
@@ -2114,7 +2114,7 @@ pub fn build_prepass_hash_chain_pointer_list(
 pub fn build_prepass_hash_chain_pointer_list_growing(
     nodes: &[SurfaceHashChainNode],
     head: Option<usize>,
-    output: &mut NativeSurfacePointerList,
+    output: &mut SurfacePointerList,
     grow_one_at_a_time: bool,
 ) -> Result<(), String> {
     let mut current = head;
@@ -2141,9 +2141,9 @@ pub fn build_prepass_hash_chain_pointer_list_growing(
 /// produced by the native front-insertion callback. HashIndex stores bucket
 /// links here but no key comparison, so collisions remain in the same output;
 /// exact-key filtering is a separate, not-yet-ported consumer operation.
-pub fn native_prepass_surface_pointers_for_bucket(
-    rows: &NativeSurfaceCandidateRows,
-    hash_index: &NativeSurfaceHashIndex,
+pub fn prepass_surface_pointers_for_bucket(
+    rows: &SurfaceCandidateRows,
+    hash_index: &SurfaceHashIndex,
     bucket_key: u32,
 ) -> Result<Vec<u64>, String> {
     let chain = hash_index.bucket_chain(bucket_key)?;
@@ -2153,12 +2153,12 @@ pub fn native_prepass_surface_pointers_for_bucket(
     let mut nodes = Vec::new();
     nodes
         .try_reserve_exact(chain.len())
-        .map_err(|error| format!("native prepass chain allocation failed: {error}"))?;
+        .map_err(|error| format!("prepass chain allocation failed: {error}"))?;
     for (position, row_index) in chain.iter().copied().enumerate() {
         let row = rows
             .rows()
             .get(row_index as usize)
-            .ok_or_else(|| "native prepass hash index exceeds candidate rows".to_owned())?;
+            .ok_or_else(|| "prepass hash index exceeds candidate rows".to_owned())?;
         let surface_pointer = u64::from_le_bytes(row.bytes[0x10..0x18].try_into().unwrap());
         nodes.push(SurfaceHashChainNode {
             next: (position + 1 < chain.len()).then_some(position + 1),
@@ -2166,7 +2166,7 @@ pub fn native_prepass_surface_pointers_for_bucket(
         });
     }
     let capacity = u32::try_from(chain.len())
-        .map_err(|_| "native prepass chain exceeds 32-bit count".to_owned())?;
+        .map_err(|_| "prepass chain exceeds 32-bit count".to_owned())?;
     let mut slots = vec![0; chain.len()];
     let mut count = 0;
     build_prepass_hash_chain_pointer_list(&nodes, Some(0), &mut slots, &mut count, capacity)?;
@@ -2322,45 +2322,45 @@ pub fn parameterized_surface_program_selector(
 
 /// FUN_1402c2ac0 -> FUN_1402db420 prepares the lookup passed to FUN_140342640.
 /// The global parameter ID is supplied by the caller; its native value is runtime-owned.
-pub fn native_surface_parameter_float_lookup(
+pub fn surface_parameter_float_lookup(
     parameter_object: &[u8],
     parameter_id: u64,
 ) -> Result<(u64, u64, u32), &'static str> {
     let owner = parameter_object
         .get(0x10..0x18)
-        .ok_or("native parameter object is shorter than its owner pointer at +0x10")?;
+        .ok_or("parameter object is shorter than its owner pointer at +0x10")?;
     let property = u64::from_le_bytes(owner.try_into().unwrap()).wrapping_add(0x2d8);
     Ok((property, parameter_id, 0))
 }
 
 /// FUN_140319540 clears qwords 0 and 3 only when qword 0 is nonzero.
-pub fn reset_native_depth_draw_cache_if_bound(cache: &mut [u64; 4]) {
+pub fn reset_depth_draw_cache_if_bound(cache: &mut [u64; 4]) {
     if cache[0] != 0 {
         cache[0] = 0;
         cache[3] = 0;
     }
 }
 
-fn native_indirect_pointer_plus(base: &[u8], addend: u64) -> Result<u64, &'static str> {
+fn indirect_pointer_plus(base: &[u8], addend: u64) -> Result<u64, &'static str> {
     let pointer = base
         .get(0x10..0x18)
-        .ok_or("native object is shorter than its pointer at +0x10")?;
+        .ok_or("object is shorter than its pointer at +0x10")?;
     let pointer = u64::from_le_bytes(pointer.try_into().unwrap());
     Ok(pointer.wrapping_add(addend))
 }
 
 /// FUN_1402c2ab0 loads a pointer at byte offset 0x10 and returns pointer + 0x58.
-pub fn native_indirect_pointer_plus_0x58(base: &[u8]) -> Result<u64, &'static str> {
-    native_indirect_pointer_plus(base, 0x58)
+pub fn indirect_pointer_plus_0x58(base: &[u8]) -> Result<u64, &'static str> {
+    indirect_pointer_plus(base, 0x58)
 }
 
 /// FUN_1402c2aa0 loads a pointer at byte offset 0x10 and returns pointer + 0x2d8.
-pub fn native_indirect_pointer_plus_0x2d8(base: &[u8]) -> Result<u64, &'static str> {
-    native_indirect_pointer_plus(base, 0x2d8)
+pub fn indirect_pointer_plus_0x2d8(base: &[u8]) -> Result<u64, &'static str> {
+    indirect_pointer_plus(base, 0x2d8)
 }
 
 /// FUN_1402bc340 passes its value as a one-qword array to FUN_1402bc370.
-pub fn call_native_resource_array_bind_with_one(
+pub fn call_resource_array_bind_with_one(
     context: u64,
     value: u64,
     extra: u64,
@@ -2373,7 +2373,7 @@ pub fn call_native_resource_array_bind_with_one(
 /// FUN_1402fd8d0 reads its worker index at context +0xf8. Indices 0/1
 /// invoke their no-argument workers; all others tail-dispatch the same context
 /// to FUN_1402fe850. A short byte view is rejected instead of read out of bounds.
-pub fn dispatch_native_depthpass_worker(
+pub fn dispatch_depthpass_worker(
     context: &[u8],
     worker_0: impl FnOnce() -> u64,
     worker_1: impl FnOnce() -> u64,
@@ -2381,7 +2381,7 @@ pub fn dispatch_native_depthpass_worker(
 ) -> Result<u64, String> {
     let index = context
         .get(0xf8..0xfc)
-        .ok_or_else(|| "native depth-pass context is shorter than its worker index".to_owned())?;
+        .ok_or_else(|| "depth-pass context is shorter than its worker index".to_owned())?;
     let worker_index = i32::from_le_bytes(index.try_into().unwrap());
     Ok(match worker_index {
         0 => worker_0(),
@@ -2393,27 +2393,27 @@ pub fn dispatch_native_depthpass_worker(
 /// Ports the early return in FUN_1402fdb60 when view+0x3a34 bit 0x10 is set:
 /// mark renderer-state byte +0x12ad4 and return the original state pointer with
 /// its low byte cleared. `None` means the worker continues through its main path.
-pub fn native_depthpass_index0_early_exit(
+pub fn depthpass_index0_early_exit(
     view: &[u8],
     renderer_state: &mut [u8],
     state_pointer: u64,
 ) -> Result<Option<u64>, &'static str> {
     let flags = *view
         .get(0x3a34)
-        .ok_or("native view is shorter than its +0x3a34 flags byte")?;
+        .ok_or("view is shorter than its +0x3a34 flags byte")?;
     if flags & 0x10 == 0 {
         return Ok(None);
     }
     let completed = renderer_state
         .get_mut(0x12ad4)
-        .ok_or("native renderer state is shorter than its +0x12ad4 completion byte")?;
+        .ok_or("renderer state is shorter than its +0x12ad4 completion byte")?;
     *completed = 1;
     Ok(Some(state_pointer & !0xff))
 }
 
 /// FUN_140109550 stages 64 source bytes, then writes four 16-byte chunks in
 /// destination order. The writer callback preserves native pointer/alias order.
-pub fn copy_native_64_to_four_destinations(
+pub fn copy_64_to_four_destinations(
     source: &[u8; 64],
     mut write_destination: impl FnMut(usize, &[u8; 16]),
 ) {
@@ -2427,7 +2427,7 @@ pub fn copy_native_64_to_four_destinations(
 
 /// FUN_1402ff110 reads four signed slot indices and copies a 64-byte payload
 /// to `(index * 16) + 16` for each slot, without interpreting its contents.
-pub fn write_native_depthpass_parameter_slots(
+pub fn write_depthpass_parameter_slots(
     context: &mut [u8],
     source: [u8; 64],
 ) -> Result<(), &'static str> {
@@ -2437,23 +2437,23 @@ pub fn write_native_depthpass_parameter_slots(
         let field = FIRST_INDEX + slot * 4;
         let bytes = context
             .get(field..field + 4)
-            .ok_or("native depth-pass context lacks parameter slot indices")?;
+            .ok_or("depth-pass context lacks parameter slot indices")?;
         let index = i32::from_le_bytes(bytes.try_into().unwrap());
         let start = i64::from(index)
             .checked_mul(16)
             .and_then(|offset| offset.checked_add(16))
-            .ok_or("native depth-pass parameter slot offset overflow")?;
+            .ok_or("depth-pass parameter slot offset overflow")?;
         let start = usize::try_from(start)
-            .map_err(|_| "native depth-pass parameter slot index is negative")?;
+            .map_err(|_| "depth-pass parameter slot index is negative")?;
         let end = start
             .checked_add(16)
-            .ok_or("native depth-pass parameter slot range overflow")?;
+            .ok_or("depth-pass parameter slot range overflow")?;
         if end > context.len() {
-            return Err("native depth-pass parameter slot exceeds context");
+            return Err("depth-pass parameter slot exceeds context");
         }
         *destination = start;
     }
-    copy_native_64_to_four_destinations(&source, |slot, chunk| {
+    copy_64_to_four_destinations(&source, |slot, chunk| {
         let start = destinations[slot];
         context[start..start + 16].copy_from_slice(chunk);
     });
@@ -2505,42 +2505,42 @@ pub fn build_zprepass_list(
 #[cfg(test)]
 mod zprepass_list_tests {
     use super::{
-        build_zprepass_list, copy_native_64_to_four_destinations, dispatch_native_depthpass_worker,
-        native_depthpass_index0_early_exit, write_native_depthpass_parameter_slots,
+        build_zprepass_list, copy_64_to_four_destinations, dispatch_depthpass_worker,
+        depthpass_index0_early_exit, write_depthpass_parameter_slots,
     };
 
     #[test]
-    fn native_depthpass_index0_flag_sets_completion_and_masks_return_pointer() {
+    fn depthpass_index0_flag_sets_completion_and_masks_return_pointer() {
         let mut view = vec![0; 0x3a35];
         view[0x3a34] = 0x10;
         let mut state = vec![0; 0x12ad5];
         let result =
-            native_depthpass_index0_early_exit(&view, &mut state, 0x1234_5678_9abc_def7).unwrap();
+            depthpass_index0_early_exit(&view, &mut state, 0x1234_5678_9abc_def7).unwrap();
         assert_eq!(result, Some(0x1234_5678_9abc_de00));
         assert_eq!(state[0x12ad4], 1);
     }
 
     #[test]
-    fn native_depthpass_index0_without_flag_continues_without_writing_state() {
+    fn depthpass_index0_without_flag_continues_without_writing_state() {
         let view = vec![0; 0x3a35];
         let mut state = vec![0; 0x12ad5];
         assert_eq!(
-            native_depthpass_index0_early_exit(&view, &mut state, 0xff),
+            depthpass_index0_early_exit(&view, &mut state, 0xff),
             Ok(None)
         );
         assert_eq!(state[0x12ad4], 0);
-        assert!(native_depthpass_index0_early_exit(&[], &mut state, 0).is_err());
+        assert!(depthpass_index0_early_exit(&[], &mut state, 0).is_err());
         let mut short_state = vec![0; 0x12ad4];
         let mut flagged_view = vec![0; 0x3a35];
         flagged_view[0x3a34] = 0x10;
-        assert!(native_depthpass_index0_early_exit(&flagged_view, &mut short_state, 0).is_err());
+        assert!(depthpass_index0_early_exit(&flagged_view, &mut short_state, 0).is_err());
     }
 
     #[test]
-    fn native_depthpass_payload_copy_preserves_bytes_and_destination_order() {
+    fn depthpass_payload_copy_preserves_bytes_and_destination_order() {
         let source: [u8; 64] = std::array::from_fn(|index| (index * 17) as u8);
         let mut chunks = [[0u8; 16]; 4];
-        copy_native_64_to_four_destinations(&source, |index, chunk| chunks[index] = *chunk);
+        copy_64_to_four_destinations(&source, |index, chunk| chunks[index] = *chunk);
         for index in 0..4 {
             assert_eq!(chunks[index], source[index * 16..index * 16 + 16]);
         }
@@ -2550,7 +2550,7 @@ mod zprepass_list_tests {
             let field = 0x123e8 + slot * 4;
             context[field..field + 4].copy_from_slice(&index.to_le_bytes());
         }
-        write_native_depthpass_parameter_slots(&mut context, source).unwrap();
+        write_depthpass_parameter_slots(&mut context, source).unwrap();
         for index in 0..4 {
             let start = (index + 1) * 16;
             assert_eq!(
@@ -2564,19 +2564,19 @@ mod zprepass_list_tests {
             let field = 0x123e8 + slot * 4;
             aliased[field..field + 4].copy_from_slice(&0i32.to_le_bytes());
         }
-        write_native_depthpass_parameter_slots(&mut aliased, source).unwrap();
+        write_depthpass_parameter_slots(&mut aliased, source).unwrap();
         assert_eq!(&aliased[16..32], &source[48..64]);
     }
 
     #[test]
-    fn native_depthpass_dispatch_reads_index_and_routes_original_context() {
+    fn depthpass_dispatch_reads_index_and_routes_context() {
         let make_context = |index: i32| {
             let mut bytes = vec![0; 0xfc];
             bytes[0xf8..0xfc].copy_from_slice(&index.to_le_bytes());
             bytes
         };
         assert_eq!(
-            dispatch_native_depthpass_worker(
+            dispatch_depthpass_worker(
                 &make_context(0),
                 || 10,
                 || 11,
@@ -2585,7 +2585,7 @@ mod zprepass_list_tests {
             Ok(10)
         );
         assert_eq!(
-            dispatch_native_depthpass_worker(
+            dispatch_depthpass_worker(
                 &make_context(1),
                 || 10,
                 || 11,
@@ -2596,7 +2596,7 @@ mod zprepass_list_tests {
         let context = make_context(2);
         let mut passed_same_context = false;
         assert_eq!(
-            dispatch_native_depthpass_worker(
+            dispatch_depthpass_worker(
                 &context,
                 || 10,
                 || 11,
@@ -2609,14 +2609,14 @@ mod zprepass_list_tests {
         );
         assert!(passed_same_context);
         assert_eq!(
-            dispatch_native_depthpass_worker(&make_context(-1), || 10, || 11, |_| 13),
+            dispatch_depthpass_worker(&make_context(-1), || 10, || 11, |_| 13),
             Ok(13)
         );
-        assert!(dispatch_native_depthpass_worker(&[0; 0xfb], || 10, || 11, |_| 13).is_err());
+        assert!(dispatch_depthpass_worker(&[0; 0xfb], || 10, || 11, |_| 13).is_err());
     }
 
     #[test]
-    fn matches_original_zprepass_list_cases() {
+    fn matches_zprepass_list_cases() {
         let data = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/zprepass_list_cases.txt"
@@ -2717,7 +2717,7 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn surface_key_comparator_preserves_native_field_precedence_and_nan() {
+    fn surface_key_comparator_preserves_field_precedence_and_nan() {
         let base = surface_key(1.0, 2.0);
         let mut other = base;
         other.flags[0] = 1;
@@ -2750,7 +2750,7 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_surface_key_search_and_lower_bound_preserve_duplicate_rules() {
+    fn surface_key_search_and_lower_bound_preserve_duplicate_rules() {
         let entries = [
             surface_key(0.0, 0.0),
             surface_key(1.0, 0.0),
@@ -2845,39 +2845,39 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_sorted_surface_insert_composes_search_lower_bound_and_pointer_growth() {
+    fn sorted_surface_insert_composes_search_lower_bound_and_pointer_growth() {
         let mut keys = Vec::new();
-        let mut pointers = super::NativeSurfacePointerList::with_capacity(1, 0).unwrap();
+        let mut pointers = super::SurfacePointerList::with_capacity(1, 0).unwrap();
         let key0 = surface_key(0.0, 0.0);
         let key1 = surface_key(1.0, 0.0);
         let key2 = surface_key(2.0, 0.0);
         let key_between = surface_key(1.5, 0.0);
 
         assert_eq!(
-            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key0, 10, false),
-            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 0 })
+            super::insert_sorted_surface_pointer(&mut keys, &mut pointers, key0, 10, false),
+            Ok(super::SurfaceSortedInsert::Inserted { index: 0 })
         );
         assert_eq!(
-            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 20, false),
-            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+            super::insert_sorted_surface_pointer(&mut keys, &mut pointers, key2, 20, false),
+            Ok(super::SurfaceSortedInsert::Inserted { index: 1 })
         );
         assert_eq!(
-            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key2, 99, false),
-            Ok(super::NativeSurfaceSortedInsert::Existing { index: 1 })
+            super::insert_sorted_surface_pointer(&mut keys, &mut pointers, key2, 99, false),
+            Ok(super::SurfaceSortedInsert::Existing { index: 1 })
         );
         assert_eq!(
-            super::insert_native_sorted_surface_pointer(
+            super::insert_sorted_surface_pointer(
                 &mut keys,
                 &mut pointers,
                 key_between,
                 15,
                 false
             ),
-            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+            Ok(super::SurfaceSortedInsert::Inserted { index: 1 })
         );
         assert_eq!(
-            super::insert_native_sorted_surface_pointer(&mut keys, &mut pointers, key1, 13, false),
-            Ok(super::NativeSurfaceSortedInsert::Inserted { index: 1 })
+            super::insert_sorted_surface_pointer(&mut keys, &mut pointers, key1, 13, false),
+            Ok(super::SurfaceSortedInsert::Inserted { index: 1 })
         );
 
         assert_eq!(
@@ -2890,7 +2890,7 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_prepass_hash_chain_uses_full_pointer_growth_and_front_order() {
+    fn prepass_hash_chain_uses_full_pointer_growth_and_front_order() {
         let nodes = [
             super::SurfaceHashChainNode {
                 next: Some(1),
@@ -2901,7 +2901,7 @@ mod zprepass_list_tests {
                 surface_pointer: 0x22,
             },
         ];
-        let mut output = super::NativeSurfacePointerList::with_capacity(0, 0).unwrap();
+        let mut output = super::SurfacePointerList::with_capacity(0, 0).unwrap();
         super::build_prepass_hash_chain_pointer_list_growing(&nodes, Some(0), &mut output, true)
             .unwrap();
         assert_eq!(output.values(), &[0x22, 0x11]);
@@ -2911,31 +2911,31 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_surface_iteration_matches_fun_14033b280_count_mode_and_filter() {
+    fn surface_iteration_matches_fun_14033b280_count_mode_and_filter() {
         assert_eq!(
-            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, -1),
+            super::surface_candidate_iteration_indices(0xaa00_0003, 0, -1),
             Ok((1, vec![0, 1, 2]))
         );
         assert_eq!(
-            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0x10, -1),
+            super::surface_candidate_iteration_indices(0xaa00_0003, 0x10, -1),
             Ok((0, vec![0, 1, 2]))
         );
         assert_eq!(
-            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 1),
+            super::surface_candidate_iteration_indices(0xaa00_0003, 0, 1),
             Ok((1, vec![1]))
         );
         assert_eq!(
-            super::native_surface_candidate_iteration_indices(0xaa00_0003, 0, 3),
+            super::surface_candidate_iteration_indices(0xaa00_0003, 0, 3),
             Ok((1, vec![]))
         );
         assert_eq!(
-            super::native_surface_candidate_iteration_indices(0xaa00_0001, 0, -1),
+            super::surface_candidate_iteration_indices(0xaa00_0001, 0, -1),
             Ok((0, vec![0]))
         );
     }
 
     #[test]
-    fn surface_container_visits_native_stride_order_mode_and_filter() {
+    fn surface_container_visits_stride_order_mode_and_filter() {
         let mut rows = vec![0; 3 * 0x80];
         for index in 0..3 {
             rows[index * 0x80] = index as u8;
@@ -2950,10 +2950,10 @@ mod zprepass_list_tests {
             (0xaa00_0000, 0, -1),
         ] {
             let (mode, expected_indices) =
-                super::native_surface_candidate_iteration_indices(packed_count, flags, filter)
+                super::surface_candidate_iteration_indices(packed_count, flags, filter)
                     .unwrap();
             let mut visited = Vec::new();
-            let count = super::visit_native_surface_container_rows(
+            let count = super::visit_surface_container_rows(
                 &rows,
                 packed_count,
                 flags,
@@ -2976,7 +2976,7 @@ mod zprepass_list_tests {
     fn surface_container_rejects_truncation_before_visiting_and_propagates_error() {
         let mut visits = 0;
         assert!(
-            super::visit_native_surface_container_rows(&[0; 0x7f], 1, 0, -1, |_, _, _| {
+            super::visit_surface_container_rows(&[0; 0x7f], 1, 0, -1, |_, _, _| {
                 visits += 1;
                 Ok(())
             },)
@@ -2984,7 +2984,7 @@ mod zprepass_list_tests {
         );
         assert_eq!(visits, 0);
         let error =
-            super::visit_native_surface_container_rows(&[0; 3 * 0x80], 3, 0, -1, |_, index, _| {
+            super::visit_surface_container_rows(&[0; 3 * 0x80], 3, 0, -1, |_, index, _| {
                 visits += 1;
                 if index == 1 {
                     Err("callback error".to_owned())
@@ -3025,7 +3025,7 @@ mod zprepass_list_tests {
             let near = next();
             for unit in [false, true] {
                 assert_eq!(
-                    super::native_transformed_aabb_clip_cull_bounds(
+                    super::transformed_aabb_clip_cull_bounds(
                         &matrix, minimum, maximum, near, unit
                     ),
                     super::aabb_clip_cull_scalar(&matrix, minimum, maximum, near, unit)
@@ -3035,77 +3035,77 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn transformed_aabb_clip_matches_original_plane_mask_and_cull_return() {
+    fn transformed_aabb_clip_matches_plane_mask_and_cull_return() {
         let identity = [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 0.1], [0.5, 0.5, 0.9]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 0.1], [0.5, 0.5, 0.9]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0,
                 output_byte: 0,
                 culled: false
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [-3.0, 0.0, 0.1], [-2.0, 1.0, 0.9]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [-3.0, 0.0, 0.1], [-2.0, 1.0, 0.9]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x01,
                 output_byte: 0x01,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [2.0, 0.0, 0.1], [3.0, 1.0, 0.9]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [2.0, 0.0, 0.1], [3.0, 1.0, 0.9]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x02,
                 output_byte: 0x02,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [0.0, -3.0, 0.1], [1.0, -2.0, 0.9]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [0.0, -3.0, 0.1], [1.0, -2.0, 0.9]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x04,
                 output_byte: 0x04,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [0.0, 2.0, 0.1], [1.0, 3.0, 0.9]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [0.0, 2.0, 0.1], [1.0, 3.0, 0.9]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x08,
                 output_byte: 0x08,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(
+            super::transformed_aabb_clip_cull(
                 &identity,
                 [-0.5, -0.5, -2.0],
                 [0.5, 0.5, -1.0]
             ),
-            super::NativeAabbClipCullResult {
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x10,
                 output_byte: 0x10,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 2.0], [0.5, 0.5, 3.0]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [-0.5, -0.5, 2.0], [0.5, 0.5, 3.0]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x20,
                 output_byte: 0x20,
                 culled: true
             },
         );
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(
+            super::transformed_aabb_clip_cull(
                 &identity,
                 [-1.0, -0.5, 0.1],
                 [-1.0, 0.5, 0.9]
             ),
-            super::NativeAabbClipCullResult {
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x01,
                 output_byte: 0x01,
                 culled: true
@@ -3113,8 +3113,8 @@ mod zprepass_list_tests {
         );
         let nan = f32::NAN;
         assert_eq!(
-            super::native_transformed_aabb_clip_cull(&identity, [nan; 3], [nan; 3]),
-            super::NativeAabbClipCullResult {
+            super::transformed_aabb_clip_cull(&identity, [nan; 3], [nan; 3]),
+            super::AabbClipCullResult {
                 outside_plane_mask: 0x3f,
                 output_byte: 0x3f,
                 culled: true
@@ -3123,8 +3123,8 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_surface_candidate_category_key_matches_original_gates() {
-        let mut gates = super::NativeSurfaceCandidateBranchGates {
+    fn surface_candidate_category_key_matches_gates() {
+        let mut gates = super::SurfaceCandidateBranchGates {
             material_pointer_present: true,
             surface_pointer_30_present: true,
             optional_pointer_78_value: Some(1),
@@ -3137,7 +3137,7 @@ mod zprepass_list_tests {
             candidate_parameter_lookup_present: true,
         };
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            super::surface_candidate_category_key(&gates, 0x20, 1),
             Some(9)
         );
         let identity = [
@@ -3146,7 +3146,7 @@ mod zprepass_list_tests {
         gates.mode = 1;
         gates.helper_140109dd0_returns_nonzero = false;
         assert_eq!(
-            super::native_surface_candidate_category_key_with_bounds(
+            super::surface_candidate_category_key_with_bounds(
                 &gates,
                 0x20,
                 1,
@@ -3157,7 +3157,7 @@ mod zprepass_list_tests {
             Some(9)
         );
         assert_eq!(
-            super::native_surface_candidate_category_key_with_bounds(
+            super::surface_candidate_category_key_with_bounds(
                 &gates,
                 0x20,
                 1,
@@ -3169,44 +3169,44 @@ mod zprepass_list_tests {
         );
         gates.mode = 0;
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0, u32::MAX),
+            super::surface_candidate_category_key(&gates, 0, u32::MAX),
             None
         );
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 0),
+            super::surface_candidate_category_key(&gates, 0x20, 0),
             None
         );
         gates.optional_pointer_78_value = Some(0);
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            super::surface_candidate_category_key(&gates, 0x20, 1),
             None
         );
         gates.optional_pointer_78_value = None;
         gates.material_flags_4b = 4;
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            super::surface_candidate_category_key(&gates, 0x20, 1),
             None
         );
         gates.material_flags_4b = 0;
         gates.mode = 1;
         gates.helper_140109dd0_returns_nonzero = true;
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            super::surface_candidate_category_key(&gates, 0x20, 1),
             None
         );
         gates.surface_pointer_40_present = true;
         assert_eq!(
-            super::native_surface_candidate_category_key(&gates, 0x20, 1),
+            super::surface_candidate_category_key(&gates, 0x20, 1),
             Some(9)
         );
     }
 
     #[test]
-    fn native_prepass_candidate_gate_row_hash_bucket_and_front_insert_compose() {
+    fn prepass_candidate_gate_row_hash_bucket_and_front_insert_compose() {
         let identity = [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
-        let gates = super::NativeSurfaceCandidateBranchGates {
+        let gates = super::SurfaceCandidateBranchGates {
             material_pointer_present: true,
             surface_pointer_30_present: true,
             optional_pointer_78_value: Some(1),
@@ -3221,8 +3221,8 @@ mod zprepass_list_tests {
         let input = |pointer, material_flags_4a, feature_bits, accepted| {
             let mut input_gates = gates;
             input_gates.candidate_parameter_lookup_present = accepted;
-            super::NativeSurfaceCandidateInput {
-                branch_fields: super::NativeSurfaceCandidateBranchFields {
+            super::SurfaceCandidateInput {
+                branch_fields: super::SurfaceCandidateBranchFields {
                     owner_byte_1c31: 0,
                     global_byte_77b0: 0,
                     context_pointer: 0x11,
@@ -3241,10 +3241,10 @@ mod zprepass_list_tests {
                 bounds: [[-0.5; 3], [0.5; 3]],
             }
         };
-        let mut rows = super::NativeSurfaceCandidateRows::with_capacity(0, 0).unwrap();
-        let mut hash = super::NativeSurfaceHashIndex::lazy(4, 0, 0).unwrap();
+        let mut rows = super::SurfaceCandidateRows::with_capacity(0, 0).unwrap();
+        let mut hash = super::SurfaceHashIndex::lazy(4, 0, 0).unwrap();
         assert_eq!(
-            super::append_native_surface_candidate_if_eligible(
+            super::append_surface_candidate_if_eligible(
                 &input(0x0a, 0x20, 1, true),
                 &mut rows,
                 &mut hash,
@@ -3253,7 +3253,7 @@ mod zprepass_list_tests {
             Ok(Some(0))
         );
         assert_eq!(
-            super::append_native_surface_candidate_if_eligible(
+            super::append_surface_candidate_if_eligible(
                 &input(0x0b, 0x40, 2, true),
                 &mut rows,
                 &mut hash,
@@ -3262,7 +3262,7 @@ mod zprepass_list_tests {
             Ok(Some(1))
         );
         assert_eq!(
-            super::append_native_surface_candidate_if_eligible(
+            super::append_surface_candidate_if_eligible(
                 &input(0x0c, 0x20, 1, true),
                 &mut rows,
                 &mut hash,
@@ -3271,7 +3271,7 @@ mod zprepass_list_tests {
             Ok(Some(2))
         );
         assert_eq!(
-            super::append_native_surface_candidate_if_eligible(
+            super::append_surface_candidate_if_eligible(
                 &input(0x0d, 0x20, 1, false),
                 &mut rows,
                 &mut hash,
@@ -3280,7 +3280,7 @@ mod zprepass_list_tests {
             Ok(None)
         );
         assert_eq!(
-            super::append_native_surface_candidate_if_eligible(
+            super::append_surface_candidate_if_eligible(
                 &input(0x0e, 0xa0, 16, true),
                 &mut rows,
                 &mut hash,
@@ -3292,24 +3292,24 @@ mod zprepass_list_tests {
         // Categories 9 and 13 collide in the four-bucket HashIndex. The
         // insertion callback reverses the bucket walk but does not compare keys.
         assert_eq!(
-            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 9),
+            super::prepass_surface_pointers_for_bucket(&rows, &hash, 9),
             Ok(vec![0x0a, 0x0c, 0x0e])
         );
         assert_eq!(
-            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 10),
+            super::prepass_surface_pointers_for_bucket(&rows, &hash, 10),
             Ok(vec![0x0b])
         );
         assert_eq!(
-            super::native_prepass_surface_pointers_for_bucket(&rows, &hash, 11),
+            super::prepass_surface_pointers_for_bucket(&rows, &hash, 11),
             Ok(Vec::new())
         );
     }
 
     #[test]
-    fn native_surface_candidate_hash_index_matches_lazy_reset_growth_and_chain_order() {
-        let mut rows = super::NativeSurfaceCandidateRows::with_capacity(1, 0).unwrap();
-        let mut hash = super::NativeSurfaceHashIndex::lazy(8, 1, 0).unwrap();
-        let row = super::NativeSurfaceCandidateRow::default();
+    fn surface_candidate_hash_index_matches_lazy_reset_growth_and_chain_order() {
+        let mut rows = super::SurfaceCandidateRows::with_capacity(1, 0).unwrap();
+        let mut hash = super::SurfaceHashIndex::lazy(8, 1, 0).unwrap();
+        let row = super::SurfaceCandidateRow::default();
         assert_eq!(
             super::append_surface_candidate_to_hash(&mut rows, &mut hash, 11, row, false),
             Ok(0)
@@ -3338,8 +3338,8 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_surface_candidate_payload_and_row_match_original_offsets() {
-        let sort = super::NativeSurfaceCandidateSortFields {
+    fn surface_candidate_payload_and_row_match_offsets() {
+        let sort = super::SurfaceCandidateSortFields {
             candidate_material_pointer: 0x101,
             owner_sort_value_1bb0: 0x202,
             surface_resource_value_00: 0x303,
@@ -3354,7 +3354,7 @@ mod zprepass_list_tests {
             surface_type_count: 1,
             owner_byte_1c31: 0x06,
         };
-        let payload = super::native_surface_candidate_sort_payload(&sort);
+        let payload = super::surface_candidate_sort_payload(&sort);
         assert_eq!(u64::from_le_bytes(payload[0..8].try_into().unwrap()), 0x101);
         assert_eq!(
             u64::from_le_bytes(payload[8..16].try_into().unwrap()),
@@ -3388,8 +3388,8 @@ mod zprepass_list_tests {
             0x7f7fffff
         );
 
-        let row = super::native_surface_candidate_branch_row(
-            &super::NativeSurfaceCandidateBranchFields {
+        let row = super::surface_candidate_branch_row(
+            &super::SurfaceCandidateBranchFields {
                 owner_byte_1c31: 0x06,
                 global_byte_77b0: 0x80,
                 context_pointer: 0x505,
@@ -3436,11 +3436,11 @@ mod zprepass_list_tests {
 
         let mut gated = sort;
         gated.surface_state_pointer_40 = 1;
-        assert_eq!(super::native_surface_candidate_sort_payload(&gated)[48], 0);
+        assert_eq!(super::surface_candidate_sort_payload(&gated)[48], 0);
     }
 
     #[test]
-    fn preallocated_surface_pointer_insert_matches_native_clamp_shift_and_count() {
+    fn preallocated_surface_pointer_insert_matches_clamp_shift_and_count() {
         let mut slots = [11, 22, 33, 0];
         let mut count = 0xa500_0003;
         assert_eq!(
@@ -3451,7 +3451,7 @@ mod zprepass_list_tests {
         assert_eq!(count, 0xa500_0004);
         assert_eq!(
             super::insert_preallocated_surface_pointer(&mut slots, &mut count, 4, -7, 88),
-            Err("native surface pointer vector growth is required".to_owned())
+            Err("surface pointer vector growth is required".to_owned())
         );
 
         let mut empty = [0; 2];
@@ -3502,13 +3502,13 @@ mod zprepass_list_tests {
         let mut full_count = 2;
         assert_eq!(
             super::insert_preallocated_surface_pointer(&mut full, &mut full_count, 2, 100, 3),
-            Err("native surface pointer vector growth is required".to_owned())
+            Err("surface pointer vector growth is required".to_owned())
         );
     }
 
     #[test]
-    fn native_surface_pointer_list_ports_allocator_modes_growth_and_capacity_reset() {
-        let mut ordinary = super::NativeSurfacePointerList::with_capacity(1, 0).unwrap();
+    fn surface_pointer_list_ports_allocator_modes_growth_and_capacity_reset() {
+        let mut ordinary = super::SurfacePointerList::with_capacity(1, 0).unwrap();
         assert_eq!(ordinary.insert(0, 10, false), Ok(0));
         assert_eq!(ordinary.insert(1, 20, false), Ok(1));
         assert_eq!(ordinary.capacity(), 2);
@@ -3517,27 +3517,27 @@ mod zprepass_list_tests {
         assert_eq!(ordinary.values(), &[5, 10, 20]);
         assert_eq!(ordinary.capacity(), 3);
 
-        let mut specialized = super::NativeSurfacePointerList::with_capacity(1, 0xc0).unwrap();
+        let mut specialized = super::SurfacePointerList::with_capacity(1, 0xc0).unwrap();
         assert_eq!(specialized.insert(0, 30, true), Ok(0));
         assert_eq!(specialized.insert(1, 40, true), Ok(1));
         assert_eq!(specialized.values(), &[30, 40]);
         assert_eq!(specialized.packed_header(), (2, (2 << 8) | 0xc0));
 
-        let mut specialized_oom = super::NativeSurfacePointerList::with_capacity(1, 0xc0).unwrap();
+        let mut specialized_oom = super::SurfacePointerList::with_capacity(1, 0xc0).unwrap();
         specialized_oom.insert(0, 45, true).unwrap();
         assert_eq!(specialized_oom.set_capacity(2, false), Ok(true));
         assert_eq!(specialized_oom.packed_header(), (1, (2 << 8) | 0xc0));
         assert_eq!(specialized_oom.values(), &[45]);
         assert!(specialized_oom.insert(1, 46, true).is_err());
 
-        let mut denied = super::NativeSurfacePointerList::with_capacity(1, 0x40).unwrap();
+        let mut denied = super::SurfacePointerList::with_capacity(1, 0x40).unwrap();
         assert_eq!(denied.insert(0, 50, false), Ok(0));
         let before = denied.packed_header();
         assert!(denied.insert(1, 60, false).is_err());
         assert_eq!(denied.packed_header(), before);
         assert_eq!(denied.values(), &[50]);
 
-        let mut failure = super::NativeSurfacePointerList::with_capacity(2, 0).unwrap();
+        let mut failure = super::SurfacePointerList::with_capacity(2, 0).unwrap();
         failure.insert(0, 70, false).unwrap();
         let before = failure.packed_header();
         assert_eq!(failure.set_capacity(4, false), Ok(false));
@@ -3545,12 +3545,12 @@ mod zprepass_list_tests {
         assert_eq!(failure.count(), 1);
         assert!(failure.values().is_empty());
 
-        let mut retained = super::NativeSurfacePointerList::with_capacity(2, 0x40).unwrap();
+        let mut retained = super::SurfacePointerList::with_capacity(2, 0x40).unwrap();
         retained.insert(0, 80, false).unwrap();
         assert_eq!(retained.set_capacity(0, true), Ok(true));
         assert_eq!(retained.packed_header(), (0, (2 << 8) | 0x40));
         assert!(retained.values().is_empty());
-        let mut released = super::NativeSurfacePointerList::with_capacity(2, 0).unwrap();
+        let mut released = super::SurfacePointerList::with_capacity(2, 0).unwrap();
         released.insert(0, 90, false).unwrap();
         assert_eq!(released.set_capacity(0, true), Ok(true));
         assert_eq!(released.packed_header(), (0, 0));
@@ -3558,18 +3558,18 @@ mod zprepass_list_tests {
 
         let mut slots = vec![11, 22];
         let mut capacity_word = (2 << 8) | 0x55;
-        super::reallocate_native_surface_pointers(&mut slots, 2, &mut capacity_word, 4).unwrap();
+        super::reallocate_surface_pointers(&mut slots, 2, &mut capacity_word, 4).unwrap();
         assert_eq!(slots, [11, 22, 0, 0]);
         assert_eq!(capacity_word, (4 << 8) | 0x3f);
         assert_eq!(
-            super::allocate_zeroed_native_surface_pointers(3).unwrap(),
+            super::allocate_zeroed_surface_pointers(3).unwrap(),
             [0, 0, 0]
         );
     }
 
     #[test]
-    fn native_surface_batch_rows_preserve_0x38_bytes_across_capacity_modes() {
-        let mut ordinary = super::NativeSurfaceBatchRowList::with_capacity(1, 0).unwrap();
+    fn surface_batch_rows_preserve_0x38_bytes_across_capacity_modes() {
+        let mut ordinary = super::SurfaceBatchRowList::with_capacity(1, 0).unwrap();
         let first = ordinary.push_zeroed_row(false, true).unwrap();
         assert_eq!(first, 0);
         ordinary.row_mut(first).unwrap()[0] = 0x1234_5678;
@@ -3580,9 +3580,9 @@ mod zprepass_list_tests {
         assert_eq!(ordinary.rows()[0][0], 0x1234_5678);
         assert_eq!(ordinary.rows()[0][13], 0x9abc_def0);
         assert_eq!(ordinary.rows()[1], [0; 14]);
-        assert_eq!(std::mem::size_of::<super::NativeSurfaceBatchRow>(), 0x38);
+        assert_eq!(std::mem::size_of::<super::SurfaceBatchRow>(), 0x38);
 
-        let mut specialized = super::NativeSurfaceBatchRowList::with_capacity(1, 0xc0).unwrap();
+        let mut specialized = super::SurfaceBatchRowList::with_capacity(1, 0xc0).unwrap();
         let first = specialized.push_zeroed_row(true, true).unwrap();
         specialized.row_mut(first).unwrap()[6] = 0xfeed_beef;
         let second = specialized.push_zeroed_row(true, true).unwrap();
@@ -3591,13 +3591,13 @@ mod zprepass_list_tests {
         assert_eq!(specialized.rows()[0][6], 0xfeed_beef);
         assert_eq!(specialized.rows()[1], [0; 14]);
 
-        let mut specialized_oom = super::NativeSurfaceBatchRowList::with_capacity(1, 0xc0).unwrap();
+        let mut specialized_oom = super::SurfaceBatchRowList::with_capacity(1, 0xc0).unwrap();
         specialized_oom.push_zeroed_row(true, true).unwrap();
         assert_eq!(specialized_oom.set_capacity(2, false), Ok(true));
         assert_eq!(specialized_oom.packed_header(), (1, (2 << 8) | 0xc0));
         assert!(specialized_oom.push_zeroed_row(true, true).is_err());
 
-        let mut ordinary_oom = super::NativeSurfaceBatchRowList::with_capacity(1, 0).unwrap();
+        let mut ordinary_oom = super::SurfaceBatchRowList::with_capacity(1, 0).unwrap();
         ordinary_oom.push_zeroed_row(false, true).unwrap();
         let before = ordinary_oom.packed_header();
         assert_eq!(ordinary_oom.set_capacity(2, false), Ok(false));
@@ -3605,7 +3605,7 @@ mod zprepass_list_tests {
         assert_eq!(ordinary_oom.count(), 1);
         assert!(ordinary_oom.rows().is_empty());
 
-        let mut denied = super::NativeSurfaceBatchRowList::with_capacity(1, 0x40).unwrap();
+        let mut denied = super::SurfaceBatchRowList::with_capacity(1, 0x40).unwrap();
         denied.push_zeroed_row(false, true).unwrap();
         assert!(denied.push_zeroed_row(false, true).is_err());
         assert_eq!(denied.set_capacity(0, true), Ok(true));
@@ -3720,8 +3720,8 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_candidate_row_initializer_matches_observed_fields() {
-        let row = super::NativeSurfaceCandidateRow::default();
+    fn candidate_row_initializer_matches_observed_fields() {
+        let row = super::SurfaceCandidateRow::default();
         assert_eq!(row.bytes[0], 0);
         assert_eq!(row.bytes[1], 0xff);
         assert_eq!(
@@ -3740,11 +3740,11 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_candidate_rows_append_and_preserve_data_across_growth() {
-        let mut rows = super::NativeSurfaceCandidateRows::with_capacity(1, 0x3f).unwrap();
-        let mut first = super::NativeSurfaceCandidateRow::default();
+    fn candidate_rows_append_and_preserve_data_across_growth() {
+        let mut rows = super::SurfaceCandidateRows::with_capacity(1, 0x3f).unwrap();
+        let mut first = super::SurfaceCandidateRow::default();
         first.bytes[8..16].copy_from_slice(&0x1122_3344_5566_7788_u64.to_le_bytes());
-        let mut second = super::NativeSurfaceCandidateRow::default();
+        let mut second = super::SurfaceCandidateRow::default();
         second.bytes[8..16].copy_from_slice(&0x8877_6655_4433_2211_u64.to_le_bytes());
         assert_eq!(rows.append(first, false), Ok(0));
         assert_eq!(rows.append(second, false), Ok(1));
@@ -3752,7 +3752,7 @@ mod zprepass_list_tests {
         assert_eq!(rows.rows()[0].bytes[8..16], first.bytes[8..16]);
         assert_eq!(rows.rows()[1].bytes[8..16], second.bytes[8..16]);
 
-        let mut mode_three = super::NativeSurfaceCandidateRows::with_capacity(1, 0xc0).unwrap();
+        let mut mode_three = super::SurfaceCandidateRows::with_capacity(1, 0xc0).unwrap();
         assert_eq!(mode_three.append(first, false), Ok(0));
         assert_eq!(mode_three.append(second, false), Ok(1));
         assert_eq!(mode_three.packed_header(), (2, (2 << 8) | 0x3f));
@@ -3760,22 +3760,22 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn native_candidate_reallocation_copies_only_live_prefix() {
+    fn candidate_reallocation_copies_only_live_prefix() {
         let mut rows = vec![
-            super::NativeSurfaceCandidateRow::default(),
-            super::NativeSurfaceCandidateRow::default(),
+            super::SurfaceCandidateRow::default(),
+            super::SurfaceCandidateRow::default(),
         ];
         rows[0].bytes[2] = 0x11;
         rows[1].bytes[2] = 0x22;
         super::reallocate_surface_candidate_rows(&mut rows, 1, 3).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].bytes[2], 0x11);
-        assert_eq!(rows[1], super::NativeSurfaceCandidateRow::default());
-        assert_eq!(rows[2], super::NativeSurfaceCandidateRow::default());
+        assert_eq!(rows[1], super::SurfaceCandidateRow::default());
+        assert_eq!(rows[2], super::SurfaceCandidateRow::default());
     }
 
     #[test]
-    fn surface_compare_1_returns_observed_native_index() {
+    fn surface_compare_1_returns_observed_index() {
         assert_eq!(super::surface_compare_1_index_result(), 0);
     }
 
@@ -3832,7 +3832,7 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn static_surface_selector_preserves_native_flag_precedence() {
+    fn static_surface_selector_preserves_flag_precedence() {
         let bands = [0.0; 10];
         let select = |state: Vec<u8>| super::static_surface_program_selector(&state, &bands);
         assert_eq!(select(selector_state(0, 0, 0, 1, 0.0, 0.0)), Ok(0x25));
@@ -3856,7 +3856,7 @@ mod zprepass_list_tests {
     }
 
     #[test]
-    fn static_surface_selector_uses_native_threshold_order_and_nan_comparisons() {
+    fn static_surface_selector_uses_threshold_order_and_nan_comparisons() {
         let state = selector_state(0, 0, 0, 0, 1.0, 2.0);
         let ordered = [
             (1, 0x26),
@@ -3973,11 +3973,11 @@ mod zprepass_list_tests {
         let mut parameter_object = [0; 0x18];
         parameter_object[0x10..0x18].copy_from_slice(&0x1000u64.to_le_bytes());
         assert_eq!(
-            super::native_surface_parameter_float_lookup(&parameter_object, 0xfeed),
+            super::surface_parameter_float_lookup(&parameter_object, 0xfeed),
             Ok((0x12d8, 0xfeed, 0)),
         );
         assert!(
-            super::native_surface_parameter_float_lookup(&parameter_object[..0x17], 0xfeed)
+            super::surface_parameter_float_lookup(&parameter_object[..0x17], 0xfeed)
                 .is_err()
         );
     }
@@ -4039,10 +4039,10 @@ mod owner_flags;
 pub use owner_flags::{
     collect_local_model_casters, mark_model_owner_dirty, model_caster_sort_distance,
     model_is_dynamic_caster, model_owner_bounds_flags, model_shadow_radial_sort_key,
-    native_point_clip_mask, prepare_model_caster_info, set_actor_dynamic_caster,
+    point_clip_mask, prepare_model_caster_info, set_actor_dynamic_caster,
     set_actors_dynamic_caster_for_view, set_model_dynamic_caster_flag,
     set_model_dynamic_caster_with_children, sort_model_shadow_records, ActorCasterAccess,
-    LocalModelCasterRecord, LocalShadowCacheControls, ModelOwnerDirtyQueues, NativeModelCasterInfo,
+    LocalModelCasterRecord, LocalShadowCacheControls, ModelOwnerDirtyQueues, ModelCasterInfo,
     INITIAL_MODEL_CONTEXT_FLAGS_18BC,
 };
 
@@ -4287,7 +4287,7 @@ impl ParameterBlock {
         if self.entries.len() > (self.value_capacity_word >> 8) as usize
             || self.entries.len() > (self.id_capacity_word >> 8) as usize
         {
-            return Err("native parameter-array growth is not implemented".into());
+            return Err("parameter-array growth is not implemented".into());
         }
         Ok(())
     }
@@ -4303,7 +4303,7 @@ impl ParameterBlock {
     pub fn deduplicate(&mut self) -> Result<(), String> {
         self.validate_preallocated()?;
         if self.entries.len() > 512 {
-            return Err("native duplicate marker array is limited to 512 entries".into());
+            return Err("duplicate marker array is limited to 512 entries".into());
         }
         let mut removed = [false; 512];
         for index in (0..self.entries.len()).rev() {
@@ -4348,11 +4348,11 @@ impl ParameterBlock {
     pub fn write_entries_to_slots(&self, slots: &mut [[u32; 4]]) -> Result<(), String> {
         let count = (self.value_count_word & 0x00ff_ffff) as usize;
         if count > self.entries.len() {
-            return Err("native parameter value count exceeds initialized entries".into());
+            return Err("parameter value count exceeds initialized entries".into());
         }
         for &(id, _) in &self.entries[..count] {
             if usize::from(id) + 1 >= slots.len() {
-                return Err("native parameter ID exceeds destination slots".into());
+                return Err("parameter ID exceeds destination slots".into());
             }
         }
         for &(id, value) in &self.entries[..count] {
@@ -4362,61 +4362,61 @@ impl ParameterBlock {
     }
 }
 
-fn native_parameter_slot_index(id: i32, slot_count: usize) -> Result<usize, String> {
+fn parameter_slot_index(id: i32, slot_count: usize) -> Result<usize, String> {
     let index = usize::try_from(i64::from(id) + 1)
-        .map_err(|_| "native parameter ID selects a negative slot".to_owned())?;
+        .map_err(|_| "parameter ID selects a negative slot".to_owned())?;
     if index >= slot_count {
-        return Err("native parameter ID exceeds destination slots".into());
+        return Err("parameter ID exceeds destination slots".into());
     }
     Ok(index)
 }
 
 /// FUN_140310720: zero the first qword and write an exact second qword.
-pub fn write_native_parameter_u64(
+pub fn write_parameter_u64(
     slots: &mut [[u32; 4]],
     id: i32,
     value: u64,
 ) -> Result<(), String> {
-    let slot = native_parameter_slot_index(id, slots.len())?;
+    let slot = parameter_slot_index(id, slots.len())?;
     slots[slot] = [0, 0, value as u32, (value >> 32) as u32];
     Ok(())
 }
 
 /// FUN_140310780: replicate the exact 32-bit word to all four lanes.
-pub fn write_native_parameter_repeated_u32(
+pub fn write_parameter_repeated_u32(
     slots: &mut [[u32; 4]],
     id: i32,
     value: u32,
 ) -> Result<(), String> {
-    let slot = native_parameter_slot_index(id, slots.len())?;
+    let slot = parameter_slot_index(id, slots.len())?;
     slots[slot] = [value; 4];
     Ok(())
 }
 
 /// FUN_140310a80: copy two raw qwords into the parameter slot at ID + 1.
-pub fn write_native_parameter_4_words(
+pub fn write_parameter_4_words(
     slots: &mut [[u32; 4]],
     id: i32,
     value: [u32; 4],
 ) -> Result<(), String> {
-    let slot = native_parameter_slot_index(id, slots.len())?;
+    let slot = parameter_slot_index(id, slots.len())?;
     slots[slot] = value;
     Ok(())
 }
 
 /// FUN_140310920: zero-extend the word into the first qword and clear the second.
-pub fn write_native_parameter_u32(
+pub fn write_parameter_u32(
     slots: &mut [[u32; 4]],
     id: i32,
     value: u32,
 ) -> Result<(), String> {
-    let slot = native_parameter_slot_index(id, slots.len())?;
+    let slot = parameter_slot_index(id, slots.len())?;
     slots[slot] = [value, 0, 0, 0];
     Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeOptionalParameterValues {
+pub struct OptionalParameterValues {
     pub gate_at_0x38: u64,
     pub indirect_gate_at_0x78: u64,
     pub word_at_0x90: u32,
@@ -4426,20 +4426,20 @@ pub struct NativeOptionalParameterValues {
 
 /// FUN_1402afbf0's conditional writes, given the original pointer-loaded values
 /// and the three runtime parameter IDs in native call order.
-pub fn write_native_optional_parameter_values(
+pub fn write_optional_parameter_values(
     slots: &mut [[u32; 4]],
     ids: [i32; 3],
-    values: NativeOptionalParameterValues,
+    values: OptionalParameterValues,
 ) -> Result<bool, String> {
     if values.gate_at_0x38 != 0 || values.indirect_gate_at_0x78 != 0 {
         return Ok(false);
     }
     for id in ids {
-        native_parameter_slot_index(id, slots.len())?;
+        parameter_slot_index(id, slots.len())?;
     }
-    write_native_parameter_u32(slots, ids[0], values.word_at_0x90)?;
-    write_native_parameter_4_words(slots, ids[1], values.words_at_0x94)?;
-    write_native_parameter_u32(slots, ids[2], values.word_at_0x8c)?;
+    write_parameter_u32(slots, ids[0], values.word_at_0x90)?;
+    write_parameter_4_words(slots, ids[1], values.words_at_0x94)?;
+    write_parameter_u32(slots, ids[2], values.word_at_0x8c)?;
     Ok(true)
 }
 

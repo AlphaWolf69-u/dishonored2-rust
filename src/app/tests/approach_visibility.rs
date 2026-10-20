@@ -5,7 +5,7 @@ use super::*;
 fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     let base = crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(&base).unwrap();
-    let mut library = shader_cache::NativeProgramLibrary::open(
+    let mut library = shader_cache::ProgramLibrary::open(
         &base,
         shader_cache::ShaderCacheBackend::Pc,
         &catalog,
@@ -61,7 +61,7 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         *spellings.entry(main.to_owned()).or_default() += 1;
         let resolved = material_float_vectors(&mut library, &catalog, &bytes, ["zbias"]).unwrap();
         let overrides = entities::material_float_parameters(
-            &entities::native_declaration_text(&bytes),
+            &entities::declaration_text(&bytes),
             |name| name == "zbias",
         )
         .unwrap();
@@ -79,7 +79,7 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     // Exercise the actual loader, not only the shared Uniform decoder: these
     // assets mix arkdecal/arkDecal spellings. The old loader lost the former's
     // bias even though decoding the Uniform on its own already worked.
-    let mut native_programs = Ok(library);
+    let mut programs = Ok(library);
     let mut resolver = MaterialResolver {
         material_exposure: default(),
         anisotropic_sampler_image: default(),
@@ -87,15 +87,15 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         vista_sun: [Vec4::ZERO; 2],
         environment: None,
         catalog: Some(&catalog),
-        native_programs: Some(&mut native_programs),
+        programs: Some(&mut programs),
         probe_materials: &mut Assets::default(),
         decal_materials: &mut Assets::default(),
         probe_sh_buffers: &mut Assets::default(),
         probe_sh_buffer: default(),
         vertex_probe_buffer: default(),
-        native_shadow_buffer: default(),
-        native_local_shadow_buffer: default(),
-        native_shadow_map: default(),
+        shadow_buffer: default(),
+        local_shadow_buffer: default(),
+        shadow_map: default(),
         probe_sh_records: default(),
         probes: None,
         cache: default(),
@@ -173,7 +173,7 @@ fn short_range_lights_keep_finite_clusters_when_approached() {
         .collect();
     for distance in [6.0, 4.0, 2.0, 0.5, 2.0, 6.0] {
         let pose = Transform::from_xyz(0.0, 0.0, distance);
-        let mut projection = camera_projection::NativeGameProjection::new(110.0, 0.01, 7000.0);
+        let mut projection = camera_projection::GameProjection::new(110.0, 0.01, 7000.0);
         projection.update(1920.0, 1080.0);
         let clip = projection.get_clip_from_view();
         let frustum = Frustum(
@@ -233,7 +233,7 @@ fn saved_dust_approach_visibility_queries() {
         query_data: tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap(),
         bytes,
         tree,
-        query_job_count: tome::ORIGINAL_DEFAULT_QUERY_JOB_COUNT,
+        query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     };
     let bwm = world_mesh::parse(&level.read_world(&catalog).unwrap()).unwrap();
@@ -282,7 +282,7 @@ fn saved_dust_approach_visibility_queries() {
         let pose = game_pose_from_view_transform(&transform);
         let fov = f8_reference_fov(&report).unwrap();
         let rows =
-            tome::original_world_visibility_query_matrix(fov, 1920, 1080, 1.0, pose, 0.01, 7000.0)
+            tome::world_visibility_query_matrix(fov, 1920, 1080, 1.0, pose, 0.01, 7000.0)
                 .unwrap();
         let input = tome::OrdinaryDirectQueryInput {
             camera_point: [pose[0][3], pose[1][3], pose[2][3]],
@@ -293,17 +293,17 @@ fn saved_dust_approach_visibility_queries() {
             object_imprecision: settings.umbra_distance_imprecision,
             minimum_area_metric: 25.0 / (1920.0 * 1080.0),
             global_distance_threshold: settings.umbra_accurate_threshold,
-            object_distance_scale: native_view_distance_scale(
-                &Projection::custom(camera_projection::NativeGameProjection::new(
+            object_distance_scale: view_distance_scale(
+                &Projection::custom(camera_projection::GameProjection::new(
                     fov, 0.01, 7000.0,
                 )),
                 UVec2::new(1920, 1080),
-                Some(&NativeViewSettings(Ok(settings.clone()))),
+                Some(&ViewSettings(Ok(settings.clone()))),
             )
             .unwrap(),
             winding_flip: tome::query_matrix_winding_flip(rows),
             gate_states: Some(&world.gate_states),
-            output_capacity: tome::ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
+            output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
         };
         let jobs = run_tome_render_jobs(&world, &input);
         let output = tome::merge_render_query_outputs(&jobs).unwrap().unwrap();
@@ -329,7 +329,7 @@ fn saved_dust_approach_visibility_queries() {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
         );
-        let mut projection = camera_projection::NativeGameProjection::new(fov, 0.01, 7000.0);
+        let mut projection = camera_projection::GameProjection::new(fov, 0.01, 7000.0);
         bevy::camera::CameraProjection::update(&mut projection, 1920.0, 1080.0);
         let clip = bevy::camera::CameraProjection::get_clip_from_view(&projection)
             * transform.to_matrix().inverse();
@@ -339,11 +339,11 @@ fn saved_dust_approach_visibility_queries() {
             }
             let linear = Color::srgb_from_array(light.color).to_linear();
             let Some(preset) =
-                original_light_preset(light, [linear.red, linear.green, linear.blue])
+                light_preset(light, [linear.red, linear.green, linear.blue])
             else {
                 continue;
             };
-            let matrix = original_local_light_clip_to_world(
+            let matrix = local_light_clip_to_world(
                 game_to_view(light.position),
                 light.rotation,
                 light.kind,
@@ -352,7 +352,7 @@ fn saved_dust_approach_visibility_queries() {
                     .then(|| authored_light_cosines(light.angular_cutoff, light.angular_falloff).0),
             )
             .unwrap();
-            let (low, high) = original_light_projection_bounds(matrix).unwrap();
+            let (low, high) = light_projection_bounds(matrix).unwrap();
             let bounds = [[low.x, -high.z, low.y], [high.x, -low.z, high.y]];
             let sphere = [
                 light.position[0] + preset.center_offset[0],
@@ -388,7 +388,7 @@ fn saved_dust_approach_visibility_queries() {
                 light.definition_name_hash,
                 light.preset,
                 light.position,
-                original_local_light_id_pass(
+                local_light_id_pass(
                     light.kind,
                     light.culling,
                     light.definition_name_hash,
@@ -396,10 +396,10 @@ fn saved_dust_approach_visibility_queries() {
                 ),
                 query.visibility_and_area(bounds).unwrap(),
                 result.count,
-                original_light_volume_intersects_camera(clip, matrix)
+                light_volume_intersects_camera(clip, matrix)
             );
             if number >= 4 {
-                assert!(original_local_light_id_pass(
+                assert!(local_light_id_pass(
                     light.kind,
                     light.culling,
                     light.definition_name_hash,
@@ -408,7 +408,7 @@ fn saved_dust_approach_visibility_queries() {
                 assert!(query.visibility_and_area(bounds).unwrap().0);
                 assert_eq!(result.count, 1);
                 assert_eq!(
-                    original_light_volume_intersects_camera(clip, matrix),
+                    light_volume_intersects_camera(clip, matrix),
                     Some(true)
                 );
             }
@@ -463,18 +463,18 @@ fn saved_dust_approach_visibility_queries() {
         }
         let fixture = format!("artifacts/dust-approach-{}-depth.bin", number + 1);
         fs::write(&fixture, raw).unwrap();
-        let native = std::process::Command::new(
+        let game = std::process::Command::new(
             env::var("DH2_ORACLE_PYTHON").unwrap_or_else(|_| "python".into()),
         )
         .args(["analysis/probe_original_depth_aabb.py", "--state", &fixture])
         .output()
         .unwrap();
         assert!(
-            native.status.success(),
+            game.status.success(),
             "installed depth-query parity: {}{}",
-            String::from_utf8_lossy(&native.stdout),
-            String::from_utf8_lossy(&native.stderr)
+            String::from_utf8_lossy(&game.stdout),
+            String::from_utf8_lossy(&game.stderr)
         );
-        print!("{}", String::from_utf8_lossy(&native.stdout));
+        print!("{}", String::from_utf8_lossy(&game.stdout));
     }
 }

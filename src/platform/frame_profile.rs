@@ -34,14 +34,14 @@ pub const LABELS: [&str; 50] = [
     "prepare_views",
     "queue_meshes",
     "acquire_window",
-    "native_parallel_cpu",
-    "native_world_draws",
-    "native_model_draws",
-    "native_local_cpu",
-    "native_local_draws",
-    "native_model_collect",
-    "native_parallel_render",
-    "native_local_render",
+    "parallel_cpu",
+    "world_draws",
+    "model_draws",
+    "local_cpu",
+    "local_draws",
+    "model_collect",
+    "parallel_render",
+    "local_render",
     "shadow_prepare_records",
     "shadow_encode_draws",
     "host_cluster_stage_span",
@@ -55,8 +55,8 @@ pub const LABELS: [&str; 50] = [
     "shadow_receiver",
     "shadow_tome_gather",
     "shadow_world_query",
-    "native_screen_shadow_render",
-    "native_coarse_depth_render",
+    "screen_shadow_render",
+    "coarse_depth_render",
     "visibility_publish",
     "visibility_mark_instances",
     "visibility_spatial_instances",
@@ -126,10 +126,10 @@ fn end<const I: usize>(profile: Res<CpuFrameProfile>) {
 }
 
 fn wrap_extract(app: &mut SubApp, profile: CpuFrameProfile, index: usize) {
-    if let Some(mut original) = app.take_extract() {
+    if let Some(mut reference) = app.take_extract() {
         app.set_extract(move |main, sub| {
             profile.start(index);
-            original(main, sub);
+            reference(main, sub);
             profile.end(index);
         });
     }
@@ -291,7 +291,7 @@ pub fn install(app: &mut App) {
 mod tests {
     use super::*;
     #[test]
-    fn instrumentation_preserves_original_extract_and_shared_counters() {
+    fn instrumentation_preserves_extract_and_shared_counters() {
         let profile = CpuFrameProfile::default();
         let mut sub = SubApp::new();
         sub.set_extract(|_, world| {

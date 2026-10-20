@@ -3,15 +3,15 @@ use super::shadow_caster;
 use super::{
     CellObjectVisibilityQuery, CellSelection, CellTraversalWorklist, CellTree, CellWorkItem,
     CellWorkNodePool, DirectLinkDestination, DirectTomeQueryData, InitialCameraCellSeed,
-    LinkQueryDirection, ORIGINAL_OBJECT_QUERY_BATCH_SIZE, ORIGINAL_QUERY_CELL_STATE_COUNT,
-    OrdinaryGlobalCameraQuery, OrdinarySpatialQueryVolume, OriginalSpatialQueryVolume,
+    LinkQueryDirection, OBJECT_QUERY_BATCH_SIZE, QUERY_CELL_STATE_COUNT,
+    OrdinaryGlobalCameraQuery, OrdinarySpatialQueryVolume, SpatialQueryVolume,
     PortalTileMask, ReadyCellTarget, SpatialCellWorklists, SpatialQueryBranchCandidate,
     SpatialQueryBranchStack, SpatialTree, TraversalCellId, VisibleCellIndexOutput,
     VisibleObjectIndexOutput, VisitedCellCoverage, crop_query_rows, direct_spatial_link_target,
     expand_object_bounds_for_camera_imprecision, first_depth_quad, float,
     global_node_overlaps_query_planes, object_bounds, object_distance_bounds,
     object_distance_rejection_mask, ordinary_spatial_query_volume,
-    original_query_accepts_tome_root, project_clipped_query_aabb, quad_intersects_aabb,
+    query_accepts_tome_root, project_clipped_query_aabb, quad_intersects_aabb,
     quantized_cell_query_bounds, query_bounds_accepts_aabb, query_planes_from_rows,
     ready_same_spatial_cell_target, render_query_job_tile, word, write_u32,
 };
@@ -251,12 +251,12 @@ impl SpatialTree {
         {
             return Err("invalid ordinary Tome global query planes or imprecision".into());
         }
-        if !original_query_accepts_tome_root(self, OriginalSpatialQueryVolume::Point(point))? {
+        if !query_accepts_tome_root(self, SpatialQueryVolume::Point(point))? {
             return Ok(None);
         }
-        let mut branch_stack = SpatialQueryBranchStack::from_original_root(self)?;
+        let mut branch_stack = SpatialQueryBranchStack::from_root(self)?;
         write_u32(&mut branch_stack.entries[0].bytes, 0x24, 1);
-        let mut branch_states = vec![0u16; ORIGINAL_QUERY_CELL_STATE_COUNT];
+        let mut branch_states = vec![0u16; QUERY_CELL_STATE_COUNT];
         let mut next_state = 2usize;
         let mut seeded_records = Vec::new();
         let mut nodes_visited = 0;
@@ -372,7 +372,7 @@ impl SpatialTree {
             next_state += 2;
         }
         if branch_states[1] & 0x7fff != 0 {
-            branch_stack = SpatialQueryBranchStack::from_original_root(self)?;
+            branch_stack = SpatialQueryBranchStack::from_root(self)?;
             write_u32(&mut branch_stack.entries[0].bytes, 0x24, 1);
         }
         Ok(Some(OrdinaryGlobalCameraQuery {
@@ -529,8 +529,8 @@ impl SpatialTree {
     ) -> Result<Vec<usize>, String> {
         match ordinary_spatial_query_volume(bounds, camera_position)? {
             OrdinarySpatialQueryVolume::CameraPoint(point) => {
-                let volume = OriginalSpatialQueryVolume::Point(point);
-                if !original_query_accepts_tome_root(self, volume)? {
+                let volume = SpatialQueryVolume::Point(point);
+                if !query_accepts_tome_root(self, volume)? {
                     return Ok(Vec::new());
                 }
                 self.record_nodes_for_camera_query_prefilter(point, planes, camera_imprecision)
@@ -542,9 +542,9 @@ impl SpatialTree {
                 {
                     return Err("invalid ordinary Tome query prefilter input".into());
                 }
-                if !original_query_accepts_tome_root(
+                if !query_accepts_tome_root(
                     self,
-                    OriginalSpatialQueryVolume::Bounds(query),
+                    SpatialQueryVolume::Bounds(query),
                 )? {
                     return Ok(Vec::new());
                 }
@@ -1102,10 +1102,10 @@ impl CellTree {
         let mut emitted = 0usize;
         let mut run_next = 0usize;
         let mut run_remaining = 0usize;
-        let mut batch = [0u32; ORIGINAL_OBJECT_QUERY_BATCH_SIZE];
+        let mut batch = [0u32; OBJECT_QUERY_BATCH_SIZE];
 
         while emitted < count as usize {
-            let batch_len = (count as usize - emitted).min(ORIGINAL_OBJECT_QUERY_BATCH_SIZE);
+            let batch_len = (count as usize - emitted).min(OBJECT_QUERY_BATCH_SIZE);
             for candidate in &mut batch[..batch_len] {
                 if run_remaining == 0 {
                     if record >= self.candidate_record_count {
@@ -1211,7 +1211,7 @@ impl CellTree {
                     continue;
                 }
                 if let Some(near_offset) = query.point_occlusion_near_offset {
-                    if !shadow_caster::native_point_occlusion_visible(
+                    if !shadow_caster::point_occlusion_visible(
                         bytes,
                         object_index,
                         query.object_distance_point,

@@ -50,7 +50,7 @@ pub fn register_shaders(app: &mut App) {
 
 /// Resolved original shadowCommon compile options and render parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NativeShadowOffsetParameters {
+pub struct ShadowOffsetParameters {
     pub sun_direction: [f32; 3],
     pub use_normal_offset: bool,
     pub use_slope_scale: bool,
@@ -65,7 +65,7 @@ pub struct NativeShadowOffsetParameters {
 
 /// Authored GPU transport layout, not a claim about the original constant-buffer ABI.
 #[derive(Clone, Debug, ShaderType)]
-pub struct NativeParallelSamplingUniform {
+pub struct ParallelSamplingUniform {
     pub world_to_shadow: [Mat4; 5],
     pub view_row2: Vec4,
     pub cascade_fars: Vec4,
@@ -82,7 +82,7 @@ pub struct NativeParallelSamplingUniform {
     pub camera_time: Vec4,
 }
 
-impl Default for NativeParallelSamplingUniform {
+impl Default for ParallelSamplingUniform {
     fn default() -> Self {
         Self {
             world_to_shadow: [Mat4::ZERO; 5],
@@ -100,12 +100,12 @@ impl Default for NativeParallelSamplingUniform {
     }
 }
 
-impl NativeParallelSamplingUniform {
+impl ParallelSamplingUniform {
     /// Atlas production is shared by the original direct and screen-space
     /// consumers. Route the receiver explicitly; a ScreenSpace frame must not
     /// enable the direct forward hook or be rejected before producing its atlas.
     pub fn from_owner_receiver(
-        receiver: &crate::shadow_pass::NativeParallelReceiverVars,
+        receiver: &crate::shadow_pass::ParallelReceiverVars,
     ) -> Result<Self, String> {
         match receiver.path {
             crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace => {
@@ -116,7 +116,7 @@ impl NativeParallelSamplingUniform {
     }
 
     pub fn from_receiver(
-        receiver: &crate::shadow_pass::NativeParallelReceiverVars,
+        receiver: &crate::shadow_pass::ParallelReceiverVars,
     ) -> Result<Self, String> {
         if receiver.path != crate::render_shadow::ParallelShadowReceiverPath::DirectVisibility {
             return Err(format!(
@@ -131,7 +131,7 @@ impl NativeParallelSamplingUniform {
     /// ZERO vertex normal and explicitly disables vertex-normal offset. Its
     /// transport must not accidentally enable the direct-atlas opaque hook.
     pub fn from_screen_receiver(
-        receiver: &crate::shadow_pass::NativeParallelReceiverVars,
+        receiver: &crate::shadow_pass::ParallelReceiverVars,
     ) -> Result<Self, String> {
         if receiver.path != crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace {
             return Err(
@@ -145,7 +145,7 @@ impl NativeParallelSamplingUniform {
     }
 
     fn pack_receiver(
-        receiver: &crate::shadow_pass::NativeParallelReceiverVars,
+        receiver: &crate::shadow_pass::ParallelReceiverVars,
     ) -> Result<Self, String> {
         let count = receiver.world_to_shadow.len();
         if count == 0
@@ -157,7 +157,7 @@ impl NativeParallelSamplingUniform {
                 .flatten()
                 .any(|v| !v.is_finite())
         {
-            return Err("native parallel receiver needs 1..=5 finite owner matrices".into());
+            return Err("parallel receiver needs 1..=5 finite owner matrices".into());
         }
         if receiver.offset.use_uv_normal_offset {
             return Err("original UV-normal-offset compiled caller remains unsupported".into());
@@ -218,7 +218,7 @@ impl NativeParallelSamplingUniform {
 }
 
 #[derive(Resource, Clone, ExtractResource)]
-pub struct NativeParallelSamplingBuffer {
+pub struct ParallelSamplingBuffer {
     pub buffer: Handle<ShaderBuffer>,
     pub unavailable_depth: Handle<Image>,
 }
@@ -227,7 +227,7 @@ pub struct NativeParallelSamplingBuffer {
 /// actual entity-to-GPU-index table; shadow records retain the native144-byte
 /// layout. Capacity is allocated from the scene registry, never guessed IDs.
 #[derive(Resource, Clone, ExtractResource)]
-pub struct NativeLocalSamplingBuffer {
+pub struct LocalSamplingBuffer {
     pub buffer: Handle<ShaderBuffer>,
     pub light_capacity: u32,
 }
@@ -309,7 +309,7 @@ mod tests {
         let world = app.sub_app_mut(RenderApp).world_mut();
         let device = world.resource::<RenderDevice>();
         let queue = world.resource::<RenderQueue>();
-        let atlas = crate::shadow_pipeline::NativeShadowDepthArray::new_with_format(
+        let atlas = crate::shadow_pipeline::ShadowDepthArray::new_with_format(
             device,
             Extent3d {
                 width: 16,
@@ -415,7 +415,7 @@ mod tests {
                 @group(0) @binding(129) var<storage,read> cases:array<Case>;
                 @group(0) @binding(130) var<storage,read_write> results:array<f32>;
                 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
-                    let c=cases[i.x];results[i.x]=native_local_visibility(c.ids.x,c.position.xyz,c.normal.xyz,c.route);
+                    let c=cases[i.x];results[i.x]=local_visibility(c.ids.x,c.position.xyz,c.normal.xyz,c.route);
                 }
             "#
             );
@@ -434,7 +434,7 @@ mod tests {
                         compilation_options: default(),
                         cache: None,
                     });
-            let sampler = crate::shadow_pipeline::native_shadow_comparison_sampler(device);
+            let sampler = crate::shadow_pipeline::shadow_comparison_sampler(device);
             let group = device
                 .wgpu_device()
                 .create_bind_group(&BindGroupDescriptor {
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires GPU; compares local shadowCommon structured-matrix coordinates against original HLSL"]
-    fn local_shadow_coordinates_match_original_structured_buffer_gpu() {
+    fn local_shadow_coordinates_match_structured_buffer_gpu() {
         use bevy::{
             prelude::*,
             render::{
@@ -616,7 +616,7 @@ mod tests {
             @group(0) @binding(1) var<storage,read_write> results:array<vec4<f32>>;
             @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) i:vec3<u32>) {
                 let c=cases[i.x];let m=mat4x4<f32>(c.matrix[0],c.matrix[1],c.matrix[2],c.matrix[3]);
-                results[i.x]=native_shadow_position(m,c.position.xyz,false);
+                results[i.x]=shadow_position(m,c.position.xyz,false);
             }
         "#
         );
@@ -692,7 +692,7 @@ mod tests {
     fn owner_transport_preserves_direct_vs_screen_consumer() {
         let mut vars = receiver();
         assert_eq!(
-            NativeParallelSamplingUniform::from_owner_receiver(&vars)
+            ParallelSamplingUniform::from_owner_receiver(&vars)
                 .unwrap()
                 .config
                 .x,
@@ -700,19 +700,19 @@ mod tests {
         );
         vars.path = crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace;
         vars.offset.use_normal_offset = true;
-        let screen = NativeParallelSamplingUniform::from_owner_receiver(&vars).unwrap();
+        let screen = ParallelSamplingUniform::from_owner_receiver(&vars).unwrap();
         assert_eq!(screen.config.x, 2);
         assert_eq!(screen.config.z & 1, 0, "screen shader uses zero normal");
         assert!(
-            NativeParallelSamplingUniform::from_receiver(&vars).is_err(),
+            ParallelSamplingUniform::from_receiver(&vars).is_err(),
             "screen route must never become a direct forward receiver"
         );
         vars.path = crate::render_shadow::ParallelShadowReceiverPath::DirectWithCasterDistance;
-        assert!(NativeParallelSamplingUniform::from_owner_receiver(&vars).is_err());
+        assert!(ParallelSamplingUniform::from_owner_receiver(&vars).is_err());
     }
 
-    fn receiver() -> crate::shadow_pass::NativeParallelReceiverVars {
-        crate::shadow_pass::NativeParallelReceiverVars {
+    fn receiver() -> crate::shadow_pass::ParallelReceiverVars {
+        crate::shadow_pass::ParallelReceiverVars {
             path: crate::render_shadow::ParallelShadowReceiverPath::DirectVisibility,
             world_to_shadow: vec![std::array::from_fn(|r| {
                 std::array::from_fn(|c| (r * 4 + c) as f32)
@@ -723,7 +723,7 @@ mod tests {
             light_quality: 2,
             filtering_quality: 3,
             directional_light_index: 0,
-            offset: NativeShadowOffsetParameters {
+            offset: ShadowOffsetParameters {
                 sun_direction: [0.0, 0.0, -1.0],
                 use_normal_offset: true,
                 use_slope_scale: false,
@@ -738,9 +738,9 @@ mod tests {
     }
 
     #[test]
-    fn transport_preserves_original_rows_and_resolved_options() {
+    fn transport_preserves_rows_and_resolved_options() {
         let input = receiver();
-        let uniform = NativeParallelSamplingUniform::from_receiver(&input).unwrap();
+        let uniform = ParallelSamplingUniform::from_receiver(&input).unwrap();
         assert_eq!(
             uniform.world_to_shadow[0].to_cols_array_2d(),
             input.world_to_shadow[0]
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(uniform.config.to_array(), [1, 0, 5, 1]);
         assert_eq!(uniform.quality.to_array(), [2, 3, 0, 0]);
         assert_eq!(uniform.bias.to_array(), [0.01, 0.001, 0.002, 0.0]);
-        let neutral = NativeParallelSamplingUniform::default();
+        let neutral = ParallelSamplingUniform::default();
         assert_eq!(neutral.config.x, 0);
         let buffer = ShaderBuffer::from(neutral);
         assert_eq!(buffer.data.unwrap().len(), 480);
@@ -762,7 +762,7 @@ mod tests {
             crate::render_shadow::ParallelShadowReceiverPath::DirectWithCasterDistance,
         ] {
             input.path = path;
-            assert!(NativeParallelSamplingUniform::from_receiver(&input)
+            assert!(ParallelSamplingUniform::from_receiver(&input)
                 .unwrap_err()
                 .contains("scalar atlas transport"));
         }
@@ -771,32 +771,32 @@ mod tests {
     #[test]
     fn screen_producer_transport_keeps_rows_but_disables_vertex_normal_offset() {
         let mut input = receiver();
-        assert!(NativeParallelSamplingUniform::from_screen_receiver(&input).is_err());
+        assert!(ParallelSamplingUniform::from_screen_receiver(&input).is_err());
         input.path = crate::render_shadow::ParallelShadowReceiverPath::ScreenSpace;
-        let uniform = NativeParallelSamplingUniform::from_screen_receiver(&input).unwrap();
+        let uniform = ParallelSamplingUniform::from_screen_receiver(&input).unwrap();
         assert_eq!(uniform.config.to_array(), [2, 0, 4, 1]);
         assert_eq!(
             uniform.world_to_shadow[0].to_cols_array_2d(),
             input.world_to_shadow[0]
         );
         assert_eq!(uniform.bias.to_array(), [0.01, 0.001, 0.002, 0.0]);
-        assert!(NativeParallelSamplingUniform::from_receiver(&input).is_err());
+        assert!(ParallelSamplingUniform::from_receiver(&input).is_err());
         input.offset.use_uv_normal_offset = true;
-        assert!(NativeParallelSamplingUniform::from_screen_receiver(&input).is_err());
+        assert!(ParallelSamplingUniform::from_screen_receiver(&input).is_err());
     }
 
     #[test]
     fn unresolved_offset_branch_is_not_silently_substituted() {
         let mut input = receiver();
         input.offset.use_uv_normal_offset = true;
-        assert!(NativeParallelSamplingUniform::from_receiver(&input)
+        assert!(ParallelSamplingUniform::from_receiver(&input)
             .unwrap_err()
             .contains("unsupported"));
         input.offset.use_uv_normal_offset = false;
         input.offset.bias = f32::NAN;
-        assert!(NativeParallelSamplingUniform::from_receiver(&input).is_err());
+        assert!(ParallelSamplingUniform::from_receiver(&input).is_err());
         input.offset.bias = 0.0;
         input.world_to_shadow.clear();
-        assert!(NativeParallelSamplingUniform::from_receiver(&input).is_err());
+        assert!(ParallelSamplingUniform::from_receiver(&input).is_err());
     }
 }

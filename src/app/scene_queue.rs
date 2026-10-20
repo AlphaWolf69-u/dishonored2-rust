@@ -125,10 +125,10 @@ pub(super) struct SceneRenderQueue {
     pub(super) diffuse_image_demands: Vec<texture::ProjectedAreaDemand>,
     pub(super) diffuse_image_paths: Vec<String>,
     pub(super) diffuse_image_materials: Vec<Vec<(MaterialHandle, surface_gpu::ImageRole)>>,
-    pub(super) native_material_images: HashMap<MaterialHandle, Vec<usize>>,
+    pub(super) material_images: HashMap<MaterialHandle, Vec<usize>>,
     pub(super) diffuse_image_handles: Vec<Option<Handle<Image>>>,
     /// Initial native whole-view alpha casters are independent of color visibility.
-    pub(super) native_shadow_diffuse_slots: Vec<usize>,
+    pub(super) shadow_diffuse_slots: Vec<usize>,
     pub(super) shadow_diffuse_membership: Vec<bool>,
     pub(super) diffuse_image_pending: Vec<Option<Handle<Image>>>,
     pub(super) diffuse_mip_states: Vec<DiffuseMipState>,
@@ -146,7 +146,7 @@ impl SceneRenderQueue {
     pub(super) fn request_shadow_diffuse(&mut self, slot: usize) {
         if self.shadow_diffuse_membership.len() != self.diffuse_image_paths.len() {
             self.shadow_diffuse_membership = vec![false; self.diffuse_image_paths.len()];
-            for &old in &self.native_shadow_diffuse_slots {
+            for &old in &self.shadow_diffuse_slots {
                 if let Some(member) = self.shadow_diffuse_membership.get_mut(old) {
                     *member = true;
                 }
@@ -154,11 +154,11 @@ impl SceneRenderQueue {
         }
         if let Some(member) = self.shadow_diffuse_membership.get_mut(slot) {
             if !std::mem::replace(member, true) {
-                self.native_shadow_diffuse_slots.push(slot);
+                self.shadow_diffuse_slots.push(slot);
             }
-        } else if !self.native_shadow_diffuse_slots.contains(&slot) {
+        } else if !self.shadow_diffuse_slots.contains(&slot) {
             // Keep the existing error path and request order for malformed IDs.
-            self.native_shadow_diffuse_slots.push(slot);
+            self.shadow_diffuse_slots.push(slot);
         }
     }
 
@@ -254,13 +254,13 @@ mod tests {
             let mut commands = Commands::new(&mut deferred, &world);
             world_requests.submit(&mut commands);
             model_requests.submit(&mut commands);
-            assert!(scene.native_shadow_diffuse_slots.is_empty());
+            assert!(scene.shadow_diffuse_slots.is_empty());
         }
         deferred.apply(&mut world);
         assert_eq!(
             world
                 .resource::<SceneRenderQueue>()
-                .native_shadow_diffuse_slots,
+                .shadow_diffuse_slots,
             [2, 1, 3]
         );
     }
@@ -272,12 +272,12 @@ mod tests {
         for slot in [2, 1, 2, 0, 1, 99, 99] {
             queue.request_shadow_diffuse(slot);
         }
-        assert_eq!(queue.native_shadow_diffuse_slots, [2, 1, 0, 99]);
+        assert_eq!(queue.shadow_diffuse_slots, [2, 1, 0, 99]);
         queue.diffuse_image_paths.resize(6, String::new());
         for slot in [2, 5, 1, 5] {
             queue.request_shadow_diffuse(slot);
         }
-        assert_eq!(queue.native_shadow_diffuse_slots, [2, 1, 0, 99, 5]);
+        assert_eq!(queue.shadow_diffuse_slots, [2, 1, 0, 99, 5]);
     }
 }
 
@@ -288,15 +288,15 @@ mod tests {
 /// The skinned-model bounds virtual (+0x80) is FUN_14025da70: resource+0xe0,
 /// not an AABB reconstructed from the currently drawn/rest-pose vertices.
 #[derive(Resource, Default)]
-pub(super) struct NativeShadowModelBoundsSources(pub(super) Vec<NativeShadowModelBoundsSource>);
+pub(super) struct ShadowModelBoundsSources(pub(super) Vec<ShadowModelBoundsSource>);
 
-pub(super) struct NativeShadowModelBoundsSource {
+pub(super) struct ShadowModelBoundsSource {
     pub(super) placement: usize,
     pub(super) instances: std::ops::Range<usize>,
     pub(super) bounds: [[f32; 3]; 2],
 }
 
-impl NativeShadowModelBoundsSources {
+impl ShadowModelBoundsSources {
     pub(super) fn active_bounds(
         &self,
         scene: &SceneRenderQueue,
@@ -305,7 +305,7 @@ impl NativeShadowModelBoundsSources {
         let mut bounds = Vec::with_capacity(self.0.len());
         for source in &self.0 {
             if source.instances.is_empty() || source.instances.end > scene.instances.len() {
-                return Err("native shadow model bounds reference an invalid owner range".into());
+                return Err("shadow model bounds reference an invalid owner range".into());
             }
             if !source
                 .bounds
@@ -314,17 +314,17 @@ impl NativeShadowModelBoundsSources {
                 .all(|value| value.is_finite())
                 || (0..3).any(|axis| source.bounds[0][axis] > source.bounds[1][axis])
             {
-                return Err("native shadow model owner has invalid prepared bounds".into());
+                return Err("shadow model owner has invalid prepared bounds".into());
             }
             let mut active = false;
             for instance in &scene.instances[source.instances.clone()] {
                 let placement = match instance.source.as_ref().map(|value| &value.surface) {
                     Some(RenderModelSurface::Bmodel { placement, .. })
                     | Some(RenderModelSurface::Bmd6 { placement, .. }) => *placement,
-                    _ => return Err("native shadow model bounds have no model owner".into()),
+                    _ => return Err("shadow model bounds have no model owner".into()),
                 };
                 if placement != source.placement {
-                    return Err("native shadow model bounds disagree with their model owner".into());
+                    return Err("shadow model bounds disagree with their model owner".into());
                 }
                 active |= instance
                     .pickup_id

@@ -137,8 +137,8 @@ impl FrameTimingEstimator {
         }
         self.smoothed_microseconds = self.smoothed_microseconds * f32::from_bits(0x3f4c_cccd)
             + elapsed * f32::from_bits(0x3e4c_cccd);
-        self.truncated_microseconds = native_truncate_i32(self.smoothed_microseconds);
-        self.frame_rate = native_truncate_i32(1_000_000.0 / self.smoothed_microseconds + 0.5);
+        self.truncated_microseconds = truncate_i32(self.smoothed_microseconds);
+        self.frame_rate = truncate_i32(1_000_000.0 / self.smoothed_microseconds + 0.5);
         self.previous_microseconds = Some(current);
         Ok(())
     }
@@ -147,11 +147,11 @@ impl FrameTimingEstimator {
 /// Byte-exact owned state. Native padding/other fields survive initialization
 /// and updates, instead of being silently assigned invented field meanings.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeGameClock {
+pub struct GameClock {
     bytes: [u8; STATE_SIZE],
 }
 
-impl NativeGameClock {
+impl GameClock {
     pub fn from_bytes(bytes: [u8; STATE_SIZE]) -> Self {
         Self { bytes }
     }
@@ -259,7 +259,7 @@ impl NativeGameClock {
     ) -> Result<(), String> {
         if group >= GROUP_COUNT {
             return Err(format!(
-                "native time group {group} outside 0..{GROUP_COUNT}"
+                "time group {group} outside 0..{GROUP_COUNT}"
             ));
         }
         let base = group * GROUP_STRIDE;
@@ -416,15 +416,15 @@ impl NativeGameClock {
             }
         }
         let raw_steps = ((unquantized * max_rate) * effective_rate) * 120.0;
-        let mut count = native_truncate_i32((raw_steps + 0.5).floor());
+        let mut count = truncate_i32((raw_steps + 0.5).floor());
         if input.jitter_window > 0.0 && input.rate_cap > 0 {
             let expected = ((120.0 / input.rate_cap as f32) * max_rate) * effective_rate;
             if expected > 0.5 && (0.5 - expected % 1.0).abs() * 2.0 > 0.5 {
                 let previous = self.u32(0x198) as i32;
                 if count > previous {
-                    count = native_truncate_i32(((raw_steps - input.jitter_window) + 0.5).floor());
+                    count = truncate_i32(((raw_steps - input.jitter_window) + 0.5).floor());
                 } else if count < previous {
-                    count = native_truncate_i32(((input.jitter_window + raw_steps) + 0.5).floor());
+                    count = truncate_i32(((input.jitter_window + raw_steps) + 0.5).floor());
                 }
             }
         }
@@ -507,7 +507,7 @@ impl GameplayViewClocks {
         }
     }
 
-    pub fn from_clock(clock: &NativeGameClock) -> Self {
+    pub fn from_clock(clock: &GameClock) -> Self {
         Self {
             times: std::array::from_fn(|group| {
                 clock
@@ -554,7 +554,7 @@ impl GameplayViewClocks {
 
     /// 140319560 reads the identity-ordered renderer snapshot after the
     /// original 35dc60/374e40 copies. Preserve double addition before f32
-    /// conversion; invalid native group bits are unavailable, not clamped.
+    /// conversion; invalid group bits are unavailable, not clamped.
     pub fn model_local_time(&self, model_offset: f32, model_flags_1c31: u8) -> Option<[f32; 2]> {
         let group = crate::render_model::model_shader_time_group(model_flags_1c31);
         Some(crate::render_model::model_shader_local_time(
@@ -567,7 +567,7 @@ impl GameplayViewClocks {
 
 // CVTTSS2SI returns INT_MIN for NaN/out-of-range; Rust's saturating cast alone
 // would change the native step-count branches.
-fn native_truncate_i32(value: f32) -> i32 {
+fn truncate_i32(value: f32) -> i32 {
     if value.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
     } else {
@@ -580,7 +580,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn view_shader_times_preserve_native_groups_conversion_and_signed_zero() {
+    fn view_shader_times_preserve_groups_conversion_and_signed_zero() {
         let clocks = GameplayViewClocks {
             times: [101.0, -0.0, 303.0, 16_777_217.0, 505.0],
             deltas: [0.01, -0.0, 0.03, 0.04, 0.05],
@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn view_local_time_source_byte_matches_original_reset_and_copy_prefix() {
+    fn view_local_time_source_byte_matches_reset_and_copy_prefix() {
         let mut count = 0;
         for line in include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn gameplay_view_clock_transfer_matches_original_machine_blocks() {
+    fn gameplay_view_clock_transfer_matches_machine_blocks() {
         fn bytes(text: &str) -> Vec<u8> {
             (0..text.len())
                 .step_by(2)
@@ -658,7 +658,7 @@ mod tests {
                 state[group * GROUP_STRIDE + 0x28..group * GROUP_STRIDE + 0x2c]
                     .copy_from_slice(&delta.to_le_bytes());
             }
-            let values = GameplayViewClocks::from_clock(&NativeGameClock::from_bytes(state));
+            let values = GameplayViewClocks::from_clock(&GameClock::from_bytes(state));
             let mut game_result = [0x6b; 0x50];
             values.write_game_result(&mut game_result).unwrap();
             assert_eq!(&game_result[..0x3c], bytes(words[10]), "{line}");
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn constructor_reanchors_and_quantizes_first_update() {
-        let mut clock = NativeGameClock::from_bytes([0xa5; STATE_SIZE]);
+        let mut clock = GameClock::from_bytes([0xa5; STATE_SIZE]);
         clock.initialize();
         assert_eq!(clock.bytes[4..8], [0xa5; 4]);
         for group in 0..GROUP_COUNT {
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn setting_time_and_serialization_do_not_guess_outer_format() {
-        let mut clock = NativeGameClock::from_bytes([0; STATE_SIZE]);
+        let mut clock = GameClock::from_bytes([0; STATE_SIZE]);
         clock.initialize();
         clock.set_time(25.0, 0.125);
         assert_eq!(clock.previous_time(4), Some(24.875));
@@ -739,7 +739,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(saved.len(), 331);
-        let mut restored = NativeGameClock::from_bytes([0; STATE_SIZE]);
+        let mut restored = GameClock::from_bytes([0; STATE_SIZE]);
         restored.initialize();
         let mut cursor = 0;
         restored
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_and_frame_timing_match_original_executable() {
+    fn platform_and_frame_timing_match_executable() {
         fn word(text: &str) -> u64 {
             u64::from_str_radix(text, 16).unwrap()
         }
@@ -779,7 +779,7 @@ mod tests {
                     assert_eq!(
                         scale.read(word(fields[1]) as i64, word(fields[2]) as i64),
                         Some(word(fields[4])),
-                        "native microseconds {line}"
+                        "microseconds {line}"
                     );
                     assert_eq!(scale.divisor, word(fields[5]));
                 }
@@ -813,7 +813,7 @@ mod tests {
                             word(fields[7]) as u32,
                             word(fields[8]) as u32
                         ),
-                        "native frame estimator {line}"
+                        "frame estimator {line}"
                     );
                     assert_eq!(timing.previous_microseconds, Some(current));
                 }
@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_state_matches_original_executable() {
+    fn clock_state_matches_executable() {
         fn raw<const N: usize>(text: &str) -> [u8; N] {
             assert_eq!(text.len(), N * 2);
             std::array::from_fn(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).unwrap())
@@ -869,7 +869,7 @@ mod tests {
                 "step" => (9, 11),
                 other => panic!("unknown original fixture {other}"),
             };
-            let mut clock = NativeGameClock::from_bytes(raw(fields[before]));
+            let mut clock = GameClock::from_bytes(raw(fields[before]));
             match fields[0] {
                 "init" => {
                     counts[0] += 1;
@@ -920,9 +920,9 @@ mod tests {
                     } else {
                         clock.transfer_state(writing, &mut transfer).unwrap();
                     }
-                    assert_eq!(cursor, payload.len(), "native I/O length case {line}");
+                    assert_eq!(cursor, payload.len(), "I/O length case {line}");
                     if writing {
-                        assert_eq!(actual, payload, "native I/O order case {line}");
+                        assert_eq!(actual, payload, "I/O order case {line}");
                     }
                 }
                 "step" => {
@@ -940,7 +940,7 @@ mod tests {
                     assert_eq!(
                         clock.step(input),
                         fields[10] == "1",
-                        "native update result case {line}"
+                        "update result case {line}"
                     );
                 }
                 _ => unreachable!(),

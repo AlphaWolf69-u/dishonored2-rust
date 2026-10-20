@@ -1,9 +1,9 @@
 //! Performance.
 use super::{
     frame_profile, local_light_kind_index, view_to_game, AppExit, BenchmarkSeconds,
-    FrameRateOverlay, MeshTag, OriginalLocalLightCull, OriginalLocalLightCullStats,
+    FrameRateOverlay, MeshTag, LocalLightCull, LocalLightCullStats,
     SceneRenderQueue, StreamingDiagnostics, VisibilityElapsedTiming,
-    ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+    LOCAL_LIGHT_MIN_AREA_PIXELS,
 };
 use bevy::prelude::*;
 
@@ -13,13 +13,13 @@ use bevy::prelude::*;
 pub(super) fn finish_streaming_diagnostics(
     mut diagnostics: ResMut<StreamingDiagnostics>,
     render_diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
-    mut light_culling: ResMut<OriginalLocalLightCullStats>,
+    mut light_culling: ResMut<LocalLightCullStats>,
     scene: Res<SceneRenderQueue>,
     meshes: Query<&ViewVisibility, With<MeshTag>>,
     local_lights: Query<(
         Entity,
         &ViewVisibility,
-        &OriginalLocalLightCull,
+        &LocalLightCull,
         &Visibility,
     )>,
     frame: Res<bevy::diagnostic::FrameCount>,
@@ -123,7 +123,7 @@ pub(super) fn finish_streaming_diagnostics(
         light_culling.proximity_unverified,
         light_culling.total_by_kind,
         light_culling.visible_by_kind,
-        ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+        LOCAL_LIGHT_MIN_AREA_PIXELS,
         scene
             .diffuse_image_handles
             .iter()
@@ -172,7 +172,7 @@ pub(super) fn benchmark_frames(
     models: Res<SceneRenderQueue>,
     camera: Query<(&bevy::prelude::Camera, &Transform), With<Camera3d>>,
     visibility_timing: Option<Res<VisibilityElapsedTiming>>,
-    light_culling: Res<OriginalLocalLightCullStats>,
+    light_culling: Res<LocalLightCullStats>,
     mut elapsed: Local<f32>,
     mut measured: Local<(u64, f64)>,
     mut frame_times: Local<Vec<f64>>,
@@ -180,12 +180,12 @@ pub(super) fn benchmark_frames(
     mut render_metrics: Local<std::collections::BTreeMap<String, (u64, f64, f64)>>,
     cpu_profile: Option<Res<frame_profile::CpuFrameProfile>>,
     render_ready: (
-        Res<super::shadow_pass::NativeShadowCaptureReadiness>,
-        Res<super::shadow_pass::NativeShadowSceneFrame>,
-        Option<Res<super::NativeParallelShadowOwner>>,
-        Option<Res<super::local_shadow_updates::NativeLocalShadowOwner>>,
-        Res<super::shadow_pass::NativeLocalShadowCompletion>,
-        Res<super::NativeViewSettings>,
+        Res<super::shadow_pass::ShadowCaptureReadiness>,
+        Res<super::shadow_pass::ShadowSceneFrame>,
+        Option<Res<super::ParallelShadowOwner>>,
+        Option<Res<super::local_shadow_updates::LocalShadowOwner>>,
+        Res<super::shadow_pass::LocalShadowCompletion>,
+        Res<super::ViewSettings>,
     ),
     mut readiness: Local<(f32, bool)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
@@ -206,7 +206,7 @@ pub(super) fn benchmark_frames(
         && (sun.is_none()
             || matches!(
                 directional.state,
-                super::shadow_pass::NativeShadowSceneState::Ready { .. }
+                super::shadow_pass::ShadowSceneState::Ready { .. }
             ))
         && (local.is_none() || local_done.0.lock().is_ok_and(|done| done.is_some()));
     if !ready {
@@ -315,7 +315,7 @@ pub(super) fn benchmark_frames(
             light_culling.proximity_unverified,
             light_culling.total_by_kind,
             light_culling.visible_by_kind,
-            ORIGINAL_LOCAL_LIGHT_MIN_AREA_PIXELS,
+            LOCAL_LIGHT_MIN_AREA_PIXELS,
             models
                 .diffuse_image_handles
                 .iter()
@@ -389,12 +389,22 @@ pub(super) fn show_frame_rate(
     if *elapsed >= 1.0 {
         let fps = *frames as f32 / *elapsed;
         let frame_ms = *elapsed * 1000.0 / *frames as f32;
+        let memory = crate::platform::process_memory::sample()
+            .map(|usage| {
+                let gib = 1024.0 * 1024.0 * 1024.0;
+                format!(
+                    "RAM {:.2} GiB | Private {:.2} GiB",
+                    usage.resident_bytes as f64 / gib,
+                    usage.private_bytes as f64 / gib,
+                )
+            })
+            .unwrap_or_else(|| "RAM unavailable".into());
         window.title = format!(
             "Dishonored 2 Rust | {:.0} FPS | {} loaded",
             fps, scene.active
         );
         for mut overlay in &mut overlays {
-            **overlay = format!("{fps:.0} FPS | {frame_ms:.1} ms");
+            **overlay = format!("{fps:.0} FPS | {frame_ms:.1} ms\n{memory}");
         }
         *elapsed = 0.0;
         *frames = 0;

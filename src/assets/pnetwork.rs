@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_native_vertex_reference_tail() {
+    fn reads_vertex_reference_tail() {
         let mut bytes = Vec::new();
         for word in [1u32, 2, 7, 9, 8, 11, 22] {
             bytes.extend_from_slice(&word.to_le_bytes());
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn native_word_buffers_floor_the_declared_size() {
+    fn word_buffers_floor_the_declared_size() {
         let mut bytes = Vec::new();
         for word in [0u32, 4, 5, 123] {
             bytes.extend_from_slice(&word.to_le_bytes());

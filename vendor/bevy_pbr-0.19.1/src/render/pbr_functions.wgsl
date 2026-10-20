@@ -1,6 +1,6 @@
 #define_import_path bevy_pbr::pbr_functions
-#ifdef DH2_NATIVE_LOCAL_SHADOWS
-#import dh2_local_receiver::native_local_visibility
+#ifdef DH2_LOCAL_SHADOWS
+#import dh2_local_receiver::local_visibility
 #endif
 
 #import bevy_pbr::{
@@ -350,17 +350,17 @@ fn apply_pbr_lighting_with_directional_shadow(
     directional_shadow: f32,
     transmitted_directional_shadow: f32,
 ) -> vec4<f32> {
-    return apply_pbr_lighting_with_native_shadows(in,directional_index,directional_shadow,
+    return apply_pbr_lighting_with_shadows(in,directional_index,directional_shadow,
         transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u),vec3<f32>(0.0));
 }
 
-fn apply_pbr_lighting_with_native_shadows(
+fn apply_pbr_lighting_with_shadows(
     in: pbr_types::PbrInput,
     directional_index: u32,
     directional_shadow: f32,
     transmitted_directional_shadow: f32,
-    native_shadow_route: vec4<u32>,
-    native_indirect: vec3<f32>,
+    shadow_route: vec4<u32>,
+    indirect_diffuse: vec3<f32>,
 ) -> vec4<f32> {
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     if #{DH2_TRACE_LIGHT_COMPONENT} == 5u { return in.material.base_color; }
@@ -527,13 +527,13 @@ fn apply_pbr_lighting_with_native_shadows(
 #endif
 
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
-#ifdef DH2_NATIVE_LOCAL_SHADOWS
+#ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
         // The existing light functions return zero before BRDF evaluation
         // when radial/hemisphere/cone attenuation is absent. Dead direct
         // lobes need no map query either; avoid 0*undefined PCF coordinates.
         if any(light_contrib!=vec3<f32>(0.0)) {
-            shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -556,9 +556,9 @@ fn apply_pbr_lighting_with_native_shadows(
 
         let transmitted_light_contrib =
             lighting::point_light(light_id, &transmissive_lighting_input, enable_diffuse, true);
-#ifdef DH2_NATIVE_LOCAL_SHADOWS
+#ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -606,13 +606,13 @@ fn apply_pbr_lighting_with_native_shadows(
 #endif
 
         let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
-#ifdef DH2_NATIVE_LOCAL_SHADOWS
+#ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
         // The existing light functions return zero before BRDF evaluation
         // when radial/hemisphere/cone attenuation is absent. Dead direct
         // lobes need no map query either; avoid 0*undefined PCF coordinates.
         if any(light_contrib!=vec3<f32>(0.0)) {
-            shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -641,9 +641,9 @@ fn apply_pbr_lighting_with_native_shadows(
 
         let transmitted_light_contrib =
             lighting::spot_light(light_id, &transmissive_lighting_input, enable_diffuse);
-#ifdef DH2_NATIVE_LOCAL_SHADOWS
+#ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=native_local_visibility(light_id,in.world_position.xyz,in.N,native_shadow_route);
+            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -931,7 +931,7 @@ fn apply_pbr_lighting_with_native_shadows(
     // routing probe light through emission would multiply it by alpha again.
     // PostFX/Luminance/common declares ARKANE_TO_WORLD_LUMINANCE = 139.26.
     // Bevy exposes world radiance; native probe SH is in Arkane HDR units.
-    indirect_light += native_indirect * 139.26;
+    indirect_light += indirect_diffuse * 139.26;
 
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     // Source-component attribution for numerical receiver probes only.

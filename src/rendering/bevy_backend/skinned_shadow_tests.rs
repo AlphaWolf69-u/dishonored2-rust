@@ -4,7 +4,7 @@ use bevy::render::{render_resource::*, renderer::RenderQueue, RenderApp};
 
 #[test]
 #[ignore = "requires GPU; compares four/eight weight shaders to actual installed DXBC stream output"]
-fn native_skin_shadow_installed_dxbc_gpu_parity() {
+fn skin_shadow_installed_dxbc_gpu_parity() {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -69,7 +69,7 @@ fn native_skin_shadow_installed_dxbc_gpu_parity() {
         assert_eq!(cases.len(), *count);
         assert!(cases.iter().all(|v| v.len() == 27));
         let rows = std::array::from_fn(|r| std::array::from_fn(|c| f32::from_bits(vp[r * 4 + c])));
-        let cb = crate::shadow_pass::native_skin_shadow_instance_cb(
+        let cb = crate::shadow_pass::skin_shadow_instance_cb(
             &rows,
             *offset as u32,
             f32::from_bits(vp[16]),
@@ -262,9 +262,9 @@ fn native_skin_shadow_installed_dxbc_gpu_parity() {
             view_formats: &[],
         });
         let image = texture.create_view(&TextureViewDescriptor::default());
-        let sampler = native_shadow_alpha_sampler(device);
+        let sampler = shadow_alpha_sampler(device);
         for (alpha, dither) in [(false, false), (true, false), (true, true)] {
-            let raster = NativeOpaqueShadowPipeline::with_program(
+            let raster = ShadowDepthPipeline::with_program(
                 device,
                 adapter,
                 &RawVertexBufferLayout {
@@ -276,7 +276,7 @@ fn native_skin_shadow_installed_dxbc_gpu_parity() {
                 TextureFormat::Depth24PlusStencil8,
                 FrontFace::Ccw,
                 None,
-                NativeShadowDepthProgram::Skinned {
+                ShadowDepthProgram::Skinned {
                     influences: *influences as u8,
                     alpha,
                     dither,

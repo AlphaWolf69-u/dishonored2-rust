@@ -1,45 +1,45 @@
 //! Native32db10's cropped/rescaled depthCopy draw. WGPU texture copies cannot
 //! replace this path: the native shader transports an authored source region
 //! to the current destination viewport and can merge with LESS_EQUAL depth.
-use crate::shadow_pipeline::{native_depth_stencil_gpu, NativeShadowDepthArray};
+use crate::shadow_pipeline::{depth_stencil_gpu, ShadowDepthArray};
 use bevy::render::{render_resource::*, renderer::RenderDevice};
 
-pub struct NativeShadowDepthCopy {
+pub struct ShadowDepthCopy {
     pipeline: RenderPipeline,
     sampler: Sampler,
     format: TextureFormat,
 }
 
-/// Original32db10 overrides, retaining the actual depthCopy RPD's other bits.
+/// Native32db10 overrides, retaining the actual depthCopy RPD's other bits.
 pub fn copy_draw_state(
-    mut source: crate::render_state::NativeRenderState,
+    mut source: crate::render_state::RenderState,
     merge: bool,
-) -> crate::render_state::NativeRenderState {
+) -> crate::render_state::RenderState {
     source[0] &= 0xfe1f_ffff;
     source[5] = (source[5] & 0xfcff_fff8) | (if merge { 3 } else { 7 }) | 8;
     source
 }
 
-impl NativeShadowDepthCopy {
+impl ShadowDepthCopy {
     pub fn new(
         device: &RenderDevice,
         format: TextureFormat,
-        source: crate::render_state::NativeRenderState,
+        source: crate::render_state::RenderState,
         merge: bool,
     ) -> Result<Self, String> {
         let state = copy_draw_state(source, merge);
-        let raster = crate::render_state::native_raster_state(&state);
+        let raster = crate::render_state::raster_state(&state);
         if raster.cull_mode != 1
             || raster.fill_mode != 3
             || raster.antialiased_line
             || raster.multisample
             || !raster.depth_clip
         {
-            return Err("native depthCopy raster state requires unsupported nonstandard fullscreen behavior".into());
+            return Err("depthCopy raster state requires unsupported nonstandard fullscreen behavior".into());
         }
-        let depth = native_depth_stencil_gpu(&state, format)?;
+        let depth = depth_stencil_gpu(&state, format)?;
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("native depthCopy cropped array draw"),
+            label: Some("depthCopy cropped array draw"),
             source: ShaderSource::Wgsl(
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
@@ -49,7 +49,7 @@ impl NativeShadowDepthCopy {
             ),
         });
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native depthCopy viewport transfer"),
+            label: Some("depthCopy viewport transfer"),
             layout: None,
             vertex: RawVertexState {
                 module: &shader,
@@ -78,7 +78,7 @@ impl NativeShadowDepthCopy {
             cache: None,
         });
         let sampler = device.create_sampler(&SamplerDescriptor {
-            label: Some("native depthCopy POINT sampler"),
+            label: Some("depthCopy POINT sampler"),
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             address_mode_w: AddressMode::ClampToEdge,
@@ -99,14 +99,14 @@ impl NativeShadowDepthCopy {
         &self,
         device: &RenderDevice,
         encoder: &mut CommandEncoder,
-        source: &NativeShadowDepthArray,
+        source: &ShadowDepthArray,
         source_layer: u32,
         source_rect: [i32; 4],
-        destination: &NativeShadowDepthArray,
+        destination: &ShadowDepthArray,
         destination_layer: u32,
         destination_rect: [i32; 4],
     ) -> Result<(), String> {
-        let validate = |target: &NativeShadowDepthArray, layer, rect: [i32; 4]| {
+        let validate = |target: &ShadowDepthArray, layer, rect: [i32; 4]| {
             layer < target.size.depth_or_array_layers
                 && rect[0] >= 0
                 && rect[1] >= 0
@@ -121,7 +121,7 @@ impl NativeShadowDepthCopy {
             || !validate(destination, destination_layer, destination_rect)
         {
             return Err(
-                "native depthCopy source/destination region is invalid or aliases its attachment"
+                "depthCopy source/destination region is invalid or aliases its attachment"
                     .into(),
             );
         }
@@ -137,7 +137,7 @@ impl NativeShadowDepthCopy {
         bytes.extend(source_layer.to_le_bytes());
         bytes.extend([0u8; 12]);
         let constants = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("native depthCopy source crop/slice"),
+            label: Some("depthCopy source crop/slice"),
             contents: &bytes,
             usage: BufferUsages::UNIFORM,
         });
@@ -163,7 +163,7 @@ impl NativeShadowDepthCopy {
             });
         let has_stencil = self.format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("native depthCopy rectangle"),
+            label: Some("depthCopy rectangle"),
             color_attachments: &[],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: &destination.layers[destination_layer as usize],
@@ -220,7 +220,7 @@ mod tests {
             TextureFormat::Depth16Unorm,
             TextureFormat::Depth24PlusStencil8,
         ] {
-            let source = NativeShadowDepthArray::new_with_format(
+            let source = ShadowDepthArray::new_with_format(
                 device,
                 Extent3d {
                     width: 8,
@@ -228,10 +228,10 @@ mod tests {
                     depth_or_array_layers: 2,
                 },
                 format,
-                "native copy source pattern",
+                "copy source pattern",
             )
             .unwrap();
-            let target = NativeShadowDepthArray::new_with_format(
+            let target = ShadowDepthArray::new_with_format(
                 device,
                 Extent3d {
                     width: 10,
@@ -239,13 +239,13 @@ mod tests {
                     depth_or_array_layers: 2,
                 },
                 format,
-                "native copy destination regions",
+                "copy destination regions",
             )
             .unwrap();
             let mut state = [0; 9];
-            crate::render_state::reset_native_render_state(&mut state);
-            let replace = NativeShadowDepthCopy::new(device, format, state, false).unwrap();
-            let merge = NativeShadowDepthCopy::new(device, format, state, true).unwrap();
+            crate::render_state::reset_render_state(&mut state);
+            let replace = ShadowDepthCopy::new(device, format, state, false).unwrap();
+            let merge = ShadowDepthCopy::new(device, format, state, true).unwrap();
             let shader=device.create_and_validate_shader_module(ShaderModuleDescriptor {label:None,source:ShaderSource::Wgsl(r#"
                 @vertex fn vertex(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{
                     let uv=vec2<f32>(f32((i<<1u)&2u),f32(i&2u));return vec4<f32>(uv*vec2(2.0,-2.0)+vec2(-1.0,1.0),0.0,1.0);
@@ -441,7 +441,7 @@ mod tests {
                 }
                 assert!(
                     (actual - expected).abs() <= quantization * 1.01,
-                    "native depthCopy {format:?} layer{layer} ({x},{y}): {actual} vs {expected}"
+                    "depthCopy {format:?} layer{layer} ({x},{y}): {actual} vs {expected}"
                 );
             }
             drop(mapped);
