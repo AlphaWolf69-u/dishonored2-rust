@@ -617,11 +617,7 @@ pub fn point_triangle_distance_squared(point: [f32; 3], triangle: [[f32; 3]; 3])
             if e >= 0.0 {
                 return f.abs();
             }
-            if c <= -e {
-                e * 2.0 + c
-            } else {
-                (-e / c) * e
-            }
+            if c <= -e { e * 2.0 + c } else { (-e / c) * e }
         } else if a <= -d {
             d * 2.0 + a
         } else {

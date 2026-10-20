@@ -67,14 +67,16 @@ compiler beside the executable, on PATH, or in the Windows SDK; an SDK is not a
 launch requirement. `WGPU_DX12_COMPILER=Fxc` retains the FXC fallback explicitly.
 No compiler DLLs or game executables are copied by the launcher.
 
-The rewrite extends sunlight caster depth to at least 150 metres to reduce the
-original game's abrupt shadow cutoffs. Authored longer ranges are preserved.
-Set `DH2_SUN_SHADOW_MIN_EXTENT=0` to use the game's area ranges exactly, or set
-another distance in metres. This explicit rewrite setting leaves the game's
-configuration and assets untouched; longer caster depth can increase shadow cost.
+Sunlight caster depth uses the game's authored area ranges by default.
+Set `DH2_SUN_SHADOW_MIN_EXTENT=150` to extend short ranges to at least 150 metres;
+authored longer ranges are preserved. This optional rewrite setting leaves the
+game's configuration and assets untouched; longer caster depth can increase
+shadow cost. A value of `0` also selects the authored ranges.
 
 ## Controls and diagnostics
 
+- Each launch saves renderer warnings/errors, panic backtraces and the exit result
+  under `%LOCALAPPDATA%/Dishonored2Rewrite/logs/`, even if the console closes.
 - Click the window to capture the mouse; Esc releases it.
 - WASD moves, Shift moves faster, Space jumps. G toggles walking/free-fly;
   Q/E move vertically in free-fly.
@@ -92,8 +94,8 @@ Exact shadow-query reuse, compact world-shadow constants, unchanged local
 atlas reuse, mesh allocation metadata reuse and prepared shadow record reuse
 are enabled by default. Depth passes share compatible pipelines and omit
 material reads only for verified opaque shader paths. Windows also finalizes
-independent command encoders in parallel, using one dedicated worker on hosts
-with at least four logical processors, and records large direct camera phases
+independent command encoders in parallel, using a small dedicated pool sized
+to the host, and records large direct camera phases
 in consecutive chunks. These paths preserve quality settings, selected
 geometry, draw order and shadow coverage. Diagnostic controls retain the
 reference submission paths:

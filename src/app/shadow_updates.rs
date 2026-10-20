@@ -554,8 +554,8 @@ pub(super) fn initialize_native_parallel_receiver_source(
 pub(super) fn publish_native_parallel_shadow_frame(
     owner: Option<Res<NativeParallelShadowOwner>>,
     cpu: Res<NativeParallelShadowCpu>,
-    world: Res<NativeParallelWorldDraws>,
-    models: Res<NativeParallelModelDraws>,
+    mut world: ResMut<NativeParallelWorldDraws>,
+    mut models: ResMut<NativeParallelModelDraws>,
     receiver_source: Res<NativeParallelReceiverSource>,
     scene: Res<SceneData>,
     lights: Query<&DirectionalLight>,
@@ -571,7 +571,7 @@ pub(super) fn publish_native_parallel_shadow_frame(
     if !completion.whole_view_completed(&owner.target_image, owner.dimensions) {
         return;
     }
-    let result=(||->Result<(shadow_pass::NativeParallelReceiverVars,Vec<shadow_pass::NativeShadowLayer>),String>{
+    let result=(||->Result<shadow_pass::NativeParallelReceiverVars,String>{
         let frame=cpu.current.as_ref().ok_or("native CPU frame is unavailable")?;
         let source=receiver_source.0.as_ref().map_err(Clone::clone)?;
         let (world_frame,world)=world.current.as_ref().ok_or("native world submissions are unavailable")?;
@@ -613,23 +613,30 @@ pub(super) fn publish_native_parallel_shadow_frame(
                 frame.frame,frame.camera_view,receiver.world_to_shadow,
                 frame.masks.iter().map(|mask|mask.iter().filter(|&&v|v!=0).count()).collect::<Vec<_>>());
         }
-        let mut layers=world.clone();
-        for (layer,models) in layers.iter_mut().zip(models) {layer.instances.extend(models.iter().cloned());}
-        layers.push(shadow_pass::NativeShadowLayer {
-            ops:shadow_pass::NativeShadowLayerOps {
-                depth:shadow_pass::NativeShadowLoad::Load,stencil:shadow_pass::NativeStencilLoad::Load,
-            },cache:shadow_pass::NativeShadowCacheOp::None,instances:Vec::new(),
-        });
-        Ok((receiver,layers))
+        Ok(receiver)
     })();
     match result {
-        Ok((receiver, layers)) => {
+        Ok(receiver) => {
             let Some(revision) = output.revision.checked_add(1) else {
                 output.state = shadow_pass::NativeShadowSceneState::Unavailable(
                     "native frame revision overflow".into(),
                 );
                 return;
             };
+            // Both draw builders publish once before this sole consumer. Move
+            // their completed lists only after every fallible check succeeds.
+            let mut layers = world.current.take().unwrap().1;
+            for (layer, models) in layers.iter_mut().zip(models.current.take().unwrap().1) {
+                layer.instances.extend(models);
+            }
+            layers.push(shadow_pass::NativeShadowLayer {
+                ops: shadow_pass::NativeShadowLayerOps {
+                    depth: shadow_pass::NativeShadowLoad::Load,
+                    stencil: shadow_pass::NativeStencilLoad::Load,
+                },
+                cache: shadow_pass::NativeShadowCacheOp::None,
+                instances: Vec::new(),
+            });
             if last_error.take().is_some()
                 || !matches!(
                     output.state,
@@ -650,7 +657,7 @@ pub(super) fn publish_native_parallel_shadow_frame(
                 target_image: owner.target_image.clone(),
                 dimensions: owner.dimensions,
                 receiver,
-                layers,
+                layers: layers.into(),
             };
         }
         Err(error) => {

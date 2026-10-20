@@ -279,6 +279,19 @@ impl<'w, 's> RenderContext<'w, 's> {
         self.state.flush_encoder();
     }
 
+    /// Add an independently recorded encoder at this exact submission position.
+    /// Finish it with the common submission batch when parallel finalization is enabled.
+    pub fn add_command_encoder(&mut self, encoder: CommandEncoder) {
+        self.ensure_device();
+        self.state.flush_encoder();
+        let command = if self.state.0.parallel_finalization {
+            PendingCommandBuffer::Recorded(encoder)
+        } else {
+            PendingCommandBuffer::Ready(encoder.finish())
+        };
+        self.state.0.command_buffers.push(command);
+    }
+
     /// Adds a finished command buffer to be submitted later.
     pub fn add_command_buffer(&mut self, command_buffer: CommandBuffer) {
         self.ensure_device();

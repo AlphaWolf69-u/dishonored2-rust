@@ -339,7 +339,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             multi_bounce_flags: 7,
         };
         probes.initialize_indirect_lighting(&parameters);
-        println!("Native probe accumulation: {} probes, source-backed static/sun/occluded sky/per-probe ambient; sun_ground={:?}",probes.probes.len(),parameters.sun_ground_color);
+        println!(
+            "Native probe accumulation: {} probes, source-backed static/sun/occluded sky/per-probe ambient; sun_ground={:?}",
+            probes.probes.len(),
+            parameters.sun_ground_color
+        );
     }
     if let Some(probes) = &environment_probes {
         println!(
@@ -379,6 +383,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Authored light entities resolved: {}", placed_lights.len());
     let mut app = App::new();
+    let compute_threads = env::var("DH2_COMPUTE_THREADS")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?;
+    let mut task_pools = bevy::app::TaskPoolOptions::default();
+    if let Some(threads) = compute_threads {
+        if !(1..=32).contains(&threads) {
+            return Err("DH2_COMPUTE_THREADS must be between 1 and 32".into());
+        }
+        task_pools.compute.min_threads = threads;
+        task_pools.compute.max_threads = threads;
+    }
     let tome_path = PathBuf::from(&level.tome);
     if let Some(tome_bytes) = level.read_tome(catalog.as_ref().unwrap())? {
         let tome_started = Instant::now();
@@ -714,6 +730,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .add_plugins(
             DefaultPlugins
+                .set(bevy::log::LogPlugin {
+                    custom_layer: crate::platform::client_diagnostics::log_layer,
+                    ..default()
+                })
+                .set(bevy::app::TaskPoolPlugin {
+                    task_pool_options: task_pools,
+                })
                 .set(bevy::window::WindowPlugin {
                     primary_window: Some(bevy::window::Window {
                         // Match the installed game's measured r_fullscreen=2 borderless mode.
@@ -750,6 +773,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ..default()
                 }),
         );
+    if compute_threads.is_some() {
+        println!(
+            "Host compute workers: {}",
+            bevy::tasks::ComputeTaskPool::get().thread_num()
+        );
+    }
     // LogTracer initializes `log` at TRACE even when tracing rejects TRACE.
     // wgpu constructs owned resource labels before that later rejection.
     // Match the subscriber's actual upper bound before formatting log args;
@@ -782,7 +811,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(chunk_size) = env::var("DH2_CAMERA_DRAW_CHUNK_SIZE")
         .ok()
         .or_else(|| {
-            (cfg!(target_os = "windows") && parallel_finalization).then(|| "1024".to_owned())
+            (cfg!(target_os = "windows") && parallel_finalization).then(|| "4096".to_owned())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|size| *size > 0 && *size <= 16384)
@@ -810,9 +839,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(threads) = env::var("DH2_RENDER_FINALIZATION_THREADS")
         .ok()
         .or_else(|| {
-            (cfg!(target_os = "windows")
-                && std::thread::available_parallelism().is_ok_and(|count| count.get() >= 4))
-            .then(|| "1".to_owned())
+            if !cfg!(target_os = "windows") {
+                return None;
+            }
+            let count = std::thread::available_parallelism().ok()?.get();
+            // The render thread also finalizes commands in this batch.
+            (count >= 4).then(|| (count / 4).clamp(1, 3).to_string())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|threads| *threads > 0 && *threads <= 32)
@@ -1011,7 +1043,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         app.insert_resource(prepared_images);
     }
-    app.run();
+    if let bevy::app::AppExit::Error(code) = app.run() {
+        return Err(format!("Game runtime exited with error code {code}").into());
+    }
     Ok(())
 }
 
@@ -1041,8 +1075,11 @@ fn read_installed_visuals(catalog: &archive::Catalog) -> Result<String, String> 
 }
 
 pub fn main() {
+    crate::platform::client_diagnostics::initialize();
     if let Err(error) = run() {
+        crate::platform::client_diagnostics::record(&format!("Game client error: {error}"));
         eprintln!("Game client error: {error}");
         std::process::exit(1);
     }
+    crate::platform::client_diagnostics::record("Game client exited normally");
 }

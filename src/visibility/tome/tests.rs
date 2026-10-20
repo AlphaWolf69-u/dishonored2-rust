@@ -98,10 +98,12 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         .unwrap()
         .expect("camera point inside the Tome root");
     assert_eq!(result.nodes_visited, tree.node_count());
-    assert!(result
-        .seeded_records
-        .iter()
-        .any(|seed| { seed.spatial_node_index == 903 && seed.selection.cell_id == 1346 }));
+    assert!(
+        result
+            .seeded_records
+            .iter()
+            .any(|seed| { seed.spatial_node_index == 903 && seed.selection.cell_id == 1346 })
+    );
     assert_eq!(result.branch_states[1] & 0x8000, 0x8000);
     assert!(result.branch_stack.is_active());
     for seed in &result.seeded_records {
@@ -156,10 +158,12 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         .unwrap()
         .expect("camera point inside the Tome root");
     assert!(frustum_result.nodes_visited < unbounded_result.nodes_visited);
-    assert!(frustum_result
-        .seeded_records
-        .iter()
-        .any(|seed| { seed.spatial_node_index == 903 && seed.selection.cell_id == 1346 }));
+    assert!(
+        frustum_result
+            .seeded_records
+            .iter()
+            .any(|seed| { seed.spatial_node_index == 903 && seed.selection.cell_id == 1346 })
+    );
     let mut active_nodes = vec![u32::MAX; tree.node_count().div_ceil(32)];
     let activation = frustum_result
         .activate_next_spatial_record(&tree, point, &mut active_nodes, &mut worklists)
@@ -174,8 +178,8 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
         seed.spatial_node_index == activation.spatial_node_index
             && seed.pending_slot == activation.pending_slot
     }));
-    assert!(tree
-        .seed_ordinary_camera_global_query(
+    assert!(
+        tree.seed_ordinary_camera_global_query(
             &bytes,
             None,
             [100_000.0, 0.0, 0.0],
@@ -188,7 +192,8 @@ fn ordinary_global_pass_seeds_authored_eotw_camera_cell() {
             &mask,
         )
         .unwrap()
-        .is_none());
+        .is_none()
+    );
 }
 
 #[test]
@@ -294,12 +299,14 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
     let target_cell = (link[1] >> 16) as usize;
     assert!(!changed);
     assert_eq!(worklists.cell_states()[target_cell], 0);
-    assert!(coverage
-        .coverage(TraversalCellId {
-            spatial_index: 903,
-            cell_index: target_cell
-        })
-        .is_none());
+    assert!(
+        coverage
+            .coverage(TraversalCellId {
+                spatial_index: 903,
+                cell_index: target_cell
+            })
+            .is_none()
+    );
 
     let rows = SpatialCellSlotRows::parse(&bytes).unwrap();
     assert_eq!(rows.spatial_record_count(), tree.node_count());
@@ -354,16 +361,20 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
     let slot = rows
         .resolve(&mut mapper, 725, &global.branch_states)
         .unwrap();
-    assert!(cross_worklists
-        .pending_cell(slot as usize, cross_cell)
-        .is_none());
+    assert!(
+        cross_worklists
+            .pending_cell(slot as usize, cross_cell)
+            .is_none()
+    );
     assert!(mapper.intermediate_slots().is_empty());
-    assert!(cross_coverage
-        .coverage(TraversalCellId {
-            spatial_index: 725,
-            cell_index: cross_cell as usize,
-        })
-        .is_none());
+    assert!(
+        cross_coverage
+            .coverage(TraversalCellId {
+                spatial_index: 725,
+                cell_index: cross_cell as usize,
+            })
+            .is_none()
+    );
 
     let mut loop_worklists = SpatialCellWorklists::new_for_original_query();
     let mut loop_pool = CellWorkNodePool::new_for_original_query().unwrap();
@@ -418,12 +429,14 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
     .unwrap();
     assert_eq!(processed, camera_seed.work_item);
     assert_eq!(loop_pool.recycled_count(), 1);
-    assert!(loop_coverage
-        .coverage(TraversalCellId {
-            spatial_index: 725,
-            cell_index: cross_cell as usize,
-        })
-        .is_none());
+    assert!(
+        loop_coverage
+            .coverage(TraversalCellId {
+                spatial_index: 725,
+                cell_index: cross_cell as usize,
+            })
+            .is_none()
+    );
     let mut progressed = 1;
     for _ in 0..500 {
         match process_next_active_direct_cell(
@@ -562,14 +575,16 @@ fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
     let bytes = std::fs::read("artifacts/eotw_p_lowchaos.tome").unwrap();
     let tree = SpatialTree::parse(&bytes).unwrap();
     let data = DirectTomeQueryData::parse(&bytes, &tree).unwrap();
-    let point = [-43.0, 138.0, 48.0];
+    // Captured street camera, frame 1164: exercise foreground depth coverage.
+    let point = [-36.467716, 192.6837, 5.6344576];
     let pose = [
-        [1.0, 0.0, 0.0, point[0]],
-        [0.0, 1.0, 0.0, point[1]],
-        [0.0, 0.0, 1.0, point[2]],
+        [-0.72593063, 0.01375436, -0.6876305, point[0]],
+        [-0.68776804, -0.014517557, 0.7257855, point[1]],
+        [4.656613e-10, 0.9998, 0.019998547, point[2]],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let rows = original_render_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
+    let rows =
+        original_world_visibility_query_matrix(80.0, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
     let gates = initial_gate_states(&bytes).unwrap();
     let input = OrdinaryDirectQueryInput {
         camera_point: point,
@@ -633,17 +648,23 @@ fn requested_depth_output_matches_cached_and_uncached_eotw_jobs() {
             .expect("requested descriptor must contain generated depth");
         let populated = grid.iter().filter(|&&value| value != 0.0).count();
         assert!(populated > 0, "{count} jobs produced an empty grid");
-        assert!(grid
-            .iter()
-            .all(|&value| value.is_finite() && (0.0..=1.0).contains(&value)));
+        assert!(
+            grid.iter()
+                .all(|&value| value.is_finite() && (0.0..=1.0).contains(&value))
+        );
         assert!(state.maximum_depth > 0.0 && state.maximum_depth <= 1.0);
         let query = RenderAabbQuery::from_state(state).unwrap();
+        let mut frustum_state = state.clone();
+        frustum_state.depth_grid = None;
+        let frustum = RenderAabbQuery::from_state(&frustum_state).unwrap();
+        // Native 764c0 may reject candidates emitted by the ordinary world
+        // query. The machine-backed dense-scene fixture checks that distinction;
+        // depth must tighten the frustum, not preserve every earlier candidate.
         for &index in output.indices() {
+            let bounds = object_bounds(&bytes, index).unwrap();
             assert!(
-                query
-                    .visible(object_bounds(&bytes, index).unwrap())
-                    .unwrap(),
-                "generated depth rejected accepted object{index} with{count} jobs"
+                !query.visible(bounds).unwrap() || frustum.visible(bounds).unwrap(),
+                "depth admitted outside-frustum object{index} with{count} jobs"
             );
         }
         println!(
@@ -668,9 +689,11 @@ fn grows_and_merges_original_portal_tile_coverage() {
     assert!(destination.merge_new_coverage(&incoming).unwrap());
     assert_eq!(destination.bits, [0, 1, 2, 0, 0, 4, 8, 0, 0, 16, 32, 0]);
     assert!(!destination.merge_new_coverage(&incoming).unwrap());
-    assert!(destination
-        .merge_new_coverage(&PortalTileMask::new([0, 0, 1, 1]).unwrap())
-        .is_err());
+    assert!(
+        destination
+            .merge_new_coverage(&PortalTileMask::new([0, 0, 1, 1]).unwrap())
+            .is_err()
+    );
 }
 
 #[test]
@@ -905,27 +928,29 @@ fn direct_local_link_reaches_unvisited_cell_through_original_work_pool() {
     let mut worklists = SpatialCellWorklists::new(2);
     let mut pool = CellWorkNodePool::new(3).unwrap();
     let mut coverage = VisitedCellCoverage::default();
-    assert!(traverse_direct_unvisited_link_from_pool(
-        &[],
-        0,
-        link,
-        direction,
-        None,
-        [0.0; 3],
-        None,
-        &PortalQueryProjection::new([[0.0; 4]; 4], false),
-        &[],
-        [0, 0, 8, 4],
-        &incoming,
-        4,
-        destination,
-        0,
-        &mut worklists,
-        &mut pool,
-        &mut coverage,
-        |_, _, _| Ok(())
-    )
-    .unwrap());
+    assert!(
+        traverse_direct_unvisited_link_from_pool(
+            &[],
+            0,
+            link,
+            direction,
+            None,
+            [0.0; 3],
+            None,
+            &PortalQueryProjection::new([[0.0; 4]; 4], false),
+            &[],
+            [0, 0, 8, 4],
+            &incoming,
+            4,
+            destination,
+            0,
+            &mut worklists,
+            &mut pool,
+            &mut coverage,
+            |_, _, _| Ok(())
+        )
+        .unwrap()
+    );
     assert_eq!(worklists.cell_states()[1], CellTraversalState::QUEUED | 1);
     assert_eq!(pool.free_count(), 1);
     assert_eq!(coverage.coverage(destination).unwrap(), &incoming);
@@ -960,17 +985,19 @@ fn new_portal_bits_reactivate_a_processed_cell_from_recycled_chain() {
     pool.release_processed(item, worklists.cell_states_mut())
         .unwrap();
     assert_eq!(pool.recycled_count(), 1);
-    assert!(!worklists
-        .reactivate_processed_active_cell(
-            &mut pool,
-            &mut coverage,
-            destination,
-            item,
-            [0, 0, 8, 4],
-            &first,
-            PortalCoveragePath::Unclipped,
-        )
-        .unwrap());
+    assert!(
+        !worklists
+            .reactivate_processed_active_cell(
+                &mut pool,
+                &mut coverage,
+                destination,
+                item,
+                [0, 0, 8, 4],
+                &first,
+                PortalCoveragePath::Unclipped,
+            )
+            .unwrap()
+    );
     assert_eq!(pool.recycled_count(), 1);
     let mut second = first.clone();
     second.bits[0] = 2;
@@ -980,28 +1007,30 @@ fn new_portal_bits_reactivate_a_processed_cell_from_recycled_chain() {
         (40 << 16) | 60,
         (40 << 16) | 60,
     ];
-    assert!(traverse_same_spatial_direct_link_from_pool(
-        &[],
-        0,
-        link,
-        LinkQueryDirection::Volume {
-            center: [50, 50, 50, 0],
-            tolerance: [0; 4],
-        },
-        None,
-        [0.0; 3],
-        None,
-        &PortalQueryProjection::new([[0.0; 4]; 4], false),
-        &[],
-        [0, 0, 8, 4],
-        &second,
-        4,
-        &mut worklists,
-        &mut pool,
-        &mut coverage,
-        |_, _, _| Ok(())
-    )
-    .unwrap());
+    assert!(
+        traverse_same_spatial_direct_link_from_pool(
+            &[],
+            0,
+            link,
+            LinkQueryDirection::Volume {
+                center: [50, 50, 50, 0],
+                tolerance: [0; 4],
+            },
+            None,
+            [0.0; 3],
+            None,
+            &PortalQueryProjection::new([[0.0; 4]; 4], false),
+            &[],
+            [0, 0, 8, 4],
+            &second,
+            4,
+            &mut worklists,
+            &mut pool,
+            &mut coverage,
+            |_, _, _| Ok(())
+        )
+        .unwrap()
+    );
     assert_eq!(pool.recycled_count(), 0);
     assert_eq!(
         worklists.cell_states()[1],
@@ -1037,9 +1066,11 @@ fn visited_cell_coverage_requeues_only_for_new_bits_per_spatial_cell() {
         spatial_index: 569,
         cell_index: 71,
     };
-    assert!(visited
-        .merge_incoming(other_spatial_record, &next_portal)
-        .unwrap());
+    assert!(
+        visited
+            .merge_incoming(other_spatial_record, &next_portal)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1052,12 +1083,16 @@ fn portal_propagation_uses_direct_merge_or_projected_clip_branch() {
     incoming.bits[0] = u32::MAX;
     let mut visited = VisitedCellCoverage::default();
 
-    assert!(visited
-        .propagate_portal(cell, [0, 0, 4, 4], &incoming, PortalCoveragePath::Unclipped)
-        .unwrap());
-    assert!(!visited
-        .propagate_portal(cell, [0, 0, 4, 4], &incoming, PortalCoveragePath::Unclipped)
-        .unwrap());
+    assert!(
+        visited
+            .propagate_portal(cell, [0, 0, 4, 4], &incoming, PortalCoveragePath::Unclipped)
+            .unwrap()
+    );
+    assert!(
+        !visited
+            .propagate_portal(cell, [0, 0, 4, 4], &incoming, PortalCoveragePath::Unclipped)
+            .unwrap()
+    );
     assert_eq!(visited.coverage(cell).unwrap().bits, [u32::MAX]);
 
     let projected = [
@@ -1070,29 +1105,33 @@ fn portal_propagation_uses_direct_merge_or_projected_clip_branch() {
         spatial_index: 12,
         cell_index: 4,
     };
-    assert!(visited
-        .propagate_portal(
-            clipped_cell,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Clipped {
-                projected,
-                face: [[0.0; 4]; 3],
-            },
-        )
-        .unwrap());
+    assert!(
+        visited
+            .propagate_portal(
+                clipped_cell,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Clipped {
+                    projected,
+                    face: [[0.0; 4]; 3],
+                },
+            )
+            .unwrap()
+    );
     assert_eq!(visited.coverage(clipped_cell).unwrap().bits, [0x0000_8000]);
-    assert!(!visited
-        .propagate_portal(
-            clipped_cell,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Clipped {
-                projected,
-                face: [[0.0; 4]; 3],
-            },
-        )
-        .unwrap());
+    assert!(
+        !visited
+            .propagate_portal(
+                clipped_cell,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Clipped {
+                    projected,
+                    face: [[0.0; 4]; 3],
+                },
+            )
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1107,35 +1146,41 @@ fn failed_portal_propagation_preserves_existing_coverage() {
     let before = visited.coverage(cell).unwrap().clone();
     let mut nonfinite = [[0.0; 4]; 4];
     nonfinite[0][0] = f32::NAN;
-    assert!(visited
-        .propagate_portal(
-            cell,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Clipped {
-                projected: nonfinite,
-                face: [[0.0; 4]; 3]
-            }
-        )
-        .is_err());
+    assert!(
+        visited
+            .propagate_portal(
+                cell,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Clipped {
+                    projected: nonfinite,
+                    face: [[0.0; 4]; 3]
+                }
+            )
+            .is_err()
+    );
     assert_eq!(visited.coverage(cell), Some(&before));
     let wider = PortalTileMask::full([0, 0, 2, 1]).unwrap();
-    assert!(visited
-        .propagate_portal(cell, [0, 0, 4, 4], &wider, PortalCoveragePath::Unclipped)
-        .is_err());
+    assert!(
+        visited
+            .propagate_portal(cell, [0, 0, 4, 4], &wider, PortalCoveragePath::Unclipped)
+            .is_err()
+    );
     assert_eq!(visited.coverage(cell), Some(&before));
     // The growth branch must also roll back if its later raster validation fails.
-    assert!(visited
-        .propagate_portal(
-            cell,
-            [0, 0, 16, 4],
-            &wider,
-            PortalCoveragePath::Clipped {
-                projected: nonfinite,
-                face: [[0.0; 4]; 3]
-            }
-        )
-        .is_err());
+    assert!(
+        visited
+            .propagate_portal(
+                cell,
+                [0, 0, 16, 4],
+                &wider,
+                PortalCoveragePath::Clipped {
+                    projected: nonfinite,
+                    face: [[0.0; 4]; 3]
+                }
+            )
+            .is_err()
+    );
     assert_eq!(visited.coverage(cell), Some(&before));
 }
 
@@ -1268,22 +1313,30 @@ fn rasterizes_original_small_and_medium_portal_tile_branches() {
     incoming.bits.fill(u32::MAX);
     let projected = [[0.0; 4]; 4];
     let face = [[0.0; 4]; 3];
-    assert!(destination
-        .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
-        .unwrap());
+    assert!(
+        destination
+            .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
+            .unwrap()
+    );
     assert_eq!(destination.bits[0], 0x0000_ffff);
-    assert!(!destination
-        .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
-        .unwrap());
+    assert!(
+        !destination
+            .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
+            .unwrap()
+    );
     destination.bits[0] = 0x0000_ff00;
     incoming.bits[0] = 0x5555_5555;
-    assert!(destination
-        .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
-        .unwrap());
+    assert!(
+        destination
+            .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
+            .unwrap()
+    );
     assert_eq!(destination.bits[0], 0x0000_ff55);
-    assert!(destination
-        .rasterize_projected_box(&incoming, [0, 0, 16, 12], projected, face)
-        .unwrap());
+    assert!(
+        destination
+            .rasterize_projected_box(&incoming, [0, 0, 16, 12], projected, face)
+            .unwrap()
+    );
     incoming.bits[0] = u32::MAX;
     let mut outlined = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     let projected = [
@@ -1292,9 +1345,11 @@ fn rasterizes_original_small_and_medium_portal_tile_branches() {
         [1.0; 4],
         [0.0; 4],
     ];
-    assert!(outlined
-        .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
-        .unwrap());
+    assert!(
+        outlined
+            .rasterize_projected_box(&incoming, [0, 0, 4, 4], projected, face)
+            .unwrap()
+    );
     assert_eq!(outlined.bits[0], 0x0000_8000);
 }
 
@@ -1948,7 +2003,9 @@ fn prepared_spatial_query_cpu_measurement() {
     }
     let prepared_time = start.elapsed();
     assert_eq!(repeated, prepared);
-    eprintln!("spatial CPU synthetic {count} boxes: per-object setup={repeated_time:?}, once-per-frame setup={prepared_time:?}; identical bools; not FPS");
+    eprintln!(
+        "spatial CPU synthetic {count} boxes: per-object setup={repeated_time:?}, once-per-frame setup={prepared_time:?}; identical bools; not FPS"
+    );
 }
 
 #[test]
@@ -2431,11 +2488,13 @@ fn render_job_merge_keeps_order_metrics_and_clears_failed_jobs() {
     assert_eq!(output.cell_indices(), &[3]);
     assert_eq!(output.state.as_ref().unwrap().viewport, [0, 0, 64, 64]);
     jobs[0].result = Err("first worker also failed".into());
-    assert!(merge_render_query_outputs(&jobs)
-        .unwrap()
-        .unwrap()
-        .indices()
-        .is_empty());
+    assert!(
+        merge_render_query_outputs(&jobs)
+            .unwrap()
+            .unwrap()
+            .indices()
+            .is_empty()
+    );
     jobs[0].result = Ok(None);
     jobs[1].result = Ok(None);
     let empty = merge_render_query_outputs(&jobs).unwrap().unwrap();
@@ -2477,9 +2536,11 @@ fn render_job_merge_grows_beyond_per_worker_query_capacity() {
     assert_eq!(&output.indices()[..capacity], &output.indices()[capacity..]);
     for job in 0..2 {
         let entries = job * capacity..(job + 1) * capacity;
-        assert!(output.area_metrics()[entries]
-            .iter()
-            .all(|&area| area == Some(job as f32 + 0.25)));
+        assert!(
+            output.area_metrics()[entries]
+                .iter()
+                .all(|&area| area == Some(job as f32 + 0.25))
+        );
     }
 }
 
@@ -2750,16 +2811,18 @@ fn traversal_link_precheck_selects_original_direction_and_gate_branches() {
         .unwrap(),
         TraversalLinkPrecheck::Gates { open: false }
     );
-    assert!(traversal_link_precheck(
-        &bytes,
-        gated,
-        LinkQueryDirection::Point {
-            axis_sides: [false; 4],
-        },
-        Some(&[1]),
-    )
-    .unwrap()
-    .allows_traversal());
+    assert!(
+        traversal_link_precheck(
+            &bytes,
+            gated,
+            LinkQueryDirection::Point {
+                axis_sides: [false; 4],
+            },
+            Some(&[1]),
+        )
+        .unwrap()
+        .allows_traversal()
+    );
 }
 
 #[test]
@@ -3255,9 +3318,11 @@ fn native_shadow_caster_query_returns_ordered_candidate_ids() {
             .collect::<Vec<_>>(),
         capacities
     );
-    assert!(scratch
-        .query_directional_candidates(&tome, &bytes, [f32::NAN, 0.0, 0.0], input)
-        .is_err());
+    assert!(
+        scratch
+            .query_directional_candidates(&tome, &bytes, [f32::NAN, 0.0, 0.0], input)
+            .is_err()
+    );
     assert_eq!(scratch.candidate_ids(0), Some(&[][..]));
     assert_eq!(scratch.candidate_ids(1), Some(&[][..]));
 
@@ -3587,13 +3652,17 @@ fn optional_object_distance_table_is_indexed_and_preserves_nan() {
     let second = object_distance_bounds(&bytes, 1).unwrap().unwrap();
     assert_eq!(second[0], [-5.0, -6.0, -7.0, 25.0]);
     assert!(second[1][3].is_nan());
-    assert!(object_distance_bounds(&bytes, 2)
-        .unwrap_err()
-        .contains("out of range"));
+    assert!(
+        object_distance_bounds(&bytes, 2)
+            .unwrap_err()
+            .contains("out of range")
+    );
     bytes.truncate(0x9f);
-    assert!(object_distance_bounds(&bytes, 1)
-        .unwrap_err()
-        .contains("truncated"));
+    assert!(
+        object_distance_bounds(&bytes, 1)
+            .unwrap_err()
+            .contains("truncated")
+    );
 }
 
 #[test]
@@ -3897,21 +3966,29 @@ fn projected_rectangle_output_selects_original_portal_or_depth_branch() {
     portal.bits[0] = 1;
     let mut output = VisibleObjectIndexOutput::new(4, 4);
 
-    assert!(output
-        .push_if_rectangle_visible(1, &portal, pixels, None)
-        .unwrap());
-    assert!(!output
-        .push_if_rectangle_visible(1, &portal, pixels, None)
-        .unwrap());
+    assert!(
+        output
+            .push_if_rectangle_visible(1, &portal, pixels, None)
+            .unwrap()
+    );
+    assert!(
+        !output
+            .push_if_rectangle_visible(1, &portal, pixels, None)
+            .unwrap()
+    );
 
     let mut depths = vec![0.0; 64 * 64];
     depths[0] = 0.75;
-    assert!(!output
-        .push_if_rectangle_visible(2, &portal, pixels, Some((&depths, 0.8)))
-        .unwrap());
-    assert!(output
-        .push_if_rectangle_visible(2, &portal, pixels, Some((&depths, 0.75)))
-        .unwrap());
+    assert!(
+        !output
+            .push_if_rectangle_visible(2, &portal, pixels, Some((&depths, 0.8)))
+            .unwrap()
+    );
+    assert!(
+        output
+            .push_if_rectangle_visible(2, &portal, pixels, Some((&depths, 0.75)))
+            .unwrap()
+    );
     assert_eq!(output.indices(), [1, 2]);
     assert_eq!(output.count(), 2);
 }
@@ -4068,7 +4145,18 @@ fn visible_cell_output_matches_installed_instructions() {
             .split_whitespace()
             .map(|v| v.parse().unwrap())
             .collect();
-        let [index_bits, run_bits, domain, capacity, first, count, remap, base, requested, seed_count]: [u32; 10] = values[..10].try_into().unwrap();
+        let [
+            index_bits,
+            run_bits,
+            domain,
+            capacity,
+            first,
+            count,
+            remap,
+            base,
+            requested,
+            seed_count,
+        ]: [u32; 10] = values[..10].try_into().unwrap();
         let mut at = 10;
         let seeds = &values[at..at + seed_count as usize];
         at += seed_count as usize;
@@ -4168,9 +4256,11 @@ fn visible_cell_mask_and_invalid_stream_boundaries() {
         .append_visible_cell_indices(&[], usize::MAX, None, None)
         .unwrap();
     let mut output = VisibleCellIndexOutput::new(1, 0);
-    assert!(cells
-        .append_visible_cell_indices(&[], 0, None, Some(&mut output))
-        .is_err());
+    assert!(
+        cells
+            .append_visible_cell_indices(&[], 0, None, Some(&mut output))
+            .is_err()
+    );
     assert!(output.push_unique(1).is_err());
     output.push_unique(0).unwrap();
     assert_eq!(output.count(), 1);
@@ -4178,15 +4268,19 @@ fn visible_cell_mask_and_invalid_stream_boundaries() {
     assert_eq!(cell_visibility_mask(1, output.indices()).unwrap(), [0]);
     let cells = visible_cell_test_tree(0, 1);
     let mut bytes = vec![0; 0x64];
-    assert!(cells
-        .append_visible_cell_indices(&bytes, 0, None, Some(&mut output))
-        .unwrap_err()
-        .contains("zero-width"));
+    assert!(
+        cells
+            .append_visible_cell_indices(&bytes, 0, None, Some(&mut output))
+            .unwrap_err()
+            .contains("zero-width")
+    );
     bytes[0x54..0x58].copy_from_slice(&(1u32 << 15).to_le_bytes());
-    assert!(cells
-        .append_visible_cell_indices(&bytes, 0, None, Some(&mut output))
-        .unwrap_err()
-        .contains("zero-length"));
+    assert!(
+        cells
+            .append_visible_cell_indices(&bytes, 0, None, Some(&mut output))
+            .unwrap_err()
+            .contains("zero-length")
+    );
 }
 
 #[test]
@@ -4256,9 +4350,10 @@ fn resolves_direct_link_to_internal_record_cell_table() {
             cell_index: 2
         })
     );
-    assert!(tree
-        .direct_link_destination(&bytes, [1, 3 << 16, 0, 0])
-        .is_err());
+    assert!(
+        tree.direct_link_destination(&bytes, [1, 3 << 16, 0, 0])
+            .is_err()
+    );
     assert_eq!(
         tree.direct_link_destination(&bytes, [1 << 28, 0, 0, 0])
             .unwrap(),
@@ -4467,46 +4562,58 @@ fn original_query_root_gate_matches_all_three_volume_modes() {
         offsets: vec![1],
         global_distance_scales: None,
     };
-    assert!(original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::Bounds([[-3.0; 3], [3.0; 3]])
-    )
-    .unwrap());
-    assert!(!original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::Bounds([[-1.0; 3], [1.0; 3]])
-    )
-    .unwrap());
-    assert!(original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::FourCorners([
-            [0.0, 0.0, 0.0],
-            [-1.0, 0.5, 0.0],
-            [0.5, -0.5, 0.5],
-            [1.0, 0.0, -1.0],
-        ])
-    )
-    .unwrap());
-    assert!(!original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::FourCorners([
-            [0.0, 0.0, 0.0],
-            [-1.0, 0.5, 0.0],
-            [0.5, -0.5, 0.5],
-            [3.0, 0.0, 0.0],
-        ])
-    )
-    .unwrap());
-    assert!(original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::Point([-2.0, 0.0, 1.0])
-    )
-    .unwrap());
-    assert!(!original_query_accepts_tome_root(
-        &tree,
-        OriginalSpatialQueryVolume::Point([2.01, 0.0, 0.0])
-    )
-    .unwrap());
+    assert!(
+        original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::Bounds([[-3.0; 3], [3.0; 3]])
+        )
+        .unwrap()
+    );
+    assert!(
+        !original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::Bounds([[-1.0; 3], [1.0; 3]])
+        )
+        .unwrap()
+    );
+    assert!(
+        original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::FourCorners([
+                [0.0, 0.0, 0.0],
+                [-1.0, 0.5, 0.0],
+                [0.5, -0.5, 0.5],
+                [1.0, 0.0, -1.0],
+            ])
+        )
+        .unwrap()
+    );
+    assert!(
+        !original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::FourCorners([
+                [0.0, 0.0, 0.0],
+                [-1.0, 0.5, 0.0],
+                [0.5, -0.5, 0.5],
+                [3.0, 0.0, 0.0],
+            ])
+        )
+        .unwrap()
+    );
+    assert!(
+        original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::Point([-2.0, 0.0, 1.0])
+        )
+        .unwrap()
+    );
+    assert!(
+        !original_query_accepts_tome_root(
+            &tree,
+            OriginalSpatialQueryVolume::Point([2.01, 0.0, 0.0])
+        )
+        .unwrap()
+    );
 }
 
 #[test]
@@ -4523,12 +4630,14 @@ fn newly_reached_active_cell_is_prepended_and_marked_queued() {
     );
     assert_eq!(worklists.cell_states(), &[0, 0x8002, 0]);
     assert!(worklists.prepend_active_cell(item).is_err());
-    assert!(worklists
-        .prepend_active_cell(CellWorkItem {
-            entry_id: 3,
-            cell_index: 1,
-        })
-        .is_err());
+    assert!(
+        worklists
+            .prepend_active_cell(CellWorkItem {
+                entry_id: 3,
+                cell_index: 1,
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -4554,8 +4663,8 @@ fn work_node_pool_allocates_fresh_ids_then_flushes_recycled_head() {
         .unwrap();
     assert_eq!((first.entry_id, second.entry_id), (1, 2));
     assert_eq!(pool.free_count(), 0);
-    assert!(pool
-        .allocate(
+    assert!(
+        pool.allocate(
             TraversalCellId {
                 spatial_index: 9,
                 cell_index: 2,
@@ -4565,7 +4674,8 @@ fn work_node_pool_allocates_fresh_ids_then_flushes_recycled_head() {
             |_, _, _| Ok(())
         )
         .unwrap()
-        .is_none());
+        .is_none()
+    );
 
     let mut mask = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     mask.bits[0] = 1;
@@ -4626,8 +4736,8 @@ fn failed_recycled_cell_flush_keeps_pool_head_and_state() {
     let mut mask = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     mask.bits[0] = 1;
     coverage.merge_incoming(owner, &mask).unwrap();
-    assert!(pool
-        .allocate(
+    assert!(
+        pool.allocate(
             TraversalCellId {
                 spatial_index: 7,
                 cell_index: 0,
@@ -4636,7 +4746,8 @@ fn failed_recycled_cell_flush_keeps_pool_head_and_state() {
             &mut coverage,
             |_, _, _| Err("candidate query failed".into())
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(pool.recycled_count(), 1);
     assert_eq!(states[1], 0x4001);
     assert!(coverage.coverage(owner).is_some());
@@ -4686,9 +4797,11 @@ fn record_end_flush_queries_recycled_cells_then_returns_them_to_free_head() {
     assert_eq!(states, [0, 1, 2]);
     assert_eq!(pool.free_count(), 2);
     assert_eq!(pool.recycled_count(), 0);
-    assert!(owners
-        .iter()
-        .all(|owner| coverage.coverage(*owner).is_none()));
+    assert!(
+        owners
+            .iter()
+            .all(|owner| coverage.coverage(*owner).is_none())
+    );
 
     let reused = pool
         .allocate(
@@ -4720,18 +4833,20 @@ fn new_portal_coverage_schedules_unvisited_cells_by_spatial_record() {
         cell_index: 1,
     };
 
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell(
-            &mut coverage,
-            active_id,
-            3,
-            true,
-            active,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Unclipped,
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell(
+                &mut coverage,
+                active_id,
+                3,
+                true,
+                active,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Unclipped,
+            )
+            .unwrap()
+    );
     assert_eq!(
         worklists.active_worklist().entries().collect::<Vec<_>>(),
         [active]
@@ -4746,35 +4861,39 @@ fn new_portal_coverage_schedules_unvisited_cells_by_spatial_record() {
         spatial_index: 9,
         cell_index: 2,
     };
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell(
-            &mut coverage,
-            pending_id,
-            7,
-            false,
-            pending,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Unclipped,
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell(
+                &mut coverage,
+                pending_id,
+                7,
+                false,
+                pending,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Unclipped,
+            )
+            .unwrap()
+    );
     assert_eq!(worklists.pending_cell(7, 2), Some(pending));
 
     // New coverage for an already pending cell updates its mask without
     // allocating a second pending node.
     incoming.bits[0] = 2;
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell(
-            &mut coverage,
-            pending_id,
-            7,
-            false,
-            pending,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Unclipped,
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell(
+                &mut coverage,
+                pending_id,
+                7,
+                false,
+                pending,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Unclipped,
+            )
+            .unwrap()
+    );
     assert_eq!(worklists.pending_cell(7, 2), Some(pending));
 }
 
@@ -4788,38 +4907,42 @@ fn pooled_portal_transition_returns_unused_node_before_active_enqueue() {
         cell_index: 1,
     };
     let mut no_bits = PortalTileMask::new([0, 0, 1, 1]).unwrap();
-    assert!(!worklists
-        .propagate_and_schedule_unvisited_cell_from_pool(
-            &mut pool,
-            &mut coverage,
-            destination,
-            0,
-            true,
-            [0, 0, 4, 4],
-            &no_bits,
-            PortalCoveragePath::Unclipped,
-            |_, _, _| Ok(()),
-        )
-        .unwrap());
+    assert!(
+        !worklists
+            .propagate_and_schedule_unvisited_cell_from_pool(
+                &mut pool,
+                &mut coverage,
+                destination,
+                0,
+                true,
+                [0, 0, 4, 4],
+                &no_bits,
+                PortalCoveragePath::Unclipped,
+                |_, _, _| Ok(()),
+            )
+            .unwrap()
+    );
     assert_eq!(pool.free_count(), 1);
     assert!(worklists.active_worklist().is_empty());
     assert_eq!(worklists.cell_states()[1], 0);
     assert!(coverage.coverage(destination).is_none());
 
     no_bits.bits[0] = 1;
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell_from_pool(
-            &mut pool,
-            &mut coverage,
-            destination,
-            0,
-            true,
-            [0, 0, 4, 4],
-            &no_bits,
-            PortalCoveragePath::Unclipped,
-            |_, _, _| Ok(()),
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell_from_pool(
+                &mut pool,
+                &mut coverage,
+                destination,
+                0,
+                true,
+                [0, 0, 4, 4],
+                &no_bits,
+                PortalCoveragePath::Unclipped,
+                |_, _, _| Ok(()),
+            )
+            .unwrap()
+    );
     assert_eq!(
         worklists.active_worklist().entries().collect::<Vec<_>>(),
         [CellWorkItem {
@@ -4843,38 +4966,42 @@ fn pooled_cross_spatial_transition_reuses_existing_pending_node() {
     worklists.cell_states_mut()[2] = 0x8002;
     let mut mask = PortalTileMask::new([0, 0, 1, 1]).unwrap();
     mask.bits[0] = 1;
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell_from_pool(
-            &mut pool,
-            &mut coverage,
-            destination,
-            7,
-            false,
-            [0, 0, 4, 4],
-            &mask,
-            PortalCoveragePath::Unclipped,
-            |_, _, _| Ok(()),
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell_from_pool(
+                &mut pool,
+                &mut coverage,
+                destination,
+                7,
+                false,
+                [0, 0, 4, 4],
+                &mask,
+                PortalCoveragePath::Unclipped,
+                |_, _, _| Ok(()),
+            )
+            .unwrap()
+    );
     let first = worklists.pending_cell(7, 2).unwrap();
     assert_eq!(first.entry_id, 1);
     assert_eq!(pool.free_count(), 1);
     assert_eq!(worklists.cell_states()[2], 0x8002);
 
     mask.bits[0] = 2;
-    assert!(worklists
-        .propagate_and_schedule_unvisited_cell_from_pool(
-            &mut pool,
-            &mut coverage,
-            destination,
-            7,
-            false,
-            [0, 0, 4, 4],
-            &mask,
-            PortalCoveragePath::Unclipped,
-            |_, _, _| Ok(()),
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_unvisited_cell_from_pool(
+                &mut pool,
+                &mut coverage,
+                destination,
+                7,
+                false,
+                [0, 0, 4, 4],
+                &mask,
+                PortalCoveragePath::Unclipped,
+                |_, _, _| Ok(()),
+            )
+            .unwrap()
+    );
     assert_eq!(worklists.pending_cell(7, 2), Some(first));
     assert_eq!(pool.free_count(), 1);
 }
@@ -4902,20 +5029,22 @@ fn cross_spatial_portal_scheduling_resolves_original_pending_slot() {
     // Target spatial record 1 selects bits 2..3. Its packed row has a
     // set first bit and then a clear bit; the scan resolves the pending
     // list head to slot 1 from the global branch states.
-    assert!(worklists
-        .propagate_and_schedule_cross_spatial_cell_from_pool(
-            &mut mapper,
-            &mut pool,
-            &mut coverage,
-            &rows,
-            destination,
-            &mut global_branch_states,
-            [0, 0, 4, 4],
-            &incoming,
-            PortalCoveragePath::Unclipped,
-            |_, _, _| Ok(()),
-        )
-        .unwrap());
+    assert!(
+        worklists
+            .propagate_and_schedule_cross_spatial_cell_from_pool(
+                &mut mapper,
+                &mut pool,
+                &mut coverage,
+                &rows,
+                destination,
+                &mut global_branch_states,
+                [0, 0, 4, 4],
+                &incoming,
+                PortalCoveragePath::Unclipped,
+                |_, _, _| Ok(()),
+            )
+            .unwrap()
+    );
 
     let pending = worklists.pending_cell(1, 2).unwrap();
     assert_eq!(worklists.cell_states()[2], 0);
@@ -5023,12 +5152,14 @@ fn selects_children_from_packed_codes_and_planes() {
         tree.record_leaves_containing_point([0.0, 0.0, 0.0]),
         vec![1, 2]
     );
-    assert!(tree
-        .record_leaves_containing_point([f32::NAN, 0.0, 0.0])
-        .is_empty());
-    assert!(tree
-        .record_leaves_intersecting_aabb([[3.0, 0.0, 0.0], [4.0, 1.0, 1.0]])
-        .is_empty());
+    assert!(
+        tree.record_leaves_containing_point([f32::NAN, 0.0, 0.0])
+            .is_empty()
+    );
+    assert!(
+        tree.record_leaves_intersecting_aabb([[3.0, 0.0, 0.0], [4.0, 1.0, 1.0]])
+            .is_empty()
+    );
     let camera_planes = [
         [1.0, 0.0, 0.0, 2.0],
         [-1.0, 0.0, 0.0, -0.1],
@@ -5056,9 +5187,14 @@ fn selects_children_from_packed_codes_and_planes() {
             .unwrap(),
         vec![0, 1]
     );
-    assert!(tree
-        .record_nodes_for_camera_query_prefilter([4.0, 0.0, 0.0], &camera_planes[..5], [0.0; 3])
-        .is_err());
+    assert!(
+        tree.record_nodes_for_camera_query_prefilter(
+            [4.0, 0.0, 0.0],
+            &camera_planes[..5],
+            [0.0; 3]
+        )
+        .is_err()
+    );
     let left_quad = [
         [-1.0, -0.5, -0.5],
         [-1.0, 0.5, -0.5],
@@ -5137,10 +5273,12 @@ fn parses_spatial_record_without_local_split_tree() {
     assert_eq!(cells.node_count(), 0);
     assert_eq!(cells.cell_count(), 1);
     assert_eq!(cells.code_counts(), (0, 0, 0));
-    assert!(cells
-        .cell_for_point(&data, [1.0, 1.0, 1.0])
-        .unwrap()
-        .is_none());
+    assert!(
+        cells
+            .cell_for_point(&data, [1.0, 1.0, 1.0])
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         cells.traversal_records(&data, 0).unwrap(),
         Vec::<[u32; 4]>::new()

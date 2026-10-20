@@ -141,7 +141,8 @@ fn fragment(
         }
 #endif
         if compiled_misc.z==6u {
-            var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz);
+            let clip_w=(view.clip_from_world*vertex_output.world_position).w;
+            var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz,clip_w);
             if (surface.filling_flags.x & 2u)!=0u {
                 var N=pbr_input.N;
 #ifdef VERTEX_TANGENTS

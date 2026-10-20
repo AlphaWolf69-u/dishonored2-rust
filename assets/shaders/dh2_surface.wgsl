@@ -83,13 +83,17 @@ const compiled_native_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFS
 #else
 #import bevy_pbr::mesh_view_bindings::globals
 #endif
-#import dh2_filling::{filling_pan_uv,filling_lookup_coordinate,filling_transfer_color,filling_step}
-fn filling_plane_alpha(alpha:f32,world:vec3<f32>)->f32 {
+#import dh2_filling::{filling_pan_uv,filling_lookup_coordinate,filling_transfer_color,filling_step,filling_view_fade}
+fn filling_plane_alpha(alpha:f32,world:vec3<f32>,clip_w:f32)->f32 {
     let p=surface.filling;
+    var faded_alpha=alpha;
+    if (#{DH2_FILLING_FLAGS}u & 16u)!=0u {
+        faded_alpha*=filling_view_fade(clip_w,p[10].z,p[10].w);
+    }
     let game_position=vec3(world.x,-world.z,world.y);
     let plane=dot(p[9],vec4(game_position,1.0));
     if plane<0.0 {discard;}
-    return alpha*p[8].x*filling_step(0.0,p[10].x,plane);
+    return faded_alpha*p[8].x*filling_step(0.0,p[10].x,plane);
 }
 fn filling_colour(uv:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> {
     let p=surface.filling;

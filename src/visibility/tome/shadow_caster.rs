@@ -7,10 +7,10 @@
 //! the native receiver initializer or decode unverified instance flag bits.
 
 use super::{
-    active_query_planes_into, append_object_ids_for_index, classify_native_receiver_bounds, float,
-    object_bounds, object_count, object_distance_bounds, object_distance_rejection_mask,
-    query_bounds_accepts_aabb, recorded_bounds, word, NativeReceiverBoundsClass,
-    VisibleObjectIndexOutput,
+    NativeReceiverBoundsClass, VisibleObjectIndexOutput, active_query_planes_into,
+    append_object_ids_for_index, classify_native_receiver_bounds, float, object_bounds,
+    object_count, object_distance_bounds, object_distance_rejection_mask,
+    query_bounds_accepts_aabb, recorded_bounds, word,
 };
 use std::ops::Range;
 
@@ -421,11 +421,7 @@ impl NativeCasterDirection {
         let direction = direction.map(|value| f32::from_bits(value.to_bits() ^ 0x8000_0000));
         let absolute = direction.map(|value| value.to_bits() & 0x7fff_ffff);
         let axis = if absolute[0] < absolute[1] {
-            if absolute[1] < absolute[2] {
-                2
-            } else {
-                1
-            }
+            if absolute[1] < absolute[2] { 2 } else { 1 }
         } else if absolute[2] <= absolute[0] {
             0
         } else {
@@ -547,17 +543,9 @@ pub fn native_point_occlusion_visible(
     let delta: [f32; 3] = std::array::from_fn(|axis| point[axis] - origin[axis]);
     let absolute = delta.map(|value| value.to_bits() & 0x7fffffff);
     let axis = if absolute[0] < absolute[1] {
-        if absolute[1] < absolute[2] {
-            2
-        } else {
-            1
-        }
+        if absolute[1] < absolute[2] { 2 } else { 1 }
     } else {
-        if absolute[2] <= absolute[0] {
-            0
-        } else {
-            2
-        }
+        if absolute[2] <= absolute[0] { 0 } else { 2 }
     };
     let direction = NativeCasterDirection::from_receiver_direction(
         delta.map(|value| f32::from_bits(value.to_bits() ^ 0x80000000)),
@@ -1326,15 +1314,17 @@ mod tests {
         assert!(masks.publish(&hit, &[vec![1, 2]]).is_err());
         assert_eq!(masks.masks(), &[vec![0, 0]]);
         masks.publish(&hit, &[vec![0]]).unwrap();
-        assert!(masks
-            .publish(
-                &[NativeGlobalShadowCasterHit {
-                    tome_index: 1,
-                    cascade_mask: 1
-                },],
-                &[vec![0]]
-            )
-            .is_err());
+        assert!(
+            masks
+                .publish(
+                    &[NativeGlobalShadowCasterHit {
+                        tome_index: 1,
+                        cascade_mask: 1
+                    },],
+                    &[vec![0]]
+                )
+                .is_err()
+        );
         assert_eq!(masks.masks(), &[vec![0, 0]]);
         masks.publish(&hit, &[vec![0]]).unwrap();
         assert!(masks.suppress_parents([(0, &[2][..])]).is_err());
@@ -2037,10 +2027,13 @@ mod tests {
                 "original receiver count case {case}"
             );
             for (index, value) in output.iter().flatten().enumerate() {
-                assert_eq!(value.to_bits(), words[52 + index],
+                assert_eq!(
+                    value.to_bits(),
+                    words[52 + index],
                     "original receiver case {case}, word {index}, actual plane {:?}, expected plane {:?}",
                     output[index / 4].map(f32::to_bits),
-                    &words[52 + (index / 4) * 4..56 + (index / 4) * 4]);
+                    &words[52 + (index / 4) * 4..56 + (index / 4) * 4]
+                );
             }
             cases += 1;
         }
@@ -2255,10 +2248,12 @@ mod tests {
                 suppressed_child_index: 0,
             },
         ];
-        assert!(scratch
-            .select(&tome, &visible, &[true; 3], &receivers, &chained_edges)
-            .unwrap_err()
-            .contains("chained"));
+        assert!(
+            scratch
+                .select(&tome, &visible, &[true; 3], &receivers, &chained_edges)
+                .unwrap_err()
+                .contains("chained")
+        );
         assert_eq!(scratch.selected_indices(0), Some(&[][..]));
     }
 
@@ -2277,17 +2272,21 @@ mod tests {
         visible.push_unique(1).unwrap();
         visible.push_unique(2).unwrap();
         let mut scratch = ShadowCasterSelectionScratch::new(3, 1).unwrap();
-        assert!(scratch
-            .select(&tome, &visible, &[true; 3], &receivers, &[])
-            .unwrap_err()
-            .contains("truncated"));
+        assert!(
+            scratch
+                .select(&tome, &visible, &[true; 3], &receivers, &[])
+                .unwrap_err()
+                .contains("truncated")
+        );
 
         let mut visible = VisibleObjectIndexOutput::new(3, 3);
         visible.push_unique(1).unwrap();
-        assert!(scratch
-            .select(&tome, &visible, &[true], &receivers, &[])
-            .unwrap_err()
-            .contains("flag table"));
+        assert!(
+            scratch
+                .select(&tome, &visible, &[true], &receivers, &[])
+                .unwrap_err()
+                .contains("flag table")
+        );
         assert_eq!(
             scratch
                 .select(&tome, &visible, &[false; 3], &receivers, &[])

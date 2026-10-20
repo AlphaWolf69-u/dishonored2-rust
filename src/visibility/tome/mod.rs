@@ -18,8 +18,8 @@ mod simd_predicates;
 #[path = "tome_sphere.rs"]
 mod sphere;
 pub use sphere::{
-    sphere_portal_gates_allow, SphereBatchResult, SphereCellGraph, SphereCellResult,
-    SphereCellWorker,
+    SphereBatchResult, SphereCellGraph, SphereCellResult, SphereCellWorker,
+    sphere_portal_gates_allow,
 };
 
 #[derive(Debug)]
@@ -899,6 +899,7 @@ pub fn query_viewport_tile_bounds(viewport: [i32; 4]) -> [u8; 4] {
     ]
 }
 
+#[inline(always)]
 pub fn projected_object_pixel_rect(
     projected: [f32; 4],
     query_tile_bounds: [u8; 4],
@@ -1072,6 +1073,7 @@ impl VisibleObjectIndexOutput {
     /// object. FUN_140a82710 checks this bit before loading distance/geometry
     /// bounds. Only distance rejection marks a failed visibility test: portal
     /// or projection rejection must remain eligible in another cell.
+    #[inline(always)]
     pub fn contains(&self, index: u32) -> Result<bool, String> {
         if index as usize >= self.object_count {
             return Err("visible Tome object index exceeds output bitset".into());
@@ -1083,6 +1085,7 @@ impl VisibleObjectIndexOutput {
         Ok(*slot & (1u32 << (index % 32)) != 0)
     }
 
+    #[inline(always)]
     fn push_unique_with_area_metric(
         &mut self,
         index: u32,
@@ -1125,6 +1128,7 @@ impl VisibleObjectIndexOutput {
         self.push_if_rectangle_visible_with_area_metric(index, portal, pixels, depth_grid, None)
     }
 
+    #[inline(always)]
     fn push_if_rectangle_visible_with_area_metric(
         &mut self,
         index: u32,
@@ -1153,6 +1157,7 @@ impl VisibleObjectIndexOutput {
     /// bounds. The original applies the area cutoff before pixel clipping and
     /// portal coverage, then emits a unique Tome index and its area metric.
     /// Returns the metric only when this call adds a new visible index.
+    #[inline(always)]
     pub fn push_if_projected_object_visible(
         &mut self,
         index: u32,
@@ -4514,20 +4519,12 @@ fn native_projected_corner_bounds(corners: [[f32; 4]; 8], crossing: bool) -> [f3
                 let inside_high = coordinate < w;
                 (
                     if inside_low {
-                        if inside_high {
-                            projected
-                        } else {
-                            1.0
-                        }
+                        if inside_high { projected } else { 1.0 }
                     } else {
                         -1.0
                     },
                     if inside_high {
-                        if inside_low {
-                            projected
-                        } else {
-                            -1.0
-                        }
+                        if inside_low { projected } else { -1.0 }
                     } else {
                         1.0
                     },
@@ -5405,24 +5402,24 @@ pub use trees::render_query_job_quad;
 mod portal_projection;
 use portal_projection::portal_raster_and_clip_inputs_prepared;
 pub use portal_projection::{
-    depth_grid_intersects_pixels, portal_box_depth_mask, portal_face_vectors_from_query_matrix,
-    portal_raster_inputs_from_bounds, portal_tile_rect, projected_portal_box_bounds,
-    projected_portal_box_crossing_bounds, projected_portal_box_fallback_bounds,
-    projected_portal_box_pixel_rect, projected_portal_pixel_rect, rasterize_depth_mask,
-    transform_portal_corner_by_query_matrix, PortalQueryProjection,
+    PortalQueryProjection, depth_grid_intersects_pixels, portal_box_depth_mask,
+    portal_face_vectors_from_query_matrix, portal_raster_inputs_from_bounds, portal_tile_rect,
+    projected_portal_box_bounds, projected_portal_box_crossing_bounds,
+    projected_portal_box_fallback_bounds, projected_portal_box_pixel_rect,
+    projected_portal_pixel_rect, rasterize_depth_mask, transform_portal_corner_by_query_matrix,
 };
 
 mod query_geometry;
 #[cfg(test)]
 use query_geometry::segment_intersects_aabb;
 pub use query_geometry::{
+    ORIGINAL_DEFAULT_QUERY_JOB_COUNT, ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE,
+    ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY, ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
     original_render_fov_radians, original_render_perspective_rows, original_render_query_matrix,
     original_render_vertical_fov_radians, original_world_query_job_count,
     original_world_visibility_query_matrix, point_triangle_distance_squared, quad_intersects_aabb,
     query_matrix_winding_flip, render_query_base_rows, render_query_job_tile,
     sphere_intersects_portal, stored_query_matrix_from_render_rows,
-    ORIGINAL_DEFAULT_QUERY_JOB_COUNT, ORIGINAL_DEFAULT_SCHEDULER_THREADING_MODE,
-    ORIGINAL_VISIBLE_CELL_OUTPUT_CAPACITY, ORIGINAL_WORLD_QUERY_OUTPUT_CAPACITY,
 };
 
 #[cfg(test)]

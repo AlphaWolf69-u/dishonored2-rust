@@ -48,7 +48,9 @@ pub struct NativeLocalShadowReceiver {
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct NativeLocalShadowSceneFrame(pub Option<NativeLocalShadowSubmission>);
+// A publication owns its immutable generation until both worlds release it.
+// Extracting it must not clone every local caster's CB and asset handles.
+pub struct NativeLocalShadowSceneFrame(pub Option<Arc<NativeLocalShadowSubmission>>);
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct NativeLocalShadowCompletion(
@@ -457,7 +459,7 @@ fn draw(
     let Some(records) = prepare_native_shadow_records(
         &frame.layers,
         frame.depth_32_bits,
-        false,
+        None,
         uniform,
         stride,
         &mut gpu.programs,

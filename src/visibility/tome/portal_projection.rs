@@ -1,11 +1,12 @@
 //! Portal projection.
-use super::{native_projected_corner_bounds, PortalTileMask};
+use super::{PortalTileMask, native_projected_corner_bounds};
 
 /// Query-context matrix and six face-vector sets prepared by FUN_140a81500.
 /// Keep setup errors deferred until a clipped portal actually consumes them.
 pub struct PortalQueryProjection {
     matrix: [[f32; 4]; 4],
     winding_flip: bool,
+    matrix_finite: bool,
     faces: Result<[[[f32; 4]; 3]; 6], String>,
 }
 
@@ -14,6 +15,7 @@ impl PortalQueryProjection {
         Self {
             matrix,
             winding_flip,
+            matrix_finite: matrix.iter().flatten().all(|value| value.is_finite()),
             faces: portal_face_vectors_from_query_matrix(matrix, winding_flip),
         }
     }
@@ -91,11 +93,8 @@ pub(super) fn portal_raster_and_clip_inputs_prepared(
     let matrix = projection.matrix;
     let winding_flip = projection.winding_flip;
     if face_code >= 6
-        || bounds
-            .iter()
-            .flatten()
-            .chain(matrix.iter().flatten())
-            .any(|v| !v.is_finite())
+        || !projection.matrix_finite
+        || bounds.iter().flatten().any(|v| !v.is_finite())
         || (0..3).any(|axis| bounds[0][axis] > bounds[1][axis])
     {
         return Err("invalid Tome portal raster inputs".into());

@@ -6,6 +6,7 @@
 
 #import dh2_surface::{surface, compiled_misc, scaled_uv, diffuse0, surface_sampler}
 #import dh2_surface::{filling_colour,filling_plane_alpha}
+#import bevy_pbr::mesh_view_bindings::view
 
 // arkDefault/arkVegetation Z branches return after ClipZorShadowPass:
 // only diffuse0 alpha and DefaultAlphaTest, before layers, vertex color,
@@ -22,7 +23,8 @@ fn fragment(vertex_output: VertexOutput) {
         uv1=vertex_output.uv_b;
 #endif
         let color=filling_colour(uv,uv1,vec4(1.0));
-        let alpha=filling_plane_alpha(color.a,vertex_output.world_position.xyz);
+        let clip_w=(view.clip_from_world*vertex_output.world_position).w;
+        let alpha=filling_plane_alpha(color.a,vertex_output.world_position.xyz,clip_w);
 #ifdef SHADOW_PASS
         if alpha<0.7 {discard;}
 #else

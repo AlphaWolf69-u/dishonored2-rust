@@ -4,6 +4,7 @@ pub mod filling;
 pub mod fog;
 pub mod material;
 pub mod material_surface;
+pub mod particles;
 pub mod probe_lighting;
 pub mod render_light;
 pub mod render_model;

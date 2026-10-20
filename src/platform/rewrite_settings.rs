@@ -8,9 +8,8 @@ pub struct RewriteShadowSettings {
 impl RewriteShadowSettings {
     pub fn from_environment() -> Result<Self, String> {
         let minimum_sun_caster_extent = match std::env::var("DH2_SUN_SHADOW_MIN_EXTENT") {
-            // User-requested extension: keep distant sun occluders when an
-            // authored area's short extrusion would cut their shadows off.
-            Err(std::env::VarError::NotPresent) => 150.0,
+            // Use authored area ranges unless an extension is explicitly requested.
+            Err(std::env::VarError::NotPresent) => 0.0,
             Ok(value) => value
                 .parse::<f32>()
                 .map_err(|_| "DH2_SUN_SHADOW_MIN_EXTENT must be metres, or 0 for game settings")?,

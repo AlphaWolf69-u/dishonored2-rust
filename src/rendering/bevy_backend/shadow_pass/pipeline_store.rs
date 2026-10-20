@@ -1,7 +1,7 @@
 //! Append-only pipeline storage: hash descriptions at creation, index draws.
 use super::{CachedPipeline, HashMap, PipelineKey};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct PipelineId(usize);
 
 #[derive(Default)]

@@ -442,81 +442,123 @@ fn parallel_command_finalization_preserves_mixed_buffer_submission_order_gpu() {
     app.finish();
     app.cleanup();
     let render = app.sub_app(RenderApp).world();
-    let device = render.resource::<RenderDevice>();
-    let queue = render.resource::<RenderQueue>();
-    for (parallel, threads) in [(false, 0), (true, 0), (true, 1), (true, 4)] {
-        let source = device.create_buffer_with_data(&BufferInitDescriptor {
-            label: None,
-            contents: &11u32.to_le_bytes(),
-            usage: BufferUsages::COPY_SRC,
-        });
-        let value = device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: 12,
-            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let observed = device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: 8,
-            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let readback = device.create_buffer(&BufferDescriptor {
-            label: None,
-            size: 12,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut pending = PendingCommandBuffers::default();
-        pending.set_parallel_finalization(parallel);
-        pending.set_finalization_threads(threads);
-        let mut first = device.create_command_encoder(&default());
-        first.copy_buffer_to_buffer(&source, 0, &value, 0, 4);
-        pending.push([first.finish()]);
-        let mut second = device.create_command_encoder(&default());
-        second.copy_buffer_to_buffer(&value, 0, &observed, 0, 4);
-        pending.push_encoder(second);
-        let mut third = device.create_command_encoder(&default());
-        third.clear_buffer(&value, 0, Some(4));
-        pending.push([third.finish()]);
-        let mut fourth = device.create_command_encoder(&default());
-        fourth.copy_buffer_to_buffer(&value, 0, &observed, 4, 4);
-        pending.push_encoder(fourth);
-        assert_eq!(pending.len(), 4);
-        let mut commands = pending.take();
-        assert!(pending.is_empty());
-        assert_eq!(
-            pending.parallel_finalized_encoders(),
-            if parallel { 2 } else { 0 }
-        );
-        let mut copy = device.create_command_encoder(&default());
-        copy.copy_buffer_to_buffer(&value, 0, &readback, 0, 4);
-        copy.copy_buffer_to_buffer(&observed, 0, &readback, 4, 8);
-        commands.push(copy.finish());
-        let submission = queue.submit(commands);
-        let (send, receive) = std::sync::mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(MapMode::Read, move |result| send.send(result).unwrap());
-        device
-            .poll(PollType::Wait {
-                submission_index: Some(submission),
-                timeout: Some(std::time::Duration::from_secs(20)),
-            })
-            .unwrap();
-        receive.recv().unwrap().unwrap();
-        let mapped = readback.slice(..).get_mapped_range();
-        let actual: Vec<_> = mapped
-            .chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
-            .collect();
-        assert_eq!(
-            actual,
-            vec![0, 11, 0],
-            "ready and recorded command buffers were reordered"
-        );
-        drop(mapped);
-        readback.unmap();
+    let device = render.resource::<RenderDevice>().clone();
+    let queue = render.resource::<RenderQueue>().clone();
+    for (parallel, threads) in [(false, 0), (true, 0), (true, 1), (true, 3), (true, 4)] {
+        for through_context in [false, true] {
+            let source = device.create_buffer_with_data(&BufferInitDescriptor {
+                label: None,
+                contents: &11u32.to_le_bytes(),
+                usage: BufferUsages::COPY_SRC,
+            });
+            let value = device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 12,
+                usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let observed = device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 8,
+                usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let readback = device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 12,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut pending = PendingCommandBuffers::default();
+            pending.set_parallel_finalization(parallel);
+            pending.set_finalization_threads(threads);
+            if through_context {
+                use bevy::{
+                    ecs::system::RunSystemOnce,
+                    render::renderer::{ParallelCommandFinalization, RenderContext},
+                };
+                let world = app.sub_app_mut(RenderApp).world_mut();
+                world.insert_resource(pending);
+                if parallel {
+                    world.insert_resource(ParallelCommandFinalization);
+                } else {
+                    world.remove_resource::<ParallelCommandFinalization>();
+                }
+                let (source, value, observed) = (source.clone(), value.clone(), observed.clone());
+                world
+                    .run_system_once(
+                        move |device: Res<RenderDevice>, mut context: RenderContext| {
+                            context
+                                .command_encoder()
+                                .copy_buffer_to_buffer(&source, 0, &value, 0, 4);
+                            let mut second = device.create_command_encoder(&default());
+                            second.copy_buffer_to_buffer(&value, 0, &observed, 0, 4);
+                            context.add_command_encoder(second);
+                            context.command_encoder().clear_buffer(&value, 0, Some(4));
+                            let mut fourth = device.create_command_encoder(&default());
+                            fourth.copy_buffer_to_buffer(&value, 0, &observed, 4, 4);
+                            context.add_command_buffer(fourth.finish());
+                        },
+                    )
+                    .unwrap();
+                pending = world.remove_resource::<PendingCommandBuffers>().unwrap();
+            } else {
+                let mut first = device.create_command_encoder(&default());
+                first.copy_buffer_to_buffer(&source, 0, &value, 0, 4);
+                pending.push([first.finish()]);
+                let mut second = device.create_command_encoder(&default());
+                second.copy_buffer_to_buffer(&value, 0, &observed, 0, 4);
+                pending.push_encoder(second);
+                let mut third = device.create_command_encoder(&default());
+                third.clear_buffer(&value, 0, Some(4));
+                pending.push([third.finish()]);
+                let mut fourth = device.create_command_encoder(&default());
+                fourth.copy_buffer_to_buffer(&value, 0, &observed, 4, 4);
+                pending.push_encoder(fourth);
+            }
+            assert_eq!(pending.len(), 4);
+            let mut commands = pending.take();
+            assert!(pending.is_empty());
+            assert_eq!(
+                pending.parallel_finalized_encoders(),
+                if parallel {
+                    if through_context {
+                        3
+                    } else {
+                        2
+                    }
+                } else {
+                    0
+                }
+            );
+            let mut copy = device.create_command_encoder(&default());
+            copy.copy_buffer_to_buffer(&value, 0, &readback, 0, 4);
+            copy.copy_buffer_to_buffer(&observed, 0, &readback, 4, 8);
+            commands.push(copy.finish());
+            let submission = queue.submit(commands);
+            let (send, receive) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(MapMode::Read, move |result| send.send(result).unwrap());
+            device
+                .poll(PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: Some(std::time::Duration::from_secs(20)),
+                })
+                .unwrap();
+            receive.recv().unwrap().unwrap();
+            let mapped = readback.slice(..).get_mapped_range();
+            let actual: Vec<_> = mapped
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            assert_eq!(
+                actual,
+                vec![0, 11, 0],
+                "ready and recorded command buffers were reordered"
+            );
+            drop(mapped);
+            readback.unmap();
+        }
     }
 }

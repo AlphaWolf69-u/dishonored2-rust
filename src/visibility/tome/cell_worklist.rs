@@ -1,7 +1,7 @@
 //! Indexed linked work queues from FUN_140a85790. Node zero is the sentinel.
 use super::{
-    direct_spatial_link_target, ready_same_spatial_cell_target, CellTraversalState, CellWorkItem,
-    LinkQueryDirection,
+    CellTraversalState, CellWorkItem, LinkQueryDirection, direct_spatial_link_target,
+    ready_same_spatial_cell_target,
 };
 
 #[derive(Clone, Copy, Debug)]

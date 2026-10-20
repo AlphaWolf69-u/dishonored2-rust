@@ -37,6 +37,7 @@ pub const PARAMETER_NAMES: [&str; 18] = [
     "particlealphatest",
 ];
 pub const CLIP_PARAMETER_NAMES: [&str; 2] = ["fx/clipplane", "fx/clipplanefadedistance"];
+pub const FADE_PARAMETER_NAMES: [&str; 2] = ["particledistancefadein", "particledistancefadeout"];
 pub fn parameter_vectors(v: [[f32; 4]; 18], clip: [[f32; 4]; 2]) -> [[f32; 4]; 11] {
     [
         v[0],

@@ -170,6 +170,16 @@ HDR units without changing the material's authored lighting option. Exposure
 bindings currently follow the single gameplay view; additional world views must
 receive their own matching material/exposure-state binding. Image
 roles 23–28 and 29–31 supply liquid and cloud maps through archive streaming.
+Mesh liquid materials also honor authored particle distance fading in forward
+and depth passes. The input is DirectX pixel clip W, verified in the installed
+pixel bytecode. The camera transform reconstructs that value consistently
+across GPU backends. Registered fade
+parameters occupy spare uniform components; materials without the option keep
+their compiled path. Numeric cases cover equal and reversed thresholds, and
+the GPU fixture checks matching color and depth clipping.
+`rendering/particles.rs` contains the understood fade, soft-contact arithmetic,
+animation crossfade and distortion helpers. Emitter simulation and the scene
+depth/particle-center producers for other soft-contact modes remain separate.
 `filling_cases.txt` contains numeric results from 64 installed-HLSL UV/fill/colour
 cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
 occlusion without looking at images.
@@ -180,7 +190,7 @@ composition and the HDR/depth-dependent `arkWater` path are also pending.
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
 and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
-soft-contact/view fades, vertex-lit particle producers, animated-emissive mask
+particle soft-contact inputs, vertex-lit particle producers, animated-emissive mask
 production and lens-flare postprocessing are not implemented. A mesh liquid that
 requests an unavailable producer is rejected explicitly rather than passed
 through ordinary white material shading. Next steps are the native particle
@@ -269,12 +279,22 @@ are borrowed. IDs retain their meaning for the lifetime of the owning GPU
 scene, including cached descriptors. Semantic keys remain available for
 validation; live uniform contents and the publisher's draw order remain inputs
 to every submission.
+Resource-binding cache keys use the same owning table's pipeline IDs, avoiding
+repeated hashing of complete pipeline descriptions for every draw.
 
-Cached shadow descriptors retain strong asset handles and the exact fields
-that select geometry, resources, draw state and validated buffer ranges.
-They omit live shader constant bytes, which are uploaded independently on
-every frame. The full former snapshot comparison remains a test oracle for
-the compact representation.
+Cached shadow descriptors retain the publisher's immutable draw-list generation
+through `Arc`, keeping asset ownership without copying caster constants or handles.
+Exact descriptor, uniform-layout, geometry and resource checks govern reuse.
+Live shader constant bytes are uploaded independently on every frame.
+
+Directional draw lists and complete local-shadow submissions are published
+through `Arc`. Render extraction shares an immutable generation rather than
+cloning all caster constants and asset handles. A new publication replaces the
+main-world reference; the rendering world retains the preceding generation
+until it finishes using it.
+The directional publisher consumes the world/model builders' completed lists
+after receiver and frame validation. It preserves world-before-model order;
+failed validation leaves the builders' inputs available.
 
 Each ordinary Tome worker prepares one immutable `PortalQueryProjection` from
 its matrix and winding flag, as the game does in query-context setup. All
@@ -309,3 +329,41 @@ removes unused entries, and failure or epoch changes invalidate the cache.
 Repeated draws resolve one allocation per submission. GPU tests compare against
 fresh lookups across geometry growth, index-format changes, asset replacement,
 and removal.
+
+Prepared shadow records share immutable mesh-allocation metadata owned by the
+allocation cache. Retained records keep those GPU buffers alive through `Arc`;
+asset epoch changes still invalidate reuse. Consecutive identical world-buffer
+and resource-binding lookups are reused only within one immutable render
+submission. Each draw still validates its own buffer ranges and constants.
+
+Directional slices record independently, including retained static caches. Each
+slice owns its temporary surface and static-cache texture. Its cache restore or
+refresh, dynamic pass and atlas copy remain ordered within one encoder. The
+backend finalizes those encoders concurrently, then submits them in owner layer
+order and publishes completed cache generations. Serial recording remains
+available for numeric comparisons. GPU checks compare depth and stencil across
+cache reuse, generation changes, empty draws and atlas replacement.
+
+Independent shadow encoders join the common deferred-finalization batch with
+camera commands; recording does not wait for their finalization. The render
+context flushes its current encoder before appending an independent encoder,
+so mixed ready/recorded buffers retain their exact GPU submission positions.
+
+Prepared shadow records keep the owning pipeline table's ID rather than copying
+its full semantic description per draw. The append-only table retains that
+description; exact source-descriptor comparisons still validate cached reuse.
+Cache resource snapshots skip repeated hashing of consecutive identical IDs
+while retaining the complete resource set and live GPU identity checks.
+
+Visibility output lists reserve their bounded native capacity up front. Shadow cache
+misses recover the preceding draw vector only when `Arc::try_unwrap` proves
+exclusive ownership. Retained readers prevent recycling, and verification hits
+keep the preceding snapshot intact. Every reused slot is prepared afresh before its preceding references are released;
+truncation removes records beyond the current submission count.
+
+Gameplay performance comparisons use the ordinary borderless launch path and
+verify the foreground window's physical rendering viewport. A forced windowed
+benchmark is a separate presentation-path diagnostic, even when its pixel
+size matches. Moving-camera runs determine acceptance; stationary views only
+help isolate costs. Shader/GPU oracles and profiling runs remain separate from
+clean frame-rate measurements.

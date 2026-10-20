@@ -3,7 +3,7 @@ use super::*;
 use bevy::render::render_resource::{BufferId, IndexFormat};
 
 struct EntryAllocation {
-    allocation: ShadowMeshAllocation,
+    allocation: Arc<ShadowMeshAllocation>,
     used_frame: u64,
 }
 
@@ -48,7 +48,7 @@ impl MeshAllocationCache {
         id: AssetId<Mesh>,
         allocator: &MeshAllocator,
         meshes: &RenderAssets<RenderMesh>,
-    ) -> Result<&ShadowMeshAllocation, String> {
+    ) -> Result<&Arc<ShadowMeshAllocation>, String> {
         use bevy::platform::collections::hash_map::Entry;
         match self.entries.entry(id) {
             Entry::Occupied(mut entry) => {
@@ -73,7 +73,7 @@ impl MeshAllocationCache {
             }
             Entry::Vacant(entry) => {
                 self.misses += 1;
-                let allocation = Self::fresh(id, allocator, meshes)?;
+                let allocation = Arc::new(Self::fresh(id, allocator, meshes)?);
                 Ok(&entry
                     .insert(EntryAllocation {
                         allocation,
@@ -157,7 +157,7 @@ mod tests {
         let actual = cache
             .0
             .get(selected.0, &allocator, &meshes)
-            .map(MeshAllocationCache::snapshot);
+            .map(|allocation| MeshAllocationCache::snapshot(allocation));
         let fresh = MeshAllocationCache::fresh(selected.0, &allocator, &meshes)
             .map(|v| MeshAllocationCache::snapshot(&v));
         assert_eq!(
@@ -169,7 +169,7 @@ mod tests {
             let repeated = cache
                 .0
                 .get(selected.0, &allocator, &meshes)
-                .map(MeshAllocationCache::snapshot);
+                .map(|allocation| MeshAllocationCache::snapshot(allocation));
             assert_eq!(repeated, actual);
             assert_eq!(
                 (cache.0.hits, cache.0.misses),

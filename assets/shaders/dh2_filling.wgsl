@@ -7,6 +7,13 @@ fn filling_pan_uv(uv:vec2<f32>,time:f32,rotation:f32,pan:vec2<f32>,tiling:vec2<f
 fn filling_step(a:f32,b:f32,x:f32)->f32 {
     let v=(x-a)/(b-a);var t=0.0;if v>0.0 {t=min(v,1.0);}return t*t*(3.0-2.0*t);
 }
+// ViewDependentFade uses DirectX's pixel SV_Position.w (clip W).
+// Installed pixel stage 177 retains v5.w in the reciprocal-interval multiply.
+fn filling_view_fade(clip_w:f32,start:f32,end:f32)->f32 {
+    let v=(clip_w-start)*(1.0/(end-start));
+    var t=0.0;if v>0.0 {t=min(v,1.0);}
+    return t*t*(3.0-2.0*t);
+}
 fn filling_lookup_coordinate(y:f32,distortion:f32,control:f32,p:vec4<f32>)->f32 {
     let bottom=filling_step(0.0,p.y,pow(y,8.0));
     let top=filling_step(0.0,p.y,pow(1.0-y+control,8.0));

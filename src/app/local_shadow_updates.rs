@@ -518,7 +518,7 @@ pub(super) fn publish_native_local_shadow_draws(
                 );
                 draws.reported = true;
             }
-            output.0 = Some(frame);
+            output.0 = Some(frame.into());
         }
         Err(error) => {
             if draws.error.as_ref() != Some(&error) {

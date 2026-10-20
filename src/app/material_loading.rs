@@ -664,18 +664,24 @@ impl MaterialResolver<'_> {
                     flags |= u32::from(option(name)? != 0) << i;
                 }
                 let lighting = option(b"fx/opt/use_lighting")? as u32;
+                let view_fade = option(b"fx/opt/view_dependent_fade")? != 0;
                 // Particle instance geometry and vertex-lit families require
                 // their own original input producer, not invented mesh inputs.
                 if flags & 1 == 0
                     || lighting > 1
                     || option(b"fx/opt/use_softcontact")? != 0
-                    || option(b"fx/opt/view_dependent_fade")? != 0
                     || option(b"fx/opt/use_sprite_lighting")? != 0
                 {
                     return Err("filling material requires unported particle/vertex-light/depth-fade input producer".into());
                 }
                 let mut parameters = filling::parameter_vectors(v, clip);
                 parameters[10][1] = exposure;
+                if view_fade {
+                    flags |= 16;
+                    let fade = self.float_vectors(bytes, filling::FADE_PARAMETER_NAMES)?;
+                    parameters[10][2] = fade[0][0];
+                    parameters[10][3] = fade[1][0];
+                }
                 Ok((parameters, UVec4::new(flags, lighting, 0, 0)))
             })();
             match result {

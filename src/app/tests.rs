@@ -2932,6 +2932,35 @@ fn authored_surface_gpu_pipelines_compile() {
         liquid_depth[0] > 0.0 && liquid_depth[1] == 0.0 && liquid_depth[2] > 0.0,
         "liquid prepass fill: {liquid_depth:?}"
     );
+    let mut view_fade = Vec::new();
+    for (end, visible) in [(1.0, true), (8.0, false)] {
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+            let mut material = materials.get_mut(&emitting).unwrap();
+            let surface = &mut material.extension.surface;
+            surface.filling_flags.x = 17;
+            surface.filling[8].w = 0.7;
+            surface.filling[10].z = 0.0;
+            surface.filling[10].w = end;
+        }
+        for _ in 0..80 {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        let color = forward_center(&mut app, &target);
+        let depth = center_depth(&mut app);
+        assert_eq!(energy(color) > 100, visible, "view fade color: {color:?}");
+        assert_eq!(depth > 0.0, visible, "view fade prepass: {depth}");
+        view_fade.push((color, depth));
+    }
+    // Resume the preceding Fresnel case without the independent fade option.
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut material = materials.get_mut(&emitting).unwrap();
+        material.extension.surface.filling_flags.x = 3;
+        material.extension.surface.filling[8].w = 0.03;
+    }
+    eprintln!("GPU mesh-particle clip-W view fade: {view_fade:?}");
     app.world_mut()
         .resource_mut::<Assets<ProbeMaterial>>()
         .get_mut(&emitting)
@@ -8854,6 +8883,9 @@ fn filling_matches_reference(app: &mut App) {
  let coord=filling_lookup_coordinate(y,f32(id%7u)/6.0,1.0-level,vec4(.12,.7,.18,0.0));
  output[2u*id+1u]=filling_transfer_color(vec4(.2,.4,.8,.6),vec4(.7,.1,.9,.3),coord,y,1.0-level,
      lerp_colour,vec4(5.0,.015,.01,1.0),vec4(1.2,.03,2.1,.8),1.0);
+ let d=f32(id%17u)/8.0-.25;let start=f32(id%5u)/8.0;let end=f32(id%7u)/8.0;
+ output[128u+id]=vec4(filling_view_fade(d,start,end),filling_view_fade(d,end,start),
+     filling_view_fade(start,start,start),filling_view_fade(start+.25,start,start));
 }
 "#;
     let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
@@ -8870,7 +8902,7 @@ fn filling_matches_reference(app: &mut App) {
             compilation_options: Default::default(),
             cache: None,
         });
-    let size = 128 * 16;
+    let size = 192 * 16;
     let output = device.create_buffer(&BufferDescriptor {
         label: None,
         size,
@@ -8914,13 +8946,24 @@ fn filling_matches_reference(app: &mut App) {
         .unwrap();
     rx.recv().unwrap().unwrap();
     let bytes = readback.slice(..).get_mapped_range();
-    let expected = include_str!(concat!(
+    let mut expected = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/filling_cases.txt"
     ))
     .split_whitespace()
     .map(|s| f32::from_bits(u32::from_str_radix(s, 16).unwrap()))
     .collect::<Vec<_>>();
+    let particles = include_str!("../../tests/fixtures/particle_math_cases.txt")
+        .split_whitespace()
+        .map(|s| f32::from_bits(u32::from_str_radix(s, 16).unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(particles.len(), 64 * 16);
+    expected.extend(
+        particles
+            .chunks_exact(16)
+            .flat_map(|row| row[..4].iter().copied()),
+    );
+    assert_eq!(bytes.len(), expected.len() * 4);
     for (i, (chunk, e)) in bytes.chunks_exact(4).zip(expected).enumerate() {
         let actual = f32::from_le_bytes(chunk.try_into().unwrap());
         assert!(
@@ -8932,7 +8975,9 @@ fn filling_matches_reference(app: &mut App) {
     }
     drop(bytes);
     readback.unmap();
-    eprintln!("GPU filling:64 installed-HLSL animated UV/fill/colour cases passed");
+    eprintln!(
+        "GPU filling:64 installed-HLSL UV/fill/colour cases and 256 distance-fade values passed"
+    );
 }
 
 #[test]

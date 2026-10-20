@@ -9,7 +9,7 @@ pub(super) struct PreparedRecordCache {
     ring: BufferId,
     stride: u64,
     depth_32_bits: bool,
-    layers: Vec<Vec<DescriptorSnapshot>>,
+    layers: Arc<Vec<NativeShadowLayer>>,
     uniforms: Vec<ShadowUniformRecord>,
     buffers: Vec<(AssetId<ShaderBuffer>, BufferId, u64)>,
     images: Vec<(AssetId<Image>, TextureViewId)>,
@@ -18,7 +18,7 @@ pub(super) struct PreparedRecordCache {
 
 impl PreparedRecordCache {
     pub fn new(
-        layers: &[NativeShadowLayer],
+        layers: Arc<Vec<NativeShadowLayer>>,
         geometry_epoch: (u32, u32),
         resource_epoch: (u32, u32),
         ring: BufferId,
@@ -31,34 +31,43 @@ impl PreparedRecordCache {
     ) -> Option<Self> {
         let mut buffer_ids: HashSet<AssetId<ShaderBuffer>> = HashSet::default();
         let mut image_ids: HashSet<AssetId<Image>> = HashSet::default();
+        // Collect resource ownership once per distinct consecutive ID set.
+        // The asset views stay immutable throughout this submission.
+        let mut last_image = None;
+        let mut last_buffers = None;
         for instance in layers.iter().flat_map(|layer| &layer.instances) {
             if let Some(alpha) = &instance.alpha_material {
-                image_ids.insert(alpha.diffuse.id());
+                let image = alpha.diffuse.id();
+                if last_image != Some(image) {
+                    image_ids.insert(image);
+                    last_image = Some(image);
+                }
             }
-            match &instance.per_instance_cb {
+            let resources = match &instance.per_instance_cb {
                 NativeShadowInstanceConstants::Skinned { palette, .. } => {
-                    buffer_ids.insert(palette.id());
+                    [Some(palette.id()), None, None]
                 }
                 NativeShadowInstanceConstants::World {
                     visible_indices,
                     matrices,
                     ..
-                } => {
-                    buffer_ids.extend([visible_indices.id(), matrices.id()]);
-                }
+                } => [Some(visible_indices.id()), Some(matrices.id()), None],
                 NativeShadowInstanceConstants::WorldVegetation {
                     visible_indices,
                     matrices,
                     winds,
                     ..
-                } => {
-                    buffer_ids.extend([visible_indices.id(), matrices.id()]);
-                    if let Some(winds) = winds {
-                        buffer_ids.insert(winds.id());
-                    }
-                }
+                } => [
+                    Some(visible_indices.id()),
+                    Some(matrices.id()),
+                    winds.as_ref().map(Handle::id),
+                ],
                 NativeShadowInstanceConstants::Rigid(_)
-                | NativeShadowInstanceConstants::Vegetation(_) => {}
+                | NativeShadowInstanceConstants::Vegetation(_) => continue,
+            };
+            if last_buffers != Some(resources) {
+                buffer_ids.extend(resources.into_iter().flatten());
+                last_buffers = Some(resources);
             }
         }
         Some(Self {
@@ -67,16 +76,7 @@ impl PreparedRecordCache {
             ring,
             stride,
             depth_32_bits,
-            layers: layers
-                .iter()
-                .map(|layer| {
-                    layer
-                        .instances
-                        .iter()
-                        .map(DescriptorSnapshot::new)
-                        .collect()
-                })
-                .collect(),
+            layers,
             uniforms: uniforms.to_vec(),
             records,
             buffers: buffer_ids
@@ -113,8 +113,11 @@ impl PreparedRecordCache {
             || self.uniforms != uniforms
             || self.layers.len() != layers.len()
             || !self.layers.iter().zip(layers).all(|(a, b)| {
-                a.len() == b.instances.len()
-                    && a.iter().zip(&b.instances).all(|(a, b)| a.matches(b))
+                a.instances.len() == b.instances.len()
+                    && a.instances
+                        .iter()
+                        .zip(&b.instances)
+                        .all(|(a, b)| same_descriptor(a, b))
             })
         {
             return false;
@@ -137,146 +140,9 @@ impl PreparedRecordCache {
     }
 }
 
-/// Keep strong asset ownership, but omit live CB bytes. Those bytes are uploaded
-/// independently and never participated in descriptor equality. Only the remap
-/// offsets below affect the CPU resource-range validation.
-struct DescriptorSnapshot {
-    mesh: Handle<Mesh>,
-    constants: DescriptorConstants,
-    program: NativeShadowProgram,
-    alpha_material: Option<NativeShadowAlphaMaterial>,
-    front_face: FrontFace,
-    cull_mode: Option<Face>,
-    draw_state: [u32; 9],
-    stencil_reference: u32,
-    scissor: NativeShadowScissor,
-}
-
-enum DescriptorConstants {
-    Rigid,
-    Vegetation,
-    Skinned(Handle<ShaderBuffer>),
-    World {
-        visible_indices: Handle<ShaderBuffer>,
-        matrices: Handle<ShaderBuffer>,
-        winds: Option<Handle<ShaderBuffer>>,
-        instance_count: u32,
-        offsets: [u8; 8],
-        vegetation: bool,
-    },
-}
-
-impl DescriptorSnapshot {
-    fn new(instance: &NativeShadowInstance) -> Self {
-        use NativeShadowInstanceConstants::*;
-        let constants = match &instance.per_instance_cb {
-            Rigid(_) => DescriptorConstants::Rigid,
-            Vegetation(_) => DescriptorConstants::Vegetation,
-            Skinned { palette, .. } => DescriptorConstants::Skinned(palette.clone()),
-            World {
-                constants,
-                visible_indices,
-                matrices,
-                instance_count,
-            } => {
-                let mut offsets = [0; 8];
-                offsets[..4].copy_from_slice(&constants[64..68]);
-                DescriptorConstants::World {
-                    visible_indices: visible_indices.clone(),
-                    matrices: matrices.clone(),
-                    winds: None,
-                    instance_count: *instance_count,
-                    offsets,
-                    vegetation: false,
-                }
-            }
-            WorldVegetation {
-                constants,
-                visible_indices,
-                matrices,
-                winds,
-                instance_count,
-            } => DescriptorConstants::World {
-                visible_indices: visible_indices.clone(),
-                matrices: matrices.clone(),
-                winds: winds.clone(),
-                instance_count: *instance_count,
-                offsets: constants[200..208].try_into().unwrap(),
-                vegetation: true,
-            },
-        };
-        Self {
-            mesh: instance.mesh.clone(),
-            constants,
-            program: instance.program,
-            alpha_material: instance.alpha_material.clone(),
-            front_face: instance.front_face,
-            cull_mode: instance.cull_mode,
-            draw_state: instance.draw_state,
-            stencil_reference: instance.stencil_reference,
-            scissor: instance.scissor,
-        }
-    }
-
-    fn matches(&self, instance: &NativeShadowInstance) -> bool {
-        if self.mesh != instance.mesh
-            || self.program != instance.program
-            || self.alpha_material != instance.alpha_material
-            || self.front_face != instance.front_face
-            || self.cull_mode != instance.cull_mode
-            || self.draw_state != instance.draw_state
-            || self.stencil_reference != instance.stencil_reference
-            || self.scissor != instance.scissor
-        {
-            return false;
-        }
-        use NativeShadowInstanceConstants::*;
-        match (&self.constants, &instance.per_instance_cb) {
-            (DescriptorConstants::Rigid, Rigid(_))
-            | (DescriptorConstants::Vegetation, Vegetation(_)) => true,
-            (DescriptorConstants::Skinned(a), Skinned { palette: b, .. }) => a == b,
-            (
-                DescriptorConstants::World {
-                    visible_indices: ai,
-                    matrices: am,
-                    winds: None,
-                    instance_count: ac,
-                    offsets,
-                    vegetation: false,
-                },
-                World {
-                    constants,
-                    visible_indices: bi,
-                    matrices: bm,
-                    instance_count: bc,
-                },
-            ) => ai == bi && am == bm && ac == bc && offsets[..4] == constants[64..68],
-            (
-                DescriptorConstants::World {
-                    visible_indices: ai,
-                    matrices: am,
-                    winds: aw,
-                    instance_count: ac,
-                    offsets,
-                    vegetation: true,
-                },
-                WorldVegetation {
-                    constants,
-                    visible_indices: bi,
-                    matrices: bm,
-                    winds: bw,
-                    instance_count: bc,
-                },
-            ) => ai == bi && am == bm && aw == bw && ac == bc && offsets[..] == constants[200..208],
-            _ => false,
-        }
-    }
-}
-
 /// CB bytes are uploaded on every frame independently of these descriptors.
 /// Preserve the offsets/counts used by CPU bounds validation, and every field
 /// which changes pipeline, resources, geometry, scissor or draw order.
-#[cfg(test)]
 fn same_descriptor(a: &NativeShadowInstance, b: &NativeShadowInstance) -> bool {
     let NativeShadowInstance {
         mesh,
@@ -344,15 +210,14 @@ pub(super) fn verify_records(a: &[PreparedShadowRecord], b: &[PreparedShadowReco
         assert!(
             a.layer == b.layer
                 && a.scissor == b.scissor
-                && a.key == b.key
                 && a.pipeline == b.pipeline
                 && a.uniform_offset == b.uniform_offset
                 && a.instances == b.instances
-                && a.vertex.id() == b.vertex.id()
-                && a.base_vertex == b.base_vertex
-                && a.index.id() == b.index.id()
-                && a.indices == b.indices
-                && a.index_format == b.index_format
+                && a.allocation.vertex.id() == b.allocation.vertex.id()
+                && a.allocation.base_vertex == b.allocation.base_vertex
+                && a.allocation.index.id() == b.allocation.index.id()
+                && a.allocation.indices == b.allocation.indices
+                && a.allocation.index_format == b.allocation.index_format
                 && a.resources.as_ref().map(|v| v.id()) == b.resources.as_ref().map(|v| v.id()),
             "retained shadow descriptor differs from fresh preparation"
         );
@@ -367,83 +232,6 @@ mod tests {
         prelude::*,
         render::{render_resource::*, RenderApp},
     };
-
-    #[test]
-    fn compact_descriptors_preserve_full_snapshot_comparisons() {
-        use NativeShadowInstanceConstants::*;
-        let base = super::super::uniform_tests::world_instance(0, 1);
-        let mut variants = vec![
-            Rigid([0; 80]),
-            Vegetation([0; 208]),
-            Skinned {
-                constants: [0; 112],
-                palette: Handle::default(),
-            },
-            base.per_instance_cb.clone(),
-        ];
-        for winds in [None, Some(Handle::default())] {
-            variants.push(WorldVegetation {
-                constants: [0; 208],
-                visible_indices: Handle::default(),
-                matrices: Handle::default(),
-                winds,
-                instance_count: 1,
-            });
-        }
-        for constants in &variants {
-            let mut a = base.clone();
-            a.per_instance_cb = constants.clone();
-            let snapshot = DescriptorSnapshot::new(&a);
-            let compare = |b: &NativeShadowInstance| {
-                assert_eq!(snapshot.matches(b), same_descriptor(&a, b));
-            };
-            compare(&a);
-            for other in &variants {
-                let mut b = a.clone();
-                b.per_instance_cb = other.clone();
-                compare(&b);
-            }
-            for offset in 0..constants.as_bytes().len() {
-                let mut b = a.clone();
-                let bytes: &mut [u8] = match &mut b.per_instance_cb {
-                    Rigid(bytes) => bytes,
-                    Vegetation(bytes) => bytes,
-                    Skinned { constants, .. } => constants,
-                    World { constants, .. } => constants,
-                    WorldVegetation { constants, .. } => constants,
-                };
-                bytes[offset] ^= 0x81;
-                compare(&b);
-            }
-            let mut b = a.clone();
-            if let World { instance_count, .. } | WorldVegetation { instance_count, .. } =
-                &mut b.per_instance_cb
-            {
-                *instance_count += 1;
-            }
-            compare(&b);
-            for word in 0..9 {
-                let mut b = a.clone();
-                b.draw_state[word] ^= 1;
-                compare(&b);
-            }
-            let mut b = a.clone();
-            b.stencil_reference ^= 1;
-            compare(&b);
-            let mut b = a.clone();
-            b.scissor.width -= 1;
-            compare(&b);
-            let mut b = a.clone();
-            b.program = NativeShadowProgram::Unsupported(123);
-            compare(&b);
-            let mut b = a.clone();
-            b.cull_mode = Some(Face::Front);
-            compare(&b);
-        }
-        assert!(
-            std::mem::size_of::<DescriptorSnapshot>() < std::mem::size_of::<NativeShadowInstance>()
-        );
-    }
 
     #[test]
     fn wind_descriptor_reuse_keeps_validated_offsets_but_not_live_clock() {
@@ -496,12 +284,23 @@ mod tests {
         queue: Res<RenderQueue>,
         adapter: Res<RenderAdapter>,
     ) -> Option<Vec<u16>> {
-        upload_native_shadow_uniform_ring(&input.0, &device, &queue, &mut gpu);
+        let layers = Arc::new(input.0.clone());
+        upload_native_shadow_uniform_ring(&layers, &device, &queue, &mut gpu);
         let ring = gpu.uniform_ring.as_ref()?.clone();
         let stride = gpu.uniform_stride;
         let records = prepare_native_shadow_records(
-            &input.0, false, true, ring, stride, &mut gpu, &allocator, &meshes, &images, &buffers,
-            &device, &adapter,
+            &layers,
+            false,
+            Some(&layers),
+            ring,
+            stride,
+            &mut gpu,
+            &allocator,
+            &meshes,
+            &images,
+            &buffers,
+            &device,
+            &adapter,
         )?;
         let depth = NativeShadowDepthArray::new_with_format(
             &device,
@@ -715,6 +514,46 @@ mod tests {
             counts(&app).0 > 0,
             "must actually reuse prepared descriptors"
         );
+        // A miss can grow or shrink recycled storage without changing the
+        // current submission count or preserving stale trailing records.
+        let duplicate =
+            app.sub_app(RenderApp).world().resource::<Input>().0[1].instances[0].clone();
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<Input>()
+            .0[1]
+            .instances
+            .push(duplicate);
+        assert_eq!(run(&mut app).unwrap(), first);
+        assert_eq!(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<NativeShadowSceneGpu>()
+                .prepared_records
+                .as_ref()
+                .unwrap()
+                .records
+                .len(),
+            2
+        );
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<Input>()
+            .0[1]
+            .instances
+            .truncate(1);
+        assert_eq!(run(&mut app).unwrap(), first);
+        assert_eq!(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<NativeShadowSceneGpu>()
+                .prepared_records
+                .as_ref()
+                .unwrap()
+                .records
+                .len(),
+            1
+        );
         // Submission policy changes do not change the prepared descriptors.
         app.sub_app_mut(RenderApp)
             .world_mut()
@@ -878,6 +717,14 @@ mod tests {
         assert!(
             run(&mut app).is_none(),
             "missing GPU mesh must reject cached preparation"
+        );
+        assert!(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<NativeShadowSceneGpu>()
+                .prepared_recycles
+                > 0,
+            "resource replacement must exercise recycled draw storage on a successful cache miss"
         );
     }
 }

@@ -255,11 +255,12 @@ fn retained_local_atlas_matches_fresh_submissions_gpu() {
                             lights: Vec::new(),
                             shadows: Vec::new(),
                         }),
-                    },
+                    }
+                    .into(),
                 )));
                 if stage >= 8 {
                     let mut frame = world.resource_mut::<NativeLocalShadowSceneFrame>();
-                    let frame = frame.0.as_mut().unwrap();
+                    let frame = Arc::make_mut(frame.0.as_mut().unwrap());
                     frame.layers.clear();
                     frame.regions.clear();
                 }
