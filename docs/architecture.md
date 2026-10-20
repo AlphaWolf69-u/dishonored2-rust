@@ -54,6 +54,33 @@ owning algorithm rather than growing the client integration test collection.
 Preserve source-backed numeric behavior when moving code. A structural change
 must not silently introduce different material defaults or renderer algorithms.
 
+Machinery asset bindings live in `assets/entities/machinery.rs`; compressed
+shape mass properties live in `assets/physworld/mass.rs`. Both read the installed
+archives through the shared catalog. `gameplay/machinery.rs` evaluates constraint
+motor commands and measures preceding relative motion. `gameplay/rigid_body.rs`
+owns mass-frame initialization and pose integration. `gameplay/constraint_solver/`
+owns solver phases and coupled fixed-pivot rows; its parent module owns angular
+motor and axis-lock rows. These CPU routines have executable comparison fixtures.
+`app/model_motion.rs` publishes body deltas to geometry, visibility queries and
+both shadow-bound sources, retaining authored scale, shear and blueprint offsets.
+Its integration tests exercise that handoff without a graphics window.
+`assets/entities/machinery/recipes.rs` resolves complete connected assemblies and
+shape mass frames directly from archives. `gameplay/machinery_world.rs` owns their
+bodies, fixed pivots, hinge alignment, angular limits, friction and motor history.
+`app/machinery.rs` advances that owner from the game clock and queues rigid pose
+deltas before transform propagation, visibility and shadow collection. Meshes
+and per-body solver storage are reused. Missing entity endpoints retain the
+world anchor, following the constraint body's initialization rule.
+
+This covers authored motor-driven machinery and its supporting fixed-pivot
+hinges, including dynamic cages connected to blades, inherited constraint
+settings and material-derived mass. All 36 installed level files resolve their
+active motor assemblies. General contact-driven physics, skeletal/articulated
+joint endpoints, gameplay start/stop events and save-state restoration remain
+separate work. Unsupported assembly recipes produce explicit diagnostics rather
+than replacement animation. Rendering is driven by the simulated pose; no
+object-name rotation rules or extracted runtime files are used.
+
 ## Installed resources
 
 `assets::installation::game_base` uses an authoritative `DH2_GAME_BASE` override

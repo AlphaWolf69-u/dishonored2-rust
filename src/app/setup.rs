@@ -692,6 +692,7 @@ pub(super) fn setup(
                 );
                 model_shadow_sources.push(shadow_updates::ModelShadowSource {
                     placement: number,
+                    local_bounds: model.authored_bounds,
                     bounds: caster_bounds,
                     skinned: true,
                     surfaces: caster_surfaces,
@@ -891,6 +892,7 @@ pub(super) fn setup(
         );
         model_shadow_sources.push(shadow_updates::ModelShadowSource {
             placement: number,
+            local_bounds: model.authored_bounds,
             bounds: caster_bounds,
             skinned: false,
             surfaces: caster_surfaces,

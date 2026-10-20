@@ -2,6 +2,7 @@
 //! Format observations come from local game resources; tag section conventions
 //! were cross-checked against MIT-licensed TagTools by Skyth.
 use std::collections::BTreeMap;
+pub mod mass;
 
 #[derive(Debug)]
 pub struct PhysWorld {
@@ -401,6 +402,12 @@ pub fn physics_shape_asset_path(key: &str) -> String {
 
 /// FUN_140aeb340: matrix columns to quaternion, including original branch ties.
 pub fn basis_quaternion(basis: [[f32; 4]; 3]) -> [f32; 4] {
+    normalize_body_quaternion(rotation_quaternion(basis))
+}
+
+/// FUN_140aea690 converts a rotation basis without the normalization performed
+/// by 140aeb340. Constraint motion history uses this distinct entry point.
+pub fn rotation_quaternion(basis: [[f32; 4]; 3]) -> [f32; 4] {
     let trace = (basis[0][0] + basis[1][1]) + basis[2][2];
     let mut quaternion = [0.0; 4];
     if trace > 0.0 {
@@ -427,11 +434,11 @@ pub fn basis_quaternion(basis: [[f32; 4]; 3]) -> [f32; 4] {
         quaternion[second] = (basis[largest][second] + basis[second][largest]) * factor;
         quaternion[third] = (basis[largest][third] + basis[third][largest]) * factor;
     }
-    normalize_body_quaternion(quaternion)
+    quaternion
 }
 
 #[cfg(target_arch = "x86_64")]
-fn normalize_body_quaternion(quaternion: [f32; 4]) -> [f32; 4] {
+pub(crate) fn normalize_body_quaternion(quaternion: [f32; 4]) -> [f32; 4] {
     use std::arch::x86_64::*;
     // Exact RSQRTPS/Newton sequence; generic quaternion normalization differs.
     unsafe {
@@ -452,7 +459,7 @@ fn normalize_body_quaternion(quaternion: [f32; 4]) -> [f32; 4] {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn normalize_body_quaternion(_quaternion: [f32; 4]) -> [f32; 4] {
+pub(crate) fn normalize_body_quaternion(_quaternion: [f32; 4]) -> [f32; 4] {
     unimplemented!("DH2 body normalization requires x86-64 RSQRTPS")
 }
 

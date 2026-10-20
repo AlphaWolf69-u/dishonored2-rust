@@ -400,7 +400,7 @@ pub(super) enum RenderModelSurface {
 
 /// The exact expanded placements used to enqueue models, including rigid-body
 /// additions. Model source indices refer here, NOT SceneData.placed_models.
-/// These are source associations/initial poses, not current animated poses.
+/// Physics publishes current poses here before visibility and shadow preparation.
 #[derive(Resource)]
 pub(super) struct RenderSourcePlacements(pub(super) Vec<entities::PlacedModel>);
 

@@ -688,6 +688,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    let machinery=super::machinery::AmbientMachinery::load(catalog.as_ref().unwrap(),entity_document.as_ref(),&placed_models)
+        .map_err(std::io::Error::other)?;
+    app.insert_resource(machinery);
     let mut graphics = bevy::render::settings::WgpuSettings::default();
     #[cfg(target_os = "windows")]
     if env::var_os("WGPU_BACKEND").is_none() {
@@ -876,6 +879,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .insert_resource(VisibilityElapsedTiming::default())
+        .init_resource::<super::model_motion::ModelPoseUpdates>()
+        .init_resource::<super::model_motion::ModelMotionBindings>()
         .insert_resource(LocalLightCullEnabled(light_area_cull))
         .insert_resource(LocalLightCullStats::default())
         .insert_resource(StreamingDiagnostics::new(&path))
@@ -894,6 +899,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             Update,
             (
                 camera_controls,
+                super::machinery::update_machinery,
                 update_coordinate_overlay,
                 interact_pickup,
                 snapshot_once,
@@ -901,6 +907,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 show_frame_rate,
             )
                 .chain(),
+        )
+        .add_systems(
+            PostUpdate,
+            super::model_motion::publish_model_poses
+                .before(bevy::transform::TransformSystems::Propagate)
+                .before(stream_visible_models)
+                .before(shadow_updates::collect_model_casters),
         )
         .add_systems(
             PostUpdate,

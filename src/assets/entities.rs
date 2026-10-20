@@ -1,5 +1,6 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
 use std::collections::HashMap;
+pub mod machinery;
 
 /// FUN_140135f70 uses SIGNED byte comparisons for unquoted whitespace
 /// (140135ff0/140136028: CMP byte,0x20; JG/JLE). Treating a raw 0xa0 as
@@ -142,7 +143,7 @@ pub struct RigidBodySettings {
     pub collision_layer: Option<String>,
     pub material: Option<String>,
     pub mass_override: Option<f32>,
-    /// FUN_140808ea0 accepts mass above DAT_141ab3810 (0.01); None requires shape-derived mass.
+    /// FUN_140808ea0 uses any positive mass override; otherwise shape volume times material density.
     pub descriptor_mass_override: Option<f32>,
     pub density_override: Option<f32>,
     pub start_asleep: Option<bool>,
@@ -1905,7 +1906,7 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                 material: atom("m_MaterialOverride"),
                 mass_override,
                 descriptor_mass_override: mass_override
-                    .filter(|&mass| mass > f32::from_bits(0x3c23d70a)),
+                    .filter(|&mass| mass > 0.),
                 density_override: atom("m_densityOverride").and_then(|value| value.parse().ok()),
                 start_asleep: match atom("m_startAsleep") {
                     Some(value) => value.parse().ok(),
@@ -3089,11 +3090,11 @@ entity { entityDef crate { edit = { m_componentDecls = {
         assert_eq!(bodies[0].lock_rotation, [false, true, false]);
     }
     #[test]
-    fn rigid_body_mass_branch_preserves_above_threshold_override_without_guessing_fallback() {
+    fn rigid_body_mass_branch_preserves_every_positive_override() {
         for (mass, expected) in [
             ("1", Some(1.0)),
-            ("0.001", None),
-            ("0.01", None),
+            ("0.001", Some(0.001)),
+            ("0.01", Some(0.01)),
             ("0.010000001", Some(f32::from_bits(0x3c23d70b))),
             ("0", None),
             ("-0.0", None),

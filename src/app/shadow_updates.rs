@@ -26,6 +26,8 @@ pub(super) struct ModelShadowSources(pub(super) Vec<ModelShadowSource>);
 
 pub(super) struct ModelShadowSource {
     pub placement: usize,
+    /// Resource-space bounds retained for physics pose publication.
+    pub local_bounds: [[f32; 3]; 2],
     pub bounds: [[f32; 3]; 2],
     pub skinned: bool,
     pub surfaces: Vec<(usize, i32, Result<u8, String>)>,
