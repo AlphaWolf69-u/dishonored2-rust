@@ -396,3 +396,11 @@ the frame-rate display. `RAM` is the resident working set; `Private` is private
 committed memory and includes pages that may be paged out. These process counters
 include driver allocations charged to the process and are not GPU VRAM totals.
 Unavailable counters are shown explicitly rather than reported as zero.
+
+Cutout shadow materials create their authored initial image mip chains during
+level setup. Both model and static-world shadow program banks determine which
+resources are needed, including vegetation and vista cutouts. They use the same
+archive reader, image attachment and residency bookkeeping as the streamer;
+finer mips still follow projected-area demand. A caster entering a new shadow
+range therefore has a resident base image before its first draw, rather than
+making the entire directional shadow frame wait for an initial texture read.

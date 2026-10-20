@@ -961,7 +961,7 @@ pub(super) fn setup(
         "MD6 skeletal instances shown in compiled rest pose: {md6_rest_pose_instances}; joint animation is not implemented"
     );
     println!(
-        "Materials: {} unique, {} diffuse textures deferred, {} without diffuse ({} transparent surfaces suppressed); initial mip {}",
+        "Materials: {} unique, {} registered texture resources, {} without diffuse ({} transparent surfaces suppressed); initial mip {}",
         resolver.cache.len(),
         resolver.diffuse_image_paths.len(),
         resolver.misses,
@@ -1524,6 +1524,12 @@ pub(super) fn setup(
     commands.insert_resource(shadow_updates::ModelShadowSources(
         model_shadow_sources,
     ));
+    let mut shadow_image_slots: Vec<_> = resolver.shadow_materials.0.values()
+        .filter_map(|inputs| inputs.as_ref().ok())
+        .filter_map(super::shadow_preparation::ShadowMaterialInputs::cutout_image_slot)
+        .collect();
+    shadow_image_slots.sort_unstable();
+    shadow_image_slots.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     let vegetation_vertices: usize = vegetation_meshes
         .0
@@ -1559,7 +1565,7 @@ pub(super) fn setup(
     } else {
         Vec::new()
     };
-    commands.insert_resource(SceneRenderQueue {
+    let mut render_queue = SceneRenderQueue {
         instances: render_instances,
         active: 0,
         static_world_model_present: true,
@@ -1592,7 +1598,25 @@ pub(super) fn setup(
         texture_viewport_pixels: 0,
         diffuse_mip_upgrades: 0,
         preferred_mip,
-    });
+    };
+    if let Some(catalog) = catalog {
+        let mut resident_images = 0;
+        let mut resident_bytes = 0;
+        for slot in shadow_image_slots {
+            match super::texture_streaming::initialize_resident_image(
+                catalog, slot, &mut render_queue, &mut images,
+                &mut probe_materials, &mut decal_materials,
+            ) {
+                Ok(bytes) => {
+                    resident_images += usize::from(bytes != 0);
+                    resident_bytes += bytes;
+                }
+                Err(error) => error!(target: "dh2::shadows", slot, "Cutout image initialization failed: {error}"),
+            }
+        }
+        info!(target: "dh2::shadows", resident_images, resident_bytes, "Shadow cutout base mips initialized");
+    }
+    commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
         commands.insert_resource(TextureReadWorker::new(catalog, diffuse_image_count));
     }

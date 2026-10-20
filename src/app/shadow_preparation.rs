@@ -36,6 +36,16 @@ pub(super) struct ShadowMaterialInputs {
 }
 
 impl ShadowMaterialInputs {
+    pub(super) fn cutout_image_slot(&self) -> Option<usize> {
+        let model_cutout = self.rigid_base_source.as_ref().ok()
+            .and_then(Option::as_ref)
+            .is_some_and(|source| source.class != shader_cache::CachedRigidShadowClass::Opaque);
+        let world_cutout = self.world_source.as_ref().ok()
+            .and_then(Option::as_ref)
+            .is_some_and(|source| source.class != shader_cache::CachedWorldShadowClass::Opaque);
+        (model_cutout || world_cutout).then_some(self.diffuse_image_slot).flatten()
+    }
+
     /// Only the two original material flags consumed by FUN_1402996f0.
     /// Slot presence comes from +0xf0; needsWind uses the MAIN fallback
     /// (1402d565a..1402d567e), not the specialized shadow shader's defaults.

@@ -181,7 +181,7 @@ pub(super) fn collect_model_casters(
         }
         Err(error) => {
             if output.error.as_ref() != Some(&error) {
-                eprintln!("Model caster collection pending: {error}");
+                warn!(target: "dh2::shadows", frame = frame_count.0, "Model caster collection pending: {error}");
                 output.error = Some(error);
             }
         }
@@ -202,6 +202,7 @@ pub(super) struct ParallelShadowCpu {
     gather_count: usize,
     world_query: Option<crate::local_caster_query::LocalWorldQuery>,
     shadow_extent: crate::rendering::environment::EnvironmentScalar,
+    last_shadow_extent: Option<f32>,
     static_frames: Vec<Option<Arc<StaticShadowFrame>>>,
     last_error: Option<String>,
 }
@@ -243,6 +244,7 @@ impl Default for ParallelShadowCpu {
             // Registered env/shadow/parallelLightExtend default at +0x50,
             // measured from the original registry; area targets remain authored.
             shadow_extent: crate::rendering::environment::EnvironmentScalar::new(70.0),
+            last_shadow_extent: None,
             static_frames: Vec::new(),
             last_error: None,
         }
@@ -523,7 +525,7 @@ pub(super) fn prepare_screen_shadow_frame(
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                eprintln!("Screen frame pending: {error}");
+                warn!(target: "dh2::shadows", revision = frame.revision, "Screen frame pending: {error}");
                 *last_error = Some(error);
             }
         }
@@ -662,7 +664,7 @@ pub(super) fn publish_parallel_shadow_frame(
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                eprintln!("Directional atlas frame pending: {error}");
+                warn!(target: "dh2::shadows", frame = ?cpu.current.as_ref().map(|frame| frame.frame), "Directional atlas frame pending: {error}");
                 *last_error = Some(error.clone());
             }
             output.state = shadow_pass::ShadowSceneState::Unavailable(error);
@@ -1091,7 +1093,7 @@ pub(super) fn prepare_parallel_model_draws(
     match result {
         Ok(layers) => {
             if output.last_error.take().is_some() || !output.reported {
-                println!(
+                info!(target: "dh2::shadows", frame = frame.frame,
                     "Model shadow submissions online: {} draws",
                     layers.iter().map(Vec::len).sum::<usize>()
                 );
@@ -1101,7 +1103,7 @@ pub(super) fn prepare_parallel_model_draws(
         }
         Err(error) => {
             if output.last_error.as_ref() != Some(&error) {
-                eprintln!("Model shadow submissions pending: {error}");
+                warn!(target: "dh2::shadows", frame = frame.frame, "Model shadow submissions pending: {error}");
                 output.last_error = Some(error);
             }
         }
@@ -1249,7 +1251,7 @@ pub(super) fn prepare_parallel_world_draws(
     match result {
         Ok(layers) => {
             if draws.last_error.take().is_some() {
-                println!(
+                info!(target: "dh2::shadows", frame = frame.frame,
                     "Parallel BWM submissions online: {} cascades, {} draws",
                     layers.len(),
                     layers
@@ -1262,7 +1264,7 @@ pub(super) fn prepare_parallel_world_draws(
         }
         Err(error) => {
             if draws.last_error.as_ref() != Some(&error) {
-                eprintln!("Parallel BWM submissions pending: {error}");
+                warn!(target: "dh2::shadows", frame = frame.frame, "Parallel BWM submissions pending: {error}");
                 draws.last_error = Some(error);
             }
         }
@@ -1336,6 +1338,17 @@ pub(super) fn prepare_parallel_shadow_cpu(
         )?;
         let shadow_near =
             authored_shadow_near.max(scene.rewrite_shadow_settings.minimum_sun_caster_extent);
+        if cpu.last_shadow_extent.map(f32::to_bits) != Some(authored_shadow_near.to_bits()) {
+            let position = view_to_game(transform.translation);
+            let areas: Vec<_> = scene.area_environments.iter()
+                .filter(|area| area.contains(position))
+                .map(|area| area.id.as_str())
+                .collect();
+            info!(target: "dh2::shadows", frame = frame_count.0, ?position, ?areas,
+                previous = ?cpu.last_shadow_extent, authored = authored_shadow_near,
+                applied = shadow_near, "Caster extent changed");
+            cpu.last_shadow_extent = Some(authored_shadow_near);
+        }
         let camera_view = tome::render_query_base_rows(Mat4::IDENTITY.to_cols_array_2d(), pose);
         let count = owner
             .dimensions
@@ -1817,7 +1830,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
     match result {
         Ok(frame) => {
             if cpu.last_error.take().is_some() {
-                println!(
+                info!(target: "dh2::shadows", frame = frame.frame,
                     "Parallel CPU frame online: {} cascades, {} world caster selections",
                     frame.masks.len(),
                     frame
@@ -1832,7 +1845,8 @@ pub(super) fn prepare_parallel_shadow_cpu(
         }
         Err(error) => {
             if cpu.last_error.as_ref() != Some(&error) {
-                eprintln!("Parallel CPU frame pending: {error}");
+                warn!(target: "dh2::shadows", frame = frame_count.0,
+                    extent = ?cpu.last_shadow_extent, "Parallel CPU frame pending: {error}");
                 cpu.last_error = Some(error);
             }
         }

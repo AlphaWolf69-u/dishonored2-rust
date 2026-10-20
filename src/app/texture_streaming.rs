@@ -603,6 +603,36 @@ pub(super) fn attach_prepared_diffuse_image(
     }
 }
 
+/// Create the authored initial mip chain before any caster can reference it.
+/// LoadResourceInternal (1402ea140 -> 1402e9ff0) uploads the binary image's
+/// base levels when the resource is created; finer streaming is independent.
+/// Bevy prepares this ordinary data-backed Image before exposing its GPU view.
+pub(super) fn initialize_resident_image(
+    catalog: &archive::Catalog,
+    slot: usize,
+    queue: &mut SceneRenderQueue,
+    images: &mut Assets<Image>,
+    probe_materials: &mut Assets<ProbeMaterial>,
+    decal_materials: &mut Assets<DecalMaterial>,
+) -> Result<usize, String> {
+    if queue.diffuse_image_handles.get(slot).is_some_and(Option::is_some) {
+        return Ok(0);
+    }
+    let path = queue.diffuse_image_paths.get(slot).ok_or("resident image slot is absent")?;
+    let mut streamed = read_streamed_diffuse_at_target(
+        catalog, path, TextureReadTarget::Initial(queue.preferred_mip),
+    )?.ok_or_else(|| format!("resident image is absent: {path}"))?;
+    let data: Vec<_> = streamed.uploads.into_iter().flat_map(|mip| mip.payload).collect();
+    let bytes = data.len();
+    streamed.image.data = Some(data);
+    let mip_count = streamed.image.texture_descriptor.mip_level_count;
+    let handle = images.add(streamed.image);
+    attach_prepared_diffuse_image(slot, handle, queue, images, probe_materials, decal_materials);
+    commit_prepared_diffuse_level(queue, slot, streamed.level, mip_count);
+    queue.diffuse_image_attempted[slot] = true;
+    Ok(bytes)
+}
+
 pub(super) fn commit_prepared_diffuse_level(
     queue: &mut SceneRenderQueue,
     slot: usize,

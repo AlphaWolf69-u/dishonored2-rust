@@ -7037,6 +7037,132 @@ fn deferred_diffuse_reader_loads_installed_bc7_mip() {
 }
 
 #[test]
+fn cutout_initial_residency_precedes_visibility_and_preserves_authored_chain() {
+    let base = crate::assets::installation::game_base().unwrap();
+    if !base.is_dir() { return; }
+    let catalog = archive::Catalog::open(&base).unwrap();
+    let path = catalog.paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
+        .into_iter().find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2")).unwrap();
+    let stem = path.strip_suffix("_mip2").unwrap().to_string();
+    let image_bytes = catalog.read(&stem).unwrap().unwrap();
+    let expected = texture::compressed_inline_chain(&image_bytes).unwrap();
+    let mut queue = SceneRenderQueue {
+        diffuse_image_paths: vec![stem],
+        diffuse_image_handles: vec![None],
+        diffuse_image_materials: vec![vec![]],
+        diffuse_mip_states: vec![DiffuseMipState::default()],
+        diffuse_image_attempted: vec![false],
+        ..default()
+    };
+    let mut images = Assets::<Image>::default();
+    let mut probes = Assets::<ProbeMaterial>::default();
+    let mut decals = Assets::<DecalMaterial>::default();
+    let bytes = super::texture_streaming::initialize_resident_image(
+        &catalog, 0, &mut queue, &mut images, &mut probes, &mut decals,
+    ).unwrap();
+    assert_eq!(bytes, expected.payload.len());
+    let handle = queue.diffuse_image_handles[0].as_ref().unwrap().clone();
+    let image = images.get(&handle).unwrap();
+    assert_eq!(image.data.as_deref(), Some(expected.payload.as_slice()));
+    assert_eq!(image.texture_descriptor.mip_level_count, expected.info.mip_count);
+    assert_eq!(queue.diffuse_mip_states[0].minimum, queue.diffuse_mip_states[0].resident);
+    assert_eq!(queue.diffuse_mip_states[0].resident.unwrap().resource_mip, None);
+    assert!(queue.shadow_diffuse_slots.is_empty());
+    assert_eq!(queue.active, 0);
+    queue.request_shadow_diffuse(0);
+    assert_eq!(super::texture_streaming::initialize_resident_image(
+        &catalog, 0, &mut queue, &mut images, &mut probes, &mut decals,
+    ).unwrap(), 0);
+    assert_eq!(queue.diffuse_image_handles[0].as_ref().unwrap().id(), handle.id());
+    assert_eq!(images.len(), 1);
+}
+
+#[test]
+fn cutout_initial_residency_follows_compiled_shadow_banks() {
+    use shader_cache::{CachedWorldShadowClass as World, CachedRigidShadowClass as Model};
+    for class in [World::Opaque, World::AlphaTested, World::VistaAlpha, World::Vegetation, World::VegetationFixed] {
+        let (_, mut materials) = world_shadow_test_material(class);
+        let inputs = materials.0.values_mut().next().unwrap().as_mut().unwrap();
+        // Ordinary alpha flags cannot replace the actual shadow fragment class.
+        inputs.alpha_test = class == World::Opaque;
+        assert_eq!(inputs.cutout_image_slot(), (class != World::Opaque).then_some(0));
+        let source = inputs.world_source.as_ref().unwrap().as_ref().unwrap();
+        for class in [Model::Opaque, Model::AlphaTested, Model::VistaAlpha, Model::Vegetation] {
+            let mut model = inputs.clone();
+            model.world_source = Ok(None);
+            model.diffuse_image_slot = Some(17);
+            model.rigid_base_source = Ok(Some(Arc::new(shader_cache::CachedRigidShadowSource {
+                class, skin_influences: 0, alpha_dither: false,
+                program: source.program.clone(), variant_hash: source.variant_hash,
+                definition_render_state: source.definition_render_state, variant: source.variant.clone(),
+            })));
+            assert_eq!(model.cutout_image_slot(), (class != Model::Opaque).then_some(17));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU and installed image; checks base-mip upload before first shadow demand"]
+fn cutout_initial_residency_is_ready_for_late_caster_gpu() {
+    use bevy::render::{render_asset::RenderAssets, render_resource::*, renderer::{RenderDevice, RenderQueue}, texture::GpuImage, RenderApp};
+    let base = crate::assets::installation::game_base().unwrap();
+    let catalog = archive::Catalog::open(&base).unwrap();
+    let path = catalog.paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
+        .into_iter().find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2")).unwrap();
+    let stem = path.strip_suffix("_mip2").unwrap().to_string();
+    let image_bytes = catalog.read(&stem).unwrap().unwrap();
+    let expected = texture::compressed_inline_bc7_mip(&image_bytes, 0).unwrap();
+    assert_eq!((expected.width, expected.height), (256, 256));
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins
+        .set(bevy::window::WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
+        .disable::<bevy::winit::WinitPlugin>()
+        .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>());
+    app.finish(); app.cleanup();
+    let device = app.sub_app(RenderApp).world().resource::<RenderDevice>().clone();
+    let render_queue = app.sub_app(RenderApp).world().resource::<RenderQueue>().clone();
+    let mut queue = SceneRenderQueue {
+        diffuse_image_paths: vec![stem], diffuse_image_handles: vec![None],
+        diffuse_image_materials: vec![vec![]], diffuse_mip_states: vec![DiffuseMipState::default()],
+        diffuse_image_attempted: vec![false], ..default()
+    };
+    super::texture_streaming::initialize_resident_image(&catalog, 0, &mut queue,
+        &mut app.world_mut().resource_mut::<Assets<Image>>(), &mut Assets::default(), &mut Assets::default()).unwrap();
+    let handle = queue.diffuse_image_handles[0].as_ref().unwrap().clone();
+    for _ in 0..4 { app.update(); device.poll(PollType::wait_indefinitely()).unwrap(); }
+    let gpu = app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>().get(handle.id()).unwrap();
+    let texture_id = gpu.texture.id();
+    let staging = device.create_buffer(&BufferDescriptor { label: None, size: 65536,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut encoder = device.create_command_encoder(&default());
+    encoder.copy_texture_to_buffer(gpu.texture.as_image_copy(), TexelCopyBufferInfo {
+        buffer: &staging, layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024), rows_per_image: None },
+    }, Extent3d { width: 256, height: 256, depth_or_array_layers: 1 });
+    render_queue.submit([encoder.finish()]);
+    let (tx,rx) = std::sync::mpsc::channel();
+    staging.slice(..).map_async(MapMode::Read, move |r| tx.send(r).unwrap());
+    device.poll(PollType::wait_indefinitely()).unwrap(); rx.recv().unwrap().unwrap();
+    let mapped = staging.slice(..).get_mapped_range();
+    assert_eq!(&*mapped, expected.payload);
+    drop(mapped); staging.unmap();
+    // First demand after the image was invisible for several frames reuses
+    // resident data; it must not enqueue an initial read or lose its GPU view.
+    queue.request_shadow_diffuse(0);
+    queue.diffuse_image_pending = vec![None];
+    queue.diffuse_image_demands = vec![texture::ProjectedAreaDemand::default()];
+    queue.diffuse_image_last_visible = vec![0];
+    app.insert_resource(queue);
+    app.insert_resource(TextureReadWorker::new(catalog, 1));
+    app.init_resource::<Assets<ProbeMaterial>>();
+    app.init_resource::<Assets<DecalMaterial>>();
+    app.add_systems(Update, stream_visible_textures);
+    for _ in 0..4 { app.update(); device.poll(PollType::wait_indefinitely()).unwrap(); }
+    assert_eq!(app.world().resource::<TextureReadWorker>().inflight_count, 0);
+    assert_eq!(app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>().get(handle.id()).unwrap().texture.id(), texture_id);
+    assert!(app.world().resource::<Assets<Image>>().get(&handle).is_some());
+}
+
+#[test]
 fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let base = crate::assets::installation::game_base().unwrap();
     if !base.is_dir() {
