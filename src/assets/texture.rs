@@ -168,6 +168,7 @@ pub enum ImageFormat {
     Rgba8Srgb,
     Rg8,
     R16Float,
+    Rg32Float,
     Bgra8,
     Bc1,
     Bc1Srgb,
@@ -190,6 +191,7 @@ impl ImageFormat {
             29 => Self::Rgba8Srgb,
             49 => Self::Rg8,
             54 => Self::R16Float,
+            16 => Self::Rg32Float,
             87 => Self::Bgra8,
             71 => Self::Bc1,
             72 => Self::Bc1Srgb,
@@ -210,6 +212,7 @@ impl ImageFormat {
         match self {
             Self::Rgba8 | Self::Rgba8Srgb => 4,
             Self::Rg8 | Self::R16Float => 2,
+            Self::Rg32Float => 8,
             Self::Bgra8 => 4,
             Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8,
             _ => 16,
@@ -224,7 +227,12 @@ impl ImageFormat {
     }
     pub fn block_width(self) -> u32 {
         match self {
-            Self::Rgba8 | Self::Rgba8Srgb | Self::Rg8 | Self::R16Float | Self::Bgra8 => 1,
+            Self::Rgba8
+            | Self::Rgba8Srgb
+            | Self::Rg8
+            | Self::R16Float
+            | Self::Rg32Float
+            | Self::Bgra8 => 1,
             _ => 4,
         }
     }
@@ -319,6 +327,90 @@ fn rgba8_mips_keep_pixel_rows_and_color_space() {
 pub struct InlineCompressedChain {
     pub info: BimageInfo,
     pub payload: Vec<u8>,
+}
+
+/// A BIM cubemap stores one (level, face, width, height, byte count)
+/// record for each of its six faces, with mip level as the outer order.
+pub struct InlineCubeChain {
+    pub info: BimageInfo,
+    pub payload: Vec<u8>,
+}
+pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
+    let info = BimageInfo::parse(bytes)?;
+    if word(bytes, 8)? != 2
+        || word(bytes, 52)? != 6
+        || info.width == 0
+        || info.width != info.height
+        || info.mip_count == 0
+        || info.mip_count > 16
+    {
+        return Err("invalid BIM cubemap descriptor".into());
+    }
+    let mut at = 62usize;
+    let mut payload = Vec::new();
+    for level in 0..info.mip_count {
+        let width = (info.width >> level).max(1);
+        for face in 0..6 {
+            let size = info.format.mip_bytes(width, width);
+            let end = at
+                .checked_add(20)
+                .and_then(|n| n.checked_add(size))
+                .ok_or("cube mip overflow")?;
+            let record = bytes.get(at..end).ok_or("truncated cube mip")?;
+            let mip = compressed_mip(record, level, info.format)?;
+            if word(record, 4)? != face || mip.width != width || mip.height != width {
+                return Err("cube face/mip descriptor mismatch".into());
+            }
+            payload.extend_from_slice(mip.payload);
+            at = end;
+        }
+    }
+    if at != bytes.len() {
+        return Err("cube mip chain size mismatch".into());
+    }
+    Ok(InlineCubeChain { info, payload })
+}
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn installed_reflection_cube_descriptors_and_faces_are_consistent() {
+    let catalog =
+        crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let mut count = 0;
+    for path in catalog.paths_with_suffix(".probesnetwork") {
+        let bytes = catalog.read_prefix(&path, 1024 * 1024).unwrap().unwrap();
+        let (_, _, secondary, _) = crate::pnetwork::ordered_probe_names(&bytes).unwrap();
+        let mut previous = None;
+        for resource in secondary {
+            let probe = crate::bprobe::parse(
+                &catalog
+                    .read(&format!("{resource}.bprobe"))
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            let stem = crate::material::compiled_image_stem(&catalog, &probe.cubemap_name)
+                .unwrap_or_else(|| panic!("{resource}: missing {}", probe.cubemap_name));
+            let cube = compressed_inline_cube(&catalog.read(&stem).unwrap().unwrap())
+                .unwrap_or_else(|e| panic!("{stem}: {e}"));
+            assert_eq!(cube.info.format, ImageFormat::Bc6Unsigned, "{stem}");
+            if let Some(info) = previous {
+                assert_eq!(cube.info, info, "{stem}");
+            }
+            previous = Some(cube.info);
+            assert!(
+                probe
+                    .position
+                    .into_iter()
+                    .chain(probe.virtual_planes.into_iter().flatten())
+                    .all(f32::is_finite),
+                "{resource}"
+            );
+            count += 1;
+        }
+    }
+    assert!(count > 1000, "only {count} reflection cubes validated");
+    println!("{count} installed reflection cubes validated across all networks");
 }
 
 #[test]

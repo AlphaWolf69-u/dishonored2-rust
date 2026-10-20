@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod local_shadow_updates;
+mod environment_reflection;
 mod model_motion;
 mod machinery;
 mod shadow_updates;

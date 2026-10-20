@@ -1009,6 +1009,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         "../../assets/shaders/dh2_indirect.wgsl",
         Shader::from_wgsl
     );
+    bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
     super::sky_sprite::register(&mut app);
     bevy::asset::load_internal_asset!(
         app,

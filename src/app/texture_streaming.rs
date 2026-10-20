@@ -423,6 +423,7 @@ pub(super) fn gpu_image_format(format: texture::ImageFormat) -> TextureFormat {
         Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
         Rg8 => TextureFormat::Rg8Unorm,
         R16Float => TextureFormat::R16Float,
+        Rg32Float => TextureFormat::Rg32Float,
         Bgra8 => TextureFormat::Bgra8Unorm,
         Bc1 => TextureFormat::Bc1RgbaUnorm,
         Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
@@ -443,6 +444,7 @@ pub(super) fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     match format {
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => Some(4),
         TextureFormat::Rg8Unorm | TextureFormat::R16Float => Some(2),
+        TextureFormat::Rg32Float => Some(8),
         TextureFormat::Bgra8Unorm => Some(4),
         TextureFormat::Bc1RgbaUnorm
         | TextureFormat::Bc1RgbaUnormSrgb
@@ -460,9 +462,7 @@ pub(super) fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     }
 }
 
-pub(super) fn surface_sampler_image(
-    catalog: Option<&archive::Catalog>,
-) -> Result<Image, String> {
+pub(super) fn surface_sampler_image(catalog: Option<&archive::Catalog>) -> Result<Image, String> {
     // Installed anisotropicSampler declaration; FUN_1402d9300 canonicalizes
     // any anisotropic filter to all three2-valued filter fields.
     let mut own_anisotropy = 4.0f32;
@@ -615,19 +615,40 @@ pub(super) fn initialize_resident_image(
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
 ) -> Result<usize, String> {
-    if queue.diffuse_image_handles.get(slot).is_some_and(Option::is_some) {
+    if queue
+        .diffuse_image_handles
+        .get(slot)
+        .is_some_and(Option::is_some)
+    {
         return Ok(0);
     }
-    let path = queue.diffuse_image_paths.get(slot).ok_or("resident image slot is absent")?;
+    let path = queue
+        .diffuse_image_paths
+        .get(slot)
+        .ok_or("resident image slot is absent")?;
     let mut streamed = read_streamed_diffuse_at_target(
-        catalog, path, TextureReadTarget::Initial(queue.preferred_mip),
-    )?.ok_or_else(|| format!("resident image is absent: {path}"))?;
-    let data: Vec<_> = streamed.uploads.into_iter().flat_map(|mip| mip.payload).collect();
+        catalog,
+        path,
+        TextureReadTarget::Initial(queue.preferred_mip),
+    )?
+    .ok_or_else(|| format!("resident image is absent: {path}"))?;
+    let data: Vec<_> = streamed
+        .uploads
+        .into_iter()
+        .flat_map(|mip| mip.payload)
+        .collect();
     let bytes = data.len();
     streamed.image.data = Some(data);
     let mip_count = streamed.image.texture_descriptor.mip_level_count;
     let handle = images.add(streamed.image);
-    attach_prepared_diffuse_image(slot, handle, queue, images, probe_materials, decal_materials);
+    attach_prepared_diffuse_image(
+        slot,
+        handle,
+        queue,
+        images,
+        probe_materials,
+        decal_materials,
+    );
     commit_prepared_diffuse_level(queue, slot, streamed.level, mip_count);
     queue.diffuse_image_attempted[slot] = true;
     Ok(bytes)

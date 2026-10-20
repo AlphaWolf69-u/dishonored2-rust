@@ -5,12 +5,9 @@ use super::*;
 fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     let base = crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(&base).unwrap();
-    let mut library = shader_cache::ProgramLibrary::open(
-        &base,
-        shader_cache::ShaderCacheBackend::Pc,
-        &catalog,
-    )
-    .unwrap();
+    let mut library =
+        shader_cache::ProgramLibrary::open(&base, shader_cache::ShaderCacheBackend::Pc, &catalog)
+            .unwrap();
     let program = catalog
         .read("generated/decls/renderprog/arkdecal.decl")
         .unwrap()
@@ -60,11 +57,11 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         };
         *spellings.entry(main.to_owned()).or_default() += 1;
         let resolved = material_float_vectors(&mut library, &catalog, &bytes, ["zbias"]).unwrap();
-        let overrides = entities::material_float_parameters(
-            &entities::declaration_text(&bytes),
-            |name| name == "zbias",
-        )
-        .unwrap();
+        let overrides =
+            entities::material_float_parameters(&entities::declaration_text(&bytes), |name| {
+                name == "zbias"
+            })
+            .unwrap();
         let expected = overrides
             .last()
             .map(|(_, words)| words.map(f32::from_bits))
@@ -81,6 +78,9 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     // bias even though decoding the Uniform on its own already worked.
     let mut programs = Ok(library);
     let mut resolver = MaterialResolver {
+        reflections: None,
+        reflection_brdf_lookup: None,
+        reflection_planes: default(),
         material_exposure: default(),
         anisotropic_sampler_image: default(),
         linear_clamp_image: default(),
@@ -282,8 +282,7 @@ fn saved_dust_approach_visibility_queries() {
         let pose = game_pose_from_view_transform(&transform);
         let fov = f8_reference_fov(&report).unwrap();
         let rows =
-            tome::world_visibility_query_matrix(fov, 1920, 1080, 1.0, pose, 0.01, 7000.0)
-                .unwrap();
+            tome::world_visibility_query_matrix(fov, 1920, 1080, 1.0, pose, 0.01, 7000.0).unwrap();
         let input = tome::OrdinaryDirectQueryInput {
             camera_point: [pose[0][3], pose[1][3], pose[2][3]],
             render_rows: rows,
@@ -294,9 +293,7 @@ fn saved_dust_approach_visibility_queries() {
             minimum_area_metric: 25.0 / (1920.0 * 1080.0),
             global_distance_threshold: settings.umbra_accurate_threshold,
             object_distance_scale: view_distance_scale(
-                &Projection::custom(camera_projection::GameProjection::new(
-                    fov, 0.01, 7000.0,
-                )),
+                &Projection::custom(camera_projection::GameProjection::new(fov, 0.01, 7000.0)),
                 UVec2::new(1920, 1080),
                 Some(&ViewSettings(Ok(settings.clone()))),
             )
@@ -338,9 +335,7 @@ fn saved_dust_approach_visibility_queries() {
                 continue;
             }
             let linear = Color::srgb_from_array(light.color).to_linear();
-            let Some(preset) =
-                light_preset(light, [linear.red, linear.green, linear.blue])
-            else {
+            let Some(preset) = light_preset(light, [linear.red, linear.green, linear.blue]) else {
                 continue;
             };
             let matrix = local_light_clip_to_world(
@@ -407,10 +402,7 @@ fn saved_dust_approach_visibility_queries() {
                 ));
                 assert!(query.visibility_and_area(bounds).unwrap().0);
                 assert_eq!(result.count, 1);
-                assert_eq!(
-                    light_volume_intersects_camera(clip, matrix),
-                    Some(true)
-                );
+                assert_eq!(light_volume_intersects_camera(clip, matrix), Some(true));
             }
         }
         for (index, (matrix, material)) in materials.iter().enumerate() {

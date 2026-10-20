@@ -1,6 +1,7 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
 use std::collections::HashMap;
 pub mod machinery;
+pub mod scene_motion;
 
 /// FUN_140135f70 uses SIGNED byte comparisons for unquoted whitespace
 /// (140135ff0/140136028: CMP byte,0x20; JG/JLE). Treating a raw 0xa0 as

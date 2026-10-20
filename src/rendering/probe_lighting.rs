@@ -6,6 +6,7 @@ use crate::{archive, bprobe, pnetwork};
 mod query;
 #[path = "probe_lighting/update.rs"]
 mod update;
+pub use query::ProbeQuery;
 pub use update::{sky_zh, ProbeLightingParameters};
 
 /// PC sphericalharmonics.decl EvaluateSH (four- and nine-coefficient overloads).
@@ -189,6 +190,7 @@ pub struct ProbeLightingSet {
     pub network_resource: String,
     pub probes: Vec<ProbeLighting>,
     pub secondary_resources: Vec<String>,
+    pub reflection_probes: Vec<bprobe::Probe>,
     pub rejected_resources: Vec<(String, String)>,
     pub spatial: pnetwork::SpatialData,
     pub vertex_references: pnetwork::VertexReferences,
@@ -201,6 +203,8 @@ pub struct InterpolatedProbeLighting {
     pub barycentrics: [f32; 4],
     pub probe_indices: [u16; 4],
     pub probe_weights: [f32; 4],
+    pub reflection_probe: u32,
+    pub reflection_luminance: f32,
     // Keep these distinct from the SH arrays. The installed
     // generated/decls/renderprog/indirectlighting/update/accumulatesh.decl
     // uses factorStatic = globalFactor * envBounceStatic * probeBounceStatic;
@@ -223,6 +227,22 @@ pub struct InterpolatedProbeLighting {
     pub sun_factor_sh: [[f32; 3]; 9],
     pub filtered_sun_factor_sh: [[f32; 3]; 9],
     pub sky_occlusion_sh: [f32; 9],
+}
+
+impl InterpolatedProbeLighting {
+    /// Backend per-object record. RGB holds nine SH coefficients; the first
+    /// two padding lanes carry a numeric reflection index (-1 for fallback)
+    /// and its luminance factor. Numeric indices avoid denormal float payloads.
+    pub fn object_shader_record(&self) -> [[f32; 4]; 9] {
+        let mut record = self.render_lighting_sh.map(|[r, g, b]| [r, g, b, 0.]);
+        record[0][3] = if self.reflection_probe == u32::MAX {
+            -1.
+        } else {
+            self.reflection_probe as f32
+        };
+        record[1][3] = self.reflection_luminance;
+        record
+    }
 }
 
 /// Resolve a map's PNW network by its extracted world-file stem, then follow
@@ -264,6 +284,16 @@ pub fn load_for_world(
         pnetwork::vertex_references(&network, spatial.bytes_consumed, secondary_resources.len())?;
 
     let mut probes = Vec::with_capacity(names.len());
+    let mut reflection_probes = Vec::with_capacity(secondary_resources.len());
+    for name in &secondary_resources {
+        let path = format!("{name}.bprobe");
+        let bytes = catalog
+            .read(&path)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("missing reflection probe {path}"))?;
+        reflection_probes
+            .push(bprobe::parse(&bytes).map_err(|e| format!("reflection probe {path}: {e}"))?);
+    }
     let rejected_resources = Vec::new();
     for name in names {
         let resource = format!("{name}.bprobe");
@@ -314,6 +344,7 @@ pub fn load_for_world(
         network_resource,
         probes,
         secondary_resources,
+        reflection_probes,
         rejected_resources,
         spatial,
         vertex_references,
@@ -322,6 +353,17 @@ pub fn load_for_world(
 }
 
 impl ProbeLightingSet {
+    pub fn reflection_info(&self, probe: usize) -> (u32, f32) {
+        let index = self
+            .spatial
+            .cells
+            .get(probe)
+            .and_then(|cell| cell.reflection_cell)
+            .and_then(|i| self.spatial.cells.get(i))
+            .map_or(0, |cell| cell.reflection_probe);
+        let source = &self.probes[probe].sources;
+        (index, source.lighting_scale * source.reflection_luminance)
+    }
     pub fn initialize_indirect_lighting(&mut self, parameters: &ProbeLightingParameters) {
         for probe in &mut self.probes {
             probe.render_lighting_sh = update::accumulate(probe, parameters);
@@ -376,6 +418,13 @@ impl ProbeLightingSet {
     /// Use the game shader's tetrahedron and per-vertex packed-probe-weight
     /// interpolation, returning the authored SH coefficients for a world point.
     pub fn interpolate_static_sh(&self, position: [f32; 3]) -> Option<InterpolatedProbeLighting> {
+        self.interpolate_query_sh(position, &mut ProbeQuery::default())
+    }
+    pub fn interpolate_query_sh(
+        &self,
+        position: [f32; 3],
+        query: &mut ProbeQuery,
+    ) -> Option<InterpolatedProbeLighting> {
         let barycentric = |points: [[f32; 3]; 4]| {
             let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
             let cross = |a: [f32; 3], b: [f32; 3]| {
@@ -403,7 +452,7 @@ impl ProbeLightingSet {
             [first, second, third, 1.0 - first - second - third]
         };
 
-        let selected = query::select(self, position)?;
+        let selected = query.select(self, position)?;
         let runtime = &self.spatial.runtime_tetrahedra[selected];
         'tetrahedron: for tetrahedron_index in [runtime.shader_index] {
             let tetrahedron = &self.spatial.tetrahedra[tetrahedron_index];
@@ -417,6 +466,9 @@ impl ProbeLightingSet {
                 }
             }
             let mut render_lighting_sh = [[0.0; 3]; 9];
+            let mut reflection_probe = 0;
+            let mut strongest = -f32::MAX;
+            let mut reflection_luminance = 0.;
             let mut static_lighting_sh = [[0.0; 3]; 9];
             let mut sun_factor_sh = [[0.0; 3]; 9];
             let mut filtered_sun_factor_sh = [[0.0; 3]; 9];
@@ -440,6 +492,13 @@ impl ProbeLightingSet {
                 }
                 let probe_sh = &self.probes[probe_index as usize].static_lighting_sh;
                 let probe = &self.probes[probe_index as usize];
+                let (reflection, luminance) = self.reflection_info(probe_index as usize);
+                let weight = probe_weights[probe_slot];
+                if probe_slot == 0 || weight > strongest {
+                    strongest = weight;
+                    reflection_probe = reflection;
+                }
+                reflection_luminance += weight * luminance;
                 for channel in 0..3 {
                     static_lights_illuminance[channel] +=
                         probe_weights[probe_slot] * probe.static_lights_illuminance[channel];
@@ -475,6 +534,8 @@ impl ProbeLightingSet {
                 barycentrics,
                 probe_indices: tetrahedron.probe_indices,
                 probe_weights,
+                reflection_probe,
+                reflection_luminance: reflection_luminance.max(0.0001),
                 static_lights_illuminance,
                 sky_occlusion_factor,
                 sun_irradiance_factor,
@@ -493,6 +554,41 @@ impl ProbeLightingSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn installed_vista_motion_probe_queries() {
+        let catalog =
+            archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let set = load_for_world(&catalog, "dust_p_lowchaos")
+            .unwrap()
+            .unwrap();
+        let bytes = catalog
+            .read("maps/campaign/dust/dust_p_lowchaos.entities")
+            .unwrap()
+            .unwrap();
+        let doc = crate::entities::parse(&crate::entities::declaration_text(&bytes)).unwrap();
+        for placement in crate::entities::render_placements(&doc)
+            .into_iter()
+            .filter(|p| p.resource_path.contains("giant_wind_turbine_propeller_01"))
+        {
+            let model =
+                crate::bmodel::parse(&catalog.read(&placement.resource_path).unwrap().unwrap())
+                    .unwrap();
+            let bounds = crate::render_model::transformed_bounds(
+                model.authored_bounds,
+                placement.position,
+                placement.rotation,
+                placement.scale,
+            );
+            let p = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
+            let mut query = ProbeQuery::default();
+            let light = set.interpolate_query_sh(p, &mut query).unwrap();
+            println!(
+                "{} center{p:?} query{query:?} L0{:?}",
+                placement.id, light.render_lighting_sh[0]
+            );
+        }
+    }
 
     #[test]
     fn indirect_lighting_matches_installed_hlsl() {

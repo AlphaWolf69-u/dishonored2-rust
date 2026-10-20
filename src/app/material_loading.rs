@@ -2,8 +2,8 @@
 use super::{
     archive, entities, env, material, material_surface, probe_lighting, render_program,
     render_state, shader_cache, surface_gpu, CachedMaterial, DecalExtension, DecalMaterial,
-    HashMap, MaterialHandle, ShadowMaterialInputs, ShadowMaterialParameters,
-    ShadowMaterials, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
+    HashMap, MaterialHandle, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
+    ShadowMaterialInputs, ShadowMaterialParameters, ShadowMaterials,
 };
 use bevy::prelude::*;
 
@@ -168,8 +168,7 @@ pub(super) fn resolve_world_shadow_source(
     if material::instancing_bank_override(2, multi, direct)?.is_none() {
         return Ok(None);
     }
-    let mut overrides =
-        shadow_variant_overrides(library, bytes, source, main_program, name)?;
+    let mut overrides = shadow_variant_overrides(library, bytes, source, main_program, name)?;
     let value = render_program::SerializedParameterValue::Words([1, 0, 0, 0]);
     if let Some(parameter) = overrides
         .parameters
@@ -218,10 +217,9 @@ pub(super) fn resolve_shadow_material_parameters(
     if model_depth {
         names.push(b"modeldepthhack");
     }
-    let values =
-        entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
-            names.iter().any(|required| *required == name.as_bytes())
-        })?;
+    let values = entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
+        names.iter().any(|required| *required == name.as_bytes())
+    })?;
     let overrides = render_program::SerializedParameterBlock {
         flags: 0,
         parameters: values
@@ -259,9 +257,7 @@ pub(super) fn material_option_overrides(
     Ok(option_block(values))
 }
 
-pub(super) fn option_block(
-    values: Vec<(String, i32)>,
-) -> render_program::SerializedParameterBlock {
+pub(super) fn option_block(values: Vec<(String, i32)>) -> render_program::SerializedParameterBlock {
     render_program::SerializedParameterBlock {
         flags: 0,
         parameters: values
@@ -324,6 +320,9 @@ pub(super) fn shadow_variant_overrides(
 }
 
 pub(super) struct MaterialResolver<'a> {
+    pub(super) reflections: Option<Handle<Image>>,
+    pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
+    pub(super) reflection_planes: Handle<ShaderBuffer>,
     pub(super) material_exposure: Handle<ShaderBuffer>,
     pub(super) anisotropic_sampler_image: Handle<Image>,
     pub(super) linear_clamp_image: Handle<Image>,
@@ -361,10 +360,9 @@ pub(super) fn material_float_vectors<const N: usize>(
     bytes: &[u8],
     names: [&str; N],
 ) -> Result<[[f32; 4]; N], String> {
-    let values =
-        entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
-            names.contains(&name)
-        })?;
+    let values = entities::material_float_parameters(&entities::declaration_text(bytes), |name| {
+        names.contains(&name)
+    })?;
     let overrides = render_program::SerializedParameterBlock {
         flags: 0,
         parameters: values
@@ -438,27 +436,26 @@ impl MaterialResolver<'_> {
         Ok(u8::from(present) | (u8::from(source.needs_wind) << 6))
     }
     pub(super) fn append_probe_record(&mut self, game_position: [f32; 3]) -> u32 {
-        let sh = if self.lit {
+        let record = if self.lit {
             match self
                 .probes
                 .and_then(|probes| probes.interpolate_static_sh(game_position))
             {
                 Some(lighting) => {
                     self.probe_samples += 1;
-                    lighting.render_lighting_sh
+                    lighting.object_shader_record()
                 }
                 None => {
                     if self.probes.is_some() {
                         self.probe_sample_misses += 1;
                     }
-                    [[0.0; 3]; 9]
+                    [[0.0; 4]; 9]
                 }
             }
         } else {
-            [[0.0; 3]; 9]
+            [[0.0; 4]; 9]
         };
-        let record =
-            sh.map(|coefficient| Vec4::new(coefficient[0], coefficient[1], coefficient[2], 0.0));
+        let record = record.map(Vec4::from_array);
         let index = self.probe_sh_records.len() as u32;
         self.probe_sh_records.push(record);
         index
@@ -547,10 +544,10 @@ impl MaterialResolver<'_> {
                     &crate::rendering::sky::parameter_vectors(values).map(Vec4::from_array),
                 );
                 // Registered Uniform int cloudProjOnFar defaults to zero.
-                let project = entities::material_float_parameters(
-                    &entities::declaration_text(bytes),
-                    |n| n == "cloudprojonfar",
-                )?;
+                let project =
+                    entities::material_float_parameters(&entities::declaration_text(bytes), |n| {
+                        n == "cloudprojonfar"
+                    })?;
                 p[4].x = project
                     .last()
                     .map(|(_, v)| f32::from_bits(v[0]))
@@ -856,6 +853,9 @@ impl MaterialResolver<'_> {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
                 extension: DecalExtension {
+                    reflections: self.reflections.clone(),
+                    reflection_brdf_lookup: self.reflection_brdf_lookup.clone(),
+                    reflection_planes: self.reflection_planes.clone(),
                     material_exposure: self.material_exposure.clone(),
                     bias: decal_bias,
                     sh: self.probe_sh_buffer.clone(),
@@ -906,6 +906,9 @@ impl MaterialResolver<'_> {
             MaterialHandle::Probe(self.probe_materials.add(ProbeMaterial {
                 base,
                 extension: ProbeExtension {
+                    reflections: self.reflections.clone(),
+                    reflection_brdf_lookup: self.reflection_brdf_lookup.clone(),
+                    reflection_planes: self.reflection_planes.clone(),
                     material_exposure: self.material_exposure.clone(),
                     sh: self.probe_sh_buffer.clone(),
                     vertex_probes: self.vertex_probe_buffer.clone(),

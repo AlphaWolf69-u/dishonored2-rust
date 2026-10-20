@@ -1,5 +1,6 @@
 pub mod bevy_backend;
 pub mod environment;
+pub mod environment_reflection;
 pub mod filling;
 pub mod fog;
 pub mod material;

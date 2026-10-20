@@ -35,7 +35,10 @@ pub struct Probe {
     pub filtered_sky_occlusion_sh: [f32; 9],
     pub samples: Vec<Sample>,
     pub cubemap_name: String,
+    pub virtual_planes: [[f32; 4]; 6],
+    pub reflection_parallax: bool,
     pub has_additional_results: bool,
+    pub alternate_results: Option<Box<ProbeResults>>,
     pub bytes_consumed: usize,
 }
 
@@ -46,6 +49,8 @@ pub struct ProbeSources {
     pub sky_scale: f32,
     pub lighting_scale: f32,
     pub ambient_factor: [f32; 3],
+    /// Probe header+8c; 291430 multiplies this by lighting_scale for IBL.
+    pub reflection_luminance: f32,
     pub multi_bounce_static_sh: [[f32; 3]; 9],
     pub multi_bounce_sun_sh: [[f32; 3]; 9],
     pub multi_bounce_sky_sh: [[f32; 3]; 9],
@@ -164,8 +169,97 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
     let sky_scale = reader.f32()?;
     let lighting_scale = reader.f32()?;
     let ambient_factor = [reader.f32()?, reader.f32()?, reader.f32()?];
-    reader.skip(2 + 4)?;
+    reader.skip(1)?; // Header+88: use for IBL.
+    let reflection_parallax = reader.take(1)?[0] != 0;
+    let reflection_luminance = reader.f32()?;
 
+    let ProbeResults {
+        static_lights_illuminance,
+        sky_occlusion_factor,
+        sun_irradiance_factor,
+        illuminance_estimate,
+        static_lighting_sh,
+        sun_factor_sh,
+        filtered_sun_factor_sh,
+        sky_occlusion_sh,
+        filtered_sky_occlusion_sh,
+        multi_bounce_static_sh,
+        multi_bounce_sun_sh,
+        multi_bounce_sky_sh,
+        samples,
+        cubemap_name,
+        virtual_planes,
+    } = read_results(&mut reader)?;
+    // 2b99a0 serializes one alternate result; its other allocation is runtime blend storage.
+    let has_additional_results = reader.take(1)?[0] != 0;
+    let alternate_results = if has_additional_results {
+        Some(Box::new(read_results(&mut reader)?))
+    } else {
+        None
+    };
+    if reader.cursor != bytes.len() {
+        return Err(format!(
+            "probe reader consumed {:#x} of {:#x} bytes",
+            reader.cursor,
+            bytes.len()
+        ));
+    }
+
+    Ok(Probe {
+        marker,
+        version,
+        generation,
+        position,
+        static_lights_illuminance,
+        sky_occlusion_factor,
+        sun_irradiance_factor,
+        illuminance_estimate,
+        sources: ProbeSources {
+            bounce_factors,
+            sky_scale,
+            lighting_scale,
+            ambient_factor,
+            reflection_luminance,
+            multi_bounce_static_sh,
+            multi_bounce_sun_sh,
+            multi_bounce_sky_sh,
+        },
+        static_lighting_sh,
+        sun_factor_sh,
+        filtered_sun_factor_sh,
+        sky_occlusion_sh,
+        filtered_sky_occlusion_sh,
+        samples,
+        cubemap_name,
+        virtual_planes,
+        reflection_parallax,
+        has_additional_results,
+        alternate_results,
+        bytes_consumed: reader.cursor,
+    })
+}
+
+/// A serialized results_t, shared by the ordinary and alternate captures.
+#[derive(Clone, Debug)]
+pub struct ProbeResults {
+    pub static_lights_illuminance: [f32; 3],
+    pub sky_occlusion_factor: f32,
+    pub sun_irradiance_factor: f32,
+    pub illuminance_estimate: [f32; 3],
+    pub static_lighting_sh: [[f32; 3]; 9],
+    pub sun_factor_sh: [[f32; 3]; 9],
+    pub filtered_sun_factor_sh: [[f32; 3]; 9],
+    pub sky_occlusion_sh: [f32; 9],
+    pub filtered_sky_occlusion_sh: [f32; 9],
+    pub multi_bounce_static_sh: [[f32; 3]; 9],
+    pub multi_bounce_sun_sh: [[f32; 3]; 9],
+    pub multi_bounce_sky_sh: [[f32; 3]; 9],
+    pub samples: Vec<Sample>,
+    pub cubemap_name: String,
+    pub virtual_planes: [[f32; 4]; 6],
+}
+
+fn read_results(reader: &mut Reader<'_>) -> Result<ProbeResults, String> {
     // FUN_1402b8b30 reads results_t metadata preceding its SH arrays and
     // m_samples at +0x750. Reflection metadata names the 32 bytes at +0x30:
     // static-light illuminance, sky-occlusion factor, sun-irradiance factor,
@@ -177,15 +271,15 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
     let illuminance_estimate = [reader.f32()?, reader.f32()?, reader.f32()?];
     reader.skip(9 * 4)?;
 
-    let static_lighting_sh = read_sh3(&mut reader)?;
-    let sun_factor_sh = read_sh3(&mut reader)?;
-    let filtered_sun_factor_sh = read_sh3(&mut reader)?;
-    let sky_occlusion_sh = read_sh1(&mut reader)?;
-    let filtered_sky_occlusion_sh = read_sh1(&mut reader)?;
+    let static_lighting_sh = read_sh3(reader)?;
+    let sun_factor_sh = read_sh3(reader)?;
+    let filtered_sun_factor_sh = read_sh3(reader)?;
+    let sky_occlusion_sh = read_sh1(reader)?;
+    let filtered_sky_occlusion_sh = read_sh1(reader)?;
     reader.skip(0x400)?; // Environment-distance SH table.
-    let multi_bounce_static_sh = read_sh3(&mut reader)?;
-    let multi_bounce_sun_sh = read_sh3(&mut reader)?;
-    let multi_bounce_sky_sh = read_sh3(&mut reader)?;
+    let multi_bounce_static_sh = read_sh3(reader)?;
+    let multi_bounce_sun_sh = read_sh3(reader)?;
+    let multi_bounce_sky_sh = read_sh3(reader)?;
     reader.skip(12)?; // Distance sample min/max/mean.
 
     let sample_count = reader.u32()?;
@@ -238,47 +332,27 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
     reader.counted_strings(occluder_count, 0x6c * 3 + 0x24 * 2 + 4 + 8 + 4)?;
 
     let cubemap_name = reader.string()?;
-    reader.skip(0x60)?; // Serialized virtual-plane records.
-                        // FUN_1402b99a0 reads this flag after the primary results_t. A set flag
-                        // means two additional results_t payloads follow (including IBL data).
-    let has_additional_results = reader.take(1)?[0] != 0;
-    if has_additional_results {
-        return Err("probe has the optional second/third results payloads; this reader has not ported them yet".into());
+    let mut virtual_planes = [[0.; 4]; 6];
+    for plane in &mut virtual_planes {
+        for channel in plane {
+            *channel = reader.f32()?;
+        }
     }
-    if reader.cursor != bytes.len() {
-        return Err(format!(
-            "probe reader consumed {:#x} of {:#x} bytes",
-            reader.cursor,
-            bytes.len()
-        ));
-    }
-
-    Ok(Probe {
-        marker,
-        version,
-        generation,
-        position,
+    Ok(ProbeResults {
         static_lights_illuminance,
         sky_occlusion_factor,
         sun_irradiance_factor,
         illuminance_estimate,
-        sources: ProbeSources {
-            bounce_factors,
-            sky_scale,
-            lighting_scale,
-            ambient_factor,
-            multi_bounce_static_sh,
-            multi_bounce_sun_sh,
-            multi_bounce_sky_sh,
-        },
         static_lighting_sh,
         sun_factor_sh,
         filtered_sun_factor_sh,
         sky_occlusion_sh,
         filtered_sky_occlusion_sh,
+        multi_bounce_static_sh,
+        multi_bounce_sun_sh,
+        multi_bounce_sky_sh,
         samples,
         cubemap_name,
-        has_additional_results,
-        bytes_consumed: reader.cursor,
+        virtual_planes,
     })
 }

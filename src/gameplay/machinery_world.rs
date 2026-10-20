@@ -150,10 +150,17 @@ struct JointRows {
 }
 #[derive(Default)]
 pub struct MachineryWorld {
+    windmills: std::collections::HashMap<String, WindmillMotor>,
     pub bodies: Vec<MachineryBody>,
     joints: Vec<Joint>,
     rows: Vec<JointRows>,
     velocities: Vec<SolverVelocities>,
+}
+struct WindmillMotor {
+    constraint: String,
+    default_speed: f32,
+    override_speed: f32,
+    enabled: bool,
 }
 impl MachineryWorld {
     pub fn from_recipes(
@@ -205,6 +212,24 @@ impl MachineryWorld {
                     world.add_joint(joint.clone(), a, b)?;
                 }
             }
+        }
+        for windmill in &recipes.windmills {
+            world.set_motor_parameters(
+                &windmill.constraint,
+                None,
+                None,
+                Some(windmill.speed_degrees * f32::from_bits(0x3c8efa35)),
+                None,
+            );
+            world.windmills.insert(
+                windmill.entity.clone(),
+                WindmillMotor {
+                    constraint: windmill.constraint.clone(),
+                    default_speed: windmill.speed_degrees,
+                    override_speed: -1.,
+                    enabled: true,
+                },
+            );
         }
         Ok(world)
     }
@@ -281,6 +306,83 @@ impl MachineryWorld {
     }
     pub fn joint_count(&self) -> usize {
         self.joints.len()
+    }
+    /// 743340: retain the requested override; negative values restore the
+    /// declaration's speed. Generator enable/stop gameplay has a separate owner.
+    pub fn set_windmill_speed(&mut self, entity: &str, degrees: f32) -> bool {
+        let Some(motor) = self.windmills.get_mut(entity) else {
+            return false;
+        };
+        motor.override_speed = degrees;
+        let (constraint, velocity) = (
+            motor.constraint.clone(),
+            if degrees < 0. {
+                motor.default_speed
+            } else {
+                degrees
+            },
+        );
+        if motor.enabled {
+            self.set_motor_parameters(
+                &constraint,
+                None,
+                None,
+                Some(velocity * f32::from_bits(0x3c8efa35)),
+                None,
+            );
+        }
+        true
+    }
+    pub fn motor_parameters(&self, id: &str) -> Option<(bool, f32, f32, f32)> {
+        let j = self
+            .joints
+            .iter()
+            .find(|j| j.settings.constraint_id == id)?;
+        let m = j.motor.as_ref()?;
+        Some((
+            j.settings.started,
+            j.settings.target_position,
+            m.target_velocity,
+            m.target_acceleration,
+        ))
+    }
+    /// Component setters715a60/715b60/715bb0/715b00. The same live motor owns
+    /// its history across changes; changing a target must not recreate a body.
+    pub fn set_motor_parameters(
+        &mut self,
+        id: &str,
+        enabled: Option<bool>,
+        position: Option<f32>,
+        velocity: Option<f32>,
+        acceleration: Option<f32>,
+    ) -> bool {
+        let Some(j) = self
+            .joints
+            .iter_mut()
+            .find(|j| j.settings.constraint_id == id)
+        else {
+            return false;
+        };
+        let Some(m) = j.motor.as_mut() else {
+            return false;
+        };
+        if let Some(v) = enabled {
+            j.settings.started = v;
+        }
+        if let Some(v) = position.filter(|_| m.mode == super::machinery::MotorMode::Position) {
+            j.settings.target_position = v;
+        }
+        if let Some(v) = velocity {
+            m.target_velocity = if m.mode == super::machinery::MotorMode::Velocity {
+                v
+            } else {
+                v.abs()
+            };
+        }
+        if let Some(v) = acceleration {
+            m.target_acceleration = v.abs();
+        }
+        true
     }
     pub fn step(&mut self, deltas: [f32; 5]) {
         let Some(step) = SolverParameters::from_game_deltas(&deltas, [0., 0., -9.81, 0.]) else {

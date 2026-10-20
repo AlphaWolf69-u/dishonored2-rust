@@ -4,27 +4,36 @@ use super::{
     authored_world_bounds, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, entities,
     env, environment_sun_ray, expanded_model_placements, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
-    local_shadow_updates, material, mean_game_position, rest_skinning,
-    surface_sampler_image, navigation, needs_exact_world_mesh, light_distance,
-    light_preset, light_projection_bounds,
-    light_proximity_from_cached_bounds, local_light_clip_to_world,
-    placed_direction, placed_transform, placed_vertex, preserved_half_point_angular_scale,
-    probe_lighting, render_bounds, render_light, render_model, retain_model_shadow_position,
-    retain_skin_inputs, runtime, shadow_pipeline, shadow_sampling, shadow_updates,
-    source_mesh, texture, tome, transformed, transformed_direction, view_of, view_to_game, Arc,
-    BTreeMap, Bounds, CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass,
-    DiffuseMipState, FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet,
-    MaterialResolver, ProgramCacheSource, ShadowMaterials,
-    ShadowModelBoundsSource, ShadowModelBoundsSources, VegetationMeshInputs,
-    ViewSettings, WorldShadowMeshSources, NavigationState, NavigationWorld,
-    LocalLightCull, PathBuf, PickupInstance, PickupState, PlacedModelQueries,
-    PlacedModelQueryGroup, ProbeMaterial, Projection, RectLight, RenderDevice, RenderInstance,
-    RenderInstanceSource, RenderModelSurface, RenderSourcePlacements, RenderSuppressionGroup,
-    SceneData, SceneRenderQueue, ShaderBuffer, TextureFormat, TextureReadWorker,
-    TomeRenderInstanceMap, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES,
-    DEFAULT_NEAR,
+    light_distance, light_preset, light_projection_bounds, light_proximity_from_cached_bounds,
+    local_light_clip_to_world, local_shadow_updates, material, mean_game_position, navigation,
+    needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
+    preserved_half_point_angular_scale, probe_lighting, render_bounds, render_light, render_model,
+    rest_skinning, retain_model_shadow_position, retain_skin_inputs, runtime, shadow_pipeline,
+    shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
+    transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
+    CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass, DiffuseMipState,
+    FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet, LocalLightCull,
+    MaterialResolver, NavigationState, NavigationWorld, PathBuf, PickupInstance, PickupState,
+    PlacedModelQueries, PlacedModelQueryGroup, ProbeMaterial, ProgramCacheSource, Projection,
+    RectLight, RenderDevice, RenderInstance, RenderInstanceSource, RenderModelSurface,
+    RenderSourcePlacements, RenderSuppressionGroup, SceneData, SceneRenderQueue, ShaderBuffer,
+    ShadowMaterials, ShadowModelBoundsSource, ShadowModelBoundsSources, TextureFormat,
+    TextureReadWorker, TomeRenderInstanceMap, VegetationMeshInputs, ViewSettings,
+    WorldShadowMeshSources, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES, DEFAULT_NEAR,
 };
 use bevy::prelude::*;
+
+// Model vtable+88 (1bd8b0): the center of the current world bounds,
+// shared by every material surface, rather than its vertex-density centroid.
+fn model_probe_position(placement: &entities::PlacedModel, local: [[f32; 3]; 2]) -> [f32; 3] {
+    let bounds = render_model::transformed_bounds(
+        local,
+        placement.position,
+        placement.rotation,
+        placement.scale,
+    );
+    std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5)
+}
 
 // Shared by ordinary parallel lights and the vista global-sun transport.
 // Vista sun visibility comes from its baked lightmap, independent of shadow
@@ -201,8 +210,8 @@ pub(super) fn setup(
         buffer: local_shadow_buffer.clone(),
         light_capacity: local_capacity,
     });
-    let anisotropic_sampler_image = images
-        .add(surface_sampler_image(catalog).expect("invalid original material sampler"));
+    let anisotropic_sampler_image =
+        images.add(surface_sampler_image(catalog).expect("invalid original material sampler"));
     // The original publishes parallelLightDir/Color from the environment
     // even in levels with no placed LIGHT_PRESET_SUN entity (Dust District).
     let vista_sun = scene
@@ -214,8 +223,7 @@ pub(super) fn setup(
             Some([Vec3::from_array(color).extend(0.), (-ray).extend(0.)])
         })
         .unwrap_or([Vec4::ZERO; 2]);
-    let mut linear_clamp =
-        surface_sampler_image(catalog).expect("sampler source unavailable");
+    let mut linear_clamp = surface_sampler_image(catalog).expect("sampler source unavailable");
     let bevy::image::ImageSampler::Descriptor(sampler) = &mut linear_clamp.sampler else {
         unreachable!()
     };
@@ -223,7 +231,18 @@ pub(super) fn setup(
     sampler.anisotropy_clamp = 1;
     let linear_clamp_image = images.add(linear_clamp);
     let material_exposure = probe_sh_buffers.add(auto_exposure::initial_material_exposure());
+    let (reflections, reflection_planes, reflection_brdf_lookup) =
+        super::environment_reflection::load(
+            catalog,
+            scene.environment_probes.as_ref(),
+            &mut images,
+            &mut probe_sh_buffers,
+        )
+        .expect("installed environment reflections");
     let mut resolver = MaterialResolver {
+        reflections: Some(reflections),
+        reflection_brdf_lookup,
+        reflection_planes,
         material_exposure: material_exposure.clone(),
         environment: scene.environment_render_parameters.as_ref(),
         linear_clamp_image,
@@ -256,8 +275,7 @@ pub(super) fn setup(
     };
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
-    let mut world_shadow_mesh_sources =
-        WorldShadowMeshSources::prepare(&scene.world, &mut meshes);
+    let mut world_shadow_mesh_sources = WorldShadowMeshSources::prepare(&scene.world, &mut meshes);
     let mut world_admissions = HashMap::<String, Result<u8, String>>::new();
     let mut vegetation_meshes = VegetationMeshInputs::default();
     let mut baked_shear_instances = 0usize;
@@ -407,8 +425,7 @@ pub(super) fn setup(
                     mesh: baked,
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some()
-                    {
+                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some() {
                         0x80000000 | matrix_index as u32
                     } else {
                         mat.probe_index
@@ -433,8 +450,7 @@ pub(super) fn setup(
                     mesh: mesh.clone(),
                     material: mat.handle.clone(),
                     diffuse_image_slot: mat.diffuse_image_slot,
-                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some()
-                    {
+                    probe_index: if mat.vertex_lighting && scene.environment_probes.is_some() {
                         0x80000000 | matrix_index as u32
                     } else {
                         mat.probe_index
@@ -538,9 +554,7 @@ pub(super) fn setup(
                     .entry(placement.resource_path.clone())
                     .or_insert_with(|| {
                         rest_skinning(
-                            catalog
-                                .as_ref()
-                                .ok_or("skin catalog is unavailable")?,
+                            catalog.as_ref().ok_or("skin catalog is unavailable")?,
                             &placement.resource_path,
                             model,
                             resolver.probe_sh_buffers,
@@ -589,7 +603,7 @@ pub(super) fn setup(
                     let Some(mat) = resolver.get(
                         material_path,
                         number + scene.world.objects.len(),
-                        mean_game_position(&points),
+                        model_probe_position(placement, model.authored_bounds),
                     ) else {
                         continue;
                     };
@@ -813,7 +827,7 @@ pub(super) fn setup(
             let Some(mat) = resolver.get(
                 material_path,
                 number + scene.world.objects.len(),
-                mean_game_position(&points),
+                model_probe_position(placement, model.authored_bounds),
             ) else {
                 continue;
             };
@@ -946,6 +960,9 @@ pub(super) fn setup(
         );
     }
     let probe_sh_record_count = resolver.probe_sh_records.len().saturating_sub(1);
+    commands.insert_resource(super::model_motion::ModelProbeLighting(
+        resolver.probe_sh_buffer.clone(),
+    ));
     resolver.upload_probe_records();
     println!(
         "Shared geometry: {} world meshes and {} placed-model surfaces; {} world instances baked for shear",
@@ -1084,9 +1101,8 @@ pub(super) fn setup(
     // ark_fieldOfView=80 degrees at its 16:9 reference, r_znear=0.01, and
     // r_zfar=7000. The vertical FOV is derived by FUN_140890b50; Bevy updates
     // the projection aspect when the actual camera viewport changes.
-    let _game_default_vertical_fov =
-        tome::render_vertical_fov_radians(reference_horizontal_fov)
-            .expect("the registered game FOV default is valid");
+    let _game_default_vertical_fov = tome::render_vertical_fov_radians(reference_horizontal_fov)
+        .expect("the registered game FOV default is valid");
     // The original registers r_multiSamples=0 and clamps physical count to1.
     // Override only in explicit profiling runs for same-source A/B testing.
     let multi_samples = env::var("DH2_PERF_MULTI_SAMPLES")
@@ -1273,8 +1289,7 @@ pub(super) fn setup(
                         range,
                         spot_cosines.map(|(cutoff, _)| cutoff),
                     );
-                    let projection_bounds =
-                        clip_to_world.and_then(light_projection_bounds);
+                    let projection_bounds = clip_to_world.and_then(light_projection_bounds);
                     LocalLightCull {
                         range,
                         kind: light.kind,
@@ -1523,10 +1538,11 @@ pub(super) fn setup(
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
-    commands.insert_resource(shadow_updates::ModelShadowSources(
-        model_shadow_sources,
-    ));
-    let mut shadow_image_slots: Vec<_> = resolver.shadow_materials.0.values()
+    commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
+    let mut shadow_image_slots: Vec<_> = resolver
+        .shadow_materials
+        .0
+        .values()
         .filter_map(|inputs| inputs.as_ref().ok())
         .filter_map(super::shadow_preparation::ShadowMaterialInputs::cutout_image_slot)
         .collect();
@@ -1606,14 +1622,20 @@ pub(super) fn setup(
         let mut resident_bytes = 0;
         for slot in shadow_image_slots {
             match super::texture_streaming::initialize_resident_image(
-                catalog, slot, &mut render_queue, &mut images,
-                &mut probe_materials, &mut decal_materials,
+                catalog,
+                slot,
+                &mut render_queue,
+                &mut images,
+                &mut probe_materials,
+                &mut decal_materials,
             ) {
                 Ok(bytes) => {
                     resident_images += usize::from(bytes != 0);
                     resident_bytes += bytes;
                 }
-                Err(error) => error!(target: "dh2::shadows", slot, "Cutout image initialization failed: {error}"),
+                Err(error) => {
+                    error!(target: "dh2::shadows", slot, "Cutout image initialization failed: {error}")
+                }
             }
         }
         info!(target: "dh2::shadows", resident_images, resident_bytes, "Shadow cutout base mips initialized");

@@ -144,6 +144,19 @@ fn evaluate_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
     return (1.0/3.14159265358979323846)*diffuse*fdr;
 }
 
+// The same material mapping, followed by Fresnel_F0FromIOR for the IBL lobe.
+fn material_reflectance(albedo:vec3<f32>,roughness:f32,metallic:f32,specular_tint:vec3<f32>,use_metallic_specular:bool,dielectric:vec3<f32>)->vec3<f32> {
+    var tint=specular_tint;
+    if use_metallic_specular {
+        let metal=metallic*metallic;let gloss=1.0-roughness;
+        tint=mix(dielectric,albedo,metal);
+        let mapped=mix(smoothstep(0.0,1.07,gloss),smoothstep(0.05,1.0,gloss),gloss);
+        tint*=clamp((mapped+metal)/0.05,0.0,1.0);
+    }
+    let root=sqrt(tint);let ior=(vec3(1.0)+root)/(vec3(1.00001)-root);
+    let ratio=(ior-vec3(1.0))/(ior+vec3(1.0));return ratio*ratio;
+}
+
 fn evaluate_sh_irradiance(direction: vec3<f32>, probe_index: u32) -> vec3<f32> {
     let x = direction.x;
     let y = direction.y;

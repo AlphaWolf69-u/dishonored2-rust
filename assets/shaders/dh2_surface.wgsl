@@ -1,6 +1,6 @@
 #define_import_path dh2_surface
 
-#import dh2_indirect::evaluate_diffuse_response
+#import dh2_indirect::{evaluate_diffuse_response,material_reflectance}
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
 
 struct SurfaceUniform {
@@ -117,6 +117,7 @@ struct SurfaceResult {
     occlusion: f32,
     normal_xy: vec2<f32>,
     diffuse_response:vec3<f32>,
+    specular_reflectance:vec3<f32>,
     emissive:vec3<f32>,
 }
 
@@ -308,5 +309,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     else { out.metallic = surface.ranges.w; }
     out.diffuse_response=evaluate_diffuse_response(out.albedo.rgb,out.roughness,out.metallic,specular,
         #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb,surface.diffuse_metal.rgb);
+    out.specular_reflectance=material_reflectance(out.albedo.rgb,out.roughness,out.metallic,specular,
+        #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb);
     return out;
 }

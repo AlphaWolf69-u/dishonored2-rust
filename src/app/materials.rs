@@ -10,6 +10,14 @@ use bevy::prelude::*;
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(SurfaceKey)]
 pub(super) struct ProbeExtension {
+    #[texture(159)]
+    #[sampler(160)]
+    pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
+    #[texture(156, dimension = "cube_array")]
+    #[sampler(157)]
+    pub(super) reflections: Option<Handle<Image>>,
+    #[storage(158, read_only)]
+    pub(super) reflection_planes: Handle<ShaderBuffer>,
     #[storage(154, read_only)]
     pub(super) material_exposure: Handle<ShaderBuffer>,
     #[storage(100, read_only)]
@@ -267,6 +275,14 @@ impl MaterialExtension for ProbeExtension {
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(DecalKey)]
 pub(super) struct DecalExtension {
+    #[texture(159)]
+    #[sampler(160)]
+    pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
+    #[texture(156, dimension = "cube_array")]
+    #[sampler(157)]
+    pub(super) reflections: Option<Handle<Image>>,
+    #[storage(158, read_only)]
+    pub(super) reflection_planes: Handle<ShaderBuffer>,
     #[storage(154, read_only)]
     pub(super) material_exposure: Handle<ShaderBuffer>,
     #[uniform(155)]

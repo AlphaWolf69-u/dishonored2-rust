@@ -110,6 +110,10 @@ pub struct Cell {
     pub first_tetrahedron: usize,
     pub tetrahedron_count: usize,
     pub planes: Vec<([f32; 3], [f32; 3], bool)>,
+    /// Neighbor cell IDs, in the same order as the separating planes.
+    pub neighbors: Vec<Option<usize>>,
+    pub reflection_probe: u32,
+    pub reflection_cell: Option<usize>,
     pub occluder_samples: Vec<usize>,
 }
 #[derive(Clone, Debug)]
@@ -165,8 +169,12 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             .trim_end_matches('\0')
             .to_owned();
         let first_tetrahedron = u32le(bytes, cursor + 9)? as usize;
+        let reflection_probe = u32le(bytes, cursor + 4)?;
+        let reflection_cell = u32le(bytes, cursor + 17)?;
+        let reflection_cell = (reflection_cell != u32::MAX).then_some(reflection_cell as usize);
         let cell_tetrahedron_count = u32le(bytes, cursor + 13)? as usize;
         let mut planes = Vec::new();
+        let mut neighbors = Vec::new();
         // FUN_140384870 fixed fields through the variable neighbor list.
         cursor = cursor
             .checked_add(29)
@@ -178,6 +186,8 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             ));
         }
         for neighbor_index in 0..neighbor_records {
+            let neighbor = u32le(bytes, cursor)?;
+            neighbors.push((neighbor != u32::MAX).then_some(neighbor as usize));
             let f = |at| u32le(bytes, cursor + at).map(f32::from_bits);
             let point = [f(8)?, f(12)?, f(16)?];
             let normal = [f(20)?, f(24)?, f(28)?];
@@ -222,6 +232,9 @@ pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> 
             first_tetrahedron,
             tetrahedron_count: cell_tetrahedron_count,
             planes,
+            neighbors,
+            reflection_probe,
+            reflection_cell,
             occluder_samples,
         });
         cursor = cursor

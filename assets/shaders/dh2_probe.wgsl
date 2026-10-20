@@ -16,6 +16,7 @@
 #import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, linear_clamp, scaled_uv}
 #import dh2_sky::sky_colour
 #import dh2_surface::material_exposure
+#import dh2_reflection::reflected_light
 
 @fragment
 fn fragment(
@@ -99,6 +100,7 @@ fn fragment(
     var diffuse_response=pbr_input.material.base_color.rgb;
     var indirect=vec3<f32>(0.0);
     var emissive=vec3<f32>(0.0);
+    var specular_reflectance=vec3<f32>(0.0);
     // arkDefault and arkVegetation are the only programs evaluated by dh2_surface.
     // Original arkWater requires a separate depth/HDR-dependent shader; do not
     // feed it through the default layered-material equations.
@@ -119,6 +121,7 @@ fn fragment(
         pbr_input.material.base_color = authored.albedo;
         emissive=authored.emissive;
         diffuse_response=authored.diffuse_response;
+        specular_reflectance=authored.specular_reflectance;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
         pbr_input.diffuse_occlusion = vec3<f32>(authored.occlusion);
@@ -191,6 +194,11 @@ fn fragment(
         indirect = probe_diffuse(pbr_input.N, probe_index)
             * diffuse_response * pbr_input.diffuse_occlusion;
 #endif
+        if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u {
+            indirect+=pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
+                pbr_input.N,normalize(view.world_position-vertex_output.world_position.xyz),
+                pbr_input.material.perceptual_roughness,specular_reflectance,compiled_misc.z==2u);
+        }
     }
 
     var out: FragmentOutput;

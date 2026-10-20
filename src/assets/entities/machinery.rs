@@ -17,6 +17,87 @@ pub struct AngularMotorSettings {
     pub force: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct WindmillSettings {
+    pub entity: String,
+    pub constraint: String,
+    pub speed_degrees: f32,
+}
+
+/// 742e90/742970: generator-owned rotors initialize from m_helixSpeed (150
+/// degrees/s by default), before loading scripts can override their motor.
+pub fn windmills(
+    document: &Document,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Vec<WindmillSettings>, String> {
+    let declarations: HashMap<_, _> = document
+        .definitions
+        .iter()
+        .filter(|d| d.kind == "component" && d.class == "cpntWindMill")
+        .map(|d| (d.id.as_str(), d))
+        .collect();
+    let mut cache = HashMap::new();
+    let mut result = Vec::new();
+    for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
+        let Some(edit) = scope(field(&entity.fields, "edit")) else {
+            continue;
+        };
+        let Some(components) = scope(field(edit, "m_componentDecls")) else {
+            continue;
+        };
+        for (_, entry) in components
+            .iter()
+            .filter(|(k, _)| k.starts_with("item_add["))
+        {
+            let Some(entry) = scope(Some(entry)) else {
+                continue;
+            };
+            let mut fields = if let Some(name) = atom(entry, "mapComponentDecl") {
+                let Some(decl) = declarations.get(name) else {
+                    continue;
+                };
+                let mut fields = if let Some(parent) = atom(&decl.fields, "inherit") {
+                    component_fields("cpntwindmill", parent, 0, &mut cache, &mut read)?
+                } else {
+                    Vec::new()
+                };
+                overlay(
+                    &mut fields,
+                    scope(field(&decl.fields, "edit")).unwrap_or(&[]),
+                );
+                fields
+            } else if let Some(name) =
+                atom(entry, "inheritedDecl").filter(|n| n.ends_with(".cpntwindmill"))
+            {
+                component_fields("cpntwindmill", name, 0, &mut cache, &mut read)?
+            } else {
+                continue;
+            };
+            if let Some(inline) = scope(field(entry, "inlineDecl")) {
+                overlay(&mut fields, inline);
+            }
+            let Some(constraint) =
+                atom(&fields, "m_constraint").filter(|s| !s.is_empty() && *s != "NULL")
+            else {
+                continue;
+            };
+            let speed = atom(&fields, "m_helixSpeed")
+                .unwrap_or("150")
+                .parse::<f32>()
+                .map_err(|_| format!("{}: invalid windmill speed", entity.id))?;
+            if !speed.is_finite() {
+                return Err(format!("{}: non-finite windmill speed", entity.id));
+            }
+            result.push(WindmillSettings {
+                entity: entity.id.clone(),
+                constraint: constraint.into(),
+                speed_degrees: speed,
+            });
+        }
+    }
+    Ok(result)
+}
+
 #[derive(Debug, Clone)]
 pub struct ConstraintSettings {
     pub constraint_id: String,
@@ -63,22 +144,23 @@ fn overlay(base: &mut Fields, local: &[(String, Value)]) {
 }
 
 fn component_fields(
+    kind: &str,
     name: &str,
     depth: usize,
     cache: &mut HashMap<String, Fields>,
     read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Fields, String> {
     if depth > 16 {
-        return Err(format!("constraint inheritance exceeds 16 at {name}"));
+        return Err(format!("component inheritance exceeds 16 at {name}"));
     }
     if let Some(fields) = cache.get(name) {
         return Ok(fields.clone());
     }
-    let path = format!("generated/decls/cpntconstraint/{name}.decl");
-    let source = read(&path)?.ok_or_else(|| format!("constraint declaration missing: {path}"))?;
+    let path = format!("generated/decls/{kind}/{name}.decl");
+    let source = read(&path)?.ok_or_else(|| format!("component declaration missing: {path}"))?;
     let fields = parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
     let mut resolved = match atom(&fields, "inherit") {
-        Some(parent) => component_fields(parent, depth + 1, cache, read)?,
+        Some(parent) => component_fields(kind, parent, depth + 1, cache, read)?,
         None => Vec::new(),
     };
     overlay(
@@ -125,7 +207,9 @@ pub fn constraints(
                     continue;
                 };
                 let mut fields = match atom(&declaration.fields, "inherit") {
-                    Some(parent) => component_fields(parent, 0, &mut cache, &mut read)?,
+                    Some(parent) => {
+                        component_fields("cpntconstraint", parent, 0, &mut cache, &mut read)?
+                    }
                     None => Vec::new(),
                 };
                 overlay(
@@ -137,7 +221,7 @@ pub fn constraints(
                 if !name.ends_with(".cpntconstraint") {
                     continue;
                 }
-                component_fields(name, 0, &mut cache, &mut read)?
+                component_fields("cpntconstraint", name, 0, &mut cache, &mut read)?
             } else {
                 continue;
             };

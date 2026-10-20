@@ -72,9 +72,34 @@ deltas before transform propagation, visibility and shadow collection. Meshes
 and per-body solver storage are reused. Missing entity endpoints retain the
 world anchor, following the constraint body's initialization rule.
 
+Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
+scene loops and their startup graph bindings from the installed archives.
+`gameplay/motion_curve.rs` evaluates unwrapped Euler curves, including constant,
+linear, Catmull-Rom and Bezier interpolation. `gameplay/scene_motion.rs` follows
+the relevant loading events, named variables, relays and runtime entity inputs
+before starting playback. A scene reference or editor preview binding alone
+does not start an animation. Angular motor-control nodes apply the authored
+enabled state and selected position, velocity and acceleration targets to the
+existing constraint motor, including timed changes from the current values.
+Loading events therefore apply the level's ordinary speed before physics runs;
+the same event handler accepts authored storm notifications when weather
+production is integrated. Physics and scripted motion publish through the
+same `app/model_motion.rs` handoff, with stable meshes and visibility/shadow
+bounds. Interpolation, angle conversion and reference-frame composition have
+numerical fixtures from the installed executable. Moving models retain their
+Voronoi cell/tetrahedron query and update indirect lighting from the center of
+their current world bounds. All material surfaces use that model query; vertex
+density does not move a surface's lighting sample. Probe records keep stable
+indices and the same GPU storage allocation. This covers autonomous
+single-scene motion loops; general cinematics, scene seeking, weather-event
+production, skeletal tracks and saved playback state remain separate work.
+
 This covers authored motor-driven machinery and its supporting fixed-pivot
 hinges, including dynamic cages connected to blades, inherited constraint
-settings and material-derived mass. All 36 installed level files resolve their
+settings and material-derived mass. Generator-owned rotors initialize from
+their `cpntWindMill` declaration speed before loading scripts run; temporary
+speed overrides retain the original negative-value reset rule.
+All 36 installed level files resolve their
 active motor assemblies. General contact-driven physics, skeletal/articulated
 joint endpoints, gameplay start/stop events and save-state restoration remain
 separate work. Unsupported assembly recipes produce explicit diagnostics rather
@@ -145,6 +170,21 @@ exercise depth-array layer counts.
 
 
 ## Background materials and fog-volume routing
+
+Ordinary placed props use the installed HDR reflection cubemaps as well as
+diffuse probe lighting. `assets/bprobe.rs` preserves the cubemap names, parallax
+planes and optional alternate capture records; `assets/texture.rs` validates
+all six faces and mip records. `app/environment_reflection.rs` uploads the
+authored BC6H data directly into a shared cubemap array. Plane packing and
+primary-to-reflection probe mapping follow the executable; `dh2_reflection.wgsl`
+evaluates the HQ Ward lobe, parallax correction and luminance factors. The
+vegetation path samples its registered RG32Float Ward lookup instead of using
+the ordinary material's analytical integral. The
+per-object SH record also transports its selected reflection probe and gain,
+and both update with model motion. Numeric tests cover the shader math and
+actual compressed HDR uploads. Per-world-triangle cubemap interpolation,
+alternate-capture weather blending and the special 512-probe residency mode
+remain separate renderer work.
 
 `material_surface::Program` distinguishes `arkVista` from ordinary layered
 materials. Vista images stream through the same installed-archive loader as

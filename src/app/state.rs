@@ -441,6 +441,8 @@ pub(super) const DECAL_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("9165b294-a09d-46cb-af56-27edbe334a1b");
 pub(super) const INDIRECT_SHADER_HANDLE: Handle<Shader> =
     bevy::asset::uuid_handle!("8257a42a-79cb-431e-862a-d5c8380347b5");
+pub(super) const REFLECTION_SHADER_HANDLE: Handle<Shader> =
+    bevy::asset::uuid_handle!("3951c55c-d186-4c55-b4e7-3113d972aa75");
 pub(super) const DEFAULT_HORIZONTAL_FOV_DEGREES: f32 = 80.0;
 pub(super) const DEFAULT_NEAR: f32 = 0.01;
 pub(super) const DEFAULT_FAR: f32 = 7000.0;

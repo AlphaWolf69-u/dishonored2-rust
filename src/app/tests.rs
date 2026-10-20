@@ -13,6 +13,8 @@ use std::path::Path;
 mod approach_visibility;
 #[path = "tests/texture_formats.rs"]
 mod texture_formats;
+#[path="tests/environment_reflection.rs"]
+mod environment_reflection;
 
 #[test]
 #[ignore = "requires installed original catalog and Saved Games config"]
@@ -1565,6 +1567,7 @@ fn authored_surface_gpu_pipelines_compile() {
         "../../assets/shaders/dh2_indirect.wgsl",
         Shader::from_wgsl
     );
+    bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(
         app,
         SKY_SHADER_HANDLE,
@@ -1675,6 +1678,9 @@ fn authored_surface_gpu_pipelines_compile() {
         .add(ProbeMaterial {
             base: StandardMaterial::default(),
             extension: ProbeExtension {
+                reflections:None,
+                reflection_brdf_lookup:None,
+                reflection_planes:sh.clone(),
                 material_exposure: material_exposure.clone(),
                 sh,
                 vertex_probes,
@@ -1786,6 +1792,9 @@ fn authored_surface_gpu_pipelines_compile() {
                 ..default()
             },
             extension: DecalExtension {
+                reflections:None,
+                reflection_brdf_lookup:None,
+                reflection_planes:decal_probe_buffers.0.clone(),
                 material_exposure: material_exposure.clone(),
                 bias: 0.0,
                 sh: decal_probe_buffers.0,
@@ -2681,6 +2690,7 @@ fn authored_surface_gpu_pipelines_compile() {
     vista_lighting_matches_reference(&mut app);
     filling_matches_reference(&mut app);
     probe_shader_matches(&mut app);
+    environment_reflection::shader_matches(&mut app);
     tiled_depth_shader_matches_reference(&mut app);
     // Exercise ordinary emissive-map/mask sampling through the submitted
     // material, with no direct or probe lighting. Emission is independent
@@ -7182,6 +7192,9 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let material = materials.add(ProbeMaterial {
         base: StandardMaterial::default(),
         extension: ProbeExtension {
+            reflections:None,
+            reflection_brdf_lookup:None,
+            reflection_planes:default(),
             material_exposure: Handle::default(),
             sh: Handle::default(),
             vertex_probes: Handle::default(),

@@ -9,6 +9,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = env::args()
         .nth(1)
         .ok_or("Usage: probe_audit <extracted .bprobe> | --catalog <fragment> | --paths <suffix> [fragment] | --search <path fragment> | --show <resource>")?;
+    if path == "--list-networks" {
+        let catalog =
+            archive::Catalog::open(&dishonored2_rust::assets::installation::game_base()?)?;
+        for path in catalog.paths_with_suffix(".probesnetwork") {
+            let bytes = catalog
+                .read_prefix(&path, 1024 * 1024)?
+                .ok_or("missing network")?;
+            let (_, names, _, _) = pnetwork::ordered_probe_names(&bytes)?;
+            println!(
+                "{} {path} {}",
+                names.len(),
+                names.first().map(String::as_str).unwrap_or("")
+            );
+        }
+        return Ok(());
+    }
     if path == "--show" {
         let resource = env::args()
             .nth(2)

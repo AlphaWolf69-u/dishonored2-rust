@@ -19,6 +19,7 @@ pub struct AssemblyRecipe {
     pub joints: Vec<ConstraintSettings>,
 }
 pub struct MachineryRecipes {
+    pub windmills: Vec<super::WindmillSettings>,
     pub assemblies: Vec<AssemblyRecipe>,
     pub unsupported: Vec<String>,
 }
@@ -67,6 +68,7 @@ pub fn load(
     };
     let mut visited = HashSet::new();
     let mut result = MachineryRecipes {
+        windmills: super::windmills(document, read)?,
         assemblies: Vec::new(),
         unsupported: Vec::new(),
     };

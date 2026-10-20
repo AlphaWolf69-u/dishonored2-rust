@@ -34,7 +34,11 @@ struct Binding {
     shadow_bounds: Option<usize>,
     query: Option<usize>,
     surfaces: Vec<SurfaceBinding>,
+    lighting: crate::probe_lighting::ProbeQuery,
 }
+
+#[derive(Resource)]
+pub(super) struct ModelProbeLighting(pub Handle<super::ShaderBuffer>);
 
 #[derive(Resource, Default)]
 pub(super) struct ModelMotionBindings(HashMap<usize, Binding>);
@@ -71,6 +75,9 @@ pub(super) fn publish_model_poses(
     mut queries: ResMut<PlacedModelQueries>,
     mut queue: ResMut<SceneRenderQueue>,
     mut entities: Query<(&mut Transform, &mut GlobalTransform)>,
+    scene: Option<Res<super::SceneData>>,
+    probe_buffer: Option<Res<ModelProbeLighting>>,
+    mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
 ) {
     for pose in pending.0.drain(..) {
         let Some(placement) = placements.0.get_mut(pose.placement) else {
@@ -97,6 +104,14 @@ pub(super) fn publish_model_poses(
                     }
                 })
                 .collect();
+            let mut lighting = crate::probe_lighting::ProbeQuery::default();
+            if let Some(probes) = scene.as_ref().and_then(|s| s.environment_probes.as_ref()) {
+                let bounds = models.0[source].bounds;
+                let _ = probes.interpolate_query_sh(
+                    std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5),
+                    &mut lighting,
+                );
+            }
             bindings.0.insert(
                 pose.placement,
                 Binding {
@@ -106,10 +121,11 @@ pub(super) fn publish_model_poses(
                     shadow_bounds: bounds.0.iter().position(|b| b.placement == pose.placement),
                     query: queries.0.iter().position(|q| q.indices == range),
                     surfaces,
+                    lighting,
                 },
             );
         }
-        let binding = &bindings.0[&pose.placement];
+        let binding = bindings.0.get_mut(&pose.placement).unwrap();
         let rows = std::array::from_fn(|i| pose.delta[i / 4][i % 4]);
         let delta = super::game_affine_to_view(&rows).to_matrix();
         placement.position = std::array::from_fn(|r| {
@@ -148,6 +164,41 @@ pub(super) fn publish_model_poses(
             ],
         );
         render_model::set_model_dynamic_caster_flag(&mut source.flags_18bc, 1);
+        let lighting = scene
+            .as_ref()
+            .and_then(|s| s.environment_probes.as_ref())
+            .and_then(|probes| {
+                probes.interpolate_query_sh(
+                    std::array::from_fn(|i| (source.bounds[0][i] + source.bounds[1][i]) * 0.5),
+                    &mut binding.lighting,
+                )
+            });
+        if let (Some(lighting), Some(handle), Some(buffers)) =
+            (lighting, probe_buffer.as_ref(), buffers.as_mut())
+        {
+            if let Some(mut buffer) = buffers.get_mut(&handle.0) {
+                if let Some(data) = buffer.data.as_mut() {
+                    for surface in &binding.surfaces {
+                        let tag = queue.instances[surface.index].probe_index;
+                        if tag & 0x80000000 != 0 {
+                            continue;
+                        }
+                        let start = tag as usize * 9 * 16;
+                        if let Some(record) = data.get_mut(start..start + 9 * 16) {
+                            for (coefficient, channels) in
+                                lighting.object_shader_record().iter().enumerate()
+                            {
+                                for (channel, value) in channels.iter().enumerate() {
+                                    record[coefficient * 16 + channel * 4
+                                        ..coefficient * 16 + channel * 4 + 4]
+                                        .copy_from_slice(&value.to_le_bytes());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(index) = binding.shadow_bounds {
             bounds.0[index].bounds = source.bounds;
         }

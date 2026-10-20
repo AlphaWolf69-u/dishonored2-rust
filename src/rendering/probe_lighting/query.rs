@@ -118,12 +118,13 @@ fn tetra_distance(p: [f32; 3], v: [[f32; 3]; 4]) -> f32 {
     let mut d = -f32::MAX;
     for (a, b, c) in faces {
         let n = cross(sub(v[b], v[a]), sub(v[c], v[a]));
-        let n = n.map(|x| x / dot(n, n).max(f32::MIN_POSITIVE).sqrt());
+        let reciprocal = 1. / dot(n, n).max(f32::MIN_POSITIVE).sqrt();
+        let n = n.map(|x| x * reciprocal);
         d = d.max(dot(sub(p, v[a]), n));
     }
     d
 }
-pub fn select(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
+fn select_cell(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
     let mut nearest = [(f32::MAX, usize::MAX); 4];
     for (i, g) in set.cell_geometry.iter().enumerate() {
         let delta = sub(p, g.center);
@@ -147,7 +148,9 @@ pub fn select(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
             best[kind] = (score, i);
         }
     }
-    let cell = best.into_iter().find(|v| v.1 != usize::MAX)?.1;
+    Some(best.into_iter().find(|v| v.1 != usize::MAX)?.1)
+}
+fn select_tetrahedron(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Option<usize> {
     let cell = &set.spatial.cells[cell];
     if cell.tetrahedron_count == 0 {
         return None;
@@ -169,9 +172,130 @@ pub fn select(set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
     Some(chosen)
 }
 
+/// Per-object state used by 385da0. A nearest-cell query alone omits both
+/// neighbor traversal and the retained cell/tetrahedron containment checks.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ProbeQuery {
+    cell: Option<usize>,
+    tetrahedron: Option<usize>,
+}
+fn visible(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> bool {
+    let g = &set.cell_geometry[cell];
+    let delta = sub(p, g.center);
+    let distance = dot(delta, delta).sqrt();
+    if distance < 1e-6 {
+        return true;
+    }
+    let ray = delta.map(|x| x / distance);
+    let mut hit = -1f32;
+    for q in &g.quads {
+        let denom = dot(q.normal, ray);
+        if denom >= -1e-6 {
+            continue;
+        }
+        let t = dot(q.normal, sub(q.position, g.center)) / denom;
+        if t > distance {
+            continue;
+        }
+        let d = std::array::from_fn(|i| g.center[i] + ray[i] * t - q.position[i]);
+        if dot(d, q.u).abs() <= 1. && dot(d, q.v).abs() <= 1. && hit <= t {
+            hit = t;
+        }
+    }
+    !(hit > 0. && hit < distance)
+}
+fn contains(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> bool {
+    set.spatial.cells[cell]
+        .planes
+        .iter()
+        .all(|&(origin, normal, skip)| skip || dot(sub(p, origin), normal) >= -0.)
+}
+fn neighbor(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Option<usize> {
+    let cell = &set.spatial.cells[cell];
+    cell.planes
+        .iter()
+        .zip(&cell.neighbors)
+        .find_map(|(&(origin, normal, _), &neighbor)| {
+            let neighbor = neighbor?;
+            (dot(sub(p, origin), normal) < 0.
+                && contains(set, neighbor, p)
+                && visible(set, neighbor, p))
+            .then_some(neighbor)
+        })
+}
+impl ProbeQuery {
+    pub fn select(&mut self, set: &ProbeLightingSet, p: [f32; 3]) -> Option<usize> {
+        if self.cell.is_none() {
+            self.cell = select_cell(set, p);
+            self.tetrahedron = None;
+        }
+        let cell = self.cell?;
+        if !contains(set, cell, p) || !visible(set, cell, p) {
+            self.cell = neighbor(set, cell, p).or_else(|| select_cell(set, p));
+            self.tetrahedron = None;
+        }
+        let cell = self.cell?;
+        if self.tetrahedron.is_none_or(|index| {
+            tetra_distance(p, set.spatial.runtime_tetrahedra[index].positions)
+                > f32::from_bits(0x3a83126f)
+        }) {
+            self.tetrahedron = select_tetrahedron(set, cell, p);
+        }
+        self.tetrahedron
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn retained_query_transitions_match_executable() {
+        let catalog =
+            crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap())
+                .unwrap();
+        for (world, fixture) in [
+            (
+                "boat_dust_p",
+                include_str!("../../../tests/fixtures/probe_query_state.txt"),
+            ),
+            (
+                "dust_p_lowchaos",
+                include_str!("../../../tests/fixtures/probe_query_dust.txt"),
+            ),
+        ] {
+            let set = super::super::load_for_world(&catalog, world)
+                .unwrap()
+                .unwrap();
+            let mut query = ProbeQuery::default();
+            let mut count = 0;
+            for line in fixture
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.is_empty())
+            {
+                let w: Vec<_> = line.split_whitespace().collect();
+                let f = |i| f32::from_bits(u32::from_str_radix(w[i], 16).unwrap());
+                let p = [f(0), f(1), f(2)];
+                let light = set.interpolate_query_sh(p, &mut query).unwrap();
+                assert_eq!(query.cell, Some(w[3].parse().unwrap()), "case{count}");
+                assert_eq!(
+                    light.tetrahedron_index,
+                    w[4].parse::<usize>().unwrap(),
+                    "case{count}"
+                );
+                for i in 0..4 {
+                    assert!(
+                        (light.barycentrics[i] - f(5 + i)).abs() < 3e-5 * f(5 + i).abs().max(1.),
+                        "case{count} bary{i}: {} vs {}",
+                        light.barycentrics[i],
+                        f(5 + i)
+                    );
+                }
+                count += 1;
+            }
+            assert_eq!(count, 76);
+        }
+    }
     #[test]
     fn visibility_aware_cell_ranking_matches_executable() {
         for (i, line) in include_str!("query_cases.txt").lines().enumerate() {
@@ -193,6 +317,9 @@ mod tests {
                 first_tetrahedron: 0,
                 tetrahedron_count: 0,
                 planes,
+                neighbors: vec![],
+                reflection_probe: 0,
+                reflection_cell: None,
                 occluder_samples: vec![],
             };
             let g = CellGeometry {
