@@ -26,3 +26,19 @@ experiments that measured slower were removed rather than retained as modes.
   `shadow_mesh_metadata_tracks_real_gpu_reallocation_and_removal` verifies
   growth, index-format changes, unrelated allocations, same-ID replacement and
   strong-handle lifetime against fresh allocator lookups.
+
+- `storage.rs`, `render_asset.rs`: opt-in `ShaderBufferUploadBatch` recycles
+  staging chunks with wgpu's `StagingBelt` for changed shader-buffer assets.
+  A default no-op `RenderAsset::finish_preparation` hook submits deferred copies
+  before dependent asset systems can consume the buffers. Initial uploads,
+  descriptor changes, GPU-preserving resizes and destination identities retain
+  their existing behavior. Chunk size follows the first observed update batch,
+  bounded by the device allocation limit; recycling waits for GPU completion.
+  Without the resource, ordinary queue writes remain in use.
+
+Validation: `storage_upload_tests.rs` reads back consecutive in-flight epochs,
+resizes, GPU-owned data and removals with batching both absent and present.
+The prepared-shadow cache GPU fixture also enables batching. A controlled DX12
+test updating 80 buffers over 120 frames reduced native placed-resource creation
+from 10,227 to 630, with identical endpoints and destination identities. This is
+an allocation measurement, not a gameplay FPS result.

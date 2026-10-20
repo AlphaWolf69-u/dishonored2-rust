@@ -17,6 +17,7 @@ bevy = { version = "0.19.1", optional = true, default-features = false, features
 
 [patch.crates-io]
 naga = { path = "vendor/naga-29.0.4" }
+wgpu-hal = { path = "vendor/wgpu-hal-29.0.4" }
 bevy_render = { path = "vendor/bevy_render-0.19.1" }
 bevy_core_pipeline = { path = "vendor/bevy_core_pipeline-0.19.1" }
 bevy_light = { path = "vendor/bevy_light-0.19.1" }

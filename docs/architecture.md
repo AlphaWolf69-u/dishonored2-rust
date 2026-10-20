@@ -96,7 +96,18 @@ changed files and validation. Retain upstream licenses. Compare against the matc
 release before upgrading; apply intentional changes individually and rerun GPU
 pipeline and numeric checks. Never modify the Cargo registry cache. The original
 game's material and shadow logic belongs in project code, with dependency patches
-limited to the hooks and GPU data layouts needed to express it.
+limited to the hooks, GPU data layouts and resource lifecycle fixes needed to
+express it reliably.
+
+The DX12 HAL pools completed native command lists together with their dedicated
+command allocators. Keeping one allocator per logical encoder spreads the
+largest batch's retained storage across the entire encoder pool. Each native
+list now retains its own allocator through submission; the pair enters the
+shared pool only after GPU completion, and checkout resets both before use.
+Discarded recordings remain exclusive and can be reused without a GPU wait.
+Command order and rendered work are unchanged. The Windows command-pool GPU
+regression rotates large batches among 80 encoders, checks memory growth and
+reads back the rendered depth. HAL patch notes document the ownership contract.
 
 Naga's HLSL texture-query fix selects the correct `GetDimensions` output for
 array layers, mip counts and sample counts. Its SPIR-V layer query uses the
@@ -330,6 +341,12 @@ Repeated draws resolve one allocation per submission. GPU tests compare against
 fresh lookups across geometry growth, index-format changes, asset replacement,
 and removal.
 
+Shadow material bindings follow the same submission lifetime: fresh preparation
+marks the image/UV bindings it uses and releases unused cache entries. Streamed
+mip replacements must not leave old texture views alive in pipeline caches.
+Prepared draws and submitted commands retain their own GPU handles. Periodic
+`dh2::shadow_resources` diagnostics report the live and retired binding counts.
+
 Prepared shadow records share immutable mesh-allocation metadata owned by the
 allocation cache. Retained records keep those GPU buffers alive through `Arc`;
 asset epoch changes still invalidate reuse. Consecutive identical world-buffer
@@ -367,3 +384,9 @@ benchmark is a separate presentation-path diagnostic, even when its pixel
 size matches. Moving-camera runs determine acceptance; stationary views only
 help isolate costs. Shader/GPU oracles and profiling runs remain separate from
 clean frame-rate measurements.
+
+Changed shader-buffer assets use a shared staging belt in the render world.
+Their preparation batch submits all copies before dependent asset systems run;
+wgpu returns staging chunks for reuse only after GPU completion. Destination
+buffers, uploaded bytes, resize rules and render order remain unchanged. This
+reduces temporary upload resource churn without changing game resource budgets.

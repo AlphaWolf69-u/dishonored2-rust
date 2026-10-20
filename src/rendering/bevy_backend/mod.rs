@@ -24,3 +24,8 @@ pub mod surface_gpu;
 mod texture_query_tests;
 #[cfg(feature = "game")]
 pub mod tiled_lighting_gpu;
+
+#[cfg(all(test, feature = "game", target_os = "windows"))]
+mod command_pool_tests;
+#[cfg(all(test, feature = "game"))]
+mod storage_upload_tests;

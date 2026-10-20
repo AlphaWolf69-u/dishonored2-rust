@@ -856,6 +856,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }).after(bevy::render::init_gpu_resource::<bevy::render::renderer::PendingCommandBuffers>));
         }
     }
+    if let Some(render) = app.get_sub_app_mut(RenderApp) {
+        render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
+    }
     app.add_plugins(auto_exposure::NativeExposurePlugin)
         .add_plugins(game_clock_runtime::NativeClockRuntimePlugin)
         .add_plugins(shadow_pass::NativeShadowScenePlugin)

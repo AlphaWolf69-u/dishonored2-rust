@@ -588,6 +588,8 @@ pub(crate) struct NativeShadowSceneGpu {
     prepared_hits: u64,
     prepared_misses: u64,
     prepared_recycles: u64,
+    material_preparations: u64,
+    alpha_materials_evicted: u64,
     uniform_ring: Option<Buffer>,
     uniform_capacity: usize,
     uniform_stride: u64,
@@ -691,6 +693,24 @@ struct CachedAlphaMaterial {
     view: TextureView,
     _uv_buffer: Option<Buffer>,
     binding: BindGroup,
+    used: bool,
+}
+
+impl CachedPipeline {
+    fn begin_material_frame(&mut self) {
+        for material in self.alpha_materials.values_mut() {
+            material.used = false;
+        }
+    }
+
+    fn finish_material_frame(&mut self) -> usize {
+        // The texture streamer replaces asset IDs when changing mip residency.
+        // Cached views/bind groups otherwise keep every old GPU texture alive.
+        // Draw records and submitted commands retain their own resource handles.
+        let before = self.alpha_materials.len();
+        self.alpha_materials.retain(|_, material| material.used);
+        before - self.alpha_materials.len()
+    }
 }
 
 pub struct NativeShadowScenePlugin;
@@ -1328,6 +1348,9 @@ fn prepare_native_shadow_records_fresh(
     // invalidate uploads, streamed textures and reallocated buffers naturally.
     let mut previous = std::mem::take(&mut gpu.resource_bindings);
     let mut current = HashMap::with_capacity(previous.len());
+    for pipeline in gpu.pipelines.values_mut() {
+        pipeline.begin_material_frame();
+    }
     let mut allocations = std::mem::take(&mut gpu.mesh_allocations);
     let cache_meshes = std::env::var("DH2_CACHE_SHADOW_MESH_ALLOCATIONS").as_deref() != Ok("0");
     allocations.begin_frame(
@@ -1355,6 +1378,18 @@ fn prepare_native_shadow_records_fresh(
         recycled,
     );
     gpu.resource_bindings = current;
+    for pipeline in gpu.pipelines.values_mut() {
+        gpu.alpha_materials_evicted += pipeline.finish_material_frame() as u64;
+    }
+    gpu.material_preparations += 1;
+    if gpu.material_preparations % 300 == 1 {
+        let alpha_materials = gpu.pipelines.alpha_material_count();
+        bevy::log::info!(target: "dh2::shadow_resources",
+            "Shadow resources: preparations={} pipelines={} alpha_materials={} retired_alpha_materials={} resource_bindings={} uniform_bytes={}",
+            gpu.material_preparations, gpu.pipelines.len(), alpha_materials,
+            gpu.alpha_materials_evicted, gpu.resource_bindings.len(),
+            gpu.uniform_capacity as u64 * gpu.uniform_stride);
+    }
     allocations.finish_frame(result.is_some());
     if std::env::var("DH2_TRACE_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1")
         && gpu
@@ -2321,10 +2356,13 @@ fn ensure_alpha_material(
                 view: image.texture_view.clone(),
                 _uv_buffer: uv_buffer,
                 binding,
+                used: true,
             },
         );
     }
-    Ok(cached.alpha_materials[&key].binding.clone())
+    let material = cached.alpha_materials.get_mut(&key).unwrap();
+    material.used = true;
+    Ok(material.binding.clone())
 }
 
 fn ensure_uniform_binding(
@@ -2817,6 +2855,32 @@ mod tests {
                         "wind UV is per-instance, not per-material"
                     );
                 }
+                // Changing mip residency assigns new image asset IDs. Neither
+                // those retired views nor animated UV constants may accumulate
+                // in a long-lived pipeline across successive preparations.
+                let mut streamed = Assets::<Image>::default();
+                for frame in 0..64 {
+                    cached.begin_material_frame();
+                    let mut next = material.clone();
+                    next.diffuse = streamed.add(Image::default());
+                    next.uv_scale_bias[2] = frame as f32 * 0.125;
+                    let binding =
+                        ensure_alpha_material(cached, program, &next, &image, &sampler, device)
+                            .unwrap();
+                    let reused =
+                        ensure_alpha_material(cached, program, &next, &image, &sampler, device)
+                            .unwrap();
+                    assert_eq!(binding.id(), reused.id());
+                    cached.finish_material_frame();
+                    assert_eq!(
+                        cached.alpha_materials.len(),
+                        1,
+                        "retired streamed images/UV states must leave the cache"
+                    );
+                }
+                cached.begin_material_frame();
+                cached.finish_material_frame();
+                assert!(cached.alpha_materials.is_empty());
             }
         }
         assert_eq!(

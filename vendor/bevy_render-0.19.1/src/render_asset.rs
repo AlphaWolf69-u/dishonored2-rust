@@ -80,6 +80,10 @@ pub trait RenderAsset: Send + Sync + 'static + Sized {
         previous_asset: Option<&Self>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>>;
 
+    /// Finish uploads for this preparation batch before dependent asset systems run.
+    /// The default implementation has no deferred work.
+    fn finish_preparation(_param: &mut SystemParamItem<Self::Param>) {}
+
     /// Called whenever the [`RenderAsset::SourceAsset`] has been removed.
     ///
     /// You can implement this method if you need to access ECS data (via
@@ -465,6 +469,8 @@ pub fn prepare_assets<A: RenderAsset>(
             }
         }
     }
+
+    A::finish_preparation(&mut param);
 
     if bpf.exhausted() && !prepare_next_frame.assets.is_empty() {
         debug!(

@@ -14,6 +14,13 @@ impl ShadowPipelineStore {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    pub fn alpha_material_count(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|entry| entry.alpha_materials.len())
+            .sum()
+    }
     pub fn id(&self, key: &PipelineKey) -> Option<PipelineId> {
         self.indices.get(key).copied()
     }

@@ -403,6 +403,8 @@ mod tests {
                 .disable::<bevy::winit::WinitPlugin>()
                 .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
         );
+        app.sub_app_mut(RenderApp)
+            .init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
         app.finish();
         app.cleanup();
         let make_mesh = |shift: f32| {

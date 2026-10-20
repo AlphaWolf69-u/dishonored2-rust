@@ -1,14 +1,20 @@
 use crate::{
     render_asset::{AssetExtractionError, PrepareAssetError, RenderAsset, RenderAssetPlugin},
     render_resource::{Buffer, BufferUsages},
-    renderer::{RenderDevice, RenderQueue},
+    renderer::{RenderDevice, RenderQueue, WgpuWrapper},
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::{Asset, AssetApp, AssetId, RenderAssetUsages};
-use bevy_ecs::system::{lifetimeless::SRes, SystemParamItem};
-use bevy_reflect::{prelude::ReflectDefault, Reflect};
+use bevy_ecs::{
+    prelude::Resource,
+    system::{
+        SystemParamItem,
+        lifetimeless::{SRes, SResMut},
+    },
+};
+use bevy_reflect::{Reflect, prelude::ReflectDefault};
 use bevy_utils::default;
-use encase::{internal::WriteInto, ShaderType};
+use encase::{ShaderType, internal::WriteInto};
 use wgpu::util::BufferInitDescriptor;
 
 /// Adds [`ShaderBuffer`] as an asset that is extracted and uploaded to the GPU.
@@ -125,6 +131,53 @@ where
     }
 }
 
+/// Opt-in recycling of temporary buffers used by changed shader-buffer assets.
+/// Transfers finish before `prepare_assets::<GpuShaderBuffer>` returns, so
+/// dependent systems retain the ordinary queue-ordering contract.
+#[derive(Resource, Default)]
+pub struct ShaderBufferUploadBatch {
+    pending: Vec<(Buffer, Vec<u8>)>,
+    belt: Option<WgpuWrapper<wgpu::util::StagingBelt>>,
+}
+
+impl ShaderBufferUploadBatch {
+    fn flush(&mut self, device: &RenderDevice, queue: &RenderQueue) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let bytes: u64 = self
+            .pending
+            .iter()
+            .map(|(_, data)| (data.len() as u64).next_multiple_of(wgpu::MAP_ALIGNMENT))
+            .sum();
+        // Size from observed transfers, bounded by the device's allocation limit.
+        // This changes transport allocations, never the amount of uploaded data.
+        let chunk_size = bytes.min(device.limits().max_buffer_size);
+        let belt = self.belt.get_or_insert_with(|| {
+            WgpuWrapper::new(wgpu::util::StagingBelt::new(
+                device.wgpu_device().clone(),
+                chunk_size,
+            ))
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("shader buffer asset uploads"),
+        });
+        for (target, data) in self.pending.drain(..) {
+            belt.write_buffer(
+                &mut encoder,
+                &target,
+                0,
+                wgpu::BufferSize::new(data.len() as u64).unwrap(),
+            )
+            .copy_from_slice(&data);
+        }
+        belt.finish();
+        queue.submit([encoder.finish()]);
+        // Mapping/reuse is deferred by wgpu until the GPU has finished copying.
+        belt.recall();
+    }
+}
+
 /// A storage buffer that is prepared as a [`RenderAsset`] and uploaded to the GPU.
 pub struct GpuShaderBuffer {
     pub buffer: Buffer,
@@ -134,7 +187,11 @@ pub struct GpuShaderBuffer {
 
 impl RenderAsset for GpuShaderBuffer {
     type SourceAsset = ShaderBuffer;
-    type Param = (SRes<RenderDevice>, SRes<RenderQueue>);
+    type Param = (
+        SRes<RenderDevice>,
+        SRes<RenderQueue>,
+        Option<SResMut<ShaderBufferUploadBatch>>,
+    );
 
     fn asset_usage(source_asset: &Self::SourceAsset) -> RenderAssetUsages {
         source_asset.asset_usage
@@ -159,7 +216,7 @@ impl RenderAsset for GpuShaderBuffer {
     fn prepare_asset(
         source_asset: Self::SourceAsset,
         _: AssetId<Self::SourceAsset>,
-        (render_device, render_queue): &mut SystemParamItem<Self::Param>,
+        (render_device, render_queue, upload_batch): &mut SystemParamItem<Self::Param>,
         previous_asset: Option<&Self>,
     ) -> Result<Self, PrepareAssetError<Self::SourceAsset>> {
         let had_data = source_asset.data.is_some();
@@ -182,8 +239,14 @@ impl RenderAsset for GpuShaderBuffer {
                     .usage
                     .contains(BufferUsages::COPY_DST))
         {
-            if let Some(ref data) = source_asset.data {
-                render_queue.write_buffer(&prev.buffer, 0, data);
+            if let Some(data) = source_asset.data {
+                if let Some(batch) = upload_batch.as_deref_mut() {
+                    if !data.is_empty() {
+                        batch.pending.push((prev.buffer.clone(), data));
+                    }
+                } else {
+                    render_queue.write_buffer(&prev.buffer, 0, &data);
+                }
             }
             prev.buffer.clone()
         } else if let Some(ref data) = source_asset.data {
@@ -227,5 +290,10 @@ impl RenderAsset for GpuShaderBuffer {
             },
             had_data,
         })
+    }
+    fn finish_preparation((device, queue, uploads): &mut SystemParamItem<Self::Param>) {
+        if let Some(uploads) = uploads.as_deref_mut() {
+            uploads.flush(device, queue);
+        }
     }
 }
