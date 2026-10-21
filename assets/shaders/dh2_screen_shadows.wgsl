@@ -56,14 +56,6 @@ struct ScreenVertex {
     return out;
 }
 
-// helper::B2/B8, not a conventional substituted Bayer ordering.
-fn screen_b2(p: vec2<u32>) -> u32 { return ((p.y << 1u) + p.x + 1u) & 3u; }
-fn screen_b8(p: vec2<u32>) -> u32 {
-    return (((screen_b2(p & vec2(1u)) << 2u)
-        + screen_b2((p & vec2(3u)) >> vec2(1u))) << 2u)
-        + screen_b2((p & vec2(7u)) >> vec2(2u));
-}
-
 // shadowCommon::GetFastCloudShadowing uses the FLOAT-output overload of
 // intersection::IntersectRaySphere. Its discriminant clamps to zero and
 // near hit clamps to zero; the other overload's SolveQuadratic is different.

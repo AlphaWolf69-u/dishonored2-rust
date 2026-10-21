@@ -37,6 +37,9 @@ struct Vertex {
 };
 
 struct VertexOutput {
+#ifdef DH2_FOG_VERTEX
+    @location(12) fog_color: vec4<f32>,
+#endif
     // This is `clip position` when the struct is used as a vertex stage output
     // and `frag coord` when used as a fragment stage input
     @builtin(position) position: vec4<f32>,

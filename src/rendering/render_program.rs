@@ -19,6 +19,9 @@
 //! or permission to pick another permutation. Still blocked: view +8/+0x10
 //! loader/bind lifecycle and native program-bank publication/selection.
 
+mod constants;
+pub use constants::copy_constant_buffer;
+
 /// FUN_1402c0ab0 (arkProgViewDataD3d virtual +0x38).
 pub const D3D_VARIANT_MAGIC: u32 = 0x8000_004a;
 

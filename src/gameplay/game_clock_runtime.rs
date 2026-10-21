@@ -6,52 +6,14 @@
 //! ownership remain separate integrations.
 use crate::{
     game_clock::{
-        self, ClockControls, ClockStepInputs, CounterMicroseconds, FrameTimingEstimator,
-        GameClock,
+        self, ClockControls, ClockStepInputs, CounterMicroseconds, FrameTimingEstimator, GameClock,
     },
     game_settings,
 };
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 
-#[cfg(target_os = "windows")]
-mod platform {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn QueryPerformanceCounter(value: *mut i64) -> i32;
-        fn QueryPerformanceFrequency(value: *mut i64) -> i32;
-    }
-    pub fn counter() -> Result<i64, String> {
-        let mut value = 0;
-        if unsafe { QueryPerformanceCounter(&mut value) } == 0 {
-            return Err(format!(
-                "QueryPerformanceCounter failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(value)
-    }
-    pub fn frequency() -> Result<i64, String> {
-        let mut value = 0;
-        if unsafe { QueryPerformanceFrequency(&mut value) } == 0 || value <= 0 {
-            return Err(format!(
-                "QueryPerformanceFrequency failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(value)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-mod platform {
-    pub fn counter() -> Result<i64, String> {
-        Err("QPC clock requires Windows".into())
-    }
-    pub fn frequency() -> Result<i64, String> {
-        Err("QPC clock requires Windows".into())
-    }
-}
+use crate::platform::performance_counter as platform;
 
 struct PerformanceCounter {
     origin: i64,
@@ -140,8 +102,12 @@ impl FromWorld for ClockRuntime {
             let source = PerformanceCounter::new()?;
             let mut clock = GameClock::from_bytes([0; game_clock::STATE_SIZE]);
             clock.initialize(); // Opaque owned padding is not given field meanings.
-            info!("Game clock: QPC {} Hz, controls {:?} from {} (registered defaults where absent)",
-                source.frequency, controls, path.display());
+            info!(
+                "Game clock: QPC {} Hz, controls {:?} from {} (registered defaults where absent)",
+                source.frequency,
+                controls,
+                path.display()
+            );
             Ok(LoadedClock {
                 clock,
                 source,
@@ -211,10 +177,7 @@ pub enum ClockSystems {
     PublishView,
 }
 
-fn publish_gameplay_view_clock(
-    owner: Res<ClockRuntime>,
-    mut view: ResMut<GameplayViewClock>,
-) {
+fn publish_gameplay_view_clock(owner: Res<ClockRuntime>, mut view: ResMut<GameplayViewClock>) {
     view.0 = owner
         .clock()
         .map(game_clock::GameplayViewClocks::from_clock)
@@ -236,10 +199,7 @@ impl Plugin for ClockRuntimePlugin {
         app.init_resource::<ClockRuntime>()
             .init_resource::<GameplayViewClock>()
             .add_plugins(ExtractResourcePlugin::<GameplayViewClock>::default())
-            .add_systems(
-                First,
-                advance_clock.in_set(ClockSystems::Advance),
-            )
+            .add_systems(First, advance_clock.in_set(ClockSystems::Advance))
             .add_systems(
                 PostUpdate,
                 publish_gameplay_view_clock.in_set(ClockSystems::PublishView),
@@ -291,9 +251,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .add_plugins(ClockRuntimePlugin);
-        app.world_mut().insert_resource(ClockRuntime(Err(
-            "test unavailable native clock".into()
-        )));
+        app.world_mut()
+            .insert_resource(ClockRuntime(Err("test unavailable native clock".into())));
         app.update();
         let view = app.world().resource::<GameplayViewClock>();
         assert_eq!(view.clocks().unwrap_err(), "test unavailable native clock");
@@ -343,11 +302,7 @@ mod tests {
         main.write_game_result(&mut main_bytes).unwrap();
         render.write_game_result(&mut render_bytes).unwrap();
         assert_eq!(main_bytes, render_bytes);
-        let game = app
-            .world()
-            .resource::<ClockRuntime>()
-            .clock()
-            .unwrap();
+        let game = app.world().resource::<ClockRuntime>().clock().unwrap();
         for group in 0..game_clock::GROUP_COUNT {
             assert_eq!(
                 &main_bytes[group * 8..group * 8 + 8],

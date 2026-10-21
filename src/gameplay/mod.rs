@@ -9,3 +9,5 @@ pub mod scene_motion;
 pub mod constraint_solver;
 pub mod rigid_body;
 pub mod runtime;
+
+pub mod wind;

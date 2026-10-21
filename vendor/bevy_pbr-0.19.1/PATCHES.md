@@ -41,4 +41,21 @@ for opaque, coverage, alpha-tested, vegetation, layered and liquid materials.
 It requires both actual key normalization and a reduction from two compatible
 material batches to one, preventing a disabled optimization from passing.
 
+Transparent fog adds an optional `DH2_FOG_VERTEX` output at location12 and
+calls the rewrite-owned `dh2_material_fog::material_fog_vertex` after the final
+world/clip transforms. Liquid-container materials use this route, following
+their installed vertex shader; other transparent materials use pixel fog.
+The feature is absent from depth keys and upstream materials. Existing probe
+and authored basis varyings retain their locations. Shader/material validation
+of this addition is pending the current integration checks.
+
 Upstream source is licensed MIT OR Apache-2.0; licenses are included.
+
+Far-plane projection uses the optional presence flag `DH2_FAR_DEPTH` in the
+mesh shader. The numeric `DH2_PROJECT_FAR` material key remains unchanged.
+An upstream material with no rewrite definitions must compile: the shader
+composer evaluates nested numeric conditions even inside an inactive `#ifdef`.
+The atmosphere scene fixture exercises an ordinary StandardMaterial alongside
+the rewrite's sky and fog. Validation of this guard is pending that GPU check.
+
+- Transparent fog vertex calls carry the existing mesh tag to the shared per-object area-fog parameter table (binding167), without altering irradiance tags or mesh geometry. Numerical area-selection fixtures and material GPU validation cover the transport.

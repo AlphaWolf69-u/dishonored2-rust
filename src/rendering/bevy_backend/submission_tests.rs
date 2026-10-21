@@ -63,11 +63,12 @@ fn parallel_camera_chunks_preserve_lighting_after_light_and_grid_changes_gpu() {
         // Conditional imports in the patched PBR shaders still need their
         // registered modules, just as in the game client.
         crate::shadow_sampling::register_shaders(&mut app);
+        super::fog_material::register_shaders(&mut app);
         let _indirect = app
             .world_mut()
             .resource_mut::<Assets<bevy::shader::Shader>>()
             .add(bevy::shader::Shader::from_wgsl(
-                include_str!("../../../assets/shaders/dh2_indirect.wgsl"),
+                super::probe_weights::indirect_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
                 "cluster-fixture/dh2_indirect.wgsl",
             ));
 

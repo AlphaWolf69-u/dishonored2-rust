@@ -18,6 +18,7 @@ pub(super) struct SceneData {
     pub(super) environment_render_parameters: Option<entities::EnvironmentRenderParameters>,
     pub(super) environment_blend_duration: f32,
     pub(super) area_environments: Vec<crate::rendering::environment::AreaEnvironment>,
+    pub(super) area_fog: Vec<super::fog_volumes::AreaFogSource>,
     pub(super) rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings,
     pub(super) environment_probes: Option<probe_lighting::ProbeLightingSet>,
     #[allow(dead_code)]
@@ -450,7 +451,16 @@ pub(super) const DEFAULT_FAR: f32 = 7000.0;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum MaterialHandle {
     Probe(Handle<ProbeMaterial>),
+    Sky(Handle<crate::rendering::bevy_backend::sky_mask::SkyMaterial>),
     Decal(Handle<DecalMaterial>),
+    /// A depth-only atmosphere material retains its authored identity without
+    /// allocating a forward-colour material or requesting unused textures.
+    Interior(std::sync::Arc<str>),
+    /// arkBoatVolume has an empty fragment program. Keep its mesh for the
+    /// water depth/stencil passes without allocating a forward material.
+    BoatVolume(std::sync::Arc<str>),
+    /// Water reads scene depth/HDR in its dedicated passes, not forward props.
+    Water(std::sync::Arc<str>),
 }
 
 #[derive(Clone)]

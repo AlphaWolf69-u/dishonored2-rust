@@ -194,6 +194,7 @@ pub(super) fn collect_model_casters(
 pub(super) struct ParallelShadowCpu {
     pub prepared: render_shadow::ParallelShadowPrepareState,
     pub current: Option<ParallelCasterFrame>,
+    pub adaptive_input: Option<AdaptiveShadowInput>,
     reset_frame: Option<u32>,
     initialized: [bool; 4],
     gather: Vec<GlobalShadowCasterScratch>,
@@ -207,6 +208,17 @@ pub(super) struct ParallelShadowCpu {
     last_shadow_extent: Option<f32>,
     static_frames: Vec<Option<Arc<StaticShadowFrame>>>,
     last_error: Option<String>,
+}
+
+/// Retain the exact mapped input selected by preparation, not a later mailbox
+/// observation. F8 formats it on demand; no extra readback or pixel copy.
+pub(super) struct AdaptiveShadowInput {
+    pub frame: u32,
+    pub snapshot: Arc<coarse_depth::CoarseDepthSnapshot>,
+    pub projection: render_shadow::ShadowMatrix,
+    pub inverse_projection: render_shadow::ShadowMatrix,
+    pub reference_interval: [f32; 2],
+    pub effective_far: f32,
 }
 
 pub(super) struct ParallelCasterFrame {
@@ -234,6 +246,7 @@ impl Default for ParallelShadowCpu {
         Self {
             prepared: render_shadow::ParallelShadowPrepareState::new(),
             current: None,
+            adaptive_input: None,
             reset_frame: None,
             initialized: [false; 4],
             gather: Vec::new(),
@@ -1125,6 +1138,7 @@ pub(super) fn prepare_parallel_world_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<ParallelWorldDraws>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
+    mut matrix_bank: ResMut<super::world_instances::WorldMatrices>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(22));
     draws.current = None;
@@ -1203,7 +1217,7 @@ pub(super) fn prepare_parallel_world_draws(
         // Resolve every selected program/image first; failed preparation owns
         // no transient GPU buffers. The immutable BWM matrix bank is shared.
         if draws.matrices.is_none() {
-            draws.matrices = Some(buffers.add(ShaderBuffer::from(scene.world.matrices.clone())));
+            draws.matrices = matrix_bank.get_or_upload(&scene.world.matrices, &mut buffers);
         }
         let mut layers = Vec::with_capacity(count);
         for (layer, prepared) in plans.into_iter().enumerate() {
@@ -1293,6 +1307,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
 ) {
     let _span = profile.as_deref().map(|p| p.measure(21));
     cpu.current = None;
+    cpu.adaptive_input = None;
     let Some(owner) = owner else {
         return;
     };
@@ -1389,16 +1404,23 @@ pub(super) fn prepare_parallel_shadow_cpu(
                 cpu.prepared.far_state.authored_fars[count - 2]
             };
             let depths = Box::new(std::array::from_fn(|i| snapshot.pixels[i][1]));
-            render_shadow::adaptive_directional_far(
+            let reference_interval = [previous_reference, cpu.prepared.far_state.authored_fars[count - 1]];
+            let effective_far = render_shadow::adaptive_directional_far(
                 true,
                 &camera_projection,
                 &inverse_projection,
-                [
-                    previous_reference,
-                    cpu.prepared.far_state.authored_fars[count - 1],
-                ],
+                reference_interval,
                 Some(&depths),
-            )?
+            )?;
+            cpu.adaptive_input = Some(AdaptiveShadowInput {
+                frame: frame_count.0,
+                snapshot,
+                projection: camera_projection,
+                inverse_projection,
+                reference_interval,
+                effective_far,
+            });
+            effective_far
         } else {
             -1.0
         };

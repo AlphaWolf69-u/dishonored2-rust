@@ -2,6 +2,10 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[path = "texture/volume.rs"]
+mod volume;
+pub use volume::{compressed_inline_volume, InlineVolumeChain};
+
 /// FUN_1402eab10: image priority is a monotonic byte maximum, not a
 /// replacement value. The owning material enumerator supplies the request.
 pub fn raise_image_priority(priority: &mut u8, requested: u8) {
@@ -168,6 +172,7 @@ pub enum ImageFormat {
     Rgba8Srgb,
     Rg8,
     R16Float,
+    R16Unorm,
     Rg32Float,
     Bgra8,
     Bc1,
@@ -191,6 +196,7 @@ impl ImageFormat {
             29 => Self::Rgba8Srgb,
             49 => Self::Rg8,
             54 => Self::R16Float,
+            56 => Self::R16Unorm,
             16 => Self::Rg32Float,
             87 => Self::Bgra8,
             71 => Self::Bc1,
@@ -211,7 +217,7 @@ impl ImageFormat {
     pub fn block_bytes(self) -> usize {
         match self {
             Self::Rgba8 | Self::Rgba8Srgb => 4,
-            Self::Rg8 | Self::R16Float => 2,
+            Self::Rg8 | Self::R16Float | Self::R16Unorm => 2,
             Self::Rg32Float => 8,
             Self::Bgra8 => 4,
             Self::Bc1 | Self::Bc1Srgb | Self::Bc4 | Self::Bc4Snorm => 8,
@@ -231,6 +237,7 @@ impl ImageFormat {
             | Self::Rgba8Srgb
             | Self::Rg8
             | Self::R16Float
+            | Self::R16Unorm
             | Self::Rg32Float
             | Self::Bgra8 => 1,
             _ => 4,
@@ -335,6 +342,103 @@ pub struct InlineCubeChain {
     pub info: BimageInfo,
     pub payload: Vec<u8>,
 }
+
+/// All resident mip/layer records of a BIM Texture2DArray (image kind zero).
+/// Payload order follows the file and native upload loop: mip, then layer.
+pub struct InlineArrayChain {
+    pub info: BimageInfo,
+    pub layers: u32,
+    pub payload: Vec<u8>,
+}
+
+pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String> {
+    let info = BimageInfo::parse(bytes)?;
+    let layers = word(bytes, 52)?;
+    if word(bytes, 8)? != 0 || layers == 0 || info.width == 0 || info.height == 0
+        || info.mip_count == 0 || info.mip_count > 16
+    {
+        return Err("invalid BIM texture-array descriptor".into());
+    }
+    // Bound record traversal by the supplied resource before allocating or
+    // walking layer counts. Each record has a five-word serialized header.
+    if u64::from(layers) * u64::from(info.mip_count)
+        > bytes.len().saturating_sub(62) as u64 / 20
+    {
+        return Err("truncated texture-array records".into());
+    }
+    let mut at = 62usize;
+    let mut payload = Vec::new();
+    for level in 0..info.mip_count {
+        let width = (info.width >> level).max(1);
+        let height = (info.height >> level).max(1);
+        for layer in 0..layers {
+            let header = bytes.get(at..at + 20).ok_or("truncated texture-array header")?;
+            let size = word(header, 16)? as usize;
+            let end = at.checked_add(20).and_then(|n| n.checked_add(size))
+                .ok_or("texture-array record size overflow")?;
+            let record = bytes.get(at..end).ok_or("truncated texture-array payload")?;
+            let mip = compressed_mip(record, level, info.format)?;
+            if word(record, 4)? != layer || (mip.width, mip.height) != (width, height) {
+                return Err("texture-array layer/mip descriptor mismatch".into());
+            }
+            payload.extend_from_slice(mip.payload);
+            at = end;
+        }
+    }
+    if at != bytes.len() {
+        return Err("texture-array mip chain size mismatch".into());
+    }
+    Ok(InlineArrayChain { info, layers, payload })
+}
+
+#[test]
+fn texture_array_mips_keep_layers_and_validate_record_order() {
+    let mut bytes = vec![0u8; 62];
+    bytes[..3].copy_from_slice(b"BIM");
+    // R16F, two non-square mip levels, three array layers.
+    for (offset, value) in [(12, 2u32), (16, 7), (20, 1), (24, 4), (28, 2), (44, 2), (52, 3)] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut expected = Vec::new();
+    for (level, width, height) in [(0u32, 4u32, 2u32), (1, 2, 1)] {
+        for layer in 0..3u32 {
+            let data = vec![(level * 3 + layer) as u8; (width * height * 2) as usize];
+            for word in [level, layer, width, height, data.len() as u32] {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+            bytes.extend_from_slice(&data);
+            expected.extend(data);
+        }
+    }
+    let array = compressed_inline_array(&bytes).unwrap();
+    assert_eq!(array.layers, 3);
+    assert_eq!(array.payload, expected);
+    assert_eq!(array.info.format, ImageFormat::R16Float);
+    let mut bad = bytes.clone();
+    bad[66..70].copy_from_slice(&1u32.to_le_bytes());
+    assert!(compressed_inline_array(&bad).is_err());
+    let mut bad = bytes.clone();
+    bad[52..56].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(compressed_inline_array(&bad).is_err());
+    assert!(compressed_inline_array(&bytes[..bytes.len() - 1]).is_err());
+    bytes.push(0);
+    assert!(compressed_inline_array(&bytes).is_err());
+}
+
+#[test]
+#[ignore = "requires installed water texture-array resource"]
+fn installed_water_caustics_array_keeps_all_authored_frames() {
+    let catalog = crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let stem = crate::material::compiled_image_stem(&catalog, "rendering/water/caustics3.dds").unwrap();
+    let bytes = catalog.read(&stem).unwrap().unwrap();
+    let array = compressed_inline_array(&bytes).unwrap();
+    assert_eq!((array.info.width, array.info.height, array.info.mip_count, array.layers), (256, 256, 7, 32));
+    assert_eq!(array.info.format, ImageFormat::Bc4);
+    let expected = (0..7).map(|level| array.info.format.mip_bytes(256 >> level, 256 >> level) * 32).sum::<usize>();
+    assert_eq!(array.payload.len(), expected);
+    assert_eq!(bytes.len(), 62 + 224 * 20 + expected);
+}
+
 pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
     let info = BimageInfo::parse(bytes)?;
     if word(bytes, 8)? != 2
@@ -442,6 +546,24 @@ fn half_float_lookup_mips_preserve_authored_bits() {
     );
     bytes.pop();
     assert!(compressed_inline_chain(&bytes).is_err());
+}
+#[test]
+fn normalized_16_lookup_mips_preserve_authored_words() {
+    // 2c2f50 family2/selector5 maps to DXGI56: normalized unsigned words,
+    // rather than half-float encodings, colour bytes or BC blocks.
+    let words=[0u16,1,32767,32768,65534,65535];
+    let mut bytes=vec![0;62];bytes[..3].copy_from_slice(b"BIM");
+    for (offset,value) in [(12,2u32),(16,5),(20,1),(24,3),(28,2),(44,1)] {
+        bytes[offset..offset+4].copy_from_slice(&value.to_le_bytes());
+    }
+    for value in [0u32,0,3,2,12] {bytes.extend_from_slice(&value.to_le_bytes());}
+    for word in words {bytes.extend_from_slice(&word.to_le_bytes());}
+    let chain=compressed_inline_chain(&bytes).unwrap();
+    assert_eq!(chain.info.format,ImageFormat::R16Unorm);
+    assert_eq!(chain.info.format.bits_per_pixel(),16);
+    assert_eq!(chain.info.format.mip_bytes(3,2),12);
+    assert_eq!(chain.payload,words.into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
+    bytes.pop();assert!(compressed_inline_chain(&bytes).is_err());
 }
 pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, String> {
     let info = BimageInfo::parse(bytes)?;

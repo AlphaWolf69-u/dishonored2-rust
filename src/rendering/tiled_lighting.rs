@@ -21,6 +21,12 @@ pub const SHADOW_BUFFER_CAPACITY: usize = 0x100;
 pub const LIGHT_NODE_POOL_CAPACITY: usize = 0x119400;
 pub const LIGHT_NODE_COUNTER_BYTES: u64 = 4;
 
+/// 2f7260/2fc130's tlf/unprojectZ upload from the logical projection rows.
+/// This is distinct from world-fog unprojection: Depth_to_Z negates X again.
+pub fn depth_unprojection(projection: &[[f32;4];4]) -> [f32;2] {
+    [f32::from_bits(projection[2][3].to_bits()^0x8000_0000),projection[2][2]]
+}
+
 /// FUN_1402f7260 admits these records in gathered-light order, before assigning
 /// the same index to the culling and 112-byte lighting buffers.
 pub fn includes_local_light(view_flags: u8, visibility_mask: u32, kind: i32, flags: u8) -> bool {

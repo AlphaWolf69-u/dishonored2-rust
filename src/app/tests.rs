@@ -11,10 +11,12 @@ use std::path::Path;
 
 #[path = "tests/approach_visibility.rs"]
 mod approach_visibility;
+#[path = "tests/environment_reflection.rs"]
+mod environment_reflection;
+#[path = "tests/fog.rs"]
+mod fog;
 #[path = "tests/texture_formats.rs"]
 mod texture_formats;
-#[path="tests/environment_reflection.rs"]
-mod environment_reflection;
 
 #[test]
 #[ignore = "requires installed original catalog and Saved Games config"]
@@ -43,12 +45,9 @@ fn actual_shadow_quality_inputs_resolve_from_config_and_assets() {
 fn installed_sky_and_liquid_material_inputs_resolve() {
     let base = crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(&base).unwrap();
-    let mut library = shader_cache::ProgramLibrary::open(
-        &base,
-        shader_cache::ShaderCacheBackend::Pc,
-        &catalog,
-    )
-    .unwrap();
+    let mut library =
+        shader_cache::ProgramLibrary::open(&base, shader_cache::ShaderCacheBackend::Pc, &catalog)
+            .unwrap();
     let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
     let world = world_mesh::parse(&level.read_world(&catalog).unwrap()).unwrap();
     let mut names = world
@@ -527,6 +526,7 @@ fn world_shadow_test_scene(world: world_mesh::WorldMesh) -> SceneData {
         environment_render_parameters: None,
         environment_blend_duration: 1.0,
         area_environments: Vec::new(),
+        area_fog: Vec::new(),
         rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings {
             minimum_sun_caster_extent: 0.0,
         },
@@ -589,6 +589,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
     world.insert_resource(mesh_assets);
     world.insert_resource(image_assets);
     world.insert_resource(Assets::<ShaderBuffer>::default());
+    world.insert_resource(super::world_instances::WorldMatrices::default());
     world.insert_resource(shadow_pass::ShadowSceneFrame::default());
 
     world
@@ -609,9 +610,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
         );
     }
     assert_eq!(
-        world
-            .resource::<SceneRenderQueue>()
-            .shadow_diffuse_slots,
+        world.resource::<SceneRenderQueue>().shadow_diffuse_slots,
         [0],
         "off-camera alpha slots are requested by the existing texture streamer"
     );
@@ -701,10 +700,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
         assert_eq!(published_target.id(), target_image.id());
         assert_eq!(dimensions.layers, 5);
         assert_eq!(layer.instances.len(), 3);
-        assert!(matches!(
-            layer.cache,
-            shadow_pass::ShadowCacheOp::None
-        ));
+        assert!(matches!(layer.cache, shadow_pass::ShadowCacheOp::None));
         assert!(matches!(
             layer.ops.depth,
             shadow_pass::ShadowLoad::Clear(1.0)
@@ -800,10 +796,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
             assert_eq!(
                 *constants,
                 shadow_pass::world_alpha_shadow_view_cb(
-                    &world
-                        .resource::<ParallelShadowOwner>()
-                        .whole_view
-                        .clip,
+                    &world.resource::<ParallelShadowOwner>().whole_view.clip,
                     packet_offset,
                     [2.0, 3.0, 0.25, 0.5],
                 )
@@ -838,9 +831,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
         .run_system_once(publish_initial_whole_view_depth)
         .unwrap();
     assert_eq!(
-        world
-            .resource::<shadow_pass::ShadowSceneFrame>()
-            .revision,
+        world.resource::<shadow_pass::ShadowSceneFrame>().revision,
         1,
         "the initial layer is never republished for the same owner generation"
     );
@@ -851,9 +842,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
     );
     assert!(
         !matches!(
-            &world
-                .resource::<shadow_pass::ShadowSceneFrame>()
-                .state,
+            &world.resource::<shadow_pass::ShadowSceneFrame>().state,
             shadow_pass::ShadowSceneState::Ready { .. }
         ),
         "whole-view depth is not a complete shadow frame"
@@ -911,12 +900,11 @@ fn world_shadow_all_supported_programs_preserve_typed_material_inputs() {
             assert!(plans.iter().all(|mask| mask.auxiliary.is_empty()));
         }
         let mut buffers = Assets::<ShaderBuffer>::default();
-        let layer = build_whole_view_layer(plans, &world, owner.dimensions, &mut buffers);
+        let layer = build_whole_view_layer(plans, &world, owner.dimensions, &mut buffers,
+            &mut super::world_instances::WorldMatrices::default());
         assert_eq!(layer.instances.len(), 3);
         let expected_program = match class {
-            shader_cache::CachedWorldShadowClass::Opaque => {
-                shadow_pass::ShadowProgram::WorldOpaque
-            }
+            shader_cache::CachedWorldShadowClass::Opaque => shadow_pass::ShadowProgram::WorldOpaque,
             shader_cache::CachedWorldShadowClass::AlphaTested => {
                 shadow_pass::ShadowProgram::WorldAlphaTested
             }
@@ -979,8 +967,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
     let quality = load_installed_shadow_quality(&catalog, preset)
         .unwrap()
         .unwrap();
-    let dimensions =
-        shadow_target_dimensions(settings.parallel_slice_size, &quality).unwrap();
+    let dimensions = shadow_target_dimensions(settings.parallel_slice_size, &quality).unwrap();
     let source_path = PathBuf::from("artifacts/eotw_p_lowchaos.bwm");
     let document =
         entities::parse(&fs::read_to_string(source_path.with_extension("entities")).unwrap())
@@ -1016,6 +1003,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
         environment_render_parameters: Some(parameters),
         environment_blend_duration: 1.0,
         area_environments: Vec::new(),
+        area_fog: Vec::new(),
         rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings {
             minimum_sun_caster_extent: 0.0,
         },
@@ -1045,8 +1033,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
     assert!(empty_owner.whole_view_initial_masks.is_empty());
     assert_eq!(empty_owner.cascade_fars, [4.0, 12.0, 30.0, 75.0]);
     scene.shadow_cascade_fars = Some([3.0, 15.0, 45.0, 90.0]);
-    let configured_owner =
-        ParallelShadowOwner::from_scene(&scene, &mut empty_images).unwrap();
+    let configured_owner = ParallelShadowOwner::from_scene(&scene, &mut empty_images).unwrap();
     assert_eq!(configured_owner.cascade_fars, [3.0, 15.0, 45.0, 90.0]);
     scene.shadow_cascade_fars = None;
     scene.far_shadow_bounds = Some([[0.0; 3]; 2]);
@@ -1107,9 +1094,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
     );
     assert_eq!(image.texture_descriptor.size.width, dimensions.width);
     assert!(matches!(
-        world
-            .resource::<shadow_pass::ShadowSceneFrame>()
-            .state,
+        world.resource::<shadow_pass::ShadowSceneFrame>().state,
         shadow_pass::ShadowSceneState::Unavailable(_)
     ));
     // Missing source data must allocate nothing and never imply Ready.
@@ -1120,9 +1105,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
     assert!(!world.contains_resource::<ParallelShadowOwner>());
     assert_eq!(world.resource::<Assets<Image>>().len(), 1);
     assert!(matches!(
-        world
-            .resource::<shadow_pass::ShadowSceneFrame>()
-            .state,
+        world.resource::<shadow_pass::ShadowSceneFrame>().state,
         shadow_pass::ShadowSceneState::Unavailable(_)
     ));
 }
@@ -1431,11 +1414,8 @@ fn installed_model_skin_shadow_stage_evidence() {
     use render_program::StageBytecode;
     let base = &crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(base).unwrap();
-    let mut library = shader_cache::ProgramLibrary::open(
-        base,
-        shader_cache::ShaderCacheBackend::Pc,
-        &catalog,
-    );
+    let mut library =
+        shader_cache::ProgramLibrary::open(base, shader_cache::ShaderCacheBackend::Pc, &catalog);
     let directory = Path::new("artifacts/native-actual-skin-shadow-source");
     fs::create_dir_all(directory).unwrap();
     let mut found = HashSet::new();
@@ -1463,8 +1443,7 @@ fn installed_model_skin_shadow_stage_evidence() {
             continue;
         };
         let source =
-            resolve_shadow_source_inputs(Some(&mut library), &bytes, &program, Some(main))
-                .unwrap();
+            resolve_shadow_source_inputs(Some(&mut library), &bytes, &program, Some(main)).unwrap();
         if source.is_cloth {
             continue;
         }
@@ -1565,9 +1544,14 @@ fn authored_surface_gpu_pipelines_compile() {
         app,
         INDIRECT_SHADER_HANDLE,
         "../../assets/shaders/dh2_indirect.wgsl",
+        crate::rendering::bevy_backend::probe_weights::indirect_shader
+    );
+    bevy::asset::load_internal_asset!(
+        app,
+        super::state::REFLECTION_SHADER_HANDLE,
+        "../../assets/shaders/dh2_reflection.wgsl",
         Shader::from_wgsl
     );
-    bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(
         app,
         SKY_SHADER_HANDLE,
@@ -1599,6 +1583,7 @@ fn authored_surface_gpu_pipelines_compile() {
         Shader::from_wgsl
     );
     shadow_sampling::register_shaders(&mut app);
+    crate::rendering::bevy_backend::fog_material::register_shaders(&mut app);
     app.add_plugins(auto_exposure::ExposurePlugin);
     app.finish();
     app.cleanup();
@@ -1606,6 +1591,15 @@ fn authored_surface_gpu_pipelines_compile() {
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(auto_exposure::initial_material_exposure());
+    let fog_bindings = app
+        .world_mut()
+        .resource_scope(|world, mut images: Mut<Assets<Image>>| {
+            crate::rendering::bevy_backend::fog_material::FogMaterialBindings::disabled(
+                &mut images,
+                &mut world.resource_mut::<Assets<ShaderBuffer>>(),
+            )
+        });
+    let fog_parameters = fog_bindings.parameters.clone();
     let target = app
         .world_mut()
         .resource_mut::<Assets<Image>>()
@@ -1631,12 +1625,12 @@ fn authored_surface_gpu_pipelines_compile() {
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![0u32; 8]));
-    let shadow =
-        app.world_mut()
-            .resource_mut::<Assets<ShaderBuffer>>()
-            .add(ShaderBuffer::from(
-                shadow_sampling::ParallelSamplingUniform::default(),
-            ));
+    let shadow = app
+        .world_mut()
+        .resource_mut::<Assets<ShaderBuffer>>()
+        .add(ShaderBuffer::from(
+            shadow_sampling::ParallelSamplingUniform::default(),
+        ));
     let shadow_map = app.world_mut().resource_mut::<Assets<Image>>().add(
         shadow_pipeline::shadow_depth_image(
             bevy::render::render_resource::Extent3d {
@@ -1678,9 +1672,15 @@ fn authored_surface_gpu_pipelines_compile() {
         .add(ProbeMaterial {
             base: StandardMaterial::default(),
             extension: ProbeExtension {
-                reflections:None,
-                reflection_brdf_lookup:None,
-                reflection_planes:sh.clone(),
+                fog_parameters: fog_parameters.clone(),
+                fog_objects: fog_bindings.objects.clone(),
+                fog_world: fog_bindings.world.clone(),
+                fog_canvas: fog_bindings.canvas.clone(),
+                fog_curve: fog_bindings.curve.clone(),
+                fog_depth: fog_bindings.opaque_depth.clone(),
+                reflections: None,
+                reflection_brdf_lookup: None,
+                reflection_planes: sh.clone(),
                 material_exposure: material_exposure.clone(),
                 sh,
                 vertex_probes,
@@ -1792,9 +1792,15 @@ fn authored_surface_gpu_pipelines_compile() {
                 ..default()
             },
             extension: DecalExtension {
-                reflections:None,
-                reflection_brdf_lookup:None,
-                reflection_planes:decal_probe_buffers.0.clone(),
+                fog_parameters: fog_parameters.clone(),
+                fog_objects: fog_bindings.objects.clone(),
+                fog_world: fog_bindings.world.clone(),
+                fog_canvas: fog_bindings.canvas.clone(),
+                fog_curve: fog_bindings.curve.clone(),
+                fog_depth: fog_bindings.opaque_depth.clone(),
+                reflections: None,
+                reflection_brdf_lookup: None,
+                reflection_planes: decal_probe_buffers.0.clone(),
                 material_exposure: material_exposure.clone(),
                 bias: 0.0,
                 sh: decal_probe_buffers.0,
@@ -1861,6 +1867,29 @@ fn authored_surface_gpu_pipelines_compile() {
         MeshMaterial3d(cutout),
         Transform::from_xyz(0.0, -0.6, 0.0),
     ));
+    // Compile both colour fog routes with disabled, valid shared inputs.
+    for (flags, position) in [
+        (8, Vec3::new(0.6, 0.6, 0.)),
+        (56, Vec3::new(-0.6, -0.6, 0.)),
+    ] {
+        let mut value = app
+            .world()
+            .resource::<Assets<ProbeMaterial>>()
+            .get(&probe)
+            .unwrap()
+            .clone();
+        value.extension.surface.misc.w |= flags;
+        value.base.alpha_mode = AlphaMode::Blend;
+        let value = app
+            .world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .add(value);
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(value),
+            Transform::from_translation(position),
+        ));
+    }
     let camera = app
         .world_mut()
         .spawn((
@@ -1875,6 +1904,7 @@ fn authored_surface_gpu_pipelines_compile() {
         .id();
     let mut validated = 0;
     let mut prepass_validated = 0;
+    let mut fog_validated = 0;
     for _ in 0..100 {
         app.update();
         let cache = app
@@ -1883,6 +1913,7 @@ fn authored_surface_gpu_pipelines_compile() {
             .resource::<bevy::render::render_resource::PipelineCache>();
         validated = 0;
         prepass_validated = 0;
+        fog_validated = 0;
         for p in cache.pipelines() {
             if let CachedPipelineState::Err(e) = &p.state {
                 panic!("GPU shader failure: {e}");
@@ -1900,17 +1931,20 @@ fn authored_surface_gpu_pipelines_compile() {
                     if fragment.shader == PROBE_PREPASS_SHADER_HANDLE {
                         prepass_validated += 1;
                     }
+                    if fragment.shader==PROBE_SHADER_HANDLE && fragment.shader_defs.iter().any(
+                        |value| matches!(value,bevy::shader::ShaderDefVal::UInt(name,flags) if name=="DH2_ALPHA_FLAGS" && flags&8!=0)
+                    ) {fog_validated+=1;}
                 }
             }
         }
-        if validated >= 5 && prepass_validated > 0 {
+        if validated >= 7 && prepass_validated > 0 && fog_validated >= 2 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-        validated >= 5 && prepass_validated > 0,
-        "ordinary, decal, vegetation, and alpha-cutout prepass shaders must actually compile, got {validated} pipelines / {prepass_validated} prepass"
+        validated >= 7 && prepass_validated > 0 && fog_validated>=2,
+        "surface, decal, vegetation, prepass and both fog routes must compile: {validated} colour / {prepass_validated} prepass / {fog_validated} fog"
     );
 
     app.world_mut().entity_mut(camera).insert(Msaa::Off);
@@ -2794,10 +2828,7 @@ fn authored_surface_gpu_pipelines_compile() {
         app.update();
     }
     let masked = forward_center(&mut app, &target);
-    assert!(
-        energy(masked) < 10,
-        "emission mask must clip: {masked:?}"
-    );
+    assert!(energy(masked) < 10, "emission mask must clip: {masked:?}");
     eprintln!("GPU native emission: alpha1/0={emitted:?}, masked={masked:?}");
     // Exercise the actual vista material layout, UV1 lightmap sampling and
     // unconditional forward alpha clip. UV0 deliberately addresses the other
@@ -3280,11 +3311,11 @@ fn authored_surface_gpu_pipelines_compile() {
         .world_mut()
         .resource_mut::<Assets<Mesh>>()
         .add(Rectangle::new(2.0, 2.0));
-    app.world_mut().spawn((
+    let fog_receiver_entity = app.world_mut().spawn((
         Mesh3d(quad.clone()),
         MeshMaterial3d(receiver.clone()),
         Transform::default(),
-    ));
+    )).id();
     let overlay_entity = app
         .world_mut()
         .spawn((
@@ -3295,9 +3326,9 @@ fn authored_surface_gpu_pipelines_compile() {
         .id();
     app.world_mut()
         .entity_mut(camera)
-        .insert(Projection::custom(
-            camera_projection::GameProjection::new(110.0, 0.01, 7000.0),
-        ));
+        .insert(Projection::custom(camera_projection::GameProjection::new(
+            110.0, 0.01, 7000.0,
+        )));
     for distance in [2.0, 4.0, 8.0, 16.0] {
         app.world_mut()
             .entity_mut(camera)
@@ -3369,6 +3400,18 @@ fn authored_surface_gpu_pipelines_compile() {
                 .insert(Transform::from_xyz(0.0, 0.0, distance));
             for _ in 0..24 {
                 app.update();
+                if gpu_clustering {
+                    // Cluster far-Z statistics return asynchronously from the
+                    // GPU, then cross extraction before the next main-world
+                    // grid assignment. Drain that work before judging the
+                    // new camera position rather than the previous one.
+                    app.sub_app(bevy::render::RenderApp).world()
+                        .resource::<bevy::render::renderer::RenderDevice>()
+                        .poll(bevy::render::render_resource::PollType::Wait {
+                            submission_index: None,
+                            timeout: Some(std::time::Duration::from_secs(30)),
+                        }).unwrap();
+                }
             }
             let clusters = app
                 .world()
@@ -3385,7 +3428,8 @@ fn authored_surface_gpu_pipelines_compile() {
                 "local-light grid must remain finite at distance {distance}: {clusters:?}"
             );
             if distance < 5.0 {
-                assert_eq!(clusters.dimensions.z, 1);
+                assert_eq!(clusters.dimensions.z, 1,
+                    "camera distance={distance}, GPU assignment={gpu_clustering}, grid={clusters:?}");
             }
             let on = forward_center(&mut app, &target);
             app.world_mut().entity_mut(point).insert(Visibility::Hidden);
@@ -3405,6 +3449,134 @@ fn authored_surface_gpu_pipelines_compile() {
         eprintln!(
             "GPU point light crossing first depth slice (GPU assignment={gpu_clustering}): {candle_pixels:?}"
         );
+    }
+    // Exercise shared fog inputs through real materials, including the vertex
+    // route on geometry without tangents. Only fog readiness/colour changes.
+    app.world_mut().entity_mut(camera).insert((
+        Transform::from_xyz(0., 0., 4.),
+        bevy::camera::Exposure { ev100: 0. },
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
+    ));
+    {
+        let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+        let mut value = materials.get_mut(&receiver).unwrap();
+        value.base.unlit = true;
+        value.base.base_color = Color::WHITE;
+        value.base.alpha_mode = AlphaMode::Blend;
+        value.extension.surface.misc = UVec4::ZERO;
+    }
+    let fog_image = |rgb: [f32; 3]| {
+        let data: Vec<u8> = rgb
+            .into_iter()
+            .chain([1.])
+            .flat_map(|value| half::f16::from_f32(value).to_bits().to_le_bytes())
+            .collect();
+        Image::new_fill(
+            Extent3d::default(),
+            TextureDimension::D2,
+            &data,
+            TextureFormat::Rgba16Float,
+            Default::default(),
+        )
+    };
+    let red_fog = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(fog_image([1. / 1024., 0., 0.]));
+    let blue_fog = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(fog_image([0., 0., 1. / 1024.]));
+    for flags in [8, 56] {
+        app.world_mut()
+            .resource_mut::<Assets<ProbeMaterial>>()
+            .get_mut(&receiver)
+            .unwrap()
+            .extension
+            .surface
+            .misc
+            .w = flags;
+        let mut pixels = Vec::new();
+        for (ready, image) in [
+            (false, red_fog.clone()),
+            (true, red_fog.clone()),
+            (true, blue_fog.clone()),
+            (false, blue_fog.clone()),
+        ] {
+            let mut parameters =
+                crate::rendering::bevy_backend::fog_material::FogMaterialParameters::disabled();
+            parameters.control = Vec4::new(u8::from(ready) as f32, 0.01, 0., 0.);
+            parameters.unproject = Vec4::new(1., 1., 0., 1.);
+            app.world_mut()
+                .resource_mut::<Assets<ShaderBuffer>>()
+                .get_mut(&fog_parameters)
+                .unwrap()
+                .set_data(parameters);
+            app.world_mut()
+                .resource_mut::<Assets<ProbeMaterial>>()
+                .get_mut(&receiver)
+                .unwrap()
+                .extension
+                .fog_world = Some(image);
+            for _ in 0..24 {
+                app.update();
+            }
+            pixels.push(forward_center(&mut app, &target));
+        }
+        assert_eq!(
+            pixels[0], pixels[3],
+            "disabling material fog must restore the original output: {flags} {pixels:?}"
+        );
+        assert!(
+            i32::from(pixels[1][0]) > i32::from(pixels[1][2]) + 5
+                && i32::from(pixels[2][2]) > i32::from(pixels[2][0]) + 5,
+            "material fog route {flags} did not sample/composite shared colour: {pixels:?}"
+        );
+    }
+    // Actual material stages must address both tag domains and clear a
+    // receiver after its selected local volume is removed.
+    use crate::rendering::bevy_backend::{fog::AreaFogFrame, fog_objects::FogObjectParameters};
+    let blank_fog = app.world_mut().resource_mut::<Assets<Image>>().add(fog_image([0.; 3]));
+    let area = |color: Vec3| AreaFogFrame {
+        meshes: Vec::new(), world_from_local: Mat4::IDENTITY,
+        origin: Vec3::ZERO, bounds: [[-1.; 3], [1.; 3]],
+        parameters: crate::rendering::fog::alpha::VolumeFog {
+            volume_type: Vec3::X, distance: Vec4::new(0., 1., 4., 0.),
+            color_start: color, color_end: color, density_factor: 1., falloff: 0.,
+            scattering_direction: Vec3::ZERO, scattering_phase: 0.,
+            scattering_color: Vec3::ZERO, scattering_intensity: 0.,
+        },
+    };
+    for flags in [8, 56] {
+        let mut pixels = Vec::new();
+        for (tag, active) in [(3, false), (3, true), (0x80000001, true), (3, false)] {
+            let mut records = vec![FogObjectParameters::default(); 10];
+            if active {
+                records[3] = FogObjectParameters::selected(&area(Vec3::X), [0., 100., 4.]);
+                records[9] = FogObjectParameters::selected(&area(Vec3::Z), [0., 100., 4.]);
+            }
+            app.world_mut().resource_mut::<Assets<ShaderBuffer>>()
+                .get_mut(&fog_bindings.objects).unwrap().set_data(records);
+            let mut parameters = crate::rendering::bevy_backend::fog_material::FogMaterialParameters::disabled();
+            parameters.control = Vec4::new(1., 0.01, 0., 8.);
+            parameters.unproject = Vec4::new(1., 1., 0., 1.);
+            app.world_mut().resource_mut::<Assets<ShaderBuffer>>()
+                .get_mut(&fog_parameters).unwrap().set_data(parameters);
+            {
+                let mut materials = app.world_mut().resource_mut::<Assets<ProbeMaterial>>();
+                let mut material = materials.get_mut(&receiver).unwrap();
+                material.base.base_color = Color::BLACK;
+                material.extension.surface.misc.w = flags;
+                material.extension.fog_world = Some(blank_fog.clone());
+            }
+            app.world_mut().entity_mut(fog_receiver_entity).insert(MeshTag(tag));
+            for _ in 0..24 { app.update(); }
+            pixels.push(forward_center(&mut app, &target));
+        }
+        assert_eq!(pixels[0], pixels[3], "area fog removal route {flags}: {pixels:?}");
+        assert!(i32::from(pixels[1][0]) > i32::from(pixels[1][2]) + 5
+            && i32::from(pixels[2][2]) > i32::from(pixels[2][0]) + 5,
+            "area fog tag domains route {flags}: {pixels:?}");
     }
 }
 
@@ -3471,10 +3643,7 @@ fn installed_omitted_surface_maps_resolve_constant_images() {
         let image = read_streamed_diffuse_image(&catalog, &stem, 0)
             .unwrap()
             .unwrap();
-        assert!(
-            !image.uploads.is_empty(),
-            "default must upload: {key}"
-        );
+        assert!(!image.uploads.is_empty(), "default must upload: {key}");
         if source == "_default" {
             assert_eq!(image.level.format, texture::ImageFormat::Rgba8);
         }
@@ -3858,9 +4027,7 @@ fn tiled_cull_gpu_lists_with_prior(
     render.init_resource::<tiled_lighting_gpu::TlfPipelines>();
     let device = render.resource::<RenderDevice>();
     let queue = render.resource::<RenderQueue>();
-    let pipeline = &render
-        .resource::<tiled_lighting_gpu::TlfPipelines>()
-        .cull;
+    let pipeline = &render.resource::<tiled_lighting_gpu::TlfPipelines>().cull;
     let mut params = vec![
         0.0f32.to_bits(),
         0.0f32.to_bits(),
@@ -4403,9 +4570,7 @@ fn tiled_depth_shader_matches_case(app: &mut App, case: Option<usize>) {
     world.init_resource::<tiled_lighting_gpu::TlfPipelines>();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let pipeline = &world
-        .resource::<tiled_lighting_gpu::TlfPipelines>()
-        .depth;
+    let pipeline = &world.resource::<tiled_lighting_gpu::TlfPipelines>().depth;
     let make_depth = || {
         device.create_texture(&TextureDescriptor {
             label: None,
@@ -4705,10 +4870,10 @@ fn probe_shader_matches(app: &mut App) {
     let world = app.sub_app_mut(bevy::render::RenderApp).world_mut();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let mut source = include_str!(concat!(
+    let mut source = crate::rendering::bevy_backend::probe_weights::indirect_source(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/assets/shaders/dh2_indirect.wgsl"
-    ))
+    )))
     .replace("#define_import_path dh2_indirect", "")
     .replace("#{MATERIAL_BIND_GROUP}", "0");
     source.push_str(r#"
@@ -4985,9 +5150,8 @@ fn vegetation_channels_keep_local_inputs_on_baked_meshes() {
         f3(shadow_pass::VEGETATION_COLOR),
         [128.0 / 255.0, 64.0 / 255.0, 1.0]
     );
-    let VertexAttributeValues::Float32x2(normal) = mesh
-        .attribute(shadow_pass::VEGETATION_NORMAL)
-        .unwrap()
+    let VertexAttributeValues::Float32x2(normal) =
+        mesh.attribute(shadow_pass::VEGETATION_NORMAL).unwrap()
     else {
         panic!()
     };
@@ -5023,9 +5187,7 @@ fn vegetation_mesh_channels_are_selective_and_shared_once() {
         .is_none());
     inputs.prepare(true, &handle, &mut meshes, &local, &packed);
     assert!(inputs.0[&handle.id()].is_ok());
-    let raw_pointer = |mesh: &Mesh| match mesh
-        .attribute(shadow_pass::VEGETATION_POSITION)
-        .unwrap()
+    let raw_pointer = |mesh: &Mesh| match mesh.attribute(shadow_pass::VEGETATION_POSITION).unwrap()
     {
         VertexAttributeValues::Float32x3(values) => values.as_ptr(),
         _ => panic!("wrong vertex type"),
@@ -5063,8 +5225,7 @@ fn displayed_frame_rate_uses_real_time_even_when_gameplay_time_is_paused() {
 #[test]
 fn local_light_area_threshold_is_32_physical_pixels() {
     let viewport = UVec2::new(800, 600);
-    let threshold_range =
-        (LOCAL_LIGHT_MIN_AREA_PIXELS / (viewport.x * viewport.y) as f32).sqrt();
+    let threshold_range = (LOCAL_LIGHT_MIN_AREA_PIXELS / (viewport.x * viewport.y) as f32).sqrt();
     let area =
         projected_local_light_area_pixels(Mat4::IDENTITY, Vec3::ZERO, threshold_range, viewport)
             .unwrap();
@@ -5272,9 +5433,8 @@ fn world_shadow_sources_resolve_level_materials() {
         else {
             panic!("forward BWM position attribute is missing")
         };
-        let bevy::mesh::VertexAttributeValues::Float32x3(raw) = mesh
-            .attribute(shadow_pass::VEGETATION_POSITION)
-            .unwrap()
+        let bevy::mesh::VertexAttributeValues::Float32x3(raw) =
+            mesh.attribute(shadow_pass::VEGETATION_POSITION).unwrap()
         else {
             panic!("local BWM position attribute is missing")
         };
@@ -5283,9 +5443,8 @@ fn world_shadow_sources_resolve_level_materials() {
         for (&local, converted) in decoded.positions.iter().zip(forward) {
             assert_eq!(*converted, game_to_view(local).to_array());
         }
-        let bevy::mesh::VertexAttributeValues::Float32x2(raw_normal) = mesh
-            .attribute(shadow_pass::VEGETATION_NORMAL)
-            .unwrap()
+        let bevy::mesh::VertexAttributeValues::Float32x2(raw_normal) =
+            mesh.attribute(shadow_pass::VEGETATION_NORMAL).unwrap()
         else {
             panic!("local BWM normal attribute is missing")
         };
@@ -5296,9 +5455,8 @@ fn world_shadow_sources_resolve_level_materials() {
                 [packed[4], packed[5]].map(|byte| ((byte as i8 as f32) / 127.0).max(-1.0))
             );
         }
-        let bevy::mesh::VertexAttributeValues::Float32x3(raw_color) = mesh
-            .attribute(shadow_pass::VEGETATION_COLOR)
-            .unwrap()
+        let bevy::mesh::VertexAttributeValues::Float32x3(raw_color) =
+            mesh.attribute(shadow_pass::VEGETATION_COLOR).unwrap()
         else {
             panic!("local BWM color attribute is missing")
         };
@@ -5310,11 +5468,8 @@ fn world_shadow_sources_resolve_level_materials() {
             );
         }
     }
-    let mut library = shader_cache::ProgramLibrary::open(
-        base,
-        shader_cache::ShaderCacheBackend::Pc,
-        &catalog,
-    );
+    let mut library =
+        shader_cache::ProgramLibrary::open(base, shader_cache::ShaderCacheBackend::Pc, &catalog);
     let names: std::collections::BTreeSet<_> = world
         .objects
         .iter()
@@ -5338,25 +5493,13 @@ fn world_shadow_sources_resolve_level_materials() {
                 ))
                 .map_err(|e| e.to_string())?
                 .ok_or("missing MAIN definition")?;
-            let inputs = resolve_shadow_source_inputs(
-                Some(&mut library),
-                &bytes,
-                &program,
-                Some(main),
-            )?;
-            let present = resolve_shadow_slot_presence(
-                Some(&mut library),
-                &bytes,
-                &inputs,
-                Some(main),
-            )?;
+            let inputs =
+                resolve_shadow_source_inputs(Some(&mut library), &bytes, &program, Some(main))?;
+            let present =
+                resolve_shadow_slot_presence(Some(&mut library), &catalog, &bytes, &inputs, Some(main))?;
             base_slots[usize::from(present)] += 1;
-            let source = resolve_world_shadow_source(
-                Some(&mut library),
-                &bytes,
-                &inputs,
-                Some(main),
-            )?;
+            let source =
+                resolve_world_shadow_source(Some(&mut library), &bytes, &inputs, Some(main))?;
             if let Some(source) = source {
                 let class = source.class.material_parameter_class();
                 resolve_shadow_material_parameters(
@@ -5469,13 +5612,8 @@ fn shadow_sources_resolve_actual_world_materials() {
                 let library = library.as_mut().map_err(|error| error.to_string())?;
                 let main = surface.main_program.as_deref().unwrap();
                 let selected = source.override_program.as_deref().unwrap_or(main);
-                let parameters = shadow_variant_overrides(
-                    library,
-                    &bytes,
-                    &source,
-                    Some(main),
-                    selected,
-                )?;
+                let parameters =
+                    shadow_variant_overrides(library, &bytes, &source, Some(main), selected)?;
                 let values: Vec<_> = [
                     "noShadow",
                     "invisible",
@@ -5541,10 +5679,7 @@ fn shadow_sources_resolve_actual_world_materials() {
                         .map(|hash| format!("{hash:08x}"));
                     banks.push((enabled, hash, stages));
                 }
-                let main_state = library
-                    .definition(main.as_bytes())?
-                    .unwrap()
-                    .render_state();
+                let main_state = library.definition(main.as_bytes())?.unwrap().render_state();
                 return Err(format!(
                     "{error}; requested native signature {requested_hash:?}; base {base:?}; blend parsed={:08x} mainRpd={:08x}; effective main options {values:?}; native instance banks {banks:?}",
                     source.main_blend_state, main_state[0]
@@ -5788,18 +5923,13 @@ entity { entityDef lamp { class = "idLight"; edit = {
     ));
     light.preset = Some("LIGHT_PRESET_100W".into());
     assert_eq!(
-        light_preset(&light, [1.0; 3])
-            .unwrap()
-            .normalized_intensity,
+        light_preset(&light, [1.0; 3]).unwrap().normalized_intensity,
         5.0
     );
     assert_eq!(light_preset(&light, [1.0; 3]).unwrap().range, 15.0);
     light.preset = Some("LIGHT_PRESET_MOON".into());
     light.distance_cutoff = 1000.0;
-    assert_eq!(
-        light_preset(&light, [1.0; 3]).unwrap().range,
-        1000.0
-    );
+    assert_eq!(light_preset(&light, [1.0; 3]).unwrap().range, 1000.0);
     light.preset = Some("LIGHT_PRESET_REFLECTOR".into());
     assert!(light_preset(&light, [1.0; 3]).is_some());
     light.reflector_preset = Some("REFLECTOR_SUN_OFF_50PCT_WALL".into());
@@ -5965,8 +6095,7 @@ fn light_eligibility_matches_installed_instructions() {
             .collect::<Vec<_>>();
         assert_eq!(values.len(), 7);
         let color = [values[3], values[4], values[5]].map(f32::from_bits);
-        let flags =
-            render_light_update_flags(values[0] as u8, values[1] as u8, values[2], color);
+        let flags = render_light_update_flags(values[0] as u8, values[1] as u8, values[2], color);
         assert_eq!(flags, values[6] as u8, "{line}");
         if !light_rgb_nonzero(color) {
             assert_eq!(flags & 8, 0);
@@ -6072,9 +6201,7 @@ fn world_light_query_preserves_area_then_common_proximity_and_clip_checks() {
             .projection_bounds = Some((low.min(high), low.max(high)));
         lights.push(light);
     }
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     for &light in &lights {
         assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Hidden));
     }
@@ -6091,26 +6218,17 @@ fn world_light_query_preserves_area_then_common_proximity_and_clip_checks() {
     first.proximity_bounds = Some((Vec3::ZERO, 1.0));
     first.range = 1.0e-9;
     drop(first);
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(lights[0]),
         Some(&Visibility::Visible)
     );
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .proximity_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().proximity_culled, 0);
 
     // Missing world-area data must not reuse a previous metric. Known
     // common proximity/clip checks remain valid without that descriptor.
     world.resource_mut::<SceneRenderQueue>().light_query_state = None;
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(lights[0]),
         Some(&Visibility::Visible)
@@ -6124,33 +6242,18 @@ fn world_light_query_preserves_area_then_common_proximity_and_clip_checks() {
             .world_query_unverified,
         3
     );
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .proximity_culled,
-        2
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().proximity_culled, 2);
 
     world
         .resource_mut::<SceneRenderQueue>()
         .visible_cell_mask
         .clear();
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     for light in lights {
         assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Hidden));
     }
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .proximity_culled,
-        2
-    );
-    assert_eq!(
-        world.resource::<LocalLightCullStats>().area_culled,
-        1
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().proximity_culled, 2);
+    assert_eq!(world.resource::<LocalLightCullStats>().area_culled, 1);
 }
 
 #[test]
@@ -6206,9 +6309,7 @@ fn light_sphere_batch_rejects_hidden_cells_and_retains_unlocated_sources() {
             .initial_sphere = Some([point[0], point[1], point[2], 0.1]);
         light
     });
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(lights[0]),
         Some(&Visibility::Hidden)
@@ -6226,19 +6327,12 @@ fn light_sphere_batch_rejects_hidden_cells_and_retains_unlocated_sources() {
     // A fresh mask containing the source cell retains its light.
     world.resource_mut::<SceneRenderQueue>().visible_cell_mask[cell as usize / 32] |=
         1 << (cell % 32);
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(lights[0]),
         Some(&Visibility::Visible)
     );
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .sphere_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().sphere_culled, 0);
 }
 
 #[test]
@@ -6268,16 +6362,11 @@ fn preset_rgb_is_diagnostic_not_runtime_light_eligibility() {
                 Some((Vec3::ZERO, LIGHT_FALLBACK_CULL_RADIUS)),
                 Mat4::IDENTITY,
             );
-            world
-                .get_mut::<LocalLightCull>(light)
-                .unwrap()
-                .linear_color = color;
+            world.get_mut::<LocalLightCull>(light).unwrap().linear_color = color;
             lights.push(light);
         }
     }
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     for light in &lights {
         assert_eq!(world.get::<Visibility>(*light), Some(&Visibility::Visible));
     }
@@ -6292,15 +6381,8 @@ fn preset_rgb_is_diagnostic_not_runtime_light_eligibility() {
         .resource_mut::<SceneRenderQueue>()
         .visible_cell_mask
         .clear();
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .zero_preset_rgb,
-        4
-    );
+    world.run_system_once(cull_small_local_lights).unwrap();
+    assert_eq!(world.resource::<LocalLightCullStats>().zero_preset_rgb, 4);
     for light in lights {
         assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
     }
@@ -6332,6 +6414,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         diffuse_image_paths: Vec::new(),
         diffuse_image_materials: Vec::new(),
         material_images: HashMap::new(),
+        material_stage_sorts: HashMap::new(),
         diffuse_image_handles: Vec::new(),
         diffuse_image_pending: Vec::new(),
         diffuse_mip_states: Vec::new(),
@@ -6359,9 +6442,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         }
         handles.push(light);
     }
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(handles[0]),
         Some(&Visibility::Visible)
@@ -6374,12 +6455,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         world.get::<Visibility>(handles[2]),
         Some(&Visibility::Visible)
     );
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        1
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 1);
     assert!(
         world
             .resource::<LocalLightCullStats>()
@@ -6390,9 +6466,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         .resource_mut::<SceneRenderQueue>()
         .visible_authored_ids
         .clear();
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(
         world.get::<Visibility>(handles[0]),
         Some(&Visibility::Hidden)
@@ -6405,12 +6479,7 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         world.get::<Visibility>(handles[2]),
         Some(&Visibility::Visible)
     );
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        2
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 2);
     // An unavailable camera/matrix/mapping must not turn cleared IDs into
     // rejections. Native worker errors instead publish fresh empty lists;
     // that connected pipeline policy is tested separately below.
@@ -6418,18 +6487,11 @@ fn local_light_culler_consumes_current_ids_and_fails_open_on_missing_outputs() {
         .resource_mut::<SceneRenderQueue>()
         .visible_cell_mask
         .clear();
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     for light in handles {
         assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
     }
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 0);
     assert!(
         !world
             .resource::<LocalLightCullStats>()
@@ -6667,16 +6729,9 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
         .get_mut::<LocalLightCull>(light)
         .unwrap()
         .definition_name_hash = id;
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 0);
 
     // Replay a mixed merge through the same publication stage used by
     // streaming. Failed workers clear their lists; successful siblings
@@ -6729,16 +6784,9 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
         .get_mut::<LocalLightCull>(light)
         .unwrap()
         .definition_name_hash = id;
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 0);
     assert!(
         world
             .resource::<LocalLightCullStats>()
@@ -6779,16 +6827,9 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
     assert!(scene.visible_cell_indices.is_empty());
     assert_eq!(scene.visible_cell_mask.len(), cell_count.div_ceil(32));
     assert!(scene.visible_cell_mask.iter().all(|&word| word == 0));
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Hidden));
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        1
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 1);
     assert!(
         world
             .resource::<LocalLightCullStats>()
@@ -6812,16 +6853,9 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
         .get_mut::<LocalLightCull>(light)
         .unwrap()
         .clip_to_world = Some(Mat4::IDENTITY);
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
     assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
-    assert_eq!(
-        world
-            .resource::<LocalLightCullStats>()
-            .static_id_culled,
-        0
-    );
+    assert_eq!(world.resource::<LocalLightCullStats>().static_id_culled, 0);
     assert!(
         !world
             .resource::<LocalLightCullStats>()
@@ -6878,13 +6912,8 @@ fn local_light_culling_system_applies_each_gate_and_counts_kinds() {
     assert_eq!(camera.clip_from_view(), Mat4::IDENTITY);
     drop(camera_query);
 
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
-    assert_eq!(
-        world.resource::<LocalLightCullStats>().clip_culled,
-        1
-    );
+    world.run_system_once(cull_small_local_lights).unwrap();
+    assert_eq!(world.resource::<LocalLightCullStats>().clip_culled, 1);
 
     assert_eq!(world.get::<Visibility>(point), Some(&Visibility::Visible));
     assert_eq!(
@@ -6930,9 +6959,7 @@ fn unknown_local_light_proximity_bounds_fail_open_and_are_counted() {
         ))
         .id();
 
-    world
-        .run_system_once(cull_small_local_lights)
-        .unwrap();
+    world.run_system_once(cull_small_local_lights).unwrap();
 
     assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
     let stats = world.resource::<LocalLightCullStats>();
@@ -6961,9 +6988,7 @@ fn local_light_culling_system_fails_open_without_camera_or_when_disabled() {
             Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0)),
         );
 
-        world
-            .run_system_once(cull_small_local_lights)
-            .unwrap();
+        world.run_system_once(cull_small_local_lights).unwrap();
 
         assert_eq!(world.get::<Visibility>(light), Some(&Visibility::Visible));
         let stats = world.resource::<LocalLightCullStats>();
@@ -7049,10 +7074,15 @@ fn deferred_diffuse_reader_loads_installed_bc7_mip() {
 #[test]
 fn cutout_initial_residency_precedes_visibility_and_preserves_authored_chain() {
     let base = crate::assets::installation::game_base().unwrap();
-    if !base.is_dir() { return; }
+    if !base.is_dir() {
+        return;
+    }
     let catalog = archive::Catalog::open(&base).unwrap();
-    let path = catalog.paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
-        .into_iter().find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2")).unwrap();
+    let path = catalog
+        .paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
+        .into_iter()
+        .find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2"))
+        .unwrap();
     let stem = path.strip_suffix("_mip2").unwrap().to_string();
     let image_bytes = catalog.read(&stem).unwrap().unwrap();
     let expected = texture::compressed_inline_chain(&image_bytes).unwrap();
@@ -7068,45 +7098,95 @@ fn cutout_initial_residency_precedes_visibility_and_preserves_authored_chain() {
     let mut probes = Assets::<ProbeMaterial>::default();
     let mut decals = Assets::<DecalMaterial>::default();
     let bytes = super::texture_streaming::initialize_resident_image(
-        &catalog, 0, &mut queue, &mut images, &mut probes, &mut decals,
-    ).unwrap();
+        &catalog,
+        0,
+        &mut queue,
+        &mut images,
+        &mut probes,
+        &mut decals,
+        &mut Assets::default(),
+    )
+    .unwrap();
     assert_eq!(bytes, expected.payload.len());
     let handle = queue.diffuse_image_handles[0].as_ref().unwrap().clone();
     let image = images.get(&handle).unwrap();
     assert_eq!(image.data.as_deref(), Some(expected.payload.as_slice()));
-    assert_eq!(image.texture_descriptor.mip_level_count, expected.info.mip_count);
-    assert_eq!(queue.diffuse_mip_states[0].minimum, queue.diffuse_mip_states[0].resident);
-    assert_eq!(queue.diffuse_mip_states[0].resident.unwrap().resource_mip, None);
+    assert_eq!(
+        image.texture_descriptor.mip_level_count,
+        expected.info.mip_count
+    );
+    assert_eq!(
+        queue.diffuse_mip_states[0].minimum,
+        queue.diffuse_mip_states[0].resident
+    );
+    assert_eq!(
+        queue.diffuse_mip_states[0].resident.unwrap().resource_mip,
+        None
+    );
     assert!(queue.shadow_diffuse_slots.is_empty());
     assert_eq!(queue.active, 0);
     queue.request_shadow_diffuse(0);
-    assert_eq!(super::texture_streaming::initialize_resident_image(
-        &catalog, 0, &mut queue, &mut images, &mut probes, &mut decals,
-    ).unwrap(), 0);
-    assert_eq!(queue.diffuse_image_handles[0].as_ref().unwrap().id(), handle.id());
+    assert_eq!(
+        super::texture_streaming::initialize_resident_image(
+            &catalog,
+            0,
+            &mut queue,
+            &mut images,
+            &mut probes,
+            &mut decals,
+            &mut Assets::default()
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        queue.diffuse_image_handles[0].as_ref().unwrap().id(),
+        handle.id()
+    );
     assert_eq!(images.len(), 1);
 }
 
 #[test]
 fn cutout_initial_residency_follows_compiled_shadow_banks() {
-    use shader_cache::{CachedWorldShadowClass as World, CachedRigidShadowClass as Model};
-    for class in [World::Opaque, World::AlphaTested, World::VistaAlpha, World::Vegetation, World::VegetationFixed] {
+    use shader_cache::{CachedRigidShadowClass as Model, CachedWorldShadowClass as World};
+    for class in [
+        World::Opaque,
+        World::AlphaTested,
+        World::VistaAlpha,
+        World::Vegetation,
+        World::VegetationFixed,
+    ] {
         let (_, mut materials) = world_shadow_test_material(class);
         let inputs = materials.0.values_mut().next().unwrap().as_mut().unwrap();
         // Ordinary alpha flags cannot replace the actual shadow fragment class.
         inputs.alpha_test = class == World::Opaque;
-        assert_eq!(inputs.cutout_image_slot(), (class != World::Opaque).then_some(0));
+        assert_eq!(
+            inputs.cutout_image_slot(),
+            (class != World::Opaque).then_some(0)
+        );
         let source = inputs.world_source.as_ref().unwrap().as_ref().unwrap();
-        for class in [Model::Opaque, Model::AlphaTested, Model::VistaAlpha, Model::Vegetation] {
+        for class in [
+            Model::Opaque,
+            Model::AlphaTested,
+            Model::VistaAlpha,
+            Model::Vegetation,
+        ] {
             let mut model = inputs.clone();
             model.world_source = Ok(None);
             model.diffuse_image_slot = Some(17);
             model.rigid_base_source = Ok(Some(Arc::new(shader_cache::CachedRigidShadowSource {
-                class, skin_influences: 0, alpha_dither: false,
-                program: source.program.clone(), variant_hash: source.variant_hash,
-                definition_render_state: source.definition_render_state, variant: source.variant.clone(),
+                class,
+                skin_influences: 0,
+                alpha_dither: false,
+                program: source.program.clone(),
+                variant_hash: source.variant_hash,
+                definition_render_state: source.definition_render_state,
+                variant: source.variant.clone(),
             })));
-            assert_eq!(model.cutout_image_slot(), (class != Model::Opaque).then_some(17));
+            assert_eq!(
+                model.cutout_image_slot(),
+                (class != Model::Opaque).then_some(17)
+            );
         }
     }
 }
@@ -7114,47 +7194,111 @@ fn cutout_initial_residency_follows_compiled_shadow_banks() {
 #[test]
 #[ignore = "requires a GPU and installed image; checks base-mip upload before first shadow demand"]
 fn cutout_initial_residency_is_ready_for_late_caster_gpu() {
-    use bevy::render::{render_asset::RenderAssets, render_resource::*, renderer::{RenderDevice, RenderQueue}, texture::GpuImage, RenderApp};
+    use bevy::render::{
+        render_asset::RenderAssets,
+        render_resource::*,
+        renderer::{RenderDevice, RenderQueue},
+        texture::GpuImage,
+        RenderApp,
+    };
     let base = crate::assets::installation::game_base().unwrap();
     let catalog = archive::Catalog::open(&base).unwrap();
-    let path = catalog.paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
-        .into_iter().find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2")).unwrap();
+    let path = catalog
+        .paths_containing("dirt_mud_01_dark_d2.bimage7_mip2")
+        .into_iter()
+        .find(|p| p.ends_with("dirt_mud_01_dark_d2.bimage7_mip2"))
+        .unwrap();
     let stem = path.strip_suffix("_mip2").unwrap().to_string();
     let image_bytes = catalog.read(&stem).unwrap().unwrap();
     let expected = texture::compressed_inline_bc7_mip(&image_bytes, 0).unwrap();
     assert_eq!((expected.width, expected.height), (256, 256));
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins
-        .set(bevy::window::WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
-        .disable::<bevy::winit::WinitPlugin>()
-        .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>());
-    app.finish(); app.cleanup();
-    let device = app.sub_app(RenderApp).world().resource::<RenderDevice>().clone();
-    let render_queue = app.sub_app(RenderApp).world().resource::<RenderQueue>().clone();
+    app.add_plugins(
+        DefaultPlugins
+            .set(bevy::window::WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+    );
+    app.finish();
+    app.cleanup();
+    let device = app
+        .sub_app(RenderApp)
+        .world()
+        .resource::<RenderDevice>()
+        .clone();
+    let render_queue = app
+        .sub_app(RenderApp)
+        .world()
+        .resource::<RenderQueue>()
+        .clone();
     let mut queue = SceneRenderQueue {
-        diffuse_image_paths: vec![stem], diffuse_image_handles: vec![None],
-        diffuse_image_materials: vec![vec![]], diffuse_mip_states: vec![DiffuseMipState::default()],
-        diffuse_image_attempted: vec![false], ..default()
+        diffuse_image_paths: vec![stem],
+        diffuse_image_handles: vec![None],
+        diffuse_image_materials: vec![vec![]],
+        diffuse_mip_states: vec![DiffuseMipState::default()],
+        diffuse_image_attempted: vec![false],
+        ..default()
     };
-    super::texture_streaming::initialize_resident_image(&catalog, 0, &mut queue,
-        &mut app.world_mut().resource_mut::<Assets<Image>>(), &mut Assets::default(), &mut Assets::default()).unwrap();
+    super::texture_streaming::initialize_resident_image(
+        &catalog,
+        0,
+        &mut queue,
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+        &mut Assets::default(),
+        &mut Assets::default(),
+        &mut Assets::default(),
+    )
+    .unwrap();
     let handle = queue.diffuse_image_handles[0].as_ref().unwrap().clone();
-    for _ in 0..4 { app.update(); device.poll(PollType::wait_indefinitely()).unwrap(); }
-    let gpu = app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>().get(handle.id()).unwrap();
+    for _ in 0..4 {
+        app.update();
+        device.poll(PollType::wait_indefinitely()).unwrap();
+    }
+    let gpu = app
+        .sub_app(RenderApp)
+        .world()
+        .resource::<RenderAssets<GpuImage>>()
+        .get(handle.id())
+        .unwrap();
     let texture_id = gpu.texture.id();
-    let staging = device.create_buffer(&BufferDescriptor { label: None, size: 65536,
-        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
+    let staging = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size: 65536,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
     let mut encoder = device.create_command_encoder(&default());
-    encoder.copy_texture_to_buffer(gpu.texture.as_image_copy(), TexelCopyBufferInfo {
-        buffer: &staging, layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024), rows_per_image: None },
-    }, Extent3d { width: 256, height: 256, depth_or_array_layers: 1 });
+    encoder.copy_texture_to_buffer(
+        gpu.texture.as_image_copy(),
+        TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1024),
+                rows_per_image: None,
+            },
+        },
+        Extent3d {
+            width: 256,
+            height: 256,
+            depth_or_array_layers: 1,
+        },
+    );
     render_queue.submit([encoder.finish()]);
-    let (tx,rx) = std::sync::mpsc::channel();
-    staging.slice(..).map_async(MapMode::Read, move |r| tx.send(r).unwrap());
-    device.poll(PollType::wait_indefinitely()).unwrap(); rx.recv().unwrap().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging
+        .slice(..)
+        .map_async(MapMode::Read, move |r| tx.send(r).unwrap());
+    device.poll(PollType::wait_indefinitely()).unwrap();
+    rx.recv().unwrap().unwrap();
     let mapped = staging.slice(..).get_mapped_range();
     assert_eq!(&*mapped, expected.payload);
-    drop(mapped); staging.unmap();
+    drop(mapped);
+    staging.unmap();
     // First demand after the image was invisible for several frames reuses
     // resident data; it must not enqueue an initial read or lose its GPU view.
     queue.request_shadow_diffuse(0);
@@ -7166,10 +7310,29 @@ fn cutout_initial_residency_is_ready_for_late_caster_gpu() {
     app.init_resource::<Assets<ProbeMaterial>>();
     app.init_resource::<Assets<DecalMaterial>>();
     app.add_systems(Update, stream_visible_textures);
-    for _ in 0..4 { app.update(); device.poll(PollType::wait_indefinitely()).unwrap(); }
-    assert_eq!(app.world().resource::<TextureReadWorker>().inflight_count, 0);
-    assert_eq!(app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>().get(handle.id()).unwrap().texture.id(), texture_id);
-    assert!(app.world().resource::<Assets<Image>>().get(&handle).is_some());
+    for _ in 0..4 {
+        app.update();
+        device.poll(PollType::wait_indefinitely()).unwrap();
+    }
+    assert_eq!(
+        app.world().resource::<TextureReadWorker>().inflight_count,
+        0
+    );
+    assert_eq!(
+        app.sub_app(RenderApp)
+            .world()
+            .resource::<RenderAssets<GpuImage>>()
+            .get(handle.id())
+            .unwrap()
+            .texture
+            .id(),
+        texture_id
+    );
+    assert!(app
+        .world()
+        .resource::<Assets<Image>>()
+        .get(&handle)
+        .is_some());
 }
 
 #[test]
@@ -7187,14 +7350,21 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     let stem = path.strip_suffix("_mip2").unwrap().to_string();
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
+    app.init_resource::<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>();
     app.insert_resource(Assets::<Image>::default());
     let mut materials = Assets::<ProbeMaterial>::default();
     let material = materials.add(ProbeMaterial {
         base: StandardMaterial::default(),
         extension: ProbeExtension {
-            reflections:None,
-            reflection_brdf_lookup:None,
-            reflection_planes:default(),
+            fog_parameters: default(),
+            fog_objects: default(),
+            fog_world: None,
+            fog_canvas: None,
+            fog_curve: None,
+            fog_depth: None,
+            reflections: None,
+            reflection_brdf_lookup: None,
+            reflection_planes: default(),
             material_exposure: Handle::default(),
             sh: Handle::default(),
             vertex_probes: Handle::default(),
@@ -7275,6 +7445,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             surface_gpu::ImageRole(0),
         )]],
         material_images: HashMap::new(),
+        material_stage_sorts: HashMap::new(),
         shadow_diffuse_slots: Vec::new(),
         shadow_diffuse_membership: Vec::new(),
         diffuse_image_handles: vec![None],
@@ -7535,6 +7706,7 @@ fn roof_point_diagnostic_reports_authored_tome_records() {
         diffuse_image_paths: Vec::new(),
         diffuse_image_materials: Vec::new(),
         material_images: HashMap::new(),
+        material_stage_sorts: HashMap::new(),
         diffuse_image_handles: Vec::new(),
         diffuse_image_pending: Vec::new(),
         diffuse_mip_states: Vec::new(),
@@ -7590,8 +7762,7 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
         [0.0, 0.0, 0.0, 1.0],
     ];
     let rows =
-        tome::world_visibility_query_matrix(80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0)
-            .unwrap();
+        tome::world_visibility_query_matrix(80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0).unwrap();
     for (count, threads) in [
         (1, 0),
         (2, 0),
@@ -7902,8 +8073,7 @@ fn dense_depth_grid_matches_bounds_after_camera_shifts() {
         let columns = (base * Mat4::from_rotation_y(yaw)).to_cols_array_2d();
         let pose = std::array::from_fn(|row| std::array::from_fn(|column| columns[column][row]));
         let rows =
-            tome::world_visibility_query_matrix(80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0)
-                .unwrap();
+            tome::world_visibility_query_matrix(80.0, 1920, 1017, 1.0, pose, 0.01, 7000.0).unwrap();
         let input = tome::OrdinaryDirectQueryInput {
             camera_point: [pose[0][3], pose[1][3], pose[2][3]],
             render_rows: rows,
@@ -8164,6 +8334,7 @@ fn unmapped_object_has_no_invented_frustum_visibility() {
         diffuse_image_paths: Vec::new(),
         diffuse_image_materials: Vec::new(),
         material_images: HashMap::new(),
+        material_stage_sorts: HashMap::new(),
         shadow_diffuse_slots: Vec::new(),
         shadow_diffuse_membership: Vec::new(),
         diffuse_image_handles: Vec::new(),

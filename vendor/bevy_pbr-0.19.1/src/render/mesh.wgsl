@@ -10,6 +10,9 @@
 #ifdef DH2_VERTEX_PROBE
 #import dh2_indirect::{vertex_sh, pack_vertex_irradiance}
 #endif
+#ifdef DH2_FOG_VERTEX
+#import dh2_material_fog::material_fog_vertex
+#endif
 
 #ifdef DH2_DECAL
 @group(#{MATERIAL_BIND_GROUP}) @binding(155) var<uniform> decal_zbias: f32;
@@ -91,10 +94,8 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     // arkDecal: offset homogeneous Z, preserving the authored world position.
     out.position.z -= decal_zbias;
 #endif
-#ifdef DH2_PROJECT_FAR
-#if DH2_PROJECT_FAR == 1
+#ifdef DH2_FAR_DEPTH
     out.position.z=0.0;
-#endif
 #endif
 #endif
 
@@ -148,6 +149,9 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     out.probe_luminance = packed.luminance;
     out.probe_chroma_a = packed.chroma_a;
     out.probe_chroma_b = packed.chroma_b;
+#endif
+#ifdef DH2_FOG_VERTEX
+    out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,mesh[vertex.instance_index].tag);
 #endif
     return out;
 }

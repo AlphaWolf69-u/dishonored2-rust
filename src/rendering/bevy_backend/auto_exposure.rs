@@ -47,20 +47,25 @@ impl ExposureParameters {
                 0.,
             ),
         };
-        if !settings.range.is_finite()
-            || !settings.adaptation.is_finite()
-            || !settings.camera.is_finite()
-            || settings.range.x <= 0.
-            || settings.range.y <= 0.
-            || settings.adaptation.y <= 0.
-            || settings.camera.x <= 0.
+        settings.validate()
+    }
+    pub fn validate(self) -> Result<Self, String> {
+        if !self.range.is_finite()
+            || !self.adaptation.is_finite()
+            || !self.camera.is_finite()
+            || self.range.x <= 0.
+            || self.range.y <= 0.
+            || self.adaptation.y <= 0.
+            || self.camera.x <= 0.
         {
             return Err("invalid authored exposure parameters".into());
         }
-        Ok(settings)
+        Ok(self)
     }
 }
 pub struct ExposurePlugin;
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ExposurePass;
 /// The gameplay view's previous adaptation state is also read by particle
 /// materials. Other views retain independent adaptation unless explicitly linked.
 #[derive(Component, Clone, ExtractComponent)]
@@ -121,6 +126,7 @@ impl Plugin for ExposurePlugin {
                 Core3d,
                 expose
                     .in_set(Core3dSystems::PostProcess)
+                    .in_set(ExposurePass)
                     .before(tonemapping),
             );
     }

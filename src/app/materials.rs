@@ -10,6 +10,19 @@ use bevy::prelude::*;
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(SurfaceKey)]
 pub(super) struct ProbeExtension {
+    #[storage(167, read_only)]
+    pub(super) fog_objects: Handle<ShaderBuffer>,
+    #[storage(161, read_only)]
+    pub(super) fog_parameters: Handle<ShaderBuffer>,
+    #[texture(162)]
+    pub(super) fog_world: Option<Handle<Image>>,
+    #[texture(163)]
+    #[sampler(166)]
+    pub(super) fog_canvas: Option<Handle<Image>>,
+    #[texture(164)]
+    pub(super) fog_curve: Option<Handle<Image>>,
+    #[texture(165, sample_type = "depth")]
+    pub(super) fog_depth: Option<Handle<Image>>,
     #[texture(159)]
     #[sampler(160)]
     pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
@@ -131,6 +144,17 @@ pub(super) fn specialize_surface(
     descriptor: &mut RenderPipelineDescriptor,
     key: surface_gpu::SurfaceKey,
 ) {
+    if key.0[7]&24==24 && !descriptor.vertex.shader_defs.iter().any(
+        |value| matches!(value,bevy::shader::ShaderDefVal::Bool(name,true) if name=="PREPASS_PIPELINE")
+    ) {
+        descriptor.vertex.shader_defs.push("DH2_FOG_VERTEX".into());
+        if !descriptor.vertex.shader_defs.iter().any(
+            |value| matches!(value,bevy::shader::ShaderDefVal::UInt(name,_) if name=="DH2_ALPHA_FLAGS")
+        ) {
+            descriptor.vertex.shader_defs.push(bevy::shader::ShaderDefVal::UInt("DH2_ALPHA_FLAGS".into(),key.0[7]));
+        }
+        if let Some(fragment)=descriptor.fragment.as_mut() {fragment.shader_defs.push("DH2_FOG_VERTEX".into());}
+    }
     // Bevy omits opaque depth-only fragments unless its alpha-mask flag is
     // set. These original programs discard procedurally even with ONE/ZERO
     // blending: liquid clips its fill level; sky never contributes Z.
@@ -154,6 +178,14 @@ pub(super) fn specialize_surface(
             "DH2_PROJECT_FAR".into(),
             key.0[15],
         ));
+    // An absent project option must leave upstream materials compilable.
+    // The composer evaluates nested numeric #if expressions even inside a
+    // disabled #ifdef, so the mesh program uses a separate presence flag.
+    if key.0[15] == 1 {
+        descriptor.vertex.shader_defs.push(bevy::shader::ShaderDefVal::Bool(
+            "DH2_FAR_DEPTH".into(), true,
+        ));
+    }
     if matches!(key.0[6], 7 | 8) {
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             depth.depth_write_enabled = Some(false);
@@ -275,6 +307,19 @@ impl MaterialExtension for ProbeExtension {
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(DecalKey)]
 pub(super) struct DecalExtension {
+    #[storage(167, read_only)]
+    pub(super) fog_objects: Handle<ShaderBuffer>,
+    #[storage(161, read_only)]
+    pub(super) fog_parameters: Handle<ShaderBuffer>,
+    #[texture(162)]
+    pub(super) fog_world: Option<Handle<Image>>,
+    #[texture(163)]
+    #[sampler(166)]
+    pub(super) fog_canvas: Option<Handle<Image>>,
+    #[texture(164)]
+    pub(super) fog_curve: Option<Handle<Image>>,
+    #[texture(165, sample_type = "depth")]
+    pub(super) fog_depth: Option<Handle<Image>>,
     #[texture(159)]
     #[sampler(160)]
     pub(super) reflection_brdf_lookup: Option<Handle<Image>>,

@@ -237,28 +237,57 @@ pub fn load_area_environments(
 
 /// A typed float parameter track from 88e220: switching source restarts the
 /// blend from the currently displayed value, even when targets happen to match.
-pub struct EnvironmentScalar {
+pub type EnvironmentScalar = EnvironmentTrack<f32>;
+pub type EnvironmentVector = EnvironmentTrack<bevy_math::Vec4>;
+
+/// The original float track blends all four words component by component.
+/// Scalar and float4 consumers share the same source-change and timing rules.
+pub struct EnvironmentTrack<T> {
     source: Option<usize>,
     initialized: bool,
-    start: f32,
-    target: f32,
-    current: f32,
+    start: T,
+    target: T,
+    current: T,
     elapsed: f32,
     duration: f32,
 }
 
-impl EnvironmentScalar {
-    pub fn new(registered_default: f32) -> Self {
+impl<T: Clone> EnvironmentTrack<T> {
+    pub fn new(registered_default: T) -> Self {
         Self {
             source: None,
             initialized: false,
-            start: registered_default,
-            target: registered_default,
+            start: registered_default.clone(),
+            target: registered_default.clone(),
             current: registered_default,
             elapsed: 0.0,
             duration: 0.0,
         }
     }
+}
+
+fn area_parameter<T>(
+    world: &entities::EnvironmentRenderParameters,
+    world_duration: f32,
+    areas: &[AreaEnvironment],
+    point: [f32; 3],
+    name: &str,
+    read: impl Fn(&entities::EnvironmentRenderParameters) -> Result<Option<T>, String>,
+) -> Result<(Option<usize>, T, f32), String> {
+    let mut source = None;
+    let mut target = read(world)?.ok_or_else(|| format!("unresolved environment {name}"))?;
+    let mut duration = world_duration;
+    for (index, area) in areas.iter().enumerate().filter(|(_, a)| a.contains(point)) {
+        if let Some(value) = read(&area.parameters)? {
+            source = Some(index);
+            target = value;
+            duration = area.blend_duration;
+        }
+    }
+    Ok((source, target, duration))
+}
+
+impl EnvironmentTrack<f32> {
     pub fn update(
         &mut self,
         world: &entities::EnvironmentRenderParameters,
@@ -268,20 +297,62 @@ impl EnvironmentScalar {
         name: &str,
         delta: f32,
     ) -> Result<f32, String> {
-        let mut source = None;
-        let mut target = world
-            .scalar_parameter(name)?
-            .ok_or_else(|| format!("unresolved environment {name}"))?;
-        let mut duration = world_duration;
-        for (index, area) in areas.iter().enumerate().filter(|(_, a)| a.contains(point)) {
-            if let Some(value) = area.parameters.scalar_parameter(name)? {
-                source = Some(index);
-                target = value;
-                duration = area.blend_duration;
-            }
-        }
+        let (source, target, duration) =
+            area_parameter(world, world_duration, areas, point, name, |p| {
+                p.scalar_parameter(name)
+            })?;
+        Ok(self.advance(source, target, duration, delta))
+    }
+}
+
+impl EnvironmentTrack<bevy_math::Vec4> {
+    pub fn update(
+        &mut self,
+        world: &entities::EnvironmentRenderParameters,
+        world_duration: f32,
+        areas: &[AreaEnvironment],
+        point: [f32; 3],
+        name: &str,
+        delta: f32,
+    ) -> Result<bevy_math::Vec4, String> {
+        let (source, target, duration) =
+            area_parameter(world, world_duration, areas, point, name, |p| {
+                p.vector_parameter(name)
+                    .map(|value| value.map(bevy_math::Vec4::from_array))
+            })?;
+        Ok(self.advance(source, target, duration, delta))
+    }
+}
+
+impl<T> EnvironmentTrack<T>
+where
+    T: Copy
+        + std::ops::Sub<Output = T>
+        + std::ops::Add<Output = T>
+        + std::ops::Mul<f32, Output = T>,
+{
+    fn advance(&mut self, source: Option<usize>, target: T, duration: f32, delta: f32) -> T {
+        self.advance_with(
+            source,
+            target,
+            duration,
+            delta,
+            |start, target, fraction| (*target - *start) * fraction + *start,
+        )
+    }
+}
+
+impl<T: Clone> EnvironmentTrack<T> {
+    pub(crate) fn advance_with(
+        &mut self,
+        source: Option<usize>,
+        target: T,
+        duration: f32,
+        delta: f32,
+        blend: impl Fn(&T, &T, f32) -> T,
+    ) -> T {
         if !self.initialized || source != self.source {
-            self.start = self.current;
+            self.start = self.current.clone();
             self.target = target;
             // 88e220 initializes parameters supplied by the world immediately;
             // an initial area override uses its own authored blend duration.
@@ -298,8 +369,8 @@ impl EnvironmentScalar {
             self.elapsed += delta;
             let fraction =
                 (self.elapsed / self.duration.max(f32::from_bits(0x38d1_b717))).clamp(0.0, 1.0);
-            self.current = (self.target - self.start) * fraction + self.start;
+            self.current = blend(&self.start, &self.target, fraction);
         }
-        Ok(self.current)
+        self.current.clone()
     }
 }

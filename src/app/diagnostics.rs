@@ -289,6 +289,10 @@ pub(super) fn collision_report(
     render_queue: Res<SceneRenderQueue>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     diagnostics: Option<Res<StreamingDiagnostics>>,
+    fog: Option<Res<crate::rendering::bevy_backend::fog::FogSceneFrame>>,
+    shadows: Option<Res<shadow_pass::ShadowSceneFrame>>,
+    shadow_cpu: Option<Res<super::shadow_updates::ParallelShadowCpu>>,
+    fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -379,7 +383,7 @@ pub(super) fn collision_report(
     let stem = format!("collision-{stamp}");
     let report_path = directory.join(format!("{stem}.txt"));
     let screenshot_path = directory.join(format!("{stem}.png"));
-    let report = format!(
+    let mut report = format!(
         "Level: {}\nCamera game_xyz: {:?}\nCamera direction game_xyz: {:?}\nCamera up game_xyz: {:?}\nReference horizontal FOV degrees: {}\nFeet probe game_xyz: {:?}\nMode: {}\nWalker supported: {}\nWalker vertical speed: {:.3} m/s\n{}\n{}\n{}\nScreenshot: {}\nNote: In free-fly, feet probe is 1.7 m below the camera; walker state is inactive. BWM ray tests static world geometry; placed visual models are identified in the screenshot. Collision ray tests the combined loaded collision index. Tome object candidates precede the game's final visibility tests.\n",
         scene.source_path.display(),
         view_to_game(camera.translation),
@@ -404,7 +408,38 @@ pub(super) fn collision_report(
         tome_text,
         screenshot_path.display()
     );
+    // Persist the actual CPU publications alongside the captured camera. This
+    // runs only on F8, so matrix formatting adds no per-frame rendering cost.
+    report.push_str("\nAtmosphere CPU publication (GPU submission is recorded in the session log):\n");
+    if let Some(frame) = fog.as_ref().and_then(|fog| fog.0.as_ref()) {
+        let p = &frame.parameters;
+        report.push_str(&format!(
+            "revision={} camera={:?} eye={:?}\nsettings={:?}\nfog_flags={} distance={:?} vertical={:?} height={:?}\nscattering_direction_phase={:?} scattering_colour_intensity={:?} effects={:?}\nshadow_projected={} shadow_temporal={} shadow_extent={} shadow_image={:?}\n",
+            frame.revision, frame.camera, frame.eye, frame.settings, p.flags.x,
+            p.distance, p.vertical, p.height, p.scattering_direction_phase,
+            p.scattering_color_intensity,p.effects,frame.shadow.projected,
+            frame.shadow.temporal,frame.shadow.extent,frame.shadow.image.id()
+        ));
+    } else {report.push_str("unavailable\n");}
+    if let Some(frame) = shadows.as_ref() {
+        report.push_str(&format!("Directional shadow CPU revision={}\n",frame.revision));
+        match &frame.state {
+            shadow_pass::ShadowSceneState::Ready {receiver,layers,dimensions,..} => {
+                report.push_str(&format!("atlas={dimensions:?} fars={:?} view_row2={:?}\nworld_to_shadow={:?}\n",
+                    receiver.cascade_fars,receiver.view_row2,receiver.world_to_shadow));
+                for (i,layer) in layers.iter().enumerate() {
+                    report.push_str(&format!("layer{i}: instances={}\n",layer.instances.len()));
+                }
+            }
+            shadow_pass::ShadowSceneState::Disabled => report.push_str("disabled\n"),
+            shadow_pass::ShadowSceneState::Unavailable(reason) => report.push_str(&format!("unavailable: {reason}\n")),
+            shadow_pass::ShadowSceneState::WholeViewDepth {..} => report.push_str("whole-view depth only; cascades not ready\n"),
+        }
+    }
     let history_path = directory.join(format!("{stem}-streaming.log"));
+    if let Some(cpu) = shadow_cpu.as_deref() {
+        super::shadow_diagnostics::append_adaptive_input(&mut report, cpu);
+    }
     if let Some(diagnostics) = diagnostics.as_ref() {
         let texture_event_history = if diagnostics.trace_texture_streaming {
             diagnostics
@@ -439,6 +474,9 @@ pub(super) fn collision_report(
     }
     match fs::write(&report_path, report) {
         Ok(()) => {
+            if let Some(capture) = fog_capture {
+                capture.request(directory.join(format!("{stem}-fog-gpu")));
+            }
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(screenshot_path));

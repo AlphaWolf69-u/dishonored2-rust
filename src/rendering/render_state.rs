@@ -22,10 +22,7 @@ pub fn reset_render_state(state: &mut RenderState) {
 /// similarly named option/parameter values are not drawing commands. No state
 /// preserves the nine MAIN words exactly. Multiple state blocks are explicitly
 /// unsupported until the original collector's concatenation is verified.
-pub fn material_render_state(
-    source: &str,
-    base: RenderState,
-) -> Result<RenderState, String> {
+pub fn material_render_state(source: &str, base: RenderState) -> Result<RenderState, String> {
     let tokens = crate::entities::declaration_lexemes(source)?;
     if tokens.first() != Some(&"{") {
         return Err("material declaration must start with {".into());
@@ -85,10 +82,7 @@ pub fn material_render_state(
 /// not a freshly reset state. None is the original explicit null-base branch.
 /// Lexer diagnostic/recovery side effects on malformed input are not emulated;
 /// unsupported/malformed blocks return an error instead of publishing a state.
-pub fn parse_render_state(
-    source: &str,
-    base: Option<RenderState>,
-) -> Result<RenderState, String> {
+pub fn parse_render_state(source: &str, base: Option<RenderState>) -> Result<RenderState, String> {
     fn take<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Result<&'a str, String> {
         tokens
             .next()
@@ -160,8 +154,7 @@ pub fn parse_render_state(
         let key = take(&mut tokens)?.to_ascii_lowercase();
         match key.as_str() {
             "}" => {
-                state[0] =
-                    (state[0] & !1) | u32::from(crate::material::blend_enabled(state[0]));
+                state[0] = (state[0] & !1) | u32::from(crate::material::blend_enabled(state[0]));
                 return Ok(state);
             }
             "blend" | "alphablend" => {
@@ -238,16 +231,13 @@ pub fn parse_render_state(
 
 /// FUN_140319900's surface-facing override. Only the surface's low bit
 /// replaces raster FrontCounterClockwise; all other state bits survive.
-pub fn prepared_surface_state(
-    mut state: RenderState,
-    surface_flags: u8,
-) -> RenderState {
+pub fn prepared_surface_state(mut state: RenderState, surface_flags: u8) -> RenderState {
     state[5] ^= ((u32::from(surface_flags) << 27) ^ state[5]) & 0x0800_0000;
     state
 }
 
 /// Original CVTTSS2SI result, including INT_MIN on NaN/out-of-range.
-fn cvtt_f32(value: f32) -> u32 {
+pub(crate) fn cvtt_f32(value: f32) -> u32 {
     if value >= -2147483648.0 && value < 2147483648.0 {
         value as i32 as u32
     } else {
@@ -293,12 +283,39 @@ pub fn world_state_293500(mut state: RenderState) -> RenderState {
     state
 }
 
-/// FUN_140293510.
-pub fn world_state_293510(mut state: RenderState) -> RenderState {
+/// FUN_140293510, installed by 2a8140 in the world sky/cloud cache consumed
+/// by 2a09f0. Color alpha-blends while MRT1 adds the red fog-density mask.
+pub fn sky_cloud_draw_state(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xffff_ffee) | 0xe;
     state[4] |= 2;
     state[0] = (state[0] & 0xffff_f8a9) | 0xa9;
     state[1] = (state[1] & 0xfe20_8823) | 0x0020_8823;
+    state
+}
+
+/// 309020 world fog and 309b50 radial scattering exclude stencil bit 0x40.
+/// The caller supplies stencil reference 0x40 and the current fog depth target.
+pub fn fog_draw_state(mut state: RenderState) -> RenderState {
+    state[4] = (state[4] & 0xff) | 0xa00a_0000;
+    state[5] = (state[5] & 0xff40_40ff) | 0x0040_4020;
+    state
+}
+
+/// 307530's area-volume renderMinMax submission, with no depth attachment.
+pub fn fog_interval_draw_state(mut state: RenderState) -> RenderState {
+    state[4] |= 2;
+    state[5] = (state[5] & 0xffff_ffee) | 0xe;
+    state[0] = (state[0] & 0xffe0_8c23) | 0x8c23;
+    state
+}
+
+/// 30a800 selects RGB blending while preserving the sun program's alpha state.
+pub fn sun_sprite_draw_state(mut state: RenderState, additive: bool) -> RenderState {
+    state[0] = if additive {
+        (state[0] & 0xffff_f823) | 0x23
+    } else {
+        (state[0] & 0xffff_f8a9) | 0xa9
+    };
     state
 }
 
@@ -333,6 +350,59 @@ pub fn main_depth_surface_state(
         state[4] = (state[4] & 0xff) | 0xe80e_8000;
     }
     (state, u8::from(hacked))
+}
+
+/// 2a6650's cached world depth state, consumed by 29bd30 (including water).
+/// The cache first applies the world record's facing bit, then 293310.
+/// Unlike model water, this retains the material's depth/stencil fields;
+/// 29bd30 binds the cached objects with stencil reference zero.
+pub fn world_depth_state(source: RenderState, surface_flags: u8) -> RenderState {
+    let mut state = prepared_surface_state(source, surface_flags);
+    state[5] |= 0x10;
+    state[0] = (state[0] & 0xfe7f_fffe) | 0x0060_0000;
+    state
+}
+
+/// 2fd8f0's model-water depth state. The caller supplies stencil reference 4
+/// through 319900 -> 2bb550 -> 2bb470 -> 2bbfa0, independently of this packet.
+/// The water vertex program uses the material's ordinary TransformVertex.
+pub fn water_depth_state() -> RenderState {
+    let mut state = [0; 9];
+    reset_render_state(&mut state);
+    state[0] &= 0xfe1f_ffff;
+    state[4] = (state[4] & 0xff) | 0xe80e_8000;
+    state[5] = (state[5] & 0xfc04_00fe) | 0x0004_0026;
+    state
+}
+
+/// 2fcd90: first boat-volume pass, before water depth. Source is the forced
+/// arkBoatVolume MAIN program state; stencil reference is 8.
+pub fn boat_volume_depth_state(mut state: RenderState) -> RenderState {
+    state[0] &= 0xfe1f_fffe;
+    state[4] = (state[4] & 0xff) | 0x000a_8800;
+    state[5] = (state[5] & 0xfc08_08fc) | 0x0008_083c;
+    state
+}
+
+/// 2fcb70: second boat-volume pass, also used after the depthAlpha copy on
+/// both full and reduced targets. Stencil reference remains 8.
+pub fn boat_volume_stencil_state(mut state: RenderState) -> RenderState {
+    state[0] &= 0xfe1f_fffe;
+    state[4] = (state[4] & 0xff) | 0xe28e_2800;
+    state[5] = (state[5] & 0xfc02_02ec) | 0x0002_022c;
+    state
+}
+
+/// 2feef0 restores opaque depth only where (stencil & 12)==8, after the
+/// boat/water draws. The copy shader is the same one used by 34f740;
+/// the caller supplies stencil reference 8 and the immutable opaque source.
+pub fn boat_depth_restore_state() -> RenderState {
+    let mut state = [0; 9];
+    reset_render_state(&mut state);
+    state[0] &= 0xfe1f_fffe;
+    state[4] = (state[4] & 0xff) | 0x4004_0000;
+    state[5] = (state[5] & 0xfc00_0cff) | 0x0000_0c3f;
+    state
 }
 
 /// FUN_1402c4e10, including its out-of-range ALWAYS branch.
@@ -581,6 +651,51 @@ pub fn sampler_descriptor(canonical: &[u32; 9], image_anisotropy: f32) -> [u32; 
 mod parser_tests {
     use super::*;
 
+    pub(super) fn descriptor_fields(state: &RenderState) -> [u32; 24] {
+    let d = depth_stencil_state(state);
+    let r = raster_state(state);
+    [
+        u32::from(d.depth_enabled), u32::from(d.depth_write), d.depth_compare,
+        u32::from(d.stencil_enabled), u32::from(d.stencil_read_mask), u32::from(d.stencil_write_mask),
+        d.front.fail, d.front.depth_fail, d.front.pass, d.front.compare,
+        d.back.fail, d.back.depth_fail, d.back.pass, d.back.compare,
+        r.fill_mode, r.cull_mode, u32::from(r.front_counter_clockwise),
+        r.depth_bias as u32, r.depth_bias_clamp_bits, r.slope_scaled_depth_bias_bits,
+        u32::from(r.depth_clip), u32::from(r.scissor), u32::from(r.multisample), u32::from(r.antialiased_line),
+    ]
+    }
+
+    #[test]
+    fn boat_depth_restoration_matches_executed_descriptor_factories() {
+        let row: Vec<u32> = include_str!("../../tests/fixtures/boat_depth_restore_state.txt")
+            .split_whitespace().map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+        assert_eq!(row.len(), 25);
+        assert_eq!(row[0], 8);
+        assert_eq!(&descriptor_fields(&boat_depth_restore_state()), &row[1..]);
+    }
+
+    #[test]
+    fn water_and_boat_depth_states_match_executed_descriptor_factories() {
+        let mut count = 0;
+        for line in include_str!("../../tests/fixtures/water_depth_states.txt").lines() {
+            let row: Vec<u32> = line.split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+            assert_eq!(row.len(), 35);
+            let source: RenderState = row[1..10].try_into().unwrap();
+            let (state, reference) = match row[0] {
+                0 => (water_depth_state(), 4),
+                1 => (boat_volume_depth_state(source), 8),
+                2 => (boat_volume_stencil_state(source), 8),
+                _ => unreachable!(),
+            };
+            assert_eq!(row[10], reference);
+            let fields = descriptor_fields(&state);
+            assert_eq!(&fields, &row[11..], "water/boat operation{} case{count}", row[0]);
+            count += 1;
+        }
+        assert_eq!(count, 96);
+    }
+
     #[test]
     fn state_parser_matches_token_stream_kernel() {
         fn words(text: &str) -> [u32; 9] {
@@ -670,6 +785,39 @@ mod parser_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn world_depth_state_matches_cache_builder_and_factories() {
+        let mut count = 0;
+        for line in include_str!("../../tests/fixtures/world_water_depth_states.txt").lines() {
+            let words = line
+                .split_whitespace()
+                .map(|value| u32::from_str_radix(value, 16).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(words.len(), 43);
+            let source = words[1..10].try_into().unwrap();
+            let state = super::world_depth_state(source, words[0] as u8);
+            assert_eq!(state, words[10..19], "world depth case{count}");
+            assert_eq!(super::parser_tests::descriptor_fields(&state), words[19..]);
+            count += 1;
+        }
+        assert_eq!(count, 256);
+    }
+
+    #[test]
+    fn sun_sprite_blend_preserves_installed_state_overrides() {
+        for line in include_str!("../../tests/fixtures/sun_sprite_state.txt").lines() {
+            let words = line
+                .split_whitespace()
+                .map(|value| u32::from_str_radix(value, 16).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(words.len(), 19);
+            let state: [u32; 9] = words[1..10].try_into().unwrap();
+            assert_eq!(
+                super::sun_sprite_draw_state(state, words[0] != 0),
+                words[10..]
+            );
+        }
+    }
     use super::*;
 
     #[test]
@@ -697,7 +845,7 @@ mod tests {
                 0x293470 => world_shadow_draw_state(source, face, bias, slope, clamp, clip),
                 0x2934e0 => world_state_2934e0(source),
                 0x293500 => world_state_293500(source),
-                0x293510 => world_state_293510(source),
+                0x293510 => sky_cloud_draw_state(source),
                 0x293540 => world_state_293540(source, clamp),
                 0x293570 => world_state_293570(source),
                 operation => panic!("unknown original leaf {operation:x}"),
@@ -763,18 +911,12 @@ mod tests {
                 depth.depth_compare,
                 depth_stencil_state(&source).depth_compare
             );
-            assert_eq!(
-                depth.depth_write,
-                depth_stencil_state(&source).depth_write
-            );
+            assert_eq!(depth.depth_write, depth_stencil_state(&source).depth_write);
             assert_eq!(&state[6..], &source[6..]);
         }
         for flags in 0..=255 {
             let state = prepared_surface_state([u32::MAX; 9], flags);
-            assert_eq!(
-                raster_state(&state).front_counter_clockwise,
-                flags & 1 != 0
-            );
+            assert_eq!(raster_state(&state).front_counter_clockwise, flags & 1 != 0);
             assert_eq!(state[5] & !0x0800_0000, u32::MAX & !0x0800_0000);
             assert!(state[..5]
                 .iter()
@@ -786,10 +928,7 @@ mod tests {
     #[test]
     fn enum_defaults_match_switches() {
         for code in 0..256 {
-            assert_eq!(
-                compare_function(code),
-                if code < 7 { code + 1 } else { 8 }
-            );
+            assert_eq!(compare_function(code), if code < 7 { code + 1 } else { 8 });
             assert_eq!(
                 stencil_operation(code),
                 if (1..=7).contains(&code) { code + 1 } else { 1 }
@@ -850,11 +989,7 @@ mod tests {
             let mut state: RenderState = values[..9].try_into().unwrap();
             if kind == "RESET" {
                 reset_render_state(&mut state);
-                assert_eq!(
-                    state.as_slice(),
-                    &values[9..],
-                    "state reset case {resets}"
-                );
+                assert_eq!(state.as_slice(), &values[9..], "state reset case {resets}");
                 resets += 1;
                 continue;
             }
@@ -919,8 +1054,6 @@ mod tests {
             BlendTarget::UNUSED_INDEPENDENT_TARGET
         );
         state[4] = 0;
-        assert!(blend_state(&state).targets[1..]
-            .iter()
-            .all(Option::is_none));
+        assert!(blend_state(&state).targets[1..].iter().all(Option::is_none));
     }
 }

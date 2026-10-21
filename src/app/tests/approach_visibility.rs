@@ -77,7 +77,13 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     // assets mix arkdecal/arkDecal spellings. The old loader lost the former's
     // bias even though decoding the Uniform on its own already worked.
     let mut programs = Ok(library);
+    let mut fog_test_buffers = Assets::default();
+    let mut fog_test_images = Assets::default();
     let mut resolver = MaterialResolver {
+        fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings::disabled(
+            &mut fog_test_images,
+            &mut fog_test_buffers,
+        ),
         reflections: None,
         reflection_brdf_lookup: None,
         reflection_planes: default(),
@@ -88,6 +94,7 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         environment: None,
         catalog: Some(&catalog),
         programs: Some(&mut programs),
+        sky_materials: &mut Assets::default(),
         probe_materials: &mut Assets::default(),
         decal_materials: &mut Assets::default(),
         probe_sh_buffers: &mut Assets::default(),
@@ -100,9 +107,9 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         probes: None,
         cache: default(),
         shadow_materials: default(),
+        water_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),
-        preferred_mip: None,
         misses: 0,
         suppressed_transparent: 0,
         cutout: 0,

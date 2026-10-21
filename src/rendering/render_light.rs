@@ -1,5 +1,54 @@
 //! Source-backed base-light initialization and energy/range conversion.
 
+/// Authored base-light scattering fields. Defaults are 3594a0's fields and
+/// reflection setters 991860/997690's canvas/custom-shape bits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScatteringParameters {
+    pub value: f32,
+    pub shape_scale: [f32; 2],
+    pub origin_offset: f32,
+    pub offset: f32,
+    pub turbulence: f32,
+    pub second_canvas: bool,
+    pub custom_shape: bool,
+}
+impl Default for ScatteringParameters {
+    fn default() -> Self {
+        Self {
+            value: 0.,
+            shape_scale: [1.; 2],
+            origin_offset: 0.,
+            offset: 0.,
+            turbulence: 0.,
+            second_canvas: false,
+            custom_shape: false,
+        }
+    }
+}
+impl ScatteringParameters {
+    /// Preserve every unrelated light flag. Turbulence is clamped by the
+    /// existing TLF packet writer, not by the authored-field transfer.
+    pub fn write_base(&self, record: &mut [u8; 0xe8]) {
+        for (offset, value) in [
+            (0x9c, self.value),
+            (0xa0, self.origin_offset),
+            (0xa4, self.shape_scale[0]),
+            (0xa8, self.shape_scale[1]),
+            (0xac, self.offset),
+            (0xb0, self.turbulence),
+        ] {
+            write_word(record, offset, value.to_bits());
+        }
+        record[0] = (record[0] & 0x7f) | (u8::from(self.second_canvas) << 7);
+        record[1] = (record[1] & 0xfd) | (u8::from(self.custom_shape) << 1);
+    }
+}
+
+/// Reflection setter 997670. Scatter-only is independent of custom shape.
+pub fn set_scatter_only(record: &mut [u8; 0xe8], enabled: bool) {
+    record[1] = (record[1] & 0xfe) | u8::from(enabled);
+}
+
 #[derive(Clone, Copy)]
 pub struct PresetInput {
     pub kind: u32,
@@ -116,7 +165,7 @@ pub fn proximity_from_bounds(range: f32, bounds: [[f32; 3]; 2]) -> ([f32; 3], f3
 }
 
 /// FUN_1403594a0 preserves unspecified bytes, including the upper flag bits.
-fn initialize_base(record: &mut [u8; 0xe8]) {
+pub fn initialize_base(record: &mut [u8; 0xe8]) {
     record[0] = 0x13;
     record[1] &= 0xf8;
     for offset in [
@@ -447,6 +496,35 @@ pub fn convert(input: PresetInput) -> Option<PresetOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scattering_field_transfer_matches_installed_setters_and_packet_writer() {
+        let rows=include_str!("../../tests/fixtures/light_scattering_fields.txt");
+        for line in rows.lines() {
+            let values:Vec<u32>=line.split_whitespace().map(|s|u32::from_str_radix(s,16).unwrap()).collect();
+            assert_eq!(values.len(),37);
+            let seed=values[0] as usize;
+            let mut light=std::array::from_fn(|i|(seed*29+i*17) as u8);
+            initialize_base(&mut light);
+            light[0]=(seed*37) as u8;
+            light[1]=(seed*71+0xa5) as u8;
+            write_word(&mut light,0x5c,(seed%3) as u32);
+            for (offset,value) in [(0x7c,1.0f32),(0x80,4.),(0x8c,0.8),(0x90,0.4)] {
+                write_word(&mut light,offset,value.to_bits());
+            }
+            ScatteringParameters {value:f32::from_bits(values[1]),origin_offset:f32::from_bits(values[2]),
+                shape_scale:[f32::from_bits(values[3]),f32::from_bits(values[4])],
+                offset:f32::from_bits(values[5]),turbulence:f32::from_bits(values[6]),
+                second_canvas:seed&1!=0,custom_shape:seed&2!=0}.write_base(&mut light);
+            set_scatter_only(&mut light,seed&4!=0);
+            assert_eq!(u32::from_le_bytes(light[..4].try_into().unwrap()),values[7],"flags seed{seed}");
+            let mut packet=[0xa5a51234;28];
+            let result=fill_tlf_lighting_packet(&light,(seed%3) as i32,&mut packet);
+            assert_eq!(result,(values[8],None));
+            assert_eq!(packet.as_slice(),&values[9..],"scattering packet seed{seed}");
+        }
+        assert_eq!(rows.lines().count(),128);
+    }
 
     #[test]
     fn sun_ground_color_matches_gpu_constants() {

@@ -53,6 +53,8 @@ impl SurfaceKey {
         for index in [6, 7, 14, 15] {
             depth[index] = self.0[index];
         }
+        // Colour-only fog routes never enter ClipZorShadowPass.
+        depth[7] &= 7;
         Self(depth)
     }
     pub const NAMES: [&'static str; 16] = [
@@ -228,6 +230,18 @@ mod tests {
             );
         }
         assert_eq!(depth.depth_prepass(), depth);
+        let mut key = key;
+        key.0[7] &= 7;
+        for fog_flags in [8, 24, 56] {
+            let mut fog = key;
+            fog.0[7] |= fog_flags;
+            assert_ne!(fog, key);
+            assert_eq!(
+                fog.depth_prepass(),
+                depth,
+                "colour fog must not split equivalent depth programs"
+            );
+        }
     }
     use super::*;
 

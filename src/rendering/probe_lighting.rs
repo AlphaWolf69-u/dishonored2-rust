@@ -364,6 +364,16 @@ impl ProbeLightingSet {
         let source = &self.probes[probe].sources;
         (index, source.lighting_scale * source.reflection_luminance)
     }
+
+    /// The source's eight-byte ProbeInfo records, in primary-probe order.
+    pub fn reflection_shader_words(&self) -> Vec<[u32; 2]> {
+        (0..self.probes.len())
+            .map(|probe| {
+                let (index, luminance) = self.reflection_info(probe);
+                [index, luminance.to_bits()]
+            })
+            .collect()
+    }
     pub fn initialize_indirect_lighting(&mut self, parameters: &ProbeLightingParameters) {
         for probe in &mut self.probes {
             probe.render_lighting_sh = update::accumulate(probe, parameters);

@@ -75,6 +75,7 @@ impl Drop for super::CommandEncoder {
     fn drop(&mut self) {
         use crate::CommandEncoder;
         unsafe { self.discard_encoding() }
+        self.free_intermediate_copy_buffers();
 
         let mut rtv_pool = self.rtv_pool.lock();
         for handle in self.temp_rtv_handles.drain(..) {
@@ -87,6 +88,17 @@ impl Drop for super::CommandEncoder {
 }
 
 impl super::CommandEncoder {
+    // These HAL-only buffers bypass Device::destroy_buffer. Dropping Buffer
+    // releases its COM resource, but does not return its placed allocation.
+    // Called only once all command buffers are reclaimed, or on encoder drop.
+    fn free_intermediate_copy_buffers(&mut self) {
+        let buffers = mem::take(&mut self.intermediate_copy_bufs);
+        let context = super::suballocation::DeviceAllocationContext::from(&*self);
+        for buffer in buffers {
+            context.free_resource(buffer.resource, buffer.allocation);
+        }
+    }
+
     unsafe fn begin_pass(&mut self, kind: super::PassKind, label: crate::Label) {
         let list = self.list.as_ref().unwrap();
         self.pass.kind = kind;
@@ -336,7 +348,7 @@ impl super::CommandEncoder {
             let (resource, allocation) =
                 super::suballocation::DeviceAllocationContext::from(&*self)
                     .create_buffer(&crate::BufferDescriptor {
-                        label: None,
+                        label: Some("texture copy alignment buffer"),
                         size: size.get(),
                         usage: wgt::BufferUses::COPY_SRC | wgt::BufferUses::COPY_DST,
                         memory_flags: crate::MemoryFlags::empty(),
@@ -450,7 +462,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
         })
     }
     unsafe fn reset_all<I: Iterator<Item = super::CommandBuffer>>(&mut self, command_buffers: I) {
-        self.intermediate_copy_bufs.clear();
+        self.free_intermediate_copy_buffers();
         // The caller guarantees completion of every returned buffer. Keep
         // each allocator with its list so one encoder's largest batch does not
         // inflate every other encoder's retained command storage. Reset the

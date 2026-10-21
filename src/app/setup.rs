@@ -73,15 +73,66 @@ pub(super) fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut probe_materials: ResMut<Assets<ProbeMaterial>>,
+    mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut probe_sh_buffers: ResMut<Assets<ShaderBuffer>>,
     render_device: Res<RenderDevice>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     view_settings: Res<ViewSettings>,
+    mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
     let catalog_storage = scene.catalog.take();
     let catalog = catalog_storage.as_ref();
+    let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
+        &mut images,
+        &mut probe_sh_buffers,
+    );
+    commands.insert_resource(fog_material.clone());
+    if let (Some(catalog), Some(parameters)) =
+        (catalog, scene.environment_render_parameters.as_ref())
+    {
+        let sun = scene
+            .environment_lighting
+            .and_then(|lighting| {
+                lighting
+                    .sun_theta_degrees
+                    .zip(lighting.sun_phi_degrees)
+                    .zip(lighting.sun_color)
+            })
+            .map(|((theta, phi), colour)| {
+                (
+                    Vec3::from_array(crate::render_shadow::environment_sun_direction(theta, phi)),
+                    Vec3::from_array(render_light::sun_ground_color(colour)),
+                )
+            });
+        let program_library = programs
+            .as_deref_mut()
+            .expect("atmosphere requires the installed program cache")
+            .0
+            .as_mut()
+            .unwrap_or_else(|error| panic!("atmosphere program cache unavailable: {error}"));
+        let mut fog = super::fog_scene::FogScene::load(
+            catalog,
+            program_library,
+            parameters,
+            &scene.area_environments,
+            sun,
+            DEFAULT_FAR,
+            &mut images,
+        )
+        .unwrap_or_else(|error| panic!("fog scene preparation failed: {error}"));
+        let display = super::display_scene::DisplayScene::load(
+            catalog,
+            parameters,
+            &scene.area_environments,
+            &mut images,
+        )
+        .unwrap_or_else(|error| panic!("display scene preparation failed: {error}"));
+        fog.upload_volumes(std::mem::take(&mut scene.area_fog), &mut meshes);
+        commands.insert_resource(fog);
+        commands.insert_resource(display);
+    }
     commands
         .spawn((
             Node {
@@ -231,7 +282,7 @@ pub(super) fn setup(
     sampler.anisotropy_clamp = 1;
     let linear_clamp_image = images.add(linear_clamp);
     let material_exposure = probe_sh_buffers.add(auto_exposure::initial_material_exposure());
-    let (reflections, reflection_planes, reflection_brdf_lookup) =
+    let loaded_reflections =
         super::environment_reflection::load(
             catalog,
             scene.environment_probes.as_ref(),
@@ -239,7 +290,19 @@ pub(super) fn setup(
             &mut probe_sh_buffers,
         )
         .expect("installed environment reflections");
+    let water_probes = loaded_reflections.water_probes(
+        scene.environment_probes.as_ref(),
+        vertex_probe_buffer.clone(),
+        &mut probe_sh_buffers,
+    );
+    commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterLighting(
+        water_probes,
+    ));
+    let reflections = loaded_reflections.image;
+    let reflection_planes = loaded_reflections.planes;
+    let reflection_brdf_lookup = loaded_reflections.brdf_lookup;
     let mut resolver = MaterialResolver {
+        fog_material: fog_material.bindings(),
         reflections: Some(reflections),
         reflection_brdf_lookup,
         reflection_planes,
@@ -251,6 +314,7 @@ pub(super) fn setup(
         catalog,
         programs: programs.as_deref_mut().map(|source| &mut source.0),
         probe_materials: &mut probe_materials,
+        sky_materials: &mut sky_materials,
         decal_materials: &mut decal_materials,
         probe_sh_buffers: &mut probe_sh_buffers,
         probe_sh_buffer,
@@ -260,11 +324,11 @@ pub(super) fn setup(
         shadow_map,
         probe_sh_records: records,
         probes: scene.environment_probes.as_ref(),
-        cache: HashMap::new(),
+        cache: default(),
         shadow_materials: ShadowMaterials::default(),
+        water_materials: default(),
         diffuse_image_slots: HashMap::new(),
         diffuse_image_paths: Vec::new(),
-        preferred_mip,
         misses: 0,
         suppressed_transparent: 0,
         cutout: 0,
@@ -301,8 +365,7 @@ pub(super) fn setup(
         // model/world draw selector is traced. FUN_140a82710 is the Tome
         // object-visibility query implemented in tome.rs, not an LOD selector;
         // filtering to LOD 0 here would discard authored representations.
-        let skip_color = material::is_editor_helper(&object.material_path)
-            || object.material_path == "models/campaign/boat_shared/boat_gabarit_01.material";
+        let skip_color = material::is_editor_helper(&object.material_path);
         let source = &scene.world.meshes[object.mesh_index];
         // The auxiliary whole-view pass owns native +0x18 material pointers
         // independently of the color-visible render entities. Resolve this
@@ -319,7 +382,7 @@ pub(super) fn setup(
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
-            resolver.get(
+            resolver.get_world(
                 &object.material_path,
                 object_number,
                 mean_game_position(&points),
@@ -342,9 +405,8 @@ pub(super) fn setup(
                 )
                 .expect("prepared native BWM object association");
         }
-        // This BWM surface is a boat volume proxy (stageSort sortboatvolume),
-        // not the boat's visible hull. It has no normal color draw, but remains
-        // associated with its actual native whole-view material source above.
+        // Editor helpers retain their material association above. Depth-only
+        // geometry remains in the scene and is routed by its resolved program.
         if skip_color {
             continue;
         }
@@ -374,7 +436,7 @@ pub(super) fn setup(
             let mat = if matrix_index == object.matrix_start {
                 first_material.clone()
             } else {
-                resolver.get(
+                resolver.get_world(
                     &object.material_path,
                     object_number,
                     mean_game_position(&points),
@@ -1124,15 +1186,13 @@ pub(super) fn setup(
         || scene
             .shadow_cascade_controls
             .is_some_and(|controls| controls.tighten_parallel_shadows);
-    let camera_3d = if coarse_depth_source {
+    let camera_3d = {
         Camera3d {
             depth_texture_usages: (bevy::render::render_resource::TextureUsages::RENDER_ATTACHMENT
                 | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING)
                 .into(),
             ..default()
         }
-    } else {
-        Camera3d::default()
     };
     eprintln!(
         "[renderer] r_multiSamples={multi_samples} physical_samples={}",
@@ -1148,6 +1208,7 @@ pub(super) fn setup(
         camera,
         renderer_msaa,
     ));
+    camera_entity.insert(crate::rendering::bevy_backend::fog::FogCamera);
     if coarse_depth_source {
         camera_entity.insert(coarse_depth::CoarseDepthSource);
     }
@@ -1524,7 +1585,9 @@ pub(super) fn setup(
         .collect();
     let mut diffuse_image_materials = vec![Vec::new(); resolver.diffuse_image_paths.len()];
     let mut material_images = HashMap::new();
+    let mut material_stage_sorts = HashMap::new();
     for cached in resolver.cache.values().flatten() {
+        material_stage_sorts.insert(cached.handle.clone(), cached.stage_sort.clone());
         material_images.insert(
             cached.handle.clone(),
             cached.images.iter().map(|&(slot, _)| slot).collect(),
@@ -1549,6 +1612,7 @@ pub(super) fn setup(
     shadow_image_slots.sort_unstable();
     shadow_image_slots.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     let vegetation_vertices: usize = vegetation_meshes
         .0
         .values()
@@ -1565,6 +1629,10 @@ pub(super) fn setup(
         vegetation_meshes.0.len() - vegetation_mesh_count
     );
     commands.insert_resource(vegetation_meshes);
+    commands.insert_resource(super::water_objects::prepare_world_geometry(
+        &scene.world, &world_shadow_mesh_sources, &mut meshes,
+        &mut world_matrices, resolver.probe_sh_buffers,
+    ));
     commands.insert_resource(world_shadow_mesh_sources);
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
@@ -1603,6 +1671,7 @@ pub(super) fn setup(
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
         material_images,
+        material_stage_sorts,
         diffuse_image_handles: vec![None; diffuse_image_count],
         shadow_diffuse_slots: Vec::new(),
         shadow_diffuse_membership: Vec::new(),
@@ -1620,7 +1689,24 @@ pub(super) fn setup(
     if let Some(catalog) = catalog {
         let mut resident_images = 0;
         let mut resident_bytes = 0;
-        for slot in shadow_image_slots {
+        // Sky colour and fog depth are global view inputs. As with cutout
+        // images, publish their actual base mip chains before GPU submission;
+        // finer levels still use the ordinary texture streaming owner.
+        let sky_slots = render_queue
+            .diffuse_image_materials
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, bindings)| {
+                bindings
+                    .iter()
+                    .any(|(material, _)| matches!(material, super::MaterialHandle::Sky(_)))
+                    .then_some(slot)
+            });
+        let resident_slots = shadow_image_slots
+            .into_iter()
+            .chain(sky_slots)
+            .collect::<std::collections::BTreeSet<_>>();
+        for slot in resident_slots {
             match super::texture_streaming::initialize_resident_image(
                 catalog,
                 slot,
@@ -1628,17 +1714,18 @@ pub(super) fn setup(
                 &mut images,
                 &mut probe_materials,
                 &mut decal_materials,
+                &mut sky_materials,
             ) {
                 Ok(bytes) => {
                     resident_images += usize::from(bytes != 0);
                     resident_bytes += bytes;
                 }
                 Err(error) => {
-                    error!(target: "dh2::shadows", slot, "Cutout image initialization failed: {error}")
+                    error!(target: "dh2::textures", slot, "Scene base image initialization failed: {error}")
                 }
             }
         }
-        info!(target: "dh2::shadows", resident_images, resident_bytes, "Shadow cutout base mips initialized");
+        info!(target: "dh2::textures", resident_images, resident_bytes, "Shadow cutout and sky base mips initialized");
     }
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {

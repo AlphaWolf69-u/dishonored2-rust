@@ -16,10 +16,12 @@ var<workgroup> far_without_sky: atomic<u32>;
 var<workgroup> occupied_bins: atomic<u32>;
 
 fn depth_mask(depth: vec4<f32>, a: f32, b: f32) -> u32 {
-    // Preserve the original float4 conversion and MAD, not four scalar
-    // divisions: backend rounding is observable on constant-depth tiles.
-    let z = -vec4<f32>(params.unproject_z.x) / (depth + vec4<f32>(params.unproject_z.y));
-    let bins = vec4<u32>(trunc(clamp(fma(z, vec4<f32>(a), vec4<f32>(b)), vec4<f32>(0.0), vec4<f32>(1.0)) * 31.999));
+    // The measured DXBC DIV -> MAD retains the reciprocal product through
+    // the bin mapping. Rounding unprojected Z first moves constant tiles to
+    // a different bin even when both expanded endpoints are bit-identical.
+    let reciprocal = vec4<f32>(1.0) / (depth + vec4<f32>(params.unproject_z.y));
+    let mapped = fma(vec4<f32>(-params.unproject_z.x * a), reciprocal, vec4<f32>(b));
+    let bins = vec4<u32>(trunc(clamp(mapped, vec4<f32>(0.0), vec4<f32>(1.0)) * 31.999));
     let bits = select(vec4<u32>(0u), vec4<u32>(1u) << bins, depth != vec4<f32>(0.0));
     return bits.x | bits.y | bits.z | bits.w;
 }

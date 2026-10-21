@@ -1,5 +1,9 @@
 //! Authored atmosphere calculations, separate from forward surface lighting.
 
+pub mod canvas;
+pub mod parameters;
+pub mod settings;
+pub mod scattering;
 pub mod world;
 
 /// Signed linear-depth contribution to the separate interior fog-volume target.
@@ -36,3 +40,10 @@ mod tests {
         );
     }
 }
+
+pub mod alpha;
+pub mod filter;
+pub mod rays;
+pub mod sun_sprite;
+pub mod volume;
+pub mod selection;

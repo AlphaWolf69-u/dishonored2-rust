@@ -8,39 +8,7 @@ use crate::entities::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Kiscule MWC state:7bebd0 defaults,7bf440 counter seeding,8bcce0 draw.
-pub struct ScriptRandom {
-    low: u32,
-    high: u32,
-}
-impl ScriptRandom {
-    pub fn new(counter: u64) -> Self {
-        let mut r = Self {
-            low: 0x1f123bb5,
-            high: 0x159a55e5,
-        };
-        if (counter >> 16) as u32 != 0 {
-            r.low = (counter >> 16) as u32;
-        }
-        if counter as u32 != 0 {
-            r.high = counter as u32;
-        }
-        r
-    }
-    pub fn between(&mut self, a: f32, b: f32) -> f32 {
-        self.high = (self.high & 65535)
-            .wrapping_mul(36969)
-            .wrapping_add(self.high >> 16);
-        self.low = (self.low & 65535)
-            .wrapping_mul(18000)
-            .wrapping_add(self.low >> 16);
-        let v = self.low.wrapping_add(self.high.wrapping_shl(16));
-        let fraction = (v as f64 * f64::from_bits(0x3df0000000100000)) as f32;
-        let lo = a.min(b);
-        let hi = a.max(b);
-        fraction * (hi - lo) + lo
-    }
-}
+use crate::random::MwcRandom;
 
 struct Playback {
     node: u32,
@@ -445,7 +413,7 @@ pub struct SceneMotion {
 }
 impl SceneMotion {
     pub fn new(graphs: Vec<Graph>, placements: &[PlacedModel], counter: u64) -> Self {
-        let mut random = ScriptRandom::new(counter);
+        let mut random = MwcRandom::new(counter);
         let mut result = Self::default();
         for graph in graphs {
             let mut relevant: HashSet<_> = graph

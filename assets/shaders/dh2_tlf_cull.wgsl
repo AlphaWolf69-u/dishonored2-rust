@@ -23,6 +23,12 @@ struct Params {
 @group(0) @binding(4) var<storage, read_write> free_node: atomic<u32>;
 @group(0) @binding(5) var<storage, read_write> pool: array<u32>;
 const INF: f32 = 1e20;
+// The render owner clears each head UAV to the original 23-bit sentinel.
+// This entry replaces a value UAV clear, not the shared node-counter reset.
+@compute @workgroup_size(64)
+fn clear_heads(@builtin(global_invocation_id) id:vec3<u32>) {
+    if id.x<arrayLength(&heads) {atomicStore(&heads[id.x],0x7fffffu);}
+}
 fn sign_fast(v: f32) -> f32 { return f32(1 - 2 * i32(bitcast<u32>(v) >> 31u)); }
 fn ray_xy(uv: vec2<f32>) -> vec2<f32> {
     return fma(fma(uv, vec2<f32>(2.0,-2.0), vec2<f32>(-1.0,1.0)), params.uv_to_ray.zw, params.uv_to_ray.xy);

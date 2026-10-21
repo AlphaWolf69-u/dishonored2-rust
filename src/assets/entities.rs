@@ -1,5 +1,8 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
 use std::collections::HashMap;
+use crate::render_light::ScatteringParameters;
+mod components;
+pub mod wind;
 pub mod machinery;
 pub mod scene_motion;
 
@@ -265,6 +268,9 @@ pub struct PlacedLight {
     pub cast_volumetric_shadows: bool,
     pub dont_alter_volumetric_dynamic_shadow: bool,
     pub scatter_only: bool,
+    pub scattering: ScatteringParameters,
+    /// Retained authored field; its renderer/particle linkage is not yet known.
+    pub scatter_only_with_particle: bool,
     pub shadow_near_plane: Option<f32>,
     pub spot_shadow_quality: Option<String>,
     pub visible: bool,
@@ -321,6 +327,16 @@ impl EnvironmentRenderParameters {
                 .map(|(_, value)| value.as_str())
         })
     }
+    /// GetVector uses the same layer precedence as GetFloat, including scalar
+    /// replication. Keep the declaration lexer for braces, signs and commas.
+    pub fn vector_parameter(&self, name: &str) -> Result<Option<[f32; 4]>, String> {
+        let Some(value) = self.parameter(name) else {
+            return Ok(None);
+        };
+        let values = material_float_parameters(&format!("{{ value {value} }}"), |n| n == "value")?;
+        let words = values.first().ok_or_else(|| format!("missing vector {name}"))?.1;
+        Ok(Some(words.map(f32::from_bits)))
+    }
     /// Resolve an authored scalar: current layer precedes inherited layers,
     /// and later assignments within that layer replace earlier ones. Native
     /// registered names use mixed case while the shipped env keys are lowercase.
@@ -350,6 +366,9 @@ pub struct PlacedEnvironmentVolume {
     pub id: String,
     pub position: [f32; 3],
     pub rotation: [[f32; 3]; 3],
+    pub scale: [f32; 3],
+    pub max_visible_range: Option<f32>,
+    pub scattering_source: Option<String>,
     pub model: Option<String>,
     pub environment_decl: String,
     pub lighting_override: EnvironmentLighting,
@@ -986,6 +1005,17 @@ pub fn placed_environment_volumes(document: &Document) -> Vec<PlacedEnvironmentV
                 id: definition.id.clone(),
                 position,
                 rotation,
+                scale: scope(light_field(edit, "renderModelInfo"))
+                    .and_then(|info| scope(light_field(info, "scale")))
+                    .and_then(|scale| vector(scale, [1.; 3]))
+                    .unwrap_or([1.; 3]),
+                max_visible_range: scope(light_field(edit, "renderModelInfo"))
+                    .and_then(|info| light_atom(info, "maxVisibleRange"))
+                    .and_then(|text| text.strip_suffix('m').unwrap_or(text).parse::<f32>().ok())
+                    .filter(|value| value.is_finite()),
+                scattering_source: light_atom(edit, "m_scatteringSource")
+                    .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+                    .map(str::to_owned),
                 model,
                 environment_decl: environment.to_owned(),
                 lighting_override: environment_lighting(environment),
@@ -1186,6 +1216,23 @@ pub fn declaration_float_vector_default(text: &str) -> Result<[u32; 4], String> 
     float_vector_literal(&mut parser)
 }
 
+/// Registered boolean Uniform initializers in the shipped declarations use
+/// decimal 0/1. Keep this separate from floating vector word representation.
+pub fn declaration_bool_default(text: &str) -> Result<bool, String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    if !parser.atom()?.eq_ignore_ascii_case("uniform")
+        || !parser.atom()?.eq_ignore_ascii_case("bool")
+    {
+        return Err("not a boolean Uniform declaration".into());
+    }
+    match parser.atom()? {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        value => Err(format!("unresolved boolean initializer {value:?}")),
+    }
+}
+
 /// Skip one material value with the same lexer used for numeric parameters.
 /// Inline image programs may contain spaces/nested parentheses; scopes may
 /// contain arbitrary nonnumeric values. Neither is an option-key boundary.
@@ -1299,18 +1346,65 @@ pub fn material_integer_parameters(
 
 /// Material-root numeric overrides for declarations the CALLER has identified
 /// as floating Uniforms. Preserve duplicate order; Native GetVector selects the
-/// last entry. Nested options/state/parms cannot override a root uniform.
+/// last entry. A material's legacy parms block shares the root dictionary
+/// (2d5210 ->3446d0); unrelated nested blocks remain separate.
 pub fn material_float_parameters(
     text: &str,
+    is_parameter: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, [u32; 4])>, String> {
+    material_float_parameters_with_stage_sort(text, is_parameter, |name| {
+        Err(format!("unresolved stageSort reference {name:?}"))
+    })
+}
+
+/// 2da730 permits a named render-parameter constant ONLY for stageSort.
+/// The registry owner supplies its four default words; every other floating
+/// parameter retains the numeric-only contract. Preserve duplicate order.
+pub fn material_float_parameters_with_stage_sort(
+    text: &str,
     mut is_parameter: impl FnMut(&str) -> bool,
+    mut resolve: impl FnMut(&str) -> Result<[u32; 4], String>,
 ) -> Result<Vec<(String, [u32; 4])>, String> {
     let mut parser = Parser::new(text)?;
     parser.expect(Token::Open)?;
     let mut values = Vec::new();
-    while parser.ahead != Some(Token::Close) {
+    let mut in_parms = false;
+    loop {
+        if parser.ahead == Some(Token::Close) {
+            if !in_parms {
+                break;
+            }
+            parser.advance()?;
+            in_parms = false;
+            continue;
+        }
         let name = parser.atom()?.trim_matches('"').to_ascii_lowercase();
+        if name == "parms" && !in_parms {
+            parser.expect(Token::Open)?;
+            in_parms = true;
+            continue;
+        }
         if is_parameter(&name) {
-            values.push((name, float_vector_literal(&mut parser)?));
+            let reference = match parser.ahead {
+                Some(Token::Atom(value))
+                    if name == "stagesort"
+                        && !value.starts_with('-')
+                        && !value
+                            .as_bytes()
+                            .first()
+                            .is_some_and(|b| b.is_ascii_digit() || *b == b'.') =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            };
+            let words = if let Some(reference) = reference {
+                parser.advance()?;
+                resolve(&reference.trim_matches('"').to_ascii_lowercase())?
+            } else {
+                float_vector_literal(&mut parser)?
+            };
+            values.push((name, words));
         } else {
             skip_material_value(&mut parser)?;
         }
@@ -1743,6 +1837,7 @@ pub fn placed_lights_with_inheritance(
             .and_then(|scale| vector(scale, [1.0; 3]))
             .map(|scale| [scale[1].abs(), scale[2].abs()])
             .unwrap_or([1.0; 2]);
+        let scattering_defaults = ScatteringParameters::default();
         result.push(PlacedLight {
             id: definition.id.clone(),
             definition_name_hash: declaration_name_hash(definition.id.as_bytes()),
@@ -1782,6 +1877,19 @@ pub fn placed_lights_with_inheritance(
             cast_volumetric_shadows: flag("m_castVolumetricShadows"),
             dont_alter_volumetric_dynamic_shadow: flag("m_dontAlterVolumetricDynaShadow"),
             scatter_only: flag("m_scatterOnly"),
+            scattering: ScatteringParameters {
+                value: number("m_scatterValue")?.unwrap_or(scattering_defaults.value),
+                shape_scale: [
+                    number("m_scatterShapeScaleX")?.unwrap_or(scattering_defaults.shape_scale[0]),
+                    number("m_scatterShapeScaleY")?.unwrap_or(scattering_defaults.shape_scale[1]),
+                ],
+                origin_offset: number("m_originOffset")?.unwrap_or(scattering_defaults.origin_offset),
+                offset: number("m_scatterOffset")?.unwrap_or(scattering_defaults.offset),
+                turbulence: number("m_scatterTurbulence")?.unwrap_or(scattering_defaults.turbulence),
+                second_canvas: flag("m_scatter2ndTurbulence"),
+                custom_shape: flag("m_scatterCustomShape"),
+            },
+            scatter_only_with_particle: flag("m_scatterOnlyWithParticle"),
             shadow_near_plane: number("m_shadowNearPlane")?,
             spot_shadow_quality: last("m_spotShadowQuality")?.map(str::to_owned),
             visible: last("m_visible")? != Some("false"),
@@ -2385,6 +2493,29 @@ pub fn player_start(document: &Document) -> Option<PlayerStart> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn stage_sort_references_preserve_material_dictionary_order_and_raw_vectors() {
+        let raw = [80f32.to_bits(), 0x7fc01234, 0x80000000, 0x12345678];
+        let mut names = Vec::new();
+        let values = super::material_float_parameters_with_stage_sort(
+            r#"{ stageSort sortWater parms {stageSort sortBoatVolume} stageSort -1.5 stageSort {2,3} StageSort "sortBoatVolume" }"#,
+            |name| name == "stagesort",
+            |name| {names.push(name.to_owned()); Ok(raw)},
+        ).unwrap();
+        assert_eq!(names, ["sortwater", "sortboatvolume", "sortboatvolume"]);
+        assert_eq!(values.len(), 5);
+        assert_eq!(values[0].1, raw);
+        assert_eq!(values[1].1, raw);
+        assert_eq!(values[2].1, [(-1.5f32).to_bits(); 4]);
+        assert_eq!(values[3].1, [2f32.to_bits(),3f32.to_bits(),0,0]);
+        assert_eq!(values[4].1, raw);
+        assert!(super::material_float_parameters_with_stage_sort(
+            "{other sortWater}", |_| true, |_| Ok(raw)).is_err());
+        assert!(super::material_float_parameters_with_stage_sort(
+            "{stageSort -sortWater}", |_| true, |_| Ok(raw)).is_err());
+        assert!(super::material_float_parameters_with_stage_sort(
+            "{stageSort unknown}", |_| true, |_| Err("missing registered reference".into())).is_err());
+    }
+    #[test]
     fn declaration_whitespace_matches_signed_byte_lexer() {
         let mut count = 0;
         for line in include_str!(concat!(
@@ -2747,6 +2878,7 @@ mod tests {
 entity { entityDef lamp { class = "idLight"; inherit = "light/spot"; edit = {
     "idLight::lightType_t" m_Type = "LIGHT_SPOT";
     m_DistanceCutoff = 8m; m_MaxVisibleRange = 4m; m_Color = { g = 0.5; }
+    m_scatterValue = 0.25; m_scatterShapeScaleY = 0.4; m_scatter2ndTurbulence = false;
     spawnPosition = { x = 2; y = 3; z = 4; }
     spawnOrientation = { mat = { mat[0] = { z = -1; }
                                   mat[1] = { x = 0; y = 1; } } }
@@ -2759,7 +2891,9 @@ entity { entityDef lamp { class = "idLight"; inherit = "light/spot"; edit = {
                     r#"{
                 inherit = "light";
                 "idLight" "" edit = { "idLight::lightType_t" "" "m_Type" = "LIGHT_SPOT";
-                    m_DistanceCutoff = 15m; m_MaxVisibleRange = 15m; m_AngularFalloff = 20; m_AngularCutoff = 70; }
+                    m_DistanceCutoff = 15m; m_MaxVisibleRange = 15m; m_AngularFalloff = 20; m_AngularCutoff = 70;
+                    m_scatterValue = 0.5; m_scatterShapeScaleX = 0.2; m_scatterTurbulence = 1.5;
+                    m_scatterCustomShape = true; m_scatter2ndTurbulence = true; }
             }"#
                     .into(),
                 ),
@@ -2781,6 +2915,11 @@ entity { entityDef lamp { class = "idLight"; inherit = "light/spot"; edit = {
         assert_eq!(lights[0].angular_cutoff, 70.0);
         assert_eq!(lights[0].color, [0.8, 0.5, 0.2]);
         assert_eq!(lights[0].rotation[0], [1.0, 0.0, -1.0]);
+        assert_eq!(lights[0].scattering.value, 0.25);
+        assert_eq!(lights[0].scattering.shape_scale, [0.2, 0.4]);
+        assert_eq!(lights[0].scattering.turbulence, 1.5);
+        assert!(lights[0].scattering.custom_shape);
+        assert!(!lights[0].scattering.second_canvas);
     }
 
     #[test]
@@ -2819,6 +2958,8 @@ entity { entityDef unknown { class = "idLight"; edit = {
         assert_eq!(default.angular_falloff, 10.0);
         assert_eq!(default.max_visible_range, 0.0);
         assert_eq!(default.back_reflection, Some(1.0));
+        assert_eq!(default.scattering.value, 0.0);
+        assert_eq!(default.scattering.shape_scale, [1.0; 2]);
         assert_eq!(default.area_diffusion, 0.95);
         assert_eq!(default.area_shadow_blur, 0.5);
         assert_eq!(default.area_shadow_hardening, 0.5);

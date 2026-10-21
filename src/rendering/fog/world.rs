@@ -55,7 +55,109 @@ pub struct WorldFog {
     pub scattering_color: Vec3,
 }
 
+/// Inputs produced by the depth, interior-volume, sky/cloud, shadow and canvas
+/// passes. Depths are linear camera Z; the view ray has camera-space Z=-1
+/// before rotation into the game's Z-up world coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldFogSample {
+    pub view_ray: Vec3,
+    pub camera_height: f32,
+    pub scene_depth: f32,
+    pub interior_depth: f32,
+    pub distance_curve: f32,
+    pub sky_cloud_density: Vec4,
+    pub shadow: f32,
+    pub turbulence: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldFogEffects {
+    pub far_clip: f32,
+    pub scattering_depth_start: f32,
+    pub god_ray_shadow: f32,
+    pub turbulence_start: f32,
+    pub turbulence_end: f32,
+    pub turbulence_color: Vec3,
+}
+
+/// atm/common::PhaseFunctionMie (the same phase used by authored clouds).
+pub fn mie_phase(cosine: f32, g: f32) -> f32 {
+    (1.5 / (4. * std::f32::consts::PI))
+        * (1. - g * g)
+        * (1. + g * g - 2. * g * cosine).max(0.00001).powf(-1.5)
+        * (1. + cosine * cosine)
+        / (2. + g * g)
+}
+
 impl WorldFog {
+    /// 309020's complete material-selection switch: at least one world ramp,
+    /// with only scattering, shadow and turbulence as optional feature bits.
+    pub fn world_pass_enabled(&self) -> bool {
+        self.flags & 24 != 0 && self.flags & !248 == 0
+    }
+    /// atm/distanceFog/renderWorld, before its SRC_ALPHA blend into the fog
+    /// target. The lookup sample is taken at the normalized distance below.
+    pub fn shade(&self, sample: WorldFogSample, effects: WorldFogEffects) -> Vec4 {
+        let mask = 1. - sample.sky_cloud_density.max_element();
+        if mask <= 0. {
+            return Vec4::ZERO;
+        }
+        let linear_z = sample.scene_depth - sample.interior_depth;
+        let ray_length = sample.view_ray.length();
+        let direction = sample.view_ray / ray_length;
+        let distance = linear_z * ray_length;
+        let mut color = if self.flags & 8 != 0 {
+            self.distance_color(
+                saturate((distance - self.distance.x) * self.distance.y),
+                sample.distance_curve,
+            )
+        } else {
+            Vec4::ZERO
+        };
+        let vertical = if self.flags & 16 != 0 {
+            self.vertical_color(
+                direction.z,
+                sample.camera_height,
+                distance,
+                saturate((distance - self.vertical.x) * self.vertical.y),
+            )
+        } else {
+            Vec4::ZERO
+        };
+        color = color.lerp(vertical, vertical.w);
+        let shadow = if self.flags & 64 != 0 {
+            sample.shadow
+        } else {
+            1.
+        };
+        if self.flags & 32 != 0 {
+            let mut scattering = self.scattering_color
+                * (self.scattering_intensity
+                    * mie_phase(
+                        self.scattering_direction.dot(direction),
+                        self.scattering_phase,
+                    ));
+            let depth_mask = saturate(
+                (linear_z - effects.scattering_depth_start)
+                    / (effects.far_clip - effects.scattering_depth_start),
+            );
+            scattering *= scattering.max_element().min(1.) * depth_mask;
+            let rgb = color.truncate() * (1. + (shadow - 1.) * effects.god_ray_shadow)
+                + scattering * shadow;
+            color = rgb.extend(color.w);
+        }
+        if self.flags & 128 != 0 {
+            let noise = effects.turbulence_color * (1. + (shadow - 1.) * effects.god_ray_shadow);
+            let noisy = color.truncate().lerp(noise, sample.turbulence);
+            let factor = saturate(
+                (linear_z - effects.turbulence_start)
+                    / (effects.turbulence_end - effects.turbulence_start),
+            );
+            color = color.truncate().lerp(noisy, factor).extend(color.w);
+        }
+        color.w *= mask;
+        color
+    }
     /// FUN_140306840: enable ramps only for positive extinction, and retain
     /// authored units. Global volumetric-fog scale does not scale these ramps.
     pub fn prepare(input: WorldFogInput) -> Self {
@@ -175,6 +277,72 @@ pub fn monochrome_color(color: Vec4, weights: Vec3) -> Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composition_matches_installed_world_fog_shader() {
+        let expected = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fog_composition.txt"
+        ))
+        .split_whitespace()
+        .map(|word| f32::from_bits(u32::from_str_radix(word, 16).unwrap()))
+        .collect::<Vec<_>>();
+        assert_eq!(expected.len(), 64 * 4);
+        for id in 0..64 {
+            let fog = WorldFog {
+                flags: ((id % 32) << 3) as u32,
+                distance: Vec4::new(10., 1. / 90., 3.5, 0.),
+                distance_start: Vec4::new(0.1, 0.3, 0.8, 0.2),
+                distance_end: Vec4::new(1.1, 0.8, 0.2, 0.7),
+                vertical: Vec4::new(2., 1. / 70., 0.4, 0.),
+                vertical_start: Vec4::new(0.2, 0.7, 1.1, 0.3),
+                vertical_end: Vec4::new(1.8, 0.4, 0.1, 0.8),
+                height_start: -2.,
+                height_end: 14.,
+                density_falloff: 0.03,
+                scattering_intensity: 0.3,
+                scattering_phase: 0.75,
+                scattering_direction: Vec3::new(0.6, 0., 0.8),
+                scattering_color: Vec3::new(10., 9.8, 7.2),
+            };
+            let actual = fog.shade(
+                WorldFogSample {
+                    view_ray: Vec3::new(
+                        ((id % 5) as f32 - 2.) * 0.3,
+                        ((id % 7) as f32 - 3.) * 0.2,
+                        1.,
+                    ),
+                    scene_depth: (id % 13) as f32 * 17.,
+                    interior_depth: (id % 4) as f32 * 9.,
+                    distance_curve: (id % 9) as f32 / 8.,
+                    camera_height: (id % 11) as f32 - 5.,
+                    shadow: (id % 7) as f32 / 6.,
+                    turbulence: (id % 5) as f32 / 4.,
+                    sky_cloud_density: Vec4::new(
+                        0.,
+                        0.25,
+                        0.5,
+                        if id & 32 != 0 { 1. } else { 0.75 },
+                    ),
+                },
+                WorldFogEffects {
+                    far_clip: 300.,
+                    scattering_depth_start: 30.,
+                    god_ray_shadow: 0.25,
+                    turbulence_start: 5.,
+                    turbulence_end: 100.,
+                    turbulence_color: Vec3::new(0.4, 1., 0.7),
+                },
+            );
+            for (field, value) in actual.to_array().into_iter().enumerate() {
+                let reference = expected[id * 4 + field];
+                assert!(
+                    (value - reference).abs() < 0.0003,
+                    "fog composition case{id} field{field}: {value} != {reference}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn distance_and_height_colors_match_installed_hlsl() {

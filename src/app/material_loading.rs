@@ -7,6 +7,69 @@ use super::{
 };
 use bevy::prelude::*;
 
+mod cache;
+mod water;
+use cache::{MaterialCache, MaterialGeometry};
+
+#[cfg(test)]
+mod pass_tests;
+
+/// Only boat-list membership is resolved here. World and model predicates
+/// differ; ordinary source admission and the other draw lists retain their owners.
+fn boat_volume_routes(
+    library: &mut shader_cache::ProgramLibrary,
+    catalog: &archive::Catalog,
+    bytes: &[u8],
+    main: &str,
+    stage_sort: [u32; 2],
+) -> Result<[bool; 2], String> {
+    let sort = stage_sort.map(f32::from_bits);
+    let thresholds = library.material_sort_thresholds(catalog)?;
+    // Other flag bits only change branches outside the boat interval.
+    if material::draw_bucket(0, 0, 0, false, sort, thresholds) != 0x26 {
+        return Ok([false; 2]);
+    }
+    let overrides = material_option_overrides(library, bytes)?;
+    let mut flags48 =
+        (u8::from(library.option_value(main.as_bytes(), &overrides, b"isDecal")? & 1 != 0) << 4)
+            | (u8::from(main.eq_ignore_ascii_case("atm/worldDistanceFog/arkInteriorVolume")) << 7);
+    let mut flags4a =
+        (u8::from(library.option_value(main.as_bytes(), &overrides, b"hairType")? & 1 != 0) << 4)
+            | ((library.registered_option_value(&overrides, b"decalType")? as u8 & 3) << 2);
+    let flags4b = library.option_value(main.as_bytes(), &overrides, b"skyType")? as u8 & 3;
+    // Slot12 is SSS, not refraction. Its registered Program default
+    // is null; an authored non-null program precedes sort admission.
+    let sss = material::authored_program_override(bytes, "sssProgram")
+        .is_some_and(|p| !p.is_empty() && p != "0");
+    let model = material::draw_bucket(flags48, flags4a, flags4b, sss, sort, thresholds) == 0x26;
+    flags48 |=
+        u8::from(library.option_value(main.as_bytes(), &overrides, b"needsWind")? & 1 != 0) << 6;
+    flags4a |=
+        (library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8) << 5;
+    let darkvision = material::authored_program_override(bytes, "darkVisionProgram")
+        .is_some_and(|p| !p.is_empty() && p != "0");
+    let state = library
+        .definition(main.as_bytes())?
+        .ok_or("material MAIN definition absent")?
+        .render_state();
+    let state = render_state::material_render_state(&entities::declaration_text(bytes), state)?;
+    // Boat admission is unchanged by the view mask: an implicit
+    // dark-vision layer routes elsewhere or is rejected in either case.
+    let world = crate::rendering::material_lists::world_draw_list(
+        crate::rendering::material_lists::WorldMaterial {
+            flags_48: flags48,
+            flags_4a: flags4a,
+            flags_4b: flags4b,
+            main_blend_state: state[0],
+            stage_sort: sort,
+            darkvision_program_present: darkvision,
+        },
+        thresholds,
+        0,
+    ) == Some(crate::rendering::material_lists::WorldDrawList::BoatVolume);
+    Ok([world, model])
+}
+
 /// Resolve the slot-admission fields from the same dictionaries as 1402d5210.
 /// In particular +0x48 bit4 is MAIN-fallback isDecal, not invisible. This is
 /// source selection only, not a claim that all other material flags are loaded.
@@ -78,12 +141,14 @@ pub(super) fn resolve_shadow_source_inputs(
     Ok(source)
 }
 
-/// Native material +0x48 bit0 is the finalized base bank's slot10 pointer,
-/// not the world bank2 pointer and not the subset of shader ABIs we support.
+/// Native material +0x48 bit0 starts with the finalized base-bank slot10
+/// pointer test, then is cleared for sortBoatVolume by material finalization.
+/// It is independent of the world-bank pointer and supported shader ABIs.
 /// All current level sources are resident; a missing cache row still requires
 /// the original runtime compile path and must not become `false` here.
 pub(super) fn resolve_shadow_slot_presence(
     library: Option<&mut Result<shader_cache::ProgramLibrary, String>>,
+    catalog: &archive::Catalog,
     bytes: &[u8],
     source: &material::ShadowSourceInputs,
     main_program: Option<&str>,
@@ -101,6 +166,16 @@ pub(super) fn resolve_shadow_slot_presence(
         .ok_or("program library is unavailable")?
         .as_mut()
         .map_err(|error| format!("program library: {error}"))?;
+    // 2d6f39 clears +48 bit0 for the merged stageSort==sortBoatVolume,
+    // before the later arkWater sort override. It does not clear the actual
+    // program pointer, so retain its source independently of this flag.
+    let main = main_program.ok_or("shadow material MAIN absent")?;
+    let sort = library.material_stage_sort_parameters(catalog, main.as_bytes(), &entities::declaration_text(bytes))?;
+    let empty = render_program::SerializedParameterBlock {flags: 0, parameters: Vec::new()};
+    let boat = library.registered_float_vector(catalog, &empty, b"sortboatvolume", None)?[0];
+    if f32::from_bits(sort[0]) == f32::from_bits(boat) {
+        return Ok(false);
+    }
     let overrides = shadow_variant_overrides(library, bytes, source, main_program, name)?;
     if library
         .serialized_variant(name.as_bytes(), &overrides)?
@@ -319,7 +394,44 @@ pub(super) fn shadow_variant_overrides(
     Ok(option_block(values))
 }
 
+fn forward_fog_flags(
+    library: &mut shader_cache::ProgramLibrary,
+    bytes: &[u8],
+    main: &str,
+    source: &material::ShadowSourceInputs,
+) -> Result<u32, String> {
+    let reference = option_block(material::material_option_parameters(bytes, |name| {
+        library.parameter_kinds.get(name.as_bytes())
+            == Some(&render_program::RenderParameterKind::Option)
+    })?);
+    let is_decal = library.option_value(main.as_bytes(), &reference, b"isDecal")? & 1 != 0;
+    let decal_type = library.registered_option_value(&reference, b"decalType")? as u32;
+    let is_alpha = material::shadow_is_alpha(
+        source.main_blend_state,
+        is_decal,
+        decal_type,
+        source.sky_type,
+    );
+    if !is_alpha
+        || library.option_value(main.as_bytes(), &reference, b"tool/unlit")? != 0
+        || library.option_value(main.as_bytes(), &reference, b"isMainPassAlpha")? != 0
+    {
+        return Ok(0);
+    }
+    // Existing misc.w bits0..2 retain alpha-test, decal and sided-lighting
+    // controls. Fog bits participate in the same material pipeline key.
+    let mut flags = 8;
+    if main.eq_ignore_ascii_case("particle/filing_container") {
+        flags |= 16;
+        if library.option_value(main.as_bytes(), &reference, b"fx/opt/use_mesh")? != 0 {
+            flags |= 32;
+        }
+    }
+    Ok(flags)
+}
+
 pub(super) struct MaterialResolver<'a> {
+    pub(super) fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings,
     pub(super) reflections: Option<Handle<Image>>,
     pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
     pub(super) reflection_planes: Handle<ShaderBuffer>,
@@ -331,6 +443,7 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) catalog: Option<&'a archive::Catalog>,
     pub(super) programs: Option<&'a mut Result<shader_cache::ProgramLibrary, String>>,
     pub(super) probe_materials: &'a mut Assets<ProbeMaterial>,
+    pub(super) sky_materials: &'a mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
     pub(super) decal_materials: &'a mut Assets<DecalMaterial>,
     pub(super) probe_sh_buffers: &'a mut Assets<ShaderBuffer>,
     pub(super) probe_sh_buffer: Handle<ShaderBuffer>,
@@ -340,11 +453,11 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) shadow_map: Handle<Image>,
     pub(super) probe_sh_records: Vec<[Vec4; 9]>,
     pub(super) probes: Option<&'a probe_lighting::ProbeLightingSet>,
-    pub(super) cache: HashMap<String, Option<CachedMaterial>>,
+    pub(super) cache: MaterialCache,
     pub(super) shadow_materials: ShadowMaterials,
+    pub(super) water_materials: crate::rendering::bevy_backend::water_scene::WaterMaterials,
     pub(super) diffuse_image_slots: HashMap<String, usize>,
     pub(super) diffuse_image_paths: Vec<String>,
-    pub(super) preferred_mip: Option<u8>,
     pub(super) misses: usize,
     pub(super) suppressed_transparent: usize,
     pub(super) cutout: usize,
@@ -429,6 +542,7 @@ impl MaterialResolver<'_> {
         )?;
         let present = resolve_shadow_slot_presence(
             self.programs.as_deref_mut(),
+            catalog,
             &bytes,
             &source,
             main.as_deref(),
@@ -469,15 +583,11 @@ impl MaterialResolver<'_> {
 
     pub(super) fn register_image(&mut self, name: &str) -> Option<usize> {
         let catalog = self.catalog?;
-        let mut stem = material::compiled_image_stem(catalog, name)?;
-        stem.make_ascii_lowercase();
-        if material::intrinsic_image_pixels(&stem).is_none()
-            && !catalog.contains(&stem)
-            && !(0..=self.preferred_mip.unwrap_or(15))
-                .any(|mip| catalog.contains(&format!("{stem}_mip{mip}")))
-        {
-            return None;
+        let mut stem = material::image_load_resource(catalog, name)?;
+        if stem == "_default" && !name.trim().eq_ignore_ascii_case("_default") {
+            eprintln!("Image {name}: resource missing; using the image loader's default texture");
         }
+        stem.make_ascii_lowercase();
         if let Some(&slot) = self.diffuse_image_slots.get(&stem) {
             return Some(slot);
         }
@@ -493,7 +603,25 @@ impl MaterialResolver<'_> {
         _color_seed: usize,
         game_position: [f32; 3],
     ) -> Option<ResolvedMaterial> {
-        if let Some(cached) = self.cache.get(path) {
+        self.get_for(path, MaterialGeometry::Model, game_position)
+    }
+
+    pub(super) fn get_world(
+        &mut self,
+        path: &str,
+        _color_seed: usize,
+        game_position: [f32; 3],
+    ) -> Option<ResolvedMaterial> {
+        self.get_for(path, MaterialGeometry::World, game_position)
+    }
+
+    fn get_for(
+        &mut self,
+        path: &str,
+        geometry: MaterialGeometry,
+        game_position: [f32; 3],
+    ) -> Option<ResolvedMaterial> {
+        if let Some(cached) = self.cache.get_for(path, geometry) {
             let cached = cached.clone()?;
             let probe_index = self.append_probe_record(game_position);
             return Some(ResolvedMaterial {
@@ -511,17 +639,10 @@ impl MaterialResolver<'_> {
         });
         let bytes = bytes.as_deref().unwrap_or(&[]);
         if material::is_screen_gate_impostor(path, bytes) {
-            self.cache.insert(key, None);
+            self.cache.insert(key, geometry, None);
             return None;
         }
         let surface = material_surface::Surface::parse(bytes);
-        // The original schedules this additive signed-depth program in the
-        // interiorVolumes fog target, never in the forward colour pass.
-        if surface.program() == material_surface::Program::InteriorVolume {
-            eprintln!("Material {path}: interior fog depth volume excluded from forward colour; distance fog pass is not implemented");
-            self.cache.insert(key, None);
-            return None;
-        }
         if surface.extra_layers > 2
             || surface
                 .layers
@@ -529,10 +650,11 @@ impl MaterialResolver<'_> {
                 .any(|l| l.mask_channel > 3 || l.mask_mode > 2)
         {
             eprintln!("Unsupported material layer inputs {path}");
-            self.cache.insert(key, None);
+            self.cache.insert(key, geometry, None);
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
+        let mut sky_depth_parameters = None;
         if matches!(
             surface.program(),
             material_surface::Program::Sky | material_surface::Program::Clouds
@@ -553,37 +675,45 @@ impl MaterialResolver<'_> {
                     .map(|(_, v)| f32::from_bits(v[0]))
                     .unwrap_or(0.0);
                 let environment = self.environment.ok_or("sky environment unavailable")?;
-                let read = |name| {
-                    environment
-                        .scalar_parameter(name)?
-                        .ok_or_else(|| format!("missing sky environment {name}"))
+                let read = crate::assets::environment::ParameterReader {
+                    catalog: self.catalog.ok_or("sky parameter catalog unavailable")?,
+                    parameters: environment,
                 };
-                let direction = if read("atm/worldfog/useactualsundirection")? != 0.0 {
+                let direction = if read.boolean("atm/worldfog/useactualsundirection")? {
                     self.vista_sun[1].truncate()
                 } else {
                     super::game_to_view(crate::render_shadow::environment_sun_direction(
-                        read("atm/worldfog/scatteringangletheta")?,
-                        read("atm/worldfog/scatteringanglephi")?,
+                        read.scalar("atm/worldfog/scatteringangletheta")?,
+                        read.scalar("atm/worldfog/scatteringanglephi")?,
                     ))
                 };
-                p[5] = direction.extend(read("atm/worldfog/scatteringphase")?);
-                let color = if read("atm/worldfog/useactualsuncolor")? != 0.0 {
+                p[5] = direction.extend(read.scalar("atm/worldfog/scatteringphase")?);
+                let color = if read.boolean("atm/worldfog/useactualsuncolor")? {
                     self.vista_sun[0].truncate()
                 } else {
-                    let text = environment
-                        .parameter("atm/worldfog/scatteringcolor")
-                        .ok_or("missing scattering colour")?;
-                    let values =
-                        entities::material_float_parameters(&format!("{{ value {text} }}"), |n| {
-                            n == "value"
-                        })?;
-                    Vec4::from_array(values[0].1.map(f32::from_bits)).truncate()
+                    Vec4::from_array(read.vector("atm/worldfog/scatteringcolor")?).truncate()
                 };
                 p[6] = color.extend(0.0);
                 Ok(p)
             })();
             match result {
-                Ok(p) => uniform.sky = p,
+                Ok(p) => {
+                    uniform.sky = p;
+                    let depth_name = if surface.program() == material_surface::Program::Clouds {
+                        "clouddepthoffset"
+                    } else {
+                        "skydepthoffset"
+                    };
+                    match self.float_vectors(bytes, [depth_name, "skydepthuvscale"]) {
+                        Ok([offset, uv]) => {
+                            sky_depth_parameters = Some((offset[0], Vec4::from_array(uv)))
+                        }
+                        Err(error) => {
+                            eprintln!("Sky fog depth unavailable {path}: {error}");
+                            return None;
+                        }
+                    }
+                }
                 Err(e) => {
                     eprintln!("Sky material unavailable {path}: {e}");
                     return None;
@@ -703,7 +833,44 @@ impl MaterialResolver<'_> {
             })
         });
         let program = program.as_deref().unwrap_or(&[]);
-        if matches!(uniform.misc.z, 1 | 2 | 6) {
+        let stage_sort = (|| -> Result<[u32; 2], String> {
+            let catalog = self.catalog.ok_or("material catalog unavailable")?;
+            let main = surface
+                .main_program
+                .as_deref()
+                .ok_or("material MAIN absent")?;
+            let library = self
+                .programs
+                .as_deref_mut()
+                .ok_or("program library unavailable")?
+                .as_mut()
+                .map_err(|e| e.clone())?;
+            library.material_stage_sort(catalog, main.as_bytes(), &entities::declaration_text(bytes))
+        })();
+        let boat_routes = (|| -> Result<[bool; 2], String> {
+            let sort = *stage_sort.as_ref().map_err(Clone::clone)?;
+            let catalog = self.catalog.ok_or("material catalog unavailable")?;
+            let main = surface
+                .main_program
+                .as_deref()
+                .ok_or("material MAIN absent")?;
+            let library = self
+                .programs
+                .as_deref_mut()
+                .ok_or("program library unavailable")?
+                .as_mut()
+                .map_err(|e| e.clone())?;
+            boat_volume_routes(library, catalog, bytes, main, sort)
+        })()
+        .unwrap_or([false; 2]);
+        let empty_fragment = surface.program() == material_surface::Program::BoatVolume;
+        let boat_routes = boat_routes.map(|route| route || empty_fragment);
+        let boat_volume = boat_routes[match geometry {
+            MaterialGeometry::World => 0,
+            MaterialGeometry::Model => 1,
+        }];
+        let mut fog_flags = 0;
+        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6) {
             let receiver = (|| -> Result<UVec4, String> {
                 let source = resolve_shadow_source_inputs(
                     self.programs.as_deref_mut(),
@@ -721,6 +888,7 @@ impl MaterialResolver<'_> {
                     .main_program
                     .as_deref()
                     .ok_or("receiver MAIN is absent")?;
+                fog_flags = forward_fog_flags(library, bytes, main, &source)?;
                 let overrides =
                     shadow_variant_overrides(library, bytes, &source, Some(main), main)?;
                 let mut option =
@@ -748,14 +916,15 @@ impl MaterialResolver<'_> {
         // FUN_1402d5210 encodes inherited `invisible` as material+0x4b's
         // excluded state; FUN_14033b350 rejects it before creating any rows.
         if material::program_option(bytes, program, "invisible") {
-            self.cache.insert(key, None);
+            self.cache.insert(key, geometry, None);
             return None;
         }
         let transparency = material::transparency_with_program(bytes, program);
         let program_is_decal = material::program_option(bytes, program, "isDecal");
         let two_sided_lighting = material::program_option(bytes, program, "twoSidedLighting");
         let alpha_test = material::program_option(bytes, program, "alphaTest");
-        uniform.misc.w = u32::from(alpha_test)
+        uniform.misc.w = fog_flags
+            | u32::from(alpha_test)
             | (u32::from(program_is_decal) << 1)
             | (u32::from(two_sided_lighting) << 2);
         if env::var("DH2_TRACE_MATERIAL").ok().as_deref() == Some(path) {
@@ -781,7 +950,7 @@ impl MaterialResolver<'_> {
             0.0
         };
         let mut images = Vec::new();
-        for (role, name) in surface.texture_bindings(program_is_decal) {
+        for (role, name) in surface.texture_bindings(program_is_decal).into_iter().filter(|_| !boat_volume && surface.program() != material_surface::Program::Water) {
             if let Some(slot) = self.register_image(name) {
                 images.push((slot, surface_gpu::ImageRole(role)));
             } else {
@@ -792,7 +961,9 @@ impl MaterialResolver<'_> {
             .iter()
             .find(|(_, role)| role.0 == 0)
             .map(|&(slot, _)| slot);
-        if diffuse_image_slot.is_none() {
+        if diffuse_image_slot.is_none()
+            && !boat_volume && !matches!(surface.program(), material_surface::Program::InteriorVolume | material_surface::Program::BoatVolume | material_surface::Program::Water)
+        {
             self.misses += 1;
         }
         let alpha_mode = match transparency {
@@ -848,11 +1019,78 @@ impl MaterialResolver<'_> {
             cull_mode,
             ..default()
         };
-        let vertex_lighting = matches!(uniform.misc.z, 1 | 2 | 6);
-        let handle = if is_decal {
+        let vertex_lighting = !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6);
+        let handle = if surface.program() == material_surface::Program::InteriorVolume {
+            MaterialHandle::Interior(path.into())
+        } else if boat_volume || surface.program() == material_surface::Program::BoatVolume {
+            MaterialHandle::BoatVolume(path.into())
+        } else if surface.program() == material_surface::Program::Water {
+            let inputs = (|| -> Result<_, String> {
+                let library = self.programs.as_deref_mut()
+                    .ok_or("water program library unavailable")?.as_mut().map_err(|e|e.clone())?;
+                let main = surface.main_program.as_deref().ok_or("water MAIN absent")?;
+                let base = library.definition(main.as_bytes())?
+                    .ok_or("water MAIN definition absent")?.render_state();
+                let state = render_state::material_render_state(&entities::declaration_text(bytes), base)?;
+                let options = material_option_overrides(library, bytes)?;
+                let depth = water::depth_sources(library, bytes, main, &options, state);
+                Ok(std::sync::Arc::new(crate::rendering::bevy_backend::water_scene::WaterMaterialSource {
+                    main_program: main.to_owned(),
+                    state,
+                    options,
+                    depth,
+                    declaration: bytes.into(),
+                }))
+            })();
+            if let Err(error) = &inputs { eprintln!("Water material unavailable {path}: {error}"); }
+            std::sync::Arc::make_mut(&mut self.water_materials.0).insert(path.into(), inputs);
+            MaterialHandle::Water(path.into())
+        } else if let Some((depth_offset, depth_uv)) = sky_depth_parameters {
+            let result = (|| -> Result<_, String> {
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("sky program library unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let main = surface
+                    .main_program
+                    .as_deref()
+                    .ok_or("sky program missing")?;
+                let state = library
+                    .definition(main.as_bytes())?
+                    .ok_or("sky program definition missing")?
+                    .render_state();
+                let state =
+                    render_state::material_render_state(&entities::declaration_text(bytes), state)?;
+                let clouds = surface.program() == material_surface::Program::Clouds;
+                Ok(crate::rendering::bevy_backend::sky_mask::SkyMaterial {
+                    sky: uniform.sky,
+                    depth_offset,
+                    depth_uv,
+                    clouds,
+                    project_far: !clouds || uniform.sky[4].x != 0.,
+                    state,
+                    images: std::array::from_fn(|_| None),
+                })
+            })();
+            match result {
+                Ok(material) => MaterialHandle::Sky(self.sky_materials.add(material)),
+                Err(error) => {
+                    eprintln!("Sky render state unavailable {path}: {error}");
+                    return None;
+                }
+            }
+        } else if is_decal {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
                 extension: DecalExtension {
+                    fog_parameters: self.fog_material.parameters.clone(),
+                    fog_objects: self.fog_material.objects.clone(),
+                    fog_world: self.fog_material.world.clone(),
+                    fog_canvas: self.fog_material.canvas.clone(),
+                    fog_curve: self.fog_material.curve.clone(),
+                    fog_depth: self.fog_material.opaque_depth.clone(),
                     reflections: self.reflections.clone(),
                     reflection_brdf_lookup: self.reflection_brdf_lookup.clone(),
                     reflection_planes: self.reflection_planes.clone(),
@@ -906,6 +1144,12 @@ impl MaterialResolver<'_> {
             MaterialHandle::Probe(self.probe_materials.add(ProbeMaterial {
                 base,
                 extension: ProbeExtension {
+                    fog_parameters: self.fog_material.parameters.clone(),
+                    fog_objects: self.fog_material.objects.clone(),
+                    fog_world: self.fog_material.world.clone(),
+                    fog_canvas: self.fog_material.canvas.clone(),
+                    fog_curve: self.fog_material.curve.clone(),
+                    fog_depth: self.fog_material.opaque_depth.clone(),
                     reflections: self.reflections.clone(),
                     reflection_brdf_lookup: self.reflection_brdf_lookup.clone(),
                     reflection_planes: self.reflection_planes.clone(),
@@ -962,12 +1206,13 @@ impl MaterialResolver<'_> {
             surface.main_program.as_deref(),
         )
         .map(|source| {
-            let base_slot10_present = resolve_shadow_slot_presence(
-                self.programs.as_deref_mut(),
-                bytes,
-                &source,
-                surface.main_program.as_deref(),
-            );
+            let base_slot10_present = match self.catalog {
+                Some(catalog) => resolve_shadow_slot_presence(
+                    self.programs.as_deref_mut(), catalog, bytes, &source,
+                    surface.main_program.as_deref(),
+                ),
+                None => Err("shadow material catalog unavailable".into()),
+            };
             let rigid_base_source = resolve_rigid_shadow_source(
                 self.programs.as_deref_mut(),
                 bytes,
@@ -1041,8 +1286,10 @@ impl MaterialResolver<'_> {
             diffuse_image_slot,
             images,
             vertex_lighting,
+            stage_sort,
+            compatible_geometry_routes: boat_routes[0] == boat_routes[1],
         };
-        self.cache.insert(key, Some(cached.clone()));
+        self.cache.insert(key, geometry, Some(cached.clone()));
         let probe_index = self.append_probe_record(game_position);
         Some(ResolvedMaterial {
             handle: cached.handle,

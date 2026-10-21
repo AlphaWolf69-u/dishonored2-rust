@@ -170,8 +170,7 @@ fn parallel_slice_size(value: &str) -> u32 {
 pub fn shadow_settings(source: &str) -> Result<ShadowSettings, String> {
     Ok(ShadowSettings {
         quality_preset: shadow_quality_preset(source)?,
-        cascade_fars: quoted_multi_value(source, "r_shadowCascadeFars")?
-            .and_then(four_float_cvar),
+        cascade_fars: quoted_multi_value(source, "r_shadowCascadeFars")?.and_then(four_float_cvar),
         parallel_slice_size: quoted_setting(source, "r_shadowParallelSliceSize")?
             .map(parallel_slice_size)
             .unwrap_or(crate::render_shadow::PARALLEL_SLICE_SIZE),
@@ -244,6 +243,56 @@ pub fn read_local_shadow_settings() -> Result<(PathBuf, LocalShadowSettings), St
         path,
         local_shadow_settings(source.as_deref().unwrap_or(""))?,
     ))
+}
+
+/// Startup controls for the atmosphere passes. Defaults are registered by
+/// 141377690 and 14136ba60..14136bba0; keep them separate from authored fog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogRenderSettings {
+    pub downsample: i32,
+    pub nearest_upscale: bool,
+    pub nearest_threshold: f32,
+    pub skip_blur: bool,
+    pub gaussian_blur: bool,
+    pub blur_radius: f32,
+    pub near_clip: f32,
+    pub far_clip: f32,
+    pub bilateral_depth_range: f32,
+    pub bilateral_sharpness_near: f32,
+    pub bilateral_sharpness_far: f32,
+    pub god_ray_depth_sharpness: f32,
+}
+
+pub fn fog_render_settings(source: &str) -> Result<FogRenderSettings, String> {
+    let integer = |name, default| -> Result<i32, String> {
+        Ok(quoted_setting(source, name)?
+            .map(integer_cvar)
+            .unwrap_or(default))
+    };
+    let float = |name, default| -> Result<f32, String> {
+        Ok(quoted_setting(source, name)?
+            .map(float_cvar)
+            .unwrap_or(default))
+    };
+    Ok(FogRenderSettings {
+        downsample: integer("r_downsampleQuality", 1)?,
+        nearest_upscale: integer("r_fogNearestUpscale", 1)? != 0,
+        nearest_threshold: float("r_fogNearestThreshold", 0.0002)?,
+        skip_blur: integer("r_skipFogBlur", 0)? != 0,
+        gaussian_blur: integer("r_fogBlurGaussian", 0)? != 0,
+        blur_radius: float("r_fogBlurRadius", 6.)?,
+        near_clip: float("r_znear", 0.01)?,
+        far_clip: float("r_zfar", 7000.)?,
+        bilateral_depth_range: float("r_bilateralDepthRange", 10.)?,
+        bilateral_sharpness_near: float("r_bilateralSharpnessNear", 0.1)?,
+        bilateral_sharpness_far: float("r_bilateralSharpnessFar", 0.01)?,
+        god_ray_depth_sharpness: float("r_atmGodRaysDepthSharpness", 0.00001)?,
+    })
+}
+
+pub fn read_fog_render_settings() -> Result<(PathBuf, FogRenderSettings), String> {
+    let (path, source) = read_configuration()?;
+    Ok((path, fog_render_settings(source.as_deref().unwrap_or(""))?))
 }
 
 /// Native image-manager filter codes (FUN_1402eb830's POINT/LINEAR/ANISO
@@ -449,6 +498,7 @@ pub fn read_game_clock_controls() -> Result<(PathBuf, crate::game_clock::ClockCo
 pub struct ViewSettings {
     pub horizontal_fov_degrees: f32,
     pub lod_zoom_multiplier: f32,
+    pub model_fade_lod_scale: f32,
     pub umbra_gate_visibility_ratio: f32,
     pub umbra_distance_imprecision: f32,
     pub umbra_accurate_threshold: f32,
@@ -466,6 +516,11 @@ pub fn view_settings(source: &str) -> Result<ViewSettings, String> {
             .map(float_cvar)
             .unwrap_or(1.0)
             .clamp(f32::from_bits(0x3586_37bd), f32::from_bits(0x4974_2400)),
+        // FUN_1413875b0 registers unbounded lod_dist_far="50"; 31ad30
+        // multiplies it by six and the model's largest half-extent.
+        model_fade_lod_scale: quoted_setting(source, "lod_dist_far")?
+            .map(float_cvar)
+            .unwrap_or(50.0),
         umbra_gate_visibility_ratio: quoted_setting(source, "r_umbraGateVisibilityRatio")?
             .map(float_cvar)
             .unwrap_or(1.0),
@@ -524,6 +579,8 @@ mod tests {
         let defaults =
             super::view_settings_with_visuals("r_viewDistPreset \"1\"", visuals).unwrap();
         assert_eq!(defaults.lod_zoom_multiplier, 7000.0);
+        assert_eq!(defaults.model_fade_lod_scale, 50.0);
+        assert_eq!(super::view_settings("lod_dist_far \"-3\"").unwrap().model_fade_lod_scale, -3.0);
         assert_eq!(defaults.umbra_gate_visibility_ratio, 1.0);
         assert_eq!(
             super::view_settings_with_visuals("", visuals).unwrap(),

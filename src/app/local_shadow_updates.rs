@@ -222,10 +222,11 @@ pub(super) fn publish_local_shadow_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<LocalShadowDraws>,
     mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
-    (completion, profile, mut commands): (
+    (completion, profile, mut commands, mut matrix_bank): (
         Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
+        ResMut<super::world_instances::WorldMatrices>,
     ),
 ) {
     let _span = profile.as_deref().map(|p| p.measure(25));
@@ -293,7 +294,7 @@ pub(super) fn publish_local_shadow_draws(
             })
         });
         if draws.matrices.is_none() {
-            draws.matrices = Some(buffers.add(ShaderBuffer::from(scene.world.matrices.clone())));
+            draws.matrices = matrix_bank.get_or_upload(&scene.world.matrices, &mut buffers);
         }
         let matrices = draws.matrices.clone();
         let mut layers = Vec::new();

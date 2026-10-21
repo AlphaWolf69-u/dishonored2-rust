@@ -1,5 +1,94 @@
 //! Resolve a Void material's base-colour image from its text declaration.
 
+/// Material-list selection in 1403386a0. The thresholds are the renderer's
+/// ten runtime sort values (140351210), not enum ordinals. stageSortAdjust
+/// participates in list selection even though constructor flags use stageSort
+/// alone. The caller supplies finalized material fields and slot12 presence.
+pub fn draw_bucket(
+    flags_48: u8,
+    flags_4a: u8,
+    flags_4b: u8,
+    slot12_present: bool,
+    stage_sort: [f32; 2],
+    thresholds: [f32; 10],
+) -> u8 {
+    let hair = flags_4a & 0x10 != 0;
+    if slot12_present && !hair {
+        return 0x25;
+    }
+    if flags_48 & 0x80 != 0 {
+        return 0x2a;
+    }
+    if hair {
+        return 0x36;
+    }
+    if matches!(flags_4b & 3, 1 | 2) {
+        return 0x29;
+    }
+    let decal_type = (flags_4a >> 2) & 3;
+    if flags_48 & 0x10 != 0 {
+        return if matches!(decal_type, 0 | 3) {
+            0x23
+        } else {
+            0x37
+        };
+    }
+    let value = stage_sort[1] + stage_sort[0];
+    if value < thresholds[0] {
+        return if flags_4b & 0x80 != 0 { 0x37 } else { 0x23 };
+    }
+    for (index, bucket) in [
+        (1, 0x26),
+        (2, 0x32),
+        (3, 0x33),
+        (5, 0x34),
+        (4, 0x2d),
+        (6, 0x37),
+        (7, 0x35),
+        (8, 0x38),
+        (9, 0x39),
+    ] {
+        if value < thresholds[index] {
+            return bucket;
+        }
+    }
+    0x41
+}
+
+#[cfg(test)]
+mod draw_bucket_tests {
+    #[test]
+    fn material_draw_buckets_match_executed_selector() {
+        let mut lines = include_str!("../../tests/fixtures/material_draw_bucket.txt").lines();
+        let words = |line: &str| {
+            line.split_whitespace()
+                .map(|v| u32::from_str_radix(v, 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let header = words(lines.next().unwrap());
+        let thresholds = std::array::from_fn(|i| f32::from_bits(header[i]));
+        let mut count = 0;
+        for line in lines {
+            let row = words(line);
+            assert_eq!(row.len(), 7);
+            assert_eq!(
+                u32::from(super::draw_bucket(
+                    row[0] as u8,
+                    row[1] as u8,
+                    row[2] as u8,
+                    row[3] != 0,
+                    [f32::from_bits(row[4]), f32::from_bits(row[5])],
+                    thresholds
+                )),
+                row[6],
+                "fixture case {count}: {row:08x?}"
+            );
+            count += 1;
+        }
+        assert_eq!(count, 14848);
+    }
+}
+
 /// Ordinary material constructor's three banks (1402d66a0..1402d66f0).
 /// GetInteger reads the unmodified material block/registered defaults here,
 /// not the later pass-specialized dictionary. Bank2 is the world +0x250 bank.
@@ -232,10 +321,7 @@ pub fn rigid_shadow_option_parameters(
     let mut options = material_option_parameters(bytes, is_option)?;
     // Last-wins overrides; signature order comes from the program handles.
     options.push(("isAlpha".into(), i32::from(is_alpha)));
-    options.push((
-        "noScreenShadows".into(),
-        i32::from(no_screen_shadows),
-    ));
+    options.push(("noScreenShadows".into(), i32::from(no_screen_shadows)));
     options.push(("isShadow".into(), 1));
     if alpha_test & 1 != 0 {
         options.push(("forcePixelShader".into(), 1));
@@ -607,6 +693,9 @@ pub fn constant_color_pixels(color: [f32; 4]) -> Option<[u8; 64]> {
 
 /// Prefer the source->compiled mapping stored by the game itself.
 pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Option<String> {
+    if name.trim().eq_ignore_ascii_case("_defaultCube") {
+        return Some("_defaultCube".into());
+    }
     if matches!(
         name.trim().to_ascii_lowercase().as_str(),
         "_default" | "_black" | "_white"
@@ -640,6 +729,114 @@ pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Opt
     diffuse_image(declaration.as_bytes())?
         .strip_suffix("_mip0")
         .map(|path| path.replace('\\', "/"))
+}
+
+/// Resource misses use the image type's actual default generator. 05ede0
+/// invokes resource vtable+70 on load failure; idImage's +58/+70 entries at
+/// 141b1cd00/141b1cd18 are 2ea140/2f5fc0. Unsupported source expressions
+/// remain unresolved, and malformed existing BIMs still report their errors.
+pub fn image_load_resource(catalog: &crate::archive::Catalog, name: &str) -> Option<String> {
+    let resource = if catalog.contains(name) {
+        name.to_owned()
+    } else {
+        compiled_image_stem(catalog, name)?
+    };
+    Some(
+        if catalog.contains(&resource) || intrinsic_image_pixels(&resource).is_some()
+            || resource.eq_ignore_ascii_case("_defaultCube") {
+            resource
+        } else {
+            "_default".into()
+        },
+    )
+}
+
+/// 2f5920 initializes this cube through 2f5a20 AFTER the ordinary fallback.
+/// Its BC1 upload wrapper (2f50c0) reads only the first eight bytes of each
+/// constant RGBA face. Preserve those actual blocks; recompressing the colours
+/// or using six fallback checkers would produce a different image.
+pub fn intrinsic_cube_image(name: &str) -> Option<crate::texture::InlineCubeChain> {
+    if !name.eq_ignore_ascii_case("_defaultCube") {return None;}
+    let mut payload = Vec::with_capacity(48);
+    for face in 1..=6u8 {
+        let pixel = [(face & 1) * 255, ((face >> 1) & 1) * 255, ((face >> 2) & 1) * 255, 255];
+        payload.extend(pixel);
+        payload.extend(pixel);
+    }
+    let mut packed_format = 0x54e;
+    crate::texture::normalize_image_format(&mut packed_format).expect("verified BC1 intrinsic descriptor");
+    Some(crate::texture::InlineCubeChain {
+        info: crate::texture::BimageInfo {width: 4, height: 4, mip_count: 1,
+            packed_format, format: crate::texture::ImageFormat::Bc1}, payload,
+    })
+}
+
+pub struct CubeImage {
+    pub resource: String,
+    pub image: crate::texture::InlineCubeChain,
+    pub defaulted: bool,
+}
+
+/// Direct cube resources retain their dimensional fallback. The named
+/// _defaultCube intrinsic differs from 2f5fc0's failed-image checker cube.
+pub fn load_cube_image(catalog: &crate::archive::Catalog, name: &str) -> Result<CubeImage, String> {
+    let resource = if catalog.contains(name) {name.to_owned()} else {
+        compiled_image_stem(catalog, name).ok_or_else(||format!("unresolved cube image source {name}"))?
+    };
+    if let Some(image) = intrinsic_cube_image(&resource) {
+        return Ok(CubeImage {resource, image, defaulted: false});
+    }
+    if intrinsic_image_pixels(&resource).is_some() {
+        return Err(format!("2D intrinsic {resource} requested as cube"));
+    }
+    if let Some(bytes) = catalog.read(&resource).map_err(|error|error.to_string())? {
+        let image = crate::texture::compressed_inline_cube(&bytes)?;
+        return Ok(CubeImage {resource, image, defaulted: false});
+    }
+    let mut packed_format = 0x54a;
+    crate::texture::normalize_image_format(&mut packed_format).expect("verified RGBA8 fallback descriptor");
+    let image = crate::texture::InlineCubeChain {
+        info: crate::texture::BimageInfo {width: 16, height: 16, mip_count: 1,
+            packed_format, format: crate::texture::ImageFormat::Rgba8},
+        payload: intrinsic_image_pixels("_default").unwrap().repeat(6),
+    };
+    Ok(CubeImage {resource, image, defaulted: true})
+}
+
+#[test]
+#[ignore = "requires installed resource catalog"]
+fn cube_resource_resolution_retains_dimensional_defaults() {
+    let catalog = crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let cube = load_cube_image(&catalog, "_defaultCube").unwrap();
+    assert!(!cube.defaulted);
+    assert_eq!(cube.image.info.format, crate::texture::ImageFormat::Bc1);
+    assert_eq!(cube.image.payload.len(), 48);
+    assert_eq!(image_load_resource(&catalog,"_defaultCube").as_deref(),Some("_defaultCube"));
+    let missing = load_cube_image(&catalog, "missing_test_cube_9f63be.dds").unwrap();
+    assert!(missing.defaulted);
+    assert_eq!((missing.image.info.width, missing.image.info.height), (16,16));
+    assert_eq!(missing.image.info.format, crate::texture::ImageFormat::Rgba8);
+    assert_eq!(missing.image.payload, intrinsic_image_pixels("_default").unwrap().repeat(6));
+    assert!(load_cube_image(&catalog,"_white").is_err());
+}
+
+#[test]
+fn default_cube_preserves_executed_upload_blocks() {
+    let cube = intrinsic_cube_image("_defaultCube").unwrap();
+    let mut count = 0;
+    for row in include_str!("../../tests/fixtures/default_cube.txt").lines() {
+        let fields = row.split_whitespace().collect::<Vec<_>>();
+        let word = |i| u32::from_str_radix(fields[i], 16).unwrap();
+        assert_eq!(fields.len(), 6);
+        assert_eq!([cube.info.packed_format,cube.info.width,cube.info.height], [word(0),word(1),word(2)]);
+        assert_eq!((word(3),word(4)), (count,8));
+        let expected = (0..8).map(|i|u8::from_str_radix(&fields[5][i*2..i*2+2],16).unwrap()).collect::<Vec<_>>();
+        assert_eq!(&cube.payload[count as usize*8..count as usize*8+8], expected);
+        count += 1;
+    }
+    assert_eq!(count, 6);
+    assert_eq!(cube.payload.len(), 48);
+    assert!(intrinsic_cube_image("_default").is_none());
 }
 
 /// Image_intrinsic.cpp: FUN_1402f5fc0, 1402f5630 and 1402f6a60.

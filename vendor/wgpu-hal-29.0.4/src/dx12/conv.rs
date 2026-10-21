@@ -52,7 +52,11 @@ pub fn map_texture_usage_to_resource_flags(
         .intersects(wgt::TextureUses::DEPTH_STENCIL_READ | wgt::TextureUses::DEPTH_STENCIL_WRITE)
     {
         flags |= Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-        if !usage.contains(wgt::TextureUses::RESOURCE) {
+        // wgpu-core also tracks fully read-only depth/stencil attachments as
+        // RESOURCE, even without public TEXTURE_BINDING usage. A texture that
+        // permits DEPTH_STENCIL_READ must support that combined read state;
+        // DENY_SHADER_RESOURCE would make the transition invalid in D3D12.
+        if !usage.intersects(wgt::TextureUses::RESOURCE | wgt::TextureUses::DEPTH_STENCIL_READ) {
             flags |= Direct3D12::D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
         }
     }

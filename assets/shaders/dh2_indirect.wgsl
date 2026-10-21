@@ -32,18 +32,7 @@ fn vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32
         let packed = probe_words[v+3u];
         weights[i] = vec4<f32>(vec4<u32>(packed & 255u, (packed >> 8u) & 255u, (packed >> 16u) & 255u, packed >> 24u)) * (1.0 / 255.0);
     }
-    let d = game_vector(position) - positions[3];
-    let v0 = positions[0] - positions[3];
-    let v1 = positions[1] - positions[3];
-    let v2 = positions[2] - positions[3];
-    let determinant = dot(v0, cross(v1, v2));
-    var reciprocal = 0.0;
-    if abs(determinant) > 0.0 { reciprocal = 1.0 / determinant; }
-    let b0 = reciprocal * dot(d, cross(v1, v2));
-    let b1 = reciprocal * dot(d, cross(v2, v0));
-    let b2 = reciprocal * dot(d, cross(v0, v1));
-    let bary = vec4(b0, b1, b2, 1.0 - b0 - b1 - b2);
-    let w = bary.x*weights[0] + bary.y*weights[1] + bary.z*weights[2] + bary.w*weights[3];
+    let w = tetrahedron_probe_weights(game_vector(position),positions,weights);
     let packed0 = probe_words[base+4u];
     let packed1 = probe_words[base+5u];
     let probes = vec4(packed0 & 65535u, packed0 >> 16u, packed1 & 65535u, packed1 >> 16u);

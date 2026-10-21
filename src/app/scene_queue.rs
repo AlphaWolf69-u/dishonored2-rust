@@ -126,6 +126,8 @@ pub(super) struct SceneRenderQueue {
     pub(super) diffuse_image_paths: Vec<String>,
     pub(super) diffuse_image_materials: Vec<Vec<(MaterialHandle, surface_gpu::ImageRole)>>,
     pub(super) material_images: HashMap<MaterialHandle, Vec<usize>>,
+    /// Preserve both stageSort and stageSortAdjust for the game's pass lists.
+    pub(super) material_stage_sorts: HashMap<MaterialHandle, Result<[u32; 2], String>>,
     pub(super) diffuse_image_handles: Vec<Option<Handle<Image>>>,
     /// Initial native whole-view alpha casters are independent of color visibility.
     pub(super) shadow_diffuse_slots: Vec<usize>,

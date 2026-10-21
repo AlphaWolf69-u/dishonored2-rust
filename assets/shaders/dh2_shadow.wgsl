@@ -11,6 +11,14 @@ struct ShadowInfo {
     unused_tail_c: u32,
 }
 
+// helper::B2/B8. Shared by surface visibility and fog-shadow ray marching.
+fn screen_b2(p: vec2<u32>) -> u32 { return ((p.y << 1u) + p.x + 1u) & 3u; }
+fn screen_b8(p: vec2<u32>) -> u32 {
+    return (((screen_b2(p & vec2(1u)) << 2u)
+        + screen_b2((p & vec2(3u)) >> vec2(1u))) << 2u)
+        + screen_b2((p & vec2(7u)) >> vec2(2u));
+}
+
 // HLSL saturate's _sat modifier returns zero for NaN. WGSL clamp alone
 // does not retain that contract, which matters at perspective W=0 planes.
 fn shadow_saturate(value:f32)->f32 {
@@ -46,19 +54,24 @@ fn parallel_shadow_slice(position: vec3<f32>, view_row2: vec4<f32>, fars: vec4<f
     return u32(mask.x + mask.y + mask.z + mask.w);
 }
 
+// intersection's FLOAT-output overload. A missed sphere still returns a
+// degenerate interval; this differs from the bool/quadratic overload.
+fn ray_sphere_interval(origin:vec3<f32>, direction:vec3<f32>, center:vec3<f32>, radius:f32)->vec2<f32> {
+    let diff=origin-center;
+    let a0=dot(diff,diff)-radius*radius;
+    let a1=dot(direction,diff);
+    let root=sqrt(max(0.0,a1*a1-a0));
+    return vec2(max(-a1-root,0.0),-a1+root);
+}
+
 // shadowCommon::GetFastCloudShadowing and the float-output ray/sphere overload.
 fn fast_cloud_shadowing(position: vec3<f32>, direction: vec3<f32>, world_time: f32,
     motion: vec4<f32>, density_parameters: vec4<f32>, cloud: texture_2d<f32>, cloud_sampler: sampler) -> f32 {
     let center = vec3(0.0, 0.0, -motion.x);
     let radius = motion.x + 2.0;
     let origin = 0.001 * position;
-    let diff = origin - center;
-    let a0 = dot(diff, diff) - radius * radius;
-    let a1 = dot(direction, diff);
-    let root = sqrt(max(0.0, a1 * a1 - a0));
-    let near_hit = max(-a1 - root, 0.0);
-    let far_hit = -a1 + root;
-    let hit = origin + direction * select(near_hit, far_hit, far_hit > 0.0);
+    let interval=ray_sphere_interval(origin,direction,center,radius);
+    let hit = origin + direction * select(interval.x, interval.y, interval.y > 0.0);
     let angle = world_time * motion.y;
     let sine = sin(angle);
     let cosine = cos(angle);

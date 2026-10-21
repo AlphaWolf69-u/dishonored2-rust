@@ -72,7 +72,6 @@ const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAG
 @group(#{MATERIAL_BIND_GROUP}) @binding(146) var filling_lookup:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(147) var filling_normal:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(148) var filling_fresnel:texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(149) var linear_clamp:sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(151) var cloud_opacity:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(152) var cloud_density:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(153) var cloud_back_density:texture_2d<f32>;

@@ -9,6 +9,7 @@
 #import dh2_indirect::{PackedIrradiance,unpack_diffuse,probe_diffuse}
 #import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow}
 #import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility}
+#import dh2_material_fog::material_fog_pixel
 
 @fragment
 fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -86,6 +87,9 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     } else { out.color = pbr_input.material.base_color; }
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color=vec4(out.color.rgb+emissive*139.26*view.exposure,out.color.a);
+    }
+    if (compiled_misc.w&8u)!=0u {
+        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,mesh[vertex_output.instance_index].tag),out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

@@ -8,3 +8,5 @@ pub mod process_memory;
 pub mod host_graphics;
 pub mod rewrite_settings;
 pub mod worker_topology;
+
+pub mod performance_counter;

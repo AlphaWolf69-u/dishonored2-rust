@@ -33,3 +33,38 @@ with whole-encoder allocators used 2.24 GB process memory and 1.61 GB nonlocal
 GPU commitment. Pairing allocators with lists reduced those figures to 1.57 GB
 and 0.97 GB, with identical depth output and stable memory while batches moved.
 These are controlled diagnostic measurements, not game memory budgets or FPS.
+
+## Read-only depth/stencil attachment resource flags
+
+`src/dx12/conv.rs` keeps depth/stencil textures that permit attachment reads
+compatible with shader-resource states, including textures created without
+public `TEXTURE_BINDING` usage. wgpu-core 29's render-pass setup tracks a fully
+read-only depth/stencil attachment as `DEPTH_STENCIL_READ | RESOURCE`.
+Previously the HAL created attachment-only textures with
+`DENY_SHADER_RESOURCE`, making that valid pass fail at command-list close with
+D3D12 `RESOURCE_BARRIER_MISMATCHING_MISC_FLAGS` (#524) and device loss.
+Write-only HAL textures may retain the deny flag. Existing shader-readable
+textures keep the same flags. Public texture-usage validation is unchanged.
+
+The visible-sun numeric GPU regression uses an attachment-only depth texture,
+clears it, then reads it for depth testing with writes disabled. It compares
+both sun blend modes and foreground rejection against D3D11 render outputs.
+The DX12 regression passes against all 256 reference sun pixels, alongside the
+fog shader suite, 666 CPU tests and the headless gameplay-camera owner test.
+No test texture usage was broadened to hide the invalid transition.
+
+## Texture-copy alignment allocations
+
+`src/dx12/command.rs` returns intermediate texture-copy buffers through
+`DeviceAllocationContext::free_resource` on encoder reset and drop. Their
+`Buffer` values do not own allocator cleanup; clearing their vector only
+released COM resources and leaked each placed allocation. Preserve the existing
+completion boundary: reset reclaims all command buffers from the encoder, and
+no returned command buffer may outlive its encoder. No memory is freed while
+its submitted copy is still using it. Internal allocations receive a useful
+label and do not affect public buffer object counts.
+
+The fog TLF GPU test copies texture data at offset 256, forcing this DX12 path.
+It repeats complete view construction, three-frame submission and teardown,
+checks numeric output and stable persistent buffer identities, then verifies
+that settled allocator usage does not exceed the pre-view baseline.

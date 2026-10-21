@@ -4131,6 +4131,9 @@ pub struct ModelQueryInput {
     pub bounds: [[f32; 3]; 2],
 }
 
+mod area_gather;
+pub use area_gather::{area_model_visible, ModelFadeInput};
+
 pub fn model_eligible(frame_flags: u8, shape_flags: u8) -> bool {
     frame_flags & 4 != 0 || (shape_flags & 0x10 != 0 && frame_flags & 1 == 0)
 }

@@ -208,13 +208,177 @@ captures locally and must not publish the captured game shader source.
 ONE/ONE blending into the original interior-volume fog target, without depth
 testing/writing. It is excluded from forward colour submission by program class,
 across all levels, rather than by object/material path. The understood boundary
-accumulation lives in `rendering/fog.rs`. **The distance-fog render graph and its
-volume accumulation target are not implemented yet.** Exclusion corrects opaque
-doorway blockers, but does not add fog. The original consumer is recorded in
-`analysis/decompiled/chunk_000124.c` (the `interiorVolumes` and
-`interiorWorldVolumes` passes). Next work must connect those depth targets to the
-world-distance-fog integration, using the retained environment parameters; it
-must not substitute colour or opacity for fog depth.
+accumulation lives in `rendering/fog.rs`; the render-world owner in
+`rendering/bevy_backend/fog_scene.rs` submits the retained geometry to the signed
+depth target and consumes it in distance/height fog. The owner also supplies
+current camera depth, the sky/cloud mask, authored LUT/noise, environment
+parameters and directional shadow resources. GPU tests compare numeric output
+and exercise the actual Core3d owner without a window. Local-light scattering,
+water depth and the underwater mask still require gameplay producer integration.
+
+`fog_shadow.rs` contains the full parallel/projected-height raymarch and temporal
+sampling rules. The fog scene prepares the authored height image and selects
+between the two installed fog-shadow materials by resource identity against the
+registered default. Material options control projected and temporal branches;
+they are resolved through the program registry, separately from environment
+uniforms. The pass uses integer pixel coordinates and its actual viewport for
+reconstruction, then stores the result in the source R8 target.
+
+The sun sprite's registered `Texture2D<float>` input samples red and broadcasts
+that scalar to colour and opacity; the image's stored alpha is not used.
+Its raster regression executes the installed cached pixel shader, including
+the exposure-buffer and white-level conversion, against the rewrite's output.
+
+`FogPass::record_sources` records the completed, filtered fog image separately
+from HDR composition. Its borrowed `FogSource` exposes that image for water
+sampling and consumes itself when recording the final blend. The borrow keeps
+targets and bindings stable between these phases. `FogPass::record` retains the
+existing consecutive sequence for views without intervening water rendering.
+The GPU composition test writes HDR between the phases and checks the result
+against the installed shader's numeric reference.
+
+`arkBoatVolume` is another geometry-only material: its installed fragment
+program has no output. `MaterialHandle::BoatVolume` retains its mesh and authored
+identity without a forward material or texture requests. Scene loading preserves
+resolved `stageSort` and `stageSortAdjust` instead of dropping a boat-proxy
+filename. The material-list selector follows runtime sort boundaries, while the
+constructor separately excludes `sortBoatVolume` from ordinary shadow gathering
+and forces the final `arkWater` sort after overrides. Boat/water depth-stencil
+states and shared indexed/nonindexed mesh submission have numeric tests; their
+complete depthWater/alpha-depth gameplay sequence remains pending. The shared
+position-mesh allocation owner is also used by interior fog geometry.
+
+Placed `arkWater` uses `MaterialHandle::Water` and `WaterMesh`, independently
+of forward prop materials. The loader retains its complete declaration, typed
+material-only options, MAIN program and authored render state in `WaterMaterials`.
+The immutable registry is shared across main/render worlds; visible instances
+carry current transforms, stable scene order and world/model provenance while
+reusing the scene allocator. Unresolved material input errors remain explicit.
+This scene publication does not yet provide motion history or the complete
+water pass sequence.
+
+`bevy_backend/water_depth.rs` owns the full-size depth/stencil water target,
+copies the current view's immutable opaque depth, and restores opaque depth
+inside boat volumes after water geometry. It reuses the shared copy shader and
+the verified stencil predicate; the alternate task branch preserves stencil.
+World depth uses its material-derived cached state and reference zero, whereas
+model water uses the separate forced state and reference four. Numeric tests
+exercise ordinary copy, alternate copy, and masked restoration on both graphics
+backends. Geometry submission and gameplay scheduling still need to connect
+these operations before the result can feed alpha depth, fog, and water colour.
+
+`rendering/water.rs` also separates water colour admission from visible ocean
+patches. `bevy_backend/water_foam_depth.rs` produces the quarter-resolution R16F
+foam mask from completed opaque and water depth attachments, then runs the four
+authored point/mirror Gaussian draws. It retains its textures, uniforms and input
+bindings across frames. The view owner supplies matrices, viewport/scissor and
+resolution transforms; connecting this producer to gameplay still depends on
+the complete water-depth and water-colour sequence above.
+The shared point-sampling helper preserves level-zero Direct3D fixed-point
+rounding and mirrored texel selection across graphics backends.
+
+Ocean wave simulation, quadtree selection and grid generation live in
+`rendering/ocean/`; their GPU resources live under `bevy_backend/ocean_waves/`.
+`ocean_surface.rs` and `ocean_vertex.rs` carry the shared displacement equations
+and explicit current/previous view parameters. `ocean_mesh.rs` uploads the shared
+grid once. `ocean_depth.rs` submits indexed strips and edge triangles with the
+selected program's prepared state. Normal depth writes RG16F motion; alpha depth has no fragment
+stage. It preserves caller-owned depth/stencil and requires real wave history,
+patch constants, viewport and scissor. Shared GPU state translation lives in
+`pipeline_state.rs`, also used by the shadow pipeline. `ocean_colour.rs` provides
+the colour pipelines, projected-height shadows, foam sampling and complete water
+shader composition. GPU tests compare complete colour, depth and stencil
+readbacks against the installed cached ocean stages, including perspective
+interpolation, implicit foam mips, nonzero parameter offsets and scissor clipping.
+View resource ownership and the complete gameplay water sequence remain
+unfinished; these producers do not establish visible gameplay ocean support.
+Ocean settings resolve the authored projected-height image, extent and thresholds
+from each effective environment. These images are installed resources, with the
+registered black image used where the environment specifies it.
+`water/settings.rs` resolves the shared optical, caustic, sky and reflection
+uniforms through the same registered-default reader. Ocean settings include
+these values; shader options and runtime reflection admission remain separate.
+The installed-environment audit resolves the combined inputs across all 36 levels.
+
+`water_normals.rs` preserves placed `arkWater`'s distance-dependent Perlin detail
+and finite-difference normal, including the tangent-space path for vertical
+surfaces. These waves affect shading rather than displacing mesh vertices.
+`water_colour.rs` prepares the fragment's inputs to the shared complete water
+shading function, with the placed surface's actual height and source constants
+for foam and additional visibility. Numeric comparisons execute the installed
+functions and fragment preparation on both graphics backends.
+`water_probes.rs` preserves PC probe transport: normal-W triangle corners encode
+the vertex's cube-array index, and the fragment reconstructs three indices and
+their weights after interpolation. The single-probe and disabled branches stay
+separate. `water_colour_input_with_probes` feeds these values into the shared
+surface input. `probe_weights.rs` supplies the same unsaturated tetrahedral
+interpolation to general indirect lighting and water probe selection.
+`water_world_colour.rs` implements the world-water vertex stage: instance remap,
+game-space transform, PNW reference lookup, strongest interpolated probe selection,
+ProbeInfo lookup, cube-array remapping and normal-W transport. It consumes the
+existing eight-word PNW buffer layout, with separate ProbeInfo and cube-remap
+buffers. Level setup publishes `WaterLighting` with the existing PNW, cube-array
+and plane allocations. The reflection loader supplies the primary ProbeInfo
+records and the source-ID-to-uploaded-slot buffer once per level. Missing or
+invalid associations remain explicit results. Visible instances share these
+handles across extraction. `WaterWorldMeshes` retains the raw shared world mesh
+for each water object; visible instances preserve their original object and
+matrix indices even where the host forward mesh has baked shear. Only those
+shared meshes acquire the additional SNORM normal-W probe-corner channel.
+`app/world_instances.rs` owns one immutable 48-byte matrix stream per level,
+shared by whole-view depth, directional shadows, local shadows and water.
+`WorldProbeVertexStage` binds that stream and the shared probe buffers with an
+explicit raw-position/normal-W vertex layout. Numeric raster checks cover real
+vertex fetch, nonzero allocator offsets, draw-relative instances and projection
+against the cached shader's stream output. Gameplay draw ownership and the
+complete colour pipeline remain pending.
+Water material loading also resolves slot4 separately for rigid bank0 and world
+bank2, respecting authored depth-program nulls, constructor finalization and the
+direct/multi-instancing exclusion. The shader cache admits only the actual
+verified rigid/world vertex and motion-pixel bytecode pairs. These sources and
+their errors stay attached to the material; they do not imply a completed draw.
+Its parameters explicitly compensate for the allocator vertex base and WGPU's
+first-instance convention; D3D11's source instance ID is draw-relative.
+`water_depth_program.rs` submits rigid water meshes with actual current/previous
+MVP rows, the model depth multiplier, and jitter. Its world branch resolves
+the remap buffer's low 24 bits, reads the shared 48-byte instance matrices,
+and applies current/previous view-projection matrices to the current world
+position. It reuses the world-shadow projection arithmetic and applies no prop
+depth multiplier. The world parameters likewise remove WGPU's first-instance
+base before the source remap lookup. Normal depth writes the
+material-selected RG16F motion channels; alpha depth has no fragment output.
+The shared motion helper also serves ocean depth. Raster comparisons use the
+installed cached vertex/pixel stages and verify all depth, stencil, and motion
+samples. Scene mesh publication, wind/skinned variants, colour raster, and
+gameplay frame ownership for this placed-water path remain unfinished.
+
+Resident BIM texture arrays retain their authored block format and mip/layer
+order through `assets/texture.rs` and `bevy_backend/layered_images.rs`. The shared
+uploader also preserves cube faces and supplies a cube view. GPU format
+mapping is shared with the ordinary texture streamer through `image_formats.rs`.
+Registered image defaults include array and cube identities. The floating array
+frame index follows the source sampler's nearest/even rounding and layer clamp.
+
+`water_refraction.rs` provides the active water refraction equations, including
+depth-validated distortion, exposure decoding, animated chromatic caustics,
+parallel shadow visibility and vertical extinction. `screen_ray.rs` implements
+the source's hierarchical depth traversal, used by screen-space reflection.
+`water_reflection.rs` combines that traversal with the authored sky/probe
+fallback, fog and HDR decoding. `water_surface.rs` supplies complete default
+above-water and underwater colour composition, including Fresnel, sun reflection
+and refraction, foam and geometry-edge alpha. These require explicit current-view
+inputs and are tested with numeric GPU readback against installed shader
+functions. Their application resource owners and final water colour submission
+remain unfinished. The shared `test_depth.rs` uploader and `test_water.rs`
+numeric scene are compiled only for GPU tests.
+
+`colour_output.rs` supplies the shared black/white overlay and HDR range
+compression. Local-light fog and ocean colour use the same overlay function.
+The conversion uses the actual auto-exposure luminance factor and white level,
+including the source's unguarded zero-exposure results.
+`rendering/water.rs` also preserves the per-view refracted sunlight calculation,
+verified against the executed game code; the eventual view owner supplies the
+actual parallel-light direction.
 
 `arkSky` and `arkClouds` use their authored colour, star, opacity, animated UV,
 density, scattering and back/rim-lighting equations in `dh2_sky.wgsl`.
@@ -262,9 +426,9 @@ depth/particle-center producers for other soft-contact modes remain separate.
 cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
 occlusion without looking at images.
 
-Remaining render-graph coverage: the sky/cloud secondary fog-depth mask is not
-consumed until world-distance fog is connected; physical atmosphere LUT
-composition and the HDR/depth-dependent `arkWater` path are also pending.
+The sky/cloud secondary depth mask now feeds world-distance fog. Remaining
+render-graph coverage includes physical atmosphere LUT composition and the
+HDR/depth-dependent `arkWater` path.
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
 and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
@@ -338,11 +502,18 @@ values, mip selection, linear filtering and the default sampled channels.
 
 `rendering/fog/world.rs` owns prepared distance/height fog parameters and the
 understood shader calculations. Its synthetic numerical reference comes from
-executing the installed fog helpers. This is groundwork for atmosphere
-rendering; the runtime fog pass still needs its interior-depth, sky/cloud mask,
-scattering and turbulence producers. It must consume those authored inputs
-before being enabled. The interior-volume depth contract remains separate from
-opaque forward surface materials.
+executing the installed fog helpers. Runtime world fog uses signed interior
+depth, the sky/cloud mask and independent world/light turbulence canvases.
+`app/fog_scene.rs` publishes environment parameters and images;
+`rendering/bevy_backend/fog_scene.rs` owns GPU submission and same-view resource
+readiness. Local-light scattering has a tested pass and tiled-light owner, but
+is not yet connected to gameplay. The interior-volume depth contract remains
+separate from opaque forward surface materials.
+
+The tiled-light depth gather preserves the measured reciprocal/MAD arithmetic
+through depth-bin mapping. Rounding linear Z before that mapping changes the
+occupied bin for constant-depth tiles despite identical near/far endpoints.
+Native shader fixtures check exact masks on both graphics backends.
 
 Tome support-plane, distance and portal-pixel kernels retain the game's packed
 SSE arithmetic and comparison order. Their scalar test oracles and captured
@@ -463,6 +634,35 @@ the frame-rate display. `RAM` is the resident working set; `Private` is private
 committed memory and includes pages that may be paged out. These process counters
 include driver allocations charged to the process and are not GPU VRAM totals.
 Unavailable counters are shown explicitly rather than reported as zero.
+
+F8 can request a numerical fog capture through `fog_capture`. The render owner
+records the exact scene-depth, directional-atlas, fog-shadow and sampling-buffer
+inputs from one submitted view. Mapping is asynchronous after submission;
+private binary data and matching view metadata are written by the I/O pool.
+No continuous capture, image encoding or gameplay visibility decision depends
+on these diagnostic resources. Adapter buffer limits are checked before copying.
+
+The authored filmic curve calculation lives in `rendering::tone_mapping`.
+`app::display_scene` prepares registered defaults, level and area values, and
+resident 3D colour tables directly from archives. Gameplay publishes typed
+camera-area transitions for the filmic curve, grading and exposure controls;
+it does not parse declarations or load tables during frame updates.
+
+`bevy_backend::colour_cube` owns three bounded RGBA8 volume textures for
+environment colour-table history and overlays. It preserves the last base
+blend when a new transition starts; overlay output has its own texture.
+`bevy_backend::tone_mapping` supplies the filmic curve, 3D table lookup and
+display gamma as a single full-screen pass with GPU-resident exposure input.
+`bevy_backend::display_scene` runs this pass after exposure computation and
+replaces Bevy tone mapping only when the view's real inputs are ready. Missing
+resources preserve the existing loading fallback. The fragment reads current
+GPU adaptation directly; the host removes camera pre-exposure once. Immutable
+colour-table inputs are blended only when their views or weights change.
+These components are numerically checked against installed shader rules, and
+headless render-graph checks cover readiness, fallback and changing exposure on
+Vulkan and DirectX 12. Fog-shadow sampling and filtering are unchanged. External
+Midnight environment overrides, bloom and other final-display effects remain
+separate unfinished paths; ordinary camera-area inputs are connected.
 
 Cutout shadow materials create their authored initial image mip chains during
 level setup. Both model and static-world shadow program banks determine which

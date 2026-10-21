@@ -361,7 +361,7 @@ impl CascadeFarInput {
 /// FUN_140330630's reload, authored rescaling, movement/dirty gate and split
 /// update. `DAT_143309920` is prepare-results +0xb00, written by
 /// FUN_140332900 after each update. FUN_14032fd40/FUN_140310a80 copy it TO
-/// the `parallelLightSliceNears` shader parameter. The biased pointer
+/// the `parallelLightSliceFars` shader parameter. The biased pointer
 /// `DAT_14330991c + count*4` selects the last preceding effective far.
 pub fn update_cascade_fars(state: &mut CascadeFarState, input: &CascadeFarInput) -> [f32; 4] {
     assert!(
@@ -2242,7 +2242,7 @@ pub struct DirectionalProjectionInput {
 }
 
 /// Persistent arkParallelShadowPepareResults fields used by FUN_140332900.
-/// The shader's misleadingly named `parallelLightSliceNears` is this owner's
+/// The shader's `parallelLightSliceFars` is this owner's
 /// PREVIOUS effective far bank, not an independently supplied render parameter.
 /// FUN_140351780 binds &DAT_143308e20 to preparation (140353668) and stores
 /// that same address in gather-results slot1 (1403537c2). Its +0xb00 bank is

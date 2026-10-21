@@ -9,16 +9,70 @@ use bevy::{
     },
 };
 
+pub(super) struct LoadedReflections {
+    pub image: Handle<Image>,
+    pub planes: Handle<ShaderBuffer>,
+    pub brdf_lookup: Option<Handle<Image>>,
+    /// Source secondary-probe ID -> actual slot appended to this cube array.
+    pub cube_indices: Option<Handle<ShaderBuffer>>,
+    pub cube_count: u32,
+}
+
+impl LoadedReflections {
+    pub fn water_probes(
+        &self,
+        probes: Option<&probe_lighting::ProbeLightingSet>,
+        vertex_references: Handle<ShaderBuffer>,
+        buffers: &mut Assets<ShaderBuffer>,
+    ) -> Result<Option<crate::rendering::bevy_backend::water_scene::WaterProbeResources>, String>
+    {
+        let Some(probes) = probes.filter(|probes| !probes.probes.is_empty()) else {
+            return Ok(None);
+        };
+        let cube_indices = self
+            .cube_indices
+            .clone()
+            .ok_or("water probes have no reflection cube array")?;
+        let records = probes.reflection_shader_words();
+        if let Some((probe, record)) = records
+            .iter()
+            .enumerate()
+            .find(|(_, record)| record[0] >= self.cube_count)
+        {
+            return Err(format!(
+                "water primary probe {probe} references absent reflection probe {}",
+                record[0]
+            ));
+        }
+        Ok(Some(
+            crate::rendering::bevy_backend::water_scene::WaterProbeResources {
+                vertex_references,
+                probe_info: buffers.add(ShaderBuffer::from(records)),
+                cube_indices,
+                cubes: self.image.clone(),
+                planes: self.planes.clone(),
+                primary_count: probes
+                    .probes
+                    .len()
+                    .try_into()
+                    .map_err(|_| "too many water lighting probes")?,
+                cube_count: self.cube_count,
+            },
+        ))
+    }
+}
+
 pub(super) fn load(
     catalog: Option<&archive::Catalog>,
     probes: Option<&probe_lighting::ProbeLightingSet>,
     images: &mut Assets<Image>,
     buffers: &mut Assets<ShaderBuffer>,
-) -> Result<(Handle<Image>, Handle<ShaderBuffer>, Option<Handle<Image>>), String> {
+) -> Result<LoadedReflections, String> {
     let count = probes.map_or(0, |p| p.reflection_probes.len());
     let mut words = vec![count as u32, 0, 0, 0];
     let mut data = Vec::new();
     let mut spec = None;
+    let mut cube_indices = Vec::<u32>::with_capacity(count);
     if let Some(probes) = probes {
         for probe in &probes.reflection_probes {
             let catalog = catalog.ok_or("reflection catalog missing")?;
@@ -39,6 +93,14 @@ pub(super) fn load(
                 }
             }
             spec = Some(cube.info);
+            // Cubes are appended in secondary-probe order. Record that upload
+            // association explicitly rather than treating IDs as GPU slots.
+            cube_indices.push(
+                cube_indices
+                    .len()
+                    .try_into()
+                    .map_err(|_| "too many reflection cubes")?,
+            );
             // Bevy's default upload order is layer-major. The archive is mip-major.
             for face in 0..6 {
                 let mut offset = 0;
@@ -111,9 +173,12 @@ pub(super) fn load(
     } else {
         None
     };
-    Ok((
-        images.add(image),
-        buffers.add(ShaderBuffer::from(words)),
-        lookup,
-    ))
+    Ok(LoadedReflections {
+        image: images.add(image),
+        planes: buffers.add(ShaderBuffer::from(words)),
+        brdf_lookup: lookup,
+        cube_count: count.try_into().map_err(|_| "too many reflection cubes")?,
+        cube_indices: (!cube_indices.is_empty())
+            .then(|| buffers.add(ShaderBuffer::from(cube_indices))),
+    })
 }

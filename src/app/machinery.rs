@@ -28,20 +28,7 @@ impl AmbientMachinery {
         let world = MachineryWorld::from_recipes(&recipes)?;
         info!("Ambient machinery: {} assemblies, {} bodies, {} constraints, {} unsupported assemblies",recipes.assemblies.len(),world.bodies.iter().filter(|b|b.placement.is_some()).count(),world.joint_count(),recipes.unsupported.len());
         let graphs = crate::entities::scene_motion::load(catalog, document)?;
-        #[cfg(target_os = "windows")]
-        let counter = {
-            #[link(name = "kernel32")]
-            unsafe extern "system" {
-                fn QueryPerformanceCounter(value: *mut i64) -> i32;
-            }
-            let mut value = 0;
-            if unsafe { QueryPerformanceCounter(&mut value) } == 0 {
-                return Err("scene random counter unavailable".into());
-            }
-            value as u64
-        };
-        #[cfg(not(target_os = "windows"))]
-        let counter = 0;
+        let counter = crate::platform::performance_counter::counter()? as u64;
         let scenes = crate::gameplay::scene_motion::SceneMotion::new(graphs, &placements, counter);
         for diagnostic in &scenes.diagnostics {
             warn!("Ambient scene motion: {diagnostic}");

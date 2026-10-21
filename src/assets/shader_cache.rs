@@ -13,6 +13,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
+mod water;
+pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
 
 /// Cache slots 0/1, NOT the render-program platform enum's PC/PC_D3D12 IDs.
@@ -372,6 +374,8 @@ pub struct ProgramLibrary {
         HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedRigidShadowSource>>>>,
     world_shadow_sources:
         HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedWorldShadowSource>>>>,
+    water_depth_sources:
+        HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedWaterDepthSource>>>>,
 }
 
 impl ProgramLibrary {
@@ -408,6 +412,7 @@ impl ProgramLibrary {
             definitions: HashMap::new(),
             rigid_shadow_sources: HashMap::new(),
             world_shadow_sources: HashMap::new(),
+            water_depth_sources: HashMap::new(),
         })
     }
 
@@ -497,6 +502,100 @@ impl ProgramLibrary {
             self.float_vector_defaults[&key].clone()?,
             fallback,
         )
+    }
+
+    /// 2d5210 first merges MAIN-program parms, then authored material parms,
+    /// and stores stageSort/Adjust separately at material+2c0/+2c4. Named
+    /// stageSort constants resolve through the actual render-parameter registry.
+    pub fn material_stage_sort_parameters(
+        &mut self,
+        catalog: &crate::archive::Catalog,
+        main_program: &[u8],
+        source: &str,
+    ) -> Result<[u32; 2]> {
+        let fallback = self
+            .definition(main_program)?
+            .ok_or("stage sort has no MAIN program definition")?
+            .defaults
+            .clone();
+        let empty = crate::render_program::SerializedParameterBlock {
+            flags: 0,
+            parameters: Vec::new(),
+        };
+        let values = crate::entities::material_float_parameters_with_stage_sort(
+            source,
+            |name| matches!(name, "stagesort" | "stagesortadjust"),
+            |name| self.registered_float_vector(catalog, &empty, name.as_bytes(), None),
+        )?;
+        let overrides = crate::render_program::SerializedParameterBlock {
+            flags: 0,
+            parameters: values
+                .into_iter()
+                .map(|(name, words)| crate::render_program::SerializedParameter {
+                    name: name.into_bytes(),
+                    kind: crate::render_program::RenderParameterKind::Uniform,
+                    value: crate::render_program::SerializedParameterValue::Words(words),
+                })
+                .collect(),
+        };
+        let value =
+            self.registered_float_vector(catalog, &overrides, b"stagesort", Some(&fallback))?[0];
+        let adjust =
+            self.registered_float_vector(catalog, &overrides, b"stagesortadjust", Some(&fallback))?
+                [0];
+        Ok([value, adjust])
+    }
+
+    pub fn material_stage_sort(
+        &mut self,
+        catalog: &crate::archive::Catalog,
+        main_program: &[u8],
+        source: &str,
+    ) -> Result<[u32; 2]> {
+        let mut result = self.material_stage_sort_parameters(catalog, main_program, source)?;
+        // 2d6f39: MAIN==arkWater sets +48 bit5 and forces the final sort
+        // to sortWater, after authored overrides. The adjustment is retained.
+        if main_program.eq_ignore_ascii_case(b"arkWater") {
+            let empty = crate::render_program::SerializedParameterBlock {
+                flags: 0,
+                parameters: Vec::new(),
+            };
+            result[0] = self.registered_float_vector(catalog, &empty, b"sortwater", None)?[0];
+        }
+        Ok(result)
+    }
+
+    /// Runtime list boundaries copied by 140351210 to renderer+5fa318.
+    /// The final sentinel is the executable's 0x7149f2ca float constant.
+    pub fn material_sort_thresholds(
+        &mut self,
+        catalog: &crate::archive::Catalog,
+    ) -> Result<[f32; 10]> {
+        let empty = crate::render_program::SerializedParameterBlock {
+            flags: 0,
+            parameters: Vec::new(),
+        };
+        let mut values = [0.; 10];
+        for (index, name) in [
+            "sortboatvolume",
+            "sortemit",
+            "sortemitonly",
+            "sortshadowwalk",
+            "sortdecal",
+            "sortwater",
+            "sortdarkvision",
+            "sorthud",
+            "sortperturber",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            values[index] = f32::from_bits(
+                self.registered_float_vector(catalog, &empty, name.as_bytes(), None)?[0],
+            );
+        }
+        values[9] = f32::from_bits(0x7149f2ca);
+        Ok(values)
     }
 
     /// 140342a50 with a null fallback: material overrides then the registered
@@ -939,6 +1038,27 @@ fn inflate(bytes: &[u8], unpacked: u32) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires installed RPD/registered stage-sort constants"]
+    fn installed_water_stage_sort_uses_main_defaults_and_authored_overrides() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let catalog = crate::archive::Catalog::open(&base).unwrap();
+        let mut library = super::ProgramLibrary::open(&base, super::ShaderCacheBackend::Pc, &catalog).unwrap();
+        for (program, expected) in [(b"arkWater".as_slice(), 300f32), (b"arkBoatVolume".as_slice(), 80f32)] {
+            assert_eq!(library.material_stage_sort(&catalog, program, "{}").unwrap(), [expected.to_bits(), 0]);
+            let authored_sort = if program.eq_ignore_ascii_case(b"arkWater") {300f32} else {-1.5f32};
+            assert_eq!(library.material_stage_sort(&catalog, program,
+                "{stageSort -1.5 stageSortAdjust .25}").unwrap(), [authored_sort.to_bits(), 0.25f32.to_bits()]);
+            assert_eq!(library.material_stage_sort(&catalog, program,
+                "{stageSort sortWater stageSort sortBoatVolume}").unwrap(), [expected.to_bits(), 0]);
+        }
+        let thresholds = library.material_sort_thresholds(&catalog).unwrap();
+        assert_eq!(thresholds[0], 80.);
+        assert_eq!(thresholds[5], 300.);
+        assert_eq!(crate::material::draw_bucket(0, 0, 0, false, [80., 0.], thresholds), 0x26);
+        assert_eq!(crate::material::draw_bucket(0, 0, 0, false, [300., 0.], thresholds), 0x2d);
+        println!("Installed material-list boundaries: {thresholds:?}");
+    }
     use super::*;
     use flate2::{write::DeflateEncoder, Compression};
     use std::io::Write;

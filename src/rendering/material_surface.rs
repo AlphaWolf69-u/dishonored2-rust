@@ -2,7 +2,7 @@
 //! installed arkDefaultHelpers and renderParm declarations, not a PBR preset.
 use std::collections::HashMap;
 
-pub const TEXTURE_PARAMETERS: [&str; 33] = [
+pub const TEXTURE_PARAMETERS: [&str; 35] = [
     "diffusemap",
     "layer1_diffusemap",
     "layer2_diffusemap",
@@ -36,6 +36,8 @@ pub const TEXTURE_PARAMETERS: [&str; 33] = [
     "densitymap",
     "backdensitymap",
     "texturemap",
+    "skydepth",
+    "clouddepth",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,7 @@ pub enum Program {
     Sky = 7,
     Clouds = 8,
     SimpleSprite = 9,
+    BoatVolume = 10,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,7 @@ pub struct Surface {
     pub lightmap: String,
     pub filling_images: [String; 6],
     pub cloud_images: [String; 3],
+    pub sky_depth: String,
     pub layers: [Layer; 3],
     pub extra_layers: usize,
     pub has_bump: bool,
@@ -186,6 +190,7 @@ impl Surface {
             Some("arksky") => Program::Sky,
             Some("arkclouds") => Program::Clouds,
             Some("arksimplesprite") => Program::SimpleSprite,
+            Some("arkboatvolume") => Program::BoatVolume,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
@@ -268,6 +273,17 @@ impl Surface {
             }),
             cloud_images: ["opacitymap", "densitymap", "backdensitymap"]
                 .map(|n| image(&v, n).unwrap_or_else(|| "_black".into())),
+            sky_depth: image(
+                &v,
+                if v.get("mainprogram")
+                    .is_some_and(|name| name.trim_matches('"').eq_ignore_ascii_case("arkClouds"))
+                {
+                    "clouddepth"
+                } else {
+                    "skydepth"
+                },
+            )
+            .unwrap_or_else(|| "_black".into()),
             layers,
             extra_layers: number(&v, "extralayer", 0) as usize,
             has_bump: number(&v, "hasbumpmap", 0) != 0,
@@ -306,7 +322,10 @@ impl Surface {
             return vec![(0, self.layers[0].diffuse.as_deref().unwrap())];
         }
         if matches!(self.program(), Program::Sky | Program::Clouds) {
-            let mut bindings = vec![(0, self.layers[0].diffuse.as_deref().unwrap())];
+            let mut bindings = vec![
+                (0, self.layers[0].diffuse.as_deref().unwrap()),
+                (33, self.sky_depth.as_str()),
+            ];
             if self.program() == Program::Clouds {
                 for (i, name) in self.cloud_images.iter().enumerate() {
                     bindings.push((29 + i, name.as_str()));
@@ -314,7 +333,7 @@ impl Surface {
             }
             return bindings;
         }
-        if self.program() == Program::InteriorVolume {
+        if matches!(self.program(), Program::InteriorVolume | Program::BoatVolume) {
             return Vec::new();
         }
         if self.program() == Program::Vista {

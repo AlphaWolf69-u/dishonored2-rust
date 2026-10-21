@@ -22,6 +22,7 @@ use crate::tiled_lighting::{
 pub struct TlfPipelines {
     pub depth: ComputePipeline,
     pub cull: ComputePipeline,
+    pub clear_heads: ComputePipeline,
     /// FUN_1402fc6a0's last-mip reduction/unprojection into the 64×64 CPU grid.
     /// Source mip, viewport scale and inverse projection belong to the caller.
     pub coarse_depth: ComputePipeline,
@@ -108,8 +109,32 @@ impl TlfPipelines {
         buffers: &[bevy::render::render_resource::RawVertexBufferLayout<'_>],
     ) -> bevy::render::render_resource::RenderPipeline {
         use bevy::render::render_resource::*;
+        self.depth_copy_pipeline_with_state(
+            device,
+            downscale,
+            buffers,
+            DepthStencilState {
+                format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            },
+        )
+    }
+
+    /// Reuse the captured copy program with its caller's depth/stencil state,
+    /// including 2feef0's masked boat-depth restoration.
+    pub fn depth_copy_pipeline_with_state(
+        &self,
+        device: &RenderDevice,
+        downscale: bool,
+        buffers: &[bevy::render::render_resource::RawVertexBufferLayout<'_>],
+        depth: bevy::render::render_resource::DepthStencilState,
+    ) -> bevy::render::render_resource::RenderPipeline {
+        use bevy::render::render_resource::*;
         device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("native 2D depth copy/downscale"),
+            label: Some("2D depth copy/downscale"),
             layout: None,
             vertex: RawVertexState {
                 module: &self.depth_copy_2d,
@@ -130,15 +155,10 @@ impl TlfPipelines {
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
-            depth_stencil: Some(DepthStencilState {
-                format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: Some(depth),
         })
     }
+
 }
 
 impl FromWorld for TlfPipelines {
@@ -159,6 +179,7 @@ impl FromWorld for TlfPipelines {
             })
         };
         Self {
+            clear_heads: compile(include_str!("../../../assets/shaders/dh2_tlf_cull.wgsl"),"clear_heads"),
             depth: compile(
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),

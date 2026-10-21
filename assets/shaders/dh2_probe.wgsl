@@ -13,10 +13,12 @@
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
 #import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility}
-#import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, linear_clamp, scaled_uv}
+#import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, scaled_uv}
+#import dh2_material_samplers::linear_clamp
 #import dh2_sky::sky_colour
 #import dh2_surface::material_exposure
 #import dh2_reflection::reflected_light
+#import dh2_material_fog::{material_fog_pixel,material_fog_composite}
 
 @fragment
 fn fragment(
@@ -237,6 +239,13 @@ fn fragment(
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color=vec4(out.color.rgb+emissive*139.26*view.exposure,out.color.a);
     }
+#ifdef DH2_FOG_VERTEX
+    out.color=vec4(material_fog_composite(out.color.rgb,vertex_output.fog_color),out.color.a);
+#else
+    if (compiled_misc.w&8u)!=0u {
+        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,mesh[vertex_output.instance_index].tag),out.color.a);
+    }
+#endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

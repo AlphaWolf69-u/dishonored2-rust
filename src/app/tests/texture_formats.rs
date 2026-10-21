@@ -4,6 +4,33 @@ use super::*;
 #[test]
 #[ignore = "requires GPU; uploads and samples R16Float authored mip payloads"]
 fn half_float_texture_upload_and_sampling_gpu() {
+    let values = [0.0009765625_f32, 0.25, 3., 4096., -2., 0.33325195, 12.];
+    scalar_16_texture_upload_and_sampling(
+        texture::ImageFormat::R16Float,
+        values.map(|v| half::f16::from_f32(v).to_bits()),
+        values,
+        0.0,
+    );
+}
+
+#[test]
+#[ignore = "requires GPU; uploads and filters authored R16Unorm mip payloads"]
+fn normalized_16_texture_upload_and_sampling_gpu() {
+    let words = [0u16, 1, 32768, 65535, 12345, 54321, 40000];
+    scalar_16_texture_upload_and_sampling(
+        texture::ImageFormat::R16Unorm,
+        words,
+        words.map(|v| f32::from(v) / 65535.0),
+        0.0000002,
+    );
+}
+
+fn scalar_16_texture_upload_and_sampling(
+    source_format: texture::ImageFormat,
+    words: [u16; 7],
+    values: [f32; 7],
+    tolerance: f32,
+) {
     use bevy::render::{
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -21,7 +48,7 @@ fn half_float_texture_upload_and_sampling_gpu() {
     );
     app.finish();
     app.cleanup();
-    let format = gpu_image_format(texture::ImageFormat::R16Float);
+    let format = gpu_image_format(source_format);
     let handle = app
         .world_mut()
         .resource_mut::<Assets<Image>>()
@@ -34,20 +61,16 @@ fn half_float_texture_upload_and_sampling_gpu() {
     let queue = render.resource::<RenderQueue>();
     let images = render.resource::<RenderAssets<GpuImage>>();
     let image = images.get(handle.id()).unwrap();
-    let values = [0.0009765625_f32, 0.25, 3., 4096., -2., 0.33325195, 12.];
     let uploads = [
-        (0, 4, &values[..4]),
-        (1, 2, &values[4..6]),
-        (2, 1, &values[6..]),
+        (0, 4, &words[..4]),
+        (1, 2, &words[4..6]),
+        (2, 1, &words[6..]),
     ]
     .map(|(mip_level, width, values)| CompressedMipUpload {
         mip_level,
         width,
         height: 1,
-        payload: values
-            .iter()
-            .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
-            .collect(),
+        payload: values.iter().flat_map(|v| v.to_le_bytes()).collect(),
     });
     upload_compressed_mips(device, queue, image, None, GpuMipCopy::None, &uploads).unwrap();
     let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
@@ -145,12 +168,21 @@ fn half_float_texture_upload_and_sampling_gpu() {
         .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
         .collect::<Vec<_>>();
     for id in 0..8 {
-        let red = if id < 7 { values[id] } else { 1.625 };
-        assert_eq!(
-            &actual[id * 4..id * 4 + 4],
-            &[red, 0., 0., 1.],
-            "half float mip/sample{id}"
-        );
+        let red = if id < 7 {
+            values[id]
+        } else {
+            (values[1] + values[2]) * 0.5
+        };
+        let expected = [red, 0., 0., 1.];
+        for channel in 0..4 {
+            assert!(
+                actual[id * 4 + channel].is_finite()
+                    && (actual[id * 4 + channel] - expected[channel]).abs() <= tolerance,
+                "{source_format:?} mip/sample{id} channel{channel}: {} != {}",
+                actual[id * 4 + channel],
+                expected[channel]
+            );
+        }
     }
     drop(mapped);
     readback.unmap();

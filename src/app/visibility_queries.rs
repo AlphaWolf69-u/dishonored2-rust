@@ -534,6 +534,35 @@ pub(super) fn stream_visible_models(
                 }
             } else {
                 let mut entity = match &instance.material {
+                    MaterialHandle::Water(material) => commands.spawn((
+                        Mesh3d(instance.mesh.clone()),
+                        crate::rendering::bevy_backend::water_scene::WaterMesh {
+                            material: material.clone(), order: index,
+                            geometry: instance.source.map(|source| match source.surface {
+                                super::RenderModelSurface::World { object, matrix } => crate::rendering::bevy_backend::water_scene::WaterGeometry::World { object, matrix },
+                                _ => crate::rendering::bevy_backend::water_scene::WaterGeometry::Model,
+                            }),
+                        },
+                        instance.transform,
+                        Visibility::Visible,
+                    )),
+                    MaterialHandle::BoatVolume(_) => commands.spawn((
+                        Mesh3d(instance.mesh.clone()),
+                        instance.transform,
+                        Visibility::Visible,
+                    )),
+                    MaterialHandle::Interior(_) => commands.spawn((
+                        Mesh3d(instance.mesh.clone()),
+                        crate::rendering::bevy_backend::fog::InteriorVolume,
+                        instance.transform,
+                        Visibility::Visible,
+                    )),
+                    MaterialHandle::Sky(material) => commands.spawn((
+                        Mesh3d(instance.mesh.clone()),
+                        crate::rendering::bevy_backend::sky_mask::SkyMesh {material:material.clone(),order:index},
+                        instance.transform,
+                        Visibility::Visible,
+                    )),
                     MaterialHandle::Probe(material) => commands.spawn((
                         Mesh3d(instance.mesh.clone()),
                         MeshMaterial3d(material.clone()),

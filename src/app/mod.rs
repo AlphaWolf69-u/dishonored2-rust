@@ -50,6 +50,9 @@ mod environment_reflection;
 mod model_motion;
 mod machinery;
 mod shadow_updates;
+mod shadow_diagnostics;
+mod world_instances;
+mod water_objects;
 mod state;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
@@ -74,6 +77,10 @@ use shadow_preparation::{
 };
 mod materials;
 mod sky_sprite;
+mod fog_scene;
+mod display_scene;
+mod fog_volumes;
+mod fog_objects;
 use materials::{
     DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT,
 };

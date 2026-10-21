@@ -416,34 +416,12 @@ pub(super) fn read_streamed_diffuse_at_target(
     }))
 }
 
-pub(super) fn gpu_image_format(format: texture::ImageFormat) -> TextureFormat {
-    use texture::ImageFormat::*;
-    match format {
-        Rgba8 => TextureFormat::Rgba8Unorm,
-        Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
-        Rg8 => TextureFormat::Rg8Unorm,
-        R16Float => TextureFormat::R16Float,
-        Rg32Float => TextureFormat::Rg32Float,
-        Bgra8 => TextureFormat::Bgra8Unorm,
-        Bc1 => TextureFormat::Bc1RgbaUnorm,
-        Bc1Srgb => TextureFormat::Bc1RgbaUnormSrgb,
-        Bc3 => TextureFormat::Bc3RgbaUnorm,
-        Bc3Srgb => TextureFormat::Bc3RgbaUnormSrgb,
-        Bc4 => TextureFormat::Bc4RUnorm,
-        Bc4Snorm => TextureFormat::Bc4RSnorm,
-        Bc5 => TextureFormat::Bc5RgUnorm,
-        Bc5Snorm => TextureFormat::Bc5RgSnorm,
-        Bc6Unsigned => TextureFormat::Bc6hRgbUfloat,
-        Bc6Signed => TextureFormat::Bc6hRgbFloat,
-        Bc7 => TextureFormat::Bc7RgbaUnorm,
-        Bc7Srgb => TextureFormat::Bc7RgbaUnormSrgb,
-    }
-}
+pub(super) use crate::rendering::bevy_backend::image_formats::gpu_image_format;
 
 pub(super) fn streamed_block_bytes(format: TextureFormat) -> Option<usize> {
     match format {
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => Some(4),
-        TextureFormat::Rg8Unorm | TextureFormat::R16Float => Some(2),
+        TextureFormat::Rg8Unorm | TextureFormat::R16Float | TextureFormat::R16Unorm => Some(2),
         TextureFormat::Rg32Float => Some(8),
         TextureFormat::Bgra8Unorm => Some(4),
         TextureFormat::Bc1RgbaUnorm
@@ -569,9 +547,18 @@ pub(super) fn attach_prepared_diffuse_image(
     images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
+    sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) {
     for (material, role) in &queue.diffuse_image_materials[slot] {
         match material {
+            MaterialHandle::Interior(_) | MaterialHandle::BoatVolume(_) | MaterialHandle::Water(_) => {
+                unreachable!("depth-only materials have no texture bindings")
+            }
+            MaterialHandle::Sky(material) => {
+                if let Some(mut material) = sky_materials.get_mut(material) {
+                    *material.image_mut(role.0) = Some(handle.clone());
+                }
+            }
             MaterialHandle::Probe(material) => {
                 if let Some(mut material) = probe_materials.get_mut(material) {
                     if *role == surface_gpu::ImageRole::occlusion() {
@@ -614,6 +601,7 @@ pub(super) fn initialize_resident_image(
     images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
+    sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) -> Result<usize, String> {
     if queue
         .diffuse_image_handles
@@ -648,6 +636,7 @@ pub(super) fn initialize_resident_image(
         images,
         probe_materials,
         decal_materials,
+        sky_materials,
     );
     commit_prepared_diffuse_level(queue, slot, streamed.level, mip_count);
     queue.diffuse_image_attempted[slot] = true;
@@ -684,6 +673,7 @@ pub(super) fn stream_visible_textures(
     mut images: ResMut<Assets<Image>>,
     mut probe_materials: ResMut<Assets<ProbeMaterial>>,
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
+    mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
 ) {
     let Some(mut worker) = worker else {
@@ -778,6 +768,7 @@ pub(super) fn stream_visible_textures(
                     &mut images,
                     &mut probe_materials,
                     &mut decal_materials,
+                    &mut sky_materials,
                 );
                 if let Some(level) = prepared_level {
                     commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
@@ -899,6 +890,7 @@ pub(super) fn stream_visible_textures(
                     &mut images,
                     &mut probe_materials,
                     &mut decal_materials,
+                    &mut sky_materials,
                 );
                 commit_prepared_diffuse_level(&mut queue, slot, minimum, minimum_count);
             }
@@ -1042,6 +1034,7 @@ pub(super) fn stream_visible_textures(
                 &mut images,
                 &mut probe_materials,
                 &mut decal_materials,
+                &mut sky_materials,
             );
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(diagnostics) = diagnostics.as_deref_mut() {

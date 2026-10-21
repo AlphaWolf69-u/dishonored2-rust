@@ -4,6 +4,7 @@ pub mod bmodel;
 pub mod bprobe;
 pub mod edge_skeleton;
 pub mod entities;
+pub mod environment;
 pub mod installation;
 pub mod level;
 pub mod physworld;

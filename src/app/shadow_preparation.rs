@@ -19,8 +19,8 @@ pub(super) struct ShadowMaterialInputs {
     /// native pointer bank, draw-state override, or a ready shadow frame.
     pub(super) rigid_base_source:
         Result<Option<std::sync::Arc<shader_cache::CachedRigidShadowSource>>, String>,
-    /// Native material +0x48 bit0 tests bank0 slot10 (+0xf0), regardless
-    /// of whether that program's rigid ABI has been ported. An unsupported
+    /// Native material +0x48 bit0 tests bank0 slot10 (+0xf0), then excludes
+    /// sortBoatVolume. This is independent of whether the rigid ABI is ported. An unsupported
     /// shader-class error must not be mistaken for an absent native pointer.
     pub(super) base_slot10_present: Result<bool, String>,
     /// Actual bank2 slot10 (+0x250), not a rigid-source substitute.
@@ -545,6 +545,10 @@ pub(super) struct CachedMaterial {
     pub(super) diffuse_image_slot: Option<usize>,
     pub(super) images: Vec<(usize, surface_gpu::ImageRole)>,
     pub(super) vertex_lighting: bool,
+    /// MAIN defaults followed by authored overrides; retain unresolved errors
+    /// for pass admission instead of silently inventing a sort value.
+    pub(super) stage_sort: Result<[u32; 2], String>,
+    pub(super) compatible_geometry_routes: bool,
 }
 
 /// Persistent native directional target and level-owned preparation. This is
@@ -1315,10 +1319,12 @@ pub(super) fn build_whole_view_layer(
     world: &world_mesh::WorldMesh,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
+    matrix_bank: &mut super::world_instances::WorldMatrices,
 ) -> shadow_pass::ShadowLayer {
     let has_instances = plans.iter().any(|plan| !plan.instances.is_empty());
-    let matrices =
-        has_instances.then(|| shader_buffers.add(ShaderBuffer::from(world.matrices.clone())));
+    let matrices = has_instances
+        .then(|| matrix_bank.get_or_upload(&world.matrices, shader_buffers))
+        .flatten();
     build_world_layer(plans, matrices.as_ref(), dimensions, shader_buffers)
 }
 
@@ -1609,6 +1615,7 @@ pub(super) fn publish_initial_whole_view_depth(
     completion: Option<Res<shadow_pass::ShadowSceneCompletion>>,
     mut frame: ResMut<shadow_pass::ShadowSceneFrame>,
     mut last_error: Local<Option<String>>,
+    mut matrix_bank: ResMut<super::world_instances::WorldMatrices>,
 ) {
     if matches!(
         &frame.state,
@@ -1687,6 +1694,7 @@ pub(super) fn publish_initial_whole_view_depth(
             &scene.world,
             owner.dimensions,
             shader_buffers,
+            &mut matrix_bank,
         ))
     })();
     match attempt {

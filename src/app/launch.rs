@@ -312,6 +312,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         area_environments.len()
     );
     let probe_start = Instant::now();
+    let area_fog = match (catalog.as_ref(), entity_document.as_ref()) {
+        (Some(catalog), Some(document)) => super::fog_volumes::load(catalog,document)
+            .map_err(std::io::Error::other)?,
+        _ => Vec::new(),
+    };
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
         (Some(catalog), Some(stem)) => {
@@ -364,7 +369,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|layer| layer.parameters.len())
             .sum::<usize>();
         println!(
-            "World environment render parameters: {} layers, {value_count} raw entries; exposure and sky consume authored values; fog/water remain pending",
+            "World environment render parameters: {} layers, {value_count} raw entries; exposure, sky and world fog consume authored values; radial rays, local/transparent fog and water rendering remain pending",
             parameters.layers.len(),
         );
     }
@@ -691,6 +696,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let machinery=super::machinery::AmbientMachinery::load(catalog.as_ref().unwrap(),entity_document.as_ref(),&placed_models)
         .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
+    app.insert_resource(super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(),entity_document.as_ref()).map_err(std::io::Error::other)?);
+    app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     let mut graphics = bevy::render::settings::WgpuSettings::default();
     #[cfg(target_os = "windows")]
     if env::var_os("WGPU_BACKEND").is_none() {
@@ -718,6 +725,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             environment_render_parameters,
             environment_blend_duration,
             area_environments,
+            area_fog,
             rewrite_shadow_settings,
             environment_probes,
             shadow_quality_preset,
@@ -863,11 +871,15 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
     app.add_plugins(auto_exposure::ExposurePlugin)
+        .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
         .add_plugins(game_clock_runtime::ClockRuntimePlugin)
         .add_plugins(shadow_pass::ShadowScenePlugin)
         .add_plugins(screen_shadow_pass::ScreenShadowScenePlugin)
         .add_plugins(coarse_depth::CoarseDepthPlugin)
+        .add_plugins(crate::rendering::bevy_backend::fog::FogPlugin)
+        .add_plugins(crate::rendering::bevy_backend::water_scene::WaterPlugin)
         .init_resource::<super::scene_queue::VisibleSceneInstances>()
+        .init_resource::<super::world_instances::WorldMatrices>()
         .init_resource::<shadow_updates::ParallelShadowCpu>()
         .init_resource::<local_shadow_updates::LocalShadowCpu>()
         .init_resource::<local_shadow_updates::LocalShadowViewControls>()
@@ -900,6 +912,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             (
                 camera_controls,
                 super::machinery::update_machinery,
+                super::fog_scene::update_world_wind,
                 update_coordinate_overlay,
                 interact_pickup,
                 snapshot_once,
@@ -988,7 +1001,19 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             PostUpdate,
             (finish_streaming_diagnostics, collision_report)
                 .chain()
-                .after(VisibilitySystems::CheckVisibility),
+                .after(VisibilitySystems::CheckVisibility)
+                .after(super::fog_scene::publish_fog_frame)
+                .after(shadow_updates::publish_parallel_shadow_frame),
+        )
+        .add_systems(PostUpdate,super::fog_scene::publish_fog_frame
+            .after(game_clock_runtime::ClockSystems::PublishView)
+            .after(bevy::camera::CameraUpdateSystems)
+            .after(bevy::transform::TransformSystems::Propagate))
+        .add_systems(
+            PostUpdate,
+            super::display_scene::publish_display_frame
+                .after(game_clock_runtime::ClockSystems::PublishView)
+                .after(bevy::transform::TransformSystems::Propagate),
         )
         .add_systems(Update, stream_visible_textures);
     bevy::asset::load_internal_asset!(
@@ -1007,7 +1032,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         app,
         INDIRECT_SHADER_HANDLE,
         "../../assets/shaders/dh2_indirect.wgsl",
-        Shader::from_wgsl
+        crate::rendering::bevy_backend::probe_weights::indirect_shader
     );
     bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
     super::sky_sprite::register(&mut app);
