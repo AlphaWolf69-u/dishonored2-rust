@@ -5,6 +5,10 @@ pub mod alpha_depth;
 #[cfg(feature = "game")]
 pub mod water_depth;
 #[cfg(feature = "game")]
+pub mod underwater_stencil;
+#[cfg(feature = "game")]
+pub mod ocean_water_line;
+#[cfg(feature = "game")]
 pub mod water_depth_program;
 #[cfg(feature = "game")]
 pub mod water_scene;
@@ -20,6 +24,8 @@ pub mod camera_projection;
 pub mod coarse_depth;
 #[cfg(feature = "game")]
 pub mod fog;
+#[cfg(feature = "game")]
+pub mod fog_lookup;
 #[cfg(feature = "game")]
 pub mod fog_capture;
 #[cfg(feature = "game")]
@@ -84,6 +90,8 @@ pub mod fog_filter;
 pub mod fog_light_scattering;
 #[cfg(feature = "game")]
 pub mod tiled_lighting_pass;
+#[cfg(feature = "game")]
+pub mod water_depth_scene;
 #[cfg(all(test, feature = "game"))]
 mod fog_light_scattering_tests;
 #[cfg(all(test, feature = "game"))]

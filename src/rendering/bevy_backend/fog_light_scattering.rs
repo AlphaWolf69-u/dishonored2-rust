@@ -8,6 +8,13 @@ use bevy::{
     },
 };
 
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct LocalFogFrame {
+    pub camera: Option<Entity>,
+    pub shadow_revision: Option<u64>,
+    pub lights: std::sync::Arc<Vec<[u32; 28]>>,
+}
+
 #[derive(Clone, Copy, ShaderType)]
 pub struct LightScatterView {
     pub world_from_clip: Mat4,

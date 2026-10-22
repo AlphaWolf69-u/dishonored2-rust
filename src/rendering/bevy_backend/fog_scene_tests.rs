@@ -9,7 +9,6 @@ use bevy::{
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     prelude::*,
     render::{
-        extract_resource::ExtractResourcePlugin,
         render_asset::RenderAssets,
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -32,6 +31,13 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
             })
             .set(RenderPlugin {
                 synchronous_pipeline_compilation: true,
+                render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+                    bevy::render::settings::WgpuSettings {
+                        features: bevy::render::settings::WgpuSettings::default().features
+                            | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8,
+                        ..default()
+                    },
+                )),
                 ..default()
             })
             .disable::<bevy::winit::WinitPlugin>()
@@ -40,14 +46,16 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
     app.add_plugins((
         crate::gameplay::game_clock_runtime::ClockRuntimePlugin,
         FogPlugin,
-        ExtractResourcePlugin::<super::shadow_pass::ShadowSceneFrame>::default(),
-        ExtractResourcePlugin::<super::shadow_sampling::ParallelSamplingBuffer>::default(),
+        super::water_scene::WaterPlugin,
+        super::shadow_pass::ShadowScenePlugin,
     ));
     app.init_resource::<super::shadow_pass::ShadowSceneFrame>();
     app.sub_app_mut(RenderApp)
         .init_resource::<super::shadow_pass::ShadowSceneGpu>();
     app.finish();
     app.cleanup();
+    app.sub_app_mut(RenderApp)
+        .init_resource::<super::tiled_lighting_gpu::TlfPipelines>();
     crate::shadow_sampling::register_shaders(&mut app);
     // Conditional imports in the patched mesh shader still require their
     // modules, as in the client and submission_tests' existing fixture.
@@ -55,7 +63,9 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         .world_mut()
         .resource_mut::<Assets<Shader>>()
         .add(Shader::from_wgsl(
-            super::probe_weights::indirect_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
+            super::probe_weights::indirect_source(include_str!(
+                "../../../assets/shaders/dh2_indirect.wgsl"
+            )),
             "fog-scene-fixture/dh2_indirect.wgsl",
         ));
     let device = app
@@ -126,6 +136,35 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         buffer: parallel,
         unavailable_depth: unavailable,
     });
+    let local_sampling =
+        app.world_mut()
+            .resource_mut::<Assets<ShaderBuffer>>()
+            .add(ShaderBuffer::from(
+                vec![0u32; super::shadow_sampling::local_sampling_word_count(0)],
+            ));
+    app.insert_resource(super::shadow_sampling::LocalSamplingBuffer {
+        buffer: local_sampling,
+        light_capacity: 0,
+    });
+    let local_depth = || {
+        super::shadow_pipeline::shadow_depth_image(
+            Extent3d {
+                width: 8,
+                height: 8,
+                depth_or_array_layers: 1,
+            },
+            TextureFormat::Depth16Unorm,
+        )
+        .unwrap()
+    };
+    let local_atlas = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(local_depth());
+    let local_cache = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(local_depth());
     let shared = app
         .world_mut()
         .resource_scope(|world, mut images: Mut<Assets<Image>>| {
@@ -252,7 +291,12 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
     let mut settings = crate::platform::game_settings::fog_render_settings("").unwrap();
     settings.skip_blur = true;
     app.insert_resource(FogSceneFrame(Some(FogFrame {
-        shadow:super::fog::FogShadowFrame {image:curve.clone(),extent:15000.,projected:false,temporal:false},
+        shadow: super::fog::FogShadowFrame {
+            image: curve.clone(),
+            extent: 15000.,
+            projected: false,
+            temporal: false,
+        },
         areas: Vec::new(),
         area_states: None,
         light_canvas: None,
@@ -267,6 +311,8 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         eye: Vec3::ZERO,
         sky_masking_factor: 1.,
         curve,
+        curve_weight: 1.,
+        curve_overrides: None,
         noise,
         settings,
         rays: crate::rendering::fog::rays::RaySettings {
@@ -459,7 +505,119 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         (0, None, true),
         (0, None, false),
         (0, None, true),
-    ].into_iter().enumerate() {
+        (0, None, false),
+        (0, None, false),
+        (0, None, false),
+        (0, None, false),
+        (0, None, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let light_fog = matches!(mode, 8 | 11 | 12);
+        // Retain the existing final area-volume case after the light on/off pair.
+        let local_fog = if mode == 8 {
+            false
+        } else if mode == 10 {
+            true
+        } else {
+            local_fog
+        };
+        if light_fog {
+            use crate::rendering::water::parameters::{PreparedWaterValues, WaterTracks};
+            let env = crate::entities::EnvironmentRenderParameters { layers: Vec::new() };
+            let defaults = PreparedWaterValues::load(&catalog, &env, true).unwrap();
+            let values = WaterTracks::new(&defaults)
+                .unwrap()
+                .update(&defaults, 0., &[], 0.);
+            let projection = app.world().get::<Projection>(camera).unwrap();
+            let Projection::Custom(custom) = projection else {
+                panic!("fixture projection changed")
+            };
+            let projection = custom
+                .get::<super::camera_projection::GameProjection>()
+                .unwrap();
+            let matrices = crate::rendering::view_history::ViewMatrices::from_camera(
+                [0.; 3],
+                [[0., 1., 0.], [-1., 0., 0.], [0., 0., 1.]],
+                projection.rows(),
+            );
+            app.insert_resource(super::water_scene::WaterSceneFrame(Some(
+                super::water_scene::WaterFrame {
+                    camera,
+                    ocean_render_settings: crate::platform::game_settings::ocean_render_settings(
+                        "",
+                    )
+                    .unwrap(),
+                    ocean_environment: crate::rendering::ocean::OceanSettings::load(&catalog, &env)
+                        .unwrap(),
+                    values,
+                    matrices: crate::rendering::view_history::ViewMatrixFrame {
+                        frame: 1,
+                        current: matrices,
+                        previous: matrices,
+                    },
+                    local_time: [0.; 2],
+                },
+            )));
+        }
+        if matches!(mode, 11 | 12) {
+            // Submit the real local atlas owner; never synthesize completion.
+            // Constant projections keep all six point sides on the same texel.
+            // Their reference changes from visible to rejected by the cleared
+            // atlas, proving the gameplay pass reads this atlas and its records.
+            let mut shadow = [0u32; 36];
+            for (index, value) in [
+                (3, 0.5f32),
+                (7, 0.5),
+                (11, if mode == 11 { 0.5 } else { 2. }),
+                (15, 1.),
+            ] {
+                shadow[index] = value.to_bits();
+            }
+            let mut copy_state = [0; 9];
+            crate::render_state::reset_render_state(&mut copy_state);
+            app.insert_resource(super::shadow_pass::LocalShadowSceneFrame(Some(
+                super::shadow_pass::LocalShadowSubmission {
+                    revision: mode as u64,
+                    atlas: local_atlas.clone(),
+                    cache: local_cache.clone(),
+                    atlas_extent: [8, 8, 1],
+                    cache_extent: [8, 8, 1],
+                    depth_32_bits: false,
+                    copy_state,
+                    layers: Vec::new(),
+                    regions: Vec::new(),
+                    receiver: Ok(super::shadow_pass::LocalShadowReceiver {
+                        bias: [0.; 3],
+                        lights: Vec::new(),
+                        shadows: vec![shadow; 6],
+                    }),
+                }
+                .into(),
+            )));
+        }
+        {
+            let mut lights = app
+                .world_mut()
+                .resource_mut::<super::fog_light_scattering::LocalFogFrame>();
+            lights.camera = Some(camera);
+            let mut packet = [0u32; 28];
+            packet[1] = 3f32.to_bits();
+            packet[3] = 2f32.to_bits();
+            packet[4] = 0.15f32.to_bits();
+            packet[5] = 0.08f32.to_bits();
+            packet[6] = 0.04f32.to_bits();
+            packet[7] = 8f32.to_bits();
+            packet[13] = 0.5f32.to_bits();
+            packet[24] = u32::MAX;
+            if matches!(mode, 11 | 12) {
+                packet[24] = 0;
+                packet[25] = 2;
+                lights.shadow_revision = Some(mode as u64);
+            }
+            lights.lights = std::sync::Arc::new(if light_fog { vec![packet] } else { Vec::new() });
+        }
         {
             let mut frame = app.world_mut().resource_mut::<FogSceneFrame>();
             let frame = frame.0.as_mut().unwrap();
@@ -469,18 +627,25 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
                 Vec::new()
             };
             frame.area_states = Some(area_states);
+            frame.light_canvas = light_fog.then_some(frame.canvas);
         }
-        let expected_object = if local_fog && mode != 8 {
+        let expected_object = if local_fog && mode != 10 {
             super::fog_objects::FogObjectParameters::selected(&area_frame, [1., 9., 5.])
-        } else { super::fog_objects::FogObjectParameters::default() };
+        } else {
+            super::fog_objects::FogObjectParameters::default()
+        };
         let source_frame = app.world().resource::<FogSceneFrame>().0.as_ref().unwrap();
         let objects = super::fog_objects::FogObjectFrame {
-            camera: source_frame.camera, revision: source_frame.revision,
-            world_offset: 1, capacity: 1, updates: vec![(0, expected_object)],
+            camera: source_frame.camera,
+            revision: source_frame.revision,
+            world_offset: 1,
+            capacity: 1,
+            updates: vec![(0, expected_object)],
         };
-        app.world_mut().resource_mut::<super::fog_material::FogMaterialResources>().object_frame =
-            Some(std::sync::Arc::new(objects));
-        let active = flags != 0 || local_fog;
+        app.world_mut()
+            .resource_mut::<super::fog_material::FogMaterialResources>()
+            .object_frame = Some(std::sync::Arc::new(objects));
+        let active = flags != 0 || local_fog || light_fog;
         app.world_mut()
             .resource_mut::<FogSceneFrame>()
             .0
@@ -519,6 +684,7 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
             &shared_handles.world,
             &shared_handles.canvas,
             &shared_handles.opaque_depth,
+            &shared_handles.curve,
         ]
         .map(|handle| images.get(handle).unwrap().texture.id());
         if let Some(previous) = shared_ids {
@@ -587,8 +753,10 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
             .unwrap();
         let mut encoder = device.create_command_encoder(&default());
         encoder.copy_buffer_to_buffer(&parameters.buffer, 0, &control_readback, 0, 256);
-        let objects = render.resource::<RenderAssets<bevy::render::storage::GpuShaderBuffer>>()
-            .get(&shared_handles.objects).unwrap();
+        let objects = render
+            .resource::<RenderAssets<bevy::render::storage::GpuShaderBuffer>>()
+            .get(&shared_handles.objects)
+            .unwrap();
         encoder.copy_buffer_to_buffer(&objects.buffer, 0, &control_readback, 256, 128);
         if active {
             let depth = images.get(&shared_handles.opaque_depth).unwrap();
@@ -635,13 +803,20 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         );
         if active {
             let offset = f32::from_le_bytes(control[12..16].try_into().unwrap());
-            assert_eq!(offset, if local_fog {1.} else {-1.}, "object frame publication mode{mode}");
+            assert_eq!(
+                offset,
+                if local_fog { 1. } else { -1. },
+                "object frame publication mode{mode}"
+            );
         }
         if local_fog {
             let expected = ShaderBuffer::from(expected_object);
             assert_eq!(expected.data.as_ref().unwrap().len(), 128);
-            assert_eq!(&control[256..384], expected.data.as_ref().unwrap().as_slice(),
-                "actual owner object upload/clearing mode{mode}");
+            assert_eq!(
+                &control[256..384],
+                expected.data.as_ref().unwrap().as_slice(),
+                "actual owner object upload/clearing mode{mode}"
+            );
         }
         drop(control);
         control_readback.unmap();
@@ -674,7 +849,68 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
             drop(depth);
             staging.unmap();
         }
+        check_shared_curve(&app, &shared_handles, 1, 0.5, active);
     }
+    assert_eq!(
+        super::fog_scene::lookup_submissions(app.sub_app(RenderApp).world()),
+        1,
+        "unchanged resident curves must not repeat GPU preprocessing"
+    );
+    let black_curve = app.world_mut().resource_mut::<Assets<Image>>().add(image(
+        &half::f16::from_f32(0.).to_le_bytes(),
+        TextureFormat::R16Float,
+    ));
+    let white_curve = app.world_mut().resource_mut::<Assets<Image>>().add(image(
+        &half::f16::from_f32(1.).to_le_bytes(),
+        TextureFormat::R16Float,
+    ));
+    let mut overlays = crate::rendering::environment_images::ImageOverrides::default();
+    overlays.set_override(Some(white_curve.clone()), 0.25);
+    overlays.add_environment(Some(white_curve.clone()), 0.5, 1.);
+    let overlay =
+        super::fog::FogLookupOverrideFrame::from_environment(overlays.finish(), &black_curve)
+            .unwrap();
+    assert_eq!(overlay.weights, Vec4::new(0.5, 0., 0., 0.));
+    assert_eq!(overlay.images[0], white_curve);
+    assert!(overlay.images[1..]
+        .iter()
+        .all(|image| *image == black_curve));
+    // Begin from the submitted base curve .5. Each decreased raw weight
+    // preserves the previous output as the next transition's source.
+    // Curve publication is tested with world fog explicitly enabled, independent
+    // of which on/off rendering case preceded this section.
+    app.world_mut()
+        .resource_mut::<FogSceneFrame>()
+        .0
+        .as_mut()
+        .unwrap()
+        .parameters
+        .flags
+        .x = 8;
+    for (weight, curve, overrides, layer, expected) in [
+        (0.25, black_curve.clone(), None, 0, 0.375),
+        (0.75, black_curve, None, 0, 0.125),
+        (0.125, white_curve.clone(), None, 1, 0.234375),
+        (0.125, white_curve.clone(), Some(overlay), 2, 0.3671875),
+        (0.125, white_curve, None, 1, 0.234375),
+    ] {
+        {
+            let mut frame = app.world_mut().resource_mut::<FogSceneFrame>();
+            let frame = frame.0.as_mut().unwrap();
+            frame.curve = curve;
+            frame.curve_weight = weight;
+            frame.curve_overrides = overrides;
+        }
+        for _ in 0..8 {
+            app.update();
+        }
+        check_shared_curve(&app, &shared_handles, layer, expected, true);
+    }
+    assert_eq!(
+        super::fog_scene::lookup_submissions(app.sub_app(RenderApp).world()),
+        6,
+        "only the five changed curve inputs should submit new blends"
+    );
     assert!(
         results[0][0] > 0.01 && results[0][2] > results[0][0],
         "sky mesh was not drawn: {:?}",
@@ -715,8 +951,125 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
         "removing area fog left stale radiance"
     );
     assert!(
+        (0..3).any(|c| results[8][c] > results[0][c] + 0.001),
+        "local-light fog did not reach the gameplay target: {results:?}"
+    );
+    assert_eq!(
+        results[9], results[0],
+        "removing local-light fog left accumulated radiance"
+    );
+    assert!(
+        (0..3).any(|c| results[11][c] > results[0][c] + 0.001),
+        "submitted visible local atlas did not reach fog: {results:?}"
+    );
+    assert_eq!(
+        results[12], results[0],
+        "fog ignored the submitted local shadow records/atlas"
+    );
+    assert_eq!(
+        results[13], results[0],
+        "removing shadowed local fog left accumulated radiance"
+    );
+    assert!(
         errors.lock().unwrap().is_empty(),
         "atmosphere GPU validation: {:?}",
         errors.lock().unwrap()
     );
+}
+
+fn check_shared_curve(
+    app: &App,
+    shared: &super::fog_material::FogMaterialResources,
+    layer: u32,
+    expected: f32,
+    ready: bool,
+) {
+    let render = app.sub_app(RenderApp).world();
+    let device = render.resource::<RenderDevice>();
+    let queue = render.resource::<RenderQueue>();
+    let image = render
+        .resource::<RenderAssets<GpuImage>>()
+        .get(&shared.curve)
+        .unwrap();
+    assert_eq!(
+        image.texture.size(),
+        Extent3d {
+            width: 4096,
+            height: 1,
+            depth_or_array_layers: 3
+        }
+    );
+    let parameters = render
+        .resource::<RenderAssets<bevy::render::storage::GpuShaderBuffer>>()
+        .get(&shared.parameters)
+        .unwrap();
+    let staging = device.create_buffer(&BufferDescriptor {
+        label: Some("shared curve and receiver layer readback"),
+        size: 512,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&default());
+    encoder.copy_buffer_to_buffer(&parameters.buffer, 0, &staging, 0, 256);
+    encoder.copy_texture_to_buffer(
+        TexelCopyTextureInfo {
+            texture: &image.texture,
+            mip_level: 0,
+            origin: Origin3d {
+                x: 0,
+                y: 0,
+                z: layer,
+            },
+            aspect: TextureAspect::All,
+        },
+        TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: TexelCopyBufferLayout {
+                offset: 256,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        Extent3d {
+            width: 8,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let submission = queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging
+        .slice(..)
+        .map_async(MapMode::Read, move |result| tx.send(result).unwrap());
+    device
+        .poll(PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = staging.slice(..).get_mapped_range();
+    assert_eq!(
+        f32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        if ready { 1. } else { 0. }
+    );
+    if ready {
+        // ShaderType's material header (16) + WorldFog flags.y (196).
+        assert_eq!(
+            u32::from_le_bytes(bytes[212..216].try_into().unwrap()),
+            layer,
+            "material receivers selected a different history bank"
+        );
+    }
+    for x in 0..8 {
+        let at = 256 + x * 2;
+        assert_eq!(
+            half::f16::from_le_bytes([bytes[at], bytes[at + 1]]).to_f32(),
+            expected,
+            "shared fog curve layer{layer} texel{x}"
+        );
+    }
+    println!("Shared fog curve layer={layer} value={expected} receivers_ready={ready}");
+    drop(bytes);
+    staging.unmap();
 }

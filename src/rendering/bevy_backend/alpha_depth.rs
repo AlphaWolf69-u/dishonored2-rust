@@ -115,8 +115,11 @@ impl AlphaDepthPass {
         });
         let (full, full_attachment, full_sample) =
             Self::target(device, "depthAlpha", extents.full, format);
+        // 2fbc60 divides the viewport by two unconditionally. This target is
+        // independent of r_downsampleQuality used for the fog colour/depth.
+        let half = (extents.full / 2).max(bevy::math::UVec2::ONE);
         let (reduced, reduced_attachment, reduced_sample) =
-            Self::target(device, "depthAlphaDiv2", extents.depth, format);
+            Self::target(device, "depthAlphaDiv2", half, format);
         let reduction = Self::binding(device, &downscale, &full_sample, &point);
         let triangle = [
             [-1.0f32, 1., 0., 0., 0.],
@@ -151,7 +154,8 @@ impl AlphaDepthPass {
     }
 
     pub fn resize(&mut self, device: &RenderDevice, extents: FogExtents) {
-        if self.extents.full == extents.full && self.extents.depth == extents.depth {
+        if self.extents.full == extents.full {
+            self.extents = extents;
             return;
         }
         if self.extents.full != extents.full {
@@ -159,9 +163,13 @@ impl AlphaDepthPass {
                 Self::target(device, "depthAlpha", extents.full, self.format);
             self.reduction = Self::binding(device, &self.downscale, &self.full_sample, &self.point);
         }
-        if self.extents.depth != extents.depth {
-            (self.reduced, self.reduced_attachment, self.reduced_sample) =
-                Self::target(device, "depthAlphaDiv2", extents.depth, self.format);
+        if self.extents.full != extents.full {
+            (self.reduced, self.reduced_attachment, self.reduced_sample) = Self::target(
+                device,
+                "depthAlphaDiv2",
+                (extents.full / 2).max(bevy::math::UVec2::ONE),
+                self.format,
+            );
         }
         self.extents = extents;
     }

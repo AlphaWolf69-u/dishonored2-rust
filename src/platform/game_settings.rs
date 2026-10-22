@@ -249,6 +249,8 @@ pub fn read_local_shadow_settings() -> Result<(PathBuf, LocalShadowSettings), St
 /// 141377690 and 14136ba60..14136bba0; keep them separate from authored fog.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FogRenderSettings {
+    pub tiled_light_dimension: u32,
+    pub skip_light_scattering: bool,
     pub downsample: i32,
     pub nearest_upscale: bool,
     pub nearest_threshold: f32,
@@ -275,6 +277,8 @@ pub fn fog_render_settings(source: &str) -> Result<FogRenderSettings, String> {
             .unwrap_or(default))
     };
     Ok(FogRenderSettings {
+        tiled_light_dimension: integer("tlf_TileDim", 16)?.clamp(2, 32) as u32,
+        skip_light_scattering: integer("r_skipLightScattering", 0)? != 0,
         downsample: downsample_quality(source)?,
         nearest_upscale: integer("r_fogNearestUpscale", 1)? != 0,
         nearest_threshold: float("r_fogNearestThreshold", 0.0002)?,
@@ -293,7 +297,9 @@ pub fn fog_render_settings(source: &str) -> Result<FogRenderSettings, String> {
 /// Shared allocation control, registered by 141377690; atmosphere and
 /// post-processing read the same setting from the existing configuration.
 pub fn downsample_quality(source: &str) -> Result<i32, String> {
-    Ok(quoted_setting(source, "r_downsampleQuality")?.map(integer_cvar).unwrap_or(1))
+    Ok(quoted_setting(source, "r_downsampleQuality")?
+        .map(integer_cvar)
+        .unwrap_or(1))
 }
 
 pub fn read_downsample_quality() -> Result<i32, String> {
@@ -303,45 +309,60 @@ pub fn read_downsample_quality() -> Result<i32, String> {
 
 /// 141371cb0/1d00 and1413721a0/2240 register bloom mips5/3 and skip flags0.
 /// 1413785c0 registers skipPostProcess0;374e40 copies these three skip bits.
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PostProcessSettings {
-    pub hdr_buffer_format:i32,
-    pub downsample:i32,
-    pub source_mip:i32,
-    pub target_mip:i32,
-    pub skip_post_process:bool,
-    pub skip_bloom:bool,
-    pub skip_lens_flares:bool,
-    pub skip_tone_mapping:bool,
-    pub exposure_use_tone_mapping_white_level:bool,
+    pub hdr_buffer_format: i32,
+    pub downsample: i32,
+    pub source_mip: i32,
+    pub target_mip: i32,
+    pub skip_post_process: bool,
+    pub skip_bloom: bool,
+    pub skip_lens_flares: bool,
+    pub skip_tone_mapping: bool,
+    pub exposure_use_tone_mapping_white_level: bool,
 }
 impl PostProcessSettings {
     /// Only these configured fields are represented, not the entire view word.
-    pub fn flags(self)->u32 {
-        u32::from(self.skip_post_process) | (u32::from(self.skip_tone_mapping)<<19) | (u32::from(self.skip_bloom)<<20) | (u32::from(self.skip_lens_flares)<<21)
+    pub fn flags(self) -> u32 {
+        u32::from(self.skip_post_process)
+            | (u32::from(self.skip_tone_mapping) << 19)
+            | (u32::from(self.skip_bloom) << 20)
+            | (u32::from(self.skip_lens_flares) << 21)
     }
     /// 3586a0 publishes this to view_white_level;325910 uses the SAME rule
     /// for the exposure window. The filmic curve's white stays independent.
-    pub fn hdr_white_level(self, tone_white:f32)->f32 {
-        if !self.skip_tone_mapping && self.exposure_use_tone_mapping_white_level {tone_white} else {1.0}
+    pub fn hdr_white_level(self, tone_white: f32) -> f32 {
+        if !self.skip_tone_mapping && self.exposure_use_tone_mapping_white_level {
+            tone_white
+        } else {
+            1.0
+        }
     }
 }
-pub fn post_process_settings(source:&str)->Result<PostProcessSettings,String> {
-    let integer=|name,default|->Result<i32,String>{Ok(quoted_setting(source,name)?.map(integer_cvar).unwrap_or(default))};
-    Ok(PostProcessSettings{
-        hdr_buffer_format:integer("r_hdrBufferFormat",0)?,
-        downsample:downsample_quality(source)?,
-        source_mip:integer("r_postProcessDebugBloomSourceMip",5)?,
-        target_mip:integer("r_postProcessDebugBloomTargetMip",3)?,
-        skip_post_process:integer("r_skipPostProcess",0)?!=0,
-        skip_bloom:integer("r_skipBloom",0)?!=0,
-        skip_lens_flares:integer("r_skipLensFlares",0)?!=0,
-        skip_tone_mapping:integer("r_skipToneMapping",0)?!=0,
-        exposure_use_tone_mapping_white_level:integer("r_postProcessExposureUseToneMappingWhiteLevel",0)?!=0,
+pub fn post_process_settings(source: &str) -> Result<PostProcessSettings, String> {
+    let integer = |name, default| -> Result<i32, String> {
+        Ok(quoted_setting(source, name)?
+            .map(integer_cvar)
+            .unwrap_or(default))
+    };
+    Ok(PostProcessSettings {
+        hdr_buffer_format: integer("r_hdrBufferFormat", 0)?,
+        downsample: downsample_quality(source)?,
+        source_mip: integer("r_postProcessDebugBloomSourceMip", 5)?,
+        target_mip: integer("r_postProcessDebugBloomTargetMip", 3)?,
+        skip_post_process: integer("r_skipPostProcess", 0)? != 0,
+        skip_bloom: integer("r_skipBloom", 0)? != 0,
+        skip_lens_flares: integer("r_skipLensFlares", 0)? != 0,
+        skip_tone_mapping: integer("r_skipToneMapping", 0)? != 0,
+        exposure_use_tone_mapping_white_level: integer(
+            "r_postProcessExposureUseToneMappingWhiteLevel",
+            0,
+        )? != 0,
     })
 }
-pub fn read_post_process_settings()->Result<PostProcessSettings,String> {
-    let(_,source)=read_configuration()?;post_process_settings(source.as_deref().unwrap_or(""))
+pub fn read_post_process_settings() -> Result<PostProcessSettings, String> {
+    let (_, source) = read_configuration()?;
+    post_process_settings(source.as_deref().unwrap_or(""))
 }
 
 pub fn read_fog_render_settings() -> Result<(PathBuf, FogRenderSettings), String> {
@@ -588,6 +609,35 @@ pub fn view_settings(source: &str) -> Result<ViewSettings, String> {
     })
 }
 
+/// Ocean geometry and admission controls, independent of authored water optics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OceanRenderSettings {
+    pub tile_size: f32,
+    pub skip: bool,
+}
+
+pub fn ocean_render_settings(source: &str) -> Result<OceanRenderSettings, String> {
+    Ok(OceanRenderSettings {
+        // 14136ab20 registers unbounded float10.0f;3014b0 reads its cached value.
+        tile_size: quoted_setting(source, "r_oceanTileSize")?
+            .map(float_cvar)
+            .unwrap_or(10.),
+        // 1413784d0 registers integer0;351780 publishes it to the view skip mask.
+        skip: quoted_setting(source, "r_skipOcean")?
+            .map(integer_cvar)
+            .unwrap_or(0)
+            != 0,
+    })
+}
+
+pub fn read_ocean_render_settings() -> Result<(PathBuf, OceanRenderSettings), String> {
+    let (path, source) = read_configuration()?;
+    Ok((
+        path,
+        ocean_render_settings(source.as_deref().unwrap_or(""))?,
+    ))
+}
+
 pub fn read_view_settings() -> Result<(PathBuf, ViewSettings), String> {
     let (path, source) = read_configuration()?;
     Ok((path, view_settings(source.as_deref().unwrap_or(""))?))
@@ -621,20 +671,24 @@ mod tests {
     fn hdr_white_level_matches_executed_view_owner() {
         let defaults = super::post_process_settings("").unwrap();
         assert_eq!(defaults.hdr_white_level(5.0), 1.0);
-        let mut count=0;
+        let mut count = 0;
         for line in include_str!("../../tests/fixtures/hdr_white_level.txt").lines() {
-            let words:Vec<_>=line.split_whitespace().collect();
-            let settings=super::post_process_settings(&format!(
+            let words: Vec<_> = line.split_whitespace().collect();
+            let settings = super::post_process_settings(&format!(
                 "r_skipToneMapping \"{}\"\nr_postProcessExposureUseToneMappingWhiteLevel \"{}\"\n",
-                words[0],words[1],
-            )).unwrap();
-            let tone=f32::from_bits(u32::from_str_radix(words[2],16).unwrap());
-            let expected=u32::from_str_radix(words[3],16).unwrap();
-            assert_eq!(settings.hdr_white_level(tone).to_bits(),expected,"{line}");
-            assert_eq!(settings.flags()&(1<<19),u32::from(settings.skip_tone_mapping)<<19);
-            count+=1;
+                words[0], words[1],
+            ))
+            .unwrap();
+            let tone = f32::from_bits(u32::from_str_radix(words[2], 16).unwrap());
+            let expected = u32::from_str_radix(words[3], 16).unwrap();
+            assert_eq!(settings.hdr_white_level(tone).to_bits(), expected, "{line}");
+            assert_eq!(
+                settings.flags() & (1 << 19),
+                u32::from(settings.skip_tone_mapping) << 19
+            );
+            count += 1;
         }
-        assert_eq!(count,32);
+        assert_eq!(count, 32);
     }
     #[test]
     fn view_distance_preset_applies_over_registered_and_explicit_cvars() {
@@ -653,7 +707,12 @@ mod tests {
             super::view_settings_with_visuals("r_viewDistPreset \"1\"", visuals).unwrap();
         assert_eq!(defaults.lod_zoom_multiplier, 7000.0);
         assert_eq!(defaults.model_fade_lod_scale, 50.0);
-        assert_eq!(super::view_settings("lod_dist_far \"-3\"").unwrap().model_fade_lod_scale, -3.0);
+        assert_eq!(
+            super::view_settings("lod_dist_far \"-3\"")
+                .unwrap()
+                .model_fade_lod_scale,
+            -3.0
+        );
         assert_eq!(defaults.umbra_gate_visibility_ratio, 1.0);
         assert_eq!(
             super::view_settings_with_visuals("", visuals).unwrap(),

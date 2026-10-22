@@ -16,6 +16,8 @@ use std::{collections::HashMap, sync::Arc};
 
 #[derive(Resource)]
 pub(super) struct WaterScene {
+    ocean_render_settings: crate::platform::game_settings::OceanRenderSettings,
+    ocean_environment: crate::rendering::ocean::environment::OceanEnvironment,
     world: PreparedWaterValues,
     areas: Vec<(String, PreparedWaterValues)>,
     tracks: WaterTracks,
@@ -29,6 +31,10 @@ impl WaterScene {
         areas: &[AreaEnvironment],
         materials: &WaterMaterials,
     ) -> Result<(Self, WaterImageSources), String> {
+        let (_, ocean_render_settings) =
+            crate::platform::game_settings::read_ocean_render_settings()?;
+        let ocean_environment =
+            crate::rendering::ocean::environment::OceanEnvironment::load(catalog, world, areas)?;
         let defaults = PreparedWaterValues::load(
             catalog,
             &EnvironmentRenderParameters { layers: Vec::new() },
@@ -142,6 +148,8 @@ impl WaterScene {
         }
         Ok((
             Self {
+                ocean_render_settings,
+                ocean_environment,
                 world,
                 areas: prepared,
                 tracks,
@@ -238,7 +246,14 @@ pub(super) fn publish_water_frame(
         )?;
         Ok(WaterFrame {
             camera,
+            ocean_render_settings: water.ocean_render_settings,
             values,
+            ocean_environment: water.ocean_environment.update(
+                &scene.area_environments,
+                eye,
+                scene.environment_blend_duration,
+                delta,
+            )?,
             matrices,
             local_time: view_clock
                 .view_shader_times(crate::game_clock::RESET_VIEW_LOCAL_TIME_FLAG)?

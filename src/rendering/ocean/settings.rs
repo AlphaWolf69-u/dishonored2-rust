@@ -54,6 +54,7 @@ pub struct OceanSurfaceSettings {
     pub wave_amplitude_image: String,
     pub foam_image: String,
 }
+#[derive(Clone, Debug)]
 pub struct OceanSettings {
     pub water: crate::rendering::water::WaterSettings,
     pub view: OceanViewInput,

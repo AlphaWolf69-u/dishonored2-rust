@@ -221,8 +221,27 @@ accumulation lives in `rendering/fog.rs`; the render-world owner in
 depth target and consumes it in distance/height fog. The owner also supplies
 current camera depth, the sky/cloud mask, authored LUT/noise, environment
 parameters and directional shadow resources. GPU tests compare numeric output
-and exercise the actual Core3d owner without a window. Local-light scattering,
-water depth and the underwater mask still require gameplay producer integration.
+and exercise the actual Core3d owner without a window. The same owner submits
+placed-water depth and local-light scattering. Ocean/boat depth and the
+underwater mask remain separate unfinished parts of the water sequence.
+
+`fog::lookup` selects the two retained fog-curve history banks and the separate
+override output. It preserves ordered weight decreases, raw transition weights,
+the executable's NaN/negative-zero clamp behavior and the override admission
+threshold. Its 120-frame fixture executes the game's actual fog owner with only
+resource/command boundaries observed. `bevy_backend::fog_lookup` owns the three
+4096x1 R16F images, initial values, blend and weighted-override programs. It
+reuses Direct3D point-coordinate conversion for curves with different extents,
+and keeps override output separate from base history. `FogLookupTrack` publishes
+the target and fraction independently of ordinary images' halfway selection;
+55 executable updates cover area entry, exit and interrupted transitions.
+The atmosphere owner now submits the prepared curve before world fog. The three
+banks share one texture allocation: world fog reads its selected 2D layer, while
+transparent materials read the same array using a reserved backend parameter
+lane. Curve transitions require no image copy or material rebinding. Immutable
+inputs are blended only when their view identities or raw weights change.
+Scripted/external curve controllers still need their producer connected; their
+four-image weighted payload is supported by the frame and render owner.
 
 `fog_shadow.rs` contains the full parallel/projected-height raymarch and temporal
 sampling rules. The fog scene prepares the authored height image and selects
@@ -252,8 +271,10 @@ resolved `stageSort` and `stageSortAdjust` instead of dropping a boat-proxy
 filename. The material-list selector follows runtime sort boundaries, while the
 constructor separately excludes `sortBoatVolume` from ordinary shadow gathering
 and forces the final `arkWater` sort after overrides. Boat/water depth-stencil
-states and shared indexed/nonindexed mesh submission have numeric tests; their
-complete depthWater/alpha-depth gameplay sequence remains pending. The shared
+states and shared indexed/nonindexed mesh submission have numeric tests.
+`water_depth_scene` submits visible placed-water depth, its motion output,
+opaque restoration and the separate full/half alpha-depth copies. Boat-volume
+and ocean geometry still require submission into that sequence. The shared
 position-mesh allocation owner is also used by interior fog geometry.
 
 Placed `arkWater` uses `MaterialHandle::Water` and `WaterMesh`, independently
@@ -262,8 +283,9 @@ material-only options, MAIN program and authored render state in `WaterMaterials
 The immutable registry is shared across main/render worlds; visible instances
 carry current transforms, stable scene order and world/model provenance while
 reusing the scene allocator. Unresolved material input errors remain explicit.
-This scene publication does not yet provide motion history or the complete
-water pass sequence.
+The depth owner retains model transforms by frame and uses the shared camera
+history for world geometry. Water colour, ocean and underwater submission remain
+unfinished; publishing or drawing depth does not imply those passes are active.
 
 `bevy_backend/water_depth.rs` owns the full-size depth/stencil water target,
 copies the current view's immutable opaque depth, and restores opaque depth
@@ -274,6 +296,23 @@ model water uses the separate forced state and reference four. Numeric tests
 exercise ordinary copy, alternate copy, and masked restoration on both graphics
 backends. Geometry submission and gameplay scheduling still need to connect
 these operations before the result can feed alpha depth, fog, and water colour.
+
+`bevy_backend/underwater_stencil.rs` implements the ocean-mask and water-volume
+marking draws over the full and reduced alpha-depth attachments. It consumes
+the actual wave-height mask or water matrix, preserves scene depth and all
+stencil bits except the underwater bit, and retains the boat-interior exclusion.
+The two target sizes have independent uniform buffers and bounded bindings.
+GPU comparisons use coverage generated from the installed shader definitions
+and verify depth/stencil preservation on both graphics backends. Gameplay water
+scheduling must still supply current wave images and depth attachments; this
+module does not assume a dry view or enable an additional fog filter.
+`bevy_backend/ocean_water_line.rs` supplies the wave-aware mask producer using
+the shared shoreline-wave functions, actual FFT collision-height texture, shore
+distance and amplitude maps. Its ocean marking entry point records mask
+generation followed by both stencil targets in the same command stream. Mask
+storage and image bindings persist across changing water levels and wave times.
+The gameplay owner still needs to publish the current ocean selection and wave
+resources and schedule this sequence with water depth and fog.
 
 `rendering/water.rs` also separates water colour admission from visible ocean
 patches. `bevy_backend/water_foam_depth.rs` produces the quarter-resolution R16F
@@ -460,7 +499,13 @@ All 96 executable camera updates match bit for bit; this supplies static world
 water's previous view-projection without substituting a model transform history.
 Area transitions preserve missing assignments and image resource identity;
 ordinary images switch at the original half-transition threshold. The shared
-texture loader supports RGBA32F sky cubes without reducing their precision.
+environment track initializes its first selection immediately, including an
+area selected at startup. Later source changes retain their authored duration
+and restart from the current value. A 36-frame executable fixture verifies
+initial selection, zero-time updates and interrupted ordinary area blends.
+This rule is shared by atmosphere, display, water and shadow-range inputs.
+The shared texture loader supports RGBA32F sky cubes without reducing their
+precision.
 These inputs are prepared by the real application, but water raster submission
 and its full depth/fog/history dependencies remain unfinished. Retaining a CPU
 image chain does not submit a GPU upload or draw.
@@ -554,8 +599,12 @@ executing the installed fog helpers. Runtime world fog uses signed interior
 depth, the sky/cloud mask and independent world/light turbulence canvases.
 `app/fog_scene.rs` publishes environment parameters and images;
 `rendering/bevy_backend/fog_scene.rs` owns GPU submission and same-view resource
-readiness. Local-light scattering has a tested pass and tiled-light owner, but
-is not yet connected to gameplay. The interior-volume depth contract remains
+readiness. `app/fog_lights.rs` publishes admitted lights in scene order, using
+the existing preset colours, the original authored-strength conversion and
+actual local-shadow indices. The atmosphere owner submits the tiled lists from
+distinct opaque/alpha depths, checks shadow-atlas completion and adds local-light
+fog before composition. Removing the inputs removes the contribution. The
+interior-volume depth contract remains
 separate from opaque forward surface materials.
 
 The tiled-light depth gather preserves the measured reciprocal/MAD arithmetic
@@ -774,6 +823,131 @@ integer and lens-profile results match 221 executable updates; lens-dirt's
 separate publication rule retains its own 74-update check. Post-processing
 configuration supplies the original mip controls and skip bits without changing
 the installed settings file.
+
+`environment_images` prepares the four fog-curve or colour-cube override groups
+by resource identity. Explicit parameters replace both weight factors; weighted
+environments raise them independently. Zero-weight images still occupy slots,
+and contributions above a total of one are normalized in the original order.
+All 512 fog publications match the executed manager word for word; the same
+512 image/weight results were independently checked on its colour-cube branch.
+`environment_overrides` owns the manager's 16 stable environment slots, including
+first-empty registration, raw weight updates and deferred removal. Its 512-operation
+fixture verifies every slot and the resulting image publication against the game.
+The fog frame accepts this prepared blend and retains its existing lookup renderer.
+`environment_effects` implements the FX view callback: registration waits for an
+eligible view mask, retains that view's identity and updates its slot with the
+sampled blend and a second factor of one. Pending removals call only currently
+live views and are then cleared. These state changes match 512 executed binding
+updates and 64 retirement batches. The ordered registration/removal list matches
+512 executed operations, retaining duplicates and queuing view cleanup only for
+successfully removed entries with a view and handle.
+`gameplay::effects` supplies shared-RNG scalar sampling, timing preparation and
+packed Bezier float curves. Its environment blend controller preserves delayed
+starts, fade phases, one loop restart per update, explicit stop rules and view
+masks. Primitive checks cover 512 samples each; controller checks cover 64
+initializations and 940 tick/stop calls with exact stored-word comparisons.
+`assets::fx` loads environment descriptors as sparse edits of the executed
+constructor defaults, preserving inherited curve entries and zero-initializing
+new float entries through declared array counts. The complete constructor's
+45 scalar/curve words and 512 original list-reader resizes have independent
+checks. All 67 environment descriptors across 8,909 installed FX declarations
+load; the 57 enabled descriptors with an environment reference also resolve
+their environment resource and evaluate. Group loading preserves location
+conditions and the group's independent timing defaults. Parent offset sampling
+matches 512 executed group starts. The environment chain walker matches 768
+updates across 64 pools, including deferred retirement, shared-RNG update order,
+free-list reuse and retained inactive state. Definitions can be shared through
+`Arc` across live instances, as the executable retains a definition pointer.
+The index-pool transfer matches 512 executed acquisitions. Parent activation,
+other FX families' shared-RNG work and actual camera ownership remain
+prerequisites for starting these effects in gameplay.
+`environment_effect_runtime` connects the pool, controller, registration and
+per-view slots. Its default capacity and free-list layout match the executed
+64-slot constructor. A composed 560-operation fixture follows initialization,
+updates, publication, retirement dispatch and the manager's final four fog-curve
+images/weights through the game's actual routines. Pool exhaustion consumes no
+child RNG, and effects retain both their registration order and group update
+order. This owner still requires the parent activation and prepared environment
+resources described above; it does not start arbitrary parsed effects.
+Entity/script controllers remain unconnected; the gameplay producer still
+publishes no external override frame. `environment_profiles` prepares inherited
+partial profiles against the captured parameter schema and caches their shared
+identity. Atmosphere profile images use the same resident resources and aliases
+as ordinary world and area images. Preparation preserves absent fields and
+propagates image errors; loading a profile does not activate it.
+
+`rendering::environment_parameters` shares prepared scalar, vector, boolean and
+image snapshots and area evaluation between atmosphere and ocean inputs.
+Numeric external overrides are evaluated after ordinary tracks. Explicit
+entries precede weighted environments, preserve duplicates and retain the
+ordinary baseline. Environment influence averages the target separately from
+the blend weight. `environment_parameter_overrides` retains the boolean
+thresholds, integer conversion/rounding and float operand order; 512 executed
+manager cases cover all four numeric kinds, including non-finite float/bool
+inputs. The prepared float/bool adapter matches 256 of those cases. Its frame
+updates keep external results out of ordinary track history. Image overrides
+continue through the separate four-image grouping rules.
+`ocean::environment` captures exactly the inputs used by `OceanSettings`, keeps
+absent area fields distinct from defaults, and resolves image aliases during
+level preparation. The water frame publishes these evaluated ordinary ocean
+inputs alongside its matrices and clock. Ordered render-view water-contact results
+and preparation of the retained ocean view state remain requirements before drawing;
+ordinary area containment does not select a local water volume.
+
+`environment_contacts` implements selection from completed, ordered render-view
+physics hits. Ordinary environments are inserted by descending squared AABB
+diagonal, with later equal-size hits taking precedence. Water environments use
+the last hit's maximum Z; active water-trigger contact is tracked independently
+and controls ocean-height updates. Invalid or unfinished queries clear the
+selection while retaining the unused stored height. The selector's 128-case
+fixture executes the original routine, including duplicate hits and NaN sizes.
+It does not produce physics hits or replace their order with document order or
+camera-area containment. That physics producer remains required for gameplay.
+
+`gameplay::point_query` implements the hybrid broadphase's quantized point
+traversal, which the game's physics-world configuration selects. It preserves
+upper-bound expansion, branch-distance ordering, right-first ties, collector
+distance changes and early termination. A retained stack avoids per-query
+allocation after warming up. Its visitor delegates collision filters and exact
+shape queries; visiting a body candidate does not itself create a contact.
+The 268-case fixture executes the original traversal on synthetic packed trees.
+Runtime tree construction, body buffers and shape dispatch still need wiring
+before this can supply gameplay environment contacts.
+
+`gameplay::collision_filter` shares the body's five-bit layer and required-flag
+predicate with shape-pair filtering. `collision_dispatch` constructs the
+closest-point handler table with the original shape inheritance, feature masks,
+registration priority and wrapper overrides. Filtered pair selection uses that
+same predicate and preserves the flipped-query rule. Numeric execution checks
+cover 2,048 filter cases, 3,750 registered entries and 3,750 pair selections.
+Handler tags identify the required geometry kernel; an unimplemented kernel
+must not be treated as the original empty handler. The kernels remain separate
+from this completed routing layer.
+
+`gameplay::convex_support` prepares the geometry inputs used by convex distance
+handlers. It borrows unscaled four-component vertices, applies authored scale
+and offset to XYZ when required, preserves W bits, and selects the original
+radius override and support-kind code. Reusable workspaces keep both query
+sides alive independently. Its 224-case fixture executes the original wrapper;
+the distance solver and asset-to-runtime shape publication remain separate work.
+
+`ocean::OceanUpdateState` retains water height, the nine-word FFT control cache,
+spectrum invalidation and independent spectrum/surface task flags. Its initial
+tile size is 50, water height is zero and maximum wave amplitude is 5. The
+world-frame owner resets both task flags before preparing its views; actual
+water contacts supply the height-update gate. Water frames also carry the
+installed configuration's ocean tile size and skip flag, read during level
+preparation without modifying the settings file. `OceanWaves::for_view` allocates
+resources without an unnecessary initial spectrum calculation. Its view tasks
+reuse the existing FFT, displacement, collision-height and foam producers,
+initialize the spectrum when invalidated, and preserve separate height-query
+admission. `begin_world_frame` clears both displacement targets without changing
+the ping-pong index, gradient, collision or persistent foam images. The other
+displacement slot is therefore not guaranteed to contain the previous world
+frame. Native callback checks cover disabled and culled views and ordered
+render-target clears; connected GPU fixtures cover prepared controls, FFT,
+displacement clearing and both foam modes.
+These tasks still need the gameplay water/depth frame owner before submission.
 
 HDR conversion white is distinct from the filmic curve's authored white level.
 `PostProcessSettings::hdr_white_level` reproduces the shared 3586a0/325910

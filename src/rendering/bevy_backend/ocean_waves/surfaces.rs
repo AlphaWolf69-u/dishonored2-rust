@@ -165,6 +165,26 @@ impl WaveSurfaces {
         );
     }
 
+    /// 2f9fe0 clears both displacement targets at the admitted world-frame
+    /// boundary. It does not reset the ping-pong index, gradient or foam.
+    pub(super) fn clear_displacements(&self, encoder: &mut CommandEncoder) {
+        for view in &self.displacement_views {
+            let _pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("clear ocean displacement at world frame start"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(bevy::color::LinearRgba::NONE.into()),
+                        store: StoreOp::Store,
+                    },
+                })],
+                ..default()
+            });
+        }
+    }
+
     pub(super) fn record(&self, encoder: &mut CommandEncoder, current: usize) {
         for (target, pipeline, binding) in [
             (

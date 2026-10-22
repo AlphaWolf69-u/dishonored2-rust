@@ -691,7 +691,7 @@ impl MaterialResolver<'_> {
                 let color = if read.boolean("atm/worldfog/useactualsuncolor")? {
                     self.vista_sun[0].truncate()
                 } else {
-                    Vec4::from_array(read.vector("atm/worldfog/scatteringcolor")?).truncate()
+                    Vec4::from_array(read.vector("atm/worldfog/artistscatteringcolor")?).truncate()
                 };
                 p[6] = color.extend(0.0);
                 Ok(p)

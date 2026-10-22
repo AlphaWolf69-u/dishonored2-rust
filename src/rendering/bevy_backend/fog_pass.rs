@@ -505,7 +505,11 @@ impl FogPass {
                 }
             }
         }
-        for (label, pipeline, bind, target, clear) in [
+        // 307530 calls 309a20 only when world fog or a shadowed volume
+        // requests sunlight visibility. Keep clearing the retained attachment
+        // so disabled frames cannot expose an earlier frame through readback.
+        let shadow_enabled = self.parameters.get().flags.x & 64 != 0 || inputs.shadowed_volumes;
+        for (label, pipeline, bind, target, enabled) in [
             (
                 "fog turbulence",
                 &self.pipelines.canvas,
@@ -518,7 +522,7 @@ impl FogPass {
                 &self.pipelines.shadow,
                 &bindings.shadow,
                 &self.targets.shadow.view,
-                true,
+                shadow_enabled,
             ),
             (
                 "world fog radiance",
@@ -535,19 +539,17 @@ impl FogPass {
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: if clear {
-                            LoadOp::Clear(LinearRgba::NONE.into())
-                        } else {
-                            LoadOp::Load
-                        },
+                        load: LoadOp::Clear(LinearRgba::NONE.into()),
                         store: StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, bind, &[]);
-            pass.draw(0..3, 0..1);
+            if enabled {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
         if let Some(areas) = inputs.areas {
             areas.record(encoder, &self.targets.world.view);

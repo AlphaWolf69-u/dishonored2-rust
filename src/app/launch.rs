@@ -1010,6 +1010,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
+        .add_systems(PostUpdate,super::fog_lights::publish
+            .after(local_shadow_updates::publish_local_shadow_draws)
+            .after(cull_small_local_lights))
         .add_systems(
             PostUpdate,
             super::display_scene::publish_display_frame

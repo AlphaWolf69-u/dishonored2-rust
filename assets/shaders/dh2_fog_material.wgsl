@@ -11,7 +11,7 @@ struct MaterialFogParameters {
 @group(#{MATERIAL_BIND_GROUP}) @binding(161) var<storage,read> material_fog:MaterialFogParameters;
 @group(#{MATERIAL_BIND_GROUP}) @binding(162) var material_fog_world:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(163) var material_fog_canvas:texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(164) var material_fog_curve:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(164) var material_fog_curve:texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(165) var material_fog_depth:texture_depth_2d;
 @group(#{MATERIAL_BIND_GROUP}) @binding(166) var material_fog_wrap:sampler;
 struct MaterialFogObject {
@@ -26,7 +26,9 @@ fn material_fog_ray(world_position:vec3<f32>)->vec3<f32> {
 }
 fn material_fog_world_sample(ray:vec3<f32>,distance:f32,uv:vec2<f32>)->vec4<f32> {
     let normalized=fog_normalized_distance(material_fog.world,distance);
-    let curve=textureSampleLevel(material_fog_curve,linear_clamp,vec2(normalized,0.5),0.0).r;
+    // Backend transport uses a reserved flag lane for the current history
+    // layer. Authored world-fog feature bits remain exclusively in flags.x.
+    let curve=textureSampleLevel(material_fog_curve,linear_clamp,vec2(normalized,0.5),i32(material_fog.world.flags.y),0.0).r;
     let canvas=textureSampleLevel(material_fog_canvas,material_fog_wrap,uv,0.0).r;
     return fog_alpha_world(material_fog.world,material_fog.world_type,
         AlphaWorldSample(ray,distance,material_fog.control.z,curve,canvas));

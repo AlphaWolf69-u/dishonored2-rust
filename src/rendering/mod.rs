@@ -1,6 +1,14 @@
 pub mod bevy_backend;
 pub mod environment;
+pub mod environment_effects;
+pub mod environment_effect_runtime;
+pub mod environment_images;
+pub mod environment_overrides;
+pub mod environment_parameter_overrides;
+pub mod environment_contacts;
 pub mod environment_tracks;
+pub mod environment_parameters;
+pub mod environment_profiles;
 pub mod lens_dirt;
 pub mod luminance;
 pub mod bloom;

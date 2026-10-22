@@ -106,6 +106,55 @@ impl<T: Clone + PartialEq> ImageTrack<T> {
     }
 }
 
+/// Fog curves retain ordinary image-track state while publishing the target
+/// resource and fraction separately (88e220, manager slots 24d00/24d08).
+/// A target's equality with the current image does not force weight one.
+pub struct FogLookupTrack<T> {
+    track: ParameterTrack<T>,
+    target: T,
+    weight: f32,
+}
+impl<T: Clone + PartialEq> FogLookupTrack<T> {
+    /// Registered defaults and the owner's initial publication are distinct.
+    pub fn new(registered_default: T, initial_target: T, initial_weight: f32) -> Self {
+        Self {
+            track: ParameterTrack::new(registered_default),
+            target: initial_target,
+            weight: initial_weight,
+        }
+    }
+    pub fn update(
+        &mut self,
+        selection: Option<(EnvironmentSource, T)>,
+        duration: f32,
+        delta: f32,
+        initialized: bool,
+    ) {
+        let (target, weight) = (&mut self.target, &mut self.weight);
+        self.track.update(
+            selection,
+            duration,
+            delta,
+            initialized,
+            |start, end, fraction| {
+                *target = end.clone();
+                *weight = fraction;
+                if fraction >= 0.5 {
+                    end.clone()
+                } else {
+                    start.clone()
+                }
+            },
+        );
+    }
+    pub fn target(&self) -> &T {
+        &self.target
+    }
+    pub fn weight(&self) -> f32 {
+        self.weight
+    }
+}
+
 /// Integer subtypes preserve the executable's subtraction/truncation order;
 /// using ordinary float lerp here produces different intermediate integers.
 pub fn blend_unsigned(start: u32, target: u32, fraction: f32) -> u32 {
@@ -245,6 +294,29 @@ mod tests {
                 }
             ),
             51
+        );
+    }
+
+    #[test]
+    fn fog_lookup_targets_match_executable_updates() {
+        let mut track = FogLookupTrack::new(100, 200, 0.);
+        assert_eq!(
+            rows(
+                include_str!("../../tests/fixtures/fog_lookup_track.txt"),
+                |reset, selection, duration, delta, initialized| {
+                    if reset {
+                        track = FogLookupTrack::new(100, 200, 0.);
+                        return [0; 3];
+                    }
+                    track.update(selection, duration, delta, initialized);
+                    [
+                        track.track.current,
+                        *track.target(),
+                        track.weight().to_bits(),
+                    ]
+                }
+            ),
+            55
         );
     }
     #[test]

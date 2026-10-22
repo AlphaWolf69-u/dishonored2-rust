@@ -143,7 +143,11 @@ pub struct WaterImageSources {
 #[derive(Clone)]
 pub struct WaterFrame {
     pub camera: Entity,
+    pub ocean_render_settings: crate::platform::game_settings::OceanRenderSettings,
     pub values: crate::rendering::water::parameters::WaterViewParameters,
+    /// Ordinary environment inputs; the ordered render-view water-contact override
+    /// and retained OceanViewState must still be applied by the ocean owner.
+    pub ocean_environment: crate::rendering::ocean::OceanSettings,
     /// Current and previous logical rows in game coordinates, published with
     /// the actual main-world frame marker rather than per-draw observations.
     pub matrices: crate::rendering::view_history::ViewMatrixFrame,

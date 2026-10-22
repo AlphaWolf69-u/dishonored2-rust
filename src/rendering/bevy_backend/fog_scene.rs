@@ -55,6 +55,13 @@ struct Resources<'w> {
     allocator: Res<'w, MeshAllocator>,
     program: Res<'w, SkyProgram>,
     capture_request: Res<'w, super::fog_capture::FogCaptureRequest>,
+    water_frame: Option<Res<'w, super::water_scene::WaterSceneFrame>>,
+    water_materials: Option<Res<'w, super::water_scene::WaterMaterials>>,
+    water_meshes: Option<Res<'w, super::water_scene::WaterWorldMeshes>>,
+    depth_programs: Option<Res<'w, super::tiled_lighting_gpu::TlfPipelines>>,
+    local_fog: Res<'w, super::fog_light_scattering::LocalFogFrame>,
+    local_shadows: Option<Res<'w, super::shadow_pass::LocalShadowSceneFrame>>,
+    local_completion: Option<Res<'w, super::shadow_pass::LocalShadowCompletion>>,
 }
 #[derive(Resource, Default)]
 struct FogGpu {
@@ -62,6 +69,10 @@ struct FogGpu {
     reported: bool,
 }
 struct ViewFog {
+    tiled: Option<super::tiled_lighting_pass::TiledLightingPass>,
+    scattering: Option<super::fog_light_scattering::LightScatteringPass>,
+    camera: Entity,
+    water_depth: Option<super::water_depth_scene::WaterDepthScene>,
     areas: Option<super::fog_volumes::AreaFogPass>,
     sun_program: Option<FogSunProgram>,
     sun_sprite: Option<SunSpritePass>,
@@ -72,8 +83,29 @@ struct ViewFog {
     mask: FogAttachment,
     sky: SkyPass,
     fog: FogPass,
+    lookup: Option<super::fog_lookup::FogLookupPass>,
+    last_lookup: Option<(
+        FogLookupInputIds,
+        crate::rendering::fog::lookup::FogLookupPlan,
+    )>,
+    #[cfg(test)]
+    lookup_submissions: u64,
     interiors: InteriorMeshes,
     snapshot: Option<FogDepthSnapshot>,
+}
+#[derive(PartialEq, Eq)]
+struct FogLookupInputIds {
+    target: TextureViewId,
+    weight: u32,
+    overrides: Option<([TextureViewId; 4], [u32; 4])>,
+}
+#[cfg(test)]
+pub(super) fn lookup_submissions(world: &World) -> u64 {
+    world
+        .resource::<FogGpu>()
+        .current
+        .as_ref()
+        .map_or(0, |view| view.lookup_submissions)
 }
 impl ViewFog {
     fn new(
@@ -91,6 +123,10 @@ impl ViewFog {
             None => FogTargets::new(device, extents),
         };
         Ok(Self {
+            tiled: None,
+            scattering: None,
+            camera: frame.camera,
+            water_depth: None,
             areas: None,
             sun_program: None,
             sun_sprite: None,
@@ -115,6 +151,10 @@ impl ViewFog {
                 frame.canvas,
             ),
             interiors: default(),
+            lookup: None,
+            last_lookup: None,
+            #[cfg(test)]
+            lookup_submissions: 0,
             snapshot: None,
         })
     }
@@ -142,6 +182,7 @@ fn render_atmosphere(
     >,
     skies: Query<&SkyInstance>,
     interiors: Query<&InteriorInstance>,
+    waters: Query<&super::water_scene::WaterInstance>,
     clock: Res<crate::gameplay::game_clock_runtime::GameplayViewClock>,
     sampling: Option<Res<super::shadow_sampling::ParallelSamplingBuffer>>,
     atlas_frame: Res<super::shadow_pass::ShadowSceneFrame>,
@@ -245,7 +286,8 @@ fn render_atmosphere(
             jitter: Vec4::ZERO,
         };
         if gpu.current.as_ref().is_none_or(|current| {
-            current.hdr_format != target.main_texture_format()
+            current.camera != frame.camera
+                || current.hdr_format != target.main_texture_format()
                 || current.depth_format != depth.texture.format()
         }) {
             gpu.current = Some(ViewFog::new(
@@ -360,19 +402,111 @@ fn render_atmosphere(
                 );
             }
         }
-        // Sky also owns visible colour when this environment disables world fog.
-        if frame.parameters.flags.x & 24 == 0 && frame.areas.is_empty() {
-            return Ok(());
-        }
-        let curve = resources
+        // The native lookup owner runs even when this environment disables
+        // world fog. Keep the same history available when a later area enables it.
+        let curve_target = resources
             .images
             .get(&frame.curve)
-            .ok_or("fog LUT awaits GPU preparation")?;
+            .ok_or("fog curve target awaits GPU preparation")?;
+        let overrides = frame
+            .curve_overrides
+            .as_ref()
+            .map(|frame| {
+                let images = frame
+                    .images
+                    .iter()
+                    .map(|image| {
+                        resources
+                            .images
+                            .get(image)
+                            .map(|image| &image.texture_view)
+                            .ok_or("fog override curve awaits GPU preparation")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, &str>(super::fog_lookup::FogLookupOverrides {
+                    views: [images[0], images[1], images[2], images[3]],
+                    weights: frame.weights,
+                })
+            })
+            .transpose()?;
+        if let Some(shared) = &shared {
+            let image = resources
+                .images
+                .get(&shared.curve)
+                .ok_or("shared fog curve layers await GPU preparation")?;
+            if current
+                .lookup
+                .as_ref()
+                .is_none_or(|pass| pass.texture_id() != image.texture.id())
+            {
+                current.lookup = Some(super::fog_lookup::FogLookupPass::shared(
+                    &resources.device,
+                    &image.texture,
+                    frame.curve_weight,
+                )?);
+                current.last_lookup = None;
+            }
+        } else if current.lookup.is_none() {
+            current.lookup = Some(super::fog_lookup::FogLookupPass::new(
+                &resources.device,
+                &resources.queue,
+                frame.curve_weight,
+            ));
+        }
+        let input_ids = FogLookupInputIds {
+            target: curve_target.texture_view.id(),
+            weight: frame.curve_weight.to_bits(),
+            overrides: overrides.as_ref().map(|v| {
+                (
+                    v.views.map(|view| view.id()),
+                    v.weights.to_array().map(f32::to_bits),
+                )
+            }),
+        };
+        let lookup = current.lookup.as_mut().unwrap();
+        // As in the display colour-cube owner, these resident image assets are
+        // immutable. Identical raw weights and view identities reproduce the
+        // same curve and history roles; retain that output without GPU work.
+        let lookup_plan = if let Some((_, plan)) = current
+            .last_lookup
+            .as_ref()
+            .filter(|(ids, _)| *ids == input_ids)
+        {
+            *plan
+        } else {
+            let plan = lookup.record(
+                &resources.device,
+                &resources.queue,
+                context.command_encoder(),
+                &curve_target.texture_view,
+                frame.curve_weight,
+                overrides,
+            );
+            current.last_lookup = Some((input_ids, plan));
+            #[cfg(test)]
+            {
+                current.lookup_submissions += 1;
+            }
+            plan
+        };
+        let curve = lookup.view().clone();
+        // Sky also owns visible colour when this environment disables world fog.
+        let scattering_enabled = !frame.settings.skip_light_scattering
+            && resources
+                .local_fog
+                .lights
+                .iter()
+                .any(|p| f32::from_bits(p[13]) > 0.);
+        if frame.parameters.flags.x & 24 == 0 && frame.areas.is_empty() && !scattering_enabled {
+            return Ok(());
+        }
         let noise = resources
             .images
             .get(&frame.noise)
             .ok_or("fog noise awaits GPU preparation")?;
-        let projected_height=resources.images.get(&frame.shadow.image)
+        let projected_height = resources
+            .images
+            .get(&frame.shadow.image)
             .ok_or("fog projected height awaits GPU preparation")?;
         let sampling = sampling
             .as_ref()
@@ -408,6 +542,187 @@ fn render_atmosphere(
             &resources.allocator,
             &resources.meshes,
         )?;
+        if let Some(water_frame) = resources
+            .water_frame
+            .as_ref()
+            .and_then(|frame| frame.0.as_ref())
+        {
+            if water_frame.camera != frame.camera {
+                return Err("water depth inputs belong to another camera".into());
+            }
+            let programs = resources
+                .depth_programs
+                .as_ref()
+                .ok_or("water depth programs unavailable")?;
+            if current.water_depth.as_ref().is_none_or(|owner| {
+                owner.water.texture.width() != full.x || owner.water.texture.height() != full.y
+            }) {
+                current.water_depth = Some(super::water_depth_scene::WaterDepthScene::new(
+                    &resources.device,
+                    programs,
+                    extents,
+                    TextureFormat::Depth32FloatStencil8,
+                )?);
+            }
+            let owner = current.water_depth.as_mut().unwrap();
+            owner.prepare(
+                &resources.device,
+                &resources.queue,
+                waters.iter(),
+                resources
+                    .water_materials
+                    .as_ref()
+                    .ok_or("water depth material registry unavailable")?,
+                resources
+                    .water_meshes
+                    .as_ref()
+                    .ok_or("water depth mesh registry unavailable")?,
+                &resources.meshes,
+                &resources.allocator,
+                &resources.buffers,
+                water_frame.matrices,
+            )?;
+            owner.record(&resources.device, context.command_encoder(), &depth.texture)?;
+        } else {
+            current.water_depth = None;
+        }
+        if scattering_enabled {
+            use super::fog_light_scattering::{
+                LightScatterView, LightScatteringInputs, LightScatteringPass,
+            };
+            if resources.local_fog.camera != Some(frame.camera) {
+                return Err("local fog lights belong to another camera".into());
+            }
+            let water_frame = resources
+                .water_frame
+                .as_ref()
+                .and_then(|f| f.0.as_ref())
+                .ok_or("local fog view matrices unavailable")?;
+            let water = current
+                .water_depth
+                .as_ref()
+                .ok_or("local fog alpha depth unavailable")?;
+            let programs = resources
+                .depth_programs
+                .as_ref()
+                .ok_or("local fog culling programs unavailable")?;
+            let local = resources.local_shadows.as_ref().and_then(|s| s.0.as_ref());
+            let shadowed = resources
+                .local_fog
+                .lights
+                .iter()
+                .any(|p| p[24] != u32::MAX && p[25] & 2 != 0);
+            if shadowed {
+                let local = local.ok_or("local fog shadow frame unavailable")?;
+                if resources.local_fog.shadow_revision != Some(local.revision) {
+                    return Err("local fog shadow indices belong to another frame".into());
+                }
+                let ready = resources
+                    .local_completion
+                    .as_ref()
+                    .and_then(|c| c.0.lock().ok())
+                    .is_some_and(|done| {
+                        done.as_ref().is_some_and(|(revision, atlas, cache, _)| {
+                            *revision == local.revision
+                                && *atlas == local.atlas.id()
+                                && *cache == local.cache.id()
+                        })
+                    });
+                if !ready {
+                    return Err("local fog shadows await atlas submission".into());
+                }
+            }
+            let receiver = local
+                .map(|s| s.receiver.as_ref())
+                .transpose()
+                .map_err(Clone::clone)?;
+            let local_atlas = if shadowed {
+                &resources
+                    .images
+                    .get(&local.unwrap().atlas)
+                    .ok_or("local fog shadow atlas awaits GPU preparation")?
+                    .texture_view
+            } else {
+                &atlas.texture_view
+            };
+            let grid = crate::tiled_lighting::TileGrid::new(
+                full.x,
+                full.y,
+                frame.settings.tiled_light_dimension,
+            )?;
+            let tiled = current.tiled.get_or_insert_with(|| {
+                super::tiled_lighting_pass::TiledLightingPass::new(
+                    &resources.device,
+                    programs,
+                    grid,
+                )
+            });
+            tiled.resize(&resources.device, programs, grid);
+            let matrices = water_frame.matrices.current;
+            tiled.prepare(
+                &resources.device,
+                &resources.queue,
+                programs,
+                super::tiled_lighting_pass::TiledLightView {
+                    uv_to_ray: Vec4::new(0., 0., fog_view.ray_scale.x, fog_view.ray_scale.y),
+                    view: matrices.view.map(Vec4::from_array),
+                    projection: matrices.projection.map(Vec4::from_array),
+                    ..default()
+                },
+                &current.depth_view,
+                &water.alpha.full_sample,
+                &resources.local_fog.lights,
+                receiver.map_or(&[], |r| r.shadows.as_slice()),
+            )?;
+            tiled.record(context.command_encoder(), programs)?;
+            let scattering_view = LightScatterView {
+                world_from_clip: Mat4::from_cols_array_2d(&matrices.view_projection)
+                    .transpose()
+                    .inverse(),
+                camera_far: frame.eye.extend(frame.settings.far_clip),
+                position_to_view_texture: Vec4::new(
+                    0.,
+                    0.,
+                    1. / extents.world.x as f32,
+                    1. / extents.world.y as f32,
+                ),
+                canvas_scale_jitter: Vec4::new(1., 1., 0., 0.),
+                grid: UVec4::new(
+                    grid.lighting_shift,
+                    grid.dimensions[0],
+                    grid.dimensions[1],
+                    1u32 << frame.settings.downsample,
+                ),
+                black_white: Vec4::ZERO,
+            };
+            let scattering = current.scattering.get_or_insert_with(|| {
+                LightScatteringPass::new(
+                    &resources.device,
+                    current.fog.targets.world.texture.format(),
+                    scattering_view,
+                )
+            });
+            scattering.prepare(
+                &resources.device,
+                &resources.queue,
+                scattering_view,
+                LightScatteringInputs {
+                    lights: &tiled.lights,
+                    pool: &tiled.buffers.pool,
+                    heads: &tiled.scattering_heads,
+                    shadows: &tiled.shadows,
+                    atlas: local_atlas,
+                    depth: &current.fog.targets.depth.view,
+                    first_canvas: &current.fog.targets.canvas.view,
+                    second_canvas: current
+                        .fog
+                        .light_canvas_view()
+                        .ok_or("local fog turbulence canvas unavailable")?,
+                },
+            );
+        } else {
+            current.scattering = None;
+        }
         let draws = current.interiors.draws();
         if !frame.areas.is_empty() {
             let states = frame
@@ -449,14 +764,19 @@ fn render_atmosphere(
             &resources.queue,
             context.command_encoder(),
             &FogInputs {
-                shadow_parameters:&super::fog_shadow::FogShadowParameters {
-                    viewport:[0.,0.,extents.shadow.x as f32,extents.shadow.y as f32],
-                    resolution_projected:[1.,1.,frame.shadow.extent,0.],
-                    jitter:[fog_view.jitter.z,fog_view.jitter.w,0.,0.],
-                    options:[u32::from(frame.shadow.projected),u32::from(frame.shadow.temporal),1,0],
+                shadow_parameters: &super::fog_shadow::FogShadowParameters {
+                    viewport: [0., 0., extents.shadow.x as f32, extents.shadow.y as f32],
+                    resolution_projected: [1., 1., frame.shadow.extent, 0.],
+                    jitter: [fog_view.jitter.z, fog_view.jitter.w, 0., 0.],
+                    options: [
+                        u32::from(frame.shadow.projected),
+                        u32::from(frame.shadow.temporal),
+                        1,
+                        0,
+                    ],
                 },
-                projected_height:&projected_height.texture_view,
-                scattering: None,
+                projected_height: &projected_height.texture_view,
+                scattering: current.scattering.as_ref(),
                 areas: if frame.areas.is_empty() {
                     None
                 } else {
@@ -465,9 +785,12 @@ fn render_atmosphere(
                 settings: frame.settings,
                 ray_mask: None,
                 shadowed_volumes: false,
-                depth: &current.depth_view,
+                depth: current
+                    .water_depth
+                    .as_ref()
+                    .map_or(&current.depth_view, |owner| &owner.water.sample),
                 sky_mask: &current.mask.view,
-                curve: &curve.texture_view,
+                curve: &curve,
                 noise: &noise.texture_view,
                 atlas: &atlas.texture_view,
                 parallel: &parallel.buffer,
@@ -476,14 +799,27 @@ fn render_atmosphere(
             target.main_texture_view(),
         );
         if let Err(error) = capture.record(
-            &resources.capture_request, &resources.device, context.command_encoder(),
-            fog_view, frame, &current.depth_view, &atlas_frame, atlas,
-            &parallel.buffer, &current.fog,
+            &resources.capture_request,
+            &resources.device,
+            context.command_encoder(),
+            fog_view,
+            frame,
+            current
+                .water_depth
+                .as_ref()
+                .map_or(&current.depth_view, |owner| &owner.water.sample),
+            &atlas_frame,
+            atlas,
+            &parallel.buffer,
+            &current.fog,
         ) {
             warn!("Fog numeric capture failed: {error}");
         }
         if let Some(parameters) = material_parameters {
             let mut parameters_value = FogMaterialParameters::ready(frame, fog_view);
+            // Reserved backend flag lane selects the same retained curve bank
+            // for material receivers without rebinding/copying an image per frame.
+            parameters_value.world.flags.y = lookup_plan.final_image as u32;
             if !frame.areas.is_empty() {
                 if let Some(shared) = &shared {
                     if let Some(objects) = &shared.object_frame {

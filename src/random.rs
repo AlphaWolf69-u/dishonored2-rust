@@ -1,5 +1,14 @@
-//! Counter-seeded multiply-with-carry generator shared by scripts and rendering.
-//! Evidence: 7bebd0/7bf440/8bcce0 and the canvas constructor 2ff2f0.
+//! Random generators shared by scripts, effects and rendering.
+
+/// The 15-bit unit sample used by FX parameters/timings and wind. The caller
+/// owns the shared seed; every call consumes one step, including fixed ranges.
+pub fn lcg_unit(seed: &mut u32) -> f32 {
+    *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    ((*seed >> 10) & 0x7fff) as f32 * f32::from_bits(0x3800_0100)
+}
+
+/// Counter-seeded multiply-with-carry generator (7bebd0/7bf440/8bcce0 and
+/// the canvas constructor 2ff2f0).
 pub struct MwcRandom {
     low: u32,
     high: u32,

@@ -49,6 +49,39 @@ pub fn set_scatter_only(record: &mut [u8; 0xe8], enabled: bool) {
     record[1] = (record[1] & 0xfe) | u8::from(enabled);
 }
 
+/// 881640's authored strength conversion, after preset energy/colour conversion.
+/// The TLF writer consumes this value, rather than the actor's UI value.
+pub fn scattering_value(value: f32, kind: u32, color: [f32; 3], inner: f32, outer: f32) -> f32 {
+    if !(value > 0.) { return 0.; }
+    let low = f32::from_bits(0x3d0f_5c29);
+    let low = if kind == 2 {
+        let limit = inner - f32::from_bits(0x3a83_126f);
+        let cosine = if outer < limit { outer } else { limit };
+        let slope = unit_clamp((1. - cosine * cosine).sqrt() / cosine);
+        interpolate(low, f32::from_bits(0x3e60_4189), 1. - slope)
+    } else { low };
+    let first = interpolate(0., low, unit_clamp(value / 0.5));
+    let strength = interpolate(first, 0.5, unit_clamp((value - 0.5) * 2.));
+    let gb = if color[1] <= color[2] { color[2] } else { color[1] };
+    let peak = if color[0] <= gb { gb } else { color[0] };
+    interpolate(1., strength, unit_clamp((peak - 30.) / 15.)) * strength
+}
+
+#[test]
+fn authored_scattering_strength_matches_installed_conversion() {
+    let mut count = 0;
+    for (case, row) in include_str!("../../tests/fixtures/light_scattering_value.txt").lines().enumerate() {
+        let words: Vec<_> = row.split_whitespace().map(|w|u32::from_str_radix(w,16).unwrap()).collect();
+        assert_eq!(words.len(),8);
+        let actual = scattering_value(f32::from_bits(words[0]),words[1],
+            [f32::from_bits(words[2]),f32::from_bits(words[3]),f32::from_bits(words[4])],
+            f32::from_bits(words[5]),f32::from_bits(words[6]));
+        assert_eq!(actual.to_bits(),words[7],"authored scattering case{case}");
+        count+=1;
+    }
+    assert_eq!(count,512);
+}
+
 #[derive(Clone, Copy)]
 pub struct PresetInput {
     pub kind: u32,

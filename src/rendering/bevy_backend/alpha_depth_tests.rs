@@ -1,5 +1,5 @@
 //! Real copy/min-gather submission, format conversion, stencil preservation,
-//! quality-dependent footprints and persistent target/binding ownership.
+//! fixed half-size footprints and persistent target/binding ownership.
 use super::*;
 use bevy::{math::UVec2, render::renderer::RenderQueue};
 
@@ -113,9 +113,8 @@ pub(in crate::rendering::bevy_backend) fn check_preparation(
         let previous = [owner.full.id(), owner.reduced.id()];
         owner.resize(device, extent);
         assert_eq!(owner.full.id(), previous[0]);
-        if quality == 1 {
-            assert_eq!(owner.reduced.id(), previous[1]);
-        }
+        assert_eq!(owner.reduced.id(), previous[1]);
+        assert_eq!([owner.reduced.width(), owner.reduced.height()], [16, 16]);
         assert_eq!([owner.copy.id(), owner.downscale.id()], fixed);
         assert_eq!(owner.vertices.id(), vertices);
         let bind = device.create_bind_group(
@@ -227,7 +226,7 @@ pub(in crate::rendering::bevy_backend) fn check_preparation(
                     if flags & 8 == 0 { 0 } else { 0x44 },
                     "full stencil policy"
                 );
-                let size = extent.depth.x as usize;
+                let size = 16usize; // 2fbc60's literal division, at either fog quality.
                 if x < size && y < size {
                     let low = |p: usize| {
                         (((p as f32 + 0.5) * 32. / size as f32 - 0.5).floor() as usize).min(31)

@@ -47,6 +47,18 @@ impl OceanWaves {
         queue: &RenderQueue,
         parameters: WaveSpectrumParameters,
     ) -> Result<Self, String> {
+        let result = Self::allocate(device, queue)?;
+        result.upload_initial_spectrum(queue, parameters)?;
+        Ok(result)
+    }
+
+    /// Allocate the successful2fa110 resources. The admitted spectrum task
+    /// initializes H0/Omega from the prepared view's actual cached controls.
+    pub fn for_view(device: &RenderDevice, queue: &RenderQueue) -> Result<Self, String> {
+        Self::allocate(device, queue)
+    }
+
+    fn allocate(device: &RenderDevice, queue: &RenderQueue) -> Result<Self, String> {
         let buffer = |label, size, usage| {
             device.create_buffer(&BufferDescriptor {
                 label: Some(label),
@@ -183,8 +195,62 @@ impl OceanWaves {
             // 1402f9a80 initializes simulation owner+108 to zero.
             current_index: 0,
         };
-        result.upload_initial_spectrum(queue, parameters)?;
         Ok(result)
+    }
+
+    /// 35f5b0/2f9fe0's admitted world-frame work. Run once before its views,
+    /// independently of ocean enable/patch visibility. Query reset remains
+    /// caller-owned; this does not advance the displacement ping-pong index.
+    pub fn begin_world_frame(
+        &self,
+        encoder: &mut CommandEncoder,
+        state: &mut crate::rendering::ocean::OceanUpdateState,
+    ) {
+        state.begin_frame();
+        self.surfaces.clear_displacements(encoder);
+    }
+
+    /// 305300/3053b0. No spectrum/FFT work for a disabled or clean culled ocean.
+    /// Clock uniforms must be prepared before recording this task.
+    pub fn record_view_spectrum(
+        &mut self,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        state: &mut crate::rendering::ocean::OceanUpdateState,
+        packed_patch_count: u32,
+    ) -> Result<bool, String> {
+        if !state.needs_spectrum(packed_patch_count) {
+            return Ok(false);
+        }
+        if state.spectrum_dirty() {
+            self.upload_initial_spectrum(queue, state.cached_controls().spectrum_parameters())?;
+        }
+        self.record_spectrum(encoder);
+        self.record_fft(encoder);
+        state.spectrum_recorded();
+        Ok(true)
+    }
+
+    /// 305270/305370's wave task, after spectrum/FFT. Height-query submission
+    /// remains a separate caller-owned task, including its view-flag gate.
+    /// Prepare this frame's actual foam parameters before recording the task.
+    pub fn record_view_surfaces(
+        &self,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        state: &mut crate::rendering::ocean::OceanUpdateState,
+        packed_patch_count: u32,
+    ) -> bool {
+        if !state.needs_surfaces(packed_patch_count) {
+            return false;
+        }
+        let controls = state.cached_controls();
+        self.prepare_choppiness(queue, controls.choppiness);
+        self.record_surfaces(encoder);
+        self.record_collision_height(encoder);
+        self.record_foam(encoder, FoamMode::from_type(controls.foam_type));
+        state.surfaces_recorded();
+        true
     }
 
     /// Invoke on the source's spectrum-invalidated branch, not every frame.
@@ -281,8 +347,8 @@ impl OceanWaves {
     pub fn displacement_view(&self) -> &TextureView {
         self.surfaces.displacement_view(self.current_index)
     }
-    /// The first previous slot has not been rendered. Allocation alone does
-    /// not establish that this texture contains a completed previous frame.
+    /// The other ping-pong slot. The admitted world-frame clear resets both
+    /// slots; it is not necessarily a completed previous world-frame image.
     pub fn previous_displacement(&self) -> &Texture {
         self.surfaces.displacement(1 - self.current_index)
     }

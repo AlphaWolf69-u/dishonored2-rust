@@ -5,6 +5,35 @@ use bevy::{prelude::*, render::RenderApp};
 #[test]
 #[ignore = "requires graphics adapter; compares installed wave shaders"]
 fn ocean_wave_compute_matches_installed_shaders() {
+    check_wave_updates(false);
+}
+
+#[test]
+#[ignore = "requires graphics adapter; original view controls and wave graph tasks"]
+fn ocean_view_updates_match_installed_shaders() {
+    check_wave_updates(true);
+}
+
+fn view_input() -> crate::rendering::ocean::OceanViewInput {
+    crate::rendering::ocean::OceanViewInput {
+        enabled: true,
+        enable_ssr: false,
+        disable_ssr_on_rough_water: false,
+        use_sky_cube_map: false,
+        water_volume: false,
+        surface_water_level: 0.,
+        ocean_water_level: 0.,
+        max_wave_amplitude: 5.,
+        wind: [1., 0.],
+        foam_type: 0.,
+        wind_speed: 10.,
+        wind_dependency: 0.1,
+        small_waves: 100.,
+        choppiness: 1.,
+    }
+}
+
+fn check_wave_updates(view_updates: bool) {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -28,18 +57,23 @@ fn ocean_wave_compute_matches_installed_shaders() {
         .on_uncaptured_error(std::sync::Arc::new(move |error| {
             captured.lock().unwrap().push(format!("{error}"));
         }));
-    let mut waves = OceanWaves::new(
-        device,
-        queue,
-        WaveSpectrumParameters {
-            wind: [1., 0.],
-            amplitude: 1.,
-            wind_speed: 10.,
-            opposite_wind_attenuation: 0.1,
-            domain_length: 256.,
-            short_wave_divisor: 100.,
-        },
-    )
+    let mut state = crate::rendering::ocean::OceanUpdateState::default();
+    let mut waves = if view_updates {
+        OceanWaves::for_view(device, queue)
+    } else {
+        OceanWaves::new(
+            device,
+            queue,
+            WaveSpectrumParameters {
+                wind: [1., 0.],
+                amplitude: 1.,
+                wind_speed: 10.,
+                opposite_wind_attenuation: 0.1,
+                domain_length: 256.,
+                short_wave_divisor: 100.,
+            },
+        )
+    }
     .unwrap();
     let ids = [
         &waves.initial,
@@ -58,9 +92,12 @@ fn ocean_wave_compute_matches_installed_shaders() {
         usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut input = include_str!("../../../../tests/fixtures/ocean_wave_compute.txt")
-        .lines()
-        .peekable();
+    let fixture = if view_updates {
+        include_str!("../../../../tests/fixtures/ocean_view_wave_compute.txt")
+    } else {
+        include_str!("../../../../tests/fixtures/ocean_wave_compute.txt")
+    };
+    let mut input = fixture.lines().peekable();
     let mut frames = 0;
     while let Some(header) = input.next() {
         let words = header.split_whitespace().collect::<Vec<_>>();
@@ -71,9 +108,19 @@ fn ocean_wave_compute_matches_installed_shaders() {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("ocean fixture frame"),
         });
-        waves.record_spectrum(&mut encoder);
+        if view_updates {
+            waves.begin_world_frame(&mut encoder, &mut state);
+            state.prepare(&view_input(), 10., true);
+            assert!(waves
+                .record_view_spectrum(queue, &mut encoder, &mut state, 1)
+                .unwrap());
+        } else {
+            waves.record_spectrum(&mut encoder);
+        }
         encoder.copy_buffer_to_buffer(&waves.spectrum, 0, &staging, 0, size);
-        waves.record_fft(&mut encoder);
+        if !view_updates {
+            waves.record_fft(&mut encoder);
+        }
         encoder.copy_buffer_to_buffer(waves.transformed_spectrum(), 0, &staging, size, size);
         queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -131,7 +178,7 @@ fn ocean_wave_compute_matches_installed_shaders() {
         frames += 1;
     }
     assert_eq!(frames, 3);
-    check_surfaces(device, queue, &mut waves);
+    check_surfaces(device, queue, &mut waves, view_updates, &mut state);
     assert!(
         errors.lock().unwrap().is_empty(),
         "GPU errors: {:?}",
@@ -139,7 +186,13 @@ fn ocean_wave_compute_matches_installed_shaders() {
     );
 }
 
-fn check_surfaces(device: &RenderDevice, queue: &RenderQueue, waves: &mut OceanWaves) {
+fn check_surfaces(
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    waves: &mut OceanWaves,
+    view_updates: bool,
+    state: &mut crate::rendering::ocean::OceanUpdateState,
+) {
     let image_bytes = u64::from(WAVE_RESOLUTION) * u64::from(WAVE_RESOLUTION) * 8;
     let staging = device.create_buffer(&BufferDescriptor {
         label: Some("ocean surface numeric readback"),
@@ -150,18 +203,27 @@ fn check_surfaces(device: &RenderDevice, queue: &RenderQueue, waves: &mut OceanW
     let gradient_id = waves.gradients().id();
     let mut last_texture = waves.displacement().id();
     let mut previous_pixels: Vec<(usize, [u16; 4])> = Vec::new();
-    let mut lines = include_str!("../../../../tests/fixtures/ocean_wave_surfaces.txt")
-        .lines()
-        .peekable();
+    let fixture = if view_updates {
+        include_str!("../../../../tests/fixtures/ocean_view_wave_surfaces.txt")
+    } else {
+        include_str!("../../../../tests/fixtures/ocean_wave_surfaces.txt")
+    };
+    let mut lines = fixture.lines().peekable();
     let mut frames = 0;
-    let mut foam_lines = include_str!("../../../../tests/fixtures/ocean_wave_foam.txt")
-        .lines()
-        .peekable();
+    let foam_fixture = if view_updates {
+        include_str!("../../../../tests/fixtures/ocean_view_wave_foam.txt")
+    } else {
+        include_str!("../../../../tests/fixtures/ocean_wave_foam.txt")
+    };
+    let mut foam_lines = foam_fixture.lines().peekable();
     let foam_id = waves.foam_mask().id();
     let collision_id = waves.collision_height().id();
-    let mut collision_lines = include_str!("../../../../tests/fixtures/ocean_wave_collision.txt")
-        .lines()
-        .peekable();
+    let collision_fixture = if view_updates {
+        include_str!("../../../../tests/fixtures/ocean_view_wave_collision.txt")
+    } else {
+        include_str!("../../../../tests/fixtures/ocean_wave_collision.txt")
+    };
+    let mut collision_lines = collision_fixture.lines().peekable();
     while let Some(header) = lines.next() {
         let row = header
             .strip_prefix("frame ")
@@ -194,11 +256,29 @@ fn check_surfaces(device: &RenderDevice, queue: &RenderQueue, waves: &mut OceanW
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("ocean surface fixture"),
         });
-        waves.record_spectrum(&mut encoder);
-        waves.record_fft(&mut encoder);
-        waves.record_surfaces(&mut encoder);
-        waves.record_collision_height(&mut encoder);
-        waves.record_foam(&mut encoder, mode);
+        if view_updates {
+            waves.begin_world_frame(&mut encoder, state);
+            let mut input = view_input();
+            input.choppiness = row[2];
+            input.foam_type = foam_header[0] as f32;
+            state.prepare(&input, 10., true);
+            assert!(waves
+                .record_view_spectrum(queue, &mut encoder, state, 1)
+                .unwrap());
+            assert!(waves.record_view_surfaces(queue, &mut encoder, state, 1));
+            let index = waves.current_index;
+            assert!(!waves
+                .record_view_spectrum(queue, &mut encoder, state, 0x1000000)
+                .unwrap());
+            assert!(!waves.record_view_surfaces(queue, &mut encoder, state, 0x1000000));
+            assert_eq!(waves.current_index, index);
+        } else {
+            waves.record_spectrum(&mut encoder);
+            waves.record_fft(&mut encoder);
+            waves.record_surfaces(&mut encoder);
+            waves.record_collision_height(&mut encoder);
+            waves.record_foam(&mut encoder, mode);
+        }
         assert_eq!(waves.collision_height().id(), collision_id);
         assert_eq!(waves.foam_mask().id(), foam_id);
         assert_eq!(waves.previous_displacement().id(), last_texture);
@@ -290,15 +370,22 @@ fn check_surfaces(device: &RenderDevice, queue: &RenderQueue, waves: &mut OceanW
                     "surface frame{frames} pixel{pixel} channel{channel}: {actual} != {expected}"
                 );
             }
-            if frames > 0 {
-                assert_eq!(previous_pixels[samples].0, pixel);
+            if view_updates || frames > 0 {
                 let previous: [u16; 4] = std::array::from_fn(|channel| {
                     read_half(image_bytes as usize * 2 + pixel * 8 + channel * 2)
                 });
-                assert_eq!(
-                    previous, previous_pixels[samples].1,
-                    "previous wave overwritten at pixel{pixel}"
-                );
+                if view_updates {
+                    assert_eq!(
+                        previous, [0; 4],
+                        "world-frame displacement clear at pixel{pixel}"
+                    );
+                } else {
+                    assert_eq!(previous_pixels[samples].0, pixel);
+                    assert_eq!(
+                        previous, previous_pixels[samples].1,
+                        "previous wave overwritten at pixel{pixel}"
+                    );
+                }
             }
             current_pixels.push((pixel, current));
             samples += 1;

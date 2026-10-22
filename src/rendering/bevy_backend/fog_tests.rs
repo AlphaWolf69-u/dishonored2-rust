@@ -124,7 +124,7 @@ fn world_fog_shader_matches_installed_composition() {
     check_interior_depth(device, queue, &pipelines);
     super::fog_pass_tests::check_composition(device, queue);
     super::fog_pass_tests::check_depth_reduction(device, queue);
-    super::fog_pass_tests::check_slope_upscale(device, queue);
+    super::fog_pass_tests::check_upscales(device, queue);
     super::fog_alpha_tests::check_alpha(device, queue);
     super::fog_alpha_tests::check_volume(device, queue);
     super::fog_alpha_tests::check_scattering(device, queue);

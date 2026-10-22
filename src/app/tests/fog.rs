@@ -82,6 +82,21 @@ fn installed_fog_scene_assets_and_area_tracks() {
             );
             assert!(settings.fog.distance.is_finite() && settings.fog.vertical.is_finite());
         }
+        let before_profile = images.len();
+        let profile = fog.prepare_profile(&catalog,&name,&mut images).unwrap();
+        assert_eq!(images.len(),before_profile,"{resource}: world profile duplicated resident images");
+        let repeated = fog.prepare_profile(&catalog,&name,&mut images).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&profile,&repeated));
+        if count == 0 {
+            for path in catalog.paths_with_suffix(".decl").into_iter().filter(|p|p.starts_with("generated/decls/env/")) {
+                let profile_name = path.strip_prefix("generated/decls/env/").unwrap().strip_suffix(".decl").unwrap();
+                let prepared = fog.prepare_profile(&catalog,profile_name,&mut images)
+                    .unwrap_or_else(|e|panic!("{resource}/{profile_name}: {e}"));
+                for handle in prepared.images.values() {
+                    assert!(images.get(handle).unwrap().data.is_some(),"{profile_name}: profile image is not resident");
+                }
+            }
+        }
         println!(
             "Prepared fog scene {resource}: {} areas, {} resident images",
             areas.len(),

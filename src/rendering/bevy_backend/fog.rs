@@ -66,8 +66,29 @@ pub struct AreaFogStates {
 }
 
 #[derive(Clone)]
+pub struct FogLookupOverrideFrame {
+    pub images: [Handle<Image>; 4],
+    pub weights: Vec4,
+}
+impl FogLookupOverrideFrame {
+    /// Publish 88e220's prepared image groups. The caller supplies the actual
+    /// default image that 3110e0 resolves for an empty resource slot.
+    pub fn from_environment(
+        blend: crate::rendering::environment_images::ImageOverrideBlend<Handle<Image>>,
+        default_image: &Handle<Image>,
+    ) -> Option<Self> {
+        blend.is_active().then(|| Self {
+            images: blend
+                .images
+                .map(|image| image.unwrap_or_else(|| default_image.clone())),
+            weights: Vec4::from_array(blend.weights),
+        })
+    }
+}
+
+#[derive(Clone)]
 pub struct FogFrame {
-    pub shadow:FogShadowFrame,
+    pub shadow: FogShadowFrame,
     pub revision: u64,
     pub camera: Entity,
     pub parameters: FogParameters,
@@ -76,6 +97,8 @@ pub struct FogFrame {
     pub eye: Vec3,
     pub sky_masking_factor: f32,
     pub curve: Handle<Image>,
+    pub curve_weight: f32,
+    pub curve_overrides: Option<FogLookupOverrideFrame>,
     pub noise: Handle<Image>,
     pub settings: crate::platform::game_settings::FogRenderSettings,
     pub rays: crate::rendering::fog::rays::RaySettings,
@@ -86,10 +109,10 @@ pub struct FogFrame {
 
 #[derive(Clone)]
 pub struct FogShadowFrame {
-    pub image:Handle<Image>,
-    pub extent:f32,
-    pub projected:bool,
-    pub temporal:bool,
+    pub image: Handle<Image>,
+    pub extent: f32,
+    pub projected: bool,
+    pub temporal: bool,
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct FogSceneFrame(pub Option<FogFrame>);
@@ -99,6 +122,8 @@ impl Plugin for FogPlugin {
     fn build(&self, app: &mut App) {
         super::fog_material::register_shaders(app);
         app.init_resource::<FogSceneFrame>();
+        app.init_resource::<super::fog_light_scattering::LocalFogFrame>();
+        app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::fog_light_scattering::LocalFogFrame>::default());
         app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<
             FogCamera,
         >::default());

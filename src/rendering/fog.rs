@@ -1,7 +1,7 @@
 //! Authored atmosphere calculations, separate from forward surface lighting.
 
 pub mod canvas;
-pub mod parameters;
+pub mod lookup;
 pub mod settings;
 pub mod scattering;
 pub mod world;

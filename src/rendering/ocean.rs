@@ -8,14 +8,17 @@ mod fft;
 pub use collision::{build_wave_collision_mesh, WaveCollisionMesh};
 mod geometry;
 pub use fft::{ocean_fft_passes, FftBuffer, FftPass};
+pub mod environment;
 mod patches;
 mod settings;
 mod spectrum;
+mod update;
 mod view;
 pub use settings::{
     OceanSettings, OceanSurfaceSettings, PerlinWaveSettings, ProjectedShadowSettings,
     ShoreWaveSettings, WaveFoamParameters,
 };
+pub use update::OceanUpdateState;
 pub use view::{prepare_ocean_view, OceanViewInput, OceanViewState, OceanWaveControls};
 mod queries;
 pub use geometry::{

@@ -14,11 +14,21 @@ use bevy::{
     },
 };
 
-pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
+pub(super) fn check_upscales(device: &RenderDevice, queue: &RenderQueue) {
+    check_upscale(device, queue, false);
+    check_upscale(device, queue, true);
+}
+
+fn check_upscale(device: &RenderDevice, queue: &RenderQueue, nearest: bool) {
     let pipelines = super::fog_pipeline::FogPipelines::new(device, TextureFormat::Rgba16Float);
+    let pipeline = if nearest {
+        &pipelines.upscale
+    } else {
+        &pipelines.upscale_slope
+    };
     let make = |size: UVec2, format, usage, data: Option<&[u8]>| {
         let desc = TextureDescriptor {
-            label: Some("slope-aware fog upscale fixture"),
+            label: Some("depth-aware fog upscale fixture"),
             size: Extent3d {
                 width: size.x,
                 height: size.y,
@@ -60,6 +70,11 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
         mapped_at_creation: false,
     });
     let sampler = device.create_sampler(&SamplerDescriptor::default());
+    let linear = device.create_sampler(&SamplerDescriptor {
+        min_filter: FilterMode::Linear,
+        mag_filter: FilterMode::Linear,
+        ..default()
+    });
     // Upload through R32F and write the exact raw words to a sampleable depth
     // attachment; no depth-copy or projection rounding contaminates the oracle.
     let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
@@ -105,11 +120,17 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
         multiview_mask: None,
         cache: None,
     });
-    let rows = include_str!("../../../tests/fixtures/fog_upscale_slope.txt")
+    let fixture = if nearest {
+        // Unchanged captured PS20350, including its HDR divide and actual blend.
+        include_str!("../../../tests/fixtures/fog_upscale_nearest.txt")
+    } else {
+        include_str!("../../../tests/fixtures/fog_upscale_slope.txt")
+    };
+    let rows = fixture
         .lines()
         .map(|line| line.split_whitespace().collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    assert_eq!(rows.len(), 256);
+    assert_eq!(rows.len(), if nearest { 384 } else { 256 });
     for group in rows.chunks_exact(64) {
         let width = group[0][0].parse::<u32>().unwrap();
         let height = group[0][1].parse::<u32>().unwrap();
@@ -135,14 +156,19 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
         );
         let color_view = color.create_view(&default());
         let mut raw_depth = Vec::new();
+        let mut distances = Vec::new();
         for y in 0..8 {
             for x in 0..8 {
                 // Reference input arithmetic is f64, then rounded once to R32F.
-                let distance = 1.
-                    + x as f64 * 0.125
-                    + y as f64 * 0.2
-                    + if pattern != 0 && x >= 4 { 8. } else { 0. }
-                    + if pattern != 0 && y == 3 { 4. } else { 0. };
+                let distance = if pattern == 2 {
+                    2.
+                } else {
+                    1. + x as f64 * 0.125
+                        + y as f64 * 0.2
+                        + if pattern != 0 && x >= 4 { 8. } else { 0. }
+                        + if pattern != 0 && y == 3 { 4. } else { 0. }
+                };
+                distances.push(distance);
                 raw_depth.extend_from_slice(&((1. / distance) as f32).to_le_bytes());
             }
         }
@@ -165,7 +191,7 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
             clip_from_world: Mat4::IDENTITY,
             world_from_view: Mat4::IDENTITY,
             world_from_clip: Mat4::IDENTITY,
-            ray_scale: Vec4::ZERO,
+            ray_scale: Vec4::new(0., 0., 7000., 0.0002),
             unproject: Vec4::new(1., 1., 0., 0.75),
             extent: Vec4::new(8., 8., 4., 4.),
             reduced_extent: Vec4::new(4., 4., width as f32, height as f32),
@@ -177,27 +203,68 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
             contents: &ShaderBuffer::from(view).data.unwrap(),
             usage: BufferUsages::UNIFORM,
         });
+        let reduced = if nearest {
+            let mut bytes = Vec::new();
+            for y in 0..4 {
+                for x in 0..4 {
+                    let samples = [
+                        distances[(y * 2) * 8 + x * 2],
+                        distances[(y * 2) * 8 + x * 2 + 1],
+                        distances[(y * 2 + 1) * 8 + x * 2],
+                        distances[(y * 2 + 1) * 8 + x * 2 + 1],
+                    ];
+                    for value in [
+                        samples.into_iter().fold(f64::INFINITY, f64::min),
+                        samples.into_iter().fold(f64::NEG_INFINITY, f64::max),
+                    ] {
+                        bytes.extend(half::f16::from_f64(value).to_bits().to_le_bytes());
+                    }
+                }
+            }
+            Some(make(
+                UVec2::splat(4),
+                TextureFormat::Rg16Float,
+                TextureUsages::TEXTURE_BINDING,
+                Some(&bytes),
+            ))
+        } else {
+            None
+        };
+        let reduced_view = reduced.as_ref().map(|image| image.create_view(&default()));
+        let mut entries = vec![
+            BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: BindingResource::TextureView(&depth_view),
+            },
+            BindGroupEntry {
+                binding: 12,
+                resource: BindingResource::TextureView(&color_view),
+            },
+            BindGroupEntry {
+                binding: 13,
+                resource: BindingResource::Sampler(&sampler),
+            },
+        ];
+        if let Some(view) = &reduced_view {
+            entries.extend([
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 7,
+                    resource: BindingResource::Sampler(&linear),
+                },
+            ]);
+        }
         let bind = device.create_bind_group(
             None,
-            &BindGroupLayout::from(pipelines.upscale_slope.get_bind_group_layout(0)),
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::TextureView(&depth_view),
-                },
-                BindGroupEntry {
-                    binding: 12,
-                    resource: BindingResource::TextureView(&color_view),
-                },
-                BindGroupEntry {
-                    binding: 13,
-                    resource: BindingResource::Sampler(&sampler),
-                },
-            ],
+            &BindGroupLayout::from(pipeline.get_bind_group_layout(0)),
+            &entries,
         );
         let mut encoder = device.create_command_encoder(&default());
         {
@@ -229,7 +296,7 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
                 })],
                 ..default()
             });
-            pass.set_pipeline(&pipelines.upscale_slope);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -241,7 +308,11 @@ pub(super) fn check_slope_upscale(device: &RenderDevice, queue: &RenderQueue) {
             &staging,
             group,
             4,
-            "slope-aware fog upscale",
+            if nearest {
+                "captured nearest fog upscale"
+            } else {
+                "slope-aware fog upscale"
+            },
         );
     }
 }

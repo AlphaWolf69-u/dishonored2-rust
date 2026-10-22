@@ -50,6 +50,14 @@ mod tests {
         };
         let mut track = EnvironmentScalar::new(70.0);
         let areas = [area];
+        // Establish the initial world before entering an area: the first
+        // selection itself snaps, while subsequent changes interpolate.
+        assert_eq!(
+            track
+                .update(&world, 1.0, &areas, [2.0; 3], "test/value", 0.1)
+                .unwrap(),
+            70.0
+        );
         assert_eq!(
             track
                 .update(&world, 1.0, &areas, [0.0; 3], "test/value", 0.25)
@@ -363,23 +371,68 @@ impl<T: Clone> EnvironmentTrack<T> {
         if !self.initialized || source != self.source {
             self.start = self.current.clone();
             self.target = target;
-            // 88e220 initializes parameters supplied by the world immediately;
-            // an initial area override uses its own authored blend duration.
-            self.duration = if !self.initialized && source.is_none() {
-                0.0
-            } else {
-                duration
-            };
+            // 88e220 initializes the first selection immediately, including
+            // an area. Later source changes use the authored blend duration.
+            self.duration = if !self.initialized { 0.0 } else { duration };
             self.elapsed = 0.0;
             self.source = source;
             self.initialized = true;
         }
         if self.elapsed <= self.duration {
             self.elapsed += delta;
-            let fraction =
-                (self.elapsed / self.duration.max(MIN_BLEND_DURATION)).clamp(0.0, 1.0);
+            let fraction = (self.elapsed / self.duration.max(MIN_BLEND_DURATION)).clamp(0.0, 1.0);
             self.current = blend(&self.start, &self.target, fraction);
         }
         self.current.clone()
+    }
+}
+
+#[cfg(test)]
+mod initialization_tests {
+    use super::*;
+
+    #[test]
+    fn static_world_and_area_initialization_matches_executed_updates() {
+        let fixture = include_str!("../../tests/fixtures/environment_float_track.txt");
+        let mut frames = 0;
+        for scenario in fixture
+            .split("RESET")
+            .filter(|text| !text.trim().is_empty())
+        {
+            let rows: Vec<Vec<u32>> = scenario
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    line.split_whitespace()
+                        .map(|word| u32::from_str_radix(word, 16).unwrap())
+                        .collect()
+                })
+                .collect();
+            // This API represents a static world and ordinary areas. Presence,
+            // secondary sources and overlays have their own ParameterTrack.
+            if rows
+                .iter()
+                .any(|row| row[0] == 0 || row[7] != 0 || row[9] != 0)
+            {
+                continue;
+            }
+            let mut track = EnvironmentTrack::new(-0.0_f32);
+            for row in rows {
+                let (source, target, duration) = match row[1] {
+                    0 => (None, 5.0, 0.6), // owned executable oracle's world inputs
+                    1 => (Some(0), row[2] as f32, f32::from_bits(row[5])),
+                    2 => (Some(1), row[3] as f32, f32::from_bits(row[6])),
+                    count => panic!("unexpected area count {count}"),
+                };
+                let actual = track.advance(source, target, duration, f32::from_bits(row[4]));
+                assert_eq!(
+                    actual.to_bits(),
+                    row[row.len() - 3],
+                    "executed frame{frames}"
+                );
+                frames += 1;
+            }
+        }
+        assert_eq!(frames, 36);
     }
 }

@@ -393,6 +393,15 @@ pub fn boat_volume_stencil_state(mut state: RenderState) -> RenderState {
     state
 }
 
+/// 2fdea0's shared ocean/volume underwater mark. Stencil reference is 0x42;
+/// bit 1 excludes boat interiors, and only bit 6 may be replaced.
+pub fn underwater_stencil_state(mut state: RenderState) -> RenderState {
+    state[0] &= 0xfe1f_fffe;
+    state[4] = (state[4] & 0xff) | 0xa80a_8000;
+    state[5] = (state[5] & 0xfc40_02ef) | 0x0040_022f;
+    state
+}
+
 /// 2feef0 restores opaque depth only where (stencil & 12)==8, after the
 /// boat/water draws. The copy shader is the same one used by 34f740;
 /// the caller supplies stencil reference 8 and the immutable opaque source.

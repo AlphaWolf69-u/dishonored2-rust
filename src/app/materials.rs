@@ -19,7 +19,7 @@ pub(super) struct ProbeExtension {
     #[texture(163)]
     #[sampler(166)]
     pub(super) fog_canvas: Option<Handle<Image>>,
-    #[texture(164)]
+    #[texture(164, dimension = "2d_array")]
     pub(super) fog_curve: Option<Handle<Image>>,
     #[texture(165, sample_type = "depth")]
     pub(super) fog_depth: Option<Handle<Image>>,
@@ -323,7 +323,7 @@ pub(super) struct DecalExtension {
     #[texture(163)]
     #[sampler(166)]
     pub(super) fog_canvas: Option<Handle<Image>>,
-    #[texture(164)]
+    #[texture(164, dimension = "2d_array")]
     pub(super) fog_curve: Option<Handle<Image>>,
     #[texture(165, sample_type = "depth")]
     pub(super) fog_depth: Option<Handle<Image>>,

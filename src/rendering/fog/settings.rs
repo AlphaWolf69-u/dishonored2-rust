@@ -68,8 +68,10 @@ impl FogSettings {
         // 306840 reads these inputs before selecting the actual-sun values.
         let theta = read.scalar("atm/worldfog/scatteringangletheta")?;
         let phi = read.scalar("atm/worldfog/scatteringanglephi")?;
+        // 306840 reads the artist-facing colour, not the separate renderer
+        // scatteringColor parameter (live metadata key 1422aebc8).
         let authored_color =
-            Vec4::from_array(read.vector("atm/worldfog/scatteringcolor")?).truncate();
+            Vec4::from_array(read.vector("atm/worldfog/artistscatteringcolor")?).truncate();
         let direction = if read.boolean("atm/worldfog/useactualsundirection")? {
             sun.ok_or("fog requests unresolved current sun direction")?
                 .0
@@ -173,13 +175,23 @@ mod tests {
                 });
             let fog = FogSettings::load(&catalog, &parameters, sun, 7000.)
                 .unwrap_or_else(|e| panic!("{path}: {e}"));
-            let prepared = super::super::parameters::FogParameterValues::world(
-                &catalog,
-                &parameters,
-                sun,
-                7000.,
-            )
-            .unwrap();
+            if name == "env/campaign/institute/institute_p/institut_ext01" {
+                // Live 306840 output: both colour parameters coexist, but the
+                // artistScatteringColor key feeds this routine. Keep their
+                // different values from silently being conflated again.
+                assert_eq!(
+                    fog.fog.scattering_color.to_array().map(f32::to_bits),
+                    [0x3ea1_13a5, 0x3ec2_d363, 0x3edc_b44a],
+                    "{path}: differs from the game's completed fog record"
+                );
+            }
+            let prepared =
+                crate::rendering::environment_parameters::EnvironmentParameters::capture(
+                    &catalog,
+                    &parameters,
+                    |read| FogSettings::resolve(read, sun, 7000.),
+                )
+                .unwrap();
             let resident = FogSettings::resolve(&prepared, sun, 7000.).unwrap();
             assert_eq!(format!("{:?}", fog.fog), format!("{:?}", resident.fog));
             assert_eq!(
