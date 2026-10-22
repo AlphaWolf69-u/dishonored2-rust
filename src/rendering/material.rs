@@ -243,12 +243,11 @@ pub enum Transparency {
     Blend,
 }
 
-/// Editor/debug colour swatches are geometry guides, not authored visible
-/// surfaces. The installed models use these for occluders and volume proxies.
-pub fn is_editor_helper(path: &str) -> bool {
-    path.starts_with("models/templates/colors/")
-        || path.eq_ignore_ascii_case("NULL")
-        || path.ends_with("/invisible.material")
+/// The serialized NULL sentinel has no material resource. Valid declarations
+/// must pass through program/option admission, regardless of their path: the
+/// game uses template colour materials for visible backing geometry too.
+pub fn is_null_material(path: &str) -> bool {
+    path.eq_ignore_ascii_case("NULL")
 }
 
 /// Screen gates are distant-view impostors. Their material's black diffusemap
@@ -1582,18 +1581,20 @@ mod tests {
         );
     }
     #[test]
-    fn distinguishes_editor_colour_from_game_material() {
-        assert!(is_editor_helper("models/templates/colors/blue.material"));
-        assert!(is_editor_helper("NULL"));
-        assert!(is_editor_helper(
-            "models/templates/flat_colors/invisible.material"
-        ));
-        assert!(is_editor_helper(
-            "models/testassets/yguilloud/invisible_mesh/invisible.material"
-        ));
-        assert!(!is_editor_helper(
-            "models/environment/vehicles/skiff_01/skiff_hull_01.material"
-        ));
+    fn material_paths_do_not_hide_authored_backing_geometry() {
+        assert!(is_null_material("NULL"));
+        for path in [
+            "models/templates/colors/black.material",
+            "models/templates/colors/blue.material",
+            "models/templates/flat_colors/invisible.material",
+            "models/testassets/yguilloud/invisible_mesh/invisible.material",
+            "models/environment/vehicles/skiff_01/skiff_hull_01.material",
+        ] {
+            assert!(
+                !is_null_material(path),
+                "valid resource must be resolved: {path}"
+            );
+        }
     }
     #[test]
     fn identifies_distant_screen_gate_impostor() {

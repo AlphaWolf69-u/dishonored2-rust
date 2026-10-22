@@ -23,7 +23,7 @@ pub struct CachedWaterDepthSource {
 
 impl ProgramLibrary {
     pub fn world_water_colour_class(
-        &self,
+        &mut self,
         variant: &D3dVariantData,
     ) -> Result<crate::rendering::water::program::WorldWaterColourClass> {
         let mut pair = [None; 2];

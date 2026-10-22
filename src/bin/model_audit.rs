@@ -612,7 +612,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .get(index)
                     .and_then(Option::as_deref)
                     .unwrap_or(&surface.material_path);
-                if material::is_editor_helper(path) {
+                if material::is_null_material(path) {
                     continue;
                 }
                 let valid = if let Some(&valid) = checked.get(path) {

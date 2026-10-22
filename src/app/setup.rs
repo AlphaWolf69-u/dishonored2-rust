@@ -365,12 +365,12 @@ pub(super) fn setup(
         // model/world draw selector is traced. FUN_140a82710 is the Tome
         // object-visibility query implemented in tome.rs, not an LOD selector;
         // filtering to LOD 0 here would discard authored representations.
-        let skip_color = material::is_editor_helper(&object.material_path);
+        let null_material = material::is_null_material(&object.material_path);
         let source = &scene.world.meshes[object.mesh_index];
         // The auxiliary whole-view pass owns native +0x18 material pointers
         // independently of the color-visible render entities. Resolve this
-        // object's actual material even when its debug/helper color mesh is
-        // intentionally absent; never turn that absence into a no-caster flag.
+        // object's actual material independently of colour admission; never turn
+        // that absence into a no-caster flag.
         let admission = world_admissions
             .entry(object.material_path.clone())
             .or_insert_with(|| resolver.caster_admission(&object.material_path))
@@ -405,9 +405,9 @@ pub(super) fn setup(
                 )
                 .expect("prepared native BWM object association");
         }
-        // Editor helpers retain their material association above. Depth-only
-        // geometry remains in the scene and is routed by its resolved program.
-        if skip_color {
+        // Only the serialized NULL sentinel is absent. All real material paths
+        // are admitted through their resolved program and visibility flags.
+        if null_material {
             continue;
         }
         // layer0_vtxcolormaskchannel blends material layers, not final opacity.
@@ -651,7 +651,7 @@ pub(super) fn setup(
                         .get(surface_number)
                         .and_then(Option::as_deref)
                         .unwrap_or(&surface.material_path);
-                    if material::is_editor_helper(material_path) {
+                    if material::is_null_material(material_path) {
                         continue;
                     }
                     let points: Vec<Vec3> = surface
@@ -871,7 +871,7 @@ pub(super) fn setup(
                 .get(surface_number)
                 .and_then(Option::as_deref)
                 .unwrap_or(&surface.material_path);
-            if material::is_editor_helper(material_path) {
+            if material::is_null_material(material_path) {
                 continue;
             }
             let points: Vec<Vec3> = surface
