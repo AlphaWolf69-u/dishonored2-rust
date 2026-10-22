@@ -4,7 +4,9 @@ use bevy_math::{Quat, Vec3, Vec4};
 pub struct CanvasView {
     pub position_delta: Vec3,
     pub forward: Vec3,
-    pub right: Vec3,
+    /// Game camera axis 1 (+Y for a +X-facing camera), pointing left.
+    /// 2ff520 negates this axis when computing lateral movement.
+    pub left: Vec3,
     pub up: Vec3,
     pub fov_radians: f32,
     pub inverse_frequency: f32,
@@ -51,7 +53,7 @@ impl DynamicCanvas {
         let focus = view.focus_distance.max(0.01);
         let tangent = (view.fov_radians * 0.5).tan();
         let roll = if view.forward.truncate().length() > f32::from_bits(0x34000000) {
-            view.right.z.atan2(view.up.z)
+            view.left.z.atan2(view.up.z)
         } else {
             0.
         };
@@ -75,7 +77,7 @@ impl DynamicCanvas {
         };
         let pitch_delta = difference(self.pitch, pitch);
         let azimuth_delta = difference(self.azimuth, azimuth);
-        let projected_bank = -view.right.dot(up);
+        let projected_bank = -view.left.dot(up);
         let bank = projected_bank.clamp(-1., 1.).asin();
         let bank_delta = difference(self.bank, bank);
         let correction = self.pitch.sin() * azimuth_delta;
@@ -110,7 +112,7 @@ impl DynamicCanvas {
             (azimuth_delta * angular_scale, pitch_delta * angular_scale)
         };
         let (sin, cos) = self.spin.sin_cos();
-        let lateral = -view.right.dot(view.position_delta);
+        let lateral = -view.left.dot(view.position_delta);
         let vertical = view.up.dot(view.position_delta);
         self.offset[0] = (((cos * lateral - sin * vertical) * angular_scale) / focus
             + ((cos * pan_x - sin * pan_y) + self.offset[0]))
@@ -177,7 +179,7 @@ mod tests {
                 focus_distance: row[2],
                 position_delta: vec(3) - vec(6) - vec(18) * row[21],
                 forward: vec(9),
-                right: vec(12),
+                left: vec(12),
                 up: vec(15),
             });
             let values = actual

@@ -38,12 +38,15 @@ pub(super) fn register(app: &mut App) {
         render.init_resource::<FogGpu>().add_systems(
             Core3d,
             render_atmosphere
+                .in_set(AtmospherePass)
                 .in_set(Core3dSystems::MainPass)
                 .after(main_opaque_pass_3d)
                 .before(main_transparent_pass_3d),
         );
     }
 }
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct AtmospherePass;
 #[derive(SystemParam)]
 struct Resources<'w> {
     device: Res<'w, RenderDevice>,
@@ -785,6 +788,10 @@ fn render_atmosphere(
                 settings: frame.settings,
                 ray_mask: None,
                 shadowed_volumes: false,
+                // 309430 ORs base-light bit5 across all admitted lights,
+                // including lights whose scattering value is zero. The TLF
+                // packet writer preserves that flag in bit1.
+                shadowed_local_lights: resources.local_fog.lights.iter().any(|p| p[25] & 2 != 0),
                 depth: current
                     .water_depth
                     .as_ref()

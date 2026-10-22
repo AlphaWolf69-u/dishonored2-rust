@@ -22,6 +22,9 @@ pub struct FogInputs<'a> {
     pub settings: crate::platform::game_settings::FogRenderSettings,
     pub ray_mask: Option<&'a TextureView>,
     pub shadowed_volumes: bool,
+    /// 309430's local-light flag at volumetric parameters +0x99, consumed by
+    /// 307530's blur gate independently of sunlight shadowing.
+    pub shadowed_local_lights: bool,
     pub depth: &'a TextureView,
     pub sky_mask: &'a TextureView,
     pub curve: &'a TextureView,
@@ -557,11 +560,13 @@ impl FogPass {
         if let Some(scattering) = inputs.scattering {
             scattering.record(encoder, &self.targets.world.view);
         }
-        // 307530 filters only shadowed fog, radial rays or shadowed volumes.
+        // 307530 also filters when admitted local lights cast volumetric
+        // shadows (+0x99); their eight-tap scattering contains the same dither.
         if !inputs.settings.skip_blur
             && (self.parameters.get().flags.x & 64 != 0
                 || inputs.ray_mask.is_some()
-                || inputs.shadowed_volumes)
+                || inputs.shadowed_volumes
+                || inputs.shadowed_local_lights)
         {
             self.filter
                 .get_or_insert_with(|| FogFilter::new(device))

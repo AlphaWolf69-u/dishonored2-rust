@@ -12,6 +12,30 @@ use crate::rendering::{
 use bevy::prelude::*;
 use std::collections::HashMap;
 
+/// 2ff520 consumes the game's forward/left/up camera axes at 3a9c/3aa8/3ab4.
+/// Host +X points right; the native left axis is host -X, as in view history.
+pub(super) fn canvas_camera_view(
+    rotation: Quat,
+    projection: [[f32; 4]; 4],
+    position_delta: Vec3,
+    inverse_frequency: f32,
+    focus_distance: f32,
+) -> crate::rendering::fog::canvas::CanvasView {
+    let [forward, left, up] = [Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y]
+        .map(|axis| Vec3::from_array(super::view_to_game(rotation * axis)));
+    crate::rendering::fog::canvas::CanvasView {
+        position_delta,
+        forward,
+        left,
+        up,
+        // 2ff520 reads render-view +3a70 (vertical FOV), whereas the
+        // area-volume LOD calculation below uses +3a6c (horizontal FOV).
+        fov_radians: 2. * (1. / projection[1][1]).atan(),
+        inverse_frequency,
+        focus_distance,
+    }
+}
+
 fn prepare_image(
     catalog: &archive::Catalog,
     name: &str,
@@ -395,10 +419,7 @@ pub(super) fn publish_fog_frame(
     mut output: ResMut<crate::rendering::bevy_backend::fog::FogSceneFrame>,
     mut last_error: Local<Option<String>>,
 ) {
-    use crate::rendering::{
-        bevy_backend::fog::{FogCanvas, FogFrame, FogParameters},
-        fog::canvas::CanvasView,
-    };
+    use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
     let Some(fog) = fog.as_mut() else {
         output.0 = None;
         return;
@@ -457,24 +478,20 @@ pub(super) fn publish_fog_frame(
                 .map_err(Clone::clone)?
                 .model_fade_lod_scale,
         };
-        let canvas = motion.canvas.update(CanvasView {
-            position_delta: position - previous - wind.camera_velocity() * delta,
-            forward: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::NEG_Z)),
-            right: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::X)),
-            up: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::Y)),
-            fov_radians: 2. * (1. / matrix[0][0]).atan(),
-            inverse_frequency: settings.inverse_frequency,
-            focus_distance: settings.focus_distance,
-        });
-        let light_canvas = motion.light_canvas.update(CanvasView {
-            position_delta: position - previous - settings.light_canvas.wind * delta,
-            forward: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::NEG_Z)),
-            right: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::X)),
-            up: Vec3::from_array(super::view_to_game(transform.rotation * Vec3::Y)),
-            fov_radians: 2. * (1. / matrix[0][0]).atan(),
-            inverse_frequency: settings.light_canvas.inverse_frequency,
-            focus_distance: settings.light_canvas.focus_distance,
-        });
+        let canvas = motion.canvas.update(canvas_camera_view(
+            transform.rotation,
+            matrix,
+            position - previous - wind.camera_velocity() * delta,
+            settings.inverse_frequency,
+            settings.focus_distance,
+        ));
+        let light_canvas = motion.light_canvas.update(canvas_camera_view(
+            transform.rotation,
+            matrix,
+            position - previous - settings.light_canvas.wind * delta,
+            settings.light_canvas.inverse_frequency,
+            settings.light_canvas.focus_distance,
+        ));
         motion.revision = motion
             .revision
             .checked_add(1)

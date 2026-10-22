@@ -13,6 +13,8 @@ pub mod water_depth_program;
 #[cfg(feature = "game")]
 pub mod water_scene;
 #[cfg(feature = "game")]
+pub mod water_colour_scene;
+#[cfg(feature = "game")]
 pub mod water_hdr;
 #[cfg(feature = "game")]
 pub mod position_meshes;

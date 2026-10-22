@@ -22,6 +22,43 @@ pub struct CachedWaterDepthSource {
 }
 
 impl ProgramLibrary {
+    pub fn world_water_colour_class(
+        &self,
+        variant: &D3dVariantData,
+    ) -> Result<crate::rendering::water::program::WorldWaterColourClass> {
+        let mut pair = [None; 2];
+        for stage in &variant.stages {
+            let bytes = match &stage.bytecode {
+                StageBytecode::Absent => continue,
+                StageBytecode::Inline(bytes) => bytes.clone(),
+                StageBytecode::Cached(id) => self.cache.stage(*id as usize)?.bytes,
+            };
+            if bytes.len() < 32 || bytes.get(..4) != Some(b"DXBC".as_slice())
+                || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
+            {
+                return Err("invalid water colour DXBC container".into());
+            }
+            let slot = pair.get_mut(stage.kind as usize)
+                .ok_or("unsupported water colour stage kind")?;
+            if slot.is_some() { return Err("duplicate water colour stage".into()); }
+            *slot = Some(<[u8;16]>::try_from(&bytes[4..20]).unwrap());
+        }
+        // VS14490/14494 have identical WORLD/PNW output for all 512 native
+        // stream-output cases, including first-instance 0/2/7. The corresponding
+        // PS14491/14495 differ by the source's SSR specialization.
+        let supported = [
+            ([0x28,0x8c,0x1c,0x55,0xb1,0x3e,0x90,0x53,0x29,0xbb,0x26,0x9d,0xae,0xb8,0x2b,0xb3],
+             [0xcb,0x54,0x40,0x7c,0xfa,0x50,0x00,0x37,0xb8,0xe2,0xa6,0x92,0x51,0x50,0x46,0x04]),
+            ([0x18,0xde,0xd5,0xaf,0xf3,0x84,0x6f,0x42,0x4c,0x81,0x10,0xc1,0x1e,0x9b,0x25,0xc7],
+             [0xc6,0xbe,0x74,0x4d,0x88,0xf3,0x4b,0x51,0xcd,0x9e,0x95,0x0a,0xf3,0xb1,0x05,0x56]),
+        ];
+        if supported.iter().any(|(v,p)| pair == [Some(*v),Some(*p)]) {
+            Ok(crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal)
+        } else {
+            Err(format!("unsupported world water colour stages {pair:02x?}"))
+        }
+    }
+
     /// Pass/instancing overrides are supplied by the material constructor.
     /// A resident miss is distinct from an unsupported bytecode pair. Memoize
     /// both so materials sharing a specialization never reread its stages.

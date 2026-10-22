@@ -143,6 +143,8 @@ pub struct WaterImageSources {
 #[derive(Clone)]
 pub struct WaterFrame {
     pub camera: Entity,
+    /// Same prepared environment sun used by the view and atmosphere owners.
+    pub parallel: Option<([f32; 3], [f32; 3])>,
     pub ocean_render_settings: crate::platform::game_settings::OceanRenderSettings,
     pub values: crate::rendering::water::parameters::WaterViewParameters,
     /// Ordinary environment inputs; the ordered render-view water-contact override

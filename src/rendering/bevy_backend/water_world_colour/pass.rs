@@ -61,7 +61,15 @@ impl WorldProbeColourProgram {
         colour_format: TextureFormat,
         state: crate::render_state::RenderState,
     ) -> Result<Self, String> {
-        Self::create(device, mesh, depth_format, colour_format, state, false)
+        Self::create(
+            device,
+            mesh,
+            depth_format,
+            colour_format,
+            state,
+            false,
+            false,
+        )
     }
 
     /// Gameplay variant: every water HDR decode/encode reads the actual
@@ -73,7 +81,34 @@ impl WorldProbeColourProgram {
         colour_format: TextureFormat,
         state: crate::render_state::RenderState,
     ) -> Result<Self, String> {
-        Self::create(device, mesh, depth_format, colour_format, state, true)
+        Self::create(
+            device,
+            mesh,
+            depth_format,
+            colour_format,
+            state,
+            true,
+            false,
+        )
+    }
+
+    pub fn new_for_world_surface(
+        device: &RenderDevice,
+        mesh: &MeshVertexBufferLayoutRef,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        indices_reversed: bool,
+    ) -> Result<Self, String> {
+        Self::create(
+            device,
+            mesh,
+            depth_format,
+            colour_format,
+            state,
+            true,
+            indices_reversed,
+        )
     }
 
     fn create(
@@ -83,6 +118,7 @@ impl WorldProbeColourProgram {
         colour_format: TextureFormat,
         state: crate::render_state::RenderState,
         view_exposure: bool,
+        indices_reversed: bool,
     ) -> Result<Self, String> {
         let raster = crate::render_state::raster_state(&state);
         if raster.antialiased_line || raster.multisample {
@@ -190,7 +226,8 @@ impl WorldProbeColourProgram {
             source: ShaderSource::Wgsl(source.into()),
         });
         let mesh = vertex_buffer_layout(mesh).map_err(|e| e.to_string())?;
-        let (front_face, cull_mode) = super::super::pipeline_state::mesh_raster(&state, false);
+        let (front_face, cull_mode) =
+            super::super::pipeline_state::mesh_raster(&state, indices_reversed);
         let depth = super::super::pipeline_state::depth_stencil_gpu(&state, depth_format)?;
         let target = crate::render_state::blend_state(&state).targets[0]
             .ok_or("world water has no colour target state")?;

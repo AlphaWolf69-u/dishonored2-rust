@@ -479,8 +479,9 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
 @group(0) @binding(0) var first:texture_2d<f32>;
 @group(0) @binding(1) var second:texture_2d<f32>;
 @group(0) @binding(2) var<storage,read_write> values:vec4<f32>;
+@group(0) @binding(3) var scratch:texture_2d<f32>;
 @compute @workgroup_size(1) fn read_canvas() {
-    values=vec4(textureLoad(first,vec2(0),0).r,textureLoad(second,vec2(0),0).r,0.0,0.0);
+    values=vec4(textureLoad(first,vec2(0),0).r,textureLoad(second,vec2(0),0).r,textureLoad(scratch,vec2(0),0).r,0.0);
 }
 "#
             .into(),
@@ -510,14 +511,24 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
                 binding: 2,
                 resource: canvas_values.as_entire_binding(),
             },
+            BindGroupEntry {
+                binding: 3,
+                resource: BindingResource::TextureView(&pass.targets.filtered.view),
+            },
         ],
     );
-    for (nearest, case, mask) in [true, false].into_iter().flat_map(|nearest| {
-        [0u8, 128, 255]
-            .into_iter()
-            .enumerate()
-            .map(move |(case, mask)| (nearest, case, mask))
-    }) {
+    for (nearest, case, mask, shadowed_local_lights, skip_blur) in
+        [true, false].into_iter().flat_map(|nearest| {
+            [0u8, 128, 255]
+                .into_iter()
+                .enumerate()
+                .flat_map(move |(case, mask)| {
+                    [(false, false), (true, false), (true, true)]
+                        .into_iter()
+                        .map(move |(shadowed, skip)| (nearest, case, mask, shadowed, skip))
+                })
+        })
+    {
         // A changed input view rebuilds bindings, while unchanged viewport
         // dimensions retain all intermediate textures and uniform buffers.
         pass.update(device, queue, extents, view, parameters, canvas);
@@ -539,6 +550,7 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
         let mut settings =
             crate::platform::game_settings::fog_render_settings("\"r_skipFogBlur\" \"1\"").unwrap();
         settings.nearest_upscale = nearest;
+        settings.skip_blur = skip_blur;
         let inputs = FogInputs {
             shadow_parameters: &super::fog_shadow::FogShadowParameters {
                 viewport: [
@@ -557,6 +569,7 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
             settings,
             ray_mask: None,
             shadowed_volumes: false,
+            shadowed_local_lights,
             depth: &depth_view,
             sky_mask: &mask_view,
             curve: &curve_view,
@@ -565,6 +578,22 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
             parallel: &parallel,
         };
         let mut encoder = device.create_command_encoder(&default());
+        // A marker in the real scratch attachment detects whether the owner
+        // submitted the existing filter, even with sunlight shadowing off.
+        {
+            let _marker = encoder.begin_render_pass(&RenderPassDescriptor {
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &pass.targets.filtered.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(LinearRgba::new(97., 67., 31., 1.).into()),
+                        store: StoreOp::Store,
+                    },
+                })],
+                ..default()
+            });
+        }
         let clip = projection * Vec4::new(0., 0., -4., 1.);
         {
             let _clear = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -638,6 +667,18 @@ pub(super) fn check_composition(device: &RenderDevice, queue: &RenderQueue) {
             .unwrap();
         rx.recv().unwrap().unwrap();
         let bytes = staging.slice(..).get_mapped_range();
+        let scratch = f32::from_le_bytes(bytes[2056..2060].try_into().unwrap());
+        if shadowed_local_lights && !skip_blur {
+            assert!(
+                scratch.is_finite() && scratch < 1.,
+                "local shadow fog filter was not submitted: {scratch}"
+            );
+        } else {
+            assert_eq!(
+                scratch, 97.,
+                "unrequested fog filter changed its scratch target"
+            );
+        }
         let first = f32::from_le_bytes(bytes[2048..2052].try_into().unwrap());
         let second = f32::from_le_bytes(bytes[2052..2056].try_into().unwrap());
         assert_eq!(first, 0., "light canvas changed the world-fog canvas");

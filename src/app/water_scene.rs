@@ -246,6 +246,14 @@ pub(super) fn publish_water_frame(
         )?;
         Ok(WaterFrame {
             camera,
+            parallel: scene.environment_lighting.and_then(|environment| {
+                Some((
+                    crate::render_shadow::environment_sun_direction(
+                        environment.sun_theta_degrees?, environment.sun_phi_degrees?,
+                    ),
+                    crate::render_light::sun_ground_color(environment.sun_color?),
+                ))
+            }),
             ocean_render_settings: water.ocean_render_settings,
             values,
             ocean_environment: water.ocean_environment.update(

@@ -84,12 +84,27 @@ pub(super) fn world_colour_source(
         .serialized_variant(selected.as_bytes(), &options)?
         .ok_or_else(|| format!("world water colour needs runtime compilation: {selected}"))?;
     let parameters = colour_parameters(library, bytes, &selected)?;
+    let mut enabled = |name: &[u8]| {
+        library
+            .option_value(selected.as_bytes(), &options, name)
+            .map(|v| v != 0)
+    };
+    let colour_options = crate::rendering::water::program::WaterColourOptions {
+        horizontal: enabled(b"water/IsHorizontalWaterSurface")?,
+        sunlight: enabled(b"water/UseSunLight")?,
+        reflections: enabled(b"water/enableSSReflectionOption")?,
+        sky_cube: enabled(b"water/UseSkyCubeMapOption")?,
+        disable_rough_reflections: enabled(b"water/disableSSReflectionOnRoughWaterOption")?,
+    };
+    let class = library.world_water_colour_class(&variant);
     Ok(Some(Arc::new(
         crate::rendering::water::program::WorldWaterColourSource {
             program: selected,
             variant_hash,
             variant,
             options,
+            colour_options,
+            class,
             parameters,
         },
     )))

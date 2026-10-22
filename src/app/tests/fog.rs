@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn canvas_host_camera_inputs_match_executed_game_inputs() {
+    for (case, line) in include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/fog_canvas.txt"
+    ))
+    .lines()
+    .enumerate()
+    {
+        let words: Vec<f32> = line
+            .split_whitespace()
+            .map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap()))
+            .collect();
+        let axes = [9, 12, 15].map(|offset| Vec3::from_slice(&words[offset..offset + 3]));
+        let rotation = Transform::IDENTITY
+            .looking_to(
+                game_to_view(axes[0].to_array()),
+                game_to_view(axes[2].to_array()),
+            )
+            .rotation;
+        let vec = |at| Vec3::from_slice(&words[at..at + 3]);
+        let aspect = [16. / 9., 4. / 3., 9. / 16.][case % 3];
+        let projection = Mat4::perspective_infinite_reverse_rh(words[0], aspect, 0.01);
+        let input = super::super::fog_scene::canvas_camera_view(
+            rotation,
+            projection.to_cols_array_2d(),
+            vec(3) - vec(6) - vec(18) * words[21],
+            words[1],
+            words[2],
+        );
+        assert!((input.fov_radians - words[0]).abs() < 0.000001);
+        for (axis, (actual, expected)) in [input.forward, input.left, input.up]
+            .into_iter()
+            .zip(axes)
+            .enumerate()
+        {
+            assert!(
+                (actual - expected).length() < 0.00001,
+                "native canvas camera {case}, axis {axis}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+}
+
+
+#[test]
 #[ignore = "requires installed environments, area shapes and atmosphere images"]
 fn installed_fog_scene_assets_and_area_tracks() {
     let base = crate::assets::installation::game_base().unwrap();

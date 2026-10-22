@@ -681,7 +681,7 @@ impl CoarseDepthOutput {
 }
 
 #[derive(Resource, Default)]
-struct CoarseDepthGpu {
+pub(super) struct CoarseDepthGpu {
     view_entity: Option<Entity>,
     source_texture_id: Option<TextureId>,
     source_extent: Option<[u32; 2]>,
@@ -690,9 +690,16 @@ struct CoarseDepthGpu {
     readback: Option<CoarseDepthReadback>,
     next_sequence: u64,
     last_published_sequence: u64,
+    recorded: bool,
 }
 
 impl CoarseDepthGpu {
+    /// Same-view reduction submitted earlier in this Core3d schedule. Water
+    /// reflection shares its four mips instead of repeating the compute pass.
+    pub(super) fn pyramid_for(&self, texture: TextureId) -> Option<&DepthPyramid> {
+        (self.recorded && self.source_texture_id == Some(texture))
+            .then_some(self.pyramid.as_ref()).flatten()
+    }
     fn ensure(
         &mut self,
         entity: Entity,
@@ -753,8 +760,9 @@ impl Plugin for CoarseDepthPlugin {
             .add_systems(
                 Core3d,
                 render_coarse_depth
-                    .after(Core3dSystems::MainPass)
-                    .before(Core3dSystems::EarlyPostProcess),
+                    .in_set(Core3dSystems::MainPass)
+                    .after(bevy::core_pipeline::core_3d::main_opaque_pass_3d)
+                    .before(super::fog_scene::AtmospherePass),
             )
             .add_systems(
                 Render,
@@ -829,6 +837,7 @@ fn render_coarse_depth(
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|profile| profile.measure(43));
+    gpu.recorded = false;
     // The original has resident shaders before drawing gameplay depth. An
     // asynchronously compiling forward pass supplies an incomplete depth image
     // and must not seed the native persistent cascade/movement cache.
@@ -935,6 +944,7 @@ fn render_coarse_depth(
                 Some(metadata),
             )?;
         gpu.next_sequence = sequence;
+        gpu.recorded = true;
         Ok(())
     })();
     match result {
