@@ -1,9 +1,11 @@
 //! Original PostFX/Luminance histogram, scrolling-window selection and adaptation.
+use super::luminance::{LuminancePipelines, LuminanceViews};
 use bevy::{
     core_pipeline::{tonemapping::tonemapping, Core3d, Core3dSystems},
     prelude::*,
     render::{
         extract_component::{ExtractComponent, ExtractComponentPlugin},
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
         globals::{GlobalsBuffer, GlobalsUniform},
         render_asset::RenderAssets,
         render_resource::*,
@@ -81,6 +83,8 @@ struct Pipelines {
     histogram: CachedComputePipelineId,
     adapt: CachedComputePipelineId,
 }
+#[derive(Resource, Clone, ExtractResource)]
+struct DownsampleQuality(i32);
 #[derive(Resource, Default)]
 struct Views(HashMap<Entity, GpuView>);
 struct GpuView {
@@ -94,6 +98,10 @@ struct GpuView {
 struct TraceCopies(Vec<(Buffer, u64, f64, std::path::PathBuf)>);
 impl Plugin for ExposurePlugin {
     fn build(&self, app: &mut App) {
+        let quality = crate::platform::game_settings::read_downsample_quality()
+            .unwrap_or_else(|error| panic!("luminance configuration failed: {error}"));
+        app.insert_resource(DownsampleQuality(quality))
+            .add_plugins(ExtractResourcePlugin::<DownsampleQuality>::default());
         let shader = app
             .world_mut()
             .resource_mut::<Assets<Shader>>()
@@ -119,9 +127,11 @@ impl Plugin for ExposurePlugin {
         render
             .insert_resource(ShaderHandle(shader))
             .init_resource::<Views>()
+            .init_resource::<LuminanceViews>()
             .init_resource::<TraceCopies>()
             .add_systems(RenderStartup, initialize)
             .add_systems(Render, map_trace.in_set(RenderSystems::Cleanup))
+            .add_systems(Render, retire_views.in_set(RenderSystems::PrepareResources))
             .add_systems(
                 Core3d,
                 expose
@@ -131,7 +141,12 @@ impl Plugin for ExposurePlugin {
             );
     }
 }
-fn initialize(mut commands: Commands, shader: Res<ShaderHandle>, cache: Res<PipelineCache>) {
+fn initialize(
+    mut commands: Commands,
+    shader: Res<ShaderHandle>,
+    cache: Res<PipelineCache>,
+    device: Res<RenderDevice>,
+) {
     use binding_types::*;
     let layout = BindGroupLayoutDescriptor::new(
         "exposure",
@@ -161,6 +176,24 @@ fn initialize(mut commands: Commands, shader: Res<ShaderHandle>, cache: Res<Pipe
         adapt: make("update_exposure"),
         layout,
     });
+    commands.insert_resource(LuminancePipelines::new(&device));
+}
+fn retire_views(
+    mut views: ResMut<Views>,
+    mut pyramids: ResMut<LuminanceViews>,
+    active: Query<
+        (Option<&ExposureParameters>, Option<&MaterialExposure>),
+        With<bevy::render::camera::ExtractedCamera>,
+    >,
+) {
+    views
+        .0
+        .retain(|entity, _| active.get(*entity).is_ok_and(|v| v.0.is_some()));
+    pyramids.retain(|entity| {
+        active
+            .get(entity)
+            .is_ok_and(|v| v.0.is_some() || v.1.is_some())
+    });
 }
 fn expose(
     view: ViewQuery<(
@@ -177,6 +210,9 @@ fn expose(
     queue: Res<RenderQueue>,
     uniforms: Res<ViewUniforms>,
     globals: Res<GlobalsBuffer>,
+    quality: Res<DownsampleQuality>,
+    pyramid_programs: Res<LuminancePipelines>,
+    mut pyramids: ResMut<LuminanceViews>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     mut copies: ResMut<TraceCopies>,
     mut context: RenderContext,
@@ -232,13 +268,32 @@ fn expose(
     let Some(view_buffer) = uniforms.uniforms.buffer() else {
         return;
     };
+    let full = UVec2::new(
+        target.main_texture().width(),
+        target.main_texture().height(),
+    );
+    let pyramid = pyramids
+        .prepare(&device, &queue, entity, full, quality.0)
+        .unwrap_or_else(|error| panic!("luminance allocation failed: {error}"));
+    pyramid.record(
+        &device,
+        &queue,
+        context.command_encoder(),
+        &pyramid_programs,
+        target.main_texture_view(),
+        camera.exposure,
+        0..2,
+    );
+    let histogram_extent = pyramid
+        .extent(1)
+        .expect("luminance minimum has a second mip");
     let group = device.create_bind_group(
         None,
         &cache.get_bind_group_layout(&pipelines.layout),
         &BindGroupEntries::sequential((
             &globals.buffer,
             &gpu.settings,
-            target.main_texture_view(),
+            pyramid.view(1).unwrap(),
             gpu.histogram.as_entire_buffer_binding(),
             state.as_entire_buffer_binding(),
             BufferBinding {
@@ -248,8 +303,8 @@ fn expose(
             },
         )),
     );
-    let width = target.main_texture().width().div_ceil(2).div_ceil(2);
-    let height = target.main_texture().height().div_ceil(2).div_ceil(2);
+    let width = histogram_extent.x;
+    let height = histogram_extent.y;
     {
         let mut pass = context
             .command_encoder()

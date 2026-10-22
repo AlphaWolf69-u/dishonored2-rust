@@ -53,6 +53,7 @@ mod shadow_updates;
 mod shadow_diagnostics;
 mod world_instances;
 mod water_objects;
+mod water_scene;
 mod state;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
@@ -79,10 +80,11 @@ mod materials;
 mod sky_sprite;
 mod fog_scene;
 mod display_scene;
+mod lens_scene;
 mod fog_volumes;
 mod fog_objects;
 use materials::{
-    DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT,
+    DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT, DH2_NORMAL_W,
 };
 mod scene_queue;
 use scene_queue::{

@@ -5,7 +5,8 @@ struct WaterWorldColourParameters {vp:array<vec4<f32>,4>,controls:vec4<u32>,}
 struct WaterColourMatrix {x:vec4<f32>,y:vec4<f32>,z:vec4<f32>,}
 @group(1) @binding(0) var<storage,read> water_colour_instances:array<u32>;
 @group(1) @binding(1) var<storage,read> water_colour_matrices:array<WaterColourMatrix>;
-// Same eight-word PNW header/layout published by ProbeLightingSet.
+// Uses the original PNW section offsets at header words 0..3. The shared
+// ProbeLightingSet header also retains metadata for other lighting consumers.
 @group(1) @binding(2) var<storage,read> water_colour_pnw:array<u32>;
 @group(1) @binding(3) var<storage,read> water_colour_probe_info:array<vec2<u32>>;
 @group(1) @binding(4) var<storage,read> water_colour_cube_indices:array<u32>;

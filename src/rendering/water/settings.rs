@@ -138,3 +138,38 @@ impl WaterSettings {
         })
     }
 }
+
+/// Floating optical uniforms consumed by the water colour path.
+pub const FLOAT_PARAMETER_NAMES: [&str; 28] = [
+    "water/watercolor",
+    "water/skycolor",
+    "ocean/perlinmaxoctaves",
+    "ocean/perlinantialias",
+    "ocean/perlinfrequency",
+    "ocean/perlinspeed",
+    "ocean/perlinpersistence",
+    "ocean/perlinamplitude",
+    "water/extinction",
+    "water/inscattering",
+    "water/refraction",
+    "water/specularpower",
+    "water/shorefoamluminance",
+    "water/underwatervisibilityboost",
+    "water/skycubemapsphereradius",
+    "water/causticsspeed",
+    "water/causticstiling",
+    "water/causticsfade",
+    "water/causticschromaticaberration",
+    "water/screenspacereflectionzthicknessmulnear",
+    "water/screenspacereflectionzthicknessdistancenear",
+    "water/screenspacereflectionzthicknessmulfar",
+    "water/screenspacereflectionzthicknessdistancefar",
+    "water/screenspacereflectionzthicknesspow",
+    "water/screenspacereflectionverticalfade",
+    "water/screenspacereflectionborderfade",
+    "water/screenspacereflectionsoften",
+    "water/screenspacereflectionmaxstepscount",
+];
+
+/// Image uniforms consumed by the water colour path.
+pub const IMAGE_PARAMETER_NAMES: [&str; 2] = ["water/skycubemap", "water/causticstex"];

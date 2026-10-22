@@ -170,6 +170,7 @@ pub enum ImageFormat {
     // Uncompressed native intrinsics and BIM resources share the mip uploader.
     Rgba8,
     Rgba8Srgb,
+    Rgba32Float,
     Rg8,
     R16Float,
     R16Unorm,
@@ -192,6 +193,7 @@ pub enum ImageFormat {
 impl ImageFormat {
     pub fn from_dxgi(value: u32) -> Result<Self, String> {
         Ok(match value {
+            2 => Self::Rgba32Float,
             28 => Self::Rgba8,
             29 => Self::Rgba8Srgb,
             49 => Self::Rg8,
@@ -235,6 +237,7 @@ impl ImageFormat {
         match self {
             Self::Rgba8
             | Self::Rgba8Srgb
+            | Self::Rgba32Float
             | Self::Rg8
             | Self::R16Float
             | Self::R16Unorm

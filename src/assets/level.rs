@@ -11,6 +11,7 @@ pub struct LevelResources {
     pub entities: String,
     pub tome: String,
     pub physics: Option<String>,
+    pub probe_network: Option<String>,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -47,6 +48,28 @@ impl LevelResources {
             .ok_or_else(|| invalid("world has no resource directory"))?;
         let entities = format!("{directory}.entities");
         let tome = format!("{without_extension}.tome");
+        // 2b0970 keeps the chaos suffix in the directory, but the network's
+        // filename may use the unsuffixed map name. Resolve the exact indexed
+        // directory, never a substring that can also match a boat/other level.
+        let probe_networks: Vec<_> = catalog
+            .paths_with_suffix(".probesnetwork")
+            .into_iter()
+            .filter(|path| {
+                path.rsplit_once('/')
+                    .is_some_and(|(parent, _)| parent == directory)
+            })
+            .collect();
+        let probe_network = match probe_networks.as_slice() {
+            [] => None,
+            [path] => Some(path.clone()),
+            _ => {
+                return Err(invalid(format!(
+                    "ambiguous probe networks for {world}: {}",
+                    probe_networks.join(", ")
+                ))
+                .into())
+            }
+        };
         // The index places compiled physics under the level directory, with a
         // filename that need not match the world stem. Resolve the indexed
         // relationship instead of inventing a filename or extracting/renaming.
@@ -77,6 +100,7 @@ impl LevelResources {
             entities,
             tome,
             physics,
+            probe_network,
         })
     }
 
@@ -103,6 +127,39 @@ impl LevelResources {
 mod tests {
     use super::*;
     use crate::{entities, physworld, tome, world_mesh};
+
+    #[test]
+    #[ignore = "requires installed archives; checks every level's probe companion"]
+    fn installed_probe_networks_use_exact_level_directories() {
+        let catalog = Catalog::open(&super::super::installation::game_base().unwrap()).unwrap();
+        let mut count = 0;
+        for world in catalog.paths_with_suffix(".bwm") {
+            let level = LevelResources::resolve(&catalog, &world).unwrap();
+            if let Some(network) = level.probe_network {
+                assert_eq!(
+                    network.rsplit_once('/').unwrap().0,
+                    world.rsplit_once('/').unwrap().0
+                );
+                assert!(catalog.contains(&network));
+                count += 1;
+            }
+        }
+        let manor = LevelResources::resolve(&catalog, "madinventor_p").unwrap();
+        assert_eq!(
+            manor.probe_network.as_deref(),
+            Some("maps/campaign/madinventor/house/madinventor_p/madinventor_p.probesnetwork")
+        );
+        assert!(
+            catalog
+                .paths_containing("madinventor_p")
+                .iter()
+                .filter(|p| p.ends_with(".probesnetwork"))
+                .count()
+                > 1
+        );
+        assert_eq!(count, catalog.paths_with_suffix(".probesnetwork").len());
+        eprintln!("{count} exact level probe companions resolved");
+    }
 
     #[test]
     #[ignore = "requires installed Dishonored 2"]

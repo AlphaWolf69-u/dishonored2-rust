@@ -3,6 +3,13 @@
 //! as loaded by 140779530; render-model bounds do not define containment.
 use crate::{archive, entities, physworld};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentSource {
+    World,
+    Area(usize),
+    Secondary(usize),
+}
+
 pub struct AreaEnvironment {
     pub id: String,
     pub parameters: entities::EnvironmentRenderParameters,
@@ -240,6 +247,8 @@ pub fn load_area_environments(
 pub type EnvironmentScalar = EnvironmentTrack<f32>;
 pub type EnvironmentVector = EnvironmentTrack<bevy_math::Vec4>;
 
+pub(crate) const MIN_BLEND_DURATION: f32 = f32::from_bits(0x38d1_b717);
+
 /// The original float track blends all four words component by component.
 /// Scalar and float4 consumers share the same source-change and timing rules.
 pub struct EnvironmentTrack<T> {
@@ -368,7 +377,7 @@ impl<T: Clone> EnvironmentTrack<T> {
         if self.elapsed <= self.duration {
             self.elapsed += delta;
             let fraction =
-                (self.elapsed / self.duration.max(f32::from_bits(0x38d1_b717))).clamp(0.0, 1.0);
+                (self.elapsed / self.duration.max(MIN_BLEND_DURATION)).clamp(0.0, 1.0);
             self.current = blend(&self.start, &self.target, fraction);
         }
         self.current.clone()

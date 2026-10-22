@@ -171,7 +171,7 @@ exercise depth-array layer counts.
 
 ## Background materials and fog-volume routing
 
-Ordinary placed props use the installed HDR reflection cubemaps as well as
+Ordinary placed props and world surfaces use the installed HDR reflection cubemaps as well as
 diffuse probe lighting. `assets/bprobe.rs` preserves the cubemap names, parallax
 planes and optional alternate capture records; `assets/texture.rs` validates
 all six faces and mip records. `app/environment_reflection.rs` uploads the
@@ -181,10 +181,18 @@ evaluates the HQ Ward lobe, parallax correction and luminance factors. The
 vegetation path samples its registered RG32Float Ward lookup instead of using
 the ordinary material's analytical integral. The
 per-object SH record also transports its selected reflection probe and gain,
-and both update with model motion. Numeric tests cover the shader math and
-actual compressed HDR uploads. Per-world-triangle cubemap interpolation,
-alternate-capture weather blending and the special 512-probe residency mode
+and both update with model motion. World vertices select their reflection probe
+and interpolate its luminance factor from the same tetrahedron weights as SH.
+The retained normal-W corner channel transports three probe indices through
+perspective interpolation; each cube gets its own parallax correction, with a
+single sample when all three indices agree. Numeric tests cover both shader
+variants and actual compressed HDR uploads. Alternate-capture weather blending
+and the special 512-probe residency mode
 remain separate renderer work.
+
+`assets/level.rs` resolves probe networks in the exact indexed world directory.
+Substring matching cannot distinguish the manor from its boat level and must
+not determine whether a level has indirect lighting.
 
 `material_surface::Program` distinguishes `arkVista` from ordinary layered
 materials. Vista images stream through the same installed-archive loader as
@@ -429,6 +437,46 @@ occlusion without looking at images.
 The sky/cloud secondary depth mask now feeds world-distance fog. Remaining
 render-graph coverage includes physical atmosphere LUT composition and the
 HDR/depth-dependent `arkWater` path.
+Water material preparation now retains colour-program defaults and actual
+material numeric/image overrides as separate ordered scopes. The evaluated view
+sits beneath them; instance overrides remain a further draw-owner input.
+`render_program::parameters::ParameterScopes` preserves missing assignments,
+last matching names, raw vector words and named image identities. Scope outputs
+match 64 executions of the original slot publisher. All 21 installed arkWater
+materials resolve their 367 explicit optical/image assignments. The loader also
+retains the selected world-bank colour variant, effective specialization and
+that program's defaults. Selection preserves bank exclusion, finalization,
+explicit nulls and the SSS-driven choice of `mainAlphaProgram`. Serialized stages
+remain separate from GPU ABI admission; their presence does not enable a draw.
+Level setup
+also prepares registered, world and area water values and retains shared CPU
+cube/array image chains. `app/water_scene.rs` publishes evaluated parameters,
+game-space camera matrices and gameplay view-local time through `WaterSceneFrame`.
+`view_history.rs` preserves the original per-frame current/previous matrices and
+camera position, including first-update seeding, same-frame updates, explicit
+resets and counter wraparound. Water publication uses the host render-frame
+marker and starts a fresh history when its level owner or camera changes.
+All 96 executable camera updates match bit for bit; this supplies static world
+water's previous view-projection without substituting a model transform history.
+Area transitions preserve missing assignments and image resource identity;
+ordinary images switch at the original half-transition threshold. The shared
+texture loader supports RGBA32F sky cubes without reducing their precision.
+These inputs are prepared by the real application, but water raster submission
+and its full depth/fog/history dependencies remain unfinished. Retaining a CPU
+image chain does not submit a GPU upload or draw.
+The world-probe colour program has a view-exposure variant that reads the
+camera's existing `MaterialExposure` GPU record for every HDR decode and encode.
+It preserves the uniform white level and does not require CPU exposure readback
+or another rendering pass. This binding expects HDR samples and output in the
+game's storage units. `water_hdr.rs` now owns matching pre-water and writable
+colour targets in R11G11B10F or RGBA16F, converts the host primary using the
+live exposure record, and restores working RGB while preserving host alpha.
+The pre-water source stays separate from subsequent water writes; two bounded
+bindings retain the host's alternating views. This reproduces native storage
+rounding at the water boundary, without claiming the preceding host opaque
+passes already reproduce every native framebuffer store. Connecting these
+targets to the actual water draw owner and gameplay pass order remains required.
+
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
 and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
@@ -642,6 +690,15 @@ private binary data and matching view metadata are written by the I/O pool.
 No continuous capture, image encoding or gameplay visibility decision depends
 on these diagnostic resources. Adapter buffer limits are checked before copying.
 
+F8 also requests numerical display inputs through `display_capture`: the exact
+pre-display HDR source, first luminance mip, final bloom target and 32-byte GPU
+exposure record. Copies are recorded after the display producer in the same
+command stream. The text sidecar records texture formats, padded row layouts
+and the settings used by that submitted frame. Mapping and file writes are
+asynchronous. These resources perform no copies or allocations without a
+request; the capture adds no shader pass. CPU lens publications in the ordinary
+F8 report are labelled separately from this GPU evidence.
+
 The authored filmic curve calculation lives in `rendering::tone_mapping`.
 `app::display_scene` prepares registered defaults, level and area values, and
 resident 3D colour tables directly from archives. Gameplay publishes typed
@@ -661,8 +718,110 @@ colour-table inputs are blended only when their views or weights change.
 These components are numerically checked against installed shader rules, and
 headless render-graph checks cover readiness, fallback and changing exposure on
 Vulkan and DirectX 12. Fog-shadow sampling and filtering are unchanged. External
-Midnight environment overrides, bloom and other final-display effects remain
-separate unfinished paths; ordinary camera-area inputs are connected.
+Midnight environment overrides and several other final-display effects remain
+unfinished; ordinary camera-area inputs, bloom and lens dirt are connected.
+
+`bevy_backend::bloom` implements the authored upsampling draw with a linear
+mirror sampler and the original UV limits and repeated sample offsets. Its
+actual raster pass is checked against installed HLSL at full and half precision
+on both graphics backends. `rendering::bloom` provides the original inclusive
+mip schedule, including the distinct floor-sized source views and ceil-sized
+temporary targets. All 192 captured schedules match the executable exactly.
+`BloomChain` owns persistent RGBA16F targets with one shared pipeline and separate
+uniforms per draw. Chained readbacks match installed HLSL within one FP16 step;
+repeated frames reuse the same target views. Gameplay submits this chain before
+final tone mapping when lens flares are disabled. Exposure and bloom share a
+per-view luminance pyramid: frame-generation tracking fills only missing levels
+and prevents stale reads when exposure is unavailable. Resize and camera
+retirement release the corresponding targets.
+`rendering::viewport` supplies the executable's pixel-to-view and viewport
+constants; 128 native calls match word for word. Bloom's complete-target
+constructor uses these constants and is exercised by the chained GPU test.
+`bevy_backend::lens_streak` supplies the authored angular streak calculation.
+Its shader preserves the compiled angle polynomial and fused phase arithmetic:
+substituting a backend's ordinary angle approximation changes the 4,096-slice
+noise. Numerical checks cover 256 installed-HLSL cases on both graphics backends.
+`bevy_backend::lens_composite` combines these inputs in a variant of the existing
+tone-mapping pass, without an additional full-screen draw. The shader preserves
+lens-dirt selection/blending, HDR expansion, the positive-strength bloom guard,
+shifted flare sampling, black-and-white transforms and exposure ordering. The
+fused pass is checked against 42 installed-HLSL frames, including poisoned bloom
+data at zero strength, several host radiance scales and compressed-HDR input
+adaptation. The original compressed mode expands bloom separately; a source
+adapter inside the existing final draw preserves the host primary scene
+brightness while retaining that bloom scale. This does not reproduce the
+original main-target packed-storage quantization. Both-backend render-graph
+checks cover actual submission, exposure sharing, changing images, resize,
+retirement and fallback. Enabled lens flares retain the ordinary display path
+until their real source producer is connected.
+`rendering::lens_dirt` supplies the special image transition state, including
+world/area/secondary selection, interrupted transitions, missing assignments
+and ordered dominant-image overrides. Its outputs match 74 executable updates
+word for word. `PreparedLensDirt` resolves immutable image values at level
+preparation; updates perform no archive reads. Installed checks cover all 36
+levels and 2,812 area snapshots. This image state remains distinct from the
+ordinary numeric environment track, whose interpolation rules differ.
+`app::lens_scene` now prepares the level's archive-backed lens-dirt and colour
+profile images alongside its float and integer settings. `DisplayFrame` carries
+these resident handles and evaluated values to the render world. The display
+owner consumes the authored dirt pair, intrinsic black for disabled flares,
+actual camera-axis term and tracked white level. No archive reads occur during
+updates. Preparation checks cover all 36
+levels and 2,812 area dictionaries, including the actual BC7 sRGB dirt image.
+`rendering::environment_tracks` preserves presence, initialization, source
+changes and stored-word comparison for these values. Its float, signed/unsigned
+integer and lens-profile results match 221 executable updates; lens-dirt's
+separate publication rule retains its own 74-update check. Post-processing
+configuration supplies the original mip controls and skip bits without changing
+the installed settings file.
+
+HDR conversion white is distinct from the filmic curve's authored white level.
+`PostProcessSettings::hdr_white_level` reproduces the shared 3586a0/325910
+selection: use `1` unless `r_postProcessExposureUseToneMappingWhiteLevel` is
+enabled and tone mapping is not skipped. The display owner supplies this value
+to HDR conversion and the exposure window while retaining the authored white
+in `ToneCurve`. The 32-case fixture executes the original view-owner branch.
+Lens dirt's `UseDefault` view uniform follows equality of the resolved From/To
+images, as in 3586a0; it is not an independently authored visibility switch.
+
+`bevy_backend::lens_flare` owns the threshold, ghost/halo generation and
+incremental Gaussian H/V passes from the flare producer. `FlareChain` retains
+two R11G11B10 float targets, shares its pipelines and keeps a separate uniform
+buffer for each queued draw. It preserves the scaled scissor, the threshold's
+unscaled viewport, integer parameter clamps and the small-radius blur branch.
+Both backends match installed-HLSL packed stores exactly in isolated and
+four-pass tests. This producer is not yet submitted by gameplay: its actual
+`hrBufferDiv2` source is the clamped colour downsample made before DOF filtering,
+and must not be replaced by the luminance pyramid. No fog-shadow pass is added.
+`rendering::colour_downscale` provides executable-checked material selection,
+source-texel offsets and clear-colour preparation. Its backend raster pass
+implements all seven installed colour reduction modes, including clear-pixel
+replacement and the authored adaptation maximum. Floating-point and packed
+render stores match installed shaders on both graphics backends. `HdrDownscale`
+retains the pre-DOF colour target in the main HDR format (packed RGB or RGBA16F).
+Its host-source variant reads current GPU adaptation and removes camera radiance
+units inside the downsample draw, without a separate full-screen conversion.
+The source texel offsets remain tied to the full source image. This adapter
+preserves linear compression arithmetic but does not reproduce the original
+main-target packed-storage quantization. Checks cover 72 shader frames in
+float, half and packed outputs, including 16 host-source cases, live GPU factors
+and retained target identity. Gameplay submission still awaits the enabled-flare
+owner and its verified inherited threshold offset; it is not used as a
+replacement for the luminance pyramid. The caller must provide the pre-DOF
+source, actual target extent and full unscaled view; flare temporary/output
+targets remain separately packed.
+`rendering::depth_of_field` currently supplies material variant selection only.
+Its filter, cat-eye and fringing selection matches 315 executable calls; this
+does not provide the DOF render passes or autofocus producer.
+
+`bevy_backend::luminance` owns per-view RGBA16F mip chains. Exposure renders the
+first two levels once and reads the second level for its histogram; other
+post-processing can continue generating later levels from those same images.
+Allocation follows the configured downsample quality, minimum dimensions and
+the original short-axis mip stop. Shared extent rules also serve fog allocation.
+Buffers are replaced on resize and released when their view retires. Installed
+shader comparisons cover complete chains, including odd sizes and both quality
+settings; render-graph tests also cover exposure, display and view retirement.
 
 Cutout shadow materials create their authored initial image mip chains during
 level setup. Both model and static-world shadow program banks determine which

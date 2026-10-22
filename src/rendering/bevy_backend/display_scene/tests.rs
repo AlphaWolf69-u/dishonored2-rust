@@ -169,7 +169,7 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
             MaterialExposure(adaptation.clone()),
         ))
         .id();
-    let frame = DisplayFrame {
+    let mut frame = DisplayFrame {
         camera,
         parameters: ToneMappingParameters {
             curve: crate::rendering::tone_mapping::ToneCurve::new(
@@ -192,6 +192,7 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
         weight: 1.,
         custom_ev: 0.,
         overrides: None,
+        lens: None,
     };
     app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
     for _ in 0..6 {
@@ -237,6 +238,231 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
         "unchanged archive colour tables must not be recomputed each frame"
     );
     assert_pixel(pixel(&app, &target), [99, 137, 188, 255]);
+    // Exercise the actual gameplay lens owner without the exposure producer:
+    // it must generate its own fresh pyramid while retaining all targets.
+    let (white, black) = {
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let mut intrinsic = |name| {
+            images.add(Image::new(
+                Extent3d {
+                    width: 16,
+                    height: 16,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                crate::material::intrinsic_image_pixels(name).unwrap(),
+                TextureFormat::Rgba8Unorm,
+                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            ))
+        };
+        (intrinsic("_white"), intrinsic("_black"))
+    };
+    let mut settings = crate::platform::game_settings::post_process_settings("").unwrap();
+    settings.skip_lens_flares = true;
+    settings.hdr_buffer_format = 1;
+    frame.lens = Some(super::super::lens_scene::LensFrame {
+        settings,
+        black,
+        camera_axis: -1.0,
+        white_level: 4.0,
+        veil_size: 0.5,
+        veil_strength: 0.0,
+        dirt_strength: 0.0,
+        use_default_dirt: false,
+        threshold: [0.0, 1.0],
+        ghost: [0.1, 0.0, 0.25, 0.0],
+        streak: [0.2, 0.05, 0.04, 0.0],
+        blur_radius: 8,
+        ghost_samples: 5,
+        dirt: crate::rendering::lens_dirt::LensDirtBlend {
+            from: white.clone(),
+            to: white.clone(),
+            weight: 0.0,
+        },
+        profile: crate::rendering::environment_tracks::LensProfileBlend {
+            from: white.clone(),
+            to: white,
+            weight: 0.0,
+        },
+    });
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_pixel(pixel(&app, &target), [99, 137, 188, 255]);
+    let render_camera = {
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        let mut query = world.query::<(Entity, &MainEntity)>();
+        query
+            .iter(world)
+            .find_map(|(e, m)| (m.id() == camera).then_some(e))
+            .unwrap()
+    };
+    let (bloom_id, pyramid_id) = {
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        let bloom = world
+            .resource::<DisplayGpu>()
+            .current
+            .as_ref()
+            .unwrap()
+            .lens
+            .as_ref()
+            .unwrap()
+            .bloom_output()
+            .unwrap()
+            .id();
+        let pyramid = world
+            .resource_mut::<super::super::luminance::LuminanceViews>()
+            .get_mut(render_camera)
+            .unwrap()
+            .texture()
+            .id();
+        (bloom, pyramid)
+    };
+    for _ in 0..3 {
+        app.update();
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        assert_eq!(
+            world
+                .resource::<DisplayGpu>()
+                .current
+                .as_ref()
+                .unwrap()
+                .lens
+                .as_ref()
+                .unwrap()
+                .bloom_output()
+                .unwrap()
+                .id(),
+            bloom_id
+        );
+        assert_eq!(
+            world
+                .resource_mut::<super::super::luminance::LuminanceViews>()
+                .get_mut(render_camera)
+                .unwrap()
+                .texture()
+                .id(),
+            pyramid_id
+        );
+    }
+    frame.lens.as_mut().unwrap().veil_strength = 0.5;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    let brighter = pixel(&app, &target);
+    for (channel, base) in [99, 137, 188].into_iter().enumerate() {
+        assert!(
+            brighter[channel] > base,
+            "bloom did not brighten the scene: {brighter:?}"
+        );
+    }
+    frame.lens.as_mut().unwrap().dirt_strength = 1.0;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    assert_pixel(pixel(&app, &target), [137, 188, 255, 255]);
+    // A changed source must reach bloom in this frame, even without histogram
+    // generation. Reusing last frame's levels produces a different colour.
+    app.world_mut()
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .clear_color = ClearColorConfig::Custom(Color::linear_rgb(0.25, 0.125, 0.25));
+    app.update();
+    assert_pixel(pixel(&app, &target), [188, 137, 188, 255]);
+    app.world_mut()
+        .resource_mut::<Assets<Image>>()
+        .get_mut(&target)
+        .unwrap()
+        .resize(Extent3d {
+            width: 16,
+            height: 12,
+            depth_or_array_layers: 1,
+        });
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_pixel(pixel(&app, &target), [188, 137, 188, 255]);
+    {
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        assert_ne!(
+            world
+                .resource::<DisplayGpu>()
+                .current
+                .as_ref()
+                .unwrap()
+                .lens
+                .as_ref()
+                .unwrap()
+                .bloom_output()
+                .unwrap()
+                .id(),
+            bloom_id
+        );
+        assert_ne!(
+            world
+                .resource_mut::<super::super::luminance::LuminanceViews>()
+                .get_mut(render_camera)
+                .unwrap()
+                .texture()
+                .id(),
+            pyramid_id
+        );
+    }
+    frame.lens.as_mut().unwrap().settings.hdr_buffer_format = 0;
+    frame.lens.as_mut().unwrap().white_level = 0.1 / factor;
+    frame.lens.as_mut().unwrap().veil_strength = 0.0;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    assert_pixel(pixel(&app, &target), [137, 99, 137, 255]);
+    frame.lens.as_mut().unwrap().veil_strength = 0.5;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    assert_pixel(pixel(&app, &target), [143, 104, 143, 255]);
+    frame.lens.as_mut().unwrap().settings.hdr_buffer_format = 1;
+    frame.lens.as_mut().unwrap().white_level = 4.0;
+    frame.lens.as_mut().unwrap().settings.skip_bloom = true;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    assert_pixel(pixel(&app, &target), [137, 99, 137, 255]);
+    {
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        assert!(world
+            .resource::<DisplayGpu>()
+            .current
+            .as_ref()
+            .unwrap()
+            .lens
+            .as_ref()
+            .unwrap()
+            .bloom_output()
+            .is_none());
+        assert_eq!(
+            world
+                .resource_mut::<super::super::luminance::LuminanceViews>()
+                .get_mut(render_camera)
+                .unwrap()
+                .generated_levels(),
+            0
+        );
+    }
+    // An unfinished enabled-flare producer must retain the existing custom
+    // display path, rather than binding a fabricated black flare image.
+    frame.lens.as_mut().unwrap().settings.skip_bloom = false;
+    frame.lens.as_mut().unwrap().settings.skip_lens_flares = false;
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
+    assert_pixel(pixel(&app, &target), [137, 99, 137, 255]);
+    assert_eq!(mode(&mut app, camera), Tonemapping::None);
+    frame.lens.as_mut().unwrap().settings.skip_lens_flares = true;
+    frame.lens.as_mut().unwrap().veil_strength = 0.0;
+    frame.lens.as_mut().unwrap().dirt_strength = 0.0;
+    app.world_mut()
+        .entity_mut(camera)
+        .get_mut::<Camera>()
+        .unwrap()
+        .clear_color = ClearColorConfig::Custom(Color::linear_rgb(0.125, 0.25, 0.5));
+    app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame.clone());
+    app.update();
     // The current GPU adaptation state, not a CPU snapshot or constant, owns
     // the multiplier. Halving it must be applied exactly once in this frame.
     {
@@ -285,7 +511,22 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
     app.world_mut().resource_mut::<DisplaySceneFrame>().0 = Some(frame);
     let mut factors = Vec::new();
     for _ in 0..3 {
+        let previous_draws = app
+            .sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<super::super::luminance::LuminanceViews>()
+            .get_mut(render_camera)
+            .unwrap()
+            .draw_count();
         app.update();
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        let mut pyramids = world.resource_mut::<super::super::luminance::LuminanceViews>();
+        let pyramid = pyramids.get_mut(render_camera).unwrap();
+        assert_eq!(
+            pyramid.draw_count() - previous_draws,
+            pyramid.level_count() as u64,
+            "exposure and display duplicated pyramid draws"
+        );
         let factor = adaptation_factor(&app, &adaptation);
         factors.push(factor);
         let scale = factor * 2.0_f32.powf(-0.75) / (139.26 * Exposure { ev100: 0. }.exposure());
@@ -304,6 +545,38 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
     assert!(
         factors.windows(2).any(|p| (p[1] - p[0]).abs() > 0.0001),
         "exposure did not change: {factors:?}"
+    );
+    // A retired camera must release its new pyramid as well as exposure state.
+    let render_camera = {
+        let world = app.sub_app_mut(RenderApp).world_mut();
+        let mut query = world.query::<(Entity, &MainEntity)>();
+        query
+            .iter(world)
+            .find_map(|(entity, main)| (main.id() == camera).then_some(entity))
+            .unwrap()
+    };
+    assert!(app
+        .sub_app_mut(RenderApp)
+        .world_mut()
+        .resource_mut::<super::super::luminance::LuminanceViews>()
+        .get_mut(render_camera)
+        .is_some());
+    app.world_mut().despawn(camera);
+    app.update();
+    app.update();
+    assert!(app
+        .sub_app_mut(RenderApp)
+        .world_mut()
+        .resource_mut::<super::super::luminance::LuminanceViews>()
+        .get_mut(render_camera)
+        .is_none());
+    assert!(
+        app.sub_app(RenderApp)
+            .world()
+            .resource::<DisplayGpu>()
+            .current
+            .is_none(),
+        "retired camera retained lens targets"
     );
     assert!(
         errors.lock().unwrap().is_empty(),

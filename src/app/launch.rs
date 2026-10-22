@@ -319,8 +319,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
-        (Some(catalog), Some(stem)) => {
-            probe_lighting::load_for_world(catalog, stem).map_err(std::io::Error::other)?
+        (Some(catalog), Some(_)) => {
+            probe_lighting::load_for_world(catalog, &path.to_string_lossy()).map_err(std::io::Error::other)?
         }
         _ => None,
     };
@@ -704,7 +704,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         graphics.backends = Some(bevy::render::settings::Backends::DX12);
     }
     graphics.features |= bevy::render::settings::WgpuFeatures::DEPTH_CLIP_CONTROL
-        | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8;
+        | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
+        | bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(ProgramCacheSource(program_cache))
@@ -1015,6 +1016,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .after(game_clock_runtime::ClockSystems::PublishView)
                 .after(bevy::transform::TransformSystems::Propagate),
         )
+        .add_systems(PostUpdate,super::water_scene::publish_water_frame
+            .after(game_clock_runtime::ClockSystems::PublishView)
+            .after(bevy::camera::CameraUpdateSystems)
+            .after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, stream_visible_textures);
     bevy::asset::load_internal_asset!(
         app,

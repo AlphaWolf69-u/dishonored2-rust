@@ -15,9 +15,29 @@ pub struct WaterMaterialSource {
     /// separate, as in the installed material constructor.
     pub options: crate::render_program::SerializedParameterBlock,
     pub declaration: Arc<[u8]>,
+    /// Colour program defaults, then actual material numeric/image assignments.
+    pub parameters: [crate::render_program::SerializedParameterBlock; 2],
+    /// 29f890 selects world bank2 slot0, or slot2 when slot12 (SSS) exists.
+    /// A serialized variant is not a claim that its GPU stages are implemented.
+    pub world_colour:
+        Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String>,
     /// Slot4 in rigid bank0 and world bank2, independently admitted by actual
     /// resident bytecode. MAIN colour readiness never conceals a depth error.
     pub depth: [Result<Option<Arc<crate::shader_cache::CachedWaterDepthSource>>, String>; 2],
+}
+
+impl WaterMaterialSource {
+    pub fn settings(
+        &self,
+        view: &impl crate::assets::environment::ParameterSource,
+    ) -> Result<crate::rendering::water::WaterSettings, String> {
+        crate::rendering::water::WaterSettings::resolve(
+            &crate::render_program::parameters::ParameterScopes {
+                view,
+                blocks: &[&self.parameters[0], &self.parameters[1]],
+            },
+        )
+    }
 }
 
 /// The immutable level registry is shared across main/render worlds. An error
@@ -58,9 +78,18 @@ pub enum WaterGeometry {
 
 /// Raw world meshes retain local game coordinates even where the forward host
 /// mesh has baked shear. These handles share the shadow mesh allocations.
+#[derive(Clone)]
+pub struct WaterWorldMesh {
+    pub mesh: Handle<Mesh>,
+    /// World surface state is applied before constructing a pass pipeline.
+    pub surface_flags: u8,
+    /// Orientation of the imported index data, independent of raster state.
+    pub indices_reversed: bool,
+}
+
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterWorldMeshes {
-    pub objects: Arc<HashMap<usize, Result<Handle<Mesh>, String>>>,
+    pub objects: Arc<HashMap<usize, Result<WaterWorldMesh, String>>>,
     pub matrices: Option<Handle<bevy::render::storage::ShaderBuffer>>,
 }
 
@@ -104,17 +133,40 @@ impl bevy::render::extract_component::ExtractComponent for WaterMesh {
     }
 }
 
+/// Immutable archive-backed water images. Named aliases share resident chains;
+/// the drawing owner uploads only the images it actually consumes.
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct WaterImageSources {
+    pub skies: Arc<HashMap<String, Arc<crate::texture::InlineCubeChain>>>,
+    pub caustics: Arc<HashMap<String, Arc<crate::texture::InlineArrayChain>>>,
+}
+#[derive(Clone)]
+pub struct WaterFrame {
+    pub camera: Entity,
+    pub values: crate::rendering::water::parameters::WaterViewParameters,
+    /// Current and previous logical rows in game coordinates, published with
+    /// the actual main-world frame marker rather than per-draw observations.
+    pub matrices: crate::rendering::view_history::ViewMatrixFrame,
+    pub local_time: [f32; 2],
+}
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct WaterSceneFrame(pub Option<WaterFrame>);
+
 pub struct WaterPlugin;
 impl Plugin for WaterPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterMaterials>();
         app.init_resource::<WaterLighting>();
         app.init_resource::<WaterWorldMeshes>();
+        app.init_resource::<WaterImageSources>();
+        app.init_resource::<WaterSceneFrame>();
         app.add_plugins((
             bevy::render::extract_component::ExtractComponentPlugin::<WaterMesh>::default(),
             bevy::render::extract_resource::ExtractResourcePlugin::<WaterMaterials>::default(),
             bevy::render::extract_resource::ExtractResourcePlugin::<WaterLighting>::default(),
             bevy::render::extract_resource::ExtractResourcePlugin::<WaterWorldMeshes>::default(),
+            bevy::render::extract_resource::ExtractResourcePlugin::<WaterImageSources>::default(),
+            bevy::render::extract_resource::ExtractResourcePlugin::<WaterSceneFrame>::default(),
         ));
     }
 }

@@ -293,6 +293,9 @@ pub(super) fn collision_report(
     shadows: Option<Res<shadow_pass::ShadowSceneFrame>>,
     shadow_cpu: Option<Res<super::shadow_updates::ParallelShadowCpu>>,
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
+    display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
+    images: Res<Assets<Image>>,
+    display_capture: Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>,
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -410,6 +413,32 @@ pub(super) fn collision_report(
     );
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
+    report.push_str("\nLens CPU publication (not proof of GPU submission):\n");
+    if let Some(frame) = display.as_ref().and_then(|display| display.0.as_ref()) {
+        if let Some(lens) = &frame.lens {
+            report.push_str(&format!(
+                "camera={:?} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} use_default_dirt={} dirt_blend={} white_level={} camera_axis={}\n",
+                frame.camera, lens.settings, lens.veil_size, lens.veil_strength,
+                lens.dirt_strength, lens.use_default_dirt, lens.dirt.weight,
+                lens.white_level, lens.camera_axis,
+            ));
+            for (name, handle) in [("dirt_from", &lens.dirt.from), ("dirt_to", &lens.dirt.to)] {
+                if let Some(image) = images.get(handle) {
+                    let descriptor = &image.texture_descriptor;
+                    report.push_str(&format!(
+                        "{name}={:?} size={:?} format={:?} mips={}\n",
+                        handle.id(), descriptor.size, descriptor.format, descriptor.mip_level_count,
+                    ));
+                } else {
+                    report.push_str(&format!("{name}={:?} unavailable\n", handle.id()));
+                }
+            }
+        } else {
+            report.push_str("lens inputs unavailable\n");
+        }
+    } else {
+        report.push_str("display inputs unavailable\n");
+    }
     report.push_str("\nAtmosphere CPU publication (GPU submission is recorded in the session log):\n");
     if let Some(frame) = fog.as_ref().and_then(|fog| fog.0.as_ref()) {
         let p = &frame.parameters;
@@ -474,6 +503,9 @@ pub(super) fn collision_report(
     }
     match fs::write(&report_path, report) {
         Ok(()) => {
+            if let Some(capture) = display_capture {
+                capture.request(directory.join(format!("{stem}-display-gpu")));
+            }
             if let Some(capture) = fog_capture {
                 capture.request(directory.join(format!("{stem}-fog-gpu")));
             }

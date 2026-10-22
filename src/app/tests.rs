@@ -1616,6 +1616,7 @@ fn authored_surface_gpu_pipelines_compile() {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.75, 0.5]; n]);
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; n]);
     mesh.insert_attribute(DH2_BITANGENT, vec![[0.0, 1.0, 0.0]; n]);
+    mesh.insert_attribute(DH2_NORMAL_W, vec![0.0; n]);
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     let sh = app
         .world_mut()
@@ -4905,8 +4906,10 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
         if id == 1u { p = vec3(1.0,0.0,0.0); }
         if id == 2u { p = vec3(-0.25,1.25,-0.5); }
         if id == 3u { p = vec3(0.0); }
-        let interpolated = vertex_sh(0x80000000u,0u,view_vector(p));
+        let lighting = vertex_lighting(0x80000000u,0u,view_vector(p));
+        let interpolated = lighting.sh;
         for (var i = 0u; i < 9u; i++) { result[64u*9u+id*9u+i] = vec4(interpolated[i],0.0); }
+        result[64u*9u+4u*9u+64u+id] = vec4(f32(lighting.cube_index),lighting.reflection_gain,0.0,0.0);
     }
 }
 "#);
@@ -4944,13 +4947,16 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
     });
     // One tetrahedron with four primary IDs and exact unit-axis positions.
     let mut words = vec![
-        8u32, 9, 10, 16, 1, 1, 1, 4, 0, 0, 0, 1, 2, 3, 0x00010000, 0x00030002,
+        10u32, 11, 12, 18, 1, 1, 1, 4, 34, 4, 0, 0, 0, 1, 2, 3, 0x00010000, 0x00030002,
     ];
     for i in 0..4 {
         for axis in 0..3 {
             words.push((if i == axis { 1.0f32 } else { 0.0f32 }).to_bits());
         }
         words.push(255u32 << (8 * i));
+    }
+    for (index, gain) in [(2u32, 0.25f32), (1, 0.5), (3, 0.75), (0, 1.0)] {
+        words.extend([index, gain.to_bits()]);
     }
     let word_bytes = words
         .into_iter()
@@ -4961,7 +4967,7 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
         contents: &word_bytes,
         usage: BufferUsages::STORAGE,
     });
-    let size = (64 * 9 + 4 * 9 + 64) * 16;
+    let size = (64 * 9 + 4 * 9 + 64 + 4) * 16;
     let output = device.create_buffer(&BufferDescriptor {
         label: None,
         size,
@@ -5026,6 +5032,12 @@ fn view_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x,v.z,-v.y); }
         .collect::<Vec<_>>();
     drop(bytes);
     readback.unmap();
+    for (id, expected) in [[2.0, 0.625], [2.0, 0.25], [1.0, 0.6875], [0.0, 1.0]].into_iter().enumerate() {
+        let at = (64 * 9 + 4 * 9 + 64 + id) * 4;
+        assert_eq!(actual[at], expected[0], "world reflection probe ID case{id}");
+        assert!((actual[at + 1] - expected[1]).abs() < 1e-6,
+            "world reflection gain case{id}: {} != {}", actual[at + 1], expected[1]);
+    }
     for (id, line) in include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/indirect_lighting_cases.txt"
@@ -5108,6 +5120,8 @@ fn authored_mesh_retains_uv_color_and_independent_sheared_basis() {
     };
     assert_eq!(f3(Mesh::ATTRIBUTE_NORMAL), [1.0, 0.0, 0.0]);
     assert_eq!(f3(DH2_BITANGENT), [-3.0, -1.0, 4.0]);
+    let VertexAttributeValues::Float32(corner) = mesh.attribute(DH2_NORMAL_W).unwrap() else {panic!()};
+    assert_eq!(corner[0], 42.0 / 127.0);
     let VertexAttributeValues::Float32x4(t) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap()
     else {
         panic!()

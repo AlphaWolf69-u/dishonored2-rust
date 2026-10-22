@@ -4346,12 +4346,35 @@ impl ParameterBlock {
         parameter_float(name, id, flags, defaults, &self.entries)
     }
 
-    /// FUN_140310450 copies the value-count prefix to the ID+1 slots.
+    /// FUN_140310620 restores registered defaults for the ID-count prefix.
+    /// Value count/capacity and unused trailing IDs do not affect this operation.
+    pub fn restore_defaults(
+        &self,
+        slots: &mut [[u32; 4]],
+        defaults: &[[u32; 4]],
+    ) -> Result<(), String> {
+        let count = (self.id_count_word & 0x00ff_ffff) as usize;
+        let entries = self
+            .entries
+            .get(..count)
+            .ok_or("parameter ID count exceeds initialized entries")?;
+        for &(id, _) in entries {
+            if usize::from(id) >= defaults.len() || usize::from(id) + 1 >= slots.len() {
+                return Err("parameter ID exceeds default or destination slots".into());
+            }
+        }
+        for &(id, _) in entries {
+            slots[usize::from(id) + 1] = defaults[usize::from(id)];
+        }
+        Ok(())
+    }
+
+    /// FUN_140310450 copies the ID-count prefix to the ID+1 slots.
     /// The paired representation preserves native ID/value order and duplicates.
     pub fn write_entries_to_slots(&self, slots: &mut [[u32; 4]]) -> Result<(), String> {
-        let count = (self.value_count_word & 0x00ff_ffff) as usize;
+        let count = (self.id_count_word & 0x00ff_ffff) as usize;
         if count > self.entries.len() {
-            return Err("parameter value count exceeds initialized entries".into());
+            return Err("parameter ID count exceeds initialized entries".into());
         }
         for &(id, _) in &self.entries[..count] {
             if usize::from(id) + 1 >= slots.len() {

@@ -187,3 +187,7 @@ mod tests;
 #[cfg(test)]
 #[path = "water_world_colour/raster_tests.rs"]
 mod raster_tests;
+
+#[cfg(test)]
+#[path = "water_world_colour/exposure_tests.rs"]
+mod exposure_tests;

@@ -35,9 +35,54 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
         let mut images = Assets::<Image>::default();
         let mut scene = DisplayScene::load(&catalog, &parameters, &areas, &mut images)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
-        let (frame, cube, weight, exposure) = scene
-            .update(&areas, [0., 0., 0.], 1., 0.016)
+        let resident_count = images.len();
+        let (frame, cube, weight, exposure, lens) = scene
+            .update(&areas, [0., 0., 0.], 1., 0.016, 0.0)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(
+            images.len(),
+            resident_count,
+            "frame allocated an image: {path}"
+        );
+        for handle in [
+            &lens.dirt.from,
+            &lens.dirt.to,
+            &lens.profile.from,
+            &lens.profile.to,
+        ] {
+            let image = images.get(handle).unwrap();
+            assert_eq!(image.texture_descriptor.dimension, TextureDimension::D2);
+            assert!(image.data.as_ref().is_some_and(|v| !v.is_empty()), "{path}");
+        }
+        let dirt = images.get(&lens.dirt.from).unwrap();
+        assert_eq!(
+            dirt.texture_descriptor.format,
+            TextureFormat::Bc7RgbaUnormSrgb,
+            "{path}"
+        );
+        assert_eq!(
+            (
+                dirt.texture_descriptor.size.width,
+                dirt.texture_descriptor.size.height
+            ),
+            (1280, 720),
+            "{path}"
+        );
+        assert!(
+            lens.veil_size.is_finite()
+                && lens.veil_strength.is_finite()
+                && lens.profile.weight.is_finite(),
+            "{path}"
+        );
+        if lens.settings.skip_tone_mapping || !lens.settings.exposure_use_tone_mapping_white_level {
+            assert_eq!(lens.white_level, 1.0);
+        }
+        assert_eq!(exposure.adaptation.y, lens.white_level);
+        assert_eq!(frame.use_curve, !lens.settings.skip_tone_mapping);
+        assert_eq!(
+            lens.use_default_dirt,
+            lens.dirt.from.id() == lens.dirt.to.id()
+        );
         assert!(
             frame.gamma.is_finite() && frame.brightness.is_finite() && weight.is_finite(),
             "{path}"
@@ -68,7 +113,7 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
             "{path}"
         );
         eprintln!(
-            "display prepared {path}: {} areas, {} resident colour cubes",
+            "display prepared {path}: {} areas, {} resident display images",
             areas.len(),
             images.len()
         );

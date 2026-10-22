@@ -9,6 +9,8 @@ pub mod water_depth_program;
 #[cfg(feature = "game")]
 pub mod water_scene;
 #[cfg(feature = "game")]
+pub mod water_hdr;
+#[cfg(feature = "game")]
 pub mod position_meshes;
 #[cfg(feature = "game")]
 pub mod position_depth;
@@ -20,6 +22,8 @@ pub mod coarse_depth;
 pub mod fog;
 #[cfg(feature = "game")]
 pub mod fog_capture;
+#[cfg(feature = "game")]
+pub mod display_capture;
 #[cfg(feature = "game")]
 pub mod fog_shadow;
 #[cfg(feature = "game")]
@@ -160,3 +164,15 @@ pub mod display_scene;
 
 #[cfg(feature = "game")]
 pub mod bloom;
+#[cfg(feature = "game")]
+pub mod luminance;
+#[cfg(feature = "game")]
+pub mod lens_streak;
+#[cfg(feature = "game")]
+pub mod lens_composite;
+#[cfg(feature = "game")]
+pub mod lens_flare;
+#[cfg(feature = "game")]
+pub mod colour_downscale;
+#[cfg(feature = "game")]
+pub mod lens_scene;

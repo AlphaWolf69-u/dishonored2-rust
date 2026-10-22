@@ -60,7 +60,12 @@ fn water_scene_extracts_visible_shared_meshes_and_material_identity() {
             parameters: Vec::new(),
         },
         declaration: b"{}".as_slice().into(),
+        parameters: std::array::from_fn(|_| render_program::SerializedParameterBlock {
+            flags: 0,
+            parameters: Vec::new(),
+        }),
         depth: [Ok(None), Ok(None)],
+        world_colour: Ok(None),
     });
     std::sync::Arc::make_mut(&mut app.world_mut().resource_mut::<WaterMaterials>().0)
         .insert(name.clone(), Ok(material.clone()));
@@ -121,8 +126,22 @@ fn water_scene_extracts_visible_shared_meshes_and_material_identity() {
         .resource_mut::<Assets<ShaderBuffer>>()
         .add(ShaderBuffer::from(vec![[1f32; 12]; 20]));
     let world_objects = std::sync::Arc::new(std::collections::HashMap::from([
-        (7, Ok(raw_mesh.clone())),
-        (8, Ok(raw_mesh.clone())),
+        (
+            7,
+            Ok(WaterWorldMesh {
+                mesh: raw_mesh.clone(),
+                surface_flags: 0,
+                indices_reversed: true,
+            }),
+        ),
+        (
+            8,
+            Ok(WaterWorldMesh {
+                mesh: raw_mesh.clone(),
+                surface_flags: 1,
+                indices_reversed: false,
+            }),
+        ),
         (9, Err("test invalid source channel".into())),
     ]));
     app.insert_resource(WaterWorldMeshes {
@@ -189,9 +208,14 @@ fn water_scene_extracts_visible_shared_meshes_and_material_identity() {
         let world = render.resource::<WaterWorldMeshes>();
         assert!(std::sync::Arc::ptr_eq(&world.objects, &world_objects));
         let source = world.objects[&7].as_ref().unwrap();
-        assert_eq!(source.id(), raw_mesh.id());
-        assert_ne!(source.id(), mesh.id());
-        assert_eq!(world.objects[&8].as_ref().unwrap().id(), source.id());
+        assert_eq!(source.mesh.id(), raw_mesh.id());
+        assert_ne!(source.mesh.id(), mesh.id());
+        assert_eq!(source.surface_flags, 0);
+        assert!(source.indices_reversed);
+        let other = world.objects[&8].as_ref().unwrap();
+        assert_eq!(other.mesh.id(), source.mesh.id());
+        assert_eq!(other.surface_flags, 1);
+        assert!(!other.indices_reversed);
         assert!(world.objects[&9].is_err());
         assert_eq!(world.matrices.as_ref().unwrap().id(), matrices.id());
         assert!(render

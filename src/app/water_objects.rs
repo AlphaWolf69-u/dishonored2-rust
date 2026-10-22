@@ -1,6 +1,9 @@
 //! Publish placed world water's source geometry without host transform baking.
 use super::{world_instances::WorldMatrices, world_mesh, MaterialHandle, WorldShadowMeshSources};
-use crate::rendering::bevy_backend::{water_scene::WaterWorldMeshes, water_world_colour};
+use crate::rendering::bevy_backend::{
+    water_scene::{WaterWorldMesh, WaterWorldMeshes},
+    water_world_colour,
+};
 use bevy::{prelude::*, render::storage::ShaderBuffer};
 
 pub(super) fn prepare_world_geometry(
@@ -26,7 +29,11 @@ pub(super) fn prepare_world_geometry(
                     .ok_or("world water shared mesh asset is unavailable")?;
                 source.raw_vertex_count.as_ref().map_err(Clone::clone)?;
                 water_world_colour::retain_normal_w(&mut mesh, channels)?;
-                Ok(source.mesh.clone())
+                Ok(WaterWorldMesh {
+                    mesh: source.mesh.clone(),
+                    surface_flags: u8::from(source.flipped),
+                    indices_reversed: !source.flipped,
+                })
             })();
             (source.object_id, result)
         })

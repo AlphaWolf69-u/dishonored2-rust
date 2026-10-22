@@ -641,8 +641,8 @@ fn parameter_slot_writers_preserve_word_layout_and_order() {
     assert_eq!(slots, before);
     let too_short = ParameterBlock {
         entries: vec![(0, [1; 4])],
-        value_count_word: 2,
-        id_count_word: 1,
+        value_count_word: 1,
+        id_count_word: 2,
         value_capacity_word: 0x100,
         id_capacity_word: 0x100,
     };
@@ -1589,4 +1589,67 @@ fn surface_reduction_clears_only_derived_bits_and_ors_all_surfaces() {
     assert_eq!(reduce_surface_flags([0xff, 0xff], &[]), [0x0f, 0xfe]);
     assert_eq!(reduce_surface_flags([0xff, 0xff], &[a]), [0x0f, 0xfe]);
     assert_eq!(reduce_surface_flags([0, 4], &[b, a]), [0xf0, 5]);
+}
+#[test]
+fn parameter_default_restoration_matches_executable() {
+    let mut checked = 0;
+    for line in include_str!("../../../tests/fixtures/parameter_restore.txt").lines() {
+        let fields: Vec<u32> = line
+            .split_whitespace()
+            .map(|v| u32::from_str_radix(v, 16).unwrap())
+            .collect();
+        let case = fields[0];
+        let initial = |slot: u32, lane: u32| {
+            slot.wrapping_mul(0x45d9f3b)
+                .wrapping_add(lane.wrapping_mul(0x27d4eb2d))
+                .wrapping_add(case)
+                ^ 0xc0000000
+        };
+        let defaults: Vec<[u32; 4]> = (0..0xc28_u32)
+            .map(|slot| {
+                std::array::from_fn(|lane| {
+                    slot.wrapping_mul(0x9e3779b9)
+                        .wrapping_add(case.wrapping_mul(0xa511e9b3))
+                        .wrapping_add((lane as u32).wrapping_mul(0x6c8e9cf5))
+                })
+            })
+            .collect();
+        let mut slots: Vec<[u32; 4]> = (0..=0xc28_u32)
+            .map(|slot| std::array::from_fn(|lane| initial(slot, lane as u32)))
+            .collect();
+        let mut expected = slots.clone();
+        let mut copied = slots.clone();
+        let n = fields[3] as usize;
+        let block = ParameterBlock {
+            entries: fields[4..4 + n]
+                .iter()
+                .map(|id| (*id as u16, defaults[*id as usize]))
+                .collect(),
+            value_count_word: fields[1],
+            id_count_word: fields[2],
+            value_capacity_word: 0,
+            id_capacity_word: 0,
+        };
+        let changes = fields[4 + n] as usize;
+        for change in fields[5 + n..].chunks_exact(5) {
+            expected[change[0] as usize].copy_from_slice(&change[1..5]);
+        }
+        assert_eq!(fields.len(), 5 + n + changes * 5);
+        block.restore_defaults(&mut slots, &defaults).unwrap();
+        assert_eq!(slots, expected, "executed restore case{case}");
+        block.write_entries_to_slots(&mut copied).unwrap();
+        assert_eq!(copied, expected, "executed publication case{case}");
+        checked += 1;
+    }
+    assert_eq!(checked, 64);
+    let bad = ParameterBlock {
+        entries: vec![(3, [0; 4])],
+        value_count_word: 0,
+        id_count_word: 1,
+        value_capacity_word: 0,
+        id_capacity_word: 0,
+    };
+    let mut slots = [[0xabcdef01; 4]; 5];
+    assert!(bad.restore_defaults(&mut slots, &[[0; 4]; 3]).is_err());
+    assert_eq!(slots, [[0xabcdef01; 4]; 5]);
 }

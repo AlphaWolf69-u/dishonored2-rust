@@ -59,6 +59,23 @@ impl ParameterReader<'_> {
         }
         Ok(self.vector(name)?[0])
     }
+    /// Scalar uint uniforms retain integer token bits, rather than passing
+    /// through the floating-vector reader. Other expression forms remain errors.
+    pub fn unsigned(&self, name: &str) -> Result<u32, String> {
+        if let Some(value) = self.parameters.parameter(name) {
+            return unsigned_decimal(value.trim_matches('"')).map_err(|e| format!("{name}: {e}"));
+        }
+        let text = self.declaration(name)?;
+        let tokens = entities::declaration_lexemes(&text)?;
+        if tokens.len() < 4
+            || tokens[0] != "{"
+            || !tokens[1].eq_ignore_ascii_case("uniform")
+            || !tokens[2].eq_ignore_ascii_case("uint")
+        {
+            return Err(format!("{name}: not a scalar unsigned Uniform"));
+        }
+        unsigned_decimal(tokens[3]).map_err(|e| format!("{name}: {e}"))
+    }
     pub fn boolean(&self, name: &str) -> Result<bool, String> {
         if let Some(value) = self.parameters.scalar_parameter(name)? {
             return Ok(value != 0.);
@@ -77,6 +94,17 @@ impl ParameterReader<'_> {
         let declaration = self.declaration(name)?;
         image_initializer(&declaration).map_err(|error| format!("{name}: {error}"))
     }
+}
+
+fn unsigned_decimal(value: &str) -> Result<u32, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || !value.bytes().all(|c| c.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(format!("unresolved unsigned decimal token {value:?}"));
+    }
+    entities::numeric_token_value(value, 2).map(|v| v.0 as u32)
 }
 
 fn image_initializer(declaration: &str) -> Result<String, String> {

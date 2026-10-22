@@ -9,7 +9,8 @@ fn gpu_app() -> App {
                 render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
                     bevy::render::settings::WgpuSettings {
                         features: bevy::render::settings::WgpuSettings::default().features
-                            | WgpuFeatures::TEXTURE_COMPRESSION_BC,
+                            | WgpuFeatures::TEXTURE_COMPRESSION_BC
+                            | WgpuFeatures::FLOAT32_FILTERABLE,
                         ..default()
                     },
                 )),
@@ -468,4 +469,300 @@ fn default_cube_matches_source_upload_and_sampling() {
         assert_eq!(modes, 2);
     }
     device.poll(PollType::Poll).unwrap();
+}
+
+#[test]
+#[ignore = "requires installed float32 sky cube and graphics adapter"]
+fn float32_cube_keeps_hdr_mips_and_native_filtering() {
+    let app = gpu_app();
+    let world = app.sub_app(RenderApp).world();
+    let device = world.resource::<RenderDevice>();
+    let queue = world.resource::<RenderQueue>();
+    {
+        let catalog =
+            crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap())
+                .unwrap();
+        let actual = crate::material::load_cube_image(
+            &catalog,
+            "maps/campaign/dust/dust_sky_reflection.dds",
+        )
+        .unwrap();
+        assert!(!actual.defaulted);
+        assert_eq!(
+            actual.image.info.format,
+            crate::texture::ImageFormat::Rgba32Float
+        );
+        let actual_gpu = LayeredImage::cube(device, queue, &actual.image).unwrap();
+        assert_eq!(actual_gpu.texture().format(), TextureFormat::Rgba32Float);
+        assert_eq!(
+            actual_gpu.payload_bytes(),
+            actual.image.payload.len() as u64
+        );
+        assert_float32_cube_mips(device, queue, &actual_gpu, &actual.image);
+        let mut packed = 12 | (7 << 6) | (1 << 10);
+        crate::texture::normalize_image_format(&mut packed).unwrap();
+        let mut payload = Vec::new();
+        for level in 0..4 {
+            let size = 8 >> level;
+            for face in 0..6 {
+                for y in 0..size {
+                    for x in 0..size {
+                        let values = [
+                            face as f32 * 4.0 + x as f32 * 0.125 - 0.5,
+                            level as f32 + x as f32 * 0.03125 + y as f32 * 0.25,
+                            face as f32 + level as f32 + x as f32 * 0.125 + y as f32 * 0.0625,
+                            -((face + 1) as f32) * 0.125 + level as f32 * 0.25,
+                        ];
+                        payload.extend(values.into_iter().flat_map(f32::to_le_bytes));
+                    }
+                }
+            }
+        }
+        let chain = crate::texture::InlineCubeChain {
+            info: crate::texture::BimageInfo {
+                width: 8,
+                height: 8,
+                mip_count: 4,
+                packed_format: packed,
+                format: crate::texture::ImageFormat::Rgba32Float,
+            },
+            payload,
+        };
+        let cube = LayeredImage::cube(device, queue, &chain).unwrap();
+        let input = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: 256 * 16,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let output = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: 256 * 16,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let result = device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: output.size(),
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
+            label: Some("float32 cube numeric sampling"),
+            source: ShaderSource::Wgsl(
+                r#"
+@group(0) @binding(0) var image:texture_cube<f32>;
+@group(0) @binding(1) var filtering:sampler;
+@group(0) @binding(2) var<storage,read> queries:array<vec4<f32>>;
+@group(0) @binding(3) var<storage,read_write> output:array<vec4<f32>>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>) {
+    output[id.x]=textureSampleLevel(image,filtering,queries[id.x].xyz,queries[id.x].w);
+}
+"#
+                .into(),
+            ),
+        });
+        let pipeline = device.create_compute_pipeline(&RawComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: default(),
+            cache: None,
+        });
+        let mut lines = include_str!("../../../../tests/fixtures/float32_cube_samples.txt").lines();
+        let mut modes = 0;
+        while let Some(header) = lines.next() {
+            assert_eq!(header, format!("mode {modes}"));
+            let rows = (0..256)
+                .map(|_| {
+                    lines
+                        .next()
+                        .unwrap()
+                        .split_whitespace()
+                        .map(|v| u32::from_str_radix(v, 16).unwrap())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            queue.write_buffer(
+                &input,
+                0,
+                &rows
+                    .iter()
+                    .flat_map(|r| {
+                        [r[0], r[1], r[2], r[3]]
+                            .into_iter()
+                            .flat_map(u32::to_le_bytes)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let filter = if modes == 0 {
+                FilterMode::Nearest
+            } else {
+                FilterMode::Linear
+            };
+            let sampler = device.create_sampler(&SamplerDescriptor {
+                address_mode_u: AddressMode::Repeat,
+                address_mode_v: AddressMode::Repeat,
+                address_mode_w: AddressMode::Repeat,
+                mag_filter: filter,
+                min_filter: filter,
+                mipmap_filter: MipmapFilterMode::Nearest,
+                lod_max_clamp: 13.,
+                ..default()
+            });
+            let binding = device.create_bind_group(
+                None,
+                &pipeline.get_bind_group_layout(0).into(),
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(cube.view()),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(&sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: input.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: output.as_entire_binding(),
+                    },
+                ],
+            );
+            let mut encoder =
+                device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &binding, &[]);
+                pass.dispatch_workgroups(4, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&output, 0, &result, 0, output.size());
+            let submission = queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            result
+                .slice(..)
+                .map_async(MapMode::Read, move |r| tx.send(r).unwrap());
+            device
+                .poll(PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: None,
+                })
+                .unwrap();
+            rx.recv().unwrap().unwrap();
+            let bytes = result.slice(..).get_mapped_range();
+            let mut maximum = 0f32;
+            for (i, row) in rows.iter().enumerate() {
+                for c in 0..4 {
+                    let at = i * 16 + c * 4;
+                    let actual = f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+                    let expected = f32::from_bits(row[4 + c]);
+                    let error = (actual - expected).abs();
+                    maximum = maximum.max(error);
+                    assert!(
+                        error <= 2e-6 + expected.abs() * 1e-6,
+                        "mode{modes} sample{i} channel{c}: {actual} != {expected}"
+                    );
+                }
+            }
+            eprintln!("float32 cube mode{modes} max error={maximum}");
+            drop(bytes);
+            result.unmap();
+            modes += 1;
+        }
+        assert_eq!(modes, 2);
+    }
+    device.poll(PollType::Poll).unwrap();
+}
+
+fn assert_float32_cube_mips(
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    cube: &LayeredImage,
+    chain: &crate::texture::InlineCubeChain,
+) {
+    let mut regions = Vec::new();
+    let mut total = 0u64;
+    let mut source = 0;
+    for level in 0..chain.info.mip_count {
+        let width = (chain.info.width >> level).max(1);
+        let rows = (chain.info.height >> level).max(1);
+        let row = width * 16;
+        let pitch = row.next_multiple_of(256);
+        for face in 0..6 {
+            regions.push((level, face, width, rows, row, pitch, total, source));
+            total += u64::from(pitch * rows);
+            source += (row * rows) as usize;
+        }
+    }
+    assert_eq!(source, chain.payload.len());
+    let staging = device.create_buffer(&BufferDescriptor {
+        label: None,
+        size: total,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&default());
+    for &(level, face, width, rows, _, pitch, offset, _) in &regions {
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: cube.texture(),
+                mip_level: level,
+                origin: Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: TexelCopyBufferLayout {
+                    offset,
+                    bytes_per_row: Some(pitch),
+                    rows_per_image: Some(rows),
+                },
+            },
+            Extent3d {
+                width,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    let submitted = queue.submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging.slice(..).map_async(MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device
+        .poll(PollType::Wait {
+            submission_index: Some(submitted),
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let bytes = staging.slice(..).get_mapped_range();
+    for &(level, face, _, rows, row, pitch, offset, source) in &regions {
+        for y in 0..rows as usize {
+            let actual = offset as usize + y * pitch as usize;
+            let expected = source + y * row as usize;
+            assert_eq!(
+                &bytes[actual..actual + row as usize],
+                &chain.payload[expected..expected + row as usize],
+                "float32 mip{level} face{face} row{y}"
+            );
+        }
+    }
+    eprintln!(
+        "{} installed float32 cube mip/face records and {} bytes preserved exactly",
+        regions.len(),
+        chain.payload.len()
+    );
+    drop(bytes);
+    staging.unmap();
 }

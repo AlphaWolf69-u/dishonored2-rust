@@ -101,7 +101,16 @@ struct Output {@location(0) a:vec4<f32>,@location(1) b:vec4<f32>,}
         TextureFormat::Depth32Float,
         TextureFormat::Rgba16Float,
         colour_state,
-    ).unwrap();
+    )
+    .unwrap();
+    let _view_exposure_program = WorldProbeColourProgram::new_with_view_exposure(
+        device,
+        &mesh_layout,
+        TextureFormat::Depth32Float,
+        TextureFormat::Rgba16Float,
+        colour_state,
+    )
+    .unwrap();
     let vertex_layout = vertex_buffer_layout(&mesh_layout).unwrap();
     assert_eq!(vertex_layout.attributes[0].format, VertexFormat::Float32x3);
     assert_eq!(vertex_layout.attributes[1].format, VertexFormat::Float32);

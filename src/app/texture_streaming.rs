@@ -9,6 +9,21 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Immutable post-process images use the same installed-image reader and mip
+/// layout as streamed materials, with the complete initial chain resident.
+pub(super) fn load_resident_2d(
+    catalog:&archive::Catalog,name:&str,images:&mut Assets<Image>,
+    resident:&mut std::collections::HashMap<String,Handle<Image>>,
+)->Result<Handle<Image>,String> {
+    let path=material::image_load_resource(catalog,name)
+        .ok_or_else(||format!("unresolved resident image {name}"))?;
+    if let Some(handle)=resident.get(&path) {return Ok(handle.clone());}
+    let mut loaded=read_streamed_diffuse_at_target(catalog,&path,TextureReadTarget::Initial(Some(0)))?
+        .ok_or_else(||format!("missing resident image {path}"))?;
+    loaded.image.data=Some(loaded.uploads.into_iter().flat_map(|mip|mip.payload).collect());
+    let handle=images.add(loaded.image);resident.insert(path,handle.clone());Ok(handle)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DiffuseMipLevel {
     pub(super) resource_mip: Option<u8>,

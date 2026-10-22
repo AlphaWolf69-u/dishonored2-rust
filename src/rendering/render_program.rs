@@ -1250,3 +1250,6 @@ mod tests {
         }
     }
 }
+
+#[path = "render_program/parameters.rs"]
+pub mod parameters;

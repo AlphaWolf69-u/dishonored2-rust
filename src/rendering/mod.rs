@@ -1,5 +1,13 @@
 pub mod bevy_backend;
 pub mod environment;
+pub mod environment_tracks;
+pub mod lens_dirt;
+pub mod luminance;
+pub mod bloom;
+pub mod viewport;
+pub mod view_history;
+pub mod colour_downscale;
+pub mod depth_of_field;
 pub mod environment_reflection;
 pub mod filling;
 pub mod fog;

@@ -249,17 +249,13 @@ impl InterpolatedProbeLighting {
 /// the ordered primary list into installed .bprobe resources.
 pub fn load_for_world(
     catalog: &archive::Catalog,
-    world_stem: &str,
+    world: &str,
 ) -> Result<Option<ProbeLightingSet>, String> {
-    let candidates: Vec<_> = catalog
-        .paths_containing(world_stem)
-        .into_iter()
-        .filter(|resource| resource.ends_with(".probesnetwork"))
-        .collect();
-    if candidates.len() != 1 {
+    let level = crate::assets::level::LevelResources::resolve(catalog, world)
+        .map_err(|error| error.to_string())?;
+    let Some(network_resource) = level.probe_network else {
         return Ok(None);
-    }
-    let network_resource = candidates[0].clone();
+    };
     // FUN_1402b15e0 loads both trailing world-vertex buffers, not just the
     // ordered names/Voronoi prefix. Bound decoding by the indexed asset size;
     // EOTW's PNW is 247 MiB and its reference buffer follows the first 64 MiB.
@@ -384,7 +380,7 @@ impl ProbeLightingSet {
     /// The layout changes; the indices and 24/16/4-byte native records do not.
     pub fn vertex_shader_words(&self) -> Vec<u32> {
         let refs = &self.vertex_references;
-        let mut words = vec![0u32; 8];
+        let mut words = vec![0u32; 10];
         words[0] = words.len().try_into().expect("PNW GPU word count");
         words.extend_from_slice(&refs.instance_offsets);
         words[1] = words.len().try_into().expect("PNW GPU word count");
@@ -422,6 +418,11 @@ impl ProbeLightingSet {
             .len()
             .try_into()
             .expect("PNW vertex count");
+        words[8] = words.len().try_into().expect("PNW reflection offset");
+        words[9] = self.probes.len().try_into().expect("PNW reflection count");
+        for record in self.reflection_shader_words() {
+            words.extend(record);
+        }
         words
     }
 

@@ -1034,12 +1034,16 @@ impl MaterialResolver<'_> {
                 let state = render_state::material_render_state(&entities::declaration_text(bytes), base)?;
                 let options = material_option_overrides(library, bytes)?;
                 let depth = water::depth_sources(library, bytes, main, &options, state);
+                let parameters = water::colour_parameters(library, bytes, main)?;
+                let world_colour = water::world_colour_source(library, bytes, main, &options, state);
                 Ok(std::sync::Arc::new(crate::rendering::bevy_backend::water_scene::WaterMaterialSource {
                     main_program: main.to_owned(),
                     state,
                     options,
                     depth,
                     declaration: bytes.into(),
+                    parameters,
+                    world_colour,
                 }))
             })();
             if let Err(error) = &inputs { eprintln!("Water material unavailable {path}: {error}"); }

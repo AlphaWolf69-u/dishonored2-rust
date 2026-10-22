@@ -27,7 +27,11 @@ impl FogExtents {
         let shift = downsample as u32;
         // 36f8a0 starts at floor-reduced dimensions, then caps the longer
         // canvas axis at 640 using the full view's aspect ratio and floorf.
-        let mut canvas = (full >> shift).max(UVec2::splat(4 << (shift - 1)));
+        let downsample = UVec2::from_array(crate::rendering::luminance::downsample_extent(
+            full.to_array(),
+            downsample,
+        )?);
+        let mut canvas = downsample;
         let aspect = full.x as f32 / full.y as f32;
         if aspect < 1. && canvas.y > 640 {
             canvas.y = 640;
@@ -41,7 +45,7 @@ impl FogExtents {
         }
         Ok(Self {
             full,
-            depth: (full >> shift).max(UVec2::splat(4 << (shift - 1))),
+            depth: downsample,
             world: ((full + UVec2::ONE) >> shift).max(UVec2::splat(4)),
             shadow: ((full + UVec2::splat(3)) >> (shift + 1)).max(UVec2::splat(2)),
             canvas,

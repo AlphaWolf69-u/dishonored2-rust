@@ -3,7 +3,7 @@ use super::{
     archive, camera_projection, entities, game_settings, physworld, render_light, render_model,
     render_shadow, shadow_pass, tome, world_mesh, Aabb, FocusTarget, HashMap, Indices,
     ViewSettings, PlacedModelQueryGroup, PrimitiveTopology, Projection, RenderAssetUsages,
-    DH2_BITANGENT, DEFAULT_HORIZONTAL_FOV_DEGREES,
+    DH2_BITANGENT, DH2_NORMAL_W, DEFAULT_HORIZONTAL_FOV_DEGREES,
 };
 use bevy::prelude::*;
 
@@ -747,6 +747,7 @@ pub(super) fn authored_mesh<const N: usize>(
     let mut normals = Vec::with_capacity(points.len());
     let mut tangents = Vec::with_capacity(points.len());
     let mut bitangents = Vec::with_capacity(points.len());
+    let mut normal_w = Vec::with_capacity(points.len());
     let mut uv1 = Vec::with_capacity(points.len());
     let mut colors = Vec::with_capacity(points.len());
     for p in packed {
@@ -754,6 +755,7 @@ pub(super) fn authored_mesh<const N: usize>(
         let n = Vec3::new(snorm(p[4]), snorm(p[5]), snorm(p[6]));
         let t = Vec3::new(snorm(p[8]), snorm(p[9]), snorm(p[10]));
         let w = snorm(p[11]);
+        normal_w.push(snorm(p[7]));
         normals.push(transform_direction(n).to_array());
         tangents.push(transform_direction(t).extend(w).to_array());
         bitangents.push(transform_direction(n.cross(t) * w).to_array());
@@ -778,6 +780,7 @@ pub(super) fn authored_mesh<const N: usize>(
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_attribute(DH2_BITANGENT, bitangents)
+    .with_inserted_attribute(DH2_NORMAL_W, normal_w)
     .with_inserted_indices(render_indices(indices));
     if N == 16 {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);

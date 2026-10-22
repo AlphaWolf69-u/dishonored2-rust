@@ -1,5 +1,5 @@
-//! Authored bloom upsampling used by 325d80. The caller owns the luminance
-//! pyramid, individual horizontal/vertical targets and their exact UV scales.
+//! Authored bloom upsampling used by 325d80. BloomChain owns persistent H/V
+//! targets; its caller supplies the luminance source and exact UV constants.
 use bevy::{
     math::Vec4,
     render::{
@@ -10,6 +10,10 @@ use bevy::{
 
 pub const SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_bloom.wgsl");
 
+#[path = "bloom/chain.rs"]
+mod chain;
+pub use chain::{BloomChain, BloomViewParameters};
+
 #[derive(Clone, Copy, Default, ShaderType)]
 pub struct BloomParameters {
     pub pixel_scale: Vec4,
@@ -18,11 +22,14 @@ pub struct BloomParameters {
 }
 
 pub struct BloomUpsamplePass {
+    shared: std::sync::Arc<BloomPipeline>,
+    parameters: UniformBuffer<BloomParameters>,
+    binding: Option<(TextureViewId, BindGroup)>,
+}
+struct BloomPipeline {
     layout: BindGroupLayout,
     pipeline: RenderPipeline,
-    parameters: UniformBuffer<BloomParameters>,
     mirror: Sampler,
-    binding: Option<(TextureViewId, BindGroup)>,
 }
 
 impl BloomUpsamplePass {
@@ -74,18 +81,28 @@ impl BloomUpsamplePass {
             cache: None,
         });
         Self {
-            layout,
-            pipeline,
-            parameters: UniformBuffer::default(),
-            mirror: device.create_sampler(&SamplerDescriptor {
-                label: Some("bloom linear mirror"),
-                address_mode_u: AddressMode::MirrorRepeat,
-                address_mode_v: AddressMode::MirrorRepeat,
-                address_mode_w: AddressMode::MirrorRepeat,
-                min_filter: FilterMode::Linear,
-                mag_filter: FilterMode::Linear,
-                ..Default::default()
+            shared: std::sync::Arc::new(BloomPipeline {
+                layout,
+                pipeline,
+                mirror: device.create_sampler(&SamplerDescriptor {
+                    label: Some("bloom linear mirror"),
+                    address_mode_u: AddressMode::MirrorRepeat,
+                    address_mode_v: AddressMode::MirrorRepeat,
+                    address_mode_w: AddressMode::MirrorRepeat,
+                    min_filter: FilterMode::Linear,
+                    mag_filter: FilterMode::Linear,
+                    ..Default::default()
+                }),
             }),
+            parameters: UniformBuffer::default(),
+            binding: None,
+        }
+    }
+
+    fn sibling(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            parameters: UniformBuffer::default(),
             binding: None,
         }
     }
@@ -108,11 +125,11 @@ impl BloomUpsamplePass {
                 source.id(),
                 device.create_bind_group(
                     Some("bloom upsample source"),
-                    &self.layout,
+                    &self.shared.layout,
                     &BindGroupEntries::sequential((
                         self.parameters.binding().unwrap(),
                         source,
-                        &self.mirror,
+                        &self.shared.mirror,
                     )),
                 ),
             ));
@@ -130,7 +147,7 @@ impl BloomUpsamplePass {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.shared.pipeline);
         pass.set_bind_group(0, &self.binding.as_ref().unwrap().1, &[]);
         pass.draw(0..3, 0..1);
     }

@@ -14,11 +14,16 @@ struct PackedIrradiance {
 fn game_vector(v: vec3<f32>) -> vec3<f32> { return vec3(v.x, -v.z, v.y); }
 
 // indirectLighting/common: no saturation of tetrahedral barycentrics.
-fn vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32>, 9> {
+struct VertexLighting {
+    sh: array<vec3<f32>, 9>,
+    cube_index: u32,
+    reflection_gain: f32,
+}
+fn vertex_lighting(tag: u32, vertex_index: u32, position: vec3<f32>) -> VertexLighting {
     var sh: array<vec3<f32>, 9>;
     if (tag & 0x80000000u) == 0u {
         for (var i = 0u; i < 9u; i++) { sh[i] = probe_sh[tag][i].rgb; }
-        return sh;
+        return VertexLighting(sh,u32(max(0.0,probe_sh[tag][0].w)),probe_sh[tag][1].w);
     }
     let instance = tag & 0x7fffffffu;
     let reference = probe_words[probe_words[0] + instance] + vertex_index;
@@ -40,7 +45,21 @@ fn vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32
         sh[i] = w.x*probe_sh[probes.x][i].rgb + w.y*probe_sh[probes.y][i].rgb
             + w.z*probe_sh[probes.z][i].rgb + w.w*probe_sh[probes.w][i].rgb;
     }
-    return sh;
+    var best_weight=w.x;
+    var best_probe=probes.x;
+    if w.y>best_weight {best_weight=w.y;best_probe=probes.y;}
+    if w.z>best_weight {best_weight=w.z;best_probe=probes.z;}
+    if w.w>best_weight {best_probe=probes.w;}
+    let info=probe_words[8];
+    let gains=vec4(bitcast<f32>(probe_words[info+2u*probes.x+1u]),
+        bitcast<f32>(probe_words[info+2u*probes.y+1u]),
+        bitcast<f32>(probe_words[info+2u*probes.z+1u]),
+        bitcast<f32>(probe_words[info+2u*probes.w+1u]));
+    return VertexLighting(sh,probe_words[info+2u*best_probe],max(0.0001,dot(w,gains)));
+}
+
+fn vertex_sh(tag: u32, vertex_index: u32, position: vec3<f32>) -> array<vec3<f32>, 9> {
+    return vertex_lighting(tag,vertex_index,position).sh;
 }
 
 fn irradiance(d: vec3<f32>, sh: array<vec3<f32>, 9>) -> vec3<f32> {

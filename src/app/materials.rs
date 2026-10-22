@@ -131,6 +131,8 @@ pub(super) struct ProbeExtension {
 // inverse-transpose normals or a post-transform cross product under shear.
 pub(super) const DH2_BITANGENT: MeshVertexAttribute =
     MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
+pub(super) const DH2_NORMAL_W: MeshVertexAttribute =
+    MeshVertexAttribute::new("DH2_NormalW", 0x4448_3201, VertexFormat::Float32);
 
 use surface_gpu::SurfaceKey;
 
@@ -228,6 +230,11 @@ pub(super) fn authored_basis_pipeline(
         if let Some(fragment) = descriptor.fragment.as_mut() {
             fragment.shader_defs.push("DH2_AUTHORED_BASIS".into());
         }
+    }
+    if layout.0.contains(DH2_NORMAL_W) {
+        let extra = layout.0.get_layout(&[DH2_NORMAL_W.at_shader_location(9)])?;
+        descriptor.vertex.buffers[0].attributes.extend(extra.attributes);
+        descriptor.vertex.shader_defs.push("DH2_NORMAL_W".into());
     }
     Ok(())
 }

@@ -1357,6 +1357,39 @@ pub fn material_float_parameters(
     })
 }
 
+/// Material-root named resource overrides. Legacy parms shares the root scope;
+/// options and unrelated nested blocks do not. Inline image expressions require
+/// the image-program compiler and are reported rather than guessed here.
+pub fn material_resource_parameters(
+    text: &str,
+    mut is_parameter: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, String)>, String> {
+    let mut parser=Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    let mut values=Vec::new();
+    let mut in_parms=false;
+    loop {
+        if parser.ahead==Some(Token::Close) {
+            if !in_parms {break;}
+            parser.advance()?;in_parms=false;continue;
+        }
+        let name=parser.atom()?.trim_matches('"').to_ascii_lowercase();
+        if name=="parms" && !in_parms {
+            parser.expect(Token::Open)?;in_parms=true;continue;
+        }
+        if is_parameter(&name) {
+            let value=parser.atom()?.trim_matches('"');
+            if value.contains(['(',')']) || matches!(parser.ahead,Some(Token::Atom(v)) if v.starts_with('(')) {
+                return Err(format!("material image program requires compilation: {name}"));
+            }
+            values.push((name,value.to_owned()));
+        } else {skip_material_value(&mut parser)?;}
+    }
+    parser.expect(Token::Close)?;
+    if parser.ahead.is_some() {return Err("trailing material parameter data".into());}
+    Ok(values)
+}
+
 /// 2da730 permits a named render-parameter constant ONLY for stageSort.
 /// The registry owner supplies its four default words; every other floating
 /// parameter retains the numeric-only contract. Preserve duplicate order.
@@ -3591,4 +3624,16 @@ entity { entityDef cable { edit = {
             vec![Some("models/wire.material".into())]
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn material_resource_scopes_keep_root_order_and_skip_unrelated_values() {
+    let text=r#"{ options { water/skycubemap ignored } other ipr_color(1,2,3)
+        water/skycubemap "_defaultCube" parms { water/causticstex rendering/water/caustics3.dds }
+        WATER/SKYCUBEMAP sky/final.dds }"#;
+    let selected=|name:&str|name=="water/skycubemap" || name=="water/causticstex";
+    let actual=material_resource_parameters(text,selected).unwrap();
+    assert_eq!(actual,vec![("water/skycubemap".into(),"_defaultCube".into()),("water/causticstex".into(),"rendering/water/caustics3.dds".into()),("water/skycubemap".into(),"sky/final.dds".into())]);
+    assert!(material_resource_parameters("{ water/skycubemap ipr_color(1,2,3) }",selected).is_err());
 }

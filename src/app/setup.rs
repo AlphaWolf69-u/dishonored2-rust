@@ -1612,6 +1612,12 @@ pub(super) fn setup(
     shadow_image_slots.sort_unstable();
     shadow_image_slots.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
+        let (water,sources)=super::water_scene::WaterScene::load(catalog,parameters,&scene.area_environments,&resolver.water_materials)
+            .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
+        commands.insert_resource(water);
+        commands.insert_resource(sources);
+    }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     let vegetation_vertices: usize = vegetation_meshes
         .0

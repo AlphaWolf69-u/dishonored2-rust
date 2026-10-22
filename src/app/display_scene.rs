@@ -1,10 +1,7 @@
 //! Prepared level display inputs. Gameplay updates consume typed values only;
 //! images and registered defaults are read from archives once during setup.
 use crate::{
-    assets::{
-        archive::Catalog,
-        environment::ParameterReader,
-    },
+    assets::{archive::Catalog, environment::ParameterReader},
     entities::EnvironmentRenderParameters,
     rendering::{
         bevy_backend::{
@@ -54,6 +51,7 @@ pub(super) struct DisplayScene {
     areas: Vec<AreaInputs>,
     tracks: [EnvironmentTrack<Vec4>; 18],
     cube_track: EnvironmentTrack<(Handle<Image>, f32)>,
+    lens: super::lens_scene::LensScene,
 }
 impl DisplayScene {
     pub(super) fn load(
@@ -128,6 +126,7 @@ impl DisplayScene {
             areas: prepared,
             tracks: std::array::from_fn(|i| EnvironmentTrack::new(defaults[i])),
             cube_track: EnvironmentTrack::new((default_cube, 1.)),
+            lens: super::lens_scene::LensScene::load(catalog, world, areas, images)?,
         })
     }
     fn update(
@@ -136,12 +135,14 @@ impl DisplayScene {
         position: [f32; 3],
         world_duration: f32,
         delta: f32,
+        camera_axis: f32,
     ) -> Result<
         (
             ToneMappingParameters,
             Handle<Image>,
             f32,
             ExposureParameters,
+            crate::rendering::bevy_backend::lens_scene::LensFrame,
         ),
         String,
     > {
@@ -184,9 +185,11 @@ impl DisplayScene {
                 .advance_with(source, (target, 1.), duration, delta, |_, target, t| {
                     (target.0.clone(), t)
                 });
+        let post_process = self.lens.settings();
+        let hdr_white_level = post_process.hdr_white_level(values[2].x);
         let exposure = ExposureParameters {
             range: Vec4::new(values[7].x, values[8].x, values[9].x, values[10].x),
-            adaptation: Vec4::new(values[11].x, values[12].x, values[13].x, values[14].x),
+            adaptation: Vec4::new(values[11].x, hdr_white_level, values[13].x, values[14].x),
             camera: Vec4::new(values[15].x, values[16].x, values[17].x, 0.),
         }
         .validate()?;
@@ -202,10 +205,18 @@ impl DisplayScene {
             gamma: values[6].x,
             brightness: values[6].y,
             exposure: 1.,
-            use_curve: true,
+            use_curve: !post_process.skip_tone_mapping,
             use_colour_cube: true,
         };
-        Ok((parameters, cube, fraction, exposure))
+        let lens = self.lens.update(
+            areas,
+            position,
+            world_duration,
+            delta,
+            camera_axis,
+            hdr_white_level,
+        )?;
+        Ok((parameters, cube, fraction, exposure, lens))
     }
 }
 
@@ -291,11 +302,21 @@ pub(super) fn publish_display_frame(
             Ok(camera) => camera,
             Err(_) => return Err("display requires one exposure-controlled gameplay camera".into()),
         };
-        let (parameters, cube, weight, frame_exposure) = display.update(
+        let pose = transform.compute_transform();
+        let view = crate::render_shadow::light_view(
+            super::view_to_game(pose.translation),
+            [
+                super::view_to_game(pose.rotation * Vec3::NEG_Z),
+                super::view_to_game(pose.rotation * Vec3::NEG_X),
+                super::view_to_game(pose.rotation * Vec3::Y),
+            ],
+        );
+        let (parameters, cube, weight, frame_exposure, lens) = display.update(
             &scene.area_environments,
             super::view_to_game(transform.translation()),
             scene.environment_blend_duration,
             delta,
+            view[0][2] + view[2][1],
         )?;
         *exposure = frame_exposure;
         Ok(DisplayFrame {
@@ -307,6 +328,7 @@ pub(super) fn publish_display_frame(
             // Animated external environment overrides have their own producer;
             // ordinary area tracks publish the base target above.
             overrides: None,
+            lens: Some(lens),
         })
     })();
     match result {

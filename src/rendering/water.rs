@@ -2,8 +2,10 @@
 //! Resource readiness, shader ABI, rectangles and actual draws remain with the
 //! GPU owner. This iterator does not manufacture completed depth or ocean data.
 
+pub mod parameters;
+pub mod program;
 mod settings;
-pub use settings::{CausticSettings, WaterReflectionSettings, WaterSettings, WaterWaveSettings};
+pub use settings::{FLOAT_PARAMETER_NAMES, IMAGE_PARAMETER_NAMES, CausticSettings, WaterReflectionSettings, WaterSettings, WaterWaveSettings};
 
 /// 3045a0's per-view water/wsRefractedLightDir update. Inputs are the actual
 /// parallel-light direction. Preserve the source's separate rounded constants

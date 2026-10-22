@@ -6,6 +6,7 @@ pub fn gpu_image_format(format: crate::assets::texture::ImageFormat) -> TextureF
     match format {
         Rgba8 => TextureFormat::Rgba8Unorm,
         Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
+        Rgba32Float => TextureFormat::Rgba32Float,
         Rg8 => TextureFormat::Rg8Unorm,
         R16Float => TextureFormat::R16Float,
         R16Unorm => TextureFormat::R16Unorm,

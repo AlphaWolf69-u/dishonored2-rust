@@ -3,6 +3,10 @@
 
 use bevy_math::{Vec3, Vec4};
 
+#[cfg(test)]
+#[path = "world_captured_tests.rs"]
+mod captured_tests;
+
 fn saturate(value: f32) -> f32 {
     if value > 0. {
         value.min(1.)

@@ -1,14 +1,4 @@
 // Horizontal WORLD/IBL arkWater colour specialization, following VS14494.
-struct WorldProbeColourParameters {
-    reflection:WaterReflectionParameters,
-    refraction:WaterRefractionParameters,
-    shadow:WaterShadowParameters,
-    surface:WaterSurfaceParameters,
-    colour:WaterColourParameters,
-    output:ColourOutputParameters,
-    sky_radius:vec4<f32>,
-    options:vec4<u32>,
-}
 @group(2) @binding(0) var<uniform> water:WorldProbeColourParameters;
 @group(3) @binding(0) var permutation:texture_2d<f32>;
 @group(3) @binding(1) var gradients:texture_2d<f32>;
@@ -31,18 +21,23 @@ struct WorldProbeColourFragment {
     @location(0) indices_world_x:vec4<f32>,
     @location(1) world_yz_barycentrics:vec4<f32>,
 }
-@fragment fn water_world_colour_fragment(vertex:WorldProbeColourFragment,
-    @builtin(front_facing) front:bool)->@location(0) vec4<f32> {
+fn water_world_colour(vertex:WorldProbeColourFragment,
+    front:bool,parameters:WorldProbeColourParameters)->vec4<f32> {
     let position=vec3(vertex.indices_world_x.w,vertex.world_yz_barycentrics.xy);
     // This specialization is admitted only for horizontal water. The installed
     // horizontal branch does not fetch or use geometric normals/tangents.
-    let input=water_colour_input_with_probes(water.colour,position,vertex.pixel.xy,
+    let input=water_colour_input_with_probes(parameters.colour,position,vertex.pixel.xy,
         front,vec3(0.0),vec3(0.0),0.0,true,true,0u,
         vertex.indices_world_x.xyz,vertex.world_yz_barycentrics.zw,
         permutation,gradients,point_wrap);
-    let environment=WaterEnvironment(water.sky_radius.xyz,water.sky_radius.w,true,true,water.options.x!=0u);
-    let result=water_surface(water.surface,water.reflection,water.refraction,water.shadow,environment,input,
+    let environment=WaterEnvironment(parameters.sky_radius.xyz,parameters.sky_radius.w,true,true,parameters.options.x!=0u);
+    let result=water_surface(parameters.surface,parameters.reflection,parameters.refraction,parameters.shadow,environment,input,
         opaque,reduced,hdr,fog,caustics,probes,sky,shadow,
         linear_clamp,caustic_sampler,probe_sampler,sky_sampler,comparison);
-    return vec4(colour_output(water.output,result.rgb),result.a);
+    return vec4(colour_output(parameters.output,result.rgb),result.a);
+}
+
+@fragment fn water_world_colour_fragment(vertex:WorldProbeColourFragment,
+    @builtin(front_facing) front:bool)->@location(0) vec4<f32> {
+    return water_world_colour(vertex,front,water);
 }

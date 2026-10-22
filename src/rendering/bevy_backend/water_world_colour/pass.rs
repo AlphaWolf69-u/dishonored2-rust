@@ -49,6 +49,7 @@ pub struct WorldProbeColourProgram {
     pub parameters: BindGroupLayout,
     pub resources: BindGroupLayout,
     pipeline: RenderPipeline,
+    view_exposure: bool,
 }
 impl WorldProbeColourProgram {
     /// State must include the world's material/surface overrides. This is the
@@ -59,6 +60,29 @@ impl WorldProbeColourProgram {
         depth_format: TextureFormat,
         colour_format: TextureFormat,
         state: crate::render_state::RenderState,
+    ) -> Result<Self, String> {
+        Self::create(device, mesh, depth_format, colour_format, state, false)
+    }
+
+    /// Gameplay variant: every water HDR decode/encode reads the actual
+    /// MaterialExposure buffer, without a CPU readback or another GPU pass.
+    pub fn new_with_view_exposure(
+        device: &RenderDevice,
+        mesh: &MeshVertexBufferLayoutRef,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+    ) -> Result<Self, String> {
+        Self::create(device, mesh, depth_format, colour_format, state, true)
+    }
+
+    fn create(
+        device: &RenderDevice,
+        mesh: &MeshVertexBufferLayoutRef,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        view_exposure: bool,
     ) -> Result<Self, String> {
         let raster = crate::render_state::raster_state(&state);
         if raster.antialiased_line || raster.multisample {
@@ -96,7 +120,7 @@ impl WorldProbeColourProgram {
                 },
             }],
         );
-        let entries: Vec<_> = (0..16)
+        let mut entries: Vec<_> = (0..16)
             .map(|binding| BindGroupLayoutEntry {
                 binding,
                 visibility: ShaderStages::FRAGMENT,
@@ -125,6 +149,18 @@ impl WorldProbeColourProgram {
                 },
             })
             .collect();
+        if view_exposure {
+            entries.push(BindGroupLayoutEntry {
+                binding: 16,
+                visibility: ShaderStages::FRAGMENT,
+                count: None,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(32),
+                },
+            });
+        }
         let resources =
             device.create_bind_group_layout(Some("world water fragment sources"), &entries);
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
@@ -138,10 +174,16 @@ impl WorldProbeColourProgram {
             immediate_size: 0,
         });
         let source = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             super::super::water_colour::shader_source(),
             super::super::colour_output::SHADER_SOURCE,
-            include_str!("../../../../assets/shaders/dh2_water_world_colour_pass.wgsl")
+            include_str!("../../../../assets/shaders/dh2_water_world_colour_parameters.wgsl"),
+            include_str!("../../../../assets/shaders/dh2_water_world_colour_pass.wgsl"),
+            if view_exposure {
+                include_str!("../../../../assets/shaders/dh2_water_world_colour_exposure.wgsl")
+            } else {
+                ""
+            },
         );
         let fragment = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("arkWater world probe colour"),
@@ -167,7 +209,11 @@ impl WorldProbeColourProgram {
             },
             fragment: Some(RawFragmentState {
                 module: &fragment,
-                entry_point: Some("water_world_colour_fragment"),
+                entry_point: Some(if view_exposure {
+                    "water_world_colour_fragment_with_exposure"
+                } else {
+                    "water_world_colour_fragment"
+                }),
                 compilation_options: default(),
                 targets: &[Some(ColorTargetState {
                     format: colour_format,
@@ -197,6 +243,7 @@ impl WorldProbeColourProgram {
             parameters,
             resources,
             pipeline,
+            view_exposure,
         })
     }
     pub fn parameter_binding(&self, device: &RenderDevice, buffer: &Buffer) -> BindGroup {
@@ -222,6 +269,31 @@ impl WorldProbeColourProgram {
         images: [&TextureView; 10],
         samplers: [&Sampler; 6],
     ) -> BindGroup {
+        self.bind_resources(device, images, samplers, None)
+    }
+
+    pub fn resource_binding_with_view_exposure(
+        &self,
+        device: &RenderDevice,
+        images: [&TextureView; 10],
+        samplers: [&Sampler; 6],
+        adaptation: &Buffer,
+    ) -> BindGroup {
+        self.bind_resources(device, images, samplers, Some(adaptation))
+    }
+
+    fn bind_resources(
+        &self,
+        device: &RenderDevice,
+        images: [&TextureView; 10],
+        samplers: [&Sampler; 6],
+        adaptation: Option<&Buffer>,
+    ) -> BindGroup {
+        assert_eq!(
+            self.view_exposure,
+            adaptation.is_some(),
+            "water exposure binding does not match its pipeline"
+        );
         let mut entries: Vec<_> = images
             .into_iter()
             .enumerate()
@@ -239,6 +311,12 @@ impl WorldProbeColourProgram {
                     resource: BindingResource::Sampler(v),
                 }),
         );
+        if let Some(adaptation) = adaptation {
+            entries.push(BindGroupEntry {
+                binding: 16,
+                resource: adaptation.as_entire_binding(),
+            });
+        }
         device.create_bind_group(
             Some("world water fragment sources"),
             &self.resources,

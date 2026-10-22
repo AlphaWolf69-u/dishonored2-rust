@@ -8,7 +8,7 @@
 }
 
 #ifdef DH2_VERTEX_PROBE
-#import dh2_indirect::{vertex_sh, pack_vertex_irradiance}
+#import dh2_indirect::{vertex_lighting, pack_vertex_irradiance}
 #endif
 #ifdef DH2_FOG_VERTEX
 #import dh2_material_fog::material_fog_vertex
@@ -136,7 +136,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif
 
 #ifdef DH2_VERTEX_PROBE
-    let sh = vertex_sh(mesh[vertex_no_morph.instance_index].tag,
+    let lighting = vertex_lighting(mesh[vertex_no_morph.instance_index].tag,
         vertex_no_morph.index - mesh[vertex_no_morph.instance_index].first_vertex_index,
         out.world_position.xyz);
 #ifdef DH2_AUTHORED_BASIS
@@ -144,11 +144,20 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #else
     let bitangent = cross(out.world_normal, out.world_tangent.xyz) * out.world_tangent.w;
 #endif
-    let packed = pack_vertex_irradiance(sh, out.world_tangent.xyz, bitangent,
+    let packed = pack_vertex_irradiance(lighting.sh, out.world_tangent.xyz, bitangent,
         out.world_normal, (#{DH2_ALPHA_FLAGS}u & 4u) != 0u);
     out.probe_luminance = packed.luminance;
     out.probe_chroma_a = packed.chroma_a;
     out.probe_chroma_b = packed.chroma_b;
+    // vertex/common: NORMAL.w carries the triangle corner, independently of
+    // TANGENT.w's handedness. Perspective interpolation transports three IDs.
+    var bary=vec3(1.0,0.0,0.0);
+#ifdef DH2_NORMAL_W
+    let corner=vertex_no_morph.normal_w;
+    bary=vec3(clamp(-corner,0.0,1.0),select(0.0,1.0,abs(corner)<=0.5),clamp(corner,0.0,1.0));
+#endif
+    out.reflection_indices_gain=vec4(bary*f32(lighting.cube_index),lighting.reflection_gain);
+    out.reflection_barycentrics=bary.xy;
 #endif
 #ifdef DH2_FOG_VERTEX
     out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,mesh[vertex.instance_index].tag);

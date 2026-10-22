@@ -1,6 +1,9 @@
 #define_import_path bevy_pbr::forward_io
 
 struct Vertex {
+#ifdef DH2_NORMAL_W
+    @location(9) normal_w: f32,
+#endif
     @builtin(instance_index) instance_index: u32,
 #ifdef VERTEX_POSITIONS
     @location(0) position: vec3<f32>,
@@ -70,6 +73,8 @@ struct VertexOutput {
     @location(9) probe_luminance: f32,
     @location(10) probe_chroma_a: vec4<f32>,
     @location(11) probe_chroma_b: vec4<f32>,
+    @location(13) reflection_indices_gain: vec4<f32>,
+    @location(14) reflection_barycentrics: vec2<f32>,
 #endif
 }
 

@@ -197,9 +197,16 @@ fn fragment(
             * diffuse_response * pbr_input.diffuse_occlusion;
 #endif
         if compiled_misc.z==1u || compiled_misc.z==2u || compiled_misc.z==6u {
+            var reflection_indices_gain=vec4(0.0);
+            var reflection_barycentrics=vec2(0.0);
+#ifdef DH2_VERTEX_PROBE
+            reflection_indices_gain=vertex_output.reflection_indices_gain;
+            reflection_barycentrics=vertex_output.reflection_barycentrics;
+#endif
             indirect+=pbr_input.diffuse_occlusion*reflected_light(probe_index,vertex_output.world_position.xyz,
                 pbr_input.N,normalize(view.world_position-vertex_output.world_position.xyz),
-                pbr_input.material.perceptual_roughness,specular_reflectance,compiled_misc.z==2u);
+                pbr_input.material.perceptual_roughness,specular_reflectance,compiled_misc.z==2u,
+                reflection_indices_gain,reflection_barycentrics);
         }
     }
 

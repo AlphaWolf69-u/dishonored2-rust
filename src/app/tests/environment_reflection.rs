@@ -285,6 +285,11 @@ fn reflection_math_matches_installed_shader() {
 }
 
 pub(super) fn shader_matches(app: &mut App) {
+    shader_matches_variant(app, false);
+    shader_matches_variant(app, true);
+}
+
+fn shader_matches_variant(app: &mut App, per_vertex: bool) {
     use bevy::render::{
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
@@ -292,7 +297,11 @@ pub(super) fn shader_matches(app: &mut App) {
     let world = app.sub_app_mut(RenderApp).world_mut();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let fixture: Vec<Vec<f32>> = include_str!("../../../tests/fixtures/environment_reflection.txt")
+    let fixture: Vec<Vec<f32>> = (if per_vertex {
+        include_str!("../../../tests/fixtures/world_environment_reflection.txt")
+    } else {
+        include_str!("../../../tests/fixtures/environment_reflection.txt")
+    })
         .lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
         .map(|line| {
@@ -320,8 +329,8 @@ pub(super) fn shader_matches(app: &mut App) {
         .join("\n")
         .replace("#{MATERIAL_BIND_GROUP}", "0")
         .replace(
-            "textureSampleLevel(reflection_cubes,reflection_sampler,direction,i32(index),mip).rgb",
-            "reflection_sample(direction,index,mip)",
+            "textureSampleLevel(reflection_cubes,reflection_sampler,corrected.xyz,i32(index),mip).rgb",
+            "reflection_sample(corrected.xyz,index,mip)",
         ).replace("textureSampleLevel(reflection_brdf_lookup,reflection_brdf_sampler,vec2(clamp(dot(V,N),0.0,1.0),roughness),0.0).rg","integrated_ward(dot(V,N),roughness)");
     let source = format!(
         "{indirect}\n{reflection}\n{}",
@@ -334,10 +343,12 @@ fn view_vector(p:vec3<f32>)->vec3<f32>{return vec3(p.x,p.z,-p.y);}
 let id=tid.x;let at=id*7u;let p=inputs[at];let n=inputs[at+1u];let v=inputs[at+2u];let f0=inputs[at+3u].xyz;
 let r=n.w*n.w;
 result[id*3u]=vec4(integrated_ward(dot(v.xyz,n.xyz),r),0.0,0.0);
-result[id*3u+1u]=vec4(reflected_light(id,view_vector(p.xyz),view_vector(n.xyz),view_vector(v.xyz),n.w,f0,false),0.0);
-result[id*3u+2u]=reflection_direction(p.xyz,normalize(mix(reflect(-v.xyz,n.xyz),n.xyz,r)),u32(v.w));
+let packed=u32(v.w);let ids=vec3(packed&1023u,(packed>>10u)&1023u,(packed>>20u)&1023u);
+let x=f32(id%5u)*0.25;let y=f32((id/5u)%5u)*0.25*(1.0-x);let bary=vec3(x,y,1.0-x-y);
+result[id*3u+1u]=vec4(reflected_light(select(id,0x80000000u,PER_VERTEX),view_vector(p.xyz),view_vector(n.xyz),view_vector(v.xyz),n.w,f0,false,vec4(vec3<f32>(ids)*bary,p.w),bary.xy),0.0);
+result[id*3u+2u]=reflection_direction(p.xyz,normalize(mix(reflect(-v.xyz,n.xyz),n.xyz,r)),select(packed,ids.x,PER_VERTEX));
 }
-"#
+"#.replace("PER_VERTEX", if per_vertex {"true"} else {"false"})
     );
     let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
         label: Some("installed HQ reflection math"),
