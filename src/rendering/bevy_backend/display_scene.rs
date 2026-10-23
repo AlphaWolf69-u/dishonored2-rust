@@ -36,6 +36,7 @@ pub struct DisplayCubeOverrides {
 #[derive(Clone)]
 pub struct DisplayFrame {
     pub camera: Entity,
+    pub camera_effects: Option<crate::rendering::camera_effects::CameraEffectsFrame>,
     pub parameters: ToneMappingParameters,
     /// Resident archive table; replacement produces a new GPU texture view.
     pub cube: Handle<Image>,
@@ -314,7 +315,7 @@ fn render_display(
                 if let Some(bloom) = current.lens.as_ref().and_then(|owner| owner.bloom_texture()) {
                     planes.push(("bloom", bloom));
                 }
-                let details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes());
+                let details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
                 if let Err(error) = capture.record(
                     &capture_request, &device, context.command_encoder(), &planes,
                     &exposure.buffer, details,

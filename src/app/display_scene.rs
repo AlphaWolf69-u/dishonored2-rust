@@ -52,6 +52,7 @@ pub(super) struct DisplayScene {
     tracks: [EnvironmentTrack<Vec4>; 18],
     cube_track: EnvironmentTrack<(Handle<Image>, f32)>,
     lens: super::lens_scene::LensScene,
+    camera_effects: super::camera_effects::CameraScene,
 }
 impl DisplayScene {
     pub(super) fn load(
@@ -127,6 +128,7 @@ impl DisplayScene {
             tracks: std::array::from_fn(|i| EnvironmentTrack::new(defaults[i])),
             cube_track: EnvironmentTrack::new((default_cube, 1.)),
             lens: super::lens_scene::LensScene::load(catalog, world, areas, images)?,
+            camera_effects: super::camera_effects::CameraScene::load(catalog, world, areas)?,
         })
     }
     fn update(
@@ -319,8 +321,15 @@ pub(super) fn publish_display_frame(
             view[0][2] + view[2][1],
         )?;
         *exposure = frame_exposure;
+        let camera_effects = display.camera_effects.update(
+            &scene.area_environments,
+            super::view_to_game(transform.translation()),
+            scene.environment_blend_duration,
+            delta,
+        )?;
         Ok(DisplayFrame {
             camera,
+            camera_effects: Some(camera_effects),
             parameters,
             cube,
             weight,

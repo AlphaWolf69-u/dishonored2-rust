@@ -250,6 +250,8 @@ pub struct PlacedLight {
     pub back_reflection: Option<f32>,
     /// Engine light decay blend: 1 is quadratic and 0 is no distance decay.
     pub decay: f32,
+    /// Artist specular contribution; idLight::m_specularAttn.
+    pub specular_attenuation: f32,
     pub distance_cutoff: f32,
     pub distance_falloff: f32,
     pub max_visible_range: f32,
@@ -1882,6 +1884,7 @@ pub fn placed_lights_with_inheritance(
             color,
             indirect_lighting_boost,
             back_reflection: Some(number("m_backReflection")?.unwrap_or(1.0)),
+            specular_attenuation: number("m_specularAttn")?.unwrap_or(1.0),
             decay,
             // Constructor defaults apply only after authored/inherited overrides.
             distance_cutoff: number("m_DistanceCutoff")?.unwrap_or(15.0),
@@ -2963,7 +2966,7 @@ entity { entityDef defaults { class = "idLight"; edit = {
     spawnPosition = { x = 1; }
 } } }
 entity { entityDef moving { class = "idLight"; inherit = "moving"; edit = {
-    spawnPosition = { x = 2; } m_DistanceCutoff = 0; m_areaLightShadowBlur = 0;
+    spawnPosition = { x = 2; } m_DistanceCutoff = 0; m_areaLightShadowBlur = 0; m_specularAttn = 0;
 } } }
 entity { entityDef fixed { class = "idLight"; inherit = "moving"; edit = {
     spawnPosition = { x = 3; } m_lightCulling = "LIGHT_STATIC_POSITION";
@@ -2975,7 +2978,7 @@ entity { entityDef unknown { class = "idLight"; edit = {
         .unwrap();
         let lights = placed_lights_with_inheritance(&document, |_| {
             Ok(Some(
-                r#"{ edit = { m_lightCulling = "LIGHT_DYNAMIC_POSITION"; } }"#.into(),
+                r#"{ edit = { m_lightCulling = "LIGHT_DYNAMIC_POSITION"; m_specularAttn = 0.35; } }"#.into(),
             ))
         })
         .unwrap();
@@ -2991,6 +2994,9 @@ entity { entityDef unknown { class = "idLight"; edit = {
         assert_eq!(default.angular_falloff, 10.0);
         assert_eq!(default.max_visible_range, 0.0);
         assert_eq!(default.back_reflection, Some(1.0));
+        assert_eq!(default.specular_attenuation, 1.0);
+        assert_eq!(lights[1].specular_attenuation, 0.0);
+        assert_eq!(lights[2].specular_attenuation, 0.35);
         assert_eq!(default.scattering.value, 0.0);
         assert_eq!(default.scattering.shape_scale, [1.0; 2]);
         assert_eq!(default.area_diffusion, 0.95);

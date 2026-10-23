@@ -36,6 +36,11 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
         let mut scene = DisplayScene::load(&catalog, &parameters, &areas, &mut images)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let resident_count = images.len();
+        let camera = scene.camera_effects
+            .update(&areas, [0., 0., 0.], 1., 0.016)
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let combine = camera.settings.combine(camera.far_clip);
+        assert!(combine.far.into_iter().all(f32::is_finite), "{path}");
         let (frame, cube, weight, exposure, lens) = scene
             .update(&areas, [0., 0., 0.], 1., 0.016, 0.0)
             .unwrap_or_else(|e| panic!("{path}: {e}"));

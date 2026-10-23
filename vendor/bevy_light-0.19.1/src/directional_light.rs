@@ -84,6 +84,8 @@ pub struct DirectionalLight {
     /// area.
     /// The default is [`light_consts::lux::AMBIENT_DAYLIGHT`] = 10,000.
     pub illuminance: f32,
+    /// Authored specular contribution, independent of diffuse energy.
+    pub specular_attenuation: f32,
 
     /// Whether this light casts shadows.
     ///
@@ -149,6 +151,7 @@ impl Default for DirectionalLight {
         DirectionalLight {
             color: Color::WHITE,
             illuminance: light_consts::lux::AMBIENT_DAYLIGHT,
+            specular_attenuation: 1.0,
             shadow_maps_enabled: false,
             contact_shadows_enabled: false,
             shadow_depth_bias: Self::DEFAULT_SHADOW_DEPTH_BIAS,

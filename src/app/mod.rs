@@ -81,6 +81,7 @@ mod materials;
 mod sky_sprite;
 mod fog_scene;
 mod display_scene;
+mod camera_effects;
 mod lens_scene;
 mod fog_volumes;
 mod fog_objects;

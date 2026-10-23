@@ -23,8 +23,12 @@ use bevy::{
 pub struct ScreenShadowFrame {
     pub output: Handle<Image>,
     pub cloud: Handle<Image>,
+    pub depth_default: Option<Handle<Image>>,
     pub current: Option<ScreenShadowView>,
+    pub ambient_occlusion: Option<AmbientOcclusionView>,
+    /// Ambient visibility submissions can finish before the directional atlas.
     pub produced: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub directional_produced: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -32,6 +36,14 @@ pub struct ScreenShadowView {
     pub revision: u64,
     pub parameters: ScreenShadowUniform,
     pub producer_state: [u32; 9],
+}
+
+#[derive(Clone)]
+pub struct AmbientOcclusionView {
+    pub parameters: crate::rendering::ambient_occlusion::AmbientOcclusionParameters,
+    pub extent: [u32; 2],
+    pub unproject: Vec4,
+    pub render_scale: [f32; 2],
     pub blur_state: [u32; 9],
 }
 
@@ -98,7 +110,17 @@ fn ensure_screen_depth_source(
 #[derive(Resource, Default)]
 struct ScreenGpu {
     cached: Option<ScreenTargets>,
+    ambient: Option<AmbientTargets>,
     reported: bool,
+}
+struct AmbientTargets {
+    depth_default_id: Option<TextureId>,
+    depth_id: TextureId,
+    output_id: TextureId,
+    mode: u8,
+    blur_state: [u32; 9],
+    producer: super::ambient_occlusion::AmbientOcclusionPass,
+    filter: super::screen_visibility::ScreenVisibilityFilter,
 }
 struct ScreenTargets {
     extent: [u32; 2],
@@ -106,16 +128,10 @@ struct ScreenTargets {
     output_id: TextureId,
     cloud_id: TextureId,
     atlas_id: TextureId,
-    state: ([u32; 9], [u32; 9]),
+    state: [u32; 9],
     producer: [ScreenShadowPipelines; 2],
-    blur: [DwaoBlurPipeline; 2],
     parameters: [Buffer; 2],
     bindings: [BindGroup; 2],
-    blur_bindings: [BindGroup; 2],
-    blur_parameters: [BindGroup; 2],
-    // Keep the intermediate texture and actual read-only view alive.
-    _intermediate: Texture,
-    intermediate: TextureView,
 }
 
 fn clear_view_stencil(
@@ -176,6 +192,7 @@ impl ScreenTargets {
         atlas: &GpuImage,
         parallel: &Buffer,
         view: &ScreenShadowView,
+        unused_source: &TextureView,
     ) -> Result<Self, String> {
         let extent = [output.texture.width(), output.texture.height()];
         if depth.texture.sample_count() != 1
@@ -201,43 +218,6 @@ impl ScreenTargets {
                 },
             )
         });
-        let blur_depth = crate::shadow_pipeline::depth_stencil_gpu(
-            &view.blur_state,
-            depth.texture.format(),
-        )?;
-        let blur = std::array::from_fn(|i| {
-            DwaoBlurPipeline::new(
-                device,
-                &producer[0],
-                ColorTargetState {
-                    format: if i == 0 {
-                        TextureFormat::Rgba16Float
-                    } else {
-                        TextureFormat::Rgba8Unorm
-                    },
-                    blend: None,
-                    write_mask: ColorWrites::ALL,
-                },
-                blur_depth.clone(),
-            )
-        });
-        // FUN_14032c7f0 allocates a 0x54a intermediate (DXGI10 RGBA16F),
-        // while the actual ssaoScreenShadows output is DXGI28 RGBA8.
-        let intermediate = device.create_texture(&TextureDescriptor {
-            label: Some("screen shadow blur intermediate"),
-            size: Extent3d {
-                width: extent[0],
-                height: extent[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba16Float,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let intermediate_view = intermediate.create_view(&TextureViewDescriptor::default());
         let depth_view = depth.texture.create_view(&TextureViewDescriptor {
             aspect: TextureAspect::DepthOnly,
             ..Default::default()
@@ -270,38 +250,19 @@ impl ScreenTargets {
                 source,
             )
         };
-        // Visibility and pack do not read binding8. Bind a distinct real image
-        // to avoid a read/write alias with the destination attachment.
-        let bindings = std::array::from_fn(|i| bind(i, &intermediate_view));
-        let blur_bindings = [bind(1, &output.texture_view), bind(1, &intermediate_view)];
-        // Executable 32cd21/32cdcd: threshold=.1, radius=1, X then Y.
-        // The centre-weight parameter is not read by PostFX_DWAOBlur.
-        let blur_parameters = std::array::from_fn(|i| {
-            let params = DwaoBlurUniform::from_owner(
-                extent.map(|x| x as f32),
-                if i == 0 { [1.0, 0.0] } else { [0.0, 1.0] },
-                1.0,
-                0.1,
-                0.0,
-            )
-            .expect("nonzero view extent");
-            blur[i].bind(device, &typed_buffer(device, params))
-        });
+        // The visibility entry does not read binding8. Reuse the filter's
+        // real intermediate to avoid an attachment/read alias.
+        let bindings = std::array::from_fn(|i| bind(i, unused_source));
         Ok(Self {
             extent,
             depth_id: depth.texture.id(),
             output_id: output.texture.id(),
             cloud_id: cloud.texture.id(),
             atlas_id: atlas.texture.id(),
-            state: (view.producer_state, view.blur_state),
+            state: view.producer_state,
             producer,
-            blur,
             parameters,
             bindings,
-            blur_bindings,
-            blur_parameters,
-            _intermediate: intermediate,
-            intermediate: intermediate_view,
         })
     }
 }
@@ -320,16 +281,56 @@ fn render_screen_shadow(
     )>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
+    pipelines: Res<crate::tiled_lighting_gpu::TlfPipelines>,
     mut gpu: ResMut<ScreenGpu>,
     mut context: RenderContext,
     mut last_error: Local<Option<String>>,
+    mut last_ao_error: Local<Option<String>>,
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|profile| profile.measure(42));
     let Some(frame) = frame else {
         return;
     };
+    let diagnostics = context.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let span = diagnostics.time_span(context.command_encoder(), "screen_shadow_pipeline");
+    let ambient_result = (|| -> Result<(), String> {
+        let view = frame.ambient_occlusion.as_ref().ok_or("AO current view pending")?;
+        let (depth, _, camera) = views.single().map_err(|e| e.to_string())?;
+        if camera.physical_viewport_size != camera.physical_target_size
+            || camera.viewport.as_ref().is_some_and(|v| v.physical_position != UVec2::ZERO) {
+            return Err("AO sub-view owner is unresolved".into());
+        }
+        let output = images.get(frame.output.id()).ok_or("AO target pending GPU upload")?;
+        if output.texture.format() != TextureFormat::Rgba8Unorm
+            || view.extent != [output.texture.width(), output.texture.height()] {
+            return Err("AO target does not match the current view".into());
+        }
+        let depth_default = frame.depth_default.as_ref().map(|image| images.get(image.id()).ok_or("AO depth initializer pending GPU upload")).transpose()?;
+        let depth_default_id = depth_default.map(|image|image.texture.id());
+        if gpu.ambient.as_ref().is_none_or(|old| old.depth_id != depth.texture.id()
+            || old.output_id != output.texture.id() || old.mode != view.parameters.mode()
+            || old.blur_state != view.blur_state || old.depth_default_id != depth_default_id) {
+            gpu.ambient = Some(AmbientTargets {
+                depth_default_id,
+                depth_id: depth.texture.id(), output_id: output.texture.id(),
+                mode: view.parameters.mode(), blur_state: view.blur_state,
+                producer: super::ambient_occlusion::AmbientOcclusionPass::new(
+                    &device, &pipelines, &depth.texture, &view.parameters)?,
+                filter: super::screen_visibility::ScreenVisibilityFilter::new(
+                    &device, &depth.texture, &output.texture_view, view.extent, view.blur_state, depth_default.map(|image| &image.texture_view))?,
+            });
+        }
+        let cached = gpu.ambient.as_mut().unwrap();
+        let encoder = context.command_encoder();
+        cached.filter.pack(&queue, encoder, &output.texture_view, view.unproject, view.render_scale);
+        cached.producer.record(&device, &queue, encoder, &pipelines, &cached.filter.depth,
+            &output.texture_view, &view.parameters)?;
+        Ok(())
+    })();
     let result = (|| -> Result<(), String> {
+        ambient_result.as_ref().map_err(Clone::clone)?;
         let view = frame
             .current
             .as_ref()
@@ -367,7 +368,7 @@ fn render_screen_shadow(
                 || old.output_id != output.texture.id()
                 || old.cloud_id != cloud.texture.id()
                 || old.atlas_id != atlas.texture.id()
-                || old.state != (view.producer_state, view.blur_state)
+                || old.state != view.producer_state
         }) {
             gpu.cached = Some(ScreenTargets::new(
                 &device,
@@ -377,9 +378,10 @@ fn render_screen_shadow(
                 atlas,
                 &parallel.buffer,
                 view,
+                gpu.ambient.as_ref().unwrap().filter.scratch(),
             )?);
         }
-        let cached = gpu.cached.as_ref().unwrap();
+        let cached = gpu.cached.as_mut().unwrap();
         view.parameters.validate()?;
         let mut cloud = view.parameters.cloud_density;
         cloud.w = view.parameters.options.z as f32;
@@ -407,11 +409,7 @@ fn render_screen_shadow(
                     .unwrap(),
             );
         }
-        let diagnostics = context.diagnostic_recorder();
-        let diagnostics = diagnostics.as_deref();
-        let span = diagnostics.time_span(context.command_encoder(), "screen_shadow_pipeline");
         let encoder = context.command_encoder();
-        cached.producer[0].pack_depth(encoder, &cached.bindings[1], &output.texture_view);
         let attachment = depth.texture.create_view(&TextureViewDescriptor::default());
         let viewport = [
             0.0,
@@ -437,35 +435,22 @@ fn render_screen_shadow(
                 viewport,
             );
         }
-        cached.blur[0].draw(
-            encoder,
-            &cached.blur_bindings[0],
-            &cached.blur_parameters[0],
-            &cached.intermediate,
-            &attachment,
-            Operations {
-                load: LoadOp::Clear(Default::default()),
-                store: StoreOp::Store,
-            },
-            viewport,
-        );
-        cached.blur[1].draw(
-            encoder,
-            &cached.blur_bindings[1],
-            &cached.blur_parameters[1],
-            &output.texture_view,
-            &attachment,
-            load,
-            viewport,
-        );
-        span.end(context.command_encoder());
         Ok(())
     })();
+    if ambient_result.is_ok() {
+        if let (Some(cached), Some(output)) = (gpu.ambient.as_ref(), images.get(frame.output.id())) {
+            cached.filter.filter(context.command_encoder(), &output.texture_view);
+            frame.produced.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        *last_ao_error = None;
+    } else if last_ao_error.as_ref() != ambient_result.as_ref().err() {
+        warn!("Ambient occlusion pending: {}", ambient_result.as_ref().unwrap_err());
+        *last_ao_error = ambient_result.as_ref().err().cloned();
+    }
+    span.end(context.command_encoder());
     match result {
         Ok(()) => {
-            frame
-                .produced
-                .fetch_add(1, std::sync::atomic::Ordering::Release);
+            frame.directional_produced.fetch_add(1, std::sync::atomic::Ordering::Release);
             if !gpu.reported {
                 println!("Screen shadow producer and X/Y blur online");
                 gpu.reported = true;
@@ -486,6 +471,10 @@ fn render_screen_shadow(
             }
         }
     }
+    if let Some(buffer) = sampling.as_ref().and_then(|s| buffers.get(s.buffer.id())) {
+        queue.write_buffer(&buffer.buffer, 424, &u32::from(ambient_result.is_ok()).to_le_bytes());
+    }
+
 }
 
 fn capture_screen_visibility(
@@ -503,7 +492,9 @@ fn capture_screen_visibility(
     let Some(frame) = frame else {
         return;
     };
-    if frame.produced.load(std::sync::atomic::Ordering::Acquire) < 30 {
+    if frame.produced.load(std::sync::atomic::Ordering::Acquire) < 30
+        || frame.directional_produced.load(std::sync::atomic::Ordering::Acquire) < 30
+    {
         return;
     }
     let Some(image) = images.get(&frame.output) else {

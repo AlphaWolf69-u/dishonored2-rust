@@ -1,5 +1,9 @@
 #define_import_path bevy_pbr::lighting
 
+#ifdef DH2_SURFACE_ENABLED
+#import dh2_direct::{WardSurface,WardLight,ward_direct}
+#endif
+
 #import bevy_pbr::{
     mesh_view_types::{
         POINT_LIGHT_FLAGS_DECAY_MASK,
@@ -70,6 +74,9 @@ struct LayerLightingInput {
 // Input to a lighting function (`point_light`, `spot_light`,
 // `directional_light`).
 struct LightingInput {
+#ifdef DH2_SURFACE_ENABLED
+    direct_surface: WardSurface,
+#endif
 #ifdef STANDARD_MATERIAL_CLEARCOAT
     layers: array<LayerLightingInput, 2>,
 #else   // STANDARD_MATERIAL_CLEARCOAT
@@ -692,6 +699,14 @@ fn point_light(
         return vec3<f32>(0.0);
     }
 
+#ifdef DH2_SURFACE_ENABLED
+    if (#{DH2_ALPHA_FLAGS}u & 128u)!=0u {
+        // idLight updater 140881640 publishes the authored specular attenuation.
+        let r=ward_direct((*input).direct_surface,WardLight(L,
+            rangeAttenuation*half_point_attenuation,(*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
+        return select(vec3(0.0),r.diffuse,enable_diffuse)+r.specular;
+    }
+#endif
     // Base layer
 
     let a = (*input).layers[LAYER_BASE].roughness;
@@ -891,6 +906,12 @@ fn directional_light(
     let light = &view_bindings::lights.directional_lights[light_id];
 
     let L = (*light).direction_to_light.xyz;
+#ifdef DH2_SURFACE_ENABLED
+    if (#{DH2_ALPHA_FLAGS}u & 128u)!=0u {
+        let r=ward_direct((*input).direct_surface,WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));
+        return select(vec3(0.0),r.diffuse,enable_diffuse)+r.specular;
+    }
+#endif
     var derived_input = derive_lighting_input(N, V, L);
 
     var diffuse = vec3(0.0);

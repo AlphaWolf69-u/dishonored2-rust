@@ -42,6 +42,7 @@ struct ScreenShadowUniform {
 @group(0) @binding(6) var screen_cloud: texture_2d<f32>;
 @group(0) @binding(7) var screen_cloud_sampler: sampler;
 @group(0) @binding(8) var screen_source: texture_2d<f32>;
+@group(0) @binding(9) var screen_default_depth: texture_2d<f32>;
 
 struct ScreenVertex {
     @builtin(position) position: vec4<f32>,
@@ -106,11 +107,27 @@ fn screen_linear_z(raw_depth: f32) -> f32 {
 
 // DWAO's depth transport is independent of its AO calculation. Only G/BA
 // are enabled here; no AO value is fabricated for the lighting consumer.
-@fragment fn screen_pack_depth(input: ScreenVertex) -> @location(0) vec4<f32> {
-    let z = screen_linear_z(textureLoad(screen_depth, vec2<i32>(input.position.xy), 0));
+fn screen_pack_raw_depth(raw: f32) -> vec4<f32> {
+    let z = screen_linear_z(raw);
     let value = z * 257.0;
     let high = trunc(value / 256.0);
     return vec4(0.0, 1.0, high / 255.0, (value - high * 256.0) / 255.0);
+}
+
+@fragment fn screen_pack_depth(input: ScreenVertex) -> @location(0) vec4<f32> {
+    return screen_pack_raw_depth(textureLoad(screen_depth, vec2<i32>(input.position.xy), 0));
+}
+
+// 305620 passes view depth directly to HBAO but does not publish SSAO/Zbuffer
+// for its final NoAO draw. That draw resolves the registered image initializer.
+@fragment fn screen_pack_default_depth(input: ScreenVertex) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(input.position.xy);
+    var raw = 0.0;
+    // D3D11 indexed loads outside the default image return zero.
+    if all(p >= vec2(0)) && all(p < vec2<i32>(textureDimensions(screen_default_depth))) {
+        raw = textureLoad(screen_default_depth, p, 0).r;
+    }
+    return screen_pack_raw_depth(raw);
 }
 
 @fragment fn screen_bilateral(input: ScreenVertex) -> @location(0) vec4<f32> {

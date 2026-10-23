@@ -1,5 +1,9 @@
 #define_import_path bevy_pbr::pbr_types
 
+#ifdef DH2_SURFACE_ENABLED
+#import dh2_direct::WardSurface
+#endif
+
 // Since this is a hot path, try to keep the alignment and size of the struct members in mind.
 // You can find the alignment and sizes at <https://www.w3.org/TR/WGSL/#alignment-and-size>.
 struct StandardMaterial {
@@ -95,6 +99,9 @@ fn standard_material_new() -> StandardMaterial {
 }
 
 struct PbrInput {
+#ifdef DH2_SURFACE_ENABLED
+    direct_surface: WardSurface,
+#endif
     material: StandardMaterial,
     // Note: this gets monochromized upon deferred PbrInput reconstruction.
     diffuse_occlusion: vec3<f32>,

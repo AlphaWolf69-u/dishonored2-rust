@@ -171,6 +171,7 @@ fn display_owner_waits_for_inputs_replaces_tone_pass_and_restores_fallback() {
         .id();
     let mut frame = DisplayFrame {
         camera,
+        camera_effects: None,
         parameters: ToneMappingParameters {
             curve: crate::rendering::tone_mapping::ToneCurve::new(
                 crate::rendering::tone_mapping::ToneSettings {

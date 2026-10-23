@@ -1,4 +1,6 @@
 #import bevy_pbr::mesh_view_bindings::view
+#import dh2_direct::ward_surface
+
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_bindings::mesh,
@@ -12,7 +14,7 @@
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
-#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility}
+#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, ambient_occlusion}
 #import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, scaled_uv}
 #import dh2_material_samplers::linear_clamp
 #import dh2_sky::sky_colour
@@ -126,7 +128,8 @@ fn fragment(
         specular_reflectance=authored.specular_reflectance;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
-        pbr_input.diffuse_occlusion = vec3<f32>(authored.occlusion);
+        pbr_input.diffuse_occlusion = vec3<f32>(ambient_occlusion(
+            vertex_output.position.xy, authored.occlusion, (compiled_misc.w & 64u) != 0u));
         // Native twoSidedLighting reverses the whole geometric TBN, not just
         // the normal-map Z lane (BRDF_vegetation's original-basis recovery).
         let face_factor = select(1.0, -1.0, !is_front && (compiled_misc.w & 4u) != 0u);
@@ -145,6 +148,9 @@ fn fragment(
             pbr_input.N = face_factor * normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
         }
 #endif
+        pbr_input.direct_surface=ward_surface(pbr_input.N,pbr_input.V,authored.roughness,
+            authored.direct_diffuse,authored.direct_ior,surface.direct.x,surface.direct.y,
+            authored.fresnel_strength);
         if compiled_misc.z==6u {
             let clip_w=(view.clip_from_world*vertex_output.world_position).w;
             var alpha=filling_plane_alpha(authored.albedo.a,vertex_output.world_position.xyz,clip_w);

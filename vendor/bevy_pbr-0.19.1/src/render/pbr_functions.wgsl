@@ -422,6 +422,9 @@ fn apply_pbr_lighting_with_shadows(
 
     // Pack all the values into a structure.
     var lighting_input: lighting::LightingInput;
+#ifdef DH2_SURFACE_ENABLED
+    lighting_input.direct_surface = in.direct_surface;
+#endif
     lighting_input.layers[LAYER_BASE].NdotV = NdotV;
     lighting_input.layers[LAYER_BASE].N = in.N;
     lighting_input.layers[LAYER_BASE].R = R;

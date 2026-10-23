@@ -1004,3 +1004,80 @@ archive reader, image attachment and residency bookkeeping as the streamer;
 finer mips still follow projected-area demand. A caster entering a new shadow
 range therefore has a resident base image before its first draw, rather than
 making the entire directional shadow frame wait for an initial texture read.
+
+### Ambient occlusion
+
+`rendering::ambient_occlusion` transports the per-view AO mode, projection and
+HBAO kernel constants. `bevy_backend::ambient_occlusion` owns persistent GPU
+resources for the configured producer. HBAO uses the game's SDK 3.0 parameters
+and fixed sixteen-slice jitter sequence. Its host adapter packs the independent
+coarse slices in a 4x4 R8 atlas, preserving the native sample positions and
+intermediate quantization. Source-derived NVIDIA code retains its license in
+`vendor/hbao/`. Numerical fixtures contain synthetic inputs and outputs only.
+
+The legacy DWAO producer uses the existing `DepthPyramid` reduction and its
+RGBA16F maximum-depth lane. Its reduction is submitted before opaque lighting;
+the adaptive-shadow readback owner's later reduction remains separate. Neither
+legacy reduction nor its textures are allocated in HBAO mode. Settings come from
+`r_hbao` and `r_skipSSAO` in the installed game's configuration.
+
+`screen_visibility` owns packed depth and the two shared filter passes.
+`screen_shadow_pass` records AO in red independently of sunlight-atlas readiness,
+then records available sunlight visibility in green and filters both channels.
+The receiver uses a separate current-AO validity flag, so an atlas reset cannot
+remove AO or reuse an old view. Missing AO input retains material AO.
+Opaque material shaders combine screen AO with material AO using their minimum
+before SH normal relaxation, ambient lighting and reflections. The actual
+`isAlpha` material specialization bypasses AO. Direct lighting and emissive
+colour retain their independent inputs. HBAO receives view depth directly, but its following NoAO draw resolves the
+registered `SSAO/Zbuffer` image initializer. The legacy and skipped-AO callbacks
+explicitly publish view depth instead. Depth packing preserves that distinction;
+indexed loads outside the initializer return zero as in D3D11. The shared filter
+therefore receives the same packed depth as the game, including its HBAO path.
+The current full-view scale is one; dynamic-resolution production and sub-view
+rendering remain separate work.
+
+### Direct surface lighting
+
+`dh2_direct.wgsl` implements the standard Ward specular, accurate Fresnel,
+Oren–Nayar diffuse and sheen kernels from installed declarations. The surface
+shader shares one gloss/metal mapping with indirect lighting and prepares its
+normal, view, IOR and sheen context once per fragment. Bit 7 of the existing
+material specialization selects this path in the host point, half-point, spot
+and directional loops. Shadow visibility retains its existing owner.
+
+The current integration covers default/decal/filling material variants without
+sheen maps, diffuse lookups, fuzz or translucency. Those feature variants,
+vegetation transmittance and area-light solid-angle integration still require
+their own complete producers; their existing host paths remain in use.
+
+The authored `m_specularAttn` survives inherited entity parameters and maps to
+host light components independently of shadow readiness. The typed clustered
+light record carries it in an additional vec4, with a 96-byte stride that still
+fits the existing 170-light uniform-buffer limit. The directional scalar uses
+existing end padding. Both CPU and WGSL layouts declare the field explicitly.
+
+The ignored GPU comparison test uses 512 synthetic cases executed through the
+shipped shader bodies, including zero and fractional specular attenuation.
+The material pipeline test covers the connected standard specialization on both
+Vulkan and DirectX 12. Matched runtime captures compare physical HDR and bloom
+inputs; stationary measurements do not establish camera-motion stability.
+
+Camera settings and combine material selection live in `camera_effects`.
+The app prepares registered defaults and world/area transitions from archives,
+then publishes typed settings to the display frame and F8 reports. Startup
+console overrides retain integer kernels without converting through floats.
+`r_skipDOF` is preserved: the original bypasses sharpening and vignetting along
+with depth-of-field when this switch is set.
+
+The backend camera-combine draw implements sharpening, distortion, vignetting,
+optional noise and near/far composition. It reuses the shared D3D11 point
+sampler rules. Numerical tests cover the actual recorded frame and 64 synthetic
+frames on Vulkan and DirectX 12; the noise branch is not covered by these tests.
+The gameplay draw remains disconnected pending its actual blur/refraction
+images and autofocus depth/history inputs. The backend `AutofocusPass`
+implements the single-group focus update, verified against 128 shader states;
+its view owner must supply the real water-aware depth and focus history.
+The separate depth-of-field module currently implements filter-material
+selection. Full bloom appearance and camera-motion parity are not established
+by these tests.

@@ -28,6 +28,14 @@ fn parallel_directional_index() -> u32 {
     return select(0xffffffffu, parallel.config.y, parallel.config.x != 0u);
 }
 
+// lightContext::ComputeAmbientOcclusion: screen R also applies to opaque
+// noScreenShadows materials. An unavailable current view is neutral AO.
+fn ambient_occlusion(pixel: vec2<f32>, material_ao: f32, is_alpha: bool) -> f32 {
+    if is_alpha { return 1.0; }
+    if parallel.quality.z == 0 { return material_ao; }
+    return min(material_ao, textureLoad(screen_visibility, vec2<i32>(pixel), 0).x);
+}
+
 // The original DIRECT_VISIBILITY compile branch calls ComputeParallelShadow
 // with _Surface.wsPositionHacked and _Surface.wsVertexNormal, not the normal-map N.
 // Ordinary opaque ScreenSpace consumers instead read the produced visibility

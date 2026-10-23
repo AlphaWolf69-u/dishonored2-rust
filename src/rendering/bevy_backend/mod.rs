@@ -1,5 +1,11 @@
 #[cfg(feature = "game")]
+pub mod ambient_occlusion;
+#[cfg(feature = "game")]
 pub mod auto_exposure;
+#[cfg(feature = "game")]
+pub mod autofocus;
+#[cfg(feature = "game")]
+pub mod camera_effects;
 #[cfg(feature = "game")]
 pub mod alpha_depth;
 #[cfg(feature = "game")]
@@ -135,6 +141,8 @@ pub mod pipeline_state;
 #[cfg(feature = "game")]
 pub mod screen_shadow_pass;
 #[cfg(feature = "game")]
+mod screen_visibility;
+#[cfg(feature = "game")]
 pub mod screen_shadow_pipeline;
 #[cfg(feature = "game")]
 pub mod shadow_depth_copy;
@@ -186,3 +194,6 @@ pub mod lens_flare;
 pub mod colour_downscale;
 #[cfg(feature = "game")]
 pub mod lens_scene;
+
+#[cfg(all(test,feature="game"))]
+mod direct_lighting_tests;

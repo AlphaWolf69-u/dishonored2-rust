@@ -1665,7 +1665,7 @@ fn authored_surface_gpu_pipelines_compile() {
             .after(bevy::asset::AssetEventSystems),
     );
     let mut surface = surface_gpu::SurfaceUniform::from(&material_surface::Surface::parse(&[]));
-    surface.misc = UVec4::new(1, 1, 1, 2);
+    surface.misc = UVec4::new(1, 1, 1, 2 | 128);
     surface.flags = UVec4::new(2, 1, 0, 1);
     let probe = app
         .world_mut()

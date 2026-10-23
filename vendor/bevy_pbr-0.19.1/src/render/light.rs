@@ -85,6 +85,7 @@ pub struct ExtractedPointLight {
     pub falloff_start: f32,
     pub range: f32,
     pub half_point_data: Vec4,
+    pub specular_attenuation: f32,
     pub radius: f32,
     pub transform: GlobalTransform,
     pub shadow_maps_enabled: bool,
@@ -113,6 +114,7 @@ pub struct ExtractedRectLight {
 pub struct ExtractedDirectionalLight {
     pub color: LinearRgba,
     pub illuminance: f32,
+    pub specular_attenuation: f32,
     pub transform: GlobalTransform,
     pub shadow_maps_enabled: bool,
     pub contact_shadows_enabled: bool,
@@ -169,6 +171,7 @@ pub struct GpuDirectionalLight {
     decal_index: u32,
     sun_disk_angular_size: f32,
     sun_disk_intensity: f32,
+    specular_attenuation: f32,
 }
 
 // NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wgsl!
@@ -545,6 +548,7 @@ pub fn extract_lights(
             falloff_start: point_light.falloff_start.max(0.0),
             range: point_light.range,
             half_point_data: point_light.half_point_data,
+            specular_attenuation: point_light.specular_attenuation,
             radius: point_light.radius,
             transform: *transform,
             shadow_maps_enabled: point_light.shadow_maps_enabled,
@@ -677,6 +681,7 @@ pub fn extract_lights(
             falloff_start: spot_light.falloff_start.max(0.0),
             range: spot_light.range,
             half_point_data: Vec4::ZERO,
+            specular_attenuation: spot_light.specular_attenuation,
             radius: spot_light.radius,
             transform: *transform,
             shadow_maps_enabled: spot_light.shadow_maps_enabled,
@@ -829,6 +834,7 @@ pub fn extract_lights(
         let extracted_directional_light = ExtractedDirectionalLight {
             color: directional_light.color.into(),
             illuminance: directional_light.illuminance,
+            specular_attenuation: directional_light.specular_attenuation,
             transform: *transform,
             volumetric: volumetric_light.is_some(),
             affects_lightmapped_mesh_diffuse: directional_light.affects_lightmapped_mesh_diffuse,
@@ -1370,6 +1376,7 @@ pub fn prepare_lights(
                     .and_then(|index| index.try_into().ok())
                     .unwrap_or(u32::MAX),
                 range: light.range,
+                surface_parameters: Vec4::new(light.specular_attenuation,0.0,0.0,0.0),
                 soft_shadow_size: if light.soft_shadows_enabled {
                     light.radius
                 } else {
@@ -1775,6 +1782,7 @@ pub fn prepare_lights(
                 depth_texture_base_index: num_directional_cascades_enabled_for_this_view as u32,
                 sun_disk_angular_size: light.sun_disk_angular_size,
                 sun_disk_intensity: light.sun_disk_intensity,
+                specular_attenuation: light.specular_attenuation,
                 decal_index: decals
                     .as_ref()
                     .and_then(|decals| decals.get(*light_entity))

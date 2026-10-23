@@ -25,6 +25,7 @@ const LOCAL_RECEIVER_SHADER: Handle<Shader> =
     bevy::asset::uuid_handle!("833663b0-dcef-4acd-ad9b-399058840ba1");
 
 pub fn register_shaders(app: &mut App) {
+    super::surface_gpu::register_shaders(app);
     bevy::asset::load_internal_asset!(
         app,
         LOCAL_RECEIVER_SHADER,
@@ -74,7 +75,7 @@ pub struct ParallelSamplingUniform {
     pub bias: Vec4,
     /// Path: 0=unavailable, 1=direct atlas, 2=screen producer; sun index, options, matrix count.
     pub config: UVec4,
-    /// original light quality, original shadowFilteringQuality, unused, unused.
+    /// Light quality, shadowFilteringQuality, current AO availability, unused.
     pub quality: IVec4,
     /// Shared native cloud owner, populated by the same-frame screen pass.
     pub cloud_motion: Vec4,

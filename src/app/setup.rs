@@ -1380,6 +1380,7 @@ pub(super) fn setup(
                                 color,
                                 intensity,
                                 decay: light.decay,
+                                specular_attenuation: light.specular_attenuation,
                                 falloff_start,
                                 range,
                                 shadow_maps_enabled: false,
@@ -1413,6 +1414,7 @@ pub(super) fn setup(
                                 color,
                                 intensity,
                                 decay: light.decay,
+                                specular_attenuation: light.specular_attenuation,
                                 falloff_start,
                                 range,
                                 half_point_data: direction.extend(angular_scale),
@@ -1456,6 +1458,7 @@ pub(super) fn setup(
                                 color,
                                 intensity,
                                 decay: light.decay,
+                                specular_attenuation: light.specular_attenuation,
                                 falloff_start,
                                 range,
                                 inner_angle,
@@ -1530,6 +1533,7 @@ pub(super) fn setup(
                         commands.spawn((
                             DirectionalLight {
                                 color: sun_color,
+                                specular_attenuation: light.specular_attenuation,
                                 // Native lighting uses normalized HDR radiance;
                                 // PostFX/Luminance/common supplies world units.
                                 illuminance: render_light::ARKANE_TO_WORLD_LUMINANCE,

@@ -21,7 +21,11 @@ pub(super) fn snapshot_once(
     };
     let shadows_ready = screen
         .as_ref()
-        .is_none_or(|screen| screen.produced.load(std::sync::atomic::Ordering::Acquire) >= 30);
+        .is_none_or(|screen| {
+            screen.produced.load(std::sync::atomic::Ordering::Acquire) >= 30
+                && (screen.current.is_none()
+                    || screen.directional_produced.load(std::sync::atomic::Ordering::Acquire) >= 30)
+        });
     let materials_ready = pipelines
         .as_ref()
         .is_none_or(|ready| ready.0.load(std::sync::atomic::Ordering::Acquire) >= 30);

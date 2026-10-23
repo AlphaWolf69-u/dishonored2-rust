@@ -110,6 +110,18 @@ pub struct ScreenShadowPipelines {
     module: ShaderModule,
 }
 
+pub(super) fn screen_shader(device: &RenderDevice) -> ShaderModule {
+    device.create_and_validate_shader_module(ShaderModuleDescriptor {
+        label: Some("screen shadow reconstruction and bilateral programs"),
+        source: ShaderSource::Wgsl(format!(
+            "{}\n{}\n{}",
+            include_str!("../../../assets/shaders/dh2_shadow.wgsl"),
+            include_str!("../../../assets/shaders/dh2_screen_shadows.wgsl"),
+            include_str!("../../../assets/shaders/dh2_dwao_shadow_blur.wgsl"),
+        ).into()),
+    })
+}
+
 impl ScreenShadowPipelines {
     pub fn new(
         device: &RenderDevice,
@@ -117,27 +129,7 @@ impl ScreenShadowPipelines {
         visibility_depth: Option<DepthStencilState>,
         bilateral_target: ColorTargetState,
     ) -> Self {
-        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("original screen shadow reconstruction and bilateral programs"),
-            source: ShaderSource::Wgsl(
-                format!(
-                    "{}\n{}\n{}",
-                    include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/assets/shaders/dh2_shadow.wgsl"
-                    )),
-                    include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/assets/shaders/dh2_screen_shadows.wgsl"
-                    )),
-                    include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/assets/shaders/dh2_dwao_shadow_blur.wgsl"
-                    ))
-                )
-                .into(),
-            ),
-        });
+        let module = screen_shader(device);
         let stage = ShaderStages::FRAGMENT;
         let texture = |binding, sample_type, view_dimension| BindGroupLayoutEntry {
             binding,
@@ -365,7 +357,7 @@ impl ScreenShadowPipelines {
     }
 
     /// DWAO's G=1 and packed linear-depth BA transport. R belongs to AO,
-    /// which the shadow consumer never reads or publishes.
+    /// initialized to neutral visibility before the AO producer writes it.
     pub fn pack_depth(
         &self,
         encoder: &mut CommandEncoder,
@@ -379,7 +371,7 @@ impl ScreenShadowPipelines {
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    load: LoadOp::Clear(Default::default()),
+                    load: LoadOp::Clear(bevy::color::LinearRgba::WHITE.into()),
                     store: StoreOp::Store,
                 },
             })],
@@ -451,6 +443,16 @@ impl DwaoBlurPipeline {
         target: ColorTargetState,
         depth: DepthStencilState,
     ) -> Self {
+        Self::with_layout(device, &shared.layout, &shared.module, target, depth)
+    }
+
+    pub(super) fn with_layout(
+        device: &RenderDevice,
+        common: &BindGroupLayout,
+        module: &ShaderModule,
+        target: ColorTargetState,
+        depth: DepthStencilState,
+    ) -> Self {
         let layout = device.create_bind_group_layout(
             "DWAO blur offsets",
             &[BindGroupLayoutEntry {
@@ -466,14 +468,14 @@ impl DwaoBlurPipeline {
         );
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("depth-rejecting screen shadow blur"),
-            bind_group_layouts: &[Some(&shared.layout), Some(&layout)],
+            bind_group_layouts: &[Some(common), Some(&layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("PostFX_DWAOBlur original program"),
             layout: Some(&pipeline_layout),
             vertex: RawVertexState {
-                module: &shared.module,
+                module,
                 entry_point: Some("screen_dwao_vertex"),
                 compilation_options: PipelineCompilationOptions::default(),
                 buffers: &[],
@@ -486,7 +488,7 @@ impl DwaoBlurPipeline {
             depth_stencil: Some(depth),
             multisample: MultisampleState::default(),
             fragment: Some(RawFragmentState {
-                module: &shared.module,
+                module,
                 entry_point: Some("screen_dwao_blur"),
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(target)],

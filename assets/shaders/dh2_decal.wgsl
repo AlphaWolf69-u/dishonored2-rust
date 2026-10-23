@@ -1,4 +1,6 @@
 #import bevy_pbr::mesh_view_bindings::view
+#import dh2_direct::ward_surface
+
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     mesh_bindings::mesh,
@@ -8,7 +10,7 @@
 }
 #import dh2_indirect::{PackedIrradiance,unpack_diffuse,probe_diffuse}
 #import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow}
-#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility}
+#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, ambient_occlusion}
 #import dh2_material_fog::material_fog_pixel
 
 @fragment
@@ -36,7 +38,8 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         diffuse_response=authored.diffuse_response;
         pbr_input.material.perceptual_roughness = authored.roughness;
         pbr_input.material.metallic = authored.metallic;
-        pbr_input.diffuse_occlusion = vec3<f32>(authored.occlusion);
+        pbr_input.diffuse_occlusion = vec3<f32>(ambient_occlusion(
+            vertex_output.position.xy, authored.occlusion, (compiled_misc.w & 64u) != 0u));
         let face_factor = select(1.0, -1.0, !is_front && (compiled_misc.w & 4u) != 0u);
         pbr_input.world_normal = face_factor * vertex_output.world_normal;
         pbr_input.N = normalize(pbr_input.world_normal);
@@ -53,6 +56,9 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
             pbr_input.N = face_factor * normalize(normal.x * t.xyz + normal.y * b + normal.z * n);
         }
 #endif
+        pbr_input.direct_surface=ward_surface(pbr_input.N,pbr_input.V,authored.roughness,
+            authored.direct_diffuse,authored.direct_ior,surface.direct.x,surface.direct.y,
+            authored.fresnel_strength);
     } else {
         // Native paths already clip raw diffuse alpha before tints/layers.
         pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);

@@ -654,6 +654,12 @@ impl MaterialResolver<'_> {
             return None;
         }
         let mut uniform = surface_gpu::SurfaceUniform::from(&surface);
+        if matches!(uniform.misc.z, 1 | 2 | 6) {
+            match self.float_vectors(bytes,["sheen","sheenImportance"]) {
+                Ok(v) => uniform.direct = Vec4::new(v[0][0],v[1][0],0.0,0.0),
+                Err(error) => eprintln!("Surface direct-light parameters unavailable {path}: {error}"),
+            }
+        }
         let mut sky_depth_parameters = None;
         if matches!(
             surface.program(),
@@ -893,6 +899,15 @@ impl MaterialResolver<'_> {
                     shadow_variant_overrides(library, bytes, &source, Some(main), main)?;
                 let mut option =
                     |name: &[u8]| library.option_value(main.as_bytes(), &overrides, name);
+                // lightContext::ComputeAmbientOcclusion bypasses both map AO
+                // and screen AO for the actual isAlpha specialization.
+                fog_flags |= u32::from(option(b"isAlpha")? != 0) << 6;
+                let standard_brdf = matches!(uniform.misc.z, 1 | 6)
+                    && option(b"hasSheenMap")? == 0
+                    && option(b"hasDiffuseLookup")? == 0
+                    && option(b"fuzz/enable")? == 0
+                    && option(b"translucency/enable")? == 0;
+                fog_flags |= u32::from(standard_brdf) << 7;
                 let direct = option(b"noScreenShadows")? != 0;
                 let flags = u32::from(option(b"shadow/useNormalOffset")? != 0)
                     | (u32::from(option(b"shadow/useSlopeScale")? != 0) << 1)

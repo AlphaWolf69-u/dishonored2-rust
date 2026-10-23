@@ -128,6 +128,8 @@ pub struct GpuClusteredLight {
     pub(crate) decal_index: u32,
     /// The radius of the range that the light affects, used for clustering.
     pub(crate) range: f32,
+    /// x: authored specular attenuation, yzw reserved. Explicit vec4 keeps Pod/ShaderType aligned.
+    pub(crate) surface_parameters: Vec4,
 }
 
 /// Contains information about clusterable objects in the scene that's global:

@@ -98,6 +98,7 @@ pub struct Surface {
     pub gloss_in_alpha: bool,
     pub vertex_color_multiply: bool,
     pub ward: [f32; 4],
+    pub sheen: [f32; 2],
     pub metallic_min_max: [f32; 2],
     pub alpha_test: bool,
     pub alpha_cutoff: f32,
@@ -297,6 +298,8 @@ impl Surface {
             gloss_in_alpha: number(&v, "glossindiffusealpha", 0) != 0,
             vertex_color_multiply: number(&v, "vtxcolormultiply", 0) != 0,
             ward: vector(&v, "wardroughness", [0.0, 0.5, 0.0, 0.0]),
+            // Installed sheen / sheenImportance renderParm initializers.
+            sheen: [vector(&v,"sheen",[0.0])[0], vector(&v,"sheenimportance",[1.0])[0]],
             metallic_min_max: vector(&v, "metallicminmax", [0.0, 0.5]),
             alpha_test: number(&v, "alphatest", 0) != 0,
             alpha_cutoff: vector(&v, "defaultalphatest", [0.5])[0],

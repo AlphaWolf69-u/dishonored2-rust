@@ -72,6 +72,7 @@ pub(super) fn publish(
             put(0x34, &cull.linear_color);
             put(0x7c, &[preset.falloff, cull.range]);
             put(0x88, &[light.decay, falloff, cutoff]);
+            put(0x98, &[light.specular_attenuation]);
             put(0xc0, &light.area_size);
             put(
                 0xc8,

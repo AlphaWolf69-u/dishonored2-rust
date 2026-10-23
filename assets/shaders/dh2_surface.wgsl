@@ -1,6 +1,6 @@
 #define_import_path dh2_surface
 
-#import dh2_indirect::{evaluate_diffuse_response,material_reflectance}
+#import dh2_indirect::{material_lighting_values,evaluate_mapped_diffuse_response}
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
 
 struct SurfaceUniform {
@@ -28,6 +28,7 @@ struct SurfaceUniform {
     filling:array<vec4<f32>,11>,
     filling_flags:vec4<u32>,
     sky:array<vec4<f32>,7>,
+    direct:vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -117,6 +118,9 @@ struct SurfaceResult {
     normal_xy: vec2<f32>,
     diffuse_response:vec3<f32>,
     specular_reflectance:vec3<f32>,
+    direct_diffuse:vec3<f32>,
+    direct_ior:vec3<f32>,
+    fresnel_strength:f32,
     emissive:vec3<f32>,
 }
 
@@ -306,9 +310,12 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     out.roughness = 1.0 - g;
     if compiled_flags.w != 0u { out.metallic = mix(surface.ranges.z, surface.ranges.w, m); }
     else { out.metallic = surface.ranges.w; }
-    out.diffuse_response=evaluate_diffuse_response(out.albedo.rgb,out.roughness,out.metallic,specular,
+    let lighting=material_lighting_values(out.albedo.rgb,out.roughness,out.metallic,specular,
         #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb,surface.diffuse_metal.rgb);
-    out.specular_reflectance=material_reflectance(out.albedo.rgb,out.roughness,out.metallic,specular,
-        #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb);
+    out.diffuse_response=evaluate_mapped_diffuse_response(lighting,out.roughness);
+    out.specular_reflectance=lighting.reflectance;
+    out.direct_diffuse=lighting.diffuse;
+    out.direct_ior=lighting.ior;
+    out.fresnel_strength=lighting.fresnel_strength;
     return out;
 }

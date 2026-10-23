@@ -1,4 +1,5 @@
 pub mod bevy_backend;
+pub mod ambient_occlusion;
 pub mod environment;
 pub mod environment_effects;
 pub mod environment_effect_runtime;
@@ -40,3 +41,5 @@ pub mod tone_mapping;
 pub mod vista;
 pub mod water;
 pub mod ocean;
+
+pub mod camera_effects;

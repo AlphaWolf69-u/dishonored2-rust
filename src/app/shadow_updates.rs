@@ -299,6 +299,7 @@ struct ParallelReceiverCompile {
 #[derive(Resource)]
 pub(super) struct ScreenShadowSource(Result<ScreenShadowParameters, String>);
 struct ScreenShadowParameters {
+    ambient_occlusion: crate::platform::game_settings::AmbientOcclusion,
     producer: [u32; 9],
     blur: [u32; 9],
     step: f32,
@@ -314,7 +315,7 @@ pub(super) fn initialize_screen_shadow_source(
     mut programs: ResMut<ProgramCacheSource>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>), String> {
+    let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>, Option<Handle<Image>>), String> {
         let library = programs.0.as_mut().map_err(|error| error.clone())?;
         let catalog = scene
             .catalog
@@ -411,8 +412,16 @@ pub(super) fn initialize_screen_shadow_source(
             .definition(b"postfx_dwaoblur")?
             .ok_or("game DWAO blur RPD is unavailable")?
             .render_state();
+        let ambient_occlusion = crate::platform::game_settings::read_ambient_occlusion()?;
+        let depth_default = if ambient_occlusion == crate::platform::game_settings::AmbientOcclusion::Hbao {
+            let empty = crate::entities::EnvironmentRenderParameters {layers:Vec::new()};
+            let defaults = crate::assets::environment::ParameterReader {catalog,parameters:&empty};
+            let source = defaults.image_source("SSAO/Zbuffer")?;
+            Some(super::texture_streaming::load_resident_2d(catalog,&source,&mut images,&mut Default::default())?)
+        } else {None};
         Ok((
             ScreenShadowParameters {
+                ambient_occlusion,
                 producer,
                 blur,
                 step,
@@ -422,15 +431,19 @@ pub(super) fn initialize_screen_shadow_source(
                 cloud_enabled: !cloud_name.eq_ignore_ascii_case("_black"),
             },
             cloud,
+            depth_default,
         ))
     })();
     match result {
-        Ok((parameters, cloud)) => {
+        Ok((parameters, cloud, depth_default)) => {
             commands.insert_resource(screen_shadow_pass::ScreenShadowFrame {
                 output: images.add(screen_shadow_pass::visibility_image(1, 1)),
                 cloud,
+                depth_default,
                 current: None,
+                ambient_occlusion: None,
                 produced: Default::default(),
+                directional_produced: Default::default(),
             });
             commands.insert_resource(ScreenShadowSource(Ok(parameters)));
         }
@@ -454,15 +467,9 @@ pub(super) fn prepare_screen_shadow_frame(
         return;
     };
     screen.current = None;
+    screen.ambient_occlusion = None;
     let result = (|| -> Result<screen_shadow_pass::ScreenShadowView, String> {
         let source = source.0.as_ref().map_err(Clone::clone)?;
-        let shadow_pass::ShadowSceneState::Ready { .. } = &frame.state else {
-            return Err("game directional atlas pending".into());
-        };
-        let cpu = cpu
-            .current
-            .as_ref()
-            .ok_or("game current view is absent")?;
         let (transform, projection, camera) = cameras.single().map_err(|e| e.to_string())?;
         let Projection::Custom(custom) = projection else {
             return Err("game screen projection is unavailable".into());
@@ -471,14 +478,9 @@ pub(super) fn prepare_screen_shadow_frame(
             .get::<camera_projection::GameProjection>()
             .ok_or("game screen projection type is unavailable")?
             .rows();
-        let mut inverse = [[0.0; 4]; 4];
         let mut inverse_projection = [[0.0; 4]; 4];
-        if !render_shadow::invert_rows(
-            &render_shadow::multiply_rows(projection, cpu.camera_view),
-            &mut inverse,
-        ) || !render_shadow::invert_rows(&projection, &mut inverse_projection)
-        {
-            return Err("game screen view is singular".into());
+        if !render_shadow::invert_rows(&projection, &mut inverse_projection) {
+            return Err("game screen projection is singular".into());
         }
         let extent = camera
             .physical_viewport_size()
@@ -501,6 +503,41 @@ pub(super) fn prepare_screen_shadow_frame(
                     screen_shadow_pass::visibility_image(extent.x, extent.y),
                 )
                 .map_err(|e| e.to_string())?;
+        }
+        use crate::platform::game_settings::AmbientOcclusion;
+        use crate::rendering::ambient_occlusion::{AmbientOcclusionParameters, HbaoParameters};
+        let render_scale = [1.0, 1.0];
+        screen.ambient_occlusion = Some(screen_shadow_pass::AmbientOcclusionView {
+            extent: [extent.x, extent.y],
+            unproject: Vec4::new(-inverse_projection[2][3], inverse_projection[3][2], inverse_projection[3][3], 0.0),
+            render_scale,
+            blur_state: source.blur,
+            parameters: match source.ambient_occlusion {
+                AmbientOcclusion::Hbao => AmbientOcclusionParameters::Hbao(
+                    HbaoParameters::new(
+                        [extent.x, extent.y],
+                        std::array::from_fn(|i| projection[i % 4][i / 4]),
+                        render_scale,
+                    )?,
+                ),
+                AmbientOcclusion::Disabled => AmbientOcclusionParameters::Disabled,
+                AmbientOcclusion::Dwao => AmbientOcclusionParameters::Dwao {
+                    extent: [extent.x, extent.y],
+                    inverse_projection,
+                    render_scale,
+                },
+            },
+        });
+        let shadow_pass::ShadowSceneState::Ready { .. } = &frame.state else {
+            return Err("game directional atlas pending".into());
+        };
+        let cpu = cpu
+            .current
+            .as_ref()
+            .ok_or("game current view is absent")?;
+        let mut inverse = [[0.0; 4]; 4];
+        if !render_shadow::invert_rows(&render_shadow::multiply_rows(projection, cpu.camera_view), &mut inverse) {
+            return Err("game screen view is singular".into());
         }
         let position = view_to_game(transform.translation);
         let world_time = cpu.clocks.view_shader_times(1).world_time[0];
@@ -530,7 +567,6 @@ pub(super) fn prepare_screen_shadow_frame(
             revision: frame.revision,
             parameters,
             producer_state: source.producer,
-            blur_state: source.blur,
         })
     })();
     match result {

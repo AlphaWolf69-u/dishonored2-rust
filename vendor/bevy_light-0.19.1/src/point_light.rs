@@ -54,6 +54,8 @@ pub struct PointLight {
 
     /// Blend between quadratic distance decay (1) and no distance decay (0).
     pub decay: f32,
+    /// Authored specular contribution, independent of diffuse energy.
+    pub specular_attenuation: f32,
 
     /// Distance at which range attenuation begins; zero keeps Bevy's default curve.
     pub falloff_start: f32,
@@ -141,6 +143,7 @@ impl Default for PointLight {
             color: Color::WHITE,
             intensity: light_consts::lumens::VERY_LARGE_CINEMA_LIGHT,
             decay: 1.0,
+            specular_attenuation: 1.0,
             falloff_start: 0.0,
             range: 20.0,
             half_point_data: bevy_math::Vec4::ZERO,

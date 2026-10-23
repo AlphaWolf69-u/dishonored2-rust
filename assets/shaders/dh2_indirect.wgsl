@@ -128,9 +128,15 @@ fn unpack_diffuse(packed: PackedIrradiance, direction: vec3<f32>, tangent: vec3<
 // lighting::NOTOUCHY_MapGlossAndMetalToLightingPipelineValue +
 // lightcontext::ComputeAmbientLighting, using fresnel's Ward diffuse integral.
 // Probe samples are irradiance; this conversion produces reflected radiance.
-fn evaluate_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
-    specular_tint:vec3<f32>, use_metallic_specular:bool,
-    dielectric:vec3<f32>, metal_diffuse:vec3<f32>)->vec3<f32> {
+struct MaterialLightingValues {
+    diffuse:vec3<f32>,
+    ior:vec3<f32>,
+    reflectance:vec3<f32>,
+    fresnel_strength:f32,
+}
+fn material_lighting_values(albedo:vec3<f32>,roughness:f32,metallic:f32,
+    specular_tint:vec3<f32>,use_metallic_specular:bool,
+    dielectric:vec3<f32>,metal_diffuse:vec3<f32>)->MaterialLightingValues {
     let gloss=1.0-roughness;
     var metal=metallic;var tint=specular_tint;
     if use_metallic_specular {
@@ -145,24 +151,25 @@ fn evaluate_diffuse_response(albedo:vec3<f32>, roughness:f32, metallic:f32,
     let root=sqrt(tint);
     let ior=(vec3(1.0)+root)/(vec3(1.00001)-root);
     let ratio=(ior-vec3(1.0))/(ior+vec3(1.0));let f0=ratio*ratio;
+    return MaterialLightingValues(diffuse,ior,f0,smoothstep(0.1,1.0,gloss));
+}
+fn evaluate_mapped_diffuse_response(material:MaterialLightingValues,roughness:f32)->vec3<f32> {
     let r=roughness;let r2=r*r;let r3=r2*r;
     let base=0.181446-0.133354*r-0.141096*r2+0.142539*r3;
     let scale=0.818887+0.156573*r-0.669738*r2+0.262344*r3;
-    let fdr=vec3(1.0)-(1.0-r2)*base-f0*scale;
-    return (1.0/3.14159265358979323846)*diffuse*fdr;
+    let fdr=vec3(1.0)-(1.0-r2)*base-material.reflectance*scale;
+    return (1.0/3.14159265358979323846)*material.diffuse*fdr;
 }
-
-// The same material mapping, followed by Fresnel_F0FromIOR for the IBL lobe.
-fn material_reflectance(albedo:vec3<f32>,roughness:f32,metallic:f32,specular_tint:vec3<f32>,use_metallic_specular:bool,dielectric:vec3<f32>)->vec3<f32> {
-    var tint=specular_tint;
-    if use_metallic_specular {
-        let metal=metallic*metallic;let gloss=1.0-roughness;
-        tint=mix(dielectric,albedo,metal);
-        let mapped=mix(smoothstep(0.0,1.07,gloss),smoothstep(0.05,1.0,gloss),gloss);
-        tint*=clamp((mapped+metal)/0.05,0.0,1.0);
-    }
-    let root=sqrt(tint);let ior=(vec3(1.0)+root)/(vec3(1.00001)-root);
-    let ratio=(ior-vec3(1.0))/(ior+vec3(1.0));return ratio*ratio;
+fn evaluate_diffuse_response(albedo:vec3<f32>,roughness:f32,metallic:f32,
+    specular_tint:vec3<f32>,use_metallic_specular:bool,
+    dielectric:vec3<f32>,metal_diffuse:vec3<f32>)->vec3<f32> {
+    return evaluate_mapped_diffuse_response(material_lighting_values(albedo,roughness,metallic,
+        specular_tint,use_metallic_specular,dielectric,metal_diffuse),roughness);
+}
+fn material_reflectance(albedo:vec3<f32>,roughness:f32,metallic:f32,specular_tint:vec3<f32>,
+    use_metallic_specular:bool,dielectric:vec3<f32>)->vec3<f32> {
+    return material_lighting_values(albedo,roughness,metallic,specular_tint,
+        use_metallic_specular,dielectric,vec3(0.0)).reflectance;
 }
 
 fn evaluate_sh_irradiance(direction: vec3<f32>, probe_index: u32) -> vec3<f32> {

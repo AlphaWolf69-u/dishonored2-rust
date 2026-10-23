@@ -3,6 +3,14 @@ use crate::material_surface::Surface;
 use bevy::prelude::*;
 use bevy::render::render_resource::ShaderType;
 
+const DIRECT_SHADER: Handle<bevy::shader::Shader> =
+    bevy::asset::uuid_handle!("2dc96760-8a79-41cb-bd11-c3fc029c6705");
+
+/// Shared surface-lighting kernels used by authored materials and host light loops.
+pub fn register_shaders(app: &mut App) {
+    bevy::asset::load_internal_asset!(app,DIRECT_SHADER,"../../../assets/shaders/dh2_direct.wgsl",bevy::shader::Shader::from_wgsl);
+}
+
 #[derive(Clone, Debug, Reflect, ShaderType)]
 pub struct SurfaceUniform {
     pub colors: [Vec4; 3],
@@ -30,6 +38,7 @@ pub struct SurfaceUniform {
     pub filling: [Vec4; 11],
     pub filling_flags: UVec4,
     pub sky: [Vec4; 7],
+    pub direct: Vec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -183,6 +192,7 @@ impl From<&Surface> for SurfaceUniform {
             filling: [Vec4::ZERO; 11],
             filling_flags: UVec4::ZERO,
             sky: [Vec4::ZERO; 7],
+            direct: Vec4::new(s.sheen[0],s.sheen[1],0.0,0.0),
         }
     }
 }

@@ -1,5 +1,8 @@
 //! Read existing original-game graphics configuration; never create or modify it.
 use std::path::PathBuf;
+#[path = "camera_settings.rs"]
+mod camera_settings;
+pub use camera_settings::{camera_render_settings, read_camera_render_settings, CameraRenderSettings};
 
 /// Read the existing original's canonical quoted-token configuration format.
 /// Duplicate override order is deliberately not guessed.
@@ -319,6 +322,7 @@ pub struct PostProcessSettings {
     pub skip_bloom: bool,
     pub skip_lens_flares: bool,
     pub skip_tone_mapping: bool,
+    pub skip_depth_of_field: bool,
     pub exposure_use_tone_mapping_white_level: bool,
 }
 impl PostProcessSettings {
@@ -354,6 +358,9 @@ pub fn post_process_settings(source: &str) -> Result<PostProcessSettings, String
         skip_bloom: integer("r_skipBloom", 0)? != 0,
         skip_lens_flares: integer("r_skipLensFlares", 0)? != 0,
         skip_tone_mapping: integer("r_skipToneMapping", 0)? != 0,
+        // 14136fd30 registers zero;374e40 copies this to byte3a37 bit0,
+        // and315450 bypasses camera-combine (including sharpening/vignette).
+        skip_depth_of_field: integer("r_skipDOF", 0)? != 0,
         exposure_use_tone_mapping_white_level: integer(
             "r_postProcessExposureUseToneMappingWhiteLevel",
             0,
@@ -548,6 +555,34 @@ fn read_configuration() -> Result<(PathBuf, Option<String>), String> {
     Ok((path, source))
 }
 
+/// FUN_14136b010 and FUN_141378660 register r_hbao and r_skipSSAO with
+/// the same "0" default. Dispatch in FUN_140305be0 chooses the SDK path
+/// only when HBAO is enabled and SSAO has not been skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmbientOcclusion {
+    Disabled,
+    Hbao,
+    Dwao,
+}
+
+pub fn ambient_occlusion(source: &str) -> Result<AmbientOcclusion, String> {
+    let enabled = |name| -> Result<bool, String> {
+        Ok(quoted_setting(source, name)?.is_some_and(|v| integer_cvar(v) != 0))
+    };
+    Ok(if enabled("r_skipSSAO")? {
+        AmbientOcclusion::Disabled
+    } else if enabled("r_hbao")? {
+        AmbientOcclusion::Hbao
+    } else {
+        AmbientOcclusion::Dwao
+    })
+}
+
+pub fn read_ambient_occlusion() -> Result<AmbientOcclusion, String> {
+    let (_, source) = read_configuration()?;
+    ambient_occlusion(source.as_deref().unwrap_or(""))
+}
+
 pub fn read_shadow_quality_preset() -> Result<Option<(PathBuf, u32)>, String> {
     let (path, source) = read_configuration()?;
     match source {
@@ -667,6 +702,14 @@ pub fn read_view_settings_with_visuals(visuals: &str) -> Result<(PathBuf, ViewSe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ao_dispatch_follows_registered_defaults_and_skip_priority() {
+        use super::{ambient_occlusion, AmbientOcclusion::*};
+        assert_eq!(ambient_occlusion("").unwrap(), Dwao);
+        assert_eq!(ambient_occlusion("r_hbao \"1\"").unwrap(), Hbao);
+        assert_eq!(ambient_occlusion("r_skipSSAO \"1\"\nr_hbao \"1\"").unwrap(), Disabled);
+        assert_eq!(ambient_occlusion("r_skipSSAO \"1\"").unwrap(), Disabled);
+    }
     #[test]
     fn hdr_white_level_matches_executed_view_owner() {
         let defaults = super::post_process_settings("").unwrap();
