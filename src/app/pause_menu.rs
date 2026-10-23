@@ -97,7 +97,7 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
     let movie = pause_state::movie(debug_character());
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     pause_state::file_ready(&mut player, screen)?;
-    let state = pause_state::GameState::default();
+    let state = pause_state::current_state(&player, &language);
     pause_state::on_flash_loaded(&mut player, &base, user_config().as_deref(), &mut Keyboard::default(), &state)?;
     pause_state::show(&mut player, &state)?;
     let mut decoded = raster::Images::default();

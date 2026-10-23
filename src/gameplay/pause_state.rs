@@ -129,11 +129,108 @@ pub struct GameState {
     /// New and read tutorial counts of the tutorial log component.
     pub new_tutorials: usize,
     pub read_tutorials: usize,
+    /// The save helper's entries (`FUN_140467010`), newest first.
+    pub saves: Vec<crate::gameplay::save_list::Entry>,
+    /// A manual save has a free slot (`sys+0x18 != -1`).
+    pub can_create_save: bool,
+    /// `campaignSaveType` of the profile's campaign.
+    pub save_type: i32,
+    /// `gameLocal.m_missionPlusMode` byte +0x661; no live game state yet.
+    pub mission_plus: bool,
+    /// The application is the trial (Steam AppID other than 403640).
+    pub trial: bool,
+    /// Text of `m_newSaveSlotLabel` (`UI_createnewsave`).
+    pub new_save_label: String,
+}
+
+/// The element fields shared by both lists, in the writers' order.
+fn write_save_entry(player: &mut Player, element: &str, e: &crate::gameplay::save_list::Entry, mission_plus: bool) -> Result<()> {
+    let s = |v: &str| Value::from(v);
+    player.set_value(&format!("{element}.missionName"), s(&e.mission_name))?;
+    player.set_value(&format!("{element}.missionIndex"), (e.mission_index as f64).into())?;
+    player.set_value(&format!("{element}.levelChaos"), (e.level_chaos as f64).into())?;
+    player.set_value(&format!("{element}.characterName"), s(&e.character_name))?;
+    player.set_value(&format!("{element}.saveDate"), s(&e.save_date))?;
+    player.set_value(&format!("{element}.type"), (e.kind as f64).into())?;
+    player.set_value(&format!("{element}.slotNumber"), (e.slot as f64).into())?;
+    player.set_value(&format!("{element}.difficulty"), s(&e.difficulty))?;
+    player.set_value(&format!("{element}.playtime"), s(&e.playtime))?;
+    player.set_value(&format!("{element}.location"), s(&e.location))?;
+    player.set_value(&format!("{element}.corrupted"), e.corrupted.into())?;
+    player.set_value(&format!("{element}.missionPlus"), mission_plus.into())
+}
+
+/// `FUN_1404f3840`: `savesData.saveData`: the "create" element when a slot
+/// is free, then the entries the save mode allows.
+pub fn write_save_data(player: &mut Player, state: &GameState) -> Result<()> {
+    let kept: Vec<_> = state
+        .saves
+        .iter()
+        .filter(|e| if state.save_type == 1 { !matches!(e.kind, 2 | 4) } else { !matches!(e.kind, 1 | 2 | 4) })
+        .collect();
+    let create = state.can_create_save as usize;
+    player.set_value("savesData.saveData.length", ((kept.len() + create) as f64).into())?;
+    if create == 1 {
+        player.set_value("savesData.saveData.data[0].label", Value::from(state.new_save_label.as_str()))?;
+        player.set_value("savesData.saveData.data[0].type", 3.0.into())?;
+    }
+    for (i, e) in kept.iter().enumerate() {
+        let element = format!("savesData.saveData.data[{}]", i + create);
+        write_save_entry(player, &element, e, state.mission_plus)?;
+        if let Some(image) = &e.mission_image {
+            player.set_value(&format!("{element}.missionImage"), Value::from(image.as_str()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `FUN_1404f3300`: `savesData.loadData`. On PC every map chunk is
+/// available, so `chunkLockedCallback` is `SlotLocked` only for a trial
+/// application loading a full-game save.
+pub fn write_load_data(player: &mut Player, state: &GameState) -> Result<()> {
+    player.set_value("savesData.loadData.length", (state.saves.len() as f64).into())?;
+    for (i, e) in state.saves.iter().enumerate() {
+        let element = format!("savesData.loadData.data[{i}]");
+        write_save_entry(player, &element, e, state.mission_plus)?;
+        let locked = state.trial && !e.trial_save;
+        player.set_value(&format!("{element}.chunkLockedCallback"), Value::from(if locked { "SlotLocked" } else { "" }))?;
+        if let Some(image) = &e.mission_image {
+            player.set_value(&format!("{element}.missionImage"), Value::from(image.as_str()))?;
+        }
+    }
+    Ok(())
+}
+
+/// The rewrite's game state for a player: the installed full game (not the
+/// trial) and the user's saves, formatted for the text language (English
+/// dates use the 12-hour US format, `sys_date_format_europa` otherwise).
+pub fn current_state(player: &Player, language: &str) -> GameState {
+    let strings = player.state.borrow().strings.clone();
+    match strings {
+        Some(strings) => with_saves(GameState::default(), &strings, language == "english"),
+        None => GameState::default(),
+    }
+}
+
+/// The save lists from the user's saves (`FUN_140658950`, `FUN_140467010`).
+pub fn with_saves(mut state: GameState, strings: &crate::assets::lang::StringTable, english: bool) -> GameState {
+    use crate::gameplay::save_list::{helper_entries, next_free_slot, read_headers, system_list, Saves};
+    if let Some(saves) = Saves::locate() {
+        let list = system_list(read_headers(&saves.folder), saves.campaign);
+        state.can_create_save = next_free_slot(&list, saves.campaign, saves.save_type) != -1;
+        state.save_type = saves.save_type;
+        state.saves = helper_entries(&list, strings, english);
+    }
+    state.new_save_label = strings.lookup("UI_createnewsave").to_string();
+    state
 }
 
 /// FillData entries (`FUN_14078e740`, `FUN_1404f3800`, `FUN_14078e6c0`,
 /// `FUN_14078e9e0`, `FUN_14078e850`), in the game's write order.
 pub fn write_entries(player: &mut Player, state: &GameState) -> Result<()> {
+    // `FUN_1404f32c0`: the save list, then the load list.
+    write_save_data(player, state)?;
+    write_load_data(player, state)?;
     let set = |player: &mut Player, path: &str, v: bool| player.set_value(path, v.into());
     // `FUN_14078e740` (vtable +0xa0).
     set(player, "pauseData.saveEntry.locked", !state.can_save)?;

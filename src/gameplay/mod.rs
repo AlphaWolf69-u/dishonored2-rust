@@ -4,6 +4,7 @@ pub mod effects;
 pub mod game_clock_runtime;
 pub mod navigation;
 pub mod pause_state;
+pub mod save_list;
 pub mod machinery;
 pub mod machinery_world;
 pub mod motion_curve;

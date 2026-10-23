@@ -134,6 +134,8 @@ pub fn read_text_language(base: &Path) -> Result<&'static str, String> {
 #[derive(Clone, Debug, Default)]
 pub struct StringTable {
     entries: HashMap<String, String>,
+    /// Text by string id (the key hash), for `FUN_1401653e0`.
+    ids: HashMap<u32, String>,
 }
 
 /// `FUN_140145e50`: one UTF-8 sequence, lead-byte length table at
@@ -169,6 +171,11 @@ fn read_char(bytes: &[u8], pos: &mut usize, utf8: bool, line: usize) -> Result<u
     Ok(ch)
 }
 
+/// The string id of a key (`FUN_1401652c0` over the lower-cased key).
+pub fn key_id(key: &str) -> u32 {
+    key_hash(&key.to_ascii_lowercase())
+}
+
 /// `FUN_1401652c0`: FNV-1a over the lower-cased, sign-extended bytes; 0 is 1.
 fn key_hash(lower: &str) -> u32 {
     let hash = lower.bytes().fold(0x811c9dc5u32, |h, b| (h ^ (b as i8 as i32 as u32)).wrapping_mul(0x0100_0193));
@@ -189,6 +196,7 @@ impl StringTable {
         let mut pos = 0;
         let mut line = 1;
         let mut entries = HashMap::new();
+        let mut ids = HashMap::new();
         let mut hashes = HashMap::new();
         while pos < len {
             let c = bytes[pos];
@@ -260,12 +268,13 @@ impl StringTable {
                     if let Some(previous) = hashes.insert(key_hash(&lower), key.clone()) {
                         return Err(format!("Computed a duplicate ID for strings {previous} and {key}"));
                     }
+                    ids.insert(key_hash(&lower), value.clone());
                     entries.insert(lower, value);
                 }
                 _ => {}
             }
         }
-        Ok(StringTable { entries })
+        Ok(StringTable { entries, ids })
     }
 
     pub fn load(catalog: &Catalog, language: &str) -> Result<Self, String> {
@@ -275,6 +284,11 @@ impl StringTable {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Unable to load language file {path}!"))?;
         Self::parse(&bytes)
+    }
+
+    /// `FUN_1401653e0`: the text of a string id.
+    pub fn by_id(&self, id: u32) -> Option<&str> {
+        self.ids.get(&id).map(String::as_str)
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
