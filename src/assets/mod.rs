@@ -7,6 +7,7 @@ pub mod edge_skeleton;
 pub mod entities;
 pub mod environment;
 pub mod fx;
+pub mod iggy;
 pub mod installation;
 pub mod level;
 pub mod physworld;
