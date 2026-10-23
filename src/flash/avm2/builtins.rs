@@ -17,6 +17,9 @@ pub struct Spec {
     pub name: &'static str,
     pub base: Option<Rc<Class>>,
     pub sealed: bool,
+    /// Interfaces declare their methods in the `package:Name` namespace.
+    pub interface: bool,
+    pub implements: Vec<Rc<Class>>,
     pub native: NativeClass,
     /// Instance methods placed on the prototype and as AS3 traits.
     pub proto: Vec<(&'static str, NativeFn)>,
@@ -25,6 +28,8 @@ pub struct Spec {
     pub setters: Vec<(&'static str, NativeFn)>,
     /// Instance methods as public traits (flash.* API style).
     pub methods: Vec<(&'static str, NativeFn)>,
+    /// Public `var` slots with initial values.
+    pub vars: Vec<(&'static str, Value)>,
     /// Static methods, accessors and constants.
     pub statics: Vec<(&'static str, NativeFn)>,
     pub static_getters: Vec<(&'static str, NativeFn)>,
@@ -38,11 +43,14 @@ impl Spec {
             name,
             base,
             sealed: true,
+            interface: false,
+            implements: Vec::new(),
             native: NativeClass { allocate: None, call: None, init: None },
             proto: Vec::new(),
             getters: Vec::new(),
             setters: Vec::new(),
             methods: Vec::new(),
+            vars: Vec::new(),
             statics: Vec::new(),
             static_getters: Vec::new(),
             constants: Vec::new(),
@@ -76,16 +84,45 @@ pub fn define(vm: &mut Vm, spec: Spec) -> Rc<Class> {
     for (n, f) in &spec.proto {
         instance.bindings.insert(QName::new(as3.clone(), n), Binding::Method(Method::native(n, *f)));
     }
+    let member_ns = if spec.interface {
+        let uri = if spec.package.is_empty() { spec.name.to_string() } else { format!("{}:{}", spec.package, spec.name) };
+        Namespace::Public(uri.into())
+    } else {
+        Namespace::public()
+    };
     for (n, f) in &spec.methods {
-        instance.bindings.insert(QName::public(n), Binding::Method(Method::native(n, *f)));
+        instance.bindings.insert(QName::new(member_ns.clone(), n), Binding::Method(Method::native(n, *f)));
+    }
+    // Interface names alias the public implementation, as for ABC classes.
+    for iface in &spec.implements {
+        for q in iface.instance.bindings.keys() {
+            if let Some(b) = instance.bindings.get(&QName::public(&q.name)).cloned() {
+                instance.bindings.entry(q.clone()).or_insert(b);
+            }
+        }
     }
     for (n, f) in &spec.getters {
         accessor(&mut instance, QName::public(n), Some(Method::native(n, *f)), None);
     }
+    for (n, v) in &spec.vars {
+        let id = instance.slots.len() as u32;
+        instance.slots.push(Some(super::object::Slot {
+            name: QName::public(n),
+            type_name: 0,
+            unit: None,
+            default: v.clone(),
+            constant: false,
+        }));
+        instance.bindings.insert(QName::public(n), Binding::Slot(id));
+    }
     for (n, f) in &spec.setters {
         accessor(&mut instance, QName::public(n), None, Some(Method::native(n, *f)));
     }
+    // Class objects are Class instances: statics extend its traits.
     let mut statics = Traits::default();
+    if let Some(b) = &vm.builtins {
+        statics.bindings = b.class.instance.bindings.clone();
+    }
     statics.slots.push(None);
     for (n, f) in &spec.statics {
         statics.bindings.insert(QName::public(n), Binding::Method(Method::native(n, *f)));
@@ -108,12 +145,12 @@ pub fn define(vm: &mut Vm, spec: Spec) -> Rc<Class> {
     let class = Rc::new(Class {
         name: name.clone(),
         super_class: spec.base.clone(),
-        interfaces: Vec::new(),
+        interfaces: spec.implements.clone(),
         instance: Rc::new(instance),
         statics: Rc::new(statics),
         instance_init: None,
         sealed: spec.sealed,
-        interface: false,
+        interface: spec.interface,
         native: Some(spec.native),
         object: RefCell::default(),
         prototype: RefCell::default(),
@@ -169,7 +206,7 @@ fn none() -> NativeClass {
 
 pub fn install(vm: &mut Vm) {
     // Object, Function and Class reference each other; build them first.
-    let object = bootstrap("Object", None, false, NativeClass { allocate: None, call: Some(object_call), init: None }, Traits::default());
+    let object = bootstrap("Object", None, false, NativeClass { allocate: None, call: Some(object_call), init: None }, object_traits());
     let class = bootstrap("Class", Some(object.clone()), false, none(), Traits::default());
     let function = bootstrap("Function", Some(object.clone()), false, none(), function_traits());
     for c in [&object, &class, &function] {
@@ -411,8 +448,19 @@ fn object_call(vm: &mut Vm, _: &Value, args: &[Value]) -> Result<Value> {
     Ok(if v.is_nullish() { Value::Object(vm.plain_object()) } else { v })
 }
 
-fn install_object_methods(vm: &mut Vm, object: &Rc<Class>, function: &Rc<Class>) {
-    let methods: [(&str, NativeFn); 7] = [
+/// Object's AS3-namespace instance methods (Iggy registers these three
+/// with `FUN_14104c470` as well as on `Object.prototype`).
+fn object_traits() -> Traits {
+    let mut t = Traits::default();
+    let as3 = Namespace::package(AS3);
+    for (n, f) in object_methods().into_iter().take(3) {
+        t.bindings.insert(QName::new(as3.clone(), n), Binding::Method(Method::native(n, f)));
+    }
+    t
+}
+
+fn object_methods() -> [(&'static str, NativeFn); 7] {
+    [
         ("hasOwnProperty", |vm, this, a| {
             let name = vm.to_string(&arg(a, 0))?;
             let n = Name::public(&name);
@@ -451,7 +499,11 @@ fn install_object_methods(vm: &mut Vm, object: &Rc<Class>, function: &Rc<Class>)
         ("toString", object_to_string),
         ("toLocaleString", object_to_string),
         ("valueOf", |_, this, _| Ok(this.clone())),
-    ];
+    ]
+}
+
+fn install_object_methods(vm: &mut Vm, object: &Rc<Class>, function: &Rc<Class>) {
+    let methods = object_methods();
     let proto = object.prototype();
     for (n, f) in methods {
         let func = vm.native_function(n, f);
@@ -1315,10 +1367,17 @@ fn error_to_string(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
 
 /// Text of a thrown value for diagnostics.
 pub fn describe_error(vm: &mut Vm, e: &Error) -> String {
-    match e {
+    let mut text = match e {
         Error::Internal(s) => s.clone(),
         Error::Throw(v) => vm.to_string(v).map(|s| s.to_string()).unwrap_or_else(|_| format!("{v:?}")),
+    };
+    if let Some(stack) = vm.failure_stack.take() {
+        for frame in stack.iter().rev() {
+            text.push_str("\n    at ");
+            text.push_str(frame);
+        }
     }
+    text
 }
 
 // ---- Math ----
@@ -1515,4 +1574,26 @@ fn get_definition_by_name(vm: &mut Vm, _: &Value, a: &[Value]) -> Result<Value> 
         Some(v) => Ok(v),
         None => Err(vm.reference_error(1065, format!("Variable {name} is not defined."))),
     }
+}
+
+/// Read a public fixed or dynamic property as a number.
+pub fn number_property(vm: &mut Vm, this: &Value, name: &str) -> Result<f64> {
+    let v = vm.get_property(this, &Name::public(name))?;
+    vm.to_number(&v)
+}
+
+pub fn set_number_property(vm: &mut Vm, this: &Value, name: &str, value: f64) -> Result<()> {
+    vm.set_property(this, &Name::public(name), value.into())
+}
+
+/// Look up a native class definition by package and name.
+pub fn native_class(vm: &Vm, package: &str, name: &str) -> Rc<Class> {
+    vm.natives
+        .get(&QName::new(Namespace::package(package), name))
+        .and_then(|v| v.as_object().and_then(Obj::as_class))
+        .unwrap_or_else(|| panic!("native class {package}.{name} is not installed"))
+}
+
+pub fn argument(args: &[Value], i: usize) -> Value {
+    arg(args, i)
 }

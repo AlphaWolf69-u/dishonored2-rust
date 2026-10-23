@@ -235,6 +235,9 @@ pub enum MethodKind {
 pub struct Method {
     pub name: Rc<str>,
     pub kind: MethodKind,
+    /// The declaring class: bound methods run in its scope chain, which
+    /// `super` resolution depends on.
+    pub owner: RefCell<Option<std::rc::Weak<Class>>>,
 }
 
 impl fmt::Debug for Method {
@@ -245,7 +248,7 @@ impl fmt::Debug for Method {
 
 impl Method {
     pub fn native(name: &str, f: NativeFn) -> Rc<Self> {
-        Rc::new(Method { name: name.into(), kind: MethodKind::Native(f) })
+        Rc::new(Method { name: name.into(), kind: MethodKind::Native(f), owner: RefCell::default() })
     }
 }
 

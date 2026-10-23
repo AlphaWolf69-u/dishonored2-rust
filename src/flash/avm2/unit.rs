@@ -18,6 +18,11 @@ pub struct Handler {
     pub variable: u32,
 }
 
+/// Branch target of an op whose offset does not land on an op boundary.
+/// Compilers leave such jumps in unreachable code; the verifier only
+/// follows reachable paths, so the error is raised if one executes.
+pub const INVALID_TARGET: usize = usize::MAX;
+
 /// A decoded method body. Branch targets are op indices.
 pub struct Body {
     pub ops: Vec<Op>,
@@ -36,6 +41,9 @@ pub struct Unit {
     bodies: RefCell<HashMap<usize, Rc<Body>>>,
     methods: RefCell<HashMap<u32, Rc<Method>>>,
     pub classes: RefCell<Vec<Option<Rc<Class>>>>,
+    labels: RefCell<Option<HashMap<u32, Rc<str>>>>,
+    /// The VM's Namespace class, for namespace-valued constants.
+    namespace: Option<Rc<Class>>,
 }
 
 impl std::fmt::Debug for Unit {
@@ -46,6 +54,10 @@ impl std::fmt::Debug for Unit {
 
 impl Unit {
     pub fn new(id: u32, abc: AbcFile) -> Rc<Self> {
+        Self::with_namespace_class(id, abc, None)
+    }
+
+    pub fn with_namespace_class(id: u32, abc: AbcFile, namespace: Option<Rc<Class>>) -> Rc<Self> {
         let pools = Pools::new(id, &abc);
         let mut body_of = vec![None; abc.methods.len()];
         for (i, body) in abc.method_bodies.iter().enumerate() {
@@ -62,7 +74,34 @@ impl Unit {
             bodies: RefCell::default(),
             methods: RefCell::default(),
             classes,
+            labels: RefCell::default(),
+            namespace,
         })
+    }
+
+    /// `Class.member` for diagnostics (built on first use).
+    pub fn method_label(&self, index: u32) -> Rc<str> {
+        let mut labels = self.labels.borrow_mut();
+        let map = labels.get_or_insert_with(|| {
+            let mut map = HashMap::new();
+            let name = |i: u32| self.pools.qname(i).map(|q| q.name.to_string()).unwrap_or_default();
+            let add = |map: &mut HashMap<u32, Rc<str>>, owner: &str, traits: &[Trait]| {
+                for t in traits {
+                    if let TraitKind::Method { method, .. } | TraitKind::Getter { method, .. } | TraitKind::Setter { method, .. } = &t.kind {
+                        map.insert(method.0, format!("{owner}.{}", name(t.name.0)).into());
+                    }
+                }
+            };
+            for (i, inst) in self.abc.instances.iter().enumerate() {
+                let owner = name(inst.name.0);
+                add(&mut map, &owner, &inst.traits);
+                add(&mut map, &format!("{owner}$"), &self.abc.classes[i].traits);
+                map.insert(inst.init_method.0, format!("{owner}()").into());
+                map.insert(self.abc.classes[i].init_method.0, format!("{owner}$cinit").into());
+            }
+            map
+        });
+        map.get(&index).cloned().unwrap_or_else(|| format!("method#{index}").into())
     }
 
     pub fn method(self: &Rc<Self>, index: u32) -> Rc<Method> {
@@ -75,7 +114,7 @@ impl Unit {
             .get(index as usize)
             .map(|m| self.pools.string(m.name.0))
             .unwrap_or_default();
-        let method = Rc::new(Method { name, kind: MethodKind::Bytecode { unit: self.clone(), index } });
+        let method = Rc::new(Method { name, kind: MethodKind::Bytecode { unit: self.clone(), index }, owner: RefCell::default() });
         self.methods.borrow_mut().insert(index, method.clone());
         method
     }
@@ -130,15 +169,15 @@ impl Unit {
                     if target as usize == code.len() {
                         vec![ops.len()]
                     } else {
-                        vec![index_at(target)?]
+                        vec![index_at(target).unwrap_or(INVALID_TARGET)]
                     }
                 }
                 // Lookupswitch offsets are relative to the op itself.
                 Op::LookupSwitch(table) => {
                     let base = starts[i] as i64;
-                    let mut t = vec![index_at(base + table.default_offset as i64)?];
+                    let mut t = vec![index_at(base + table.default_offset as i64).unwrap_or(INVALID_TARGET)];
                     for c in table.case_offsets.iter() {
-                        t.push(index_at(base + *c as i64)?);
+                        t.push(index_at(base + *c as i64).unwrap_or(INVALID_TARGET));
                     }
                     t
                 }
@@ -194,13 +233,24 @@ impl Unit {
             DefaultValue::False => Value::Bool(false),
             DefaultValue::Null => Value::Null,
             DefaultValue::Undefined => Value::Undefined,
-            DefaultValue::Namespace(_)
-            | DefaultValue::Package(_)
-            | DefaultValue::PackageInternal(_)
-            | DefaultValue::Protected(_)
-            | DefaultValue::Explicit(_)
-            | DefaultValue::StaticProtected(_)
-            | DefaultValue::Private(_) => Value::Undefined,
+            DefaultValue::Namespace(i)
+            | DefaultValue::Package(i)
+            | DefaultValue::PackageInternal(i)
+            | DefaultValue::Protected(i)
+            | DefaultValue::Explicit(i)
+            | DefaultValue::StaticProtected(i)
+            | DefaultValue::Private(i) => {
+                let ns = self.pools.namespace(i.0);
+                match &self.namespace {
+                    Some(class) => Value::Object(super::object::Obj::new(super::object::ObjectData {
+                        class: Some(class.clone()),
+                        traits: Some(class.instance.clone()),
+                        kind: super::object::Kind::Namespace(ns),
+                        ..super::object::ObjectData::plain(Some(class.prototype()))
+                    })),
+                    None => Value::Undefined,
+                }
+            }
         }
     }
 
@@ -290,8 +340,39 @@ pub fn build_traits(unit: &Rc<Unit>, traits: &[Trait], base: Option<&Traits>) ->
                 }
             }
         }
+        alias_protected(&mut out, &unit.pools.qname(t.name.0).unwrap());
     }
     Ok(out)
+}
+
+/// A protected override is declared in the derived class's own protected
+/// namespace; it replaces the inherited binding of the same local name in
+/// the base classes' protected namespaces (Tamarin matches protected names
+/// across the hierarchy).
+fn alias_protected(out: &mut Traits, name: &QName) {
+    if !matches!(name.ns, crate::flash::avm2::name::Namespace::Protected(_)) {
+        return;
+    }
+    let Some(binding) = out.bindings.get(name).cloned() else { return };
+    let inherited: Vec<QName> = out
+        .bindings
+        .keys()
+        .filter(|k| k.name == name.name && *k != name && matches!(k.ns, crate::flash::avm2::name::Namespace::Protected(_)))
+        .cloned()
+        .collect();
+    for k in inherited {
+        let merged = match (&binding, out.bindings.get(&k)) {
+            // A derived getter or setter alone keeps the inherited partner.
+            (Binding::Accessor { get, set }, Some(Binding::Accessor { get: g0, set: s0 })) => {
+                Binding::Accessor { get: get.clone().or_else(|| g0.clone()), set: set.clone().or_else(|| s0.clone()) }
+            }
+            _ => binding.clone(),
+        };
+        if matches!(merged, Binding::Accessor { .. }) {
+            out.bindings.insert(name.clone(), merged.clone());
+        }
+        out.bindings.insert(k, merged);
+    }
 }
 
 /// Function traits (`TraitKind::Function`) that must be closed over when an

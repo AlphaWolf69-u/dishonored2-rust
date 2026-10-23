@@ -116,6 +116,59 @@ fn main() -> Result<(), String> {
             println!("{name}");
         }
     }
+    if args.iter().any(|a| a == "--external-names") {
+        // Names used by property ops that no trait of this ABC declares.
+        use swf::avm2::types::Trait;
+        let mut declared = std::collections::HashSet::new();
+        let mut add = |traits: &[Trait]| {
+            for t in traits {
+                if let Some(Multiname::QName { name, .. }) = abc.constant_pool.multinames.get(t.name.0 as usize - 1) {
+                    declared.insert(string(&abc, name));
+                }
+            }
+        };
+        for i in &abc.instances {
+            add(&i.traits);
+        }
+        for c in &abc.classes {
+            add(&c.traits);
+        }
+        for s in &abc.scripts {
+            add(&s.traits);
+        }
+        let mut used = BTreeMap::<String, usize>::new();
+        for body in &abc.method_bodies {
+            let mut reader = Reader::new(&body.code);
+            while reader.pos(&body.code) < body.code.len() {
+                let op = reader.read_op().map_err(|e| e.to_string())?;
+                let index = match &op {
+                    Op::GetProperty { index }
+                    | Op::SetProperty { index }
+                    | Op::InitProperty { index }
+                    | Op::GetLex { index }
+                    | Op::FindPropStrict { index }
+                    | Op::CallProperty { index, .. }
+                    | Op::CallPropVoid { index, .. }
+                    | Op::ConstructProp { index, .. }
+                    | Op::CallSuper { index, .. }
+                    | Op::CallSuperVoid { index, .. }
+                    | Op::GetSuper { index }
+                    | Op::SetSuper { index } => index,
+                    _ => continue,
+                };
+                let name = match abc.constant_pool.multinames.get(index.0 as usize - 1) {
+                    Some(Multiname::QName { name, .. } | Multiname::Multiname { name, .. }) => string(&abc, name),
+                    _ => continue,
+                };
+                if !declared.contains(&name) {
+                    *used.entry(name).or_default() += 1;
+                }
+            }
+        }
+        for (name, n) in used {
+            println!("{n:6} {name}");
+        }
+    }
     if args.iter().any(|a| a == "--ops") {
         let mut ops = BTreeMap::<String, usize>::new();
         for body in &abc.method_bodies {

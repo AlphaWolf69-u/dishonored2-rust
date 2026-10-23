@@ -11,6 +11,7 @@ pub mod unit;
 pub mod value;
 pub mod xml;
 
+pub use interpreter::{loose_equals, strict_equals};
 use name::{Name, Namespace, PoolName, QName};
 use object::{Binding, Class, Function, Kind, Method, MethodKind, Obj, ObjectData, Scope, Traits};
 use std::cell::Cell;
@@ -90,6 +91,10 @@ pub struct Vm {
     /// Host state for native classes.
     pub host: Box<dyn std::any::Any>,
     pub started: std::time::Instant,
+    /// Labels of executing methods, and the stack captured at the first
+    /// failure since the last `take_failure_stack`.
+    stack: Vec<Rc<str>>,
+    pub failure_stack: Option<Vec<Rc<str>>>,
     pub random: u64,
 }
 
@@ -106,6 +111,8 @@ impl Vm {
             trace: Vec::new(),
             host: Box::new(()),
             started: std::time::Instant::now(),
+            stack: Vec::new(),
+            failure_stack: None,
             random: 0x9e37_79b9_7f4a_7c15,
         };
         builtins::install(&mut vm);
@@ -154,7 +161,7 @@ impl Vm {
         let parsed = swf::avm2::read::Reader::new(abc)
             .read()
             .map_err(|e| Error::Internal(format!("ABC: {e}")))?;
-        let unit = Unit::new(self.units.len() as u32, parsed);
+        let unit = Unit::with_namespace_class(self.units.len() as u32, parsed, Some(self.b().namespace.clone()));
         self.units.push(unit.clone());
         for (index, script) in unit.abc.scripts.iter().enumerate() {
             let traits = unit::build_traits(&unit, &script.traits, None)?;
@@ -300,17 +307,19 @@ impl Vm {
     /// Create the class object and prototype for a newly defined class.
     pub fn finish_class(&mut self, class: &Rc<Class>, scope: Rc<[Scope]>) -> Obj {
         let class_class = self.builtins.as_ref().map(|b| b.class.clone());
-        let proto_parent = class.super_class.as_ref().map(|s| s.prototype());
+        // Base-less classes (interfaces) still chain to Object.prototype.
+        let object_proto = self.builtins.as_ref().map(|b| b.object.prototype());
+        let proto_parent = class.super_class.as_ref().map(|s| s.prototype()).or(object_proto);
         let prototype = Obj::new(ObjectData {
             class: self.builtins.as_ref().map(|b| b.object.clone()),
             ..ObjectData::plain(proto_parent)
         });
         let object = Obj::new(ObjectData {
-            class: class_class,
+            class: class_class.clone(),
             slots: class.statics.initial_slots(),
             traits: Some(class.statics.clone()),
             kind: Kind::Class(class.clone()),
-            ..ObjectData::plain(None)
+            ..ObjectData::plain(class_class.as_ref().map(|c| c.prototype()))
         });
         prototype.borrow_mut().dynamic.set("constructor".into(), Value::Object(object.clone()));
         prototype.borrow_mut().dynamic.set_enumerable("constructor", false);
@@ -606,7 +615,7 @@ impl Vm {
                         return Ok(Value::Object(c.clone()));
                     }
                 }
-                let scope = self.method_scope(target);
+                let scope = self.scope_for(m, target);
                 let f = self.function(m.clone(), scope, Some(target.clone()));
                 if let Some(o) = obj {
                     o.borrow_mut().closures.insert(q.clone(), f.clone());
@@ -615,7 +624,7 @@ impl Vm {
             }
             Binding::Accessor { get: Some(g), .. } => {
                 let g = g.clone();
-                let scope = self.method_scope(target);
+                let scope = self.scope_for(&g, target);
                 self.call_method(&g, target.clone(), &[], scope, None)
             }
             Binding::Accessor { get: None, .. } => Err(self.reference_error(
@@ -625,7 +634,16 @@ impl Vm {
         }
     }
 
-    /// The scope chain a bound method of `target` runs in: its class scope.
+    /// The scope chain `method` runs in when called on `target`: its
+    /// declaring class's scope, else the receiver's class scope.
+    fn scope_for(&self, method: &Method, target: &Value) -> Rc<[Scope]> {
+        if let Some(owner) = method.owner.borrow().as_ref().and_then(|w| w.upgrade()) {
+            return owner.scope.borrow().clone();
+        }
+        self.method_scope(target)
+    }
+
+    /// The scope chain of `target`'s class.
     fn method_scope(&self, target: &Value) -> Rc<[Scope]> {
         match target {
             Value::Object(o) => {
@@ -723,7 +741,7 @@ impl Vm {
                         return Ok(());
                     }
                     Binding::Accessor { set: Some(s), .. } => {
-                        let scope = self.method_scope(target);
+                        let scope = self.scope_for(&s, target);
                         self.call_method(&s, target.clone(), &[value], scope, None)?;
                         return Ok(());
                     }
@@ -912,7 +930,7 @@ impl Vm {
             let local = name.name.clone().unwrap_or_else(|| "*".into());
             if let Some((_, Binding::Method(m))) = traits.find(&local, &name.set) {
                 let m = m.clone();
-                let scope = self.method_scope(target);
+                let scope = self.scope_for(&m, target);
                 let _ = obj;
                 return self.call_method(&m, target.clone(), args, scope, None);
             }
@@ -990,6 +1008,14 @@ impl Vm {
     }
 
     pub fn construct_class(&mut self, class: &Rc<Class>, args: &[Value]) -> Result<Value> {
+        let this = Value::Object(self.allocate(class)?);
+        self.run_constructor(class, &this, args)?;
+        Ok(this)
+    }
+
+    /// Allocate an instance without running its constructor (Iggy allocates
+    /// timeline objects first and constructs them later, `FUN_1410452c0`).
+    pub fn allocate(&mut self, class: &Rc<Class>) -> Result<Obj> {
         if class.interface {
             return Err(self.type_error(1001, format!("{} is an interface.", class.name.qualified())));
         }
@@ -997,7 +1023,7 @@ impl Vm {
             Some((_, alloc)) => alloc(self, class)?,
             None => Kind::Plain,
         };
-        let object = Obj::new(ObjectData {
+        Ok(Obj::new(ObjectData {
             class: Some(class.clone()),
             traits: Some(class.instance.clone()),
             proto: Some(class.prototype()),
@@ -1005,10 +1031,7 @@ impl Vm {
             dynamic: Default::default(),
             closures: HashMap::new(),
             kind,
-        });
-        let this = Value::Object(object.clone());
-        self.run_constructor(class, &this, args)?;
-        Ok(this)
+        }))
     }
 
     /// Run `class`'s instance initializer on `this` (`construct`/`constructsuper`).
@@ -1041,6 +1064,10 @@ impl Vm {
             return Err(Error::Internal("Error #1023: Stack overflow occurred.".into()));
         }
         self.depth += 1;
+        self.stack.push(match &method.kind {
+            MethodKind::Bytecode { unit, index } => unit.method_label(*index),
+            MethodKind::Native(_) => method.name.clone(),
+        });
         let result = match &method.kind {
             MethodKind::Native(f) => f(self, &this, args),
             MethodKind::Bytecode { unit, index } => {
@@ -1049,6 +1076,10 @@ impl Vm {
             }
         };
         self.depth -= 1;
+        if result.is_err() && self.failure_stack.is_none() {
+            self.failure_stack = Some(self.stack.clone());
+        }
+        self.stack.pop();
         result
     }
 
@@ -1106,7 +1137,9 @@ impl Vm {
             }
         }
         let class_def = &unit.abc.classes[index as usize];
-        let statics = unit::build_traits(unit, &class_def.traits, None)?;
+        // Class objects are Class instances: statics extend its traits.
+        let class_traits = self.b().class.instance.clone();
+        let statics = unit::build_traits(unit, &class_def.traits, Some(&class_traits))?;
         let class = Rc::new(Class {
             name,
             super_class: super_class.clone(),
@@ -1129,6 +1162,18 @@ impl Vm {
         let chain: Rc<[Scope]> = chain.into();
         *class.scope.borrow_mut() = chain.clone();
         unit.classes.borrow_mut()[index as usize] = Some(class.clone());
+        // Record the declaring class of every method this class defines.
+        let own = |t: &swf::avm2::types::Trait| match &t.kind {
+            swf::avm2::types::TraitKind::Method { method, .. }
+            | swf::avm2::types::TraitKind::Getter { method, .. }
+            | swf::avm2::types::TraitKind::Setter { method, .. } => Some(method.0),
+            _ => None,
+        };
+        let methods = instance.traits.iter().chain(&class_def.traits).filter_map(own)
+            .chain([instance.init_method.0, class_def.init_method.0]);
+        for m in methods {
+            *unit.method(m).owner.borrow_mut() = Some(Rc::downgrade(&class));
+        }
         for (q, method) in unit::function_traits(unit, &class_def.traits) {
             let f = self.function(unit.method(method), chain.clone(), None);
             self.init_property(&Value::Object(object.clone()), &Name::qname(&q), f.into())?;

@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
 
+pub mod font;
 mod movie;
 pub mod shape;
 pub mod timeline;

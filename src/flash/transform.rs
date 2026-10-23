@@ -1,0 +1,361 @@
+//! `flash.geom.Transform`, `Matrix3D` and `PerspectiveProjection`.
+use super::avm2::builtins::{argument as arg, define, native_class, number_property as num, set_number_property as set_num, Spec};
+use super::avm2::object::{Kind, NativeClass, Obj, Vector};
+use super::avm2::value::Value;
+use super::avm2::{Result, Vm};
+use super::display::{concatenated, display, display_ref};
+use super::geom::{self, Colour};
+use super::Native;
+
+/// Transform objects hold their display object.
+fn target(vm: &mut Vm, this: &Value) -> Result<Obj> {
+    let t = this.as_object().and_then(|o| o.host::<Native>().and_then(|n| n.target.clone()));
+    t.ok_or_else(|| vm.type_error(1009, "Transform has no display object."))
+}
+
+pub fn new_transform(vm: &mut Vm, display_object: &Value) -> Result<Value> {
+    let class = native_class(vm, "flash.geom", "Transform");
+    vm.construct_class(&class, std::slice::from_ref(display_object))
+}
+
+/// `displayObject.transform = t` copies the transform's matrix and colour.
+pub fn assign_transform(vm: &mut Vm, o: &Obj, t: &Value) -> Result<()> {
+    let source = target(vm, t)?;
+    let (m, c, m3) = {
+        let d = display_ref(&source).unwrap();
+        (d.matrix, d.colour, d.transform3d.clone())
+    };
+    let mut d = display(o).unwrap();
+    d.set_matrix(m);
+    d.colour = c;
+    d.transform3d = m3;
+    d.script_moved = true;
+    Ok(())
+}
+
+fn number_vector(vm: &mut Vm, values: &[f64]) -> Result<Value> {
+    let number = vm.b().number.clone();
+    let class = vm.vector_class(Some(number))?;
+    Ok(Value::Object(Obj::new(super::avm2::object::ObjectData {
+        class: Some(class.clone()),
+        traits: Some(class.instance.clone()),
+        kind: Kind::Vector(Vector { element: class.applied.clone().flatten(), fixed: false, items: values.iter().map(|v| Value::from(*v)).collect() }),
+        ..super::avm2::object::ObjectData::plain(Some(class.prototype()))
+    })))
+}
+
+fn set_raw(_: &mut Vm, this: &Value, m: [f64; 16]) -> Result<()> {
+    if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
+        n.matrix3d = Some(m);
+    }
+    Ok(())
+}
+
+const IDENTITY: [f64; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+/// Column-major product `a * b` (applies `b` first).
+fn multiply(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
+    let mut r = [0.0; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            r[col * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[col * 4 + k]).sum();
+        }
+    }
+    r
+}
+
+fn rotation(degrees: f64, axis: [f64; 3]) -> [f64; 16] {
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    let (x, y, z) = if len > 0.0 { (axis[0] / len, axis[1] / len, axis[2] / len) } else { (0.0, 0.0, 1.0) };
+    let (s, c) = degrees.to_radians().sin_cos();
+    let t = 1.0 - c;
+    [
+        t * x * x + c,
+        t * x * y + s * z,
+        t * x * z - s * y,
+        0.0,
+        t * x * y - s * z,
+        t * y * y + c,
+        t * y * z + s * x,
+        0.0,
+        t * x * z + s * y,
+        t * y * z - s * x,
+        t * z * z + c,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+}
+
+fn vec3(vm: &mut Vm, v: &Value) -> Result<[f64; 3]> {
+    Ok([num(vm, v, "x")?, num(vm, v, "y")?, num(vm, v, "z")?])
+}
+
+fn invert(m: &[f64; 16]) -> Option<[f64; 16]> {
+    let mut inv = [0.0; 16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if det == 0.0 {
+        return None;
+    }
+    Some(inv.map(|v| v / det))
+}
+
+/// The 4x4 matrix of a `Matrix3D` value.
+pub fn matrix3d(_: &Vm, m: &Value) -> [f64; 16] {
+    m.as_object().and_then(|o| o.host::<Native>().and_then(|n| n.matrix3d)).unwrap_or(IDENTITY)
+}
+
+fn with_raw(vm: &mut Vm, this: &Value, f: impl FnOnce(&mut Vm, [f64; 16]) -> Result<[f64; 16]>) -> Result<Value> {
+    let m = matrix3d(vm, this);
+    let r = f(vm, m)?;
+    set_raw(vm, this, r)?;
+    Ok(Value::Undefined)
+}
+
+pub fn install(vm: &mut Vm) {
+    let object = vm.b().object.clone();
+
+    let mut s = Spec::new("flash.geom", "Transform", Some(object.clone()));
+    s.native = NativeClass {
+        allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native::default())))),
+        call: None,
+        init: Some(|_, this, a| {
+            if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
+                n.target = arg(a, 0).as_object().cloned();
+            }
+            Ok(Value::Undefined)
+        }),
+    };
+    s.getters = vec![
+        ("matrix", |vm, this, _| {
+            let o = target(vm, this)?;
+            if display_ref(&o).unwrap().transform3d.is_some() {
+                return Ok(Value::Null);
+            }
+            let m = display_ref(&o).unwrap().matrix;
+            geom::new_matrix(vm, &m)
+        }),
+        ("colorTransform", |vm, this, _| {
+            let o = target(vm, this)?;
+            let c = display_ref(&o).unwrap().colour;
+            geom::new_colour(vm, &c)
+        }),
+        ("concatenatedMatrix", |vm, this, _| {
+            let o = target(vm, this)?;
+            let m = concatenated(&o);
+            geom::new_matrix(vm, &m)
+        }),
+        ("concatenatedColorTransform", |vm, this, _| {
+            let o = target(vm, this)?;
+            let mut c = Colour::default();
+            let mut cur = Some(o);
+            while let Some(x) = cur {
+                c = c.then(&display_ref(&x).unwrap().colour);
+                cur = super::display::parent(&x);
+            }
+            geom::new_colour(vm, &c)
+        }),
+        ("matrix3D", |vm, this, _| {
+            let o = target(vm, this)?;
+            let v = display_ref(&o).unwrap().transform3d.clone();
+            Ok(v.unwrap_or(Value::Null))
+        }),
+        ("perspectiveProjection", |vm, this, _| {
+            let o = target(vm, this)?;
+            let v = display_ref(&o).unwrap().projection.clone();
+            Ok(v.unwrap_or(Value::Null))
+        }),
+        ("pixelBounds", |vm, this, _| {
+            let o = target(vm, this)?;
+            let stage = super::display::root_of(&o);
+            let b = super::bounds::bounds(vm, &o, Some(&stage));
+            geom::new_rectangle(vm, b[0], b[1], b[2] - b[0], b[3] - b[1])
+        }),
+    ];
+    s.setters = vec![
+        ("matrix", |vm, this, a| {
+            let o = target(vm, this)?;
+            let m = geom::read_matrix(vm, &arg(a, 0))?;
+            let mut d = display(&o).unwrap();
+            d.set_matrix(m);
+            d.transform3d = None;
+            d.script_moved = true;
+            Ok(Value::Undefined)
+        }),
+        ("colorTransform", |vm, this, a| {
+            let o = target(vm, this)?;
+            let c = geom::read_colour(vm, &arg(a, 0))?;
+            display(&o).unwrap().colour = c;
+            Ok(Value::Undefined)
+        }),
+        ("matrix3D", |vm, this, a| {
+            let o = target(vm, this)?;
+            let v = arg(a, 0);
+            display(&o).unwrap().transform3d = (!v.is_nullish()).then_some(v);
+            display(&o).unwrap().script_moved = true;
+            Ok(Value::Undefined)
+        }),
+        ("perspectiveProjection", |vm, this, a| {
+            let o = target(vm, this)?;
+            let v = arg(a, 0);
+            display(&o).unwrap().projection = (!v.is_nullish()).then_some(v);
+            Ok(Value::Undefined)
+        }),
+    ];
+    define(vm, s);
+
+    let mut s = Spec::new("flash.geom", "Matrix3D", Some(object.clone()));
+    s.native = NativeClass {
+        allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native::default())))),
+        call: None,
+        init: Some(|vm, this, a| {
+            let mut m = IDENTITY;
+            if let Some(Value::Object(v)) = a.first() {
+                if let Kind::Vector(v) = &v.borrow().kind {
+                    for (i, x) in v.items.iter().take(16).enumerate() {
+                        m[i] = x.primitive_to_number();
+                    }
+                }
+            }
+            set_raw(vm, this, m)?;
+            Ok(Value::Undefined)
+        }),
+    };
+    s.getters = vec![
+        ("rawData", |vm, this, _| {
+            let m = matrix3d(vm, this);
+            number_vector(vm, &m)
+        }),
+        ("position", |vm, this, _| {
+            let m = matrix3d(vm, this);
+            let class = native_class(vm, "flash.geom", "Vector3D");
+            vm.construct_class(&class, &[m[12].into(), m[13].into(), m[14].into(), 0.into()])
+        }),
+    ];
+    s.setters = vec![
+        ("rawData", |vm, this, a| {
+            let mut m = IDENTITY;
+            if let Value::Object(v) = arg(a, 0) {
+                if let Kind::Vector(v) = &v.borrow().kind {
+                    for (i, x) in v.items.iter().take(16).enumerate() {
+                        m[i] = x.primitive_to_number();
+                    }
+                }
+            }
+            set_raw(vm, this, m)?;
+            Ok(Value::Undefined)
+        }),
+        ("position", |vm, this, a| {
+            let p = vec3(vm, &arg(a, 0))?;
+            with_raw(vm, this, |_, mut m| {
+                m[12] = p[0];
+                m[13] = p[1];
+                m[14] = p[2];
+                Ok(m)
+            })
+        }),
+    ];
+    s.methods = vec![
+        ("identity", |vm, this, _| with_raw(vm, this, |_, _| Ok(IDENTITY))),
+        ("clone", |vm, this, _| {
+            let m = matrix3d(vm, this);
+            let v = number_vector(vm, &m)?;
+            let class = native_class(vm, "flash.geom", "Matrix3D");
+            vm.construct_class(&class, &[v])
+        }),
+        ("append", |vm, this, a| {
+            let lhs = matrix3d(vm, &arg(a, 0));
+            with_raw(vm, this, |_, m| Ok(multiply(&lhs, &m)))
+        }),
+        ("prepend", |vm, this, a| {
+            let rhs = matrix3d(vm, &arg(a, 0));
+            with_raw(vm, this, |_, m| Ok(multiply(&m, &rhs)))
+        }),
+        ("appendTranslation", |vm, this, a| {
+            let (x, y, z) = (vm.to_number(&arg(a, 0))?, vm.to_number(&arg(a, 1))?, vm.to_number(&arg(a, 2))?);
+            with_raw(vm, this, |_, m| {
+                let mut t = IDENTITY;
+                t[12] = x;
+                t[13] = y;
+                t[14] = z;
+                Ok(multiply(&t, &m))
+            })
+        }),
+        ("prependTranslation", |vm, this, a| {
+            let (x, y, z) = (vm.to_number(&arg(a, 0))?, vm.to_number(&arg(a, 1))?, vm.to_number(&arg(a, 2))?);
+            with_raw(vm, this, |_, m| {
+                let mut t = IDENTITY;
+                t[12] = x;
+                t[13] = y;
+                t[14] = z;
+                Ok(multiply(&m, &t))
+            })
+        }),
+        ("appendScale", |vm, this, a| {
+            let (x, y, z) = (vm.to_number(&arg(a, 0))?, vm.to_number(&arg(a, 1))?, vm.to_number(&arg(a, 2))?);
+            with_raw(vm, this, |_, m| {
+                let mut t = IDENTITY;
+                t[0] = x;
+                t[5] = y;
+                t[10] = z;
+                Ok(multiply(&t, &m))
+            })
+        }),
+        ("appendRotation", |vm, this, a| {
+            let degrees = vm.to_number(&arg(a, 0))?;
+            let axis = vec3(vm, &arg(a, 1))?;
+            with_raw(vm, this, |_, m| Ok(multiply(&rotation(degrees, axis), &m)))
+        }),
+        ("invert", |vm, this, _| {
+            let m = matrix3d(vm, this);
+            match invert(&m) {
+                Some(i) => {
+                    set_raw(vm, this, i)?;
+                    Ok(true.into())
+                }
+                None => Ok(false.into()),
+            }
+        }),
+    ];
+    define(vm, s);
+
+    let mut s = Spec::new("flash.geom", "PerspectiveProjection", Some(object));
+    s.vars = vec![("fieldOfView", 55.into()), ("focalLength", 0.into())];
+    s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native::default())))), call: None, init: None };
+    s.getters = vec![("projectionCenter", |vm, this, _| {
+        let c = this.as_object().and_then(|o| o.host::<Native>().and_then(|n| n.target_value.clone()));
+        match c {
+            Some(c) => Ok(c),
+            None => {
+                let (w, h) = super::player::state(vm).borrow().stage_size;
+                geom::new_point(vm, w / 2.0, h / 2.0)
+            }
+        }
+    })];
+    s.setters = vec![("projectionCenter", |_, this, a| {
+        if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
+            n.target_value = Some(arg(a, 0));
+        }
+        Ok(Value::Undefined)
+    })];
+    define(vm, s);
+    let _ = set_num;
+}

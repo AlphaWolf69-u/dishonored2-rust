@@ -378,6 +378,8 @@ pub fn run(
                         frame.stack.push(v.clone());
                         pc = h.target;
                         handled = true;
+                        // A caught exception is not a failure.
+                        vm.failure_stack = None;
                         break;
                     }
                 }
@@ -397,12 +399,20 @@ pub fn run(
     Ok(value)
 }
 
-fn branch(pc: &mut usize, body: &super::unit::Body, taken: bool) {
+fn branch(pc: &mut usize, body: &super::unit::Body, taken: bool) -> Result<()> {
     if taken {
-        *pc = body.targets[*pc][0];
+        *pc = checked_target(body.targets[*pc][0])?;
     } else {
         *pc += 1;
     }
+    Ok(())
+}
+
+fn checked_target(target: usize) -> Result<usize> {
+    if target == super::unit::INVALID_TARGET {
+        return Err(Error::Internal("branch into the middle of an op".into()));
+    }
+    Ok(target)
 }
 
 fn int_pool(unit: &Unit, i: u32) -> f64 {
@@ -452,42 +462,42 @@ fn step(vm: &mut Vm, f: &mut Frame, body: &super::unit::Body, pc: &mut usize) ->
                 Op::IfLt { .. } | Op::IfGt { .. } | Op::IfLe { .. } | Op::IfGe { .. } => truth,
                 _ => !truth,
             };
-            branch(pc, body, taken);
+            branch(pc, body, taken)?;
             return Ok(None);
         }
         Op::IfTrue { .. } => {
             let v = f.pop()?.to_boolean();
-            branch(pc, body, v);
+            branch(pc, body, v)?;
             return Ok(None);
         }
         Op::IfFalse { .. } => {
             let v = f.pop()?.to_boolean();
-            branch(pc, body, !v);
+            branch(pc, body, !v)?;
             return Ok(None);
         }
         Op::IfEq { .. } | Op::IfNe { .. } => {
             let b = f.pop()?;
             let a = f.pop()?;
             let eq = loose_equals(vm, &a, &b)?;
-            branch(pc, body, eq == matches!(op, Op::IfEq { .. }));
+            branch(pc, body, eq == matches!(op, Op::IfEq { .. }))?;
             return Ok(None);
         }
         Op::IfStrictEq { .. } | Op::IfStrictNe { .. } => {
             let b = f.pop()?;
             let a = f.pop()?;
             let eq = strict_equals(&a, &b);
-            branch(pc, body, eq == matches!(op, Op::IfStrictEq { .. }));
+            branch(pc, body, eq == matches!(op, Op::IfStrictEq { .. }))?;
             return Ok(None);
         }
         Op::Jump { .. } => {
-            branch(pc, body, true);
+            branch(pc, body, true)?;
             return Ok(None);
         }
         Op::LookupSwitch(_) => {
             let i = f.pop()?.primitive_to_number();
             let targets = &body.targets[*pc];
             let case = if i.fract() == 0.0 && i >= 0.0 && (i as usize) < targets.len() - 1 { i as usize + 1 } else { 0 };
-            *pc = targets[case];
+            *pc = checked_target(targets[case])?;
             return Ok(None);
         }
         Op::PushWith => {
