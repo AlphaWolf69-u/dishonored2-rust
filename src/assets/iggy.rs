@@ -11,6 +11,7 @@ use std::fmt;
 use std::ops::Range;
 
 mod movie;
+pub mod shape;
 pub mod timeline;
 pub use movie::{Import, Movie};
 
@@ -390,6 +391,12 @@ impl IggyFile {
 
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// The first loaded data section of `kind`.
+    pub fn section_of_kind(&self, kind: u8) -> Option<Node<'_>> {
+        let section = self.sections.iter().position(|s| s.kind == kind)?;
+        Some(Node { file: self, section, offset: 0 })
     }
 }
 

@@ -202,3 +202,63 @@ fn corvo_main_timeline_places_screens() {
     assert_eq!(noise.colour.unwrap().mul[3], 0.8515625);
     assert!(places.iter().any(|p| p.depth == 201 && p.class_name.as_deref() == Some("PromotionScreen_main")));
 }
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn installed_shapes_and_textures_decode() {
+    use shape::Fill;
+    let catalog = catalog();
+    for path in catalog.paths_with_suffix(".iggy") {
+        let file = IggyFile::parse(catalog.read(&path).unwrap().unwrap()).unwrap();
+        let movie = file.movie().unwrap();
+        for id in 0..movie.character_count as usize {
+            if let Some(s) = file.shape(id).unwrap_or_else(|e| panic!("{path} shape {id}: {e}")) {
+                for layer in &s.layers {
+                    for p in &layer.points {
+                        // Edge fill and line indices refer to declared elements.
+                        assert!((p.fill0 as usize) <= layer.fills.len() && (p.fill1 as usize) <= layer.fills.len(), "{path} {id}");
+                        assert!((p.line as usize) <= layer.lines.len(), "{path} {id}");
+                    }
+                    for f in &layer.fills {
+                        if let Fill::Bitmap { bitmap: Some(b), .. } = f {
+                            assert!(file.bitmap(*b as usize).unwrap().is_some(), "{path} {id}");
+                        }
+                    }
+                }
+            }
+        }
+        // Texture entries are contiguous and end at the recorded iggytex size.
+        let textures = file.textures().unwrap();
+        let mut end = 0u32;
+        for t in &textures {
+            assert_eq!(t.offset, end, "{path}");
+            end += t.byte_len().unwrap() as u32;
+            let b = file.bitmap(t.character as usize).unwrap().unwrap();
+            assert_eq!((b.width, b.height), (t.width, t.height), "{path}");
+        }
+        if let Some(total) = file.texture_bytes().unwrap().filter(|&t| t > 0) {
+            assert_eq!(end, total, "{path}");
+            let tex = path.replace(".iggy", ".raw.iggytex");
+            assert_eq!(catalog.resource_size(&tex), Some(total as usize), "{path}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn corvo_square_shape_maps_its_bitmap() {
+    use shape::{Fill, Segment};
+    let file = IggyFile::parse(catalog().read("ui/corvo_pause_menu.iggy").unwrap().unwrap()).unwrap();
+    let s = file.shape(4).unwrap().unwrap();
+    assert_eq!(s.bounds, [-108.0, -108.0, 108.0, 108.0]);
+    let layer = &s.layers[0];
+    assert_eq!(layer.points.len(), 5);
+    assert_eq!(layer.points[0].segment, Segment::MoveTo);
+    assert!(layer.points[1..].iter().all(|p| p.segment == Segment::LineTo && p.fill1 == 2));
+    assert_eq!(
+        layer.fills[1],
+        Fill::Bitmap { matrix: [1.0, 0.0, 0.0, 1.0, -108.0, -108.0], bitmap: Some(3), repeat: false, smooth: true }
+    );
+    let b = file.bitmap(3).unwrap().unwrap();
+    assert_eq!((b.width, b.height, b.uv), (216, 216, [1.0, 1.0, 0.0, 0.0]));
+}
