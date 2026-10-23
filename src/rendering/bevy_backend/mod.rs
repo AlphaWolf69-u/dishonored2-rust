@@ -191,6 +191,7 @@ pub mod colour_cube;
 pub mod tone_mapping;
 #[cfg(feature = "game")]
 pub mod display_scene;
+#[cfg(feature = "game")]
 pub mod flash_ui;
 
 #[cfg(feature = "game")]

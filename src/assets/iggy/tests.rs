@@ -262,3 +262,19 @@ fn corvo_square_shape_maps_its_bitmap() {
     let b = file.bitmap(3).unwrap().unwrap();
     assert_eq!((b.width, b.height, b.uv), (216, 216, [1.0, 1.0, 0.0, 0.0]));
 }
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn list_localized_font_names() {
+    let catalog = catalog();
+    for path in ["ui/lib_loc_english_font.iggy", "ui/lib_loc_russian_font.iggy"] {
+        let file = IggyFile::parse(catalog.read(path).unwrap().unwrap()).unwrap();
+        let classes = file.symbol_classes().unwrap();
+        for id in 0..file.movie().unwrap().character_count as usize {
+            if let Some(f) = file.font(id).unwrap() {
+                let class = classes.iter().find(|(_, i)| *i as usize == id).map(|(n, _)| n.clone());
+                println!("{path}: {id} {:?} -> {:?} glyphs={} bold={} italic={}", class, f.name, f.codes.len(), f.bold, f.italic);
+            }
+        }
+    }
+}
