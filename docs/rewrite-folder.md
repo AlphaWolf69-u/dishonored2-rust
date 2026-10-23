@@ -11,7 +11,7 @@ DH2Rewrite/
   dishonored2-rust.exe      the game, built by the launcher
   config/
     dishonored2Config.cfg   the game's config format (bindings and cvars)
-    rewrite.toml            game_path, rewrite_revision
+    rewrite.toml            game_path, rewrite_revision, source_path
   saves/                    profile.bin and SLOTxx folders, the game's formats
   mods/<any folder name>/   one folder per mod (below)
   source/                   the rewrite source (a git clone the launcher keeps)
@@ -22,6 +22,13 @@ DH2Rewrite/
 ```
 
 `DH2_REWRITE_HOME` selects another folder (development).
+
+**Local source (development):** "Use local source…" stores `source_path` in
+`rewrite.toml`. Launch then runs the same cargo build in that checkout as it
+is, in its own target folder, and starts the result with this folder's
+config, saves and mods. The launcher never checks anything out into a local
+source, so mods with patches cannot be enabled with it; resource mods work.
+"Use download" returns to `source/`.
 
 Code: `src/platform/home.rs` (layout, imports, settings, mods, resources,
 fingerprint), `src/platform/game_folder.rs` (folder and question dialogs),
@@ -54,9 +61,18 @@ saves = "safe"                 # safe | cleanup | permanent
   launcher asks before disabling a permanent mod.
 - Patches are applied in file-name order onto `rewrite`, then that result is
   merged three-way onto the rewrite revision being built, mod by mod in load
-  order. A conflict names the mod, the earlier mods and the files. A
-  conflict only in `Cargo.lock` keeps the merged side; cargo updates the lock
-  file during the build.
+  order. A conflict names the mod, the earlier mods and the files.
+- A `Cargo.toml` changed by both sides merges by key, not by line
+  (`src/bin/launcher/manifest.rs`): additions on both sides are kept
+  (dependencies, features, `[[bin]]` entries; arrays merge as sets), a removal
+  on one side applies, and a dependency both changed merges field by field
+  (its `features` as a set; caret-compatible versions such as `1.2` and
+  `1.4` take the higher). Different values for the same key are a conflict
+  naming the key, for example `dependencies.rand (version "0.8" and "0.9"
+  are not compatible)`.
+- A `Cargo.lock` changed by both sides keeps the merged side; cargo adds the
+  other side's new packages during the build (at the newest compatible
+  versions, not the mod's pinned ones).
 - Resources replace or add game resources at run time (a later mod wins);
   they need no build.
 
@@ -93,8 +109,6 @@ the installed game's four `game*_patch.index` files, and every enabled mod
 - Saves do not record their mods yet (the rewrite does not write saves yet),
   so the permanent-mod warning cannot list affected saves, and `cleanup`
   mods have no launcher step to run their cleanup.
-- Merging `Cargo.toml` dependency changes from several mods (they conflict as
-  text today).
 - Downloading mod updates (only the check exists).
 - Mod profiles.
 - Loose `base/` files the engine reads directly (`default.cfg`,

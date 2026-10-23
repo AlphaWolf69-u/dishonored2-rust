@@ -188,6 +188,15 @@ pub fn setting(key: &str) -> Option<String> {
     doc.get(key)?.as_str().map(str::to_string)
 }
 
+/// Remove a setting from `config/rewrite.toml`, keeping its comments.
+pub fn remove_setting(key: &str) -> Result<(), String> {
+    let file = home().settings_file();
+    let Ok(text) = fs::read_to_string(&file) else { return Ok(()) };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{}: {e}", file.display()))?;
+    doc.remove(key);
+    fs::write(&file, doc.to_string()).map_err(|e| format!("{}: {e}", file.display()))
+}
+
 /// Set a string setting in `config/rewrite.toml`, keeping its comments.
 pub fn set_setting(key: &str, value: &str) -> Result<(), String> {
     let file = home().settings_file();

@@ -33,18 +33,37 @@ pub fn built() -> Option<String> {
     game_exe().is_file().then(|| std::fs::read_to_string(home::home().cache_dir().join(STAMP)).ok()).flatten().map(|s| s.trim().to_string())
 }
 
+/// What [`build_local`] records: a checkout's working tree is not a
+/// commit, so the next launch of the downloaded source always rebuilds.
+const LOCAL_STAMP: &str = "local checkout";
+
 /// `cargo build --release` of the game in `source/`, output in
 /// `cache/target`, log in `logs/build-*.log`; the executable is copied
 /// next to the launcher.
 pub fn build(cargo: &Path, fingerprint: &str, progress: &mut dyn FnMut(String)) -> Result<(), String> {
     let h = home::home();
+    let target = h.cache_dir().join("target");
+    run(cargo, &h.source_dir(), Some(&target), &target, fingerprint, progress)
+}
+
+/// The same build of a developer's checkout as it is, in its own target
+/// folder (`CARGO_TARGET_DIR` when set), so cargo reuses the developer's
+/// build and rebuilds only what changed.
+pub fn build_local(cargo: &Path, checkout: &Path, progress: &mut dyn FnMut(String)) -> Result<(), String> {
+    let target = checkout.join(std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| PathBuf::from("target"), PathBuf::from));
+    run(cargo, checkout, None, &target, LOCAL_STAMP, progress)
+}
+
+fn run(cargo: &Path, source: &Path, target_dir: Option<&Path>, target: &Path, stamp: &str, progress: &mut dyn FnMut(String)) -> Result<(), String> {
+    let h = home::home();
     let log_path = h.logs_dir().join(format!("build-{}.log", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()));
     let mut log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
-    let target = h.cache_dir().join("target");
-    let mut child = Command::new(cargo)
-        .args(["build", "--release", "--features", "game", "--bin", "dishonored2-rust"])
-        .current_dir(h.source_dir())
-        .env("CARGO_TARGET_DIR", &target)
+    let mut command = Command::new(cargo);
+    command.args(["build", "--release", "--features", "game", "--bin", "dishonored2-rust"]).current_dir(source);
+    if let Some(dir) = target_dir {
+        command.env("CARGO_TARGET_DIR", dir);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -69,5 +88,5 @@ pub fn build(cargo: &Path, fingerprint: &str, progress: &mut dyn FnMut(String)) 
     }
     let built = target.join("release").join(game_exe().file_name().unwrap());
     std::fs::copy(&built, game_exe()).map_err(|e| format!("Could not replace {} (is the game running?): {e}", game_exe().display()))?;
-    std::fs::write(h.cache_dir().join(STAMP), fingerprint).map_err(|e| e.to_string())
+    std::fs::write(h.cache_dir().join(STAMP), stamp).map_err(|e| e.to_string())
 }

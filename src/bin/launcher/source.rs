@@ -1,15 +1,43 @@
 //! The launcher's copy of the rewrite source: a git clone of the rewrite
-//! repository in `source/`, fetched over HTTPS by the bundled libgit2.
+//! repository in `source/`, fetched over HTTPS by the bundled libgit2. A
+//! developer's own checkout (`source_path`) is used instead when set; the
+//! launcher then only builds it, never checks anything out into it.
 use dishonored2_rust::platform::home;
 use git2::{build::RepoBuilder, FetchOptions, Oid, RemoteCallbacks, Repository};
+use std::path::{Path, PathBuf};
 
 pub const REPOSITORY: &str = "https://github.com/AlphaWolf69-u/dishonored2-rust.git";
 /// The rewrite revision setting in `config/rewrite.toml`.
 const REVISION_SETTING: &str = "rewrite_revision";
 const DEFAULT_BRANCH: &str = "main";
+/// The local checkout setting in `config/rewrite.toml`.
+const LOCAL_SETTING: &str = "source_path";
+
+/// The developer's checkout, when the launcher builds that instead.
+pub fn local() -> Option<PathBuf> {
+    home::setting(LOCAL_SETTING).map(PathBuf::from)
+}
+
+/// Build `folder` (a rewrite checkout) as it is, or `None` for `source/`.
+pub fn set_local(folder: Option<&Path>) -> Result<(), String> {
+    match folder {
+        Some(f) => home::set_setting(LOCAL_SETTING, &f.display().to_string()),
+        None => home::remove_setting(LOCAL_SETTING),
+    }
+}
 
 pub fn open() -> Option<Repository> {
-    Repository::open(home::home().source_dir()).ok()
+    Repository::open(local().unwrap_or_else(|| home::home().source_dir())).ok()
+}
+
+/// The checked-out branch and commit, for display.
+pub fn describe_head(repo: &Repository) -> String {
+    let Ok(head) = repo.head() else { return "no commits".into() };
+    let branch = if head.is_branch() { head.shorthand().unwrap_or("").to_string() } else { "detached".into() };
+    match head.peel_to_commit() {
+        Ok(commit) => format!("{branch} · {}", describe(repo, commit.id())),
+        Err(_) => branch,
+    }
 }
 
 fn fetch_options<'a>(progress: &'a mut dyn FnMut(String)) -> FetchOptions<'a> {

@@ -4,6 +4,7 @@
 //! launches it. Folder layout: `platform::home`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod build;
+mod manifest;
 mod merge;
 mod source;
 mod toolchain;
@@ -120,6 +121,7 @@ slint::slint! {
         in property <string> source-text;
         in property <string> source-detail;
         in property <string> source-action;
+        in property <bool> source-is-local;
         in property <bool> rust-ok;
         in property <string> rust-text;
         in property <bool> msvc-ok;
@@ -132,6 +134,7 @@ slint::slint! {
         in property <bool> status-error;
 
         callback source-act();
+        callback source-local();
         callback install-rust();
         callback install-build-tools();
         callback browse-game();
@@ -165,7 +168,17 @@ slint::slint! {
                 Panel {
                     VerticalLayout {
                         padding: 10px; spacing: 6px;
-                        Line { ok: root.source-ok; text: root.source-text; detail: root.source-detail; action: root.source-action; action-enabled: !root.busy; act => { root.source-act(); } }
+                        Line {
+                            ok: root.source-ok; text: root.source-text; detail: root.source-detail; action: root.source-action; action-enabled: !root.busy;
+                            act => { if root.source-is-local { root.source-local(); } else { root.source-act(); } }
+                        }
+                        if !root.source-is-local : Line {
+                            ok: true;
+                            text: "Developing the rewrite? Launch can build your own checkout as it is.";
+                            action: "Use local source…";
+                            action-enabled: !root.busy;
+                            act => { root.source-local(); }
+                        }
                         Line { ok: root.rust-ok; text: root.rust-text; action: root.rust-ok ? "" : "Install Rust"; action-enabled: !root.busy; act => { root.install-rust(); } }
                         Line {
                             ok: root.msvc-ok;
@@ -351,11 +364,18 @@ fn rows(installed: &[home::ModInfo], enabled: &[String], updates: &updates::Upda
 fn refresh(ui: &Launcher, status: Option<(String, bool)>) {
     FOUND.with(|found| {
         let found = found.borrow();
+        let local = source::local();
         let repo = source::open();
         let revision = source::revision(repo.as_ref());
-        let target = repo.as_ref().and_then(|r| source::resolve(r, &revision).ok());
-        ui.set_source_ok(target.is_some());
+        let target = repo.as_ref().filter(|_| local.is_none()).and_then(|r| source::resolve(r, &revision).ok());
+        ui.set_source_is_local(local.is_some());
+        ui.set_source_ok(target.is_some() || (local.is_some() && repo.is_some()));
         match (&repo, target) {
+            _ if local.is_some() => {
+                let path = local.as_ref().unwrap().display();
+                ui.set_source_text(if repo.is_some() { format!("Local source {path}") } else { format!("Local source {path} is not a git checkout") }.into());
+                ui.set_source_detail(repo.as_ref().map(source::describe_head).unwrap_or_default().into());
+            }
             (Some(r), Some(id)) => {
                 ui.set_source_text(format!("Rewrite {revision}").into());
                 ui.set_source_detail(source::describe(r, id).into());
@@ -370,6 +390,7 @@ fn refresh(ui: &Launcher, status: Option<(String, bool)>) {
             }
         }
         ui.set_source_action(match (&repo, &found.updates.rewrite) {
+            _ if local.is_some() => "Use download".into(),
             (None, _) => "Download".into(),
             (Some(_), Some(newer)) => format!("Update to {newer}").into(),
             (Some(_), None) => "Check for updates".into(),
@@ -387,6 +408,7 @@ fn refresh(ui: &Launcher, status: Option<(String, bool)>) {
         let layers = home::layers();
         ui.set_fingerprint(base.as_deref().map_or("unavailable (no game folder)".into(), |b| home::fingerprint(b, &layers)).into());
         ui.set_build_text(match target {
+            None if local.is_some() => "Launch builds the local checkout as it is (cargo rebuilds only what changed)".into(),
             None => "Not built: the source is missing".into(),
             Some(id) if build::built().as_deref() == Some(build::fingerprint(&id.to_string(), &layers.mods).as_str()) => {
                 "Built and up to date with the enabled mods".into()
@@ -466,13 +488,24 @@ fn discover(ui: &Launcher) {
 fn launch(cargo: Option<PathBuf>, progress: &mut dyn FnMut(String)) -> Result<String, String> {
     let repo = source::open().ok_or("Download the rewrite source first.")?;
     installation::game_base().map_err(|_| "Choose the game folder first.".to_string())?;
-    let revision = source::revision(Some(&repo));
-    let target = source::resolve(&repo, &revision)?;
     let mut problems = Vec::new();
     let mods = home::enabled_mods(&mut problems);
     if let Some(p) = problems.first() {
         return Err(format!("{p}. Fix or disable it first."));
     }
+    if let Some(checkout) = source::local() {
+        // The checkout is the developer's work: merging mods into it would
+        // replace that, so only resource mods apply.
+        if let Some(m) = mods.iter().find(|m| !m.patches().is_empty()) {
+            return Err(format!("{} changes the source; mods with patches are not merged into a local source. Disable it, or use the download.", m.name));
+        }
+        let cargo = cargo.ok_or("Install Rust and the C++ Build Tools to build the rewrite.")?;
+        progress("Building the local source…".into());
+        build::build_local(&cargo, &checkout, progress)?;
+        return start();
+    }
+    let revision = source::revision(Some(&repo));
+    let target = source::resolve(&repo, &revision)?;
     let fingerprint = build::fingerprint(&target.to_string(), &mods);
     if build::built().as_deref() != Some(fingerprint.as_str()) {
         let cargo = cargo.ok_or("Install Rust and the C++ Build Tools to build the rewrite.")?;
@@ -481,6 +514,11 @@ fn launch(cargo: Option<PathBuf>, progress: &mut dyn FnMut(String)) -> Result<St
         progress("Building the rewrite (the first build takes a while)…".into());
         build::build(&cargo, &fingerprint, progress)?;
     }
+    start()
+}
+
+/// Start the built game in the rewrite folder.
+fn start() -> Result<String, String> {
     let exe = build::game_exe();
     std::process::Command::new(&exe)
         .env("DH2_REWRITE_HOME", &home::home().root)
@@ -590,6 +628,22 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh(&ui, Some((CHECKING.into(), false)));
             discover(&ui);
         }
+    });
+
+    let s = status.clone();
+    ui.on_source_local(move || {
+        if source::local().is_some() {
+            return s(Some(source::set_local(None).map_or_else(|e| (e, true), |()| ("Launch builds the downloaded source again.".into(), false))));
+        }
+        let Some(folder) = game_folder::pick_folder("Select your rewrite checkout (the folder with Cargo.toml).") else { return };
+        s(Some(if !folder.join("Cargo.toml").is_file() {
+            (format!("{} has no Cargo.toml.", folder.display()), true)
+        } else {
+            match source::set_local(Some(&folder)) {
+                Ok(()) => (format!("Launch now builds {} as it is.", folder.display()), false),
+                Err(e) => (e, true),
+            }
+        }));
     });
 
     let weak = ui.as_weak();
