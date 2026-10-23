@@ -330,6 +330,7 @@ pub(super) fn publish_display_frame(
         Ok(DisplayFrame {
             camera,
             camera_effects: Some(camera_effects),
+            camera_blur: Some(display.camera_effects.blur_resources().clone()),
             parameters,
             cube,
             weight,

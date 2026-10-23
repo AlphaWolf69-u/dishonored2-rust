@@ -739,8 +739,20 @@ private binary data and matching view metadata are written by the I/O pool.
 No continuous capture, image encoding or gameplay visibility decision depends
 on these diagnostic resources. Adapter buffer limits are checked before copying.
 
+On Windows, uncapped HWND output uses the DX12 backend's `composited` surface
+owner. Rendering stays on the DX12 queue; a D3D11 device on the same adapter
+copies the shared final image into a discard swapchain and presents with zero
+interval and flags, matching the measured game window path. Shared fences
+protect both the copy and subsequent reuse of the image. The owner drains the
+copy context before resize or destruction. This is platform integration;
+shaders and bloom composition remain independent of presentation.
+`platform/game_settings` reads `r_swapChainTripleBufferEnable` to select two or
+three buffers and a frame latency of one or two. Explicit latency overrides
+remain available. `DH2_DEBUG_DIRECT_PRESENT=1` selects the direct DX12 flip
+path for comparison; enabling VSync retains the existing FIFO path.
+
 F8 also requests numerical display inputs through `display_capture`: the exact
-pre-display HDR source, first luminance mip, final bloom target and 32-byte GPU
+pre-display HDR source, post-lens colour, first luminance mip, final bloom target and 32-byte GPU
 exposure record. Copies are recorded after the display producer in the same
 command stream. The text sidecar records texture formats, padded row layouts
 and the settings used by that submitted frame. Mapping and file writes are
@@ -748,11 +760,57 @@ asynchronous. These resources perform no copies or allocations without a
 request; the capture adds no shader pass. CPU lens publications in the ordinary
 F8 report are labelled separately from this GPU evidence.
 
+`DH2_TRACE_BLOOM=1` enables an optional bounded GPU history for intermittent
+defects. Each frame retains synchronized 96-by-54 pixel-centre samples of
+post-lens colour and bloom, plus exposure and lens controls. Where the window
+supports texture sampling or copying, its final buffer after UI and scaling replaces the
+HDR sample in plane zero; the header identifies this stage and frame serial.
+Unsupported surfaces and the newest F8 frame retain HDR instead. Its 1,024 slots
+occupy about 122 MiB and overwrite the oldest samples; F8 asynchronously saves
+the preceding history beside the ordinary inputs. It adds two small diagnostic
+compute dispatches per frame only when explicitly enabled and supported. DX12
+also uses one reusable window-sized sampling copy because its swapchain cannot
+be sampled directly through wgpu. Normal gameplay
+allocates no history and submits no diagnostic dispatch. These reduced samples
+locate affected stages; they do not establish full-resolution appearance parity.
+
 The authored filmic curve calculation lives in `rendering::tone_mapping`.
 `app::display_scene` prepares registered defaults, level and area values, and
 resident 3D colour tables directly from archives. Gameplay publishes typed
 camera-area transitions for the filmic curve, grading and exposure controls;
 it does not parse declarations or load tables during frame updates.
+
+Camera optics follow the same boundary. `app::camera_effects` owns environment
+transitions and publishes `rendering::camera_effects::CameraSettings`.
+`assets::camera_blur` reads kernel points and the selected material bank directly
+from installed archives during level preparation. The render frame shares these
+immutable `BlurResources` through an `Arc`; it performs no archive reads to change
+the bokeh filter or select an unspecialized material. Material options come from
+the selected declaration, including its fallback, rather than from filename
+assumptions. The shared settings and material-selection rules also work without
+the `game` feature.
+
+The camera GPU components have explicit producer inputs. `camera_masks` owns
+near-mask generation, separable filtering and the combined near/far mask.
+`camera_colours` owns the ordered HDR/colour/mask downscales, stencil admission
+and near/far colour draws. `camera_blur` implements the colour-filter leaf;
+`camera_stencil` implements near, far, autofocus and constant-depth admission.
+They require the view's real depth/stencil, autofocus, refraction and colour
+resources. The colour producer retains its internal targets and bindings across
+frames. Its downscale draws use the actual fullscreen geometry and compute tap
+coordinates before interpolation, matching the installed vertex program. Draws
+queued together retain independent uniform buffers. Existing depth and unrelated
+stencil bits survive classification, and disabled branches preserve the game's
+clear/retain rules.
+
+These producers are numerically verified separately from gameplay integration.
+The combined colour check uses 24 installed vertex/fragment shader sequences on
+Vulkan and DirectX 12, repeated through game-HDR and two host-source adapters.
+Archive preparation and render-frame publication are connected; the gameplay
+render graph still needs the alpha/refraction producers and final camera-combine
+ordering. A standalone producer check does not establish appearance parity for
+the complete gameplay frame, or emulate the original main HDR target's packed
+storage conversion.
 
 `bevy_backend::colour_cube` owns three bounded RGBA8 volume textures for
 environment colour-table history and overlays. It preserves the last base

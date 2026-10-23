@@ -3,6 +3,21 @@ use super::archive::Catalog;
 use crate::rendering::depth_of_field::{BlurKernel, DofMaterialVariant, DofPass};
 use std::collections::HashMap;
 
+/// Immutable inputs prepared during level loading and shared with render views.
+#[derive(Clone, Debug)]
+pub struct BlurResources {
+    pub kernels: KernelBank,
+    pub materials: MaterialBank,
+}
+impl BlurResources {
+    pub fn load(catalog: &Catalog) -> Result<Self, String> {
+        Ok(Self {
+            kernels: KernelBank::load(catalog)?,
+            materials: MaterialBank::load(catalog)?,
+        })
+    }
+}
+
 /// A selected material's actual options, including the unspecialized fallback.
 #[derive(Clone, Debug)]
 pub struct BlurMaterial {

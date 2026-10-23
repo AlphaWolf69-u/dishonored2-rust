@@ -4,6 +4,25 @@ use std::path::PathBuf;
 mod camera_settings;
 pub use camera_settings::{camera_render_settings, read_camera_render_settings, CameraRenderSettings};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentationSettings {
+    pub triple_buffer: bool,
+}
+impl PresentationSettings {
+    pub fn frame_latency(self) -> std::num::NonZeroU32 {
+        std::num::NonZeroU32::new(1 + u32::from(self.triple_buffer)).unwrap()
+    }
+}
+pub fn read_presentation_settings() -> Result<PresentationSettings, String> {
+    let (_, source) = read_configuration()?;
+    // 141374700 registers this CVar with "0". 368b80 uses 2+flag
+    // swapchain buffers and 1+flag as the DXGI device frame latency.
+    let value = quoted_setting(source.as_deref().unwrap_or(""), "r_swapChainTripleBufferEnable")?
+        .unwrap_or("0").parse::<i32>()
+        .map_err(|error| format!("r_swapChainTripleBufferEnable: {error}"))?;
+    Ok(PresentationSettings { triple_buffer: value != 0 })
+}
+
 /// Read the existing original's canonical quoted-token configuration format.
 /// Duplicate override order is deliberately not guessed.
 fn quoted_setting<'a>(source: &'a str, name: &str) -> Result<Option<&'a str>, String> {

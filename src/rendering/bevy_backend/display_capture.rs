@@ -1,10 +1,14 @@
 //! F8 numerical display inputs. Copies run only for an explicit request.
 use bevy::{
+    camera::NormalizedRenderTarget,
     prelude::*,
     render::{
+        camera::ExtractedCamera,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_resource::*,
         renderer::RenderDevice,
+        renderer::{RenderGraph, RenderGraphSystems, RenderQueue},
+        view::{window::ExtractedWindows, ViewTarget},
         Render, RenderApp, RenderSystems,
     },
 };
@@ -12,6 +16,9 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+
+#[path = "display_capture/motion.rs"]
+mod motion;
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct DisplayCaptureRequest(Arc<Mutex<Option<PathBuf>>>);
@@ -26,6 +33,8 @@ impl DisplayCaptureRequest {
 #[derive(Resource, Default)]
 pub(super) struct DisplayCaptureGpu {
     pending: Option<Pending>,
+    motion: motion::MotionCapture,
+    window_copy: Option<Texture>,
 }
 struct Pending {
     buffer: Buffer,
@@ -40,10 +49,117 @@ pub(super) fn register(app: &mut App) {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
             .init_resource::<DisplayCaptureGpu>()
+            .add_systems(
+                RenderGraph,
+                record_window_history.in_set(RenderGraphSystems::Finish),
+            )
             .add_systems(Render, finish.in_set(RenderSystems::Cleanup));
     }
 }
+fn record_window_history(
+    mut gpu: ResMut<DisplayCaptureGpu>,
+    windows: Res<ExtractedWindows>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    targets: Query<(&ViewTarget, &ExtractedCamera)>,
+) {
+    if !gpu.motion_enabled() {
+        return;
+    }
+    let Some(window) = windows.primary.and_then(|entity| windows.get(&entity)) else {
+        return;
+    };
+    let Some(surface) = window
+        .swap_chain_texture
+        .as_ref()
+        .filter(|_| window.drawable)
+    else {
+        return;
+    };
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("final window history"),
+    });
+    let size = surface.texture.size();
+    let usage = surface.texture.usage();
+    // F8 temporarily renders into a sampleable screenshot attachment. Its
+    // identity blit to the swapchain runs after this graph schedule.
+    let redirected = targets.iter().filter(|(_, camera)| {
+        matches!(camera.target, Some(NormalizedRenderTarget::Window(w)) if w.entity() == window.entity)
+    }).filter_map(|(target, _)| target.out_texture()).find(|view| {
+        window.swap_chain_texture_view.as_ref().is_some_and(|surface_view| view.id() != surface_view.id())
+    });
+    let view: TextureView = if let Some(redirected) = redirected {
+        redirected.clone()
+    } else if usage.contains(TextureUsages::TEXTURE_BINDING) {
+        surface
+            .texture
+            .create_view(&TextureViewDescriptor {
+                format: window.swap_chain_texture_view_format,
+                ..default()
+            })
+            .into()
+    } else if usage.contains(TextureUsages::COPY_SRC) {
+        // DX12 surfaces expose copying but not shader sampling in wgpu.
+        // One reusable copy is allocated only for the requested diagnostic.
+        let format = window
+            .swap_chain_texture_view_format
+            .unwrap_or(surface.texture.format());
+        if gpu
+            .window_copy
+            .as_ref()
+            .is_none_or(|t| t.size() != size || t.format() != format)
+        {
+            gpu.window_copy = Some(device.create_texture(&TextureDescriptor {
+                label: Some("window history sampling copy"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format,
+                usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
+        }
+        let copy = gpu.window_copy.as_ref().unwrap();
+        encoder.copy_texture_to_texture(
+            surface.texture.as_image_copy(),
+            copy.as_image_copy(),
+            size,
+        );
+        copy.create_view(&default())
+    } else {
+        return;
+    };
+    if gpu.motion.record_window(
+        &device,
+        &queue,
+        &mut encoder,
+        view,
+        UVec2::new(surface.texture.width(), surface.texture.height()),
+    ) {
+        queue.submit([encoder.finish()]);
+    }
+}
 impl DisplayCaptureGpu {
+    pub(super) fn motion_enabled(&self) -> bool {
+        self.motion.enabled()
+    }
+
+    pub(super) fn record_motion(
+        &mut self,
+        request: &DisplayCaptureRequest,
+        device: &RenderDevice,
+        queue: &bevy::render::renderer::RenderQueue,
+        encoder: &mut CommandEncoder,
+        textures: [&Texture; 3],
+        exposure: &Buffer,
+        controls: [f32; 4],
+    ) {
+        self.motion.record(
+            request, device, queue, encoder, textures, exposure, controls,
+        );
+    }
+
     pub(super) fn record(
         &mut self,
         request: &DisplayCaptureRequest,
@@ -148,7 +264,13 @@ fn copy_sources(
 }
 // Render submission precedes Cleanup; never wait for the GPU on the game thread.
 fn finish(mut gpu: ResMut<DisplayCaptureGpu>, device: Res<RenderDevice>) {
-    let Some(pending) = &mut gpu.pending else {
+    let gpu = &mut *gpu;
+    finish_pending(&mut gpu.pending, &device);
+    finish_pending(&mut gpu.motion.pending, &device);
+}
+
+fn finish_pending(slot: &mut Option<Pending>, device: &RenderDevice) {
+    let Some(pending) = slot else {
         return;
     };
     if !pending.mapped {
@@ -164,7 +286,7 @@ fn finish(mut gpu: ResMut<DisplayCaptureGpu>, device: Res<RenderDevice>) {
     let _ = device.poll(PollType::Poll);
     let result = pending.result.lock().unwrap().take();
     if let Some(result) = result {
-        let pending = gpu.pending.take().unwrap();
+        let pending = slot.take().unwrap();
         if let Err(error) = result {
             warn!("Display numeric capture failed: {error}");
             return;

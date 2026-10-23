@@ -53,6 +53,8 @@ pub struct ExtractedWindow {
     pub handle: RawHandleWrapper,
     pub physical_width: u32,
     pub physical_height: u32,
+    /// Minimized windows have no drawable extent; retain their last surface size.
+    pub drawable: bool,
     pub present_mode: PresentMode,
     pub desired_maximum_frame_latency: Option<NonZero<u32>>,
     /// Note: this will not always be the swap chain texture view. When taking a screenshot,
@@ -138,12 +140,15 @@ fn extract_windows(
             window.resolution.physical_width().max(1),
             window.resolution.physical_height().max(1),
         );
+        let drawable = window.resolution.physical_width() != 0
+            && window.resolution.physical_height() != 0;
 
         let extracted_window = extracted_windows.entry(entity).or_insert(ExtractedWindow {
             entity,
             handle: handle.clone(),
             physical_width: new_width,
             physical_height: new_height,
+            drawable,
             present_mode: window.present_mode,
             desired_maximum_frame_latency: window.desired_maximum_frame_latency,
             swap_chain_texture: None,
@@ -155,6 +160,17 @@ fn extract_windows(
             alpha_mode: window.composite_alpha_mode,
             needs_initial_present: true,
         });
+
+        extracted_window.drawable = drawable;
+        if !drawable {
+            // Do not configure or acquire a surrogate 1x1 swapchain while
+            // minimized. Retire the old view before restoring its surface.
+            drop(extracted_window.swap_chain_texture.take());
+            extracted_window.swap_chain_texture_view = None;
+            extracted_window.size_changed = false;
+            extracted_window.present_mode_changed = false;
+            continue;
+        }
 
         if extracted_window.swap_chain_texture.is_none() {
             // If we called present on the previous swap-chain texture last update,
@@ -249,6 +265,9 @@ pub fn prepare_windows(
     #[cfg(target_os = "linux")] render_instance: Res<RenderInstance>,
 ) {
     for window in windows.windows.values_mut() {
+        if !window.drawable {
+            continue;
+        }
         // Skip acquiring a swap-chain texture for windows that no camera
         // targets. This avoids a wasted clear pass in
         // `handle_uncovered_swap_chains` that triggers a DMA-fence fd leak on
@@ -342,6 +361,9 @@ pub fn need_surface_configuration(
     window_surfaces: Res<WindowSurfaces>,
 ) -> bool {
     for window in windows.windows.values() {
+        if !window.drawable {
+            continue;
+        }
         if !window_surfaces.configured_windows.contains(&window.entity)
             || window.size_changed
             || window.present_mode_changed
@@ -370,6 +392,9 @@ pub fn create_surfaces(
     render_device: Res<RenderDevice>,
 ) {
     for window in windows.windows.values_mut() {
+        if !window.drawable {
+            continue;
+        }
         let data = window_surfaces
             .surfaces
             .entry(window.entity)
@@ -412,7 +437,12 @@ pub fn create_surfaces(
                     format,
                     width: window.physical_width,
                     height: window.physical_height,
-                    usage: TextureUsages::RENDER_ATTACHMENT,
+                    usage: TextureUsages::RENDER_ATTACHMENT
+                        | if std::env::var("DH2_TRACE_BLOOM").as_deref() == Ok("1") {
+                            caps.usages & (TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC)
+                        } else {
+                            TextureUsages::empty()
+                        },
                     present_mode,
                     desired_maximum_frame_latency: window
                         .desired_maximum_frame_latency

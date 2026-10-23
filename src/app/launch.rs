@@ -698,6 +698,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.insert_resource(machinery);
     app.insert_resource(super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(),entity_document.as_ref()).map_err(std::io::Error::other)?);
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
+    let presentation = game_settings::read_presentation_settings().map_err(std::io::Error::other)?;
     let mut graphics = bevy::render::settings::WgpuSettings::default();
     #[cfg(target_os = "windows")]
     if env::var_os("WGPU_BACKEND").is_none() {
@@ -767,10 +768,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                         },
                         desired_maximum_frame_latency: env::var("DH2_FRAME_LATENCY")
                             .ok()
-                            .and_then(|s| s.parse().ok()),
-                        // The user's original r_swapInterval=0; retain that uncapped default.
+                            .and_then(|s| s.parse().ok())
+                            .or(Some(presentation.frame_latency())),
+                        // The uncapped game uses composited DISCARD presentation.
+                        // The DX12 host bridge implements that path for Mailbox.
                         present_mode: if env::var("DH2_NO_VSYNC").as_deref() != Ok("0") {
-                            bevy::window::PresentMode::AutoNoVsync
+                            if cfg!(target_os = "windows")
+                                && env::var("DH2_DEBUG_DIRECT_PRESENT").as_deref() != Ok("1")
+                            {
+                                bevy::window::PresentMode::Mailbox
+                            } else {
+                                bevy::window::PresentMode::AutoNoVsync
+                            }
                         } else {
                             bevy::window::Window::default().present_mode
                         },

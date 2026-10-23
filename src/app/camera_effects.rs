@@ -1,11 +1,11 @@
 //! Prepared camera-area parameters. All archive reads finish at level loading;
 //! publication uses the same presence-aware parameter transitions as lenses.
 use crate::{
-    assets::{archive::Catalog, environment::ParameterReader},
+    assets::{archive::Catalog, camera_blur::BlurResources, environment::ParameterReader},
     entities::EnvironmentRenderParameters,
-    platform::game_settings::{CameraRenderSettings, read_camera_render_settings},
+    platform::game_settings::{read_camera_render_settings, CameraRenderSettings},
     rendering::{
-        camera_effects::{CameraEffectsFrame, CameraSettings, PARAMETER_NAMES, SettingsInputs},
+        camera_effects::{CameraEffectsFrame, CameraSettings, SettingsInputs, PARAMETER_NAMES},
         environment::{AreaEnvironment, EnvironmentSource},
         environment_tracks::{FloatParameter, ParameterTrack},
     },
@@ -15,6 +15,7 @@ struct Inputs {
     values: [Option<Vec4>; 33],
 }
 pub(super) struct CameraScene {
+    blur_resources: std::sync::Arc<BlurResources>,
     world: Inputs,
     areas: Vec<(String, Inputs)>,
     tracks: [ParameterTrack<FloatParameter>; 33],
@@ -53,6 +54,7 @@ impl CameraScene {
         let mut state = CameraSettings::from_words([0; 41]);
         state.reset();
         Ok(Self {
+            blur_resources: std::sync::Arc::new(BlurResources::load(catalog)?),
             world: prepare(world)?,
             areas: areas
                 .iter()
@@ -63,6 +65,9 @@ impl CameraScene {
             state,
             initialized: false,
         })
+    }
+    pub(super) fn blur_resources(&self) -> &std::sync::Arc<BlurResources> {
+        &self.blur_resources
     }
     pub(super) fn update(
         &mut self,
