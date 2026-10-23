@@ -81,35 +81,9 @@ pub fn install(vm: &mut Vm) {
     let object = vm.b().object.clone();
     let mut s = Spec::new("", "XML", Some(object.clone()));
     s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Xml(Rc::new(XmlNode::default())))), call: None, init: None };
-    s.proto = vec![
-        ("toString", |vm, this, _| Ok(string_value(vm, this).into())),
-        ("toXMLString", |_, this, _| {
-            let mut s = String::new();
-            if let Some(n) = node(this) {
-                n.to_xml_string(&mut s, 0);
-            }
-            Ok(s.into())
-        }),
-        ("name", |_, this, _| Ok(node(this).map(|n| Value::String(n.name.clone())).unwrap_or_default())),
-        ("localName", |_, this, _| Ok(node(this).map(|n| Value::String(n.name.clone())).unwrap_or_default())),
-        ("children", |vm, this, _| {
-            let items = node(this).map(|n| n.children.iter().map(|c| xml_value(vm, c.clone())).collect()).unwrap_or_default();
-            Ok(list(vm, items))
-        }),
-        ("attributes", |vm, this, _| {
-            let items = node(this).map(|n| n.attributes.iter().map(|(_, v)| Value::String(v.clone())).collect()).unwrap_or_default();
-            Ok(list(vm, items))
-        }),
-        ("length", |_, _, _| Ok(1.into())),
-    ];
     let xml = define(vm, s);
     let mut s = Spec::new("", "XMLList", Some(object));
     s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::XmlList(Vec::new()))), call: None, init: None };
-    s.proto = vec![
-        ("length", |_, this, _| Ok((items(this).len() as u32).into())),
-        ("toString", |vm, this, _| Ok(string_value(vm, this).into())),
-        ("toXMLString", |vm, this, _| Ok(string_value(vm, this).into())),
-    ];
     let xml_list = define(vm, s);
     let b = vm.builtins.as_mut().unwrap();
     b.xml = xml;

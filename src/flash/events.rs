@@ -344,13 +344,11 @@ pub fn install(vm: &mut Vm) {
     let object = vm.b().object.clone();
 
     let mut s = Spec::new("flash.events", "IEventDispatcher", None);
-    s.interface = true;
     s.methods = dispatcher_methods();
-    let iface = define(vm, s);
+    define(vm, s);
     let mut s = Spec::new("flash.events", "EventDispatcher", Some(object.clone()));
     s.native = NativeClass { allocate: Some(alloc_dispatcher), call: None, init: None };
     s.methods = dispatcher_methods();
-    s.implements = vec![iface];
     define(vm, s);
 
     let mut s = Spec::new("flash.events", "Event", Some(object));
@@ -379,7 +377,6 @@ pub fn install(vm: &mut Vm) {
     );
     s.getters = getters;
     s.setters = setters;
-    s.methods = vec![("updateAfterEvent", |_, _, _| Ok(Value::Undefined))];
     s.constants = vec![("KEY_DOWN", "keyDown".into()), ("KEY_UP", "keyUp".into())];
     define(vm, s);
 
@@ -388,8 +385,6 @@ pub fn install(vm: &mut Vm) {
     let (getters, setters) = field_accessors!(
         "localX" => f64::NAN.into(),
         "localY" => f64::NAN.into(),
-        "stageX" => f64::NAN.into(),
-        "stageY" => f64::NAN.into(),
         "relatedObject" => Value::Null,
         "ctrlKey" => false.into(),
         "altKey" => false.into(),
@@ -399,7 +394,6 @@ pub fn install(vm: &mut Vm) {
     );
     s.getters = getters;
     s.setters = setters;
-    s.methods = vec![("updateAfterEvent", |_, _, _| Ok(Value::Undefined))];
     s.constants = vec![
         ("CLICK", "click".into()),
         ("DOUBLE_CLICK", "doubleClick".into()),
@@ -421,7 +415,6 @@ pub fn install(vm: &mut Vm) {
     define(vm, s);
 
     let mut s = Spec::new("flash.events", "TimerEvent", Some(event.clone()));
-    s.methods = vec![("updateAfterEvent", |_, _, _| Ok(Value::Undefined))];
     s.constants = vec![("TIMER", "timer".into()), ("TIMER_COMPLETE", "timerComplete".into())];
     define(vm, s);
 

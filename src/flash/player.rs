@@ -51,6 +51,8 @@ pub type Callback = Rc<dyn Fn(&mut Vm, &[Value]) -> Result<Value>>;
 #[derive(Default)]
 pub struct PlayerState {
     pub libraries: Vec<Library>,
+    /// The game's string table (translation and `@` text substitution).
+    pub strings: Option<Rc<crate::assets::lang::StringTable>>,
     /// Embedded fonts of all loaded libraries, in load order.
     pub fonts: Vec<Rc<crate::assets::iggy::font::Font>>,
     pub stage: Option<Obj>,

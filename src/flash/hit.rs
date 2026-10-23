@@ -105,19 +105,23 @@ pub fn hit_test_point(vm: &Vm, o: &Obj, x: f64, y: f64, shape_flag: bool) -> boo
     hit_tree(vm, o, x, y, true)
 }
 
-/// Leaf display objects under a stage point, in render order.
-pub fn objects_under_point(vm: &Vm, container: &Obj, x: f64, y: f64) -> Vec<Obj> {
+/// Leaf display objects under a stage point, in render order, skipping
+/// children whose hittest flags intersect `mask` (`FUN_14101ef60`).
+pub fn objects_under_point_masked(vm: &Vm, container: &Obj, x: f64, y: f64, mask: u8) -> Vec<Obj> {
     let mut out = Vec::new();
-    fn walk(vm: &Vm, o: &Obj, x: f64, y: f64, out: &mut Vec<Obj>) {
+    fn walk(vm: &Vm, o: &Obj, x: f64, y: f64, mask: u8, out: &mut Vec<Obj>) {
         for c in children(o) {
+            if display_ref(&c).is_some_and(|d| d.hittest & mask != 0) {
+                continue;
+            }
             let (lx, ly) = concatenated(&c).invert().apply(x, y);
             if content_hit(vm, &c, lx, ly, true) {
                 out.push(c.clone());
             }
-            walk(vm, &c, x, y, out);
+            walk(vm, &c, x, y, mask, out);
         }
     }
-    walk(vm, container, x, y, &mut out);
+    walk(vm, container, x, y, mask, &mut out);
     out
 }
 

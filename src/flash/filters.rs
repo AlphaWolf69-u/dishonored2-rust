@@ -83,7 +83,6 @@ pub fn install(vm: &mut Vm) {
             .map(|(f, d)| (*f, if matches!(*f, "inner" | "knockout" | "hideObject") { Value::from(*d != 0.0) } else { Value::from(*d) }))
             .collect();
         s.native = NativeClass { allocate: None, call: None, init: Some(init_fields) };
-        s.methods = vec![("clone", clone as NativeFn)];
         define(vm, s);
     }
     for (name, arrays, fields) in ARRAY_FILTERS {
@@ -92,7 +91,6 @@ pub fn install(vm: &mut Vm) {
         vars.extend(fields.iter().map(|(f, d)| (*f, if *f == "knockout" { Value::from(*d != 0.0) } else { Value::from(*d) })));
         s.vars = vars;
         s.native = NativeClass { allocate: None, call: None, init: Some(init_fields) };
-        s.methods = vec![("clone", clone as NativeFn)];
         define(vm, s);
     }
     let mut s = Spec::new("flash.filters", "BitmapFilterQuality", Some(vm.b().object.clone()));

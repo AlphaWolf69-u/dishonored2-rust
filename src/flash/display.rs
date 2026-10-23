@@ -80,6 +80,14 @@ pub struct Display {
     pub rotation3d: (f64, f64),
     /// Constructed by the timeline but its class constructor has not run.
     pub constructed: bool,
+    /// `IggyFunctions.setHittestProperties` flags (DO byte1 bits 4..6).
+    pub hittest: u8,
+    /// `IggyFunctions.setDepth` (DO +0x194 when 0xbb&0x80).
+    pub custom_depth: Option<f32>,
+    /// Cleared by `setObjectAntialiasingEnable(obj, false)` (0xbb&0x40).
+    pub antialiasing: bool,
+    /// A game texture bound by `IggyFunctions.setTextureForBitmap` (DO +0x148).
+    pub game_texture: Option<String>,
 }
 
 impl Display {
@@ -121,6 +129,10 @@ impl Display {
             z: 0.0,
             rotation3d: (0.0, 0.0),
             constructed: true,
+            hittest: 0,
+            custom_depth: None,
+            antialiasing: true,
+            game_texture: None,
         }
     }
 
@@ -366,19 +378,6 @@ fn container_methods() -> Vec<(&'static str, NativeFn)> {
             detach(vm, &c)?;
             Ok(Value::Object(c))
         }),
-        ("removeChildren", |vm, this, a| {
-            let p = this_obj(vm, this)?;
-            let kids = children(&p);
-            let begin = vm.to_int(&arg(a, 0))?.max(0) as usize;
-            let end = match a.get(1) {
-                Some(v) => (vm.to_int(v)? as i64).min(kids.len() as i64 - 1),
-                None => kids.len() as i64 - 1,
-            };
-            for c in kids.iter().skip(begin).take((end + 1 - begin as i64).max(0) as usize) {
-                detach(vm, c)?;
-            }
-            Ok(Value::Undefined)
-        }),
         ("getChildAt", |vm, this, a| {
             let p = this_obj(vm, this)?;
             let i = vm.to_int(&arg(a, 0))?;
@@ -446,7 +445,8 @@ fn container_methods() -> Vec<(&'static str, NativeFn)> {
             let pt = arg(a, 0);
             let x = super::avm2::builtins::number_property(vm, &pt, "x")?;
             let y = super::avm2::builtins::number_property(vm, &pt, "y")?;
-            let hits = super::hit::objects_under_point(vm, &p, x, y);
+            // Children flagged HITTEST_NO_GET_OBJECTS_UNDER_POINT (2) are skipped.
+            let hits = super::hit::objects_under_point_masked(vm, &p, x, y, 2);
             Ok(Value::Object(vm.array(hits.into_iter().map(Value::Object).collect())))
         }),
     ]
@@ -535,7 +535,6 @@ fn display_getters() -> Vec<(&'static str, NativeFn)> {
             }
         }),
         ("loaderInfo", |_, _, _| Ok(Value::Null)),
-        ("opaqueBackground", |_, _, _| Ok(Value::Null)),
     ]
 }
 
@@ -738,7 +737,6 @@ fn display_setters() -> Vec<(&'static str, NativeFn)> {
             display(&o).unwrap().scroll_rect = rect;
             Ok(Value::Undefined)
         }),
-        ("opaqueBackground", |_, _, _| Ok(Value::Undefined)),
     ]
 }
 
@@ -809,8 +807,6 @@ fn interactive_accessors() -> (Vec<(&'static str, NativeFn)>, Vec<(&'static str,
         ("doubleClickEnabled", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().double_click.into())),
         ("tabEnabled", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().tab_enabled.unwrap_or(false).into())),
         ("tabIndex", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().tab_index.into())),
-        ("focusRect", |_, _, _| Ok(Value::Null)),
-        ("contextMenu", |_, _, _| Ok(Value::Null)),
     ];
     let setters: Vec<(&'static str, NativeFn)> = vec![
         ("mouseEnabled", |vm, this, a| {
@@ -830,8 +826,6 @@ fn interactive_accessors() -> (Vec<(&'static str, NativeFn)>, Vec<(&'static str,
             display(&this_obj(vm, this)?).unwrap().tab_index = v;
             Ok(Value::Undefined)
         }),
-        ("focusRect", |_, _, _| Ok(Value::Undefined)),
-        ("contextMenu", |_, _, _| Ok(Value::Undefined)),
     ];
     (getters, setters)
 }
@@ -856,17 +850,12 @@ fn sprite_accessors() -> (Vec<(&'static str, NativeFn)>, Vec<(&'static str, Nati
     let getters: Vec<(&'static str, NativeFn)> = vec![
         ("graphics", graphics_getter),
         ("buttonMode", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().button_mode.into())),
-        ("useHandCursor", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().use_hand_cursor.into())),
         ("hitArea", |_, _, _| Ok(Value::Null)),
         ("dropTarget", |_, _, _| Ok(Value::Null)),
     ];
     let setters: Vec<(&'static str, NativeFn)> = vec![
         ("buttonMode", |vm, this, a| {
             display(&this_obj(vm, this)?).unwrap().button_mode = arg(a, 0).to_boolean();
-            Ok(Value::Undefined)
-        }),
-        ("useHandCursor", |vm, this, a| {
-            display(&this_obj(vm, this)?).unwrap().use_hand_cursor = arg(a, 0).to_boolean();
             Ok(Value::Undefined)
         }),
         ("hitArea", |_, _, _| Ok(Value::Undefined)),

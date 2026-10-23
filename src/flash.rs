@@ -8,6 +8,9 @@ pub mod filters;
 pub mod geom;
 pub mod graphics;
 pub mod hit;
+pub mod iggy_functions;
+pub mod native_decl;
+pub mod native_table;
 pub mod player;
 pub mod text;
 pub mod text_layout;
@@ -41,6 +44,8 @@ pub struct Native {
     pub target_value: Option<Value>,
     /// Bitmap smoothing.
     pub flag: bool,
+    /// Native fields reached through Iggy's shared field accessors.
+    pub fields: std::collections::HashMap<u32, Value>,
 }
 
 /// `flash.utils.getTimer`: milliseconds since the VM (player) was created.
@@ -85,6 +90,8 @@ pub fn install(vm: &mut Vm) {
     filters::install(vm);
     transform::install(vm);
     utils::install(vm);
+    iggy_functions::install(vm);
+    avm2::builtins::finish_table(vm);
 }
 
 /// A running Iggy movie with its libraries.

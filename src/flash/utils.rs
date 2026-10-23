@@ -134,7 +134,7 @@ pub fn install(vm: &mut Vm) {
 
     let object = vm.b().object.clone();
     let mut s = Spec::new("flash.external", "ExternalInterface", Some(object.clone()));
-    s.static_getters = vec![("available", |_, _, _| Ok(true.into())), ("objectID", |_, _, _| Ok(Value::Null))];
+
     s.statics = vec![
         ("call", |vm, _, a| {
             let name = vm.to_string(&arg(a, 0))?.to_string();
@@ -150,7 +150,6 @@ pub fn install(vm: &mut Vm) {
 
     let mut s = Spec::new("flash.system", "Capabilities", Some(object.clone()));
     s.static_getters = vec![
-        ("isDebugger", |_, _, _| Ok(false.into())),
         ("os", |_, _, _| Ok("Windows".into())),
         ("playerType", |_, _, _| Ok("StandAlone".into())),
         ("version", |_, _, _| Ok("WIN 11,0,0,0".into())),
@@ -160,17 +159,14 @@ pub fn install(vm: &mut Vm) {
     ];
     define(vm, s);
 
-    let mut s = Spec::new("flash.ui", "Mouse", Some(object.clone()));
-    s.statics = vec![("hide", |_, _, _| Ok(Value::Undefined)), ("show", |_, _, _| Ok(Value::Undefined))];
+    let s = Spec::new("flash.ui", "Mouse", Some(object.clone()));
     define(vm, s);
 
     let mut s = Spec::new("flash.ui", "Keyboard", Some(object.clone()));
     s.constants = KEYS.iter().map(|(k, v)| (*k, Value::from(*v))).collect();
-    s.static_getters = vec![("capsLock", |_, _, _| Ok(false.into())), ("numLock", |_, _, _| Ok(false.into()))];
     define(vm, s);
 
     let mut s = Spec::new("flash.system", "System", Some(object));
-    s.static_getters = vec![("totalMemory", |_, _, _| Ok(0.into()))];
     s.statics = vec![("gc", |_, _, _| Ok(Value::Undefined))];
     define(vm, s);
 }

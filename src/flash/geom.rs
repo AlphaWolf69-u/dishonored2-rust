@@ -191,14 +191,6 @@ fn point_methods() -> Vec<(&'static str, NativeFn)> {
             set_num(vm, this, "y", y + dy)?;
             Ok(Value::Undefined)
         }),
-        ("setTo", |vm, this, a| init_vars(vm, this, a, &[("x", 0.0), ("y", 0.0)])),
-        ("copyFrom", |vm, this, a| {
-            let o = arg(a, 0);
-            let (x, y) = (num(vm, &o, "x")?, num(vm, &o, "y")?);
-            set_num(vm, this, "x", x)?;
-            set_num(vm, this, "y", y)?;
-            Ok(Value::Undefined)
-        }),
         ("toString", |vm, this, _| {
             let (x, y) = (num(vm, this, "x")?, num(vm, this, "y")?);
             Ok(format!("(x={}, y={})", value::number_to_string(x), value::number_to_string(y)).into())
@@ -292,12 +284,6 @@ fn rectangle_methods() -> Vec<(&'static str, NativeFn)> {
             let (x0, y0) = (r[0].min(o[0]), r[1].min(o[1]));
             let (x1, y1) = ((r[0] + r[2]).max(o[0] + o[2]), (r[1] + r[3]).max(o[1] + o[3]));
             new_rectangle(vm, x0, y0, x1 - x0, y1 - y0)
-        }),
-        ("setTo", |vm, this, a| init_vars(vm, this, a, &[("x", 0.0), ("y", 0.0), ("width", 0.0), ("height", 0.0)])),
-        ("copyFrom", |vm, this, a| {
-            let o = rect(vm, &arg(a, 0))?;
-            set_rect(vm, this, o)?;
-            Ok(Value::Undefined)
         }),
         ("toString", |vm, this, _| {
             let r = rect(vm, this)?;
@@ -431,12 +417,6 @@ fn matrix_methods() -> Vec<(&'static str, NativeFn)> {
             let p = arg(a, 0);
             let (x, y) = m.apply(num(vm, &p, "x")?, num(vm, &p, "y")?);
             new_point(vm, x, y)
-        }),
-        ("setTo", |vm, this, a| init_vars(vm, this, a, &[("a", 1.0), ("b", 0.0), ("c", 0.0), ("d", 1.0), ("tx", 0.0), ("ty", 0.0)])),
-        ("copyFrom", |vm, this, a| {
-            let m = read_matrix(vm, &arg(a, 0))?;
-            write_matrix(vm, this, &m)?;
-            Ok(Value::Undefined)
         }),
         ("toString", |vm, this, _| {
             let m = read_matrix(vm, this)?;

@@ -9,6 +9,7 @@ pub mod environment;
 pub mod fx;
 pub mod iggy;
 pub mod installation;
+pub mod lang;
 pub mod level;
 pub mod physworld;
 pub mod pnetwork;

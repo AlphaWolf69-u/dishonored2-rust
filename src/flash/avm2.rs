@@ -6,6 +6,7 @@
 pub mod builtins;
 mod interpreter;
 pub mod name;
+pub mod native_class;
 pub mod object;
 pub mod unit;
 pub mod value;
@@ -95,6 +96,10 @@ pub struct Vm {
     /// failure since the last `take_failure_stack`.
     stack: Vec<Rc<str>>,
     pub failure_stack: Option<Vec<Rc<str>>>,
+    /// Native classes built from the Iggy table, by simple name.
+    pub table_classes: HashMap<&'static str, Rc<Class>>,
+    /// Differences between the Rust natives and Iggy's table.
+    pub native_report: Vec<String>,
     pub random: u64,
 }
 
@@ -113,6 +118,8 @@ impl Vm {
             started: std::time::Instant::now(),
             stack: Vec::new(),
             failure_stack: None,
+            table_classes: HashMap::new(),
+            native_report: Vec::new(),
             random: 0x9e37_79b9_7f4a_7c15,
         };
         builtins::install(&mut vm);
@@ -146,6 +153,14 @@ impl Vm {
     pub fn range_error(&mut self, id: u32, message: impl Into<String>) -> Error {
         let class = self.b().range_error.clone();
         self.error_of(class, id, message.into())
+    }
+
+    /// `LAB_1410b38e0`: unimplemented natives throw IllegalOperationError.
+    pub fn illegal_operation(&mut self) -> Error {
+        match self.table_classes.get("IllegalOperationError").cloned() {
+            Some(class) => self.error_of(class, 0, String::new()),
+            None => Error::Internal("IllegalOperationError".into()),
+        }
     }
 
     pub fn argument_error(&mut self, id: u32, message: impl Into<String>) -> Error {
@@ -1066,10 +1081,15 @@ impl Vm {
         self.depth += 1;
         self.stack.push(match &method.kind {
             MethodKind::Bytecode { unit, index } => unit.method_label(*index),
-            MethodKind::Native(_) => method.name.clone(),
+            _ => method.name.clone(),
         });
         let result = match &method.kind {
             MethodKind::Native(f) => f(self, &this, args),
+            MethodKind::Unimplemented(address) => Err(Error::Internal(format!(
+                "Iggy native {} ({address:#x}) is not ported",
+                method.name
+            ))),
+            MethodKind::Field { offset, ty, set } => self.native_field(&this, *offset, ty, *set, args),
             MethodKind::Bytecode { unit, index } => {
                 let (unit, index) = (unit.clone(), *index);
                 interpreter::run(self, &unit, index, this, args, scope, callee)
@@ -1081,6 +1101,32 @@ impl Vm {
         }
         self.stack.pop();
         result
+    }
+
+    /// A native field shared accessor. Number fields are stored as f32 (the
+    /// accessors read and write 32-bit floats), Boolean fields as bytes.
+    fn native_field(&mut self, this: &Value, offset: u32, ty: &str, set: bool, args: &[Value]) -> Result<Value> {
+        let Some(o) = this.as_object() else { return Err(self.type_error(1009, "null receiver")) };
+        if set {
+            let v = args.first().cloned().unwrap_or_default();
+            let v = match ty {
+                "Boolean" => Value::Bool(v.to_boolean()),
+                "Number" => Value::Number(self.to_number(&v)? as f32 as f64),
+                "int" => Value::from(self.to_int(&v)?),
+                "uint" => Value::from(self.to_uint(&v)?),
+                _ => v,
+            };
+            if let Some(mut n) = o.host_mut::<crate::flash::Native>() {
+                n.fields.insert(offset, v);
+            }
+            return Ok(Value::Undefined);
+        }
+        let stored = o.host::<crate::flash::Native>().and_then(|n| n.fields.get(&offset).cloned());
+        Ok(stored.unwrap_or(match ty {
+            "Boolean" => Value::Bool(false),
+            "Number" | "int" | "uint" => Value::Number(0.0),
+            _ => Value::Undefined,
+        }))
     }
 
     /// Resolve a class by qualified name (`getDefinitionByName`).

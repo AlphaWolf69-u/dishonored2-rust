@@ -1,50 +1,44 @@
-//! AS3 top-level classes and functions (ECMA-262 3rd edition library plus
-//! the AS3 additions). Methods live on prototypes as non-enumerable
-//! properties and as `AS3`-namespace traits, matching playerglobal.
+//! AS3 top-level classes and functions. Class shapes (members, namespaces,
+//! constants) come from Iggy's registration table; this module supplies the
+//! Rust ports of the natives.
 use super::name::{Name, Namespace, QName};
+use super::native_class;
 use super::object::{Binding, Class, Kind, Method, NativeClass, NativeFn, Obj, ObjectData, Traits, Vector};
 use super::value::{self, Value};
 use super::{Builtins, Error, Result, Vm};
+use crate::flash::native_decl::{self, ClassDecl, Imp};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-pub const AS3: &str = "http://adobe.com/AS3/2006/builtin";
+pub const AS3: &str = native_class::AS3;
 
-/// Declarative description of a native class.
+/// Rust implementations for one Iggy native class.
 pub struct Spec {
     pub package: &'static str,
     pub name: &'static str,
-    pub base: Option<Rc<Class>>,
     pub sealed: bool,
-    /// Interfaces declare their methods in the `package:Name` namespace.
-    pub interface: bool,
-    pub implements: Vec<Rc<Class>>,
     pub native: NativeClass,
-    /// Instance methods placed on the prototype and as AS3 traits.
+    /// Instance methods (namespace and prototype placement come from the table).
     pub proto: Vec<(&'static str, NativeFn)>,
-    /// Instance accessors (public traits).
     pub getters: Vec<(&'static str, NativeFn)>,
     pub setters: Vec<(&'static str, NativeFn)>,
-    /// Instance methods as public traits (flash.* API style).
     pub methods: Vec<(&'static str, NativeFn)>,
-    /// Public `var` slots with initial values.
+    /// Properties kept in slots by the Rust port.
     pub vars: Vec<(&'static str, Value)>,
-    /// Static methods, accessors and constants.
     pub statics: Vec<(&'static str, NativeFn)>,
     pub static_getters: Vec<(&'static str, NativeFn)>,
+    pub static_setters: Vec<(&'static str, NativeFn)>,
+    /// Constants must match the table, which provides the values.
     pub constants: Vec<(&'static str, Value)>,
 }
 
 impl Spec {
-    pub fn new(package: &'static str, name: &'static str, base: Option<Rc<Class>>) -> Self {
+    pub fn new(package: &'static str, name: &'static str, _base: Option<Rc<Class>>) -> Self {
         Spec {
             package,
             name,
-            base,
             sealed: true,
-            interface: false,
-            implements: Vec::new(),
             native: NativeClass { allocate: None, call: None, init: None },
             proto: Vec::new(),
             getters: Vec::new(),
@@ -53,138 +47,126 @@ impl Spec {
             vars: Vec::new(),
             statics: Vec::new(),
             static_getters: Vec::new(),
+            static_setters: Vec::new(),
             constants: Vec::new(),
         }
     }
 }
 
-fn accessor(traits: &mut Traits, q: QName, get: Option<Rc<Method>>, set: Option<Rc<Method>>) {
-    let entry = traits.bindings.entry(q).or_insert(Binding::Accessor { get: None, set: None });
-    if let Binding::Accessor { get: g, set: s } = entry {
-        if get.is_some() {
-            *g = get;
-        }
-        if set.is_some() {
-            *s = set;
-        }
+fn ctor_init(imp: Imp) -> Option<NativeFn> {
+    match imp {
+        Imp::ThrowIllegalOperation => Some(|vm, _, _| Err(vm.illegal_operation())),
+        Imp::ThrowType => Some(|vm, _, _| Err(vm.type_error(0, ""))),
+        _ => None,
     }
 }
 
-/// Define a native class and register it as a global definition.
+/// Build the Iggy table class `spec.package.spec.name` with Rust natives.
 pub fn define(vm: &mut Vm, spec: Spec) -> Rc<Class> {
-    let mut instance = Traits::default();
-    if let Some(b) = &spec.base {
-        instance.bindings = b.instance.bindings.clone();
-        instance.slots = b.instance.slots.clone();
-    }
-    if instance.slots.is_empty() {
-        instance.slots.push(None);
-    }
-    let as3 = Namespace::package(AS3);
-    for (n, f) in &spec.proto {
-        instance.bindings.insert(QName::new(as3.clone(), n), Binding::Method(Method::native(n, *f)));
-    }
-    let member_ns = if spec.interface {
-        let uri = if spec.package.is_empty() { spec.name.to_string() } else { format!("{}:{}", spec.package, spec.name) };
-        Namespace::Public(uri.into())
-    } else {
-        Namespace::public()
-    };
-    for (n, f) in &spec.methods {
-        instance.bindings.insert(QName::new(member_ns.clone(), n), Binding::Method(Method::native(n, *f)));
-    }
+    // Iggy registers Vector without a package (`FUN_141062630(vm, 0,
+    // "Vector", ...)`); AS3 code names it `__AS3__.vec::Vector`.
+    let decl = native_decl::find(spec.package, spec.name)
+        .or_else(|| (spec.package == "__AS3__.vec").then(|| native_decl::find("", spec.name)).flatten())
+        .unwrap_or_else(|| panic!("{}.{} is not an Iggy native class", spec.package, spec.name));
+    build_class(vm, decl, spec)
+}
+
+pub fn build_class(vm: &mut Vm, decl: &'static ClassDecl, spec: Spec) -> Rc<Class> {
+    let base = (!decl.base.is_empty()).then(|| {
+        vm.table_classes
+            .get(decl.base)
+            .cloned()
+            .unwrap_or_else(|| panic!("base {} of {} is not built yet", decl.base, decl.name))
+    });
+    let class_instance = vm.builtins.as_ref().map(|b| b.class.instance.clone());
+    let mut report = Vec::new();
+    let built = native_class::build(decl, &spec, base.as_ref().map(|b| &*b.instance), class_instance.as_deref(), &mut report);
+    let interfaces: Vec<Rc<Class>> = decl.interfaces.iter().filter_map(|n| vm.table_classes.get(n).cloned()).collect();
+    let mut instance = built.instance;
     // Interface names alias the public implementation, as for ABC classes.
-    for iface in &spec.implements {
+    for iface in &interfaces {
         for q in iface.instance.bindings.keys() {
             if let Some(b) = instance.bindings.get(&QName::public(&q.name)).cloned() {
                 instance.bindings.entry(q.clone()).or_insert(b);
             }
         }
     }
-    for (n, f) in &spec.getters {
-        accessor(&mut instance, QName::public(n), Some(Method::native(n, *f)), None);
+    let init = spec.native.init.or_else(|| ctor_init(decl.ctor));
+    if spec.native.init.is_none() && spec.native.allocate.is_none() {
+        if let Imp::Native(address) = decl.ctor {
+            report.push(format!("{}.{}: constructor {address:#x} is not ported", decl.package, decl.name));
+        }
     }
-    for (n, v) in &spec.vars {
-        let id = instance.slots.len() as u32;
-        instance.slots.push(Some(super::object::Slot {
-            name: QName::public(n),
-            type_name: 0,
-            unit: None,
-            default: v.clone(),
-            constant: false,
-        }));
-        instance.bindings.insert(QName::public(n), Binding::Slot(id));
-    }
-    for (n, f) in &spec.setters {
-        accessor(&mut instance, QName::public(n), None, Some(Method::native(n, *f)));
-    }
-    // Class objects are Class instances: statics extend its traits.
-    let mut statics = Traits::default();
-    if let Some(b) = &vm.builtins {
-        statics.bindings = b.class.instance.bindings.clone();
-    }
-    statics.slots.push(None);
-    for (n, f) in &spec.statics {
-        statics.bindings.insert(QName::public(n), Binding::Method(Method::native(n, *f)));
-    }
-    for (n, f) in &spec.static_getters {
-        accessor(&mut statics, QName::public(n), Some(Method::native(n, *f)), None);
-    }
-    for (n, v) in &spec.constants {
-        let id = statics.slots.len() as u32;
-        statics.slots.push(Some(super::object::Slot {
-            name: QName::public(n),
-            type_name: 0,
-            unit: None,
-            default: v.clone(),
-            constant: true,
-        }));
-        statics.bindings.insert(QName::public(n), Binding::Slot(id));
-    }
-    let name = QName::new(Namespace::package(spec.package), spec.name);
+    vm.native_report.extend(report);
+    let name = QName::new(Namespace::package(spec.package), decl.name);
     let class = Rc::new(Class {
         name: name.clone(),
-        super_class: spec.base.clone(),
-        interfaces: spec.implements.clone(),
+        super_class: base,
+        interfaces,
         instance: Rc::new(instance),
-        statics: Rc::new(statics),
+        statics: Rc::new(built.statics),
         instance_init: None,
         sealed: spec.sealed,
-        interface: spec.interface,
-        native: Some(spec.native),
+        interface: decl.interface,
+        native: Some(NativeClass { allocate: spec.native.allocate, call: spec.native.call, init }),
         object: RefCell::default(),
         prototype: RefCell::default(),
         scope: RefCell::default(),
         applied: None,
     });
     let object = vm.finish_class(&class, Rc::new([]));
-    for (n, f) in &spec.proto {
-        let func = vm.native_function(n, *f);
-        let proto = class.prototype();
-        let mut p = proto.borrow_mut();
-        p.dynamic.set((*n).into(), Value::Object(func));
-        p.dynamic.set_enumerable(n, false);
-    }
+    install_proto(vm, &class, built.proto);
     vm.natives.insert(name, Value::Object(object));
+    vm.table_classes.insert(decl.name, class.clone());
     class
 }
 
-/// Bootstrap a class before `Class`/`Object` exist (their objects are fixed up).
-fn bootstrap(name: &str, base: Option<Rc<Class>>, sealed: bool, native: NativeClass, mut instance: Traits) -> Rc<Class> {
-    instance.slots.push(None);
-    if let Some(b) = &base {
-        for (q, binding) in &b.instance.bindings {
-            instance.bindings.entry(q.clone()).or_insert_with(|| binding.clone());
+fn install_proto(vm: &mut Vm, class: &Rc<Class>, proto: Vec<(&'static str, Rc<Method>)>) {
+    for (n, m) in proto {
+        let func = vm.function(m, Rc::new([]), None);
+        let p = class.prototype();
+        let mut p = p.borrow_mut();
+        p.dynamic.set(n.into(), Value::Object(func));
+        p.dynamic.set_enumerable(n, false);
+    }
+}
+
+/// Create every table class no module defined (constant holders and
+/// classes whose members are all trivial or unported).
+pub fn finish_table(vm: &mut Vm) {
+    for decl in crate::flash::native_table::CLASSES {
+        if native_decl::is_pseudo(decl) || vm.table_classes.contains_key(decl.name) {
+            continue;
+        }
+        build_class(vm, decl, Spec::new(decl.package, decl.name, None));
+    }
+    // Global functions: Rust ports must match Iggy's global table.
+    let globals = native_decl::globals();
+    for m in globals.members {
+        let q = QName::new(Namespace::package(m.package), m.name);
+        if !vm.natives.contains_key(&q) {
+            match m.imp {
+                Imp::Native(address) => {
+                    let method = Rc::new(Method { name: m.name.into(), kind: super::object::MethodKind::Unimplemented(address), owner: RefCell::default() });
+                    let f = vm.function(method, Rc::new([]), None);
+                    vm.natives.insert(q, Value::Object(f));
+                }
+                _ => {
+                    vm.natives.insert(q, native_class::constant(m.value));
+                }
+            }
         }
     }
-    let mut statics = Traits::default();
-    statics.slots.push(None);
+}
+
+/// Bootstrap one of Object/Class/Function before `Class` exists.
+fn bootstrap(decl: &'static ClassDecl, base: Option<Rc<Class>>, native: NativeClass, built: native_class::Built, sealed: bool) -> Rc<Class> {
     Rc::new(Class {
-        name: QName::public(name),
+        name: QName::public(decl.name),
         super_class: base,
         interfaces: Vec::new(),
-        instance: Rc::new(instance),
-        statics: Rc::new(statics),
+        instance: Rc::new(built.instance),
+        statics: Rc::new(built.statics),
         instance_init: None,
         sealed,
         interface: false,
@@ -200,15 +182,27 @@ fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).cloned().unwrap_or_default()
 }
 
-fn none() -> NativeClass {
-    NativeClass { allocate: None, call: None, init: None }
-}
 
 pub fn install(vm: &mut Vm) {
     // Object, Function and Class reference each other; build them first.
-    let object = bootstrap("Object", None, false, NativeClass { allocate: None, call: Some(object_call), init: None }, object_traits());
-    let class = bootstrap("Class", Some(object.clone()), false, none(), Traits::default());
-    let function = bootstrap("Function", Some(object.clone()), false, none(), function_traits());
+    let find = |n: &str| native_decl::find("", n).unwrap();
+    let mut report = Vec::new();
+    let mut object_spec = Spec::new("", "Object", None);
+    object_spec.proto = object_methods().to_vec();
+    let built = native_class::build(find("Object"), &object_spec, None, None, &mut report);
+    let object_instance = built.instance.clone();
+    let mut built = built;
+    built.statics.bindings.extend(object_instance.bindings.clone());
+    let object_proto = std::mem::take(&mut built.proto);
+    let object = bootstrap(find("Object"), None, NativeClass { allocate: None, call: Some(object_call), init: None }, built, false);
+    let mut built = native_class::build(find("Class"), &Spec::new("", "Class", None), Some(&object.instance), Some(&object_instance), &mut report);
+    built.statics.bindings.extend(object_instance.bindings.clone());
+    let class = bootstrap(find("Class"), Some(object.clone()), NativeClass { allocate: None, call: None, init: None }, built, false);
+    let mut function_spec = Spec::new("", "Function", None);
+    function_spec.methods = function_methods().to_vec();
+    let built = native_class::build(find("Function"), &function_spec, Some(&object.instance), Some(&class.instance), &mut report);
+    let function = bootstrap(find("Function"), Some(object.clone()), NativeClass { allocate: None, call: None, init: None }, built, false);
+    vm.native_report.extend(report);
     for c in [&object, &class, &function] {
         let proto_parent = c.super_class.as_ref().map(|s| s.prototype());
         let proto = Obj::new(ObjectData::plain(proto_parent));
@@ -226,6 +220,7 @@ pub fn install(vm: &mut Vm) {
         c.prototype().borrow_mut().dynamic.set_enumerable("constructor", false);
         *c.object.borrow_mut() = Some(o.clone());
         vm.natives.insert(c.name.clone(), Value::Object(o));
+        vm.table_classes.insert(match c.name.name.as_ref() { "Object" => "Object", "Class" => "Class", _ => "Function" }, c.clone());
     }
     // Placeholder builtins so later definitions can create functions/arrays.
     let placeholder = object.clone();
@@ -249,7 +244,7 @@ pub fn install(vm: &mut Vm) {
         range_error: placeholder.clone(),
         argument_error: placeholder,
     });
-    install_object_methods(vm, &object, &function);
+    install_proto(vm, &object, object_proto);
 
     let mut s = Spec::new("", "Array", Some(object.clone()));
     s.sealed = false;
@@ -290,27 +285,24 @@ pub fn install(vm: &mut Vm) {
 
     let mut s = Spec::new("", "int", Some(object.clone()));
     s.native = NativeClass { allocate: None, call: Some(int_call), init: Some(primitive_init::<2>) };
-    s.proto = number_methods();
     s.constants = vec![("MAX_VALUE", i32::MAX.into()), ("MIN_VALUE", i32::MIN.into())];
     let int = define(vm, s);
     vm.builtins.as_mut().unwrap().int = int;
 
     let mut s = Spec::new("", "uint", Some(object.clone()));
     s.native = NativeClass { allocate: None, call: Some(uint_call), init: Some(primitive_init::<3>) };
-    s.proto = number_methods();
     s.constants = vec![("MAX_VALUE", u32::MAX.into()), ("MIN_VALUE", 0.into())];
     let uint = define(vm, s);
     vm.builtins.as_mut().unwrap().uint = uint;
 
     let mut s = Spec::new("", "Boolean", Some(object.clone()));
     s.native = NativeClass { allocate: None, call: Some(boolean_call), init: Some(primitive_init::<4>) };
-    s.proto = vec![("toString", boolean_to_string), ("valueOf", boolean_value_of)];
+    s.proto = vec![("toString", boolean_to_string)];
     let boolean = define(vm, s);
     vm.builtins.as_mut().unwrap().boolean = boolean;
 
     let mut s = Spec::new("", "Namespace", Some(object.clone()));
     s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Namespace(Namespace::public()))), call: None, init: Some(namespace_init) };
-    s.getters = vec![("uri", namespace_uri), ("prefix", |_, _, _| Ok(Value::Undefined))];
     s.proto = vec![("toString", namespace_uri)];
     let namespace = define(vm, s);
     vm.builtins.as_mut().unwrap().namespace = namespace;
@@ -319,31 +311,26 @@ pub fn install(vm: &mut Vm) {
     s.sealed = false;
     s.native = NativeClass { allocate: None, call: Some(error_call), init: Some(error_init) };
     s.proto = vec![("toString", error_to_string)];
-    s.methods = vec![("getStackTrace", |_, _, _| Ok(Value::Null))];
-    s.getters = vec![("errorID", error_id)];
+    s.vars = vec![("message", "".into()), ("name", "Error".into())];
     let error = define(vm, s);
-    error.prototype().borrow_mut().dynamic.set("name".into(), "Error".into());
-    error.prototype().borrow_mut().dynamic.set("message".into(), "".into());
     vm.builtins.as_mut().unwrap().error = error.clone();
     let mut errors = HashMap::new();
+    // Iggy's error classes (all top-level, `FUN_14104cc40`).
     for name in [
-        "TypeError",
-        "ReferenceError",
-        "RangeError",
         "ArgumentError",
-        "VerifyError",
-        "SecurityError",
-        "SyntaxError",
-        "EvalError",
-        "URIError",
         "DefinitionError",
-        "UninitializedError",
+        "IllegalOperationError",
+        "RangeError",
+        "ReferenceError",
+        "StackOverflowError",
+        "TypeError",
+        "VerifyError",
+        "EOFError",
     ] {
         let mut s = Spec::new("", name, Some(error.clone()));
         s.sealed = false;
         s.native = NativeClass { allocate: None, call: Some(error_call), init: Some(error_init) };
         let c = define(vm, s);
-        c.prototype().borrow_mut().dynamic.set("name".into(), name.into());
         errors.insert(name, c);
     }
     {
@@ -359,7 +346,7 @@ pub fn install(vm: &mut Vm) {
     s.native = NativeClass { allocate: Some(vector_alloc), call: None, init: Some(vector_init) };
     s.proto = vector_methods();
     s.getters = vec![("length", vector_length), ("fixed", vector_fixed)];
-    s.setters = vec![("length", vector_set_length), ("fixed", vector_set_fixed)];
+    s.setters = vec![("length", vector_set_length)];
     let vector = define(vm, s);
     vm.builtins.as_mut().unwrap().vector = vector;
 
@@ -372,15 +359,16 @@ pub fn install(vm: &mut Vm) {
 
     let mut math = Spec::new("", "Math", Some(object.clone()));
     math.statics = math_functions();
-    math.constants = vec![
-        ("E", std::f64::consts::E.into()),
-        ("LN10", std::f64::consts::LN_10.into()),
-        ("LN2", std::f64::consts::LN_2.into()),
-        ("LOG10E", std::f64::consts::LOG10_E.into()),
-        ("LOG2E", std::f64::consts::LOG2_E.into()),
-        ("PI", std::f64::consts::PI.into()),
-        ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2.into()),
-        ("SQRT2", std::f64::consts::SQRT_2.into()),
+    // Iggy exposes these as static getters (FUN_1410ae9d0..FUN_1410aeb20).
+    math.static_getters = vec![
+        ("E", |_, _, _| Ok(std::f64::consts::E.into())),
+        ("LN10", |_, _, _| Ok(std::f64::consts::LN_10.into())),
+        ("LN2", |_, _, _| Ok(std::f64::consts::LN_2.into())),
+        ("LOG10E", |_, _, _| Ok(std::f64::consts::LOG10_E.into())),
+        ("LOG2E", |_, _, _| Ok(std::f64::consts::LOG2_E.into())),
+        ("PI", |_, _, _| Ok(std::f64::consts::PI.into())),
+        ("SQRT1_2", |_, _, _| Ok(std::f64::consts::FRAC_1_SQRT_2.into())),
+        ("SQRT2", |_, _, _| Ok(std::f64::consts::SQRT_2.into())),
     ];
     define(vm, math);
 
@@ -448,18 +436,8 @@ fn object_call(vm: &mut Vm, _: &Value, args: &[Value]) -> Result<Value> {
     Ok(if v.is_nullish() { Value::Object(vm.plain_object()) } else { v })
 }
 
-/// Object's AS3-namespace instance methods (Iggy registers these three
-/// with `FUN_14104c470` as well as on `Object.prototype`).
-fn object_traits() -> Traits {
-    let mut t = Traits::default();
-    let as3 = Namespace::package(AS3);
-    for (n, f) in object_methods().into_iter().take(3) {
-        t.bindings.insert(QName::new(as3.clone(), n), Binding::Method(Method::native(n, f)));
-    }
-    t
-}
-
-fn object_methods() -> [(&'static str, NativeFn); 7] {
+/// Ports of Object's natives (AS3 traits and `Object.prototype`).
+fn object_methods() -> [(&'static str, NativeFn); 4] {
     [
         ("hasOwnProperty", |vm, this, a| {
             let name = vm.to_string(&arg(a, 0))?;
@@ -489,28 +467,13 @@ fn object_methods() -> [(&'static str, NativeFn); 7] {
             let name = vm.to_string(&arg(a, 0))?;
             Ok(this.as_object().is_some_and(|o| o.borrow().dynamic.is_enumerable(&name)).into())
         }),
-        ("setPropertyIsEnumerable", |vm, this, a| {
-            let name = vm.to_string(&arg(a, 0))?;
-            if let Some(o) = this.as_object() {
-                o.borrow_mut().dynamic.set_enumerable(&name, arg(a, 1).to_boolean());
-            }
-            Ok(Value::Undefined)
-        }),
         ("toString", object_to_string),
-        ("toLocaleString", object_to_string),
-        ("valueOf", |_, this, _| Ok(this.clone())),
     ]
 }
 
-fn install_object_methods(vm: &mut Vm, object: &Rc<Class>, function: &Rc<Class>) {
-    let methods = object_methods();
-    let proto = object.prototype();
-    for (n, f) in methods {
-        let func = vm.native_function(n, f);
-        proto.borrow_mut().dynamic.set(n.into(), Value::Object(func));
-        proto.borrow_mut().dynamic.set_enumerable(n, false);
-    }
-    let fmethods: [(&str, NativeFn); 3] = [
+/// Ports of Function's AS3 natives.
+fn function_methods() -> [(&'static str, NativeFn); 2] {
+    [
         ("call", |vm, this, a| {
             let receiver = arg(a, 0);
             vm.call(this, receiver, a.get(1..).unwrap_or_default())
@@ -527,34 +490,7 @@ fn install_object_methods(vm: &mut Vm, object: &Rc<Class>, function: &Rc<Class>)
             };
             vm.call(this, receiver, &list)
         }),
-        ("toString", |_, _, _| Ok("function Function() {}".into())),
-    ];
-    let fproto = function.prototype();
-    for (n, f) in fmethods {
-        let func = vm.native_function(n, f);
-        fproto.borrow_mut().dynamic.set(n.into(), Value::Object(func));
-        fproto.borrow_mut().dynamic.set_enumerable(n, false);
-    }
-}
-
-/// `Function.length`: the declared parameter count.
-fn function_traits() -> Traits {
-    let mut t = Traits::default();
-    accessor(
-        &mut t,
-        QName::public("length"),
-        Some(Method::native("length", |_, this, _| {
-            let Some(o) = this.as_object() else { return Ok(0.into()) };
-            let d = o.borrow();
-            let Kind::Function(f) = &d.kind else { return Ok(0.into()) };
-            Ok(match &f.method.kind {
-                super::object::MethodKind::Bytecode { unit, index } => (unit.abc.methods[*index as usize].params.len() as u32).into(),
-                super::object::MethodKind::Native(_) => 0.into(),
-            })
-        })),
-        None,
-    );
-    t
+    ]
 }
 
 fn object_to_string(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
@@ -1030,18 +966,11 @@ fn vector_fixed(_: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
     Ok(this.as_object().is_some_and(|o| matches!(&o.borrow().kind, Kind::Vector(v) if v.fixed)).into())
 }
 
-fn vector_set_fixed(_: &mut Vm, this: &Value, a: &[Value]) -> Result<Value> {
-    if let Some(o) = this.as_object() {
-        if let Kind::Vector(v) = &mut o.borrow_mut().kind {
-            v.fixed = arg(a, 0).to_boolean();
-        }
-    }
-    Ok(Value::Undefined)
-}
 
 fn vector_methods() -> Vec<(&'static str, NativeFn)> {
     // Vector shares Array's generic algorithms over its item list.
-    array_methods().into_iter().filter(|(n, _)| *n != "sortOn").collect()
+    // Iggy's Vector.map is a stub returning undefined.
+    array_methods().into_iter().filter(|(n, _)| !matches!(*n, "sortOn" | "map")).collect()
 }
 
 // ---- String ----
@@ -1219,8 +1148,6 @@ fn string_methods() -> Vec<(&'static str, NativeFn)> {
             let t = vm.to_string(&arg(a, 0))?;
             Ok((s.cmp(&t) as i32).into())
         }),
-        ("toString", |vm, this, _| Ok(Value::String(this_string(vm, this)?))),
-        ("valueOf", |vm, this, _| Ok(Value::String(this_string(vm, this)?))),
     ]
 }
 
@@ -1278,7 +1205,6 @@ fn number_methods() -> Vec<(&'static str, NativeFn)> {
             }
             .into())
         }),
-        ("valueOf", |vm, this, _| Ok(this_number(vm, this)?.into())),
     ]
 }
 
@@ -1293,16 +1219,6 @@ fn boolean_to_string(_: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
     .into())
 }
 
-fn boolean_value_of(_: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
-    Ok(match this {
-        Value::Object(o) => match &o.borrow().kind {
-            Kind::Primitive(p) => p.to_boolean(),
-            _ => false,
-        },
-        v => v.to_boolean(),
-    }
-    .into())
-}
 
 // ---- Namespace ----
 
@@ -1334,27 +1250,24 @@ fn error_call(vm: &mut Vm, this: &Value, a: &[Value]) -> Result<Value> {
     vm.construct_class(&class, a)
 }
 
+/// Error constructor (port pending the native's trace): stores the message
+/// and the native error class name. `errorID` is Iggy's constant 1.
 fn error_init(vm: &mut Vm, this: &Value, a: &[Value]) -> Result<Value> {
     let message = match a.first() {
         Some(Value::Undefined) | None => "".into(),
         Some(v) => vm.to_string(v)?,
     };
-    let id = match a.get(1) {
-        Some(v) => vm.to_int(v)?,
-        None => 0,
-    };
-    if let Some(o) = this.as_object() {
-        let mut d = o.borrow_mut();
-        d.dynamic.set("message".into(), Value::String(message));
-        d.dynamic.set_enumerable("message", false);
-        d.dynamic.set("$errorID".into(), id.into());
-        d.dynamic.set_enumerable("$errorID", false);
+    let mut class = this.as_object().and_then(Obj::class);
+    while let Some(c) = &class {
+        if c.native.is_some() {
+            break;
+        }
+        class = c.super_class.clone();
     }
+    let name = class.map_or_else(|| "Error".into(), |c| c.name.name.clone());
+    vm.set_property(this, &Name::public("message"), Value::String(message))?;
+    vm.set_property(this, &Name::public("name"), Value::String(name))?;
     Ok(Value::Undefined)
-}
-
-fn error_id(_: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {
-    Ok(this.as_object().and_then(|o| o.borrow().dynamic.get("$errorID").cloned()).unwrap_or(0.into()))
 }
 
 fn error_to_string(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> {

@@ -238,6 +238,7 @@ fn setters() -> Vec<(&'static str, NativeFn)> {
     vec![
         ("text", |vm, this, a| {
             let s = vm.to_string(&arg(a, 0))?.to_string();
+            let s = super::iggy_functions::substitute(vm, &s);
             with(vm, this, |t| {
                 t.text = s;
                 t.html = None;
@@ -246,6 +247,7 @@ fn setters() -> Vec<(&'static str, NativeFn)> {
         }),
         ("htmlText", |vm, this, a| {
             let s = vm.to_string(&arg(a, 0))?.to_string();
+            let s = super::iggy_functions::substitute(vm, &s);
             with(vm, this, |t| {
                 t.text = html_to_text(&s);
                 t.html = Some(s);
@@ -370,7 +372,7 @@ pub fn install(vm: &mut Vm) {
     s.vars = fields
         .iter()
         .map(|f| (*f, Value::Null))
-        .chain(["letterSpacing", "kerning", "blockIndent", "bullet", "tabStops", "display"].iter().map(|f| (*f, Value::Null)))
+        .chain(["letterSpacing", "kerning", "blockIndent", "bullet", "tabStops"].iter().map(|f| (*f, Value::Null)))
         .collect();
     s.native = NativeClass {
         allocate: None,
@@ -409,12 +411,12 @@ pub fn install(vm: &mut Vm) {
         Ok(name.map(Value::from).unwrap_or(Value::Null))
     }), ("fontStyle", |_, _, _| Ok("regular".into())), ("fontType", |_, _, _| Ok("embedded".into()))];
     s.methods = vec![("hasGlyphs", |_, _, _| Ok(true.into()))];
-    s.statics = vec![("registerFont", |_, _, _| Ok(Value::Undefined)), ("enumerateFonts", |vm, _, _| Ok(Value::Object(vm.array(Vec::new()))))];
+    s.statics = vec![("enumerateFonts", |vm, _, _| Ok(Value::Object(vm.array(Vec::new()))))];
     define(vm, s);
 
     for (name, constants) in [
         ("TextFieldAutoSize", &[("NONE", "none"), ("LEFT", "left"), ("RIGHT", "right"), ("CENTER", "center")][..]),
-        ("TextFormatAlign", &[("LEFT", "left"), ("RIGHT", "right"), ("CENTER", "center"), ("JUSTIFY", "justify"), ("START", "start"), ("END", "end")][..]),
+        ("TextFormatAlign", &[("LEFT", "left"), ("RIGHT", "right"), ("CENTER", "center"), ("JUSTIFY", "justify")][..]),
         ("TextFieldType", &[("DYNAMIC", "dynamic"), ("INPUT", "input")][..]),
         ("AntiAliasType", &[("NORMAL", "normal"), ("ADVANCED", "advanced")][..]),
     ] {

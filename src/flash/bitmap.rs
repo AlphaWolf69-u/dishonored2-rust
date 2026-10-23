@@ -71,21 +71,7 @@ pub fn install(vm: &mut Vm) {
         ("width", |_, this, _| Ok(data_state(this).map_or(0, |s| s.width).into())),
         ("height", |_, this, _| Ok(data_state(this).map_or(0, |s| s.height).into())),
         ("transparent", |_, this, _| Ok(data_state(this).is_some_and(|s| s.transparent).into())),
-        ("rect", |vm, this, _| {
-            let s = data_state(this).unwrap_or_default();
-            super::geom::new_rectangle(vm, 0.0, 0.0, s.width as f64, s.height as f64)
-        }),
     ];
-    s.methods = vec![("dispose", |_, this, _| {
-        if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
-            if let Some(s) = n.bitmap_data.as_mut() {
-                s.disposed = true;
-                s.width = 0;
-                s.height = 0;
-            }
-        }
-        Ok(Value::Undefined)
-    })];
     define(vm, s);
 
     let display_object = native_class(vm, "flash.display", "DisplayObject");

@@ -72,6 +72,20 @@ pub fn game_base() -> io::Result<PathBuf> {
         "cannot locate installed Dishonored 2 (Steam 403640); set DH2_GAME_BASE to its base directory"))
 }
 
+/// The game language Steam selected for AppID 403640 (`UserConfig`
+/// `language` in the app manifest next to the installation), which the game
+/// uses for its string tables and localized UI libraries.
+pub fn game_language(base: &Path) -> io::Result<String> {
+    let manifest = base
+        .ancestors()
+        .nth(3)
+        .map(|library| library.join("appmanifest_403640.acf"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "game base is not inside a Steam library"))?;
+    let text = fs::read_to_string(&manifest)?;
+    vdf_value(&text, "language")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{} has no language", manifest.display())))
+}
+
 fn quoted_fields(line: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut field = String::new();

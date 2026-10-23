@@ -230,6 +230,10 @@ pub type NativeFn = fn(&mut Vm, &Value, &[Value]) -> Result<Value>;
 pub enum MethodKind {
     Bytecode { unit: Rc<Unit>, index: u32 },
     Native(NativeFn),
+    /// An Iggy native (at this executable address) not yet ported.
+    Unimplemented(u64),
+    /// A native field accessor (`FieldGet`/`FieldSet` table members).
+    Field { offset: u32, ty: &'static str, set: bool },
 }
 
 pub struct Method {
@@ -271,7 +275,7 @@ pub struct Slot {
 }
 
 /// The fixed properties of an object kind.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Traits {
     pub bindings: HashMap<QName, Binding>,
     /// Slot `i` is ABC slot id `i`; index 0 is unused.

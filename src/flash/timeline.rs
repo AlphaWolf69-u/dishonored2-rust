@@ -486,17 +486,11 @@ fn getters() -> Vec<(&'static str, NativeFn)> {
         ("currentFrame", |vm, this, _| Ok(timeline(&this_clip(vm, this)?).map_or(1, |t| t.current.max(1)).into())),
         ("totalFrames", |vm, this, _| Ok(timeline(&this_clip(vm, this)?).map_or(1, |t| t.timeline.frame_count as u32).into())),
         ("framesLoaded", |vm, this, _| Ok(timeline(&this_clip(vm, this)?).map_or(1, |t| t.timeline.frame_count as u32).into())),
-        ("isPlaying", |vm, this, _| Ok(timeline(&this_clip(vm, this)?).is_some_and(|t| t.playing).into())),
         ("enabled", |_, _, _| Ok(true.into())),
         ("currentLabel", |vm, this, _| {
             let Some(t) = timeline(&this_clip(vm, this)?) else { return Ok(Value::Null) };
             let frame = t.current.saturating_sub(1);
             Ok(t.timeline.labels().into_iter().filter(|(_, f)| *f <= frame).last().map(|(n, _)| Value::from(n)).unwrap_or(Value::Null))
-        }),
-        ("currentFrameLabel", |vm, this, _| {
-            let Some(t) = timeline(&this_clip(vm, this)?) else { return Ok(Value::Null) };
-            let frame = t.current.saturating_sub(1);
-            Ok(t.timeline.labels().into_iter().find(|(_, f)| *f == frame).map(|(n, _)| Value::from(n)).unwrap_or(Value::Null))
         }),
         ("currentLabels", |vm, this, _| {
             let labels = timeline(&this_clip(vm, this)?).map(|t| t.timeline.labels()).unwrap_or_default();

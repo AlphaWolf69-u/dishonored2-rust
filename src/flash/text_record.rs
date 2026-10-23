@@ -40,7 +40,10 @@ pub fn init_text(vm: &mut Vm, o: &Obj, file: &IggyFile, id: usize) -> Result<()>
     t.format.leading = r.leading as f64;
     t.format.align = ["left", "right", "center", "justify"].get(r.align as usize).copied().unwrap_or("left").into();
     let html = r.has(edit::HTML);
-    if let Some(text) = r.text {
+    drop(t);
+    let text = r.text.map(|text| super::iggy_functions::substitute(vm, &text));
+    let Some(mut t) = text_state(o) else { return Ok(()) };
+    if let Some(text) = text {
         if html {
             t.text = html_to_text(&text);
             t.html = Some(text);

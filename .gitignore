@@ -18,6 +18,7 @@
 !/knowledge/ExportDecomp.java
 !/analysis/
 !/analysis/shadow_pcf_probe.py
+!/analysis/generate_native_table.py
 !/tests/
 !/tests/render_command_reuse.rs
 !/tests/fixtures/
