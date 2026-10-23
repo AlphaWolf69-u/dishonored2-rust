@@ -67,6 +67,10 @@ name = "level-audit"
 path = "src/bin/level_audit.rs"
 
 [[bin]]
+name = "iggy-audit"
+path = "src/bin/iggy_audit.rs"
+
+[[bin]]
 name = "tome-audit"
 path = "src/bin/tome_audit.rs"
 
