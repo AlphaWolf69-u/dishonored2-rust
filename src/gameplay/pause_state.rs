@@ -1,9 +1,13 @@
 //! `arkGameLogicStatePause`: the data the game writes into the pause movie
 //! and the callbacks it answers (notes: `artifacts/ui-pause/notes-pause-contract.md`).
+use crate::assets::lang::StringTable;
 use crate::flash::avm2::{value::Value, Result};
 use crate::flash::Player;
+use crate::gameplay::options::{self, Effect, Options};
 use crate::platform::bindings::{self, BindableAction, Keyboard};
-use std::path::Path;
+use crate::platform::console::Console;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// The movie the decl `ui/gamelogic/state_pause` loads per player
 /// character (`m_characterDataContents[PLAYER_CORVO/EMILY].m_iggyInfo`).
@@ -68,47 +72,192 @@ pub fn controller_type() -> i32 {
 pub enum Request {
     /// `ResumeGame` (`FUN_14078ca40`): pop the pause state.
     Resume,
+    /// A message box request (`FUN_1408832b0` vfunc +0x70 -> +0x18).
+    MessageBox(options::MessageBox),
+    /// A display setting changed (visuals Update applies the mode).
+    DisplayChanged,
 }
 
-/// `FUN_14002b610`: run the deferred `ExternalInterface` handlers in call
-/// order. Names the game does not register for this file are dropped;
-/// handlers the rewrite cannot perform yet are returned as unhandled.
-pub fn handle_notifications(player: &mut Player, unhandled: &mut Vec<String>) -> std::result::Result<Vec<Request>, String> {
-    let mut requests = Vec::new();
-    for (name, _args) in player.take_notifications() {
-        match name.as_str() {
-            // Global `SetFlashFocus` -> `FUN_140035020`.
-            "SetFlashFocus" => {
-                player
-                    .call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[(controller_type() as f64).into()])
-                    .map_err(|e| format!("_C_UpdateControllerType: {}", player.describe(&e)))?;
-            }
-            "ResumeGame" => requests.push(Request::Resume),
-            // `OnOptionsClicked` has no C++ registration (dropped by the hub).
-            "OnOptionsClicked" => {}
-            _ => unhandled.push(name),
+/// `arkGameLogicStatePause` for one pause: the command state, the options
+/// container (created by pause Init, `FUN_14078eff0`) and the inputs the
+/// writers need.
+pub struct Pause {
+    pub console: Console,
+    pub options: Options,
+    pub keyboard: Keyboard,
+    pub strings: std::rc::Rc<StringTable>,
+    pub profile: BTreeMap<String, String>,
+    pub base: PathBuf,
+    pub state: GameState,
+    /// Where the config save writes `dishonored2Config.cfg`; `None` keeps
+    /// the user's file untouched (diagnostic runs).
+    pub config_path: Option<PathBuf>,
+}
+
+impl Pause {
+    /// Pause Init: the console from the installed and user configs, the
+    /// options sections from their decls, and the difficulty manager.
+    pub fn new(
+        player: &mut Player,
+        catalog: &crate::assets::archive::Catalog,
+        base: &Path,
+        user_config: Option<&str>,
+        state: GameState,
+        config_path: Option<PathBuf>,
+    ) -> std::result::Result<Pause, String> {
+        let mut console = Console::load(base, user_config)?;
+        let mut read = |path: &str| catalog.read(path).ok().flatten();
+        let options = options::read(&mut read, &mut console)?;
+        let strings = player.state.borrow().strings.clone().ok_or("no string table")?;
+        let profile = crate::gameplay::save_list::Saves::locate()
+            .and_then(|s| crate::gameplay::save_list::read_profile(&s.folder))
+            .unwrap_or_default();
+        let mut pause = Pause {
+            console,
+            options,
+            keyboard: Keyboard::default(),
+            strings,
+            profile,
+            base: base.to_path_buf(),
+            state,
+            config_path,
+        };
+        let EnvParts { options, mut env } = pause.env(player);
+        options.start(&mut env);
+        Ok(pause)
+    }
+
+    /// The options' view of the game: the pause state is active, the main
+    /// menu is not, and the current map is a level.
+    fn env<'a>(&'a mut self, player: &'a mut Player) -> EnvParts<'a> {
+        EnvParts {
+            options: &mut self.options,
+            env: options::Env {
+                player,
+                console: &mut self.console,
+                strings: &self.strings,
+                keyboard: &mut self.keyboard,
+                profile: &self.profile,
+                pause_active: true,
+                main_menu_active: false,
+                main_menu_map: false,
+                base: &self.base,
+            },
         }
     }
-    Ok(requests)
+
+    /// OnFlashLoaded (`FUN_14078f170` -> root `FUN_1407898c0`) for the parts
+    /// the rewrite can supply: the bindable actions, then
+    /// `statsEntryAvailable`.
+    pub fn on_flash_loaded(&mut self, player: &mut Player) -> std::result::Result<(), String> {
+        self.write_bindable_actions(player)?;
+        write_stats_available(player, &self.state).map_err(|e| format!("statsEntryAvailable: {}", player.describe(&e)))
+    }
+
+    fn write_bindable_actions(&mut self, player: &mut Player) -> std::result::Result<(), String> {
+        let actions = bindings::bindable_actions(&self.console.bindings, &self.strings, &mut self.keyboard);
+        write_bindable_actions(player, &actions).map_err(|e| format!("bindableActionsData: {}", player.describe(&e)))
+    }
+
+    /// `Show(1)` (`FUN_1404f45a0`): FillData (its last write is
+    /// `optionsData.sections`), then `_C_ShowPauseMenu()` with no arguments.
+    pub fn show(&mut self, player: &mut Player) -> std::result::Result<(), String> {
+        write_entries(player, &self.state).map_err(|e| format!("FillData: {}", player.describe(&e)))?;
+        let EnvParts { options, mut env } = self.env(player);
+        options.write_sections(&mut env)?;
+        player.call_root_method("_C_ShowPauseMenu", &[]).map(|_| ()).map_err(|e| format!("_C_ShowPauseMenu: {}", player.describe(&e)))
+    }
+
+    /// `FUN_14002b610`: run the deferred `ExternalInterface` handlers in
+    /// call order. Names the game does not register for this file are
+    /// dropped; handlers the rewrite cannot perform yet are returned as
+    /// unhandled.
+    pub fn handle_notifications(&mut self, player: &mut Player, unhandled: &mut Vec<String>) -> std::result::Result<Vec<Request>, String> {
+        let mut requests = Vec::new();
+        for (name, args) in player.take_notifications() {
+            match name.as_str() {
+                // Global `SetFlashFocus` -> `FUN_140035020`.
+                "SetFlashFocus" => {
+                    player
+                        .call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[(controller_type() as f64).into()])
+                        .map_err(|e| format!("_C_UpdateControllerType: {}", player.describe(&e)))?;
+                }
+                "ResumeGame" => requests.push(Request::Resume),
+                // `OnOptionsClicked` has no C++ registration (dropped by the hub).
+                "OnOptionsClicked" => {}
+                _ => {
+                    let handled = {
+                        let EnvParts { options, mut env } = self.env(player);
+                        options.handle(&mut env, &name, &args)
+                    };
+                    match handled {
+                        Some(effects) => {
+                            let effects = effects?;
+                            self.apply_effects(player, effects, &mut requests)?;
+                        }
+                        None => unhandled.push(name),
+                    }
+                }
+            }
+        }
+        self.save_if_requested()?;
+        Ok(requests)
+    }
+
+    fn apply_effects(&mut self, player: &mut Player, effects: Vec<Effect>, requests: &mut Vec<Request>) -> std::result::Result<(), String> {
+        for effect in effects {
+            match effect {
+                Effect::MessageBox(b) => requests.push(Request::MessageBox(b)),
+                // `FUN_1406509f0`: the pause state shows bindings.
+                Effect::BindingsChanged => self.write_bindable_actions(player)?,
+                Effect::RefillTutorials => {
+                    let set = |player: &mut Player, path: &str, v: bool| player.set_value(path, v.into());
+                    let st = &self.state;
+                    set(player, "pauseData.hasTutorials", st.new_tutorials + st.read_tutorials != 0)
+                        .and_then(|_| set(player, "pauseData.tutorialsEntry.hasNewElements", st.new_tutorials != 0))
+                        .map_err(|e| format!("tutorials: {}", player.describe(&e)))?;
+                }
+                Effect::DisplayChanged => requests.push(Request::DisplayChanged),
+            }
+        }
+        Ok(())
+    }
+
+    /// The answer of a message box the options asked for.
+    pub fn answer(&mut self, player: &mut Player, answer: u32) -> std::result::Result<Vec<Request>, String> {
+        let effects = {
+            let EnvParts { options, mut env } = self.env(player);
+            options.answer(&mut env, answer)?
+        };
+        let mut requests = Vec::new();
+        self.apply_effects(player, effects, &mut requests)?;
+        self.save_if_requested()?;
+        Ok(requests)
+    }
+
+    /// Pause Update (`FUN_14078ff90`): the options' per-frame work. `pressed`
+    /// is the first engine key pressed this frame.
+    pub fn update(&mut self, player: &mut Player, pressed: Option<u32>) -> std::result::Result<(), String> {
+        let EnvParts { options, mut env } = self.env(player);
+        options.update(&mut env, pressed)
+    }
+
+    /// The profile update after a config save (`FUN_1400d2f10`).
+    fn save_if_requested(&mut self) -> std::result::Result<(), String> {
+        if !std::mem::take(&mut self.options.save_requested) {
+            return Ok(());
+        }
+        match &self.config_path {
+            Some(path) => self.console.save_config(path),
+            None => Ok(()),
+        }
+    }
 }
 
-/// OnFlashLoaded (`FUN_14078f170` -> root `FUN_1407898c0`) for the parts
-/// the rewrite can supply: the bindable actions from the installed and
-/// user configs.
-pub fn on_flash_loaded(
-    player: &mut Player,
-    base: &Path,
-    user_config: Option<&str>,
-    keyboard: &mut Keyboard,
-    state: &GameState,
-) -> std::result::Result<(), String> {
-    let bindings = bindings::game_bindings(base, user_config)?;
-    let strings = player.state.borrow().strings.clone().ok_or("no string table")?;
-    let actions = bindings::bindable_actions(&bindings, &strings, keyboard);
-    write_bindable_actions(player, &actions).map_err(|e| format!("bindableActionsData: {}", player.describe(&e)))?;
-    write_stats_available(player, state).map_err(|e| format!("statsEntryAvailable: {}", player.describe(&e)))
+struct EnvParts<'a> {
+    options: &'a mut Options,
+    env: options::Env<'a>,
 }
-
 /// The game state FillData reads, as far as the rewrite has it. `default()`
 /// is the rewrite's current state: no save writer or loader, no mission,
 /// chapter, tutorial log or statistics components yet.
@@ -246,14 +395,6 @@ pub fn write_entries(player: &mut Player, state: &GameState) -> Result<()> {
     set(player, "pauseData.restartEntry.locked", !state.restart_available)?;
     set(player, "pauseData.optionsEntry.locked", false)?;
     Ok(())
-}
-
-/// `Show(1)` (`FUN_1404f45a0`): FillData, then `_C_ShowPauseMenu()` with no
-/// arguments on the root. Returns whether the call succeeded (the state
-/// retries every frame until it does).
-pub fn show(player: &mut Player, state: &GameState) -> std::result::Result<(), String> {
-    write_entries(player, state).map_err(|e| format!("FillData: {}", player.describe(&e)))?;
-    player.call_root_method("_C_ShowPauseMenu", &[]).map(|_| ()).map_err(|e| format!("_C_ShowPauseMenu: {}", player.describe(&e)))
 }
 
 /// OnFlashLoaded's `pauseData.statsEntryAvailable` (`FUN_14078f170`).

@@ -5,6 +5,7 @@ pub mod frame_profile;
 pub mod bindings;
 pub mod console;
 pub mod cvars;
+pub mod display_modes;
 pub mod game_settings;
 pub mod local_time;
 pub mod process_memory;

@@ -9,7 +9,7 @@
 use dishonored2_rust::assets::{archive::Catalog, installation, lang};
 use dishonored2_rust::flash::{raster, render, Player};
 use dishonored2_rust::gameplay::pause_state;
-use dishonored2_rust::platform::{bindings::Keyboard, game_settings};
+use dishonored2_rust::platform::game_settings;
 use std::env;
 
 fn main() -> Result<(), String> {
@@ -35,23 +35,57 @@ fn run() -> Result<(), String> {
     let (mut player, resources) = Player::load_installed(&catalog, &language, &movie_path)?;
     let frame_rate = player.state.borrow().frame_rate;
     let size = player.state.borrow().stage_size;
+    let mut pause = None;
     if args.iter().any(|a| a == "--pause-state") {
         let user = game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
         // The preview renders at stage size, so the RGB and viewport sizes match.
         let screen = pause_state::screen_size((size.0 as u32, size.1 as u32), (size.0 as u32, size.1 as u32));
         pause_state::file_ready(&mut player, screen)?;
         let state = pause_state::current_state(&player, &language);
-        pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut Keyboard::default(), &state)?;
-        pause_state::show(&mut player, &state)?;
+        // The preview never writes the user's config.
+        let mut p = pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None)?;
+        p.on_flash_loaded(&mut player)?;
+        p.show(&mut player)?;
+        pause = Some(p);
     }
     for call in &calls {
         player.call_root_method(call, &[]).map_err(|e| format!("{call}: {}", player.describe(&e)))?;
     }
+    // Diagnostic input: `--debug-click X,Y@FRAME` clicks the left button at
+    // movie pixel (X, Y); `--debug-notify NAME=NUMBER@FRAME` queues a movie
+    // notification as if the AS3 had sent it; `--debug-key CODE@FRAME`
+    // presses an engine key (the options key capture reads it).
+    let at = |flag: &str| -> Vec<(u32, String)> {
+        args.windows(2)
+            .filter(|w| w[0] == flag)
+            .filter_map(|w| w[1].rsplit_once('@').and_then(|(v, f)| Some((f.parse().ok()?, v.to_string()))))
+            .collect()
+    };
+    let clicks = at("--debug-click");
+    let notifies = at("--debug-notify");
+    let keys = at("--debug-key");
     let mut unhandled = Vec::new();
     for frame in 0..frames {
+        for (_, xy) in clicks.iter().filter(|c| c.0 == frame) {
+            let (x, y) = xy.split_once(',').ok_or("--debug-click X,Y@FRAME")?;
+            let (x, y): (f64, f64) = (x.parse().map_err(|_| "click x")?, y.parse().map_err(|_| "click y")?);
+            player.mouse_move(x, y).map_err(|e| player.describe(&e))?;
+            player.mouse_button(0, true).map_err(|e| player.describe(&e))?;
+            player.mouse_button(0, false).map_err(|e| player.describe(&e))?;
+        }
+        for (_, n) in notifies.iter().filter(|c| c.0 == frame) {
+            let (name, arg) = n.split_once('=').unwrap_or((n.as_str(), ""));
+            let args = arg.parse::<f64>().map(|v| vec![v.into()]).unwrap_or_default();
+            player.state.borrow_mut().notifications.push((name.to_string(), args));
+        }
+        let pressed = keys.iter().find(|k| k.0 == frame).and_then(|k| k.1.parse::<u32>().ok());
         player.tick(1.0 / frame_rate).map_err(|e| format!("frame {frame}: {}", player.describe(&e)))?;
-        if args.iter().any(|a| a == "--pause-state") {
-            pause_state::handle_notifications(&mut player, &mut unhandled)?;
+        if let Some(p) = pause.as_mut() {
+            p.update(&mut player, pressed)?;
+            let requests = p.handle_notifications(&mut player, &mut unhandled)?;
+            for r in requests {
+                eprintln!("frame {frame}: request {r:?}");
+            }
         }
     }
     if !unhandled.is_empty() {

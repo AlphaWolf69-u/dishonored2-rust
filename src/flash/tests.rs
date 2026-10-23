@@ -121,8 +121,9 @@ fn debug_pause_menu_elements() {
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
     let state = crate::gameplay::pause_state::current_state(&player, language);
-    crate::gameplay::pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut crate::platform::bindings::Keyboard::default(), &state).unwrap();
-    crate::gameplay::pause_state::show(&mut player, &state).unwrap();
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None).unwrap();
+    pause.on_flash_loaded(&mut player).unwrap();
+    pause.show(&mut player).unwrap();
     for _ in 0..30 {
         player.tick(1.0 / 30.0).unwrap();
     }
@@ -246,8 +247,9 @@ fn debug_pause_mouse_hover() {
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
     let state = crate::gameplay::pause_state::current_state(&player, language);
-    crate::gameplay::pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut crate::platform::bindings::Keyboard::default(), &state).unwrap();
-    crate::gameplay::pause_state::show(&mut player, &state).unwrap();
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None).unwrap();
+    pause.on_flash_loaded(&mut player).unwrap();
+    pause.show(&mut player).unwrap();
     for _ in 0..60 {
         player.tick(1.0 / 30.0).unwrap();
     }

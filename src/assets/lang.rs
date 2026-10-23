@@ -291,6 +291,12 @@ impl StringTable {
         self.ids.get(&id).map(String::as_str)
     }
 
+    /// `FUN_1401653e0` as the UI setters use it: the text of a string id,
+    /// `UNLOCALIZED_STRING` when absent.
+    pub fn text(&self, id: u32) -> &str {
+        self.by_id(id).unwrap_or("UNLOCALIZED_STRING")
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.entries.get(&key.to_ascii_lowercase()).map(String::as_str)
     }

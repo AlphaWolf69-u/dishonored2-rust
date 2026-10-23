@@ -354,3 +354,69 @@ fn debug_pause_backdrop_symbols() {
     }
     }
 }
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_print_decl() {
+    let path = std::env::var("DH2_DEBUG_DECL").unwrap();
+    let catalog = catalog();
+    match catalog.read(&path).unwrap() {
+        Some(bytes) => println!("{}", String::from_utf8_lossy(&bytes)),
+        None => {
+            let stem = path.rsplit('/').next().unwrap().split('.').next().unwrap();
+            for p in catalog.paths_containing(stem).into_iter().take(20) {
+                println!("candidate: {p}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_message_box_traits() {
+    use swf::avm2::types::{DefaultValue, Multiname, TraitKind};
+    let catalog = catalog();
+    for path in catalog.paths_with_suffix(".iggy") {
+        if !(path.contains("global") || path.contains("corvo_pause")) {
+            continue;
+        }
+        let file = IggyFile::parse(catalog.read(&path).unwrap().unwrap()).unwrap();
+        let Some(abc) = file.abc().unwrap() else { continue };
+        let abc = swf::avm2::read::Reader::new(abc).read().unwrap();
+        let pool = &abc.constant_pool;
+        let s = |i: u32| {
+            if i == 0 { String::new() } else { String::from_utf8_lossy(&pool.strings[i as usize - 1]).into_owned() }
+        };
+        let mn = |i: u32| -> String {
+            if i == 0 { return String::new(); }
+            match &pool.multinames[i as usize - 1] {
+                Multiname::QName { name, .. } | Multiname::Multiname { name, .. } => s(name.0),
+                other => format!("{other:?}"),
+            }
+        };
+        let dv = |v: &Option<DefaultValue>| match v {
+            Some(DefaultValue::String(i)) => format!("{:?}", s(i.0)),
+            Some(DefaultValue::Int(i)) => format!("int {}", pool.ints[i.0 as usize - 1]),
+            Some(DefaultValue::Uint(i)) => format!("uint {}", pool.uints[i.0 as usize - 1]),
+            Some(DefaultValue::Double(i)) => format!("double {}", pool.doubles[i.0 as usize - 1]),
+            Some(other) => format!("{other:?}"),
+            None => "-".into(),
+        };
+        for (inst, class) in abc.instances.iter().zip(abc.classes.iter()) {
+            let name = mn(inst.name.0);
+            if !name.contains("MessageBox") && !name.contains("GlobalScene") {
+                continue;
+            }
+            for (kind, traits) in [("instance", &inst.traits), ("static", &class.traits)] {
+                for t in traits {
+                    match &t.kind {
+                        TraitKind::Slot { value, type_name, .. } | TraitKind::Const { value, type_name, .. } => {
+                            println!("{path} {name} {kind} {} : {} = {}", mn(t.name.0), mn(type_name.0), dv(value))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}

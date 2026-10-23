@@ -288,6 +288,17 @@ impl Player {
         self.vm.get_property(&target, &name)
     }
 
+    /// A property of a value the movie passed out (`IggyValueGet*RS` with a
+    /// member name on a callback argument).
+    pub fn member(&mut self, target: &Value, name: &str) -> Result<Value> {
+        self.vm.get_property(target, &avm2::name::Name::public(name))
+    }
+
+    /// Set a property of a value the movie passed out.
+    pub fn set_member(&mut self, target: &Value, name: &str, value: Value) -> Result<()> {
+        self.vm.set_property(target, &avm2::name::Name::public(name), value)
+    }
+
     /// `IggyPlayerCallMethodRS` on a root-relative property chain
     /// (`FUN_140028a90` with target path type 1), followed by deferred gotos.
     pub fn call_path_method(&mut self, path: &str, name: &str, args: &[Value]) -> Result<Value> {

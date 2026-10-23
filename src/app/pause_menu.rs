@@ -49,8 +49,12 @@ enum Event {
 
 struct Loaded {
     player: Player,
+    pause: pause_state::Pause,
     /// Last cursor position sent (`rec+0xb08`, initially 1e30).
     cursor: (f64, f64),
+    /// The first keyboard key pressed since the last tick, else the first
+    /// mouse button (the options key capture reads it).
+    pressed: Option<u32>,
     images: Arc<HashMap<CharRef, Arc<Image>>>,
     pending: f64,
     frame_interval: f64,
@@ -111,8 +115,10 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     pause_state::file_ready(&mut player, screen)?;
     let state = pause_state::current_state(&player, &language);
-    pause_state::on_flash_loaded(&mut player, &base, user_config().as_deref(), &mut Keyboard::default(), &state)?;
-    pause_state::show(&mut player, &state)?;
+    let config = game_settings::configuration_path().ok();
+    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, user_config().as_deref(), state, config)?;
+    pause.on_flash_loaded(&mut player)?;
+    pause.show(&mut player)?;
     let mut decoded = raster::Images::default();
     for (index, path) in &resources {
         let file = player.state.borrow().file(*index);
@@ -125,7 +131,7 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
         .collect();
     let frame_interval = 1.0 / player.state.borrow().frame_rate;
     info!("Pause movie {movie} ({language}) loaded in {:.2} s", started.elapsed().as_secs_f64());
-    Ok(Loaded { player, cursor: (1e30, 1e30), images: Arc::new(images), pending: 0.0, frame_interval })
+    Ok(Loaded { player, pause, cursor: (1e30, 1e30), pressed: None, images: Arc::new(images), pending: 0.0, frame_interval })
 }
 
 fn report_uncaught(player: &mut Player) {
@@ -155,6 +161,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             Command::Close => loaded = None,
             Command::Key { down, key } => {
                 let Some(l) = loaded.as_mut() else { continue };
+                if down && !l.pressed.is_some_and(|k| k < 0xe0) {
+                    l.pressed = Some(key);
+                }
                 // `FUN_140033740`: engine keys as virtual keys (`FUN_140032f20`), keyLocation 0.
                 let vk = keyboard.virtual_key(key).unwrap_or(key);
                 if let Err(e) = l.player.key_event(down, vk, 0) {
@@ -181,6 +190,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             }
             Command::MouseButton { code, down } => {
                 let Some(l) = loaded.as_mut() else { continue };
+                if down && l.pressed.is_none() {
+                    l.pressed = Some(code);
+                }
                 // The Iggy button event first (left/right/middle), then
                 // `IG_OnMouseEvent(code, state)` for every button.
                 let mut result = Ok(());
@@ -215,10 +227,22 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     }
                     report_uncaught(&mut l.player);
                 }
-                match pause_state::handle_notifications(&mut l.player, &mut unhandled) {
+                let pressed = l.pressed.take();
+                if let Err(e) = l.pause.update(&mut l.player, pressed) {
+                    warn!("Pause options: {e}");
+                }
+                match l.pause.handle_notifications(&mut l.player, &mut unhandled) {
                     Ok(requests) => {
-                        if requests.contains(&Request::Resume) {
-                            let _ = outbox.send(Event::Resume);
+                        for request in requests {
+                            match request {
+                                Request::Resume => {
+                                    let _ = outbox.send(Event::Resume);
+                                }
+                                // The message-box host (`global.iggy`) is not ported yet.
+                                Request::MessageBox(b) => warn!("Pause message box not shown yet: {}", b.text),
+                                // The renderer mode switch is not wired to the window yet.
+                                Request::DisplayChanged => warn!("Pause display settings changed; applied on the next start"),
+                            }
                         }
                     }
                     Err(e) => warn!("Pause movie: {e}"),

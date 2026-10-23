@@ -3,6 +3,7 @@ pub mod effects;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
 pub mod navigation;
+pub mod options;
 pub mod pause_state;
 pub mod save_list;
 pub mod machinery;

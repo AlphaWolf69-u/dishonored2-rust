@@ -239,9 +239,8 @@ const CHAPTERS: [(i32, &str, &str); 9] = [
 /// `arkPlayer::m_characterNames` from `models/characters/player/base/body.def`.
 const CHARACTER_NAMES: [Option<&str>; 3] = [None, Some("ui_charactername_corvo"), Some("ui_charactername_emily")];
 
-/// `FUN_1401653e0`: the text of a string id, `UNLOCALIZED_STRING` when absent.
 fn text(strings: &StringTable, id: u32) -> String {
-    strings.by_id(id).unwrap_or("UNLOCALIZED_STRING").to_string()
+    strings.text(id).to_string()
 }
 
 /// `FUN_140154990(t, pad 1, " - ")`: local time; English `MM/DD/YYYY -
