@@ -18,6 +18,7 @@ pub mod render;
 pub mod tessellate;
 pub mod text;
 pub mod text_engine;
+pub mod three_d;
 mod text_record;
 pub mod timeline;
 pub mod transform;
@@ -42,6 +43,8 @@ pub struct Native {
     pub text: Option<text_engine::TextObject>,
     pub bitmap_data: Option<bitmap::BitmapDataState>,
     pub matrix3d: Option<[f64; 16]>,
+    /// A Matrix3D's cached Euler angles in degrees (box+0x68..0x74).
+    pub euler: Option<[f32; 3]>,
     /// The display object a Transform describes.
     pub target: Option<Obj>,
     /// A Bitmap's BitmapData or a projection's centre point.
@@ -107,7 +110,7 @@ pub struct Player {
 impl Player {
     pub fn new(stage_size: (f64, f64), frame_rate: f64) -> Result<Self> {
         let mut vm = Vm::new();
-        let state: Shared = Rc::new(RefCell::new(PlayerState { stage_size, frame_rate, ..PlayerState::default() }));
+        let state: Shared = Rc::new(RefCell::new(PlayerState { stage_size, frame_rate, stage_projection: (55.0, None), ..PlayerState::default() }));
         vm.host = Box::new(state.clone());
         install(&mut vm);
         let stage_class = avm2::builtins::native_class(&vm, "flash.display", "Stage");

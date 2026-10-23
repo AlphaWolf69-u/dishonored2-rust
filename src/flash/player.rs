@@ -53,6 +53,9 @@ pub struct PlayerState {
     pub fonts: Vec<Rc<crate::assets::iggy::font::Font>>,
     /// Font aliases installed for the UI library language (`FUN_140031140`).
     pub font_aliases: Vec<(String, String)>,
+    /// The Stage's perspective projection (`P+0x2698..0x26a0`): field of
+    /// view and centre (`None`: half the stage size, `FUN_141029e30`).
+    pub stage_projection: (f32, Option<[f32; 2]>),
     pub stage: Option<Obj>,
     pub root: Option<Obj>,
     /// `ExternalInterface.call`s queued for the game (`FUN_14002b7e0`), in

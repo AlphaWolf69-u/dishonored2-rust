@@ -4,6 +4,7 @@
 //! Not yet drawn: masks and clip layers (mask objects are skipped), filters,
 //! cacheAsBitmap, non-normal blend modes beyond the batch flag, and 3D
 //! transforms.
+use super::three_d;
 use super::avm2::object::Obj;
 use super::avm2::Vm;
 use super::display::{children, display_ref, DisplayKind};
@@ -31,6 +32,10 @@ pub struct Vertex {
     pub add: [f32; 4],
     /// Sampling mode and focal point.
     pub params: [f32; 2],
+    /// Perspective divisor `(Z + f·Wh) / f` of 3D content, 1 in 2D: the
+    /// GDraw vertex shader divides by it and interpolates texture
+    /// coordinates perspective-correctly.
+    pub w: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -97,12 +102,27 @@ struct Builder<'a> {
     debug_ignore_visibility: bool,
     out: DrawList,
     ramps: HashMap<Vec<u8>, usize>,
+    /// The current 3D world (`P+0x2488`) in stage pixels, inside a 3D subtree.
+    world: Option<three_d::Mat4>,
+    projection: three_d::Projection,
 }
 
 impl Builder<'_> {
     fn push(&mut self, texture: Texture, repeat: bool, smooth: bool, blend: u8, vertices: impl IntoIterator<Item = Vertex>) {
         let first = self.out.vertices.len() as u32;
-        self.out.vertices.extend(vertices);
+        match self.world {
+            // 3D content reaches the projection in local units (`FUN_14103b040`).
+            Some(world) => {
+                let projection = self.projection;
+                self.out.vertices.extend(vertices.into_iter().map(|mut v| {
+                    let (p, w) = projection.project(&world, v.position[0], v.position[1]);
+                    v.position = p;
+                    v.w = w;
+                    v
+                }));
+            }
+            None => self.out.vertices.extend(vertices),
+        }
         let count = self.out.vertices.len() as u32 - first;
         if count == 0 {
             return;
@@ -182,7 +202,7 @@ impl Builder<'_> {
                     .map(|p| {
                         let (uv, params) = texgen(p);
                         let (x, y) = m.apply(p[0] as f64, p[1] as f64);
-                        Vertex { position: [x as f32, y as f32], uv, mul, add, params }
+                        Vertex { position: [x as f32, y as f32], uv, mul, add, params, w: 1.0 }
                     })
                     .collect();
                 self.push(texture, repeat, smooth, blend, vertices);
@@ -195,7 +215,7 @@ impl Builder<'_> {
         let add = col.add.map(|v| v as f32 / 255.0);
         let corner = |x: f32, y: f32| {
             let (px, py) = m.apply(x as f64, y as f64);
-            Vertex { position: [px as f32, py as f32], uv: [x / w * uv[0] + uv[2], y / h * uv[1] + uv[3]], mul, add, params: [0.0; 2] }
+            Vertex { position: [px as f32, py as f32], uv: [x / w * uv[0] + uv[2], y / h * uv[1] + uv[3]], mul, add, params: [0.0; 2], w: 1.0 }
         };
         let (a, b, cc, d) = (corner(0.0, 0.0), corner(w, 0.0), corner(w, h), corner(0.0, h));
         self.push(Texture::Bitmap(c), false, smooth, blend, [a, b, cc, a, cc, d]);
@@ -218,7 +238,7 @@ impl Builder<'_> {
                     .into_iter()
                     .map(|p| {
                         let (x, y) = gm.apply(p[0] as f64, p[1] as f64);
-                        Vertex { position: [x as f32, y as f32], uv: [0.0; 2], mul, add, params: [0.0; 2] }
+                        Vertex { position: [x as f32, y as f32], uv: [0.0; 2], mul, add, params: [0.0; 2], w: 1.0 }
                     })
                     .collect();
                 self.push(Texture::White, false, true, blend, vertices);
@@ -231,11 +251,24 @@ impl Builder<'_> {
         if (!d.visible && !self.debug_ignore_visibility) || masks.contains(o) || d.clip_depth > 0 {
             return;
         }
-        let m = d.matrix.then(parent_m);
+        let own = d.matrix;
         let c = d.colour.then(parent_c);
         let (kind, character, graphics, blend) = (d.kind, d.character, d.graphics.clone(), d.blend);
         drop(d);
+        // `FUN_141037930`: the first object with a Matrix3D starts the 3D
+        // world from its parent's 2D world and ignores its own 2D matrix;
+        // deeper objects concatenate their Matrix3D or their 2D matrix.
+        // Inside 3D the 2D matrices are identity.
+        let outer = self.world;
+        let (m, world) = match (three_d::matrix(o), outer) {
+            (Some(m3), None) => (Affine::default(), Some(three_d::multiply(&three_d::from_affine(parent_m), &m3))),
+            (Some(m3), Some(w)) => (Affine::default(), Some(three_d::multiply(&w, &m3))),
+            (None, Some(w)) => (Affine::default(), Some(three_d::multiply(&w, &three_d::from_affine(&own)))),
+            (None, None) => (own.then(parent_m), None),
+        };
+        self.world = world;
         if c.mul[3] <= 0.0 && c.add[3] <= 0.0 {
+            self.world = outer;
             return;
         }
         if let Some(g) = graphics {
@@ -277,6 +310,7 @@ impl Builder<'_> {
         for child in children(o) {
             self.node(&child, &m, &c, &all);
         }
+        self.world = outer;
     }
 }
 
@@ -291,12 +325,21 @@ pub fn debug_draw_all(vm: &Vm) -> DrawList {
 }
 
 fn build(vm: &Vm, debug_ignore_visibility: bool) -> DrawList {
-    let (stage, size) = {
+    let (stage, size, projection) = {
         let shared = player::state(vm);
         let p = shared.borrow();
-        (p.stage.clone(), p.stage_size)
+        (p.stage.clone(), p.stage_size, p.stage_projection)
     };
-    let mut b = Builder { vm, debug_ignore_visibility, out: DrawList { stage: (size.0 as f32, size.1 as f32), ..DrawList::default() }, ramps: HashMap::new() };
+    // `FUN_14103a4f0`: the Stage projection, rebuilt every draw.
+    let projection = three_d::Projection::stage(size, projection.0, projection.1);
+    let mut b = Builder {
+        vm,
+        debug_ignore_visibility,
+        out: DrawList { stage: (size.0 as f32, size.1 as f32), ..DrawList::default() },
+        ramps: HashMap::new(),
+        world: None,
+        projection,
+    };
     if let Some(stage) = stage {
         b.node(&stage, &Affine::default(), &Colour::default(), &[]);
     }

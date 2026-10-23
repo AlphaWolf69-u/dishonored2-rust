@@ -196,8 +196,8 @@ pub fn install(vm: &mut Vm) {
             let o = target(vm, this)?;
             let m = geom::read_matrix(vm, &arg(a, 0))?;
             let mut d = display(&o).unwrap();
+            // `0x14101b280` writes the 2D matrix only; a Matrix3D stays.
             d.set_matrix(m);
-            d.transform3d = None;
             d.script_moved = true;
             Ok(Value::Undefined)
         }),
@@ -207,11 +207,25 @@ pub fn install(vm: &mut Vm) {
             display(&o).unwrap().colour = c;
             Ok(Value::Undefined)
         }),
+        // `0x14101b320`: null throws, a Matrix3D owned by another object
+        // throws; the link copies only m3/m7 into tx/ty.
         ("matrix3D", |vm, this, a| {
             let o = target(vm, this)?;
             let v = arg(a, 0);
-            display(&o).unwrap().transform3d = (!v.is_nullish()).then_some(v);
-            display(&o).unwrap().script_moved = true;
+            let Some(m) = v.as_object().cloned() else { return Err(vm.iggy_error(0x78)) };
+            let owner = m.host::<Native>().and_then(|n| n.target.clone());
+            if owner.as_ref().is_some_and(|w| *w != o) {
+                return Err(vm.iggy_error(0x72));
+            }
+            if let Some(mut n) = m.host_mut::<Native>() {
+                n.target = Some(o.clone());
+            }
+            let raw = matrix3d(vm, &v);
+            let mut d = display(&o).unwrap();
+            d.transform3d = Some(v);
+            d.matrix.tx = raw[12] as f32 as f64;
+            d.matrix.ty = raw[13] as f32 as f64;
+            d.script_moved = true;
             Ok(Value::Undefined)
         }),
         ("perspectiveProjection", |vm, this, a| {

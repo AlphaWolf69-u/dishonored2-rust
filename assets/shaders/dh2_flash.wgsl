@@ -14,6 +14,8 @@ struct VertexIn {
     @location(2) mul: vec4<f32>,
     @location(3) add: vec4<f32>,
     @location(4) params: vec2<f32>,
+    // Perspective divisor of 3D content (1 in 2D).
+    @location(5) w: f32,
 };
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -27,7 +29,9 @@ struct VertexOut {
 fn flash_vertex(v: VertexIn) -> VertexOut {
     var out: VertexOut;
     let ndc = vec2(v.position.x / stage.size.x * 2.0 - 1.0, 1.0 - v.position.y / stage.size.y * 2.0);
-    out.clip = vec4(ndc * stage.scale, 0.0, 1.0);
+    // Homogeneous w gives perspective-correct interpolation like GDraw's
+    // o1 = uv / r.z.
+    out.clip = vec4(ndc * stage.scale * v.w, 0.0, v.w);
     out.uv = v.uv;
     out.mul = v.mul;
     out.add = v.add;

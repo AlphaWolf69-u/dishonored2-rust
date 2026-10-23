@@ -78,12 +78,13 @@ struct Programs {
 }
 
 fn vertex_layout() -> RawVertexBufferLayout<'static> {
-    const ATTRIBUTES: [VertexAttribute; 5] = [
+    const ATTRIBUTES: [VertexAttribute; 6] = [
         VertexAttribute { format: VertexFormat::Float32x2, offset: 0, shader_location: 0 },
         VertexAttribute { format: VertexFormat::Float32x2, offset: 8, shader_location: 1 },
         VertexAttribute { format: VertexFormat::Float32x4, offset: 16, shader_location: 2 },
         VertexAttribute { format: VertexFormat::Float32x4, offset: 32, shader_location: 3 },
         VertexAttribute { format: VertexFormat::Float32x2, offset: 48, shader_location: 4 },
+        VertexAttribute { format: VertexFormat::Float32, offset: 56, shader_location: 5 },
     ];
     RawVertexBufferLayout { array_stride: std::mem::size_of::<Vertex>() as u64, step_mode: VertexStepMode::Vertex, attributes: &ATTRIBUTES }
 }

@@ -177,7 +177,7 @@ fn debug_pause_menu_elements() {
             let mut cur = Some(o.clone());
             while let Some(c) = cur {
                 let d = display::display(&c).unwrap();
-                chain.push_str(&format!(" <- {}@{:?} z={} rot3d={:?} m3d={}", d.name, d.matrix, d.z, d.rotation3d, d.transform3d.is_some()));
+                chain.push_str(&format!(" <- {}@{:?} m3d={}", d.name, d.matrix, d.transform3d.is_some()));
                 let parent = d.parent.clone();
                 drop(d);
                 cur = parent;

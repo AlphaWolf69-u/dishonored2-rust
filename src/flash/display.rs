@@ -76,8 +76,6 @@ pub struct Display {
     pub graphics: Option<Obj>,
     pub transform3d: Option<Value>,
     pub projection: Option<Value>,
-    pub z: f64,
-    pub rotation3d: (f64, f64),
     /// Constructed by the timeline but its class constructor has not run.
     pub constructed: bool,
     /// `IggyFunctions.setHittestProperties` flags (DO byte1 bits 4..6).
@@ -126,8 +124,6 @@ impl Display {
             graphics: None,
             transform3d: None,
             projection: None,
-            z: 0.0,
-            rotation3d: (0.0, 0.0),
             constructed: true,
             hittest: 0,
             custom_depth: None,
@@ -470,14 +466,15 @@ fn display_getters() -> Vec<(&'static str, NativeFn)> {
     vec![
         ("x", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().matrix.tx.into())),
         ("y", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().matrix.ty.into())),
-        ("z", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().z.into())),
+        // 3D getters: 0 (scaleZ 1) for a 2D object (notes-3d.md section 1).
+        ("z", |vm, this, _| Ok(super::three_d::matrix(&this_obj(vm, this)?).map_or(0.0, |m| m[11] as f64).into())),
         ("scaleX", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().scale.0.into())),
         ("scaleY", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().scale.1.into())),
-        ("scaleZ", |_, _, _| Ok(1.into())),
+        ("scaleZ", |vm, this, _| Ok(super::three_d::matrix(&this_obj(vm, this)?).map_or(1.0, |m| super::three_d::row_length(&m, 2) as f64).into())),
         ("rotation", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().rotation.into())),
-        ("rotationX", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().rotation3d.0.into())),
-        ("rotationY", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().rotation3d.1.into())),
-        ("rotationZ", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().rotation.into())),
+        ("rotationX", |vm, this, _| Ok((super::three_d::angles(&this_obj(vm, this)?)[0] as f64).into())),
+        ("rotationY", |vm, this, _| Ok((super::three_d::angles(&this_obj(vm, this)?)[1] as f64).into())),
+        ("rotationZ", |vm, this, _| Ok((super::three_d::angles(&this_obj(vm, this)?)[2] as f64).into())),
         ("alpha", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().colour.mul[3].into())),
         ("visible", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().visible.into())),
         ("name", |vm, this, _| Ok(Value::String(display_ref(&this_obj(vm, this)?).unwrap().name.clone()))),
@@ -573,6 +570,10 @@ fn display_setters() -> Vec<(&'static str, NativeFn)> {
             let v = num_arg!(vm, a);
             if !v.is_nan() {
                 set_moved(&o).matrix.tx = v;
+                // Also m3 of an existing Matrix3D.
+                if super::three_d::matrix_object(&o).is_some() {
+                    super::three_d::update(vm, &o, |m, _| m[3] = v as f32)?;
+                }
             }
             Ok(Value::Undefined)
         }),
@@ -581,32 +582,55 @@ fn display_setters() -> Vec<(&'static str, NativeFn)> {
             let v = num_arg!(vm, a);
             if !v.is_nan() {
                 set_moved(&o).matrix.ty = v;
+                // Also m7 of an existing Matrix3D.
+                if super::three_d::matrix_object(&o).is_some() {
+                    super::three_d::update(vm, &o, |m, _| m[7] = v as f32)?;
+                }
             }
             Ok(Value::Undefined)
         }),
+        // `0x1410122b0`: NaN becomes 0; m11 of the (created) Matrix3D.
         ("z", |vm, this, a| {
             let o = this_obj(vm, this)?;
             let v = num_arg!(vm, a);
-            set_moved(&o).z = v;
+            let v = if v.is_nan() { 0.0 } else { v as f32 };
+            super::three_d::update(vm, &o, |m, _| m[11] = v)?;
             Ok(Value::Undefined)
         }),
         ("scaleX", |vm, this, a| {
             let o = this_obj(vm, this)?;
             let v = num_arg!(vm, a);
-            let mut d = set_moved(&o);
-            d.scale.0 = v;
-            d.rebuild_matrix();
+            {
+                let mut d = set_moved(&o);
+                d.scale.0 = v;
+                d.rebuild_matrix();
+            }
+            // `FUN_14101f6b0`: row 0 of an existing Matrix3D to length v.
+            if super::three_d::matrix_object(&o).is_some() {
+                super::three_d::update(vm, &o, |m, _| super::three_d::set_row_length(m, 0, v as f32))?;
+            }
             Ok(Value::Undefined)
         }),
         ("scaleY", |vm, this, a| {
             let o = this_obj(vm, this)?;
             let v = num_arg!(vm, a);
-            let mut d = set_moved(&o);
-            d.scale.1 = v;
-            d.rebuild_matrix();
+            {
+                let mut d = set_moved(&o);
+                d.scale.1 = v;
+                d.rebuild_matrix();
+            }
+            // `FUN_14101f6b0`: row 1 of an existing Matrix3D to length v.
+            if super::three_d::matrix_object(&o).is_some() {
+                super::three_d::update(vm, &o, |m, _| super::three_d::set_row_length(m, 1, v as f32))?;
+            }
             Ok(Value::Undefined)
         }),
-        ("scaleZ", |_, _, _| Ok(Value::Undefined)),
+        ("scaleZ", |vm, this, a| {
+            let o = this_obj(vm, this)?;
+            let v = num_arg!(vm, a) as f32;
+            super::three_d::update(vm, &o, |m, _| super::three_d::set_row_length(m, 2, v))?;
+            Ok(Value::Undefined)
+        }),
         ("rotation", |vm, this, a| {
             let o = this_obj(vm, this)?;
             let mut v = num_arg!(vm, a) % 360.0;
@@ -615,29 +639,33 @@ fn display_setters() -> Vec<(&'static str, NativeFn)> {
             } else if v < -180.0 {
                 v += 360.0;
             }
+            // `FUN_141011970`: on a 3D object this is the rotationZ setter.
+            if super::three_d::matrix_object(&o).is_some() {
+                super::three_d::set_rotation(vm, &o, 2, v as f32)?;
+                return Ok(Value::Undefined);
+            }
             let mut d = set_moved(&o);
             d.rotation = v;
             d.rebuild_matrix();
             Ok(Value::Undefined)
         }),
+        // `FUN_14101f8e0` (axes 0/1/2) through thunks 0x141011b00/b10/b20.
         ("rotationZ", |vm, this, a| {
             let o = this_obj(vm, this)?;
-            let v = num_arg!(vm, a);
-            let mut d = set_moved(&o);
-            d.rotation = v;
-            d.rebuild_matrix();
+            let v = num_arg!(vm, a) as f32;
+            super::three_d::set_rotation(vm, &o, 2, v)?;
             Ok(Value::Undefined)
         }),
         ("rotationX", |vm, this, a| {
             let o = this_obj(vm, this)?;
-            let v = num_arg!(vm, a);
-            set_moved(&o).rotation3d.0 = v;
+            let v = num_arg!(vm, a) as f32;
+            super::three_d::set_rotation(vm, &o, 0, v)?;
             Ok(Value::Undefined)
         }),
         ("rotationY", |vm, this, a| {
             let o = this_obj(vm, this)?;
-            let v = num_arg!(vm, a);
-            set_moved(&o).rotation3d.1 = v;
+            let v = num_arg!(vm, a) as f32;
+            super::three_d::set_rotation(vm, &o, 1, v)?;
             Ok(Value::Undefined)
         }),
         ("alpha", |vm, this, a| {

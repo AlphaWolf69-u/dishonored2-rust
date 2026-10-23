@@ -170,6 +170,20 @@ impl Vm {
         }
     }
 
+    /// `FUN_1410459a0(player, code)`: an Iggy native error; `FUN_14100b120`
+    /// maps codes 0x71..0x79 to Error, ArgumentError, DefinitionError,
+    /// IllegalOperationError, RangeError, ReferenceError, StackOverflowError,
+    /// TypeError and VerifyError. The message atom is not modelled.
+    pub fn iggy_error(&mut self, code: u32) -> Error {
+        const CLASSES: [&str; 9] = ["Error", "ArgumentError", "DefinitionError", "IllegalOperationError", "RangeError", "ReferenceError", "StackOverflowError", "TypeError", "VerifyError"];
+        let name = CLASSES.get(code.wrapping_sub(0x71) as usize).copied().unwrap_or("Error");
+        let class = self.table_classes.get(name).cloned().or_else(|| self.class_by_name(name).ok().flatten().and_then(|v| v.as_object().and_then(Obj::as_class)));
+        match class {
+            Some(class) => self.error_of(class, 0, String::new()),
+            None => Error::Internal(name.into()),
+        }
+    }
+
     pub fn argument_error(&mut self, id: u32, message: impl Into<String>) -> Error {
         let class = self.b().argument_error.clone();
         self.error_of(class, id, message.into())

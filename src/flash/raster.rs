@@ -112,6 +112,10 @@ pub fn rasterize(list: &DrawList, images: &Images, width: u32, height: u32, back
                     if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                         continue;
                     }
+                    // Perspective-correct weights (vertex w, 1 in 2D).
+                    let (q0, q1, q2) = (w0 / tri[0].w, w1 / tri[1].w, w2 / tri[2].w);
+                    let sum = q0 + q1 + q2;
+                    let (w0, w1, w2) = (q0 / sum, q1 / sum, q2 / sum);
                     let lerp = |f: &dyn Fn(usize) -> f32| w0 * f(0) + w1 * f(1) + w2 * f(2);
                     let u = lerp(&|i| tri[i].uv[0]);
                     let v = lerp(&|i| tri[i].uv[1]);
