@@ -1,6 +1,10 @@
 //! Installed final-display lens streak. The frame supplies source view-axis
 //! and authored radius/offset/width/opacity; no artificial flare is generated.
-pub const SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_lens_streak.wgsl");
+pub const SHADER_SOURCE: &str = concat!(
+    include_str!("../../../assets/shaders/dh2_shader_math.wgsl"),
+    "\n",
+    include_str!("../../../assets/shaders/dh2_lens_streak.wgsl")
+);
 
 #[cfg(test)]
 mod tests {

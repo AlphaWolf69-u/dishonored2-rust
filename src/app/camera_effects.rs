@@ -3,9 +3,9 @@
 use crate::{
     assets::{archive::Catalog, environment::ParameterReader},
     entities::EnvironmentRenderParameters,
-    platform::game_settings::{read_camera_render_settings, CameraRenderSettings},
+    platform::game_settings::{CameraRenderSettings, read_camera_render_settings},
     rendering::{
-        camera_effects::{CameraEffectsFrame, CameraSettings, SettingsInputs, PARAMETER_NAMES},
+        camera_effects::{CameraEffectsFrame, CameraSettings, PARAMETER_NAMES, SettingsInputs},
         environment::{AreaEnvironment, EnvironmentSource},
         environment_tracks::{FloatParameter, ParameterTrack},
     },
@@ -122,6 +122,8 @@ impl CameraScene {
             far_clip: self.controls.far_clip,
             opaque_enabled: self.controls.opaque_enabled,
             console_override: self.controls.console.is_some(),
+            near_mask_gain: self.controls.near_mask_gain,
+            stencil_enabled: self.controls.stencil_enabled,
         })
     }
 }

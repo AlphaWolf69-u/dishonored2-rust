@@ -55,6 +55,7 @@ pub struct ColourDownscalePass {
     parameters: UniformBuffer<DownscaleParameters>,
     binding: Option<((TextureViewId, Option<BufferId>), BindGroup)>,
     host_source: bool,
+    geometry: bool,
 }
 struct Pipeline {
     layout: BindGroupLayout,
@@ -64,14 +65,26 @@ struct Pipeline {
 }
 impl ColourDownscalePass {
     pub fn new(device: &RenderDevice, format: TextureFormat) -> Self {
-        Self::create(device, format, false)
+        Self::create(device, format, false, false)
     }
     /// Adapt the host primary's pre-exposed physical RGB inside the downsample
     /// draw. This does not reproduce the original main-target packed quantization.
     pub fn new_with_host_source(device: &RenderDevice, format: TextureFormat) -> Self {
-        Self::create(device, format, true)
+        Self::create(device, format, true, false)
     }
-    fn create(device: &RenderDevice, format: TextureFormat, host_source: bool) -> Self {
+    pub fn new_with_source_geometry(
+        device: &RenderDevice,
+        format: TextureFormat,
+        host_source: bool,
+    ) -> Self {
+        Self::create(device, format, host_source, true)
+    }
+    fn create(
+        device: &RenderDevice,
+        format: TextureFormat,
+        host_source: bool,
+        geometry: bool,
+    ) -> Self {
         use binding_types::*;
         let mut entries = BindGroupLayoutEntries::sequential(
             ShaderStages::FRAGMENT,
@@ -83,6 +96,9 @@ impl ColourDownscalePass {
             ),
         )
         .to_vec();
+        if geometry {
+            entries[0].visibility |= ShaderStages::VERTEX;
+        }
         if host_source {
             entries.push(BindGroupLayoutEntry {
                 binding: 4,
@@ -114,13 +130,40 @@ impl ColourDownscalePass {
             layout: Some(&pipeline_layout),
             vertex: RawVertexState {
                 module: &shader,
-                entry_point: Some("downscale_vertex"),
+                entry_point: Some(if geometry {
+                    "downscale_mesh_vertex"
+                } else {
+                    "downscale_vertex"
+                }),
                 compilation_options: Default::default(),
-                buffers: &[],
+                buffers: if geometry {
+                    &[RawVertexBufferLayout {
+                        array_stride: 20,
+                        step_mode: VertexStepMode::Vertex,
+                        attributes: &[
+                            VertexAttribute {
+                                format: VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            VertexAttribute {
+                                format: VertexFormat::Float32x2,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                        ],
+                    }]
+                } else {
+                    &[]
+                },
             },
             fragment: Some(RawFragmentState {
                 module: &shader,
-                entry_point: Some("downscale_fragment"),
+                entry_point: Some(if geometry {
+                    "downscale_mesh_fragment"
+                } else {
+                    "downscale_fragment"
+                }),
                 compilation_options: Default::default(),
                 targets: &[Some(ColorTargetState {
                     format,
@@ -154,6 +197,7 @@ impl ColourDownscalePass {
             parameters: Default::default(),
             binding: None,
             host_source,
+            geometry,
         }
     }
     /// Separate uploads for different draws queued into the same command buffer.
@@ -163,6 +207,7 @@ impl ColourDownscalePass {
             parameters: Default::default(),
             binding: None,
             host_source: self.host_source,
+            geometry: self.geometry,
         }
     }
     pub fn record(
@@ -189,6 +234,7 @@ impl ColourDownscalePass {
             destination,
             viewport,
             scissor,
+            None,
             None,
         );
     }
@@ -218,6 +264,39 @@ impl ColourDownscalePass {
             viewport,
             scissor,
             Some(adaptation),
+            None,
+        );
+    }
+    pub fn record_with_geometry(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        parameters: DownscaleParameters,
+        source: &TextureView,
+        destination: &TextureView,
+        viewport: [u32; 4],
+        scissor: [u32; 4],
+        vertices: &Buffer,
+        range: std::ops::Range<u32>,
+        adaptation: Option<&Buffer>,
+    ) {
+        assert_eq!(
+            self.host_source,
+            adaptation.is_some(),
+            "downscale geometry source adapter differs"
+        );
+        self.record_inner(
+            device,
+            queue,
+            encoder,
+            parameters,
+            source,
+            destination,
+            viewport,
+            scissor,
+            adaptation,
+            Some((vertices, range)),
         );
     }
     fn record_inner(
@@ -231,7 +310,13 @@ impl ColourDownscalePass {
         viewport: [u32; 4],
         scissor: [u32; 4],
         adaptation: Option<&Buffer>,
+        geometry: Option<(&Buffer, std::ops::Range<u32>)>,
     ) {
+        assert_eq!(
+            self.geometry,
+            geometry.is_some(),
+            "downscale geometry differs from prepared pipeline"
+        );
         self.parameters.set(parameters);
         self.parameters.write_buffer(device, queue);
         let key = (source.id(), adaptation.map(Buffer::id));
@@ -293,7 +378,12 @@ impl ColourDownscalePass {
             1.0,
         );
         pass.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
-        pass.draw(0..3, 0..1);
+        if let Some((vertices, range)) = geometry {
+            pass.set_vertex_buffer(0, *vertices.slice(..));
+            pass.draw(range, 0..1);
+        } else {
+            pass.draw(0..3, 0..1);
+        }
     }
 }
 /// The pre-DOF `hrBufferDiv2` colour target. This is independent of the

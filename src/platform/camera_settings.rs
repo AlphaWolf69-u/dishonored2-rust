@@ -9,6 +9,8 @@ pub struct CameraRenderSettings {
     pub near_clip: f32,
     pub far_clip: f32,
     pub opaque_enabled: bool,
+    pub near_mask_gain: f32,
+    pub stencil_enabled: bool,
 }
 pub fn camera_render_settings(source: &str) -> Result<CameraRenderSettings, String> {
     let integer = |name, default| -> Result<i32, String> {
@@ -80,6 +82,9 @@ pub fn camera_render_settings(source: &str) -> Result<CameraRenderSettings, Stri
         near_clip: float("r_znear", 0.01)?,
         far_clip: float("r_zfar", 7000.)?,
         opaque_enabled: integer("r_dofOpaqueEnabled", 1)? != 0,
+        // 14136fc40 registers 1432f3fd0; 3185e0 reads its float at +0x2c.
+        near_mask_gain: float("r_dofBlurCoef", 1.0)?,
+        stencil_enabled: integer("r_DofStencilEnabled", 1)? != 0,
     })
 }
 pub fn read_camera_render_settings() -> Result<CameraRenderSettings, String> {

@@ -6,6 +6,8 @@ pub const SHADER_SOURCE: &str = concat!(
     "\n",
     include_str!("../../../assets/shaders/dh2_colour_output.wgsl"),
     "\n",
+    include_str!("../../../assets/shaders/dh2_shader_math.wgsl"),
+    "\n",
     include_str!("../../../assets/shaders/dh2_lens_streak.wgsl"),
     "\n",
     include_str!("../../../assets/shaders/dh2_lens_composite.wgsl")

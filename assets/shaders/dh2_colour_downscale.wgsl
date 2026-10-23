@@ -10,12 +10,7 @@ struct DownscaleParameters {
 @group(0) @binding(2) var bilinear_clamp:sampler;
 @group(0) @binding(3) var point_clamp:sampler;
 
-fn downscale_colour(uv:vec2<f32>)->vec4<f32> {
-    let d=p.texel.xy;
-    let uv0=uv-d;
-    let uv1=uv+vec2(d.x,-d.y);
-    let uv2=uv+vec2(-d.x,d.y);
-    let uv3=uv+d;
+fn downscale_taps(uv0:vec2<f32>,uv1:vec2<f32>,uv2:vec2<f32>,uv3:vec2<f32>)->vec4<f32> {
     let mode=p.options.x;
     if(mode==5u) {
         let clear=hdr_range_compress(p.colour.rgb,p.options.y!=0u,downscale_engine_luminance(),p.limits.z);
@@ -52,9 +47,28 @@ fn downscale_colour(uv:vec2<f32>)->vec4<f32> {
     if(mode==6u) {return vec4(clamp((a.rgb+b.rgb+c.rgb+e.rgb)*0.25,vec3(0.0),vec3(p.limits.x)),0.0);}
     return (a+b+c+e)*0.25;
 }
+fn downscale_colour(uv:vec2<f32>)->vec4<f32> {
+    let d=p.texel.xy;
+    return downscale_taps(uv-d,uv+vec2(d.x,-d.y),uv+vec2(-d.x,d.y),uv+d);
+}
 struct DownscaleVertex {@builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,}
 @vertex fn downscale_vertex(@builtin(vertex_index) i:u32)->DownscaleVertex {
     let uv=vec2<f32>(f32((i<<1u)&2u),f32(i&2u));
     return DownscaleVertex(vec4(uv*vec2(2.0,-2.0)+vec2(-1.0,1.0),0.0,1.0),uv);
 }
 @fragment fn downscale_fragment(v:DownscaleVertex)->@location(0) vec4<f32> {return downscale_colour(v.uv);}
+// Preserve the installed VP's tap offsets before interpolation when the view
+// owner supplies its actual fullscreen geometry and texture coordinates.
+struct DownscaleMeshVertex {
+    @builtin(position)position:vec4<f32>,
+    @location(0)first:vec4<f32>,
+    @location(1)second:vec4<f32>,
+}
+@vertex fn downscale_mesh_vertex(@location(0)position:vec3<f32>,@location(1)uv:vec2<f32>)->DownscaleMeshVertex {
+    return DownscaleMeshVertex(vec4(position,1.0),
+        vec4(uv+vec2(-1.0,-1.0)*p.texel.xy,uv+vec2(1.0,-1.0)*p.texel.xy),
+        vec4(uv+vec2(-1.0,1.0)*p.texel.xy,uv+vec2(1.0,1.0)*p.texel.xy));
+}
+@fragment fn downscale_mesh_fragment(v:DownscaleMeshVertex)->@location(0)vec4<f32> {
+    return downscale_taps(v.first.xy,v.first.zw,v.second.xy,v.second.zw);
+}

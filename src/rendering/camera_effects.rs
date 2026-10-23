@@ -71,6 +71,8 @@ pub struct CameraEffectsFrame {
     pub far_clip: f32,
     pub opaque_enabled: bool,
     pub console_override: bool,
+    pub near_mask_gain: f32,
+    pub stencil_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -154,6 +156,33 @@ impl CameraSettings {
     }
     pub fn bokeh_size(&self) -> f32 {
         self.get(36)
+    }
+    pub fn fringing(&self) -> [f32; 3] {
+        [self.get(20), self.get(21), self.get(22)]
+    }
+    pub fn near_sharp_distance(&self) -> f32 {
+        self.get(1)
+    }
+    pub fn far_sharp_distance(&self) -> f32 {
+        self.get(2)
+    }
+    pub fn blur_variant(
+        &self,
+        pass: super::depth_of_field::DofPass,
+    ) -> super::depth_of_field::DofMaterialVariant {
+        use super::depth_of_field::{DofMaterialVariant, DofPass};
+        let mask = match pass {
+            DofPass::Alpha => 8,
+            DofPass::Near => 16,
+            DofPass::Far => 32,
+        };
+        DofMaterialVariant::select(
+            self.bokeh_kernel(),
+            (self.words[37] >> 8) as u8,
+            self.words[37] as u8,
+            mask,
+        )
+        .expect("known camera blur pass")
     }
     pub fn range_flags(&self) -> u32 {
         self.words[4]

@@ -7,16 +7,7 @@ fn lens_rotate_scaled(p:vec2<f32>,angle:f32)->vec2<f32> {
 // Installed-HLSL DXBC atan2 expansion and phase MAD. The angular noise makes
 // ordinary atan2 approximation/rounding differences visible after 4096 slices.
 fn lens_slice_phase(p:vec2<f32>)->vec2<f32> {
-    let a=(1.0/max(abs(p.x),abs(p.y)))*min(abs(p.x),abs(p.y));
-    let a2=a*a;
-    var polynomial=fma(a2,bitcast<f32>(0x3caaae5fu),bitcast<f32>(0xbdae5a36u));
-    polynomial=fma(a2,polynomial,bitcast<f32>(0x3e3876e2u));
-    polynomial=fma(a2,polynomial,bitcast<f32>(0xbea91d04u));
-    polynomial=fma(a2,polynomial,bitcast<f32>(0x3f7ff738u));
-    let folded=select(0.0,fma(a*polynomial,-2.0,bitcast<f32>(0x3fc90fdbu)),abs(p.y)<abs(p.x));
-    var angle=fma(a,polynomial,folded);
-    angle+=select(0.0,bitcast<f32>(0xc0490fdbu),p.y < -p.y);
-    angle=select(angle,-angle,min(p.x,p.y)<-min(p.x,p.y) && max(p.x,p.y)>=-max(p.x,p.y));
+    var angle=shader_atan2(p.x,p.y);
     angle+=bitcast<f32>(0x40490fdbu);
     let slice=floor(angle*bitcast<f32>(0x4422f983u));
     return vec2(slice,fma(angle,bitcast<f32>(0x4422f983u),-slice));

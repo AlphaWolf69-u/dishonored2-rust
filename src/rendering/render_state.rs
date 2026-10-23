@@ -17,6 +17,32 @@ pub fn reset_render_state(state: &mut RenderState) {
     state[4..].copy_from_slice(&[0xe00e_0000, 0x32ff_ff1e, 0, 0, 0]);
 }
 
+/// 316670's depth/stencil classification before the near/far colour draws.
+/// These passes replace only 0x04 (near) or 0x08 (far); reference is separate.
+pub fn camera_blur_stencil_state(far: bool) -> RenderState {
+    let mut state = [0; 9];
+    reset_render_state(&mut state);
+    state[0] &= 0xfe1f_fffe;
+    state[4] = (state[4] & 0xff) | 0xe80e_8000;
+    state[5] = if far {
+        (state[5] & 0xfc08_08ee) | 0x0008_082e
+    } else {
+        (state[5] & 0xfc04_04ef) | 0x0004_042f
+    };
+    state
+}
+
+/// 316670's stencil restriction applied to the selected colour material.
+pub fn camera_blur_colour_state(mut state: RenderState, far: bool) -> RenderState {
+    state[4] = (state[4] & 0xff) | 0x4004_0000;
+    state[5] = if far {
+        (state[5] & 0xfc08_08ef) | 0x0008_082f
+    } else {
+        (state[5] & 0xfc04_04ef) | 0x0004_042f
+    };
+    state
+}
+
 /// Resolve a material's authored `state { ... }` against the actual MAIN
 /// program state (1402d5610/1402d662d). Only root-level state is consumed:
 /// similarly named option/parameter values are not drawing commands. No state
