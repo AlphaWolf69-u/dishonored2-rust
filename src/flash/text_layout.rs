@@ -12,7 +12,8 @@ use super::text::text_state;
 use crate::assets::iggy::font::Font;
 use std::rc::Rc;
 
-/// Gutter Flash and Iggy add around TextField text (2 px each side).
+/// TextField inset (2 px per side in Flash); Iggy's value comes with the
+/// FUN_141030f60 port.
 const GUTTER: f64 = 2.0;
 
 /// Find an embedded font by name across loaded libraries.
@@ -61,4 +62,61 @@ pub fn approximate_measure(vm: &Vm, o: &Obj) -> (f64, f64, usize) {
     let width = lines.iter().cloned().fold(0.0, f64::max);
     let height = line_height * lines.len() as f64 - t.format.leading;
     (width, height, lines.len())
+}
+
+/// One positioned glyph: its outline in em units, the pixel size and pen
+/// position of its origin (on the baseline), and its RGB colour.
+pub struct PlacedGlyph {
+    pub shape: crate::assets::iggy::shape::Shape,
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub colour: u32,
+}
+
+/// Glyph placement for drawing, from the same approximate layout as
+/// `approximate_measure`: left/centre/right alignment inside the text box,
+/// baselines `ascent * size` below the gutter, lines `(ascent + descent) *
+/// size + leading` apart.
+pub fn approximate_glyphs(vm: &Vm, o: &Obj) -> Vec<PlacedGlyph> {
+    let Some(t) = text_state(o).map(|t| t.clone()) else { return Vec::new() };
+    let Some(font) = find_font(vm, &t.format.font) else { return Vec::new() };
+    let size = t.format.size as f32;
+    let width = (t.rect[2] - t.rect[0]) as f32 - 2.0 * GUTTER as f32 - (t.format.left_margin + t.format.right_margin) as f32;
+    // Lines of (glyph index, advance) pairs.
+    let mut lines: Vec<Vec<(usize, f32)>> = vec![Vec::new()];
+    let mut prev: Option<u16> = None;
+    for c in t.text.encode_utf16() {
+        if c == b'\r' as u16 || c == b'\n' as u16 {
+            lines.push(Vec::new());
+            prev = None;
+            continue;
+        }
+        let Some(g) = font.glyph(c) else { continue };
+        let kern = prev.map_or(0.0, |p| if t.format.kerning { font.kerning(p, c) * size } else { 0.0 });
+        let advance = font.advances[g] * size + kern + t.format.letter_spacing as f32;
+        let line_width: f32 = lines.last().unwrap().iter().map(|(_, a)| a).sum();
+        if t.word_wrap && line_width + advance > width && line_width > 0.0 {
+            lines.push(Vec::new());
+        }
+        lines.last_mut().unwrap().push((g, advance));
+        prev = Some(c);
+    }
+    let line_height = (font.ascent + font.descent) * size + t.format.leading as f32;
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let line_width: f32 = line.iter().map(|(_, a)| a).sum();
+        let left = t.rect[0] as f32 + GUTTER as f32 + t.format.left_margin as f32;
+        let mut x = match t.format.align.as_str() {
+            "center" => left + (width - line_width) / 2.0,
+            "right" => left + width - line_width,
+            _ => left,
+        };
+        let y = t.rect[1] as f32 + GUTTER as f32 + font.ascent * size + i as f32 * line_height;
+        for &(g, advance) in line {
+            out.push(PlacedGlyph { shape: font.glyphs[g].clone(), x, y, size, colour: t.format.colour });
+            x += advance;
+        }
+    }
+    out
 }

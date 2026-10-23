@@ -13,9 +13,15 @@ fn target(vm: &mut Vm, this: &Value) -> Result<Obj> {
     t.ok_or_else(|| vm.type_error(1009, "Transform has no display object."))
 }
 
+/// `DisplayObject.transform`: a Transform bound to the object (its AS3
+/// constructor throws TypeError, so natives allocate it directly).
 pub fn new_transform(vm: &mut Vm, display_object: &Value) -> Result<Value> {
     let class = native_class(vm, "flash.geom", "Transform");
-    vm.construct_class(&class, std::slice::from_ref(display_object))
+    let t = vm.allocate(&class)?;
+    if let Some(mut n) = t.host_mut::<Native>() {
+        n.target = display_object.as_object().cloned();
+    }
+    Ok(Value::Object(t))
 }
 
 /// `displayObject.transform = t` copies the transform's matrix and colour.
@@ -137,12 +143,7 @@ pub fn install(vm: &mut Vm) {
     s.native = NativeClass {
         allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native::default())))),
         call: None,
-        init: Some(|_, this, a| {
-            if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
-                n.target = arg(a, 0).as_object().cloned();
-            }
-            Ok(Value::Undefined)
-        }),
+        init: None,
     };
     s.getters = vec![
         ("matrix", |vm, this, _| {

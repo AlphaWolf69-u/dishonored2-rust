@@ -200,8 +200,27 @@ fn apply_format(vm: &mut Vm, f: &mut Format, o: &Value) -> Result<()> {
     Ok(())
 }
 
+/// `FUN_1410b1dd0` / `FUN_1410b17d0`: the text box size scaled by the
+/// length of the matrix row (m0, m1) or (m2, m3), in f32.
+fn scaled_extent(o: &Obj, horizontal: bool) -> f64 {
+    let m = super::display::display_ref(o).map(|d| d.matrix).unwrap_or_default();
+    let (p, q, size) = {
+        let t = text_state(o).map(|t| t.rect).unwrap_or_default();
+        if horizontal { (m.a as f32, m.c as f32, (t[2] - t[0]) as f32) } else { (m.b as f32, m.d as f32, (t[3] - t[1]) as f32) }
+    };
+    ((p * p + q * q).sqrt() * size) as f64
+}
+
 fn getters() -> Vec<(&'static str, NativeFn)> {
     vec![
+        ("width", |vm, this, _| {
+            let o = this.as_object().cloned().ok_or_else(|| vm.type_error(1009, "null"))?;
+            Ok(scaled_extent(&o, true).into())
+        }),
+        ("height", |vm, this, _| {
+            let o = this.as_object().cloned().ok_or_else(|| vm.type_error(1009, "null"))?;
+            Ok(scaled_extent(&o, false).into())
+        }),
         ("text", |vm, this, _| with(vm, this, |t| Value::from(t.text.replace('\n', "\r")))),
         ("htmlText", |vm, this, _| with(vm, this, |t| Value::from(t.html.clone().unwrap_or_else(|| t.text.clone())))),
         ("length", |vm, this, _| with(vm, this, |t| Value::from(t.text.encode_utf16().count() as u32))),
@@ -236,6 +255,24 @@ fn getters() -> Vec<(&'static str, NativeFn)> {
 
 fn setters() -> Vec<(&'static str, NativeFn)> {
     vec![
+        // `FUN_1410b2b50` -> `FUN_1410317a0`: the requested box width, then
+        // relayout. The autosize origin adjustment is part of the text-engine
+        // port.
+        ("width", |vm, this, a| {
+            let w = vm.to_number(&arg(a, 0))? as f32 as f64;
+            with(vm, this, |t| t.rect[2] = t.rect[0] + w)?;
+            Ok(Value::Undefined)
+        }),
+        // `FUN_1410b2550` -> `FUN_141031780`: only without autosize.
+        ("height", |vm, this, a| {
+            let h = vm.to_number(&arg(a, 0))? as f32 as f64;
+            with(vm, this, |t| {
+                if t.auto_size == "none" {
+                    t.rect[3] = t.rect[1] + h;
+                }
+            })?;
+            Ok(Value::Undefined)
+        }),
         ("text", |vm, this, a| {
             let s = vm.to_string(&arg(a, 0))?.to_string();
             let s = super::iggy_functions::substitute(vm, &s);
@@ -340,7 +377,11 @@ fn methods() -> Vec<(&'static str, NativeFn)> {
             let o = this.as_object().cloned().unwrap();
             let (w, h, _) = super::text_layout::approximate_measure(vm, &o);
             let class = native_class(vm, "flash.text", "TextLineMetrics");
-            vm.construct_class(&class, &[0.into(), w.into(), h.into(), 0.into(), 0.into(), 0.into()])
+            let m = Value::Object(vm.allocate(&class)?);
+            for (k, v) in [("x", 0.0), ("width", w), ("height", h), ("ascent", 0.0), ("descent", 0.0), ("leading", 0.0)] {
+                vm.set_property(&m, &Name::public(k), v.into())?;
+            }
+            Ok(m)
         }),
     ]
 }
@@ -391,18 +432,6 @@ pub fn install(vm: &mut Vm) {
 
     let mut s = Spec::new("flash.text", "TextLineMetrics", Some(object.clone()));
     s.vars = vec![("x", 0.into()), ("width", 0.into()), ("height", 0.into()), ("ascent", 0.into()), ("descent", 0.into()), ("leading", 0.into())];
-    s.native = NativeClass {
-        allocate: None,
-        call: None,
-        init: Some(|vm, this, a| {
-            for (i, f) in ["x", "width", "height", "ascent", "descent", "leading"].iter().enumerate() {
-                if let Some(v) = a.get(i) {
-                    vm.set_property(this, &Name::public(f), v.clone())?;
-                }
-            }
-            Ok(Value::Undefined)
-        }),
-    };
     define(vm, s);
 
     let mut s = Spec::new("flash.text", "Font", Some(object.clone()));

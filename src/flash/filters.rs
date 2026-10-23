@@ -90,7 +90,10 @@ pub fn install(vm: &mut Vm) {
         let mut vars: Vec<(&'static str, Value)> = arrays.iter().map(|a| (*a, Value::Null)).collect();
         vars.extend(fields.iter().map(|(f, d)| (*f, if *f == "knockout" { Value::from(*d != 0.0) } else { Value::from(*d) })));
         s.vars = vars;
-        s.native = NativeClass { allocate: None, call: None, init: Some(init_fields) };
+        // Iggy's ConvolutionFilter constructor is the IllegalOperationError stub.
+        if *name != "ConvolutionFilter" {
+            s.native = NativeClass { allocate: None, call: None, init: Some(init_fields) };
+        }
         define(vm, s);
     }
     let mut s = Spec::new("flash.filters", "BitmapFilterQuality", Some(vm.b().object.clone()));

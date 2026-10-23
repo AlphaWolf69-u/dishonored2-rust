@@ -870,9 +870,10 @@ pub fn graphics_getter(vm: &mut Vm, this: &Value, _: &[Value]) -> Result<Value> 
         return Ok(Value::Object(g));
     }
     let class = native_class(vm, "flash.display", "Graphics");
-    let g = vm.construct_class(&class, &[])?;
-    display(&o).unwrap().graphics = g.as_object().cloned();
-    Ok(g)
+    // Natives allocate without the (throwing) AS3 constructor.
+    let g = vm.allocate(&class)?;
+    display(&o).unwrap().graphics = Some(g.clone());
+    Ok(Value::Object(g))
 }
 
 pub fn install(vm: &mut Vm) {
@@ -964,14 +965,18 @@ pub fn debug_tree(o: &Obj, depth: usize, out: &mut String) {
         let class = o.class().map_or("?".to_string(), |c| c.name.qualified());
         let _ = writeln!(
             out,
-            "{}{} name={:?} depth={:?} char={:?} kind={:?} frame={}",
+            "{}{} name={:?} depth={:?} char={:?} kind={:?} frame={} visible={} alpha={} clip={} mask={}",
             "  ".repeat(depth),
             class,
             d.name,
             d.depth,
             d.character.map(|c| (c.library, c.id)),
             d.kind,
-            d.timeline.as_ref().map_or(0, |t| t.current)
+            d.timeline.as_ref().map_or(0, |t| t.current),
+            d.visible,
+            d.colour.mul[3],
+            d.clip_depth,
+            d.mask.is_some()
         );
     }
     for c in children(o) {

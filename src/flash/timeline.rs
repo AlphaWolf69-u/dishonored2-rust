@@ -494,10 +494,9 @@ fn getters() -> Vec<(&'static str, NativeFn)> {
         }),
         ("currentLabels", |vm, this, _| {
             let labels = timeline(&this_clip(vm, this)?).map(|t| t.timeline.labels()).unwrap_or_default();
-            let class = native_class(vm, "flash.display", "FrameLabel");
             let mut items = Vec::new();
             for (n, f) in labels {
-                items.push(vm.construct_class(&class, &[Value::from(n), Value::from(f + 1)])?);
+                items.push(frame_label(vm, n, f + 1)?);
             }
             Ok(Value::Object(vm.array(items)))
         }),
@@ -513,42 +512,35 @@ fn getters() -> Vec<(&'static str, NativeFn)> {
 fn scene(vm: &mut Vm, this: &Value) -> Result<Value> {
     let o = this_clip(vm, this)?;
     let (frames, labels) = timeline(&o).map_or((1, Vec::new()), |t| (t.timeline.frame_count as u32, t.timeline.labels()));
-    let label_class = native_class(vm, "flash.display", "FrameLabel");
     let mut items = Vec::new();
     for (n, f) in labels {
-        items.push(vm.construct_class(&label_class, &[Value::from(n), Value::from(f + 1)])?);
+        items.push(frame_label(vm, n, f + 1)?);
     }
     let labels = Value::Object(vm.array(items));
     let class = native_class(vm, "flash.display", "Scene");
-    vm.construct_class(&class, &["Scene 1".into(), labels, frames.into()])
+    let scene = Value::Object(vm.allocate(&class)?);
+    vm.set_property(&scene, &Name::public("name"), "Scene 1".into())?;
+    vm.set_property(&scene, &Name::public("labels"), labels)?;
+    vm.set_property(&scene, &Name::public("numFrames"), frames.into())?;
+    Ok(scene)
+}
+
+/// FrameLabel objects are allocated by natives (their AS3 constructor throws).
+fn frame_label(vm: &mut Vm, name: String, frame: u32) -> Result<Value> {
+    let class = native_class(vm, "flash.display", "FrameLabel");
+    let label = Value::Object(vm.allocate(&class)?);
+    vm.set_property(&label, &Name::public("name"), Value::from(name))?;
+    vm.set_property(&label, &Name::public("frame"), Value::from(frame))?;
+    Ok(label)
 }
 
 pub fn install(vm: &mut Vm, sprite: &Rc<Class>) {
     let object = vm.b().object.clone();
     let mut s = Spec::new("flash.display", "FrameLabel", Some(object.clone()));
     s.vars = vec![("name", Value::Null), ("frame", 0.into())];
-    s.native = NativeClass {
-        allocate: None,
-        call: None,
-        init: Some(|vm, this, a| {
-            vm.set_property(this, &Name::public("name"), arg(a, 0))?;
-            vm.set_property(this, &Name::public("frame"), arg(a, 1))?;
-            Ok(Value::Undefined)
-        }),
-    };
     define(vm, s);
     let mut s = Spec::new("flash.display", "Scene", Some(object));
     s.vars = vec![("name", Value::Null), ("labels", Value::Null), ("numFrames", 0.into())];
-    s.native = NativeClass {
-        allocate: None,
-        call: None,
-        init: Some(|vm, this, a| {
-            vm.set_property(this, &Name::public("name"), arg(a, 0))?;
-            vm.set_property(this, &Name::public("labels"), arg(a, 1))?;
-            vm.set_property(this, &Name::public("numFrames"), arg(a, 2))?;
-            Ok(Value::Undefined)
-        }),
-    };
     define(vm, s);
 
     let mut s = Spec::new("flash.display", "MovieClip", Some(sprite.clone()));

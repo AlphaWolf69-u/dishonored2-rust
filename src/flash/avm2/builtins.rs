@@ -91,6 +91,17 @@ pub fn build_class(vm: &mut Vm, decl: &'static ClassDecl, spec: Spec) -> Rc<Clas
             }
         }
     }
+    // `FUN_141044820` constructs Boolean, Number, int, uint, String and
+    // Namespace by their type tag, and Array/Vector (tag 0x20) through the
+    // array path, bypassing the registered constructor.
+    // Error subclasses register the throwing stub while Error has a native
+    // constructor (0x14107ef30); whether `new TypeError()` reaches the stub
+    // is unresolved (see docs/flash.md), so they keep Error's constructor.
+    let typed = matches!(decl.name, "Boolean" | "Number" | "int" | "uint" | "String" | "Namespace" | "Vector");
+    let error_subclass = decl.base == "Error";
+    if spec.native.init.is_some() && !typed && !error_subclass && matches!(decl.ctor, Imp::ThrowIllegalOperation | Imp::ThrowType) {
+        report.push(format!("{}.{}: Rust constructor overrides Iggy's throwing constructor", decl.package, decl.name));
+    }
     let init = spec.native.init.or_else(|| ctor_init(decl.ctor));
     if spec.native.init.is_none() && spec.native.allocate.is_none() {
         if let Imp::Native(address) = decl.ctor {
