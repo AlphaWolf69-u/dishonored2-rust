@@ -10,8 +10,24 @@ use std::collections::HashMap;
 #[test]
 #[ignore = "requires graphics adapter; numeric raw-world vertex raster readback"]
 fn world_water_vertex_raster_uses_raw_mesh_and_shared_probe_bindings() {
+    check_vertex_raster(
+        include_str!("../../../../tests/fixtures/water_world_vertex.txt"),
+        true,
+    );
+}
+
+#[test]
+#[ignore = "requires graphics adapter; numeric world-water vertex raster without probe buffers"]
+fn world_water_vertex_raster_without_probes_matches_cached_stages() {
+    check_vertex_raster(
+        include_str!("../../../../tests/fixtures/water_world_position.txt"),
+        false,
+    );
+}
+
+fn check_vertex_raster(source: &str, probes: bool) {
     let mut fixture: HashMap<&str, Vec<Vec<u32>>> = HashMap::new();
-    for line in include_str!("../../../../tests/fixtures/water_world_vertex.txt").lines() {
+    for line in source.lines() {
         let mut v = line.split_whitespace();
         let key = v.next().unwrap();
         if key != "META" {
@@ -60,7 +76,11 @@ fn world_water_vertex_raster_uses_raw_mesh_and_shared_probe_bindings() {
     let world = app.sub_app(RenderApp).world();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
-    let stage = WorldProbeVertexStage::new(device);
+    let stage = if probes {
+        WorldProbeVertexStage::new(device)
+    } else {
+        WorldProbeVertexStage::without_probes(device)
+    };
     let fragment=device.create_and_validate_shader_module(ShaderModuleDescriptor { label:None,
         source:ShaderSource::Wgsl(r#"
 struct Input {@builtin(position) position:vec4<f32>,@location(0) a:vec4<f32>,@location(1) b:vec4<f32>,}
@@ -111,6 +131,20 @@ struct Output {@location(0) a:vec4<f32>,@location(1) b:vec4<f32>,}
         colour_state,
     )
     .unwrap();
+    let _world_program = WorldProbeColourProgram::new_for_world_surface(
+        device,
+        &mesh_layout,
+        TextureFormat::Depth32Float,
+        TextureFormat::Rgba16Float,
+        colour_state,
+        false,
+        if probes {
+            crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal
+        } else {
+            crate::rendering::water::program::WorldWaterColourClass::Horizontal
+        },
+    )
+    .unwrap();
     let vertex_layout = vertex_buffer_layout(&mesh_layout).unwrap();
     assert_eq!(vertex_layout.attributes[0].format, VertexFormat::Float32x3);
     assert_eq!(vertex_layout.attributes[1].format, VertexFormat::Float32);
@@ -137,16 +171,20 @@ struct Output {@location(0) a:vec4<f32>,@location(1) b:vec4<f32>,}
         })
     })
     .collect();
-    let inputs = stage.bind_inputs(
-        device,
-        WorldProbeVertexBuffers {
-            instances: &storage[0],
-            matrices: &storage[1],
-            references: &storage[2],
-            probe_info: &storage[3],
-            cube_indices: &storage[4],
-        },
-    );
+    let inputs = if !probes {
+        stage.bind_world_inputs(device, &storage[0], &storage[1])
+    } else {
+        stage.bind_inputs(
+            device,
+            WorldProbeVertexBuffers {
+                instances: &storage[0],
+                matrices: &storage[1],
+                references: &storage[2],
+                probe_info: &storage[3],
+                cube_indices: &storage[4],
+            },
+        )
+    };
     let stride = 80u64.next_multiple_of(u64::from(
         device.limits().min_uniform_buffer_offset_alignment,
     ));
@@ -185,7 +223,11 @@ struct Output {@location(0) a:vec4<f32>,@location(1) b:vec4<f32>,}
         layout: Some(&layout),
         vertex: RawVertexState {
             module: &stage.module,
-            entry_point: Some("water_world_colour_vertex"),
+            entry_point: Some(if probes {
+                "water_world_colour_vertex"
+            } else {
+                "water_world_colour_vertex_without_probes"
+            }),
             compilation_options: default(),
             buffers: &[RawVertexBufferLayout {
                 array_stride: vertex_layout.array_stride,

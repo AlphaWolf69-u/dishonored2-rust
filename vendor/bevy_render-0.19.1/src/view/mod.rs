@@ -987,7 +987,19 @@ impl ViewDepthTexture {
     }
 
     pub fn get_attachment(&self, store: StoreOp) -> RenderPassDepthStencilAttachment<'_> {
-        self.attachment.get_attachment(store)
+        let mut attachment = self.attachment.get_attachment(store);
+        if self.texture.format().has_stencil_aspect() {
+            // Share the camera's first-use clear with water/boat stencil
+            // consumers; later passes must preserve their same-frame masks.
+            attachment.stencil_ops = Some(wgpu::Operations {
+                load: match attachment.depth_ops.as_ref().map(|ops| ops.load) {
+                    Some(wgpu::LoadOp::Clear(_)) => wgpu::LoadOp::Clear(0),
+                    _ => wgpu::LoadOp::Load,
+                },
+                store,
+            });
+        }
+        attachment
     }
 
     pub fn view(&self) -> &TextureView {

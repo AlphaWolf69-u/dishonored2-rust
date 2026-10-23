@@ -19,6 +19,7 @@ pub struct WorldProbeColourParameters {
     pub output: ColourOutputParameters,
     pub sky_radius: [f32; 4],
     pub use_sky_cube: bool,
+    pub use_probes: bool,
 }
 impl WorldProbeColourParameters {
     pub fn uniform_bytes(&self) -> Result<[u8; 1008], String> {
@@ -36,9 +37,14 @@ impl WorldProbeColourParameters {
         bytes.extend(self.output.uniform_bytes());
         bytes.extend(self.sky_radius.into_iter().flat_map(f32::to_le_bytes));
         bytes.extend(
-            [u32::from(self.use_sky_cube), 0, 0, 0]
-                .into_iter()
-                .flat_map(u32::to_le_bytes),
+            [
+                u32::from(self.use_sky_cube),
+                u32::from(!self.use_probes),
+                0,
+                0,
+            ]
+            .into_iter()
+            .flat_map(u32::to_le_bytes),
         );
         Ok(bytes.try_into().expect("world probe colour uniform layout"))
     }
@@ -69,6 +75,7 @@ impl WorldProbeColourProgram {
             state,
             false,
             false,
+            true,
         )
     }
 
@@ -89,6 +96,7 @@ impl WorldProbeColourProgram {
             state,
             true,
             false,
+            true,
         )
     }
 
@@ -99,6 +107,7 @@ impl WorldProbeColourProgram {
         colour_format: TextureFormat,
         state: crate::render_state::RenderState,
         indices_reversed: bool,
+        class: crate::rendering::water::program::WorldWaterColourClass,
     ) -> Result<Self, String> {
         Self::create(
             device,
@@ -108,6 +117,7 @@ impl WorldProbeColourProgram {
             state,
             true,
             indices_reversed,
+            class == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
         )
     }
 
@@ -119,6 +129,7 @@ impl WorldProbeColourProgram {
         state: crate::render_state::RenderState,
         view_exposure: bool,
         indices_reversed: bool,
+        use_probes: bool,
     ) -> Result<Self, String> {
         let raster = crate::render_state::raster_state(&state);
         if raster.antialiased_line || raster.multisample {
@@ -142,7 +153,11 @@ impl WorldProbeColourProgram {
                 return Err(format!("world water requires device feature {feature:?}"));
             }
         }
-        let vertex = WorldProbeVertexStage::new(device);
+        let vertex = if use_probes {
+            WorldProbeVertexStage::new(device)
+        } else {
+            WorldProbeVertexStage::without_probes(device)
+        };
         let parameters = device.create_bind_group_layout(
             Some("world water fragment parameters"),
             &[BindGroupLayoutEntry {
@@ -236,7 +251,11 @@ impl WorldProbeColourProgram {
             layout: Some(&layout),
             vertex: RawVertexState {
                 module: &vertex.module,
-                entry_point: Some("water_world_colour_vertex"),
+                entry_point: Some(if use_probes {
+                    "water_world_colour_vertex"
+                } else {
+                    "water_world_colour_vertex_without_probes"
+                }),
                 compilation_options: default(),
                 buffers: &[RawVertexBufferLayout {
                     array_stride: mesh.array_stride,

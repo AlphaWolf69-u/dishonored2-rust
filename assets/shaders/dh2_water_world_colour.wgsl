@@ -53,3 +53,17 @@ fn water_world_colour_input(position:vec3<f32>,normal_w:f32,
     @builtin(instance_index) instance:u32)->WaterWorldColourVertex {
     return water_world_colour_input(position,normal_w,vertex,instance);
 }
+
+// VS14454/14465/14480 omit PNW and normal-W entirely. Carry the same world
+// position into shared shading without accessing any probe reference buffer.
+@vertex fn water_world_colour_vertex_without_probes(@location(0) position:vec3<f32>,
+    @builtin(instance_index) instance:u32)->WaterWorldColourVertex {
+    let source_instance=instance-water_world_colour.controls.z;
+    let index=water_colour_instances[water_world_colour.controls.x+source_instance]&0x00ffffffu;
+    let model=water_colour_matrices[index];
+    let p=vec4(position,1.0);
+    let world=vec3(dot(p,model.x),dot(p,model.y),dot(p,model.z));
+    let vp=water_world_colour.vp;
+    return WaterWorldColourVertex(vec4(vec3(0.0),world.x),vec4(world.yz,vec2(0.0)),
+        shadow_world_project(vec4(world,1.0),vp[0],vp[1],vp[2],vp[3]));
+}

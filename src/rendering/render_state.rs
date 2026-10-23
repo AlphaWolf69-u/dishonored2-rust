@@ -411,12 +411,23 @@ pub fn boat_volume_depth_state(mut state: RenderState) -> RenderState {
 }
 
 /// 2fcb70: second boat-volume pass, also used after the depthAlpha copy on
-/// both full and reduced targets. Stencil reference remains 8.
+/// the main camera and reduced-alpha targets. Model stencil reference remains 8.
 pub fn boat_volume_stencil_state(mut state: RenderState) -> RenderState {
     state[0] &= 0xfe1f_fffe;
     state[4] = (state[4] & 0xff) | 0xe28e_2800;
     state[5] = (state[5] & 0xfc02_02ec) | 0x0002_022c;
     state
+}
+
+/// 293400/2937d0, called by the world boat list (29aba0). The caller first
+/// applies the world surface's facing bit. Its packet masks are equivalent to
+/// the model helpers, but the stencil pass binds reference 2 instead of 8.
+pub fn world_boat_volume_state(state: RenderState, stencil_pass: bool) -> (RenderState, u8) {
+    if stencil_pass {
+        (boat_volume_stencil_state(state), 2)
+    } else {
+        (boat_volume_depth_state(state), 8)
+    }
 }
 
 /// 2fdea0's shared ocean/volume underwater mark. Stencil reference is 0x42;
@@ -729,6 +740,20 @@ mod parser_tests {
             count += 1;
         }
         assert_eq!(count, 96);
+    }
+
+    #[test]
+    fn world_boat_states_match_executed_packets_and_references() {
+        let mut count = 0;
+        for line in include_str!("../../tests/fixtures/world_boat_states.txt").lines() {
+            let words: Vec<_> = line.split_whitespace().map(|v| u32::from_str_radix(v,16).unwrap()).collect();
+            assert_eq!(words.len(),20);
+            let (state,reference) = world_boat_volume_state(words[1..10].try_into().unwrap(), words[0] != 0);
+            assert_eq!(state, words[10..19]);
+            assert_eq!(u32::from(reference), words[19]);
+            count += 1;
+        }
+        assert_eq!(count,96);
     }
 
     #[test]

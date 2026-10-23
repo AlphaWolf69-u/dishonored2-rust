@@ -74,6 +74,7 @@ Otherwise, we pass a range corresponding only to the current bind group.
 
 mod adapter;
 mod command;
+mod composited;
 mod conv;
 mod dcomp;
 mod descriptor;
@@ -590,6 +591,7 @@ unsafe impl Send for Instance {}
 unsafe impl Sync for Instance {}
 
 struct SwapChain {
+    composited: Option<composited::Composited>,
     // TODO: Drop order frees the SWC before the raw image pointers...?
     raw: Dxgi::IDXGISwapChain3,
     // need to associate raw image pointers with the swapchain so they can be properly released
@@ -1282,6 +1284,7 @@ impl crate::DynAccelerationStructure for AccelerationStructure {}
 
 impl SwapChain {
     unsafe fn release_resources(mut self) -> Dxgi::IDXGISwapChain3 {
+        drop(self.composited.take());
         if let Some(mut waitable) = self.waitable.take() {
             unsafe { Foundation::HANDLE::free(&mut waitable) };
         }
@@ -1323,6 +1326,19 @@ impl crate::Surface for Surface {
         device: &Device,
         config: &crate::SurfaceConfiguration,
     ) -> Result<(), crate::SurfaceError> {
+        let composited_handle = match (config.present_mode, &self.target) {
+            (wgt::PresentMode::Mailbox, SurfaceTarget::WndHandle(handle)) => Some(*handle),
+            _ => None,
+        };
+        if let Some(handle) = composited_handle {
+            unsafe { device.wait_for_present_queue_idle() }?;
+            if let Some(previous) = self.swap_chain.write().take() {
+                drop(unsafe { previous.release_resources() });
+            }
+            let swapchain = unsafe { composited::Composited::create(&self.factory, device, handle, config) }?;
+            *self.swap_chain.write() = Some(swapchain);
+            return Ok(());
+        }
         let mut flags = Dxgi::DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         // We always set ALLOW_TEARING on the swapchain no matter
         // what kind of swapchain we want because ResizeBuffers
@@ -1349,7 +1365,12 @@ impl crate::Surface for Surface {
         // For high latency extra buffers seems excessive, so go with a minimum of 3 and beyond that add 1.
         let swap_chain_buffer = (config.maximum_frame_latency + 1).min(16);
 
-        let swap_chain = match self.swap_chain.write().take() {
+        let previous = self.swap_chain.write().take();
+        let previous = if previous.as_ref().is_some_and(|sc| sc.composited.is_some()) {
+            drop(previous.map(|sc| unsafe { sc.release_resources() }));
+            None
+        } else { previous };
+        let swap_chain = match previous {
             //Note: this path doesn't properly re-initialize all of the things
             Some(sc) => {
                 let raw = unsafe { sc.release_resources() };
@@ -1527,6 +1548,7 @@ impl crate::Surface for Surface {
 
         let mut swapchain = self.swap_chain.write();
         *swapchain = Some(SwapChain {
+            composited: None,
             raw: swap_chain,
             resources,
             waitable,
@@ -1563,16 +1585,22 @@ impl crate::Surface for Surface {
         let mut swapchain = self.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
 
-        match self.options.latency_waitable_object {
+        if sc.composited.is_none() { match self.options.latency_waitable_object {
             wgt::Dx12UseFrameLatencyWaitableObject::None
             | wgt::Dx12UseFrameLatencyWaitableObject::DontWait => {}
             wgt::Dx12UseFrameLatencyWaitableObject::Wait => {
                 unsafe { sc.wait(timeout) }?;
             }
-        }
+        } }
 
-        let base_index = unsafe { sc.raw.GetCurrentBackBufferIndex() } as usize;
+        let base_index = sc.composited.as_ref().map_or_else(
+            || unsafe { sc.raw.GetCurrentBackBufferIndex() } as usize,
+            |bridge| bridge.next_index,
+        );
         let index = (base_index + sc.acquired_count) % sc.resources.len();
+        if let Some(bridge) = &sc.composited {
+            unsafe { bridge.acquire(index, timeout) }?;
+        }
         sc.acquired_count += 1;
 
         let texture = Texture {
@@ -1633,11 +1661,16 @@ impl crate::Queue for Queue {
     unsafe fn present(
         &self,
         surface: &Surface,
-        _texture: Texture,
+        texture: Texture,
     ) -> Result<(), crate::SurfaceError> {
         let mut swapchain = surface.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
         sc.acquired_count -= 1;
+        if let Some(bridge) = &mut sc.composited {
+            let index = sc.resources.iter().position(|r| r.as_raw() == texture.resource.as_raw())
+                .ok_or(crate::SurfaceError::Lost)?;
+            return unsafe { bridge.present(&self.raw, &sc.raw, index) };
+        }
 
         let (interval, flags) = match sc.present_mode {
             // We only allow immediate if ALLOW_TEARING is valid.

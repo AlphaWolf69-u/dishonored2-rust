@@ -37,6 +37,7 @@ pub struct DisplayCubeOverrides {
 pub struct DisplayFrame {
     pub camera: Entity,
     pub camera_effects: Option<crate::rendering::camera_effects::CameraEffectsFrame>,
+    pub camera_blur: Option<std::sync::Arc<crate::assets::camera_blur::BlurResources>>,
     pub parameters: ToneMappingParameters,
     /// Resident archive table; replacement produces a new GPU texture view.
     pub cube: Handle<Image>,
@@ -269,8 +270,7 @@ fn render_display(
                 None
             }
         };
-        let capture_source = capture_request
-            .is_pending()
+        let capture_source = (capture_request.is_pending() || capture.motion_enabled())
             .then(|| target.main_texture().clone());
         let post = target.post_process_write();
         let lens_drawn = if let (Some(inputs), Some(lens)) = (lens_inputs, frame.lens.as_ref()) {
@@ -308,19 +308,49 @@ fn render_display(
         if lens_drawn {
             if let Some(source) = capture_source.as_ref() {
                 let lens = frame.lens.as_ref().unwrap();
-                let mut planes = vec![("hdr", source)];
-                if let Some(pyramid) = pyramids.get_mut(entity) {
-                    planes.push(("luminance", pyramid.texture()));
+                if let Some(bloom) = current
+                    .lens
+                    .as_ref()
+                    .and_then(|owner| owner.bloom_texture())
+                {
+                    capture.record_motion(
+                        &capture_request,
+                        &device,
+                        &queue,
+                        context.command_encoder(),
+                        [source, post.destination_texture, bloom],
+                        &exposure.buffer,
+                        [
+                            139.26 * camera.exposure,
+                            lens.veil_strength,
+                            lens.white_level,
+                            lens.dirt_strength,
+                        ],
+                    );
                 }
-                if let Some(bloom) = current.lens.as_ref().and_then(|owner| owner.bloom_texture()) {
-                    planes.push(("bloom", bloom));
-                }
-                let details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
-                if let Err(error) = capture.record(
-                    &capture_request, &device, context.command_encoder(), &planes,
-                    &exposure.buffer, details,
-                ) {
-                    warn!("Display numeric capture failed: {error}");
+                if capture_request.is_pending() {
+                    let mut planes = vec![("hdr", source), ("display", post.destination_texture)];
+                    if let Some(pyramid) = pyramids.get_mut(entity) {
+                        planes.push(("luminance", pyramid.texture()));
+                    }
+                    if let Some(bloom) = current
+                        .lens
+                        .as_ref()
+                        .and_then(|owner| owner.bloom_texture())
+                    {
+                        planes.push(("bloom", bloom));
+                    }
+                    let details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
+                    if let Err(error) = capture.record(
+                        &capture_request,
+                        &device,
+                        context.command_encoder(),
+                        &planes,
+                        &exposure.buffer,
+                        details,
+                    ) {
+                        warn!("Display numeric capture failed: {error}");
+                    }
                 }
             }
         }

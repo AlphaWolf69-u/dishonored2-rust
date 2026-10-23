@@ -484,6 +484,7 @@ pub(super) fn prepare_screen_shadow_frame(
         }
         let extent = camera
             .physical_viewport_size()
+            .filter(|extent| extent.min_element() > 0)
             .ok_or("game screen extent is unavailable")?;
         let size = Extent3d {
             width: extent.x,

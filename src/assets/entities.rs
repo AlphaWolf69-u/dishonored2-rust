@@ -1,5 +1,5 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
 pub mod wind;
@@ -1943,7 +1943,20 @@ pub fn placed_models(document: &Document) -> Vec<PlacedModel> {
 /// Include authored blueprint instances so their child meshes can be expanded
 /// from the corresponding blueprint declaration by the asset loader.
 pub fn render_placements(document: &Document) -> Vec<PlacedModel> {
+    // arkCpntUmbraGate startup (1404cc8d0) enables the visibility gate and
+    // calls its owner's Hide (vtable+0x80, 1408784b0). This is component
+    // behavior, independent of the entity class, model or material name.
+    // Keep the authored entity/model data available through placed_models;
+    // these are the initial colour-render placements only.
+    let hidden: HashSet<_> = component_bindings(document)
+        .into_iter()
+        .filter(|binding| binding.class == "cpntUmbraGate")
+        .map(|binding| binding.entity_id)
+        .collect();
     placed_models_using(document, &HashMap::new(), true)
+        .into_iter()
+        .filter(|placement| !hidden.contains(&placement.id))
+        .collect()
 }
 
 /// Bind map-local component declarations to the entities that reference them.
@@ -3333,6 +3346,31 @@ entity { entityDef crate { edit = { m_componentDecls = {
     fn hidden_gameplay_volume_is_not_a_render_placement() {
         let source = "Version 6 entity { entityDef gate { edit = { flags = { hide = true; } renderModelInfo = { model = \"models/gate_actor.lwo\"; } spawnPosition = { x = 1; } } } }";
         assert!(render_placements(&parse(source).unwrap()).is_empty());
+    }
+
+    #[test]
+    fn gate_component_hides_initial_rendering_without_losing_authored_model() {
+        let document = parse(r#"Version 6
+            component { cpntUmbraGate gate_settings { edit = { m_kisculeDriven = true; } } }
+            entity { entityDef ordinary_owner {
+                class = "idEntity";
+                edit = {
+                    spawnPosition = { x = 1; }
+                    renderModelInfo = { model = "models/shared.lwo"; }
+                    m_componentDecls = { item_add["gate"] = { mapComponentDecl = "gate_settings"; } }
+                }
+            } }
+            entity { entityDef visible_owner {
+                class = "arkUmbraGate";
+                edit = { spawnPosition = { x = 2; } renderModelInfo = { model = "models/shared.lwo"; } }
+            } }
+        "#).unwrap();
+        // The startup component hides its owner. Neither the model path nor
+        // the class by itself suppresses the other instance of that model.
+        assert_eq!(placed_models(&document).len(), 2);
+        let rendered = render_placements(&document);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].id, "visible_owner");
     }
 
     #[test]

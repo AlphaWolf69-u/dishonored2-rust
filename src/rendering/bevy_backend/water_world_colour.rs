@@ -34,6 +34,12 @@ pub struct WorldProbeVertexBuffers<'a> {
 
 impl WorldProbeVertexStage {
     pub fn new(device: &RenderDevice) -> Self {
+        Self::create(device, true)
+    }
+    pub fn without_probes(device: &RenderDevice) -> Self {
+        Self::create(device, false)
+    }
+    fn create(device: &RenderDevice, probes: bool) -> Self {
         let layout = |name, sizes: &[u64], uniform| {
             device.create_bind_group_layout(
                 Some(name),
@@ -59,7 +65,11 @@ impl WorldProbeVertexStage {
         };
         Self {
             parameters: layout("world water vertex parameters", &[80], true),
-            inputs: layout("world water matrices and probes", &[4, 48, 32, 8, 4], false),
+            inputs: layout(
+                "world water matrices and probes",
+                if probes { &[4, 48, 32, 8, 4] } else { &[4, 48] },
+                false,
+            ),
             module: device.create_and_validate_shader_module(ShaderModuleDescriptor {
                 label: Some("arkWater world probe vertex"),
                 source: ShaderSource::Wgsl(SHADER_SOURCE.into()),
@@ -94,11 +104,22 @@ impl WorldProbeVertexStage {
             input.probe_info,
             input.cube_indices,
         ];
+        self.bind_buffers(device, &buffers)
+    }
+    pub fn bind_world_inputs(
+        &self,
+        device: &RenderDevice,
+        instances: &Buffer,
+        matrices: &Buffer,
+    ) -> BindGroup {
+        self.bind_buffers(device, &[instances, matrices])
+    }
+    fn bind_buffers(&self, device: &RenderDevice, buffers: &[&Buffer]) -> BindGroup {
         device.create_bind_group(
             Some("world water vertex sources"),
             &self.inputs,
             &buffers
-                .into_iter()
+                .iter()
                 .enumerate()
                 .map(|(binding, buffer)| BindGroupEntry {
                     binding: binding as u32,

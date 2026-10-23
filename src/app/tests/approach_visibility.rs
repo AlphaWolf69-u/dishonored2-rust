@@ -108,6 +108,7 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
         cache: default(),
         shadow_materials: default(),
         water_materials: default(),
+        boat_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),
         misses: 0,

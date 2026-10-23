@@ -16,7 +16,7 @@ pub(super) fn prepare_world_geometry(
     let objects: std::collections::HashMap<_, _> = sources
         .objects
         .iter()
-        .filter(|source| matches!(source.material, Some(MaterialHandle::Water(_))))
+        .filter(|source| matches!(source.material, Some(MaterialHandle::Water(_) | MaterialHandle::BoatVolume(_))))
         .map(|source| {
             let result = (|| {
                 let channels = &world
@@ -28,7 +28,9 @@ pub(super) fn prepare_world_geometry(
                     .get_mut(&source.mesh)
                     .ok_or("world water shared mesh asset is unavailable")?;
                 source.raw_vertex_count.as_ref().map_err(Clone::clone)?;
-                water_world_colour::retain_normal_w(&mut mesh, channels)?;
+                if matches!(source.material,Some(MaterialHandle::Water(_))) {
+                    water_world_colour::retain_normal_w(&mut mesh, channels)?;
+                }
                 Ok(WaterWorldMesh {
                     mesh: source.mesh.clone(),
                     surface_flags: u8::from(source.flipped),

@@ -22,10 +22,10 @@ pub struct CachedWaterDepthSource {
 }
 
 impl ProgramLibrary {
-    pub fn world_water_colour_class(
+    pub(super) fn stage_checksums(
         &mut self,
         variant: &D3dVariantData,
-    ) -> Result<crate::rendering::water::program::WorldWaterColourClass> {
+    ) -> Result<[Option<[u8; 16]>; 2]> {
         let mut pair = [None; 2];
         for stage in &variant.stages {
             let bytes = match &stage.bytecode {
@@ -33,26 +33,89 @@ impl ProgramLibrary {
                 StageBytecode::Inline(bytes) => bytes.clone(),
                 StageBytecode::Cached(id) => self.cache.stage(*id as usize)?.bytes,
             };
-            if bytes.len() < 32 || bytes.get(..4) != Some(b"DXBC".as_slice())
+            if bytes.len() < 32
+                || bytes.get(..4) != Some(b"DXBC".as_slice())
                 || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
             {
                 return Err("invalid water colour DXBC container".into());
             }
-            let slot = pair.get_mut(stage.kind as usize)
+            let slot = pair
+                .get_mut(stage.kind as usize)
                 .ok_or("unsupported water colour stage kind")?;
-            if slot.is_some() { return Err("duplicate water colour stage".into()); }
-            *slot = Some(<[u8;16]>::try_from(&bytes[4..20]).unwrap());
+            if slot.is_some() {
+                return Err("duplicate water colour stage".into());
+            }
+            *slot = Some(<[u8; 16]>::try_from(&bytes[4..20]).unwrap());
         }
+        Ok(pair)
+    }
+    pub fn world_water_colour_class(
+        &mut self,
+        variant: &D3dVariantData,
+    ) -> Result<crate::rendering::water::program::WorldWaterColourClass> {
+        let pair = self.stage_checksums(variant)?;
         // VS14490/14494 have identical WORLD/PNW output for all 512 native
         // stream-output cases, including first-instance 0/2/7. The corresponding
         // PS14491/14495 differ by the source's SSR specialization.
         let supported = [
-            ([0x28,0x8c,0x1c,0x55,0xb1,0x3e,0x90,0x53,0x29,0xbb,0x26,0x9d,0xae,0xb8,0x2b,0xb3],
-             [0xcb,0x54,0x40,0x7c,0xfa,0x50,0x00,0x37,0xb8,0xe2,0xa6,0x92,0x51,0x50,0x46,0x04]),
-            ([0x18,0xde,0xd5,0xaf,0xf3,0x84,0x6f,0x42,0x4c,0x81,0x10,0xc1,0x1e,0x9b,0x25,0xc7],
-             [0xc6,0xbe,0x74,0x4d,0x88,0xf3,0x4b,0x51,0xcd,0x9e,0x95,0x0a,0xf3,0xb1,0x05,0x56]),
+            (
+                [
+                    0x28, 0x8c, 0x1c, 0x55, 0xb1, 0x3e, 0x90, 0x53, 0x29, 0xbb, 0x26, 0x9d, 0xae,
+                    0xb8, 0x2b, 0xb3,
+                ],
+                [
+                    0xcb, 0x54, 0x40, 0x7c, 0xfa, 0x50, 0x00, 0x37, 0xb8, 0xe2, 0xa6, 0x92, 0x51,
+                    0x50, 0x46, 0x04,
+                ],
+            ),
+            (
+                [
+                    0x18, 0xde, 0xd5, 0xaf, 0xf3, 0x84, 0x6f, 0x42, 0x4c, 0x81, 0x10, 0xc1, 0x1e,
+                    0x9b, 0x25, 0xc7,
+                ],
+                [
+                    0xc6, 0xbe, 0x74, 0x4d, 0x88, 0xf3, 0x4b, 0x51, 0xcd, 0x9e, 0x95, 0x0a, 0xf3,
+                    0xb1, 0x05, 0x56,
+                ],
+            ),
         ];
-        if supported.iter().any(|(v,p)| pair == [Some(*v),Some(*p)]) {
+        // These horizontal variants have no IBL probes; their world vertex
+        // stages only transform position (different PerInstanceCB offsets).
+        let horizontal = [
+            (
+                [
+                    0xb5, 0x20, 0x1c, 0x0a, 0x2e, 0x3d, 0xf3, 0x00, 0x4a, 0x15, 0x4a, 0xa9, 0xc7,
+                    0xa4, 0xc7, 0x0b,
+                ],
+                [
+                    0xf6, 0xec, 0x7b, 0x02, 0xd6, 0x04, 0xcc, 0x79, 0xc5, 0xe5, 0x6f, 0x3d, 0x1f,
+                    0xb8, 0xff, 0x07,
+                ],
+            ),
+            (
+                [
+                    0x47, 0xc7, 0x9d, 0xe5, 0x6b, 0xa0, 0x6d, 0x13, 0xe0, 0x8b, 0xa8, 0xfd, 0x80,
+                    0x66, 0xe9, 0x0d,
+                ],
+                [
+                    0x3e, 0xfc, 0x49, 0xc9, 0xce, 0x21, 0xfb, 0x22, 0x6a, 0x37, 0x41, 0xec, 0xc7,
+                    0x6d, 0xd1, 0x81,
+                ],
+            ),
+            (
+                [
+                    0x64, 0x4b, 0xb6, 0x42, 0x6e, 0xbb, 0xae, 0x81, 0x3a, 0x49, 0xc8, 0x23, 0x78,
+                    0x85, 0x05, 0x04,
+                ],
+                [
+                    0x16, 0xe2, 0xab, 0x0d, 0xa5, 0xa5, 0xe9, 0x95, 0x91, 0x1f, 0xc3, 0xc1, 0x3c,
+                    0x4d, 0x45, 0x3a,
+                ],
+            ),
+        ];
+        if horizontal.iter().any(|(v, p)| pair == [Some(*v), Some(*p)]) {
+            Ok(crate::rendering::water::program::WorldWaterColourClass::Horizontal)
+        } else if supported.iter().any(|(v, p)| pair == [Some(*v), Some(*p)]) {
             Ok(crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal)
         } else {
             Err(format!("unsupported world water colour stages {pair:02x?}"))

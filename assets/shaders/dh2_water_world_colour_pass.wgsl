@@ -27,10 +27,11 @@ fn water_world_colour(vertex:WorldProbeColourFragment,
     // This specialization is admitted only for horizontal water. The installed
     // horizontal branch does not fetch or use geometric normals/tangents.
     let input=water_colour_input_with_probes(parameters.colour,position,vertex.pixel.xy,
-        front,vec3(0.0),vec3(0.0),0.0,true,true,0u,
+        front,vec3(0.0),vec3(0.0),0.0,parameters.options.y==0u,true,0u,
         vertex.indices_world_x.xyz,vertex.world_yz_barycentrics.zw,
         permutation,gradients,point_wrap);
-    let environment=WaterEnvironment(parameters.sky_radius.xyz,parameters.sky_radius.w,true,true,parameters.options.x!=0u);
+    let environment=WaterEnvironment(parameters.sky_radius.xyz,parameters.sky_radius.w,
+        parameters.options.y==0u,true,parameters.options.x!=0u);
     let result=water_surface(parameters.surface,parameters.reflection,parameters.refraction,parameters.shadow,environment,input,
         opaque,reduced,hdr,fog,caustics,probes,sky,shadow,
         linear_clamp,caustic_sampler,probe_sampler,sky_sampler,comparison);

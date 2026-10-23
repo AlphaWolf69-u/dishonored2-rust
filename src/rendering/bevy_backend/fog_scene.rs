@@ -61,6 +61,11 @@ struct Resources<'w> {
     water_frame: Option<Res<'w, super::water_scene::WaterSceneFrame>>,
     water_materials: Option<Res<'w, super::water_scene::WaterMaterials>>,
     water_meshes: Option<Res<'w, super::water_scene::WaterWorldMeshes>>,
+    water_lighting: Option<Res<'w, super::water_scene::WaterLighting>>,
+    water_images: Option<Res<'w, super::water_scene::WaterImageSources>>,
+    boat_materials: Option<Res<'w, super::boat_scene::BoatMaterials>>,
+    display: Option<Res<'w, super::display_scene::DisplaySceneFrame>>,
+    coarse: Option<Res<'w, super::coarse_depth::CoarseDepthGpu>>,
     depth_programs: Option<Res<'w, super::tiled_lighting_gpu::TlfPipelines>>,
     local_fog: Res<'w, super::fog_light_scattering::LocalFogFrame>,
     local_shadows: Option<Res<'w, super::shadow_pass::LocalShadowSceneFrame>>,
@@ -71,11 +76,23 @@ struct FogGpu {
     current: Option<ViewFog>,
     reported: bool,
 }
+#[derive(Default)]
+struct WaterSubmission {
+    error: Option<String>,
+    boat_error: Option<String>,
+    reported: bool,
+}
+#[derive(SystemParam)]
+struct WaterInstances<'w, 's> {
+    water: Query<'w, 's, &'static super::water_scene::WaterInstance>,
+    boats: Query<'w, 's, &'static super::boat_scene::BoatInstance>,
+}
 struct ViewFog {
     tiled: Option<super::tiled_lighting_pass::TiledLightingPass>,
     scattering: Option<super::fog_light_scattering::LightScatteringPass>,
     camera: Entity,
     water_depth: Option<super::water_depth_scene::WaterDepthScene>,
+    water_colour: Option<super::water_colour_scene::WaterColourScene>,
     areas: Option<super::fog_volumes::AreaFogPass>,
     sun_program: Option<FogSunProgram>,
     sun_sprite: Option<SunSpritePass>,
@@ -130,6 +147,7 @@ impl ViewFog {
             scattering: None,
             camera: frame.camera,
             water_depth: None,
+            water_colour: None,
             areas: None,
             sun_program: None,
             sun_sprite: None,
@@ -180,12 +198,13 @@ fn render_atmosphere(
             &ViewDepthTexture,
             &ExtractedView,
             &ExtractedCamera,
+            Option<&super::auto_exposure::MaterialExposure>,
         ),
         With<super::fog::FogCamera>,
     >,
     skies: Query<&SkyInstance>,
     interiors: Query<&InteriorInstance>,
-    waters: Query<&super::water_scene::WaterInstance>,
+    water_instances: WaterInstances,
     clock: Res<crate::gameplay::game_clock_runtime::GameplayViewClock>,
     sampling: Option<Res<super::shadow_sampling::ParallelSamplingBuffer>>,
     atlas_frame: Res<super::shadow_pass::ShadowSceneFrame>,
@@ -194,6 +213,7 @@ fn render_atmosphere(
     mut gpu: ResMut<FogGpu>,
     mut context: RenderContext,
     mut last_error: Local<Option<String>>,
+    mut water_submission: Local<WaterSubmission>,
 ) {
     let material_parameters = shared
         .as_ref()
@@ -209,7 +229,7 @@ fn render_atmosphere(
         return;
     };
     let result = (|| -> Result<(), String> {
-        let (main, target, depth, view, camera) =
+        let (main, target, depth, view, camera, material_exposure) =
             views.single().map_err(|error| error.to_string())?;
         if main.id() != frame.camera {
             return Err("fog inputs belong to another camera".into());
@@ -500,7 +520,12 @@ fn render_atmosphere(
                 .lights
                 .iter()
                 .any(|p| f32::from_bits(p[13]) > 0.);
-        if frame.parameters.flags.x & 24 == 0 && frame.areas.is_empty() && !scattering_enabled {
+        if frame.parameters.flags.x & 24 == 0
+            && frame.areas.is_empty()
+            && !scattering_enabled
+            && water_instances.water.is_empty()
+            && water_instances.boats.is_empty()
+        {
             return Ok(());
         }
         let noise = resources
@@ -545,6 +570,17 @@ fn render_atmosphere(
             &resources.allocator,
             &resources.meshes,
         )?;
+        if let Some((_, _, opaque)) = outputs {
+            current
+                .snapshot
+                .get_or_insert_with(|| FogDepthSnapshot::new(&resources.device))
+                .record(
+                    &resources.device,
+                    context.command_encoder(),
+                    &current.depth_view,
+                    &opaque.texture_view,
+                );
+        }
         if let Some(water_frame) = resources
             .water_frame
             .as_ref()
@@ -571,7 +607,7 @@ fn render_atmosphere(
             owner.prepare(
                 &resources.device,
                 &resources.queue,
-                waters.iter(),
+                water_instances.water.iter(),
                 resources
                     .water_materials
                     .as_ref()
@@ -585,7 +621,40 @@ fn render_atmosphere(
                 &resources.buffers,
                 water_frame.matrices,
             )?;
-            owner.record(&resources.device, context.command_encoder(), &depth.texture)?;
+            if let Some(materials) = resources.boat_materials.as_ref() {
+                let pending = owner.boats.prepare(
+                    &resources.device,
+                    &resources.queue,
+                    water_instances.boats.iter(),
+                    materials,
+                    resources
+                        .water_meshes
+                        .as_ref()
+                        .ok_or("boat world mesh registry unavailable")?,
+                    &resources.meshes,
+                    &resources.allocator,
+                    &resources.buffers,
+                    water_frame.matrices,
+                    owner.water.texture.format(),
+                    depth.texture.format(),
+                )?;
+                let error = (!pending.is_empty())
+                    .then(|| pending.into_iter().collect::<Vec<_>>().join("; "));
+                if error != water_submission.boat_error {
+                    if let Some(error) = &error {
+                        warn!("Boat volume submission pending: {error}");
+                    }
+                    water_submission.boat_error = error;
+                }
+            } else {
+                owner.boats = default();
+            }
+            owner.record_with_main(
+                &resources.device,
+                context.command_encoder(),
+                &depth.texture,
+                Some(depth.view()),
+            )?;
         } else {
             current.water_depth = None;
         }
@@ -751,18 +820,7 @@ fn render_atmosphere(
                 &current.fog.targets.depth.view,
             )?;
         }
-        if let Some((_, _, opaque)) = outputs {
-            current
-                .snapshot
-                .get_or_insert_with(|| FogDepthSnapshot::new(&resources.device))
-                .record(
-                    &resources.device,
-                    context.command_encoder(),
-                    &current.depth_view,
-                    &opaque.texture_view,
-                );
-        }
-        current.fog.record(
+        let fog_source = current.fog.record_sources(
             &resources.device,
             &resources.queue,
             context.command_encoder(),
@@ -803,8 +861,167 @@ fn render_atmosphere(
                 parallel: &parallel.buffer,
             },
             &draws,
-            target.main_texture_view(),
         );
+        if !water_instances.water.is_empty() {
+            let result = (|| -> Result<_, String> {
+                use super::water_colour_scene::{
+                    WaterColourResources, WaterColourScene, WaterColourView,
+                };
+                let water_frame = resources
+                    .water_frame
+                    .as_ref()
+                    .and_then(|f| f.0.as_ref())
+                    .ok_or("water colour frame unavailable")?;
+                let display = resources
+                    .display
+                    .as_ref()
+                    .and_then(|f| f.0.as_ref())
+                    .filter(|f| f.camera == frame.camera)
+                    .and_then(|f| f.lens.as_ref())
+                    .ok_or("water HDR view parameters unavailable")?;
+                let exposure = resources
+                    .buffers
+                    .get(
+                        &material_exposure
+                            .ok_or("water adaptation owner unavailable")?
+                            .0,
+                    )
+                    .ok_or("water adaptation buffer awaits GPU preparation")?;
+                let compressed = display.settings.hdr_buffer_format == 1;
+                if current.water_colour.as_ref().is_none_or(|owner| {
+                    !owner.matches(
+                        full.to_array(),
+                        compressed,
+                        target.main_texture_format(),
+                        TextureFormat::Depth32FloatStencil8,
+                    )
+                }) {
+                    current.water_colour = Some(WaterColourScene::new(
+                        &resources.device,
+                        &resources.queue,
+                        full.to_array(),
+                        compressed,
+                        target.main_texture_format(),
+                        TextureFormat::Depth32FloatStencil8,
+                    )?);
+                }
+                let (water_atlas, shadow) = match &atlas_frame.state {
+                    super::shadow_pass::ShadowSceneState::Ready {
+                        target_image,
+                        receiver,
+                        ..
+                    } => {
+                        if !atlas_gpu.completed_revision(atlas_frame.revision) {
+                            return Err("water shadows await current atlas submission".into());
+                        }
+                        let atlas = resources
+                            .images
+                            .get(target_image)
+                            .ok_or("water shadow atlas awaits GPU preparation")?;
+                        (
+                            &atlas.texture_view,
+                            super::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(
+                                receiver,
+                            )?,
+                        )
+                    }
+                    super::shadow_pass::ShadowSceneState::Disabled => {
+                        (&atlas.texture_view, default())
+                    }
+                    _ => return Err("water shadow owner is not ready".into()),
+                };
+                let shadow = super::water_refraction::WaterShadowParameters {
+                    world_to_shadow: shadow.world_to_shadow.map(|m| m.to_cols_array()),
+                    view_row: shadow.view_row2.to_array(),
+                    slice_fars: shadow.cascade_fars.to_array(),
+                    sun_direction: shadow.sun_direction.to_array(),
+                    shadow_size: shadow.shadow_size.to_array(),
+                    bias: shadow.bias.to_array(),
+                    options: [u32::from(shadow.config.x != 0), shadow.config.z, 0, 0],
+                };
+                current.water_colour.as_mut().unwrap().record(
+                    WaterColourResources {
+                        device: &resources.device,
+                        queue: &resources.queue,
+                        materials: resources
+                            .water_materials
+                            .as_ref()
+                            .ok_or("water materials unavailable")?,
+                        world: resources
+                            .water_meshes
+                            .as_ref()
+                            .ok_or("water meshes unavailable")?,
+                        lighting: resources
+                            .water_lighting
+                            .as_ref()
+                            .ok_or("water lighting unavailable")?,
+                        images: resources
+                            .water_images
+                            .as_ref()
+                            .ok_or("water images unavailable")?,
+                        image_assets: &resources.images,
+                        meshes: &resources.meshes,
+                        buffers: &resources.buffers,
+                        allocator: &resources.allocator,
+                        depth_programs: resources
+                            .depth_programs
+                            .as_ref()
+                            .ok_or("water depth programs unavailable")?,
+                    },
+                    WaterColourView {
+                        frame: water_frame,
+                        white_level: display.white_level,
+                        camera_exposure: camera.exposure,
+                        adaptation: &exposure.buffer,
+                        shadow,
+                        atlas: water_atlas,
+                        fog: fog_source.view(),
+                        hdr: target.main_texture_view(),
+                        opaque: outputs.map_or(&depth.texture, |(_, _, opaque)| &opaque.texture),
+                        water_depth: &current
+                            .water_depth
+                            .as_ref()
+                            .ok_or("water depth owner unavailable")?
+                            .water
+                            .attachment,
+                        pyramid: resources
+                            .coarse
+                            .as_ref()
+                            .and_then(|c| c.pyramid_for(depth.texture.id())),
+                        shared_pyramid_expected: resources.coarse.is_some(),
+                    },
+                    water_instances.water.iter(),
+                    context.command_encoder(),
+                )
+            })();
+            let error = match result {
+                Ok(pending) if pending.is_empty() => None,
+                Ok(pending) => Some(pending.into_iter().collect::<Vec<_>>().join("; ")),
+                Err(error) => Some(error),
+            };
+            if error != water_submission.error {
+                if let Some(error) = &error {
+                    warn!("Water colour submission pending: {error}");
+                }
+            }
+            let draws = current
+                .water_colour
+                .as_ref()
+                .map_or(0, |owner| owner.draw_count());
+            if error.is_none() && draws > 0 && !water_submission.reported {
+                info!(draws, "Placed water colour submission active");
+                water_submission.reported = true;
+            }
+            if error.is_some() {
+                water_submission.reported = false;
+            }
+            water_submission.error = error;
+        } else {
+            current.water_colour = None;
+            water_submission.error = None;
+            water_submission.reported = false;
+        }
+        fog_source.record_composite(context.command_encoder(), target.main_texture_view());
         if let Err(error) = capture.record(
             &resources.capture_request,
             &resources.device,

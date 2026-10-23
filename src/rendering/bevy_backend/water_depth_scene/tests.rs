@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 use crate::{material, render_program, shader_cache};
 use std::sync::Arc;
 #[path = "../../../app/material_loading/water.rs"]

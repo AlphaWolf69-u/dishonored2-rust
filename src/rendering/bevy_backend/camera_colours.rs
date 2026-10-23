@@ -471,3 +471,7 @@ impl CameraColours {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path="camera_colours_tests.rs"]
+mod tests;
