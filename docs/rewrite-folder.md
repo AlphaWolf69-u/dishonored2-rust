@@ -1,85 +1,101 @@
 # The rewrite folder and launcher
 
-The rewrite keeps everything it writes in one folder next to its executable
-(`DH2_REWRITE_HOME` selects another one). The installed game is only read.
-The first launch creates the layout below.
+Players download `dishonored2-launcher.exe` into a folder of their choice.
+The launcher creates the rewrite folder around itself, downloads the rewrite
+source, builds the game with the enabled mods and launches it. The installed
+game is only read.
 
 ```
 DH2Rewrite/
-  dishonored2-launcher.exe  launcher and mod manager
-  dishonored2-rust.exe
+  dishonored2-launcher.exe  launcher and mod manager (prebuilt)
+  dishonored2-rust.exe      the game, built by the launcher
   config/
     dishonored2Config.cfg   the game's config format (bindings and cvars)
-    rewrite.toml            rewrite settings: game_path
+    rewrite.toml            game_path, rewrite_revision
   saves/                    profile.bin and SLOTxx folders, the game's formats
-  mods/<id>/                one folder per mod (see below)
-  overrides/                simple resource swaps
-  cache/
-  logs/                     session-*.log
-  modlist.toml              enabled mods, in load order
+  mods/<any folder name>/   one folder per mod (below)
+  source/                   the rewrite source (a git clone the launcher keeps)
+  cache/target/             build output
+  cache/build.txt           what the current game executable was built from
+  logs/                     session-*.log (game), build-*.log (launcher)
+  modlist.toml              enabled mods by name, in load order
 ```
 
-Code: `src/platform/home.rs` (layout, import, settings, mods, fingerprint),
-`src/platform/game_folder.rs` (folder prompt), `src/assets/installation.rs`
-(game folder lookup), `src/assets/archive.rs` (resource overlay).
+`DH2_REWRITE_HOME` selects another folder (development).
 
-## First launch
-
-- **Game folder:** `DH2_GAME_BASE` if set, else `game_path` in
-  `config/rewrite.toml`, else a Steam installation (AppID 403640). If none is
-  found, a folder dialog asks for the installation (the folder with `base`, or
-  `base` itself) and the choice is saved to `rewrite.toml`. Any store's
-  installation with the standard `base/game*_patch.index` files works.
-- **Config and saves are imported only on request**, never guessed from the
-  original's location. A new folder starts with the game's defaults
-  (`default.cfg`, the cvar defaults).
-  - Launcher: **Import saves…** (a folder with `profile.bin` and the `SLOTxx`
-    folders; files already in `saves/` are kept) and **Import config…** (a
-    folder with `dishonored2Config.cfg`; it replaces the rewrite's).
-  - Command line: `dishonored2-rust.exe --import-saves [folder]` (a dialog
-    when no folder is given); the game does not start.
-- The original's files are never written.
-
-## Launcher
-
-`dishonored2-launcher.exe` (built with `--features launcher`, Slint) shows the
-game folder (Browse…), the installed mods with enable checkboxes and ▲/▼ load
-order (written to `modlist.toml`; invalid or missing mods are listed with the
-reason), the override count, the imports, folder shortcuts, the setup
-fingerprint, and Launch, which starts `dishonored2-rust.exe` from the same
-folder on the same rewrite folder. Code: `src/bin/launcher.rs`.
-
-## Resource overrides
-
-A file in `overrides/` replaces the game resource with the same path, for
-example `overrides/strings/english_m.lang` or
-`overrides/generated/decls/<type>/<name>.decl`. New paths add resources.
-Overrides win over every mod.
+Code: `src/platform/home.rs` (layout, imports, settings, mods, resources,
+fingerprint), `src/platform/game_folder.rs` (folder and question dialogs),
+`src/bin/launcher/` (window `main.rs`, `source.rs`, `toolchain.rs`,
+`merge.rs`, `build.rs`, `updates.rs`), `src/assets/archive.rs` (mod resource
+overlay).
 
 ## Mods
 
 ```
-mods/<id>/mod.toml        id = "<id>", name = "...", version = "...", description = "..."
-mods/<id>/resources/...   files at the game's resource paths
+mods/<folder>/mod.toml
+mods/<folder>/patches/*.patch     changes to the rewrite source (git diff format)
+mods/<folder>/resources/...       files at the game's resource paths
 ```
 
-`modlist.toml` enables mods in load order: `enabled = ["a", "b"]`; a later
-mod's file wins over an earlier one's. A mod whose `mod.toml` is missing, or
-whose `id` differs from its folder name or has no `version`, is skipped and
-reported in the session log.
+```toml
+name = "Better Stealth"        # the mod's identity: modlist, saves
+version = "1.2.0"
+author = "..."
+rewrite = "v0.4.0"             # the rewrite tag or commit the patches were made against
+repository = "https://github.com/user/better-stealth"   # optional, for update checks
+description = "..."
+saves = "safe"                 # safe | cleanup | permanent
+```
+
+- `name`, `version` and `saves` are required; `rewrite` is required when the
+  mod has patches. The folder name is free.
+- `saves`: `safe` never touches saves; `cleanup` removes its own data from
+  saves when disabled; `permanent` means saves started with it need it. The
+  launcher asks before disabling a permanent mod.
+- Patches are applied in file-name order onto `rewrite`, then that result is
+  merged three-way onto the rewrite revision being built, mod by mod in load
+  order. A conflict names the mod, the earlier mods and the files. A
+  conflict only in `Cargo.lock` keeps the merged side; cargo updates the lock
+  file during the build.
+- Resources replace or add game resources at run time (a later mod wins);
+  they need no build.
+
+## The launcher
+
+1. **Rewrite source:** Download clones
+   `https://github.com/AlphaWolf69-u/dishonored2-rust` into `source/` (bundled
+   libgit2, no git needed). The revision built is `rewrite_revision`, else the
+   newest release tag, else `main`. Check for updates fetches; a newer release
+   tag is offered as "Update to vX", a moved branch as "Update to main".
+2. **Build tools:** cargo (PATH or `~/.cargo/bin`) and the MSVC C++ build tools
+   (found with `vswhere`). Install buttons run winget in a console window, or
+   open the download pages without winget.
+3. **Game folder:** found as the game does (`game_path`, Steam), or chosen with
+   Browse… (any store's installation).
+4. **Mods:** checkboxes and ▲/▼ load order (`modlist.toml`), save-safety
+   badges, update notices (the mod repository's newest version tag), problems.
+5. **Launch:** if the rewrite commit or the enabled mods' names, versions or
+   patches changed since the last build (`cache/build.txt`), the mods are
+   merged into `source/` and `cargo build --release --features game --bin
+   dishonored2-rust` runs (output `cache/target`, log `logs/build-*.log`); the
+   game executable is copied next to the launcher and started.
+6. **Saves and config** are imported only on request (Import saves…, Import
+   config…; or `dishonored2-rust.exe --import-saves [folder]`).
 
 ## Setup fingerprint
 
-Each session log records a BLAKE3 fingerprint of the rewrite version, the
-installed game's four `game*_patch.index` files, and every enabled mod and
-override (ids, versions, resource paths and contents, in load order). Equal
-fingerprints mean the same game data and mod setup.
+Each game session log records a BLAKE3 fingerprint of the rewrite version,
+the installed game's four `game*_patch.index` files, and every enabled mod
+(name, version, patches, resource paths and contents) in load order.
 
 ## Not covered yet
 
+- Saves do not record their mods yet (the rewrite does not write saves yet),
+  so the permanent-mod warning cannot list affected saves, and `cleanup`
+  mods have no launcher step to run their cleanup.
+- Merging `Cargo.toml` dependency changes from several mods (they conflict as
+  text today).
+- Downloading mod updates (only the check exists).
+- Mod profiles.
 - Loose `base/` files the engine reads directly (`default.cfg`,
-  `default_keybinds.cfg`, `SKUConfig.txt`) are not overlaid.
-- Patching instead of replacing (decl fields, string-table keys) and code mods.
-- The text language on non-Steam installations: the Steam language lookup
-  fails, so the saved `ark_savedTextLanguage` or English applies.
-- Saves are not yet tagged with the fingerprint.
+  `default_keybinds.cfg`, `SKUConfig.txt`) cannot be replaced by mods.

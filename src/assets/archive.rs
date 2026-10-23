@@ -20,8 +20,8 @@ struct Entry {
 pub struct Catalog {
     base: PathBuf,
     entries: Vec<(String, Entry)>,
-    // Loose files of the rewrite's enabled mods and overrides/ by
-    // normalized resource path, sorted; they win over the archives.
+    // Loose resource files of the rewrite's enabled mods by normalized
+    // resource path, sorted; they win over the archives.
     overlay: Vec<(String, PathBuf)>,
     // Image source names are authoritative index aliases, including imageprog
     // expressions and option suffixes. Values index the final override table.

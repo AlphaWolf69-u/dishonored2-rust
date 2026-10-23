@@ -65,7 +65,7 @@ pub fn initialize() {
 }
 
 /// The rewrite folder's first-run work and the active setup: game folder,
-/// enabled mods, overrides and the setup fingerprint.
+/// enabled mods and the setup fingerprint.
 pub fn record_setup(base: &std::path::Path) {
     use crate::platform::home;
     let h = home::home();
@@ -81,9 +81,9 @@ pub fn record_setup(base: &std::path::Path) {
     }
     record(&format!("Game folder: {}", base.display()));
     for m in &layers.mods {
-        record(&format!("Mod: {} {} ({})", m.id, m.version, m.name));
+        record(&format!("Mod: {} {} (rewrite {}, {})", m.name, m.version, m.rewrite, m.saves.label()));
     }
-    record(&format!("Replaced resources: {}", layers.files.len()));
+    record(&format!("Mod resources: {}", layers.files.len()));
     record(&format!("Setup fingerprint: {}", home::fingerprint(base, &layers)));
 }
 

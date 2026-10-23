@@ -31,6 +31,11 @@ pub fn game_base_or_ask() -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// A Yes/No question; `true` for Yes (and where no dialog is available).
+pub fn confirm(text: &str) -> bool {
+    os::confirm(text)
+}
+
 /// A folder dialog (`None` when cancelled or unavailable).
 pub fn pick_folder(prompt: &str) -> Option<PathBuf> {
     os::pick_folder(prompt)
@@ -102,6 +107,11 @@ mod os {
         unsafe { MessageBoxW(0, wide(text).as_ptr(), wide("Dishonored 2 rewrite").as_ptr(), 0) };
     }
 
+    /// MB_YESNO | MB_ICONWARNING; IDYES is 6.
+    pub fn confirm(text: &str) -> bool {
+        unsafe { MessageBoxW(0, wide(text).as_ptr(), wide("Dishonored 2 rewrite").as_ptr(), 0x4 | 0x30) == 6 }
+    }
+
     /// The shell folder browser (`SHBrowseForFolderW`).
     pub fn pick_folder(prompt: &str) -> Option<PathBuf> {
         let title = wide(prompt);
@@ -143,4 +153,8 @@ mod os {
     }
 
     pub fn message(_text: &str) {}
+
+    pub fn confirm(_text: &str) -> bool {
+        true
+    }
 }

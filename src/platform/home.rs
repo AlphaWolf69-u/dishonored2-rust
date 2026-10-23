@@ -1,23 +1,23 @@
-//! The rewrite's own folder (`DH2Rewrite/`, next to the executable): its
-//! config, saves, mods, resource overrides, cache and logs. The installed
-//! game is only read; its Saved Games config and saves are imported once.
+//! The rewrite's own folder (`DH2Rewrite/`, next to the launcher and the
+//! executable): config, saves, mods, the rewrite source, cache and logs.
+//! The installed game is only read.
 //!
 //! Host integration (a deliberate deviation): the original keeps its config
 //! and saves under `Saved Games/Arkane Studios/Dishonored2/base`.
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub const CONFIG_FILE: &str = "dishonored2Config.cfg";
 const SETTINGS_FILE: &str = "rewrite.toml";
 const MODLIST_FILE: &str = "modlist.toml";
-const MOD_MANIFEST: &str = "mod.toml";
+pub const MOD_MANIFEST: &str = "mod.toml";
 const MOD_RESOURCES: &str = "resources";
+const MOD_PATCHES: &str = "patches";
 
 const MODLIST_TEMPLATE: &str = "\
-# Enabled mods: folder names under mods/, in load order.
-# A later mod's files win over an earlier mod's; files in overrides/ win over every mod.
+# Enabled mods by name (mod.toml `name`), in load order.
 enabled = []
 ";
 
@@ -27,23 +27,15 @@ const SETTINGS_TEMPLATE: &str = "\
 # Leave it out to look for a Steam installation.
 ";
 
-const OVERRIDES_README: &str = "\
-Resource overrides: a file here replaces the game resource with the same path.
-
-Use the paths the game's archives use, for example
-  overrides/strings/english_m.lang
-  overrides/generated/decls/<type>/<name>.decl
-  overrides/ui/corvo_pause_menu.iggy
-
-Overrides win over every mod in modlist.toml. Remove a file to restore the original.
-";
-
 const MODS_README: &str = "\
-One folder per mod:
-  mods/<id>/mod.toml        id = \"<id>\", name, version
-  mods/<id>/resources/...   files at the game's resource paths (like overrides/)
+One folder per mod (any folder name):
+  mod.toml       name, version, author, rewrite, repository, description, saves
+  patches/       *.patch: changes to the rewrite source, made against `rewrite`
+  resources/     files at the game's resource paths, replacing or adding resources
 
-Enable mods in ../modlist.toml.
+`rewrite` is the rewrite release tag (or commit) the patches were made against.
+`saves` is safe (never touches saves), cleanup (removes its data from saves when
+disabled) or permanent (saves started with it need it).
 ";
 
 /// The folder layout.
@@ -52,7 +44,7 @@ pub struct Home {
     pub root: PathBuf,
 }
 
-/// What the first run did, for the session log.
+/// What the first use did, for the session log.
 #[derive(Clone, Debug, Default)]
 pub struct Setup {
     pub created: bool,
@@ -80,8 +72,9 @@ impl Home {
     pub fn mods_dir(&self) -> PathBuf {
         self.root.join("mods")
     }
-    pub fn overrides_dir(&self) -> PathBuf {
-        self.root.join("overrides")
+    /// The rewrite source the launcher downloads and builds.
+    pub fn source_dir(&self) -> PathBuf {
+        self.root.join("source")
     }
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
@@ -109,18 +102,17 @@ impl Home {
             }
         };
         setup.created = !self.config_dir().exists();
-        for dir in [self.config_dir(), self.saves_dir(), self.mods_dir(), self.overrides_dir(), self.cache_dir(), self.logs_dir()] {
+        for dir in [self.config_dir(), self.saves_dir(), self.mods_dir(), self.cache_dir(), self.logs_dir()] {
             note(fs::create_dir_all(&dir), &dir.display().to_string());
         }
         note(write_new(&self.modlist_file(), MODLIST_TEMPLATE), MODLIST_FILE);
         note(write_new(&self.settings_file(), SETTINGS_TEMPLATE), SETTINGS_FILE);
-        note(write_new(&self.overrides_dir().join("README.txt"), OVERRIDES_README), "overrides/README.txt");
         note(write_new(&self.mods_dir().join("README.txt"), MODS_README), "mods/README.txt");
         setup
     }
 }
 
-/// The rewrite's folder, created (and imported into) on first use.
+/// The rewrite's folder, created on first use.
 pub fn home() -> &'static Home {
     &HOME.get_or_init(|| {
         let home = Home::locate();
@@ -189,84 +181,159 @@ fn copy_tree(from: &Path, to: &Path, imported: &mut Imported) -> io::Result<()> 
     Ok(())
 }
 
-/// `config/rewrite.toml`'s `game_path`.
-pub fn saved_game_path() -> Option<PathBuf> {
+/// A string setting in `config/rewrite.toml`.
+pub fn setting(key: &str) -> Option<String> {
     let text = fs::read_to_string(home().settings_file()).ok()?;
     let doc: toml_edit::DocumentMut = text.parse().ok()?;
-    doc.get("game_path")?.as_str().map(PathBuf::from)
+    doc.get(key)?.as_str().map(str::to_string)
 }
 
-/// Remember the game folder in `config/rewrite.toml`, keeping its comments.
-pub fn save_game_path(path: &Path) -> Result<(), String> {
+/// Set a string setting in `config/rewrite.toml`, keeping its comments.
+pub fn set_setting(key: &str, value: &str) -> Result<(), String> {
     let file = home().settings_file();
     let text = fs::read_to_string(&file).unwrap_or_else(|_| SETTINGS_TEMPLATE.to_string());
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{}: {e}", file.display()))?;
-    doc["game_path"] = toml_edit::value(path.display().to_string());
+    doc[key] = toml_edit::value(value);
     fs::write(&file, doc.to_string()).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-/// One enabled mod.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Mod {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub folder: PathBuf,
+/// `game_path`.
+pub fn saved_game_path() -> Option<PathBuf> {
+    setting("game_path").map(PathBuf::from)
 }
 
-/// A relative path made only of normal components.
-fn contained(path: &str) -> bool {
-    !path.is_empty() && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)))
+/// Remember the game folder.
+pub fn save_game_path(path: &Path) -> Result<(), String> {
+    set_setting("game_path", &path.display().to_string())
 }
 
-/// A mod folder under `mods/`, valid or not.
+/// `saves` in `mod.toml`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SaveSafety {
+    /// Never touches saves; can be removed any time.
+    Safe,
+    /// Removes its own data from saves when it is disabled.
+    Cleanup,
+    /// Saves started with it need it.
+    Permanent,
+}
+
+impl SaveSafety {
+    pub fn label(self) -> &'static str {
+        match self {
+            SaveSafety::Safe => "save-safe",
+            SaveSafety::Cleanup => "cleans up saves",
+            SaveSafety::Permanent => "permanent in saves",
+        }
+    }
+}
+
+/// One mod folder under `mods/`, valid or not.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Installed {
-    pub id: String,
+pub struct ModInfo {
+    /// The mod's identity (modlist, dependencies, saves).
     pub name: String,
     pub version: String,
+    pub author: String,
+    /// The rewrite revision its patches were made against.
+    pub rewrite: String,
+    pub repository: String,
     pub description: String,
-    /// Why the folder cannot be enabled, if it cannot.
+    pub saves: SaveSafety,
+    pub folder: PathBuf,
+    /// Why the mod cannot be enabled, if it cannot.
     pub problem: Option<String>,
 }
 
-fn read_manifest(id: &str, folder: &Path) -> Result<toml_edit::DocumentMut, String> {
-    if !folder.is_dir() {
-        return Err("the mod folder is not installed".into());
+impl ModInfo {
+    /// `patches/*.patch`, by file name.
+    pub fn patches(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = fs::read_dir(self.folder.join(MOD_PATCHES))
+            .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("patch"))).collect())
+            .unwrap_or_default();
+        out.sort();
+        out
     }
-    fs::read_to_string(folder.join(MOD_MANIFEST))
-        .map_err(|e| if e.kind() == io::ErrorKind::NotFound { format!("{MOD_MANIFEST} is missing") } else { format!("{MOD_MANIFEST}: {e}") })
-        .and_then(|t| t.parse::<toml_edit::DocumentMut>().map_err(|e| format!("{MOD_MANIFEST}: {e}")))
-        .and_then(|m| {
-            let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if field("id") != id || field("version").is_empty() {
-                Err(format!("{MOD_MANIFEST}: id must be {id:?} and version is required"))
-            } else {
-                Ok(m)
-            }
-        })
 }
 
-/// Every folder under `mods/`, by name.
-pub fn installed_mods() -> Vec<Installed> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(home().mods_dir()) else { return out };
-    for entry in entries.flatten().filter(|e| e.path().is_dir()) {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        let (name, version, description, problem) = match read_manifest(&id, &entry.path()) {
-            Ok(m) => {
-                let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                (field("name"), field("version"), field("description"), None)
-            }
-            Err(e) => (String::new(), String::new(), String::new(), Some(e)),
-        };
-        out.push(Installed { id, name, version, description, problem });
+/// Read a mod folder's `mod.toml`.
+pub fn read_mod(folder: &Path) -> ModInfo {
+    let fallback = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut info = ModInfo {
+        name: fallback,
+        version: String::new(),
+        author: String::new(),
+        rewrite: String::new(),
+        repository: String::new(),
+        description: String::new(),
+        saves: SaveSafety::Permanent,
+        folder: folder.to_path_buf(),
+        problem: None,
+    };
+    let manifest = match fs::read_to_string(folder.join(MOD_MANIFEST)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            info.problem = Some(format!("{MOD_MANIFEST} is missing"));
+            return info;
+        }
+        Err(e) => {
+            info.problem = Some(format!("{MOD_MANIFEST}: {e}"));
+            return info;
+        }
+    };
+    let doc: toml_edit::DocumentMut = match manifest.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            info.problem = Some(format!("{MOD_MANIFEST}: {e}"));
+            return info;
+        }
+    };
+    let field = |k: &str| doc.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if !field("name").is_empty() {
+        info.name = field("name");
     }
-    out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    info.version = field("version");
+    info.author = field("author");
+    info.rewrite = field("rewrite");
+    info.repository = field("repository");
+    info.description = field("description");
+    let saves = field("saves");
+    let mut missing: Vec<&str> = ["name", "version"].into_iter().filter(|k| field(k).is_empty()).collect();
+    if !info.patches().is_empty() && info.rewrite.is_empty() {
+        missing.push("rewrite (its patches need the rewrite release they were made against)");
+    }
+    info.saves = match saves.as_str() {
+        "safe" => SaveSafety::Safe,
+        "cleanup" => SaveSafety::Cleanup,
+        "permanent" => SaveSafety::Permanent,
+        _ => {
+            missing.push("saves (safe, cleanup or permanent)");
+            SaveSafety::Permanent
+        }
+    };
+    if !missing.is_empty() {
+        info.problem = Some(format!("{MOD_MANIFEST} needs {}", missing.join(", ")));
+    }
+    info
+}
+
+/// Every mod folder under `mods/`, by name. Two folders with the same name
+/// are both reported.
+pub fn installed_mods() -> Vec<ModInfo> {
+    let mut out: Vec<ModInfo> = fs::read_dir(home().mods_dir())
+        .map(|d| d.flatten().filter(|e| e.path().is_dir()).map(|e| read_mod(&e.path())).collect())
+        .unwrap_or_default();
+    let names: Vec<String> = out.iter().map(|m| m.name.to_lowercase()).collect();
+    for m in &mut out {
+        if names.iter().filter(|n| **n == m.name.to_lowercase()).count() > 1 && m.problem.is_none() {
+            m.problem = Some(format!("another folder also contains a mod named {:?}", m.name));
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     out
 }
 
-/// The ids `modlist.toml` lists, in order (valid or not).
+/// The names `modlist.toml` lists, in order (valid or not).
 pub fn modlist() -> Vec<String> {
     fs::read_to_string(home().modlist_file())
         .ok()
@@ -276,47 +343,34 @@ pub fn modlist() -> Vec<String> {
 }
 
 /// Write `enabled` to `modlist.toml`, keeping its comments.
-pub fn save_modlist(ids: &[String]) -> Result<(), String> {
+pub fn save_modlist(names: &[String]) -> Result<(), String> {
     let file = home().modlist_file();
     let text = fs::read_to_string(&file).unwrap_or_else(|_| MODLIST_TEMPLATE.to_string());
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{}: {e}", file.display()))?;
     let mut array = toml_edit::Array::new();
-    for id in ids {
-        array.push(id.as_str());
+    for name in names {
+        array.push(name.as_str());
     }
     doc["enabled"] = toml_edit::value(array);
     fs::write(&file, doc.to_string()).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-/// The mods `modlist.toml` enables, in load order. A mod that is missing or
-/// whose `mod.toml` is invalid is reported and skipped.
-pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<Mod> {
-    let home = home();
-    let Ok(text) = fs::read_to_string(home.modlist_file()) else { return Vec::new() };
-    let doc: toml_edit::DocumentMut = match text.parse() {
-        Ok(d) => d,
-        Err(e) => {
-            problems.push(format!("{MODLIST_FILE}: {e}"));
-            return Vec::new();
-        }
-    };
-    let Some(list) = doc.get("enabled").and_then(|v| v.as_array()) else { return Vec::new() };
-    let mut mods = Vec::new();
-    for id in list.iter().filter_map(|v| v.as_str()) {
-        if !contained(id) || id.contains(['/', '\\']) || mods.iter().any(|m: &Mod| m.id == id) {
-            problems.push(format!("{MODLIST_FILE}: invalid or repeated mod {id:?}"));
+/// The valid mods `modlist.toml` enables, in load order; the others are
+/// reported and skipped.
+pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<ModInfo> {
+    let installed = installed_mods();
+    let mut mods: Vec<ModInfo> = Vec::new();
+    for name in modlist() {
+        if mods.iter().any(|m| m.name.eq_ignore_ascii_case(&name)) {
             continue;
         }
-        let folder = home.mods_dir().join(id);
-        let manifest = match read_manifest(id, &folder) {
-            Ok(m) => m,
-            Err(e) => {
-                problems.push(format!("Mod {id} skipped: {e}"));
-                continue;
-            }
-        };
-        let field = |k: &str| manifest.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        mods.push(Mod { id: id.to_string(), name: field("name"), version: field("version"), folder });
+        match installed.iter().find(|m| m.name.eq_ignore_ascii_case(&name)) {
+            None => problems.push(format!("Mod {name} skipped: it is not installed")),
+            Some(m) => match &m.problem {
+                Some(p) => problems.push(format!("Mod {name} skipped: {p}")),
+                None => mods.push(m.clone()),
+            },
+        }
     }
     mods
 }
@@ -330,21 +384,18 @@ fn resource_files(root: &Path, out: &mut Vec<(String, PathBuf)>) {
             if path.is_dir() {
                 walk(root, &path, out);
             } else if let Ok(rel) = path.strip_prefix(root) {
-                let key = rel.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-                if key != "readme.txt" {
-                    out.push((key, path));
-                }
+                out.push((rel.to_string_lossy().replace('\\', "/").to_ascii_lowercase(), path));
             }
         }
     }
     walk(root, root, out);
 }
 
-/// The resource layers above the game archives, lowest first: each enabled
-/// mod's `resources/`, then `overrides/`. A later layer's file wins.
+/// The enabled mods' resources above the game archives: each mod's
+/// `resources/` in load order; a later mod's file wins.
 #[derive(Clone, Debug, Default)]
 pub struct Layers {
-    pub mods: Vec<Mod>,
+    pub mods: Vec<ModInfo>,
     /// (resource path, file), the winning file per path.
     pub files: Vec<(String, PathBuf)>,
     pub problems: Vec<String>,
@@ -354,52 +405,40 @@ pub fn layers() -> Layers {
     let mut problems = Vec::new();
     let mods = enabled_mods(&mut problems);
     let mut files = std::collections::BTreeMap::new();
-    let mut layer_roots: Vec<PathBuf> = mods.iter().map(|m| m.folder.join(MOD_RESOURCES)).collect();
-    layer_roots.push(home().overrides_dir());
-    for root in layer_roots {
+    for m in &mods {
         let mut layer = Vec::new();
-        resource_files(&root, &mut layer);
+        resource_files(&m.folder.join(MOD_RESOURCES), &mut layer);
         files.extend(layer);
     }
     Layers { mods, files: files.into_iter().collect(), problems }
 }
 
 /// BLAKE3 over length-prefixed parts.
-fn hash(h: &mut blake3::Hasher, part: &[u8]) {
+pub fn hash_part(h: &mut blake3::Hasher, part: &[u8]) {
     h.update(&(part.len() as u64).to_le_bytes());
     h.update(part);
 }
 
 /// The setup fingerprint: the rewrite version, the installed game's active
-/// indices, and every enabled mod and override (ids, versions, resource
-/// paths and contents). Load order counts: it decides which file wins.
+/// indices, and every enabled mod (names, versions, patches, resource paths
+/// and contents) in load order.
 pub fn fingerprint(base: &Path, layers: &Layers) -> String {
     let mut h = blake3::Hasher::new();
-    hash(&mut h, env!("CARGO_PKG_VERSION").as_bytes());
+    hash_part(&mut h, env!("CARGO_PKG_VERSION").as_bytes());
     for group in 1..=4 {
         let index = fs::read(base.join(format!("game{group}_patch.index"))).unwrap_or_default();
-        hash(&mut h, &index);
+        hash_part(&mut h, &index);
     }
     for m in &layers.mods {
-        hash(&mut h, m.id.as_bytes());
-        hash(&mut h, m.version.as_bytes());
+        hash_part(&mut h, m.name.as_bytes());
+        hash_part(&mut h, m.version.as_bytes());
+        for p in m.patches() {
+            hash_part(&mut h, &fs::read(p).unwrap_or_default());
+        }
     }
     for (key, path) in &layers.files {
-        hash(&mut h, key.as_bytes());
-        hash(&mut h, &fs::read(path).unwrap_or_default());
+        hash_part(&mut h, key.as_bytes());
+        hash_part(&mut h, &fs::read(path).unwrap_or_default());
     }
     h.finalize().to_hex().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mod_paths_must_stay_inside() {
-        assert!(contained("ui/x.iggy"));
-        assert!(!contained("../x"));
-        assert!(!contained("C:/x"));
-        assert!(!contained(""));
-    }
 }
