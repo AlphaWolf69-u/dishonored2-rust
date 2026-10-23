@@ -147,11 +147,31 @@ impl Builder<'_> {
         self.out.ramps.len() - 1
     }
 
-    fn shape(&mut self, shape: &Shape, library: usize, m: &Affine, c: &Colour, blend: u8) {
+    /// `script` names the library bitmaps of script bitmap fills
+    /// (`Graphics.beginBitmapFill`): (layer, fill number, character).
+    fn shape(&mut self, shape: &Shape, library: usize, m: &Affine, c: &Colour, blend: u8, script: &[(usize, u16, CharRef)]) {
         let scale = ((m.a * m.a + m.b * m.b).sqrt().max((m.c * m.c + m.d * m.d).sqrt())) as f32;
         let file = player::state(self.vm).borrow().file(library);
-        for layer in &shape.layers {
+        for (layer_index, layer) in shape.layers.iter().enumerate() {
             for (i, fill) in layer.fills.iter().enumerate() {
+                // A script bitmap fill draws its BitmapData's character.
+                let resolved;
+                let (fill, file) = match fill {
+                    Fill::Bitmap { matrix, bitmap: None, repeat, smooth } => {
+                        match script.iter().find(|s| s.0 == layer_index && s.1 == i as u16 + 1) {
+                            Some(&(_, _, ch)) => {
+                                resolved = Fill::Bitmap { matrix: *matrix, bitmap: Some(ch.id), repeat: *repeat, smooth: *smooth };
+                                (&resolved, player::state(self.vm).borrow().file(ch.library))
+                            }
+                            None => continue,
+                        }
+                    }
+                    other => (other, file.clone()),
+                };
+                let library = match fill {
+                    Fill::Bitmap { .. } => script.iter().find(|s| s.0 == layer_index && s.1 == i as u16 + 1).map_or(library, |s| s.2.library),
+                    _ => library,
+                };
                 let tris = triangulate(&fill_edges(layer, i as u16 + 1, scale));
                 if tris.is_empty() {
                     continue;
@@ -274,15 +294,16 @@ impl Builder<'_> {
         if let Some(g) = graphics {
             if let Some(state) = super::graphics::state(&g) {
                 let shape = state.shape();
+                let script = state.bitmap_chars.clone();
                 drop(state);
-                self.shape(&shape, 0, &m, &c, blend);
+                self.shape(&shape, 0, &m, &c, blend, &script);
             }
         }
         match (kind, character) {
             (DisplayKind::Shape, Some(ch)) => {
                 let file = player::state(self.vm).borrow().file(ch.library);
                 if let Ok(Some(shape)) = file.shape(ch.id as usize) {
-                    self.shape(&shape, ch.library, &m, &c, blend);
+                    self.shape(&shape, ch.library, &m, &c, blend, &[]);
                 }
             }
             (DisplayKind::Bitmap, _) => {

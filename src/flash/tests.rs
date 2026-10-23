@@ -159,7 +159,7 @@ fn debug_pause_menu_elements() {
             println!("  label.{name} = {text}");
         }
     }
-    for path in ["portrait", "pauseMenu", "quickScreen", "header", "chapterInfo"] {
+    for path in ["screenTexture", "noise", "vignette", "whiteHalo", "portrait"] {
         let stage = player.state.borrow().stage.clone().unwrap();
         let mut found = Vec::new();
         fn named(o: &Obj, name: &str, out: &mut Vec<Obj>) {
@@ -200,7 +200,7 @@ fn debug_pause_menu_elements() {
                     println!("{path}.bounds.{k} = {r:?}");
                 }
             }
-            for p in ["z", "rotationX", "rotationY", "x", "y", "scaleX", "width"] {
+            for p in ["blendMode", "alpha", "visible", "width", "height"] {
                 let r = player.vm.get_property(&v, &avm2::name::Name::public(p));
                 let text = match r {
                     Ok(v) => format!("{v:?}").chars().take(100).collect::<String>(),

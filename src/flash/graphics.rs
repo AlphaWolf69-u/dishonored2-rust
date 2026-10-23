@@ -16,6 +16,9 @@ pub struct GraphicsState {
     fill_start: Option<(f32, f32)>,
     /// Bitmap fills keep their BitmapData object.
     pub bitmaps: Vec<Value>,
+    /// The library bitmap behind each script bitmap fill: (layer, fill
+    /// number, character).
+    pub bitmap_chars: Vec<(usize, u16, super::player::CharRef)>,
 }
 
 impl GraphicsState {
@@ -69,6 +72,11 @@ impl GraphicsState {
         layer.fill_bounds.push([0.0; 4]);
         self.fill = self.layer().fills.len() as u16;
         if let Some(b) = bitmap {
+            let character = b.as_object().and_then(|o| o.host::<super::Native>()?.bitmap_data.as_ref()?.character);
+            if let Some(c) = character {
+                let at = (self.layers.len() - 1, self.fill, c);
+                self.bitmap_chars.push(at);
+            }
             self.bitmaps.push(b);
         }
         let pen = self.pen;
