@@ -13,7 +13,7 @@ pub const KEYS: usize = 256;
 /// `IN_GAME`, the set the UI reads regardless of the active set.
 pub const IN_GAME: usize = 2;
 /// `configVersion` the engine accepts in the user config (chunk_000012).
-const CONFIG_VERSION: i64 = 10;
+pub(crate) const CONFIG_VERSION: i64 = 10;
 
 /// One `0x30`-byte set entry: `+0` secondary flag, `+4` action id, `+8`
 /// command string.
@@ -85,10 +85,9 @@ impl Bindings {
         (0..KEYS as u32).filter(|&k| self.sets[set][k as usize].command == command).collect()
     }
 
-    /// One tokenized command; the binding commands registered in
-    /// `FUN_141...` chunk_000958 (others are not binding state and are
-    /// ignored here).
-    fn command(&mut self, args: &[String], exec: &mut dyn FnMut(&str) -> Option<String>) -> Result<(), String> {
+    /// One tokenized command: the binding commands registered in
+    /// chunk_000958 and `exec`; any other command goes to `other`.
+    fn command(&mut self, args: &[String], exec: &mut dyn FnMut(&str) -> Option<String>, other: &mut dyn FnMut(&[String])) -> Result<(), String> {
         let Some(name) = args.first() else { return Ok(()) };
         let arg = |i: usize| args.get(i).map_or("", String::as_str);
         if name.eq_ignore_ascii_case("arkBind") || name.eq_ignore_ascii_case("arkBindSecondary") {
@@ -126,8 +125,10 @@ impl Bindings {
             self.unbind_all();
         } else if name.eq_ignore_ascii_case("exec") {
             if let Some(text) = exec(arg(1)) {
-                self.execute(&text, exec)?;
+                self.execute_with(&text, exec, other)?;
             }
+        } else {
+            other(args);
         }
         Ok(())
     }
@@ -136,6 +137,11 @@ impl Bindings {
     /// a carriage return, or a `;` outside quotes; `//` before any quote on
     /// the line ends it, and `/* */` comments may span lines.
     pub fn execute(&mut self, text: &str, exec: &mut dyn FnMut(&str) -> Option<String>) -> Result<(), String> {
+        self.execute_with(text, exec, &mut |_| {})
+    }
+
+    /// [`Self::execute`] with the non-binding commands passed to `other`.
+    pub fn execute_with(&mut self, text: &str, exec: &mut dyn FnMut(&str) -> Option<String>, other: &mut dyn FnMut(&[String])) -> Result<(), String> {
         let bytes = text.as_bytes();
         let mut start = 0;
         while start < bytes.len() {
@@ -173,7 +179,7 @@ impl Bindings {
                     .iter()
                     .any(|c| c.eq_ignore_ascii_case(first.as_deref().unwrap_or("")));
                 match args.into_iter().collect::<Option<Vec<_>>>() {
-                    Some(args) => self.command(&args, exec)?,
+                    Some(args) => self.command(&args, exec, other)?,
                     None if binding_command => {
                         return Err(format!("unquoted punctuation in {line:?}: idCmdArgs tokenization not yet traced"))
                     }
@@ -220,7 +226,7 @@ fn tokenize(line: &str) -> Vec<Option<String>> {
 /// The version header the engine reads from a config (chunk_000012
 /// ~2398): `configVersion <int>` then `bindingVersion <int>`, each pair read
 /// in that order from the first tokens; a missing pair is `None`.
-fn versions(source: &str) -> (Option<i64>, Option<i64>) {
+pub(crate) fn versions(source: &str) -> (Option<i64>, Option<i64>) {
     let mut tokens = source.split_whitespace().peekable();
     let mut pair = |name: &str| -> Option<i64> {
         let token = tokens.next()?;
@@ -233,26 +239,9 @@ fn versions(source: &str) -> (Option<i64>, Option<i64>) {
     (config, pair("bindingVersion"))
 }
 
-/// The bindings the game starts with: `base/default.cfg` (which execs
-/// `default_keybinds.cfg` and `default_sku.cfg`), then the user config when
-/// its `configVersion` is 10 and its `bindingVersion` is at least
-/// default.cfg's (chunk_000012 ~2430).
+/// The bindings the game starts with ([`super::console::Console::load`]).
 pub fn game_bindings(base: &Path, user_config: Option<&str>) -> Result<Bindings, String> {
-    let read = |name: &str| std::fs::read_to_string(base.join(name)).ok();
-    let mut exec = |name: &str| read(name);
-    let default = read("default.cfg").ok_or("default.cfg not found")?;
-    let mut bindings = Bindings::default();
-    bindings.execute(&default, &mut exec)?;
-    if let Some(user) = user_config {
-        // The default bindingVersion field keeps its initial value when
-        // default.cfg has none; that value is not traced, 0 is assumed.
-        let required = versions(&default).1.unwrap_or(0);
-        let (config, binding) = versions(user);
-        if config == Some(CONFIG_VERSION) && binding.is_some_and(|v| v >= required) {
-            bindings.execute(user, &mut exec)?;
-        }
-    }
-    Ok(bindings)
+    super::console::Console::load(base, user_config).map(|c| c.bindings)
 }
 
 /// One `bindableActionsData.data[i]` element.

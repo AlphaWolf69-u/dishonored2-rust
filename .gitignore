@@ -20,6 +20,7 @@
 !/analysis/shadow_pcf_probe.py
 !/analysis/generate_native_table.py
 !/analysis/generate_binding_tables.py
+!/analysis/generate_cvar_table.py
 !/tests/
 !/tests/render_command_reuse.rs
 !/tests/fixtures/
