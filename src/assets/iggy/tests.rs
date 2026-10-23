@@ -190,7 +190,7 @@ fn corvo_main_timeline_places_screens() {
         .commands
         .iter()
         .filter_map(|c| match c {
-            Command::Place(p) => Some(p),
+            super::timeline::Command::Place(p) => Some(p),
             _ => None,
         })
         .collect();
@@ -284,5 +284,47 @@ fn list_localized_font_names() {
 fn debug_list_localized_libraries() {
     for path in catalog().paths_containing("ui/lib_loc_") {
         println!("lib: {path}");
+    }
+}
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_emily_pause_screen_timeline() {
+    let file = IggyFile::parse(catalog().read("ui/emily_pause_menu.iggy").unwrap().unwrap()).unwrap();
+    for id in 0..file.movie().unwrap().character_count as usize {
+        let Some(t) = file.sprite(id).unwrap() else { continue };
+        let names = ["portrait", "pauseMenu", "quickScreen", "header", "chapterInfo"];
+        if !t.commands.iter().any(|c| matches!(c, super::timeline::Command::Place(p) if p.name.as_deref() == Some("portrait"))) {
+            continue;
+        }
+        println!("sprite {id}: frames {} depth_size {}", t.frame_count, t.depth_size);
+        let mut frame = 1;
+        for c in &t.commands {
+            match c {
+                super::timeline::Command::ShowFrame => frame += 1,
+                super::timeline::Command::Place(p) if p.name.as_deref().is_some_and(|n| names.contains(&n)) || p.character.is_none() => {
+                    println!("f{frame} place depth {} char {:?} flags {:#x} matrix {:?} name {:?}", p.depth, p.character, p.flags, p.matrix, p.name)
+                }
+                super::timeline::Command::Label { name, .. } => println!("f{frame} label {name}"),
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_emily_portrait_sprite() {
+    let file = IggyFile::parse(catalog().read("ui/emily_pause_menu.iggy").unwrap().unwrap()).unwrap();
+    for id in [112usize, 59, 98] {
+        let t = file.sprite(id).unwrap().unwrap();
+        println!("sprite {id}: frames {}", t.frame_count);
+        for c in t.commands.iter().take(12) {
+            if let super::timeline::Command::Place(p) = c {
+                let kind = p.character.map(|c| file.character_kind(c as usize).ok().flatten());
+                let bounds = p.character.and_then(|c| file.character_bounds(c as usize).ok().flatten());
+                println!("  depth {} char {:?} kind {kind:?} matrix {:?} name {:?} bounds {bounds:?}", p.depth, p.character, p.matrix, p.name);
+            }
+        }
     }
 }

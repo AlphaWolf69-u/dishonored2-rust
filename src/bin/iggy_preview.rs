@@ -2,13 +2,22 @@
 //! stage (CPU reference rasterizer).
 //!
 //! Usage: iggy-preview <movie resource> <out.png> [frames] [--call <method>]...
-//!        [--tree] [--debug-ignore-visibility] [--debug-language <name>]
-use dishonored2_rust::assets::{archive::Catalog, iggy::IggyFile, installation, lang};
+//!        [--pause-state] [--tree] [--debug-ignore-visibility] [--debug-language <name>]
+//!
+//! `--pause-state` writes the pause state's data and shows the menu as the
+//! game does (`gameplay::pause_state`).
+use dishonored2_rust::assets::{archive::Catalog, installation, lang};
 use dishonored2_rust::flash::{raster, render, Player};
+use dishonored2_rust::gameplay::pause_state;
+use dishonored2_rust::platform::{bindings::Keyboard, game_settings};
 use std::env;
-use std::rc::Rc;
 
 fn main() -> Result<(), String> {
+    // Debug builds nest deep AS3 call chains on the native stack.
+    std::thread::Builder::new().stack_size(256 << 20).spawn(run).map_err(|e| e.to_string())?.join().map_err(|_| "preview panicked".to_string())?
+}
+
+fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let (movie_path, out) = match (args.first(), args.get(1)) {
         (Some(m), Some(o)) => (m.clone(), o.clone()),
@@ -23,28 +32,29 @@ fn main() -> Result<(), String> {
         Some(w) => w[1].clone(),
         None => lang::read_text_language(&base)?.to_string(),
     };
-    let read = |p: &str| -> Result<IggyFile, String> {
-        let bytes = catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?;
-        IggyFile::parse(bytes).map_err(|e| format!("{p}: {e}"))
-    };
-    let movie = read(&movie_path)?;
-    let info = movie.movie().map_err(|e| e.to_string())?;
-    let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
-    let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
-    player.state.borrow_mut().strings = Some(Rc::new(lang::StringTable::load(&catalog, &language)?));
-    let mut resources = Vec::new();
-    for import in &info.imports {
-        let path = lang::library_resource(&import.library, &language);
-        let index = player.load_library(read(&path)?).map_err(|e| format!("{path}: {}", player.describe(&e)))?;
-        resources.push((index, path));
+    let (mut player, resources) = Player::load_installed(&catalog, &language, &movie_path)?;
+    let frame_rate = player.state.borrow().frame_rate;
+    let size = player.state.borrow().stage_size;
+    if args.iter().any(|a| a == "--pause-state") {
+        let user = game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
+        // The preview renders at stage size, so the RGB and viewport sizes match.
+        let screen = pause_state::screen_size((size.0 as u32, size.1 as u32), (size.0 as u32, size.1 as u32));
+        pause_state::file_ready(&mut player, screen)?;
+        pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut Keyboard::default())?;
+        pause_state::show(&mut player)?;
     }
-    player.load_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
-    resources.push((player.state.borrow().libraries.len() - 1, movie_path.clone()));
     for call in &calls {
         player.call_root_method(call, &[]).map_err(|e| format!("{call}: {}", player.describe(&e)))?;
     }
+    let mut unhandled = Vec::new();
     for frame in 0..frames {
-        player.tick(1.0 / info.frame_rate as f64).map_err(|e| format!("frame {frame}: {}", player.describe(&e)))?;
+        player.tick(1.0 / frame_rate).map_err(|e| format!("frame {frame}: {}", player.describe(&e)))?;
+        if args.iter().any(|a| a == "--pause-state") {
+            pause_state::handle_notifications(&mut player, &mut unhandled)?;
+        }
+    }
+    if !unhandled.is_empty() {
+        eprintln!("unhandled notifications: {unhandled:?}");
     }
     for e in player.state.borrow().uncaught.iter() {
         eprintln!("uncaught: {e}");

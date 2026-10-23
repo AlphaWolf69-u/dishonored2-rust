@@ -102,6 +102,9 @@ pub struct Vm {
     pub native_report: Vec<String>,
     /// The `findpropstrict` holder of `natives`, rebuilt when they change.
     pub native_holder: Option<Obj>,
+    /// Diagnostic: `DH2_DEBUG_AVM_CALLS=<substring>` logs matching method
+    /// entries and their errors to stderr.
+    debug_calls: Option<String>,
     pub random: u64,
 }
 
@@ -123,6 +126,7 @@ impl Vm {
             table_classes: HashMap::new(),
             native_report: Vec::new(),
             native_holder: None,
+            debug_calls: std::env::var("DH2_DEBUG_AVM_CALLS").ok().filter(|f| !f.is_empty()),
             random: 0x9e37_79b9_7f4a_7c15,
         };
         builtins::install(&mut vm);
@@ -288,7 +292,11 @@ impl Vm {
 
     pub fn plain_object(&self) -> Obj {
         let object = self.b().object.clone();
-        Obj::new(ObjectData { class: Some(object.clone()), ..ObjectData::plain(Some(object.prototype())) })
+        Obj::new(ObjectData {
+            class: Some(object.clone()),
+            traits: Some(object.instance.clone()),
+            ..ObjectData::plain(Some(object.prototype()))
+        })
     }
 
     pub fn array(&self, items: Vec<Value>) -> Obj {
@@ -1015,7 +1023,8 @@ impl Vm {
                 Value::Object(p) => Some(p),
                 _ => Some(self.b().object.prototype()),
             };
-            let object = Obj::new(ObjectData { class: Some(self.b().object.clone()), ..ObjectData::plain(proto) });
+            let class = self.b().object.clone();
+            let object = Obj::new(ObjectData { traits: Some(class.instance.clone()), class: Some(class), ..ObjectData::plain(proto) });
             let r = self.call(ctor, Value::Object(object.clone()), args)?;
             return Ok(match r {
                 Value::Object(_) => r,
@@ -1086,6 +1095,10 @@ impl Vm {
             MethodKind::Bytecode { unit, index } => unit.method_label(*index),
             _ => method.name.clone(),
         });
+        let debug = self.debug_calls.as_ref().is_some_and(|f| self.stack.last().is_some_and(|l| l.contains(f.as_str())));
+        if debug {
+            eprintln!("avm2 {:>3} > {}", self.depth, self.stack.last().unwrap());
+        }
         let result = match &method.kind {
             MethodKind::Native(f) => f(self, &this, args),
             MethodKind::Unimplemented(address) => Err(Error::Internal(format!(
@@ -1099,6 +1112,11 @@ impl Vm {
             }
         };
         self.depth -= 1;
+        if debug {
+            if let Err(e) = &result {
+                eprintln!("avm2 {:>3} ! {} {e:?}", self.depth + 1, self.stack.last().unwrap());
+            }
+        }
         if result.is_err() && self.failure_stack.is_none() {
             self.failure_stack = Some(self.stack.clone());
         }
@@ -1166,7 +1184,9 @@ impl Vm {
         }
         let mut traits = unit::build_traits(unit, &instance.traits, super_class.as_ref().map(|s| &*s.instance))?;
         // Interface method names alias the public implementation (Tamarin
-        // binds interface namespaces to the class's public methods).
+        // binds interface namespaces to the class's public methods). The
+        // interfaces of base classes are re-bound too, so an override of a
+        // public method also answers its interface name.
         let mut all = Vec::new();
         fn collect(c: &Rc<Class>, out: &mut Vec<Rc<Class>>) {
             out.push(c.clone());
@@ -1177,11 +1197,18 @@ impl Vm {
         for i in &interfaces {
             collect(i, &mut all);
         }
+        let mut base = super_class.clone();
+        while let Some(b) = base {
+            for i in &b.interfaces {
+                collect(i, &mut all);
+            }
+            base = b.super_class.clone();
+        }
         for iface in &all {
             for q in iface.instance.bindings.keys() {
                 let public = QName { ns: Namespace::public(), name: q.name.clone() };
                 if let Some(b) = traits.bindings.get(&public).cloned() {
-                    traits.bindings.entry(q.clone()).or_insert(b);
+                    traits.bindings.insert(q.clone(), b);
                 }
             }
         }

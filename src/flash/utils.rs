@@ -136,24 +136,28 @@ pub fn install(vm: &mut Vm) {
     let mut s = Spec::new("flash.external", "ExternalInterface", Some(object.clone()));
 
     s.statics = vec![
+        // `FUN_14107f0b0` -> the game's hub `FUN_140034800`, which defers the
+        // handler; AS3 always gets null.
         ("call", |vm, _, a| {
             let name = vm.to_string(&arg(a, 0))?.to_string();
-            let callback = player::state(vm).borrow().callbacks.get(&name).cloned();
-            match callback {
-                Some(f) => f(vm, a.get(1..).unwrap_or_default()),
-                None => Ok(Value::Null),
-            }
+            let args = a.get(1..).unwrap_or_default().to_vec();
+            player::state(vm).borrow_mut().notifications.push((name, args));
+            Ok(Value::Null)
         }),
         ("addCallback", |_, _, _| Ok(Value::Undefined)),
     ];
     define(vm, s);
 
     let mut s = Spec::new("flash.system", "Capabilities", Some(object.clone()));
+    // Constant strings of the Iggy getters (0x1410af530..0x1410af620).
+    // screenResolutionX/Y read player+0x1ec0/0x1ec4 (`FUN_14101a2e0`,
+    // 0x1410af600); that field is not traced yet, the stage size stands in.
     s.static_getters = vec![
-        ("os", |_, _, _| Ok("Windows".into())),
-        ("playerType", |_, _, _| Ok("StandAlone".into())),
-        ("version", |_, _, _| Ok("WIN 11,0,0,0".into())),
         ("language", |_, _, _| Ok("en".into())),
+        ("manufacturer", |_, _, _| Ok("RAD Windows".into())),
+        ("os", |_, _, _| Ok("Windows".into())),
+        ("playerType", |_, _, _| Ok("PlugIn".into())),
+        ("version", |_, _, _| Ok("WIN 9,1,2,48".into())),
         ("screenResolutionX", |vm, _, _| Ok(player::state(vm).borrow().stage_size.0.into())),
         ("screenResolutionY", |vm, _, _| Ok(player::state(vm).borrow().stage_size.1.into())),
     ];

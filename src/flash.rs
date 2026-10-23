@@ -169,6 +169,36 @@ impl Player {
         Ok(root)
     }
 
+    /// Load an installed movie as the game's Iggy file manager does: the
+    /// text language's string table, the movie's imports in declaration
+    /// order (localized `lib_loc_flash_*` names), then the movie. Returns
+    /// the player and each loaded library's resource path.
+    pub fn load_installed(
+        catalog: &crate::assets::archive::Catalog,
+        language: &str,
+        movie_path: &str,
+    ) -> std::result::Result<(Player, Vec<(usize, String)>), String> {
+        use crate::assets::lang;
+        let read = |p: &str| -> std::result::Result<IggyFile, String> {
+            let bytes = catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?;
+            IggyFile::parse(bytes).map_err(|e| format!("{p}: {e}"))
+        };
+        let movie = read(movie_path)?;
+        let info = movie.movie().map_err(|e| e.to_string())?;
+        let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
+        let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
+        player.state.borrow_mut().strings = Some(Rc::new(lang::StringTable::load(catalog, language)?));
+        let mut resources = Vec::new();
+        for import in &info.imports {
+            let path = lang::library_resource(&import.library, language);
+            let index = player.load_library(read(&path)?).map_err(|e| format!("{path}: {}", player.describe(&e)))?;
+            resources.push((index, path));
+        }
+        player.load_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
+        resources.push((player.state.borrow().libraries.len() - 1, movie_path.to_string()));
+        Ok((player, resources))
+    }
+
     /// `FUN_1410249b0` / tick step 10: frame scripts pre-order, repeated
     /// while deferred gotos run.
     fn frame_scripts(&mut self) -> Result<()> {
@@ -216,8 +246,58 @@ impl Player {
         Ok(r)
     }
 
-    pub fn register_callback(&mut self, name: &str, f: player::Callback) {
-        self.state.borrow_mut().callbacks.insert(name.into(), f);
+    /// Resolve a root-relative Iggy value path (`a.b`, `a.data[3].c`) up to
+    /// its last member: the object holding it and the member name.
+    fn value_path(&mut self, path: &str) -> Result<(Value, avm2::name::Name)> {
+        let root = self.state.borrow().root.clone().ok_or_else(|| Error::Internal("no root".into()))?;
+        let mut names = Vec::new();
+        for segment in path.split('.') {
+            match segment.split_once('[') {
+                Some((name, index)) => {
+                    names.push(name.to_string());
+                    names.push(index.trim_end_matches(']').to_string());
+                }
+                None => names.push(segment.to_string()),
+            }
+        }
+        let last = names.pop().ok_or_else(|| Error::Internal("empty value path".into()))?;
+        let mut target = Value::Object(root);
+        for name in names {
+            target = self.vm.get_property(&target, &avm2::name::Name::public(&name))?;
+        }
+        Ok((target, avm2::name::Name::public(&last)))
+    }
+
+    /// `IggyValueSet*RS` (the `arkIggy` setters `FUN_14002a120` and
+    /// siblings): an AS3 property set, so setters run.
+    pub fn set_value(&mut self, path: &str, value: Value) -> Result<()> {
+        let (target, name) = self.value_path(path)?;
+        self.vm.set_property(&target, &name, value)
+    }
+
+    pub fn get_value(&mut self, path: &str) -> Result<Value> {
+        let (target, name) = self.value_path(path)?;
+        self.vm.get_property(&target, &name)
+    }
+
+    /// `IggyPlayerCallMethodRS` on a root-relative property chain
+    /// (`FUN_140028a90` with target path type 1), followed by deferred gotos.
+    pub fn call_path_method(&mut self, path: &str, name: &str, args: &[Value]) -> Result<Value> {
+        let (holder, member) = self.value_path(path)?;
+        let target = self.vm.get_property(&holder, &member)?;
+        let r = self.vm.call_property(&target, &avm2::name::Name::public(name), args)?;
+        timeline::run_deferred_gotos(&mut self.vm)?;
+        Ok(r)
+    }
+
+    /// A native AS3 Array (`FUN_140029470` + `FUN_141009f00`).
+    pub fn array(&self, items: Vec<Value>) -> Value {
+        Value::Object(self.vm.array(items))
+    }
+
+    /// The queued `ExternalInterface.call`s, oldest first.
+    pub fn take_notifications(&mut self) -> Vec<(String, Vec<Value>)> {
+        std::mem::take(&mut self.state.borrow_mut().notifications)
     }
 
     pub fn trace_lines(&mut self) -> Vec<String> {

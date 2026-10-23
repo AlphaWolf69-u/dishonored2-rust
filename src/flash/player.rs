@@ -44,10 +44,6 @@ pub struct Drag {
     pub bounds: Option<[f64; 4]>,
 }
 
-/// A host function AS3 can call by name (registered by the game with
-/// `FUN_14002cd20`).
-pub type Callback = Rc<dyn Fn(&mut Vm, &[Value]) -> Result<Value>>;
-
 #[derive(Default)]
 pub struct PlayerState {
     pub libraries: Vec<Library>,
@@ -57,7 +53,9 @@ pub struct PlayerState {
     pub fonts: Vec<Rc<crate::assets::iggy::font::Font>>,
     pub stage: Option<Obj>,
     pub root: Option<Obj>,
-    pub callbacks: HashMap<String, Callback>,
+    /// `ExternalInterface.call`s queued for the game (`FUN_14002b7e0`), in
+    /// call order; the game drains them later (`FUN_14002b610`).
+    pub notifications: Vec<(String, Vec<Value>)>,
     /// Stage size in pixels.
     pub stage_size: (f64, f64),
     pub frame_rate: f64,

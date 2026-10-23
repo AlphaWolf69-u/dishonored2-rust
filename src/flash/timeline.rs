@@ -389,15 +389,14 @@ fn this_clip(vm: &mut Vm, this: &Value) -> Result<Obj> {
 }
 
 /// Resolve a frame argument (1-based number or label) to a 0-based frame.
+/// An unknown label is no goto: `FUN_14107dd20` only records that the
+/// label was not found and `FUN_14101cc40` returns without an error.
 fn frame_arg(vm: &mut Vm, o: &Obj, v: &Value) -> Result<Option<u32>> {
     let t = timeline(o);
     match v {
         Value::String(s) => match s.parse::<u32>() {
             Ok(n) => Ok(Some(n.saturating_sub(1))),
-            Err(_) => match t.and_then(|t| t.timeline.label_frame(s)) {
-                Some(f) => Ok(Some(f)),
-                None => Err(vm.argument_error(2109, format!("Frame label {s} not found in scene Scene 1."))),
-            },
+            Err(_) => Ok(t.and_then(|t| t.timeline.label_frame(s))),
         },
         other => {
             let n = vm.to_number(other)?;
