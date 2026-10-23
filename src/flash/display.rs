@@ -73,6 +73,8 @@ pub struct Display {
     pub tab_enabled: Option<bool>,
     pub tab_index: i32,
     pub double_click: bool,
+    /// `DO+0x78`.
+    pub hit_area: Option<Obj>,
     pub graphics: Option<Obj>,
     pub transform3d: Option<Value>,
     pub projection: Option<Value>,
@@ -121,6 +123,7 @@ impl Display {
             tab_enabled: None,
             tab_index: -1,
             double_click: false,
+            hit_area: None,
             graphics: None,
             transform3d: None,
             projection: None,
@@ -508,12 +511,12 @@ fn display_getters() -> Vec<(&'static str, NativeFn)> {
         }),
         ("mouseX", |vm, this, _| {
             let o = this_obj(vm, this)?;
-            let (mx, my) = player::state(vm).borrow().mouse;
+            let (mx, my) = player::state(vm).borrow().mouse.position;
             Ok(concatenated(&o).invert().apply(mx, my).0.into())
         }),
         ("mouseY", |vm, this, _| {
             let o = this_obj(vm, this)?;
-            let (mx, my) = player::state(vm).borrow().mouse;
+            let (mx, my) = player::state(vm).borrow().mouse.position;
             Ok(concatenated(&o).invert().apply(mx, my).1.into())
         }),
         ("transform", |vm, this, _| super::transform::new_transform(vm, this)),
@@ -878,7 +881,7 @@ fn sprite_accessors() -> (Vec<(&'static str, NativeFn)>, Vec<(&'static str, Nati
     let getters: Vec<(&'static str, NativeFn)> = vec![
         ("graphics", graphics_getter),
         ("buttonMode", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().button_mode.into())),
-        ("hitArea", |_, _, _| Ok(Value::Null)),
+        ("hitArea", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().hit_area.clone().map_or(Value::Null, Value::Object))),
         ("dropTarget", |_, _, _| Ok(Value::Null)),
     ];
     let setters: Vec<(&'static str, NativeFn)> = vec![
@@ -886,7 +889,13 @@ fn sprite_accessors() -> (Vec<(&'static str, NativeFn)>, Vec<(&'static str, Nati
             display(&this_obj(vm, this)?).unwrap().button_mode = arg(a, 0).to_boolean();
             Ok(Value::Undefined)
         }),
-        ("hitArea", |_, _, _| Ok(Value::Undefined)),
+        // DO+0x78: a Sprite or null.
+        ("hitArea", |vm, this, a| {
+            let o = this_obj(vm, this)?;
+            let v = arg(a, 0).as_object().cloned();
+            display(&o).unwrap().hit_area = v;
+            Ok(Value::Undefined)
+        }),
     ];
     (getters, setters)
 }

@@ -11,7 +11,12 @@ use crate::gameplay::pause_state::{self, Character, Request};
 use crate::platform::bindings::{self, Keyboard};
 use crate::platform::game_settings;
 use crate::rendering::bevy_backend::flash_ui::{FlashFrame, FlashUiFrame, Image};
-use bevy::input::{keyboard::KeyboardInput, ButtonState};
+use bevy::input::{
+    keyboard::KeyboardInput,
+    mouse::{MouseButtonInput, MouseScrollUnit, MouseWheel},
+    ButtonState,
+};
+use bevy::window::{CursorGrabMode, CursorOptions};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -25,6 +30,12 @@ enum Command {
     Open { screen: (i32, i32) },
     /// An engine key code, down or up.
     Key { down: bool, key: u32 },
+    /// The cursor in movie pixels (`FUN_140033530`).
+    Cursor { x: f64, y: f64 },
+    /// Engine mouse button code 0xe0..0xe6 (`FUN_140033450`).
+    MouseButton { code: u32, down: bool },
+    /// Wheel notches (Iggy type 8).
+    Wheel(i32),
     Tick(f64),
     /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
     Close,
@@ -38,6 +49,8 @@ enum Event {
 
 struct Loaded {
     player: Player,
+    /// Last cursor position sent (`rec+0xb08`, initially 1e30).
+    cursor: (f64, f64),
     images: Arc<HashMap<CharRef, Arc<Image>>>,
     pending: f64,
     frame_interval: f64,
@@ -112,7 +125,7 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
         .collect();
     let frame_interval = 1.0 / player.state.borrow().frame_rate;
     info!("Pause movie {movie} ({language}) loaded in {:.2} s", started.elapsed().as_secs_f64());
-    Ok(Loaded { player, images: Arc::new(images), pending: 0.0, frame_interval })
+    Ok(Loaded { player, cursor: (1e30, 1e30), images: Arc::new(images), pending: 0.0, frame_interval })
 }
 
 fn report_uncaught(player: &mut Player) {
@@ -146,6 +159,47 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 let vk = keyboard.virtual_key(key).unwrap_or(key);
                 if let Err(e) = l.player.key_event(down, vk, 0) {
                     warn!("Pause movie key: {}", l.player.describe(&e));
+                }
+                report_uncaught(&mut l.player);
+            }
+            Command::Cursor { x, y } => {
+                let Some(l) = loaded.as_mut() else { continue };
+                // Moves of more than 0.1 movie pixel move `mouseCursor` and send
+                // the Iggy move event.
+                if (l.cursor.0 - x).abs() > 0.1 || (l.cursor.1 - y).abs() > 0.1 {
+                    l.cursor = (x, y);
+                    let moved = l
+                        .player
+                        .set_value("mouseCursor.x", x.into())
+                        .and_then(|_| l.player.set_value("mouseCursor.y", y.into()))
+                        .and_then(|_| l.player.mouse_move(x, y));
+                    if let Err(e) = moved {
+                        warn!("Pause movie cursor: {}", l.player.describe(&e));
+                    }
+                    report_uncaught(&mut l.player);
+                }
+            }
+            Command::MouseButton { code, down } => {
+                let Some(l) = loaded.as_mut() else { continue };
+                // The Iggy button event first (left/right/middle), then
+                // `IG_OnMouseEvent(code, state)` for every button.
+                let mut result = Ok(());
+                if (0xe0..=0xe2).contains(&code) {
+                    result = l.player.mouse_button((code - 0xe0) as u8, down);
+                }
+                let state = if down { 1.0 } else { 0.0 };
+                let result = result.and_then(|_| {
+                    l.player.call_path_method("inputsManager.mouseHandler", "IG_OnMouseEvent", &[(code as f64).into(), state.into()]).map(|_| ())
+                });
+                if let Err(e) = result {
+                    warn!("Pause movie mouse: {}", l.player.describe(&e));
+                }
+                report_uncaught(&mut l.player);
+            }
+            Command::Wheel(delta) => {
+                let Some(l) = loaded.as_mut() else { continue };
+                if let Err(e) = l.player.mouse_wheel(delta) {
+                    warn!("Pause movie wheel: {}", l.player.describe(&e));
                 }
                 report_uncaught(&mut l.player);
             }
@@ -184,11 +238,15 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
 /// The PAUSE binding opens the pause state; while it is open the game is
 /// paused, keys go to the movie and its draw list is published for the UI
 /// pass. `ResumeGame` from the movie closes it.
+#[allow(clippy::too_many_arguments)]
 pub fn update_pause_menu(
     mut menu: NonSendMut<PauseMenu>,
     mut keys: MessageReader<KeyboardInput>,
+    mut buttons: MessageReader<MouseButtonInput>,
+    mut wheels: MessageReader<MouseWheel>,
     time: Res<Time>,
     windows: Query<&Window>,
+    mut cursors: Query<&mut CursorOptions>,
     mut paused: ResMut<GamePaused>,
     mut frame: ResMut<FlashUiFrame>,
 ) {
@@ -211,7 +269,40 @@ pub fn update_pause_menu(
         }
     }
     if menu.open {
+        if let Some(window) = windows.iter().next() {
+            // The UI fills the window: movie pixels = window pixels × 1920 / width.
+            if let Some(c) = window.cursor_position() {
+                let x = c.x as f64 * 1920.0 / window.width() as f64;
+                let y = c.y as f64 * 1080.0 / window.height() as f64;
+                let _ = menu.commands.send(Command::Cursor { x, y });
+            }
+        }
+        for b in buttons.read() {
+            // DirectInput buttons 0..6 are engine codes 0xe0..0xe6.
+            let code = match b.button {
+                MouseButton::Left => 0xe0,
+                MouseButton::Right => 0xe1,
+                MouseButton::Middle => 0xe2,
+                MouseButton::Back => 0xe3,
+                MouseButton::Forward => 0xe4,
+                MouseButton::Other(n) if n < 7 => 0xe0 + n as u32,
+                _ => continue,
+            };
+            let _ = menu.commands.send(Command::MouseButton { code, down: b.state == ButtonState::Pressed });
+        }
+        for w in wheels.read() {
+            let notches = match w.unit {
+                MouseScrollUnit::Line => w.y as i32,
+                MouseScrollUnit::Pixel => (w.y / 120.0) as i32,
+            };
+            if notches != 0 {
+                let _ = menu.commands.send(Command::Wheel(notches.signum()));
+            }
+        }
         let _ = menu.commands.send(Command::Tick(time.delta_secs_f64()));
+    } else {
+        buttons.clear();
+        wheels.clear();
     }
     for event in menu.events.try_iter() {
         match event {
@@ -230,6 +321,18 @@ pub fn update_pause_menu(
     }
     if !menu.open {
         frame.0 = None;
+    }
+    // The movie draws its own cursor; the OS cursor is released and hidden
+    // while the pause state is open (whether the game hides it is not traced).
+    if menu.open != paused.0 {
+        for mut c in &mut cursors {
+            if menu.open {
+                c.grab_mode = CursorGrabMode::None;
+                c.visible = false;
+            } else {
+                c.visible = true;
+            }
+        }
     }
     paused.0 = menu.open;
 }

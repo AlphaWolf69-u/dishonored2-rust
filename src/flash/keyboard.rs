@@ -40,8 +40,17 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
+    pub fn command(&self) -> bool {
+        self.sides[0][0] || self.sides[0][1]
+    }
     pub fn shift(&self) -> bool {
         self.sides[1][0] || self.sides[1][1]
+    }
+    pub fn control(&self) -> bool {
+        self.sides[2][0] || self.sides[2][1]
+    }
+    pub fn alt(&self) -> bool {
+        self.sides[3][0] || self.sides[3][1]
     }
 }
 

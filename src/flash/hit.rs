@@ -165,7 +165,7 @@ pub fn start_drag(vm: &mut Vm, this: &Value, a: &[Value]) -> Result<Value> {
     };
     let shared = player::state(vm);
     let mut p = shared.borrow_mut();
-    let (mx, my) = p.mouse;
+    let (mx, my) = p.mouse.position;
     let parent = super::display::parent(&o);
     let (px, py) = parent.as_ref().map_or((mx, my), |pa| concatenated(pa).invert().apply(mx, my));
     let d = display_ref(&o).unwrap();
@@ -185,7 +185,7 @@ pub fn update_drag(vm: &Vm) {
     let shared = player::state(vm);
     let p = shared.borrow();
     let Some(drag) = &p.drag else { return };
-    let (mx, my) = p.mouse;
+    let (mx, my) = p.mouse.position;
     let parent = super::display::parent(&drag.object);
     let (px, py) = parent.as_ref().map_or((mx, my), |pa| concatenated(pa).invert().apply(mx, my));
     let (mut x, mut y) = (px + drag.offset.0, py + drag.offset.1);

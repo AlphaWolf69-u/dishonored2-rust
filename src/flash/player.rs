@@ -66,7 +66,7 @@ pub struct PlayerState {
     pub stage_size: (f64, f64),
     pub frame_rate: f64,
     /// Pointer position in stage pixels.
-    pub mouse: (f64, f64),
+    pub mouse: super::mouse::MouseState,
     pub focus: Option<Obj>,
     pub drag: Option<Drag>,
     /// Deferred gotos: clip, 0-based frame, play.

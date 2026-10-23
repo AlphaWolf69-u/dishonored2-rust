@@ -224,3 +224,49 @@ fn debug_pause_menu_elements() {
         println!("uncaught: {e}");
     }
 }
+
+/// Diagnostic: hovering the pause menu's options entry.
+#[test]
+#[ignore = "diagnostic"]
+fn debug_pause_mouse_hover() {
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/emily_pause_menu.iggy").unwrap();
+    crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
+    let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
+    let state = crate::gameplay::pause_state::current_state(&player, language);
+    crate::gameplay::pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut crate::platform::bindings::Keyboard::default(), &state).unwrap();
+    crate::gameplay::pause_state::show(&mut player, &state).unwrap();
+    for _ in 0..60 {
+        player.tick(1.0 / 30.0).unwrap();
+    }
+    for (x, y) in [(1240.0, 665.0), (1240.0, 668.0)] {
+        player.mouse_move(x, y).unwrap();
+        let m = player.state.borrow().mouse.clone();
+        let name = |o: &Option<Obj>| o.as_ref().map(|o| format!("{:?}/{}", o.class().map(|c| c.name.clone()), display::display_ref(o).map(|d| d.name.to_string()).unwrap_or_default()));
+        println!("at ({x},{y}) over={:?} inner={:?}", name(&m.over), name(&m.inner));
+        if let Some(i) = &m.inner {
+            let t = crate::flash::text::text_object(i).map(|t| (t.origin, t.offset, t.width, t.height, t.auto_size, t.word_wrap(), t.text()));
+            println!("  text {t:?}");
+            println!("  content {:?} concat {:?}", crate::flash::bounds::content(&player.vm, i), display::concatenated(i));
+        }
+        for _ in 0..5 {
+            player.tick(1.0 / 30.0).unwrap();
+        }
+    }
+    println!("-- click");
+    for down in [true, false] {
+        player.mouse_button(0, down).unwrap();
+        let r = player.call_path_method("inputsManager.mouseHandler", "IG_OnMouseEvent", &[224.0.into(), (if down { 1.0 } else { 0.0 }).into()]);
+        println!("IG_OnMouseEvent: {:?}", r.as_ref().map(|_| ()).map_err(|e| format!("{e:?}")));
+        player.tick(1.0 / 30.0).unwrap();
+    }
+    for _ in 0..30 {
+        player.tick(1.0 / 30.0).unwrap();
+    }
+    println!("notifications: {:?}", player.take_notifications().iter().map(|n| n.0.clone()).collect::<Vec<_>>());
+    for e in player.state.borrow().uncaught.iter() {
+        println!("uncaught: {e}");
+    }
+}

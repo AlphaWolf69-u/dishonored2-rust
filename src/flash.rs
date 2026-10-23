@@ -10,6 +10,7 @@ pub mod graphics;
 pub mod hit;
 pub mod iggy_functions;
 pub mod keyboard;
+pub mod mouse;
 pub mod native_decl;
 pub mod native_table;
 pub mod player;
@@ -239,6 +240,7 @@ impl Player {
         self.frame_scripts()?;
         self.render_if_invalidated()?;
         hit::update_drag(&self.vm);
+        mouse::moved(&mut self.vm, None)?;
         self.state.borrow_mut().frame += 1;
         Ok(())
     }
@@ -299,6 +301,28 @@ impl Player {
     /// A native AS3 Array (`FUN_140029470` + `FUN_141009f00`).
     pub fn array(&self, items: Vec<Value>) -> Value {
         Value::Object(self.vm.array(items))
+    }
+
+    /// A host mouse move to stage pixels (Iggy event type 7).
+    pub fn mouse_move(&mut self, x: f64, y: f64) -> Result<()> {
+        mouse::moved(&mut self.vm, Some((x, y)))?;
+        timeline::run_deferred_gotos(&mut self.vm)?;
+        Ok(())
+    }
+
+    /// A host mouse button (types 1..6): 0 left, 1 right, 2 middle.
+    pub fn mouse_button(&mut self, button: u8, down: bool) -> Result<()> {
+        let now = self.vm.started.elapsed().as_secs_f64();
+        mouse::button(&mut self.vm, button, down, now)?;
+        timeline::run_deferred_gotos(&mut self.vm)?;
+        Ok(())
+    }
+
+    /// A host wheel event (type 8), ±1 per notch.
+    pub fn mouse_wheel(&mut self, delta: i32) -> Result<()> {
+        mouse::wheel(&mut self.vm, delta)?;
+        timeline::run_deferred_gotos(&mut self.vm)?;
+        Ok(())
     }
 
     /// A host key event (virtual key, keyLocation), then deferred gotos.

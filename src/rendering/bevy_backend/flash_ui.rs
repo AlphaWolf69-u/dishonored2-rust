@@ -196,11 +196,21 @@ fn upload(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, r
 fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
     let mut out = Vec::with_capacity(vertices.len() * std::mem::size_of::<Vertex>());
     for v in vertices {
-        for f in v.position.iter().chain(&v.uv).chain(&v.mul).chain(&v.add).chain(&v.params) {
+        for f in v.position.iter().chain(&v.uv).chain(&v.mul).chain(&v.add).chain(&v.params).chain(std::iter::once(&v.w)) {
             out.extend_from_slice(&f.to_le_bytes());
         }
     }
+    debug_assert_eq!(out.len(), vertices.len() * std::mem::size_of::<Vertex>());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn packed_vertices_match_the_layout_stride() {
+        let v = crate::flash::render::Vertex { position: [1.0, 2.0], uv: [0.0; 2], mul: [1.0; 4], add: [0.0; 4], params: [0.0; 2], w: 1.0 };
+        assert_eq!(super::vertex_bytes(&[v, v]).len(), 2 * super::vertex_layout().array_stride as usize);
+    }
 }
 
 fn render_flash_ui(
