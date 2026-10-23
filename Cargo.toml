@@ -18,6 +18,8 @@ slint = { version = "1.18", optional = true, default-features = false, features 
 # The launcher's copy of the rewrite source and the mod merges (bundled
 # libgit2, HTTPS only: players need no git).
 git2 = { version = "0.21", optional = true, features = ["https", "vendored-libgit2"] }
+# The launcher's command-line output (already in the tree).
+serde_json = { version = "1.0.151", optional = true }
 half = "2.7.1"
 # AVM2 bytecode (ABC) parsing only; Iggy movies embed standard ABC blocks.
 swf = { version = "0.3.0", default-features = false }
@@ -37,7 +39,7 @@ bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 
 [features]
 game = ["dep:bevy", "dep:log"]
-launcher = ["dep:slint", "dep:git2"]
+launcher = ["dep:slint", "dep:git2", "dep:serde_json"]
 
 [[bin]]
 name = "dishonored2-rust"

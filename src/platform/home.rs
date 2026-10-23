@@ -249,6 +249,15 @@ pub struct ModInfo {
     pub repository: String,
     pub description: String,
     pub saves: SaveSafety,
+    /// (mod name, version requirement): mods it needs enabled and loaded
+    /// before it. The requirement is `*`, `1.2` (compatible with 1.2 and
+    /// newer, cargo's caret rule), `>=1.2` or `=1.2.0`.
+    pub requires: Vec<(String, String)>,
+    /// Mods it cannot be enabled with.
+    pub incompatible: Vec<String>,
+    /// Mods it loads after (or before) when both are enabled.
+    pub load_after: Vec<String>,
+    pub load_before: Vec<String>,
     pub folder: PathBuf,
     /// Why the mod cannot be enabled, if it cannot.
     pub problem: Option<String>,
@@ -276,6 +285,10 @@ pub fn read_mod(folder: &Path) -> ModInfo {
         repository: String::new(),
         description: String::new(),
         saves: SaveSafety::Permanent,
+        requires: Vec::new(),
+        incompatible: Vec::new(),
+        load_after: Vec::new(),
+        load_before: Vec::new(),
         folder: folder.to_path_buf(),
         problem: None,
     };
@@ -307,6 +320,19 @@ pub fn read_mod(folder: &Path) -> ModInfo {
     info.repository = field("repository");
     info.description = field("description");
     let saves = field("saves");
+    let names = |k: &str| -> Vec<String> {
+        doc.get(k).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).map(|v| v.trim().to_string()).collect()).unwrap_or_default()
+    };
+    // `requires = ["A"]` or `requires = { A = "1.2" }`.
+    info.requires = match doc.get("requires") {
+        Some(v) if v.is_table_like() => {
+            v.as_table_like().unwrap().iter().map(|(k, v)| (k.to_string(), v.as_str().unwrap_or("*").trim().to_string())).collect()
+        }
+        _ => names("requires").into_iter().map(|n| (n, "*".to_string())).collect(),
+    };
+    info.incompatible = names("incompatible");
+    info.load_after = names("load_after");
+    info.load_before = names("load_before");
     let mut missing: Vec<&str> = ["name", "version"].into_iter().filter(|k| field(k).is_empty()).collect();
     if !info.patches().is_empty() && info.rewrite.is_empty() {
         missing.push("rewrite (its patches need the rewrite release they were made against)");
@@ -365,7 +391,9 @@ pub fn save_modlist(names: &[String]) -> Result<(), String> {
 }
 
 /// The valid mods `modlist.toml` enables, in load order; the others are
-/// reported and skipped.
+/// reported and skipped. A mod whose requirements are missing or which is
+/// incompatible with an enabled mod is skipped too; a load order its
+/// relationships forbid is reported (`sort_modlist` fixes it).
 pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<ModInfo> {
     let installed = installed_mods();
     let mut mods: Vec<ModInfo> = Vec::new();
@@ -381,7 +409,102 @@ pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<ModInfo> {
             },
         }
     }
+    // Of two incompatible mods the later one in load order is skipped;
+    // skipping a mod can leave another without its requirement: repeat.
+    while let Some((i, p)) = mods.iter().enumerate().find_map(|(i, m)| relationship_problem(m, &mods[..i], &mods, &installed).map(|p| (i, p))) {
+        problems.push(format!("Mod {} skipped: {p}", mods[i].name));
+        mods.remove(i);
+    }
+    problems.extend(order_problems(&mods));
     mods
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// A missing requirement among the `enabled` mods, or an incompatible mod
+/// among those loading `earlier`.
+pub fn relationship_problem(m: &ModInfo, earlier: &[ModInfo], enabled: &[ModInfo], installed: &[ModInfo]) -> Option<String> {
+    for (name, req) in &m.requires {
+        match enabled.iter().find(|e| same(&e.name, name)) {
+            Some(e) if !version_satisfies(&e.version, req) => return Some(format!("it needs {name} {req}, but {name} is version {}", e.version)),
+            Some(_) => {}
+            None if installed.iter().any(|i| same(&i.name, name)) => return Some(format!("it needs {name}; enable it")),
+            None => return Some(format!("it needs {name}, which is not installed")),
+        }
+    }
+    for e in earlier.iter().filter(|e| !same(&e.name, &m.name)) {
+        if m.incompatible.iter().any(|n| same(n, &e.name)) || e.incompatible.iter().any(|n| same(n, &m.name)) {
+            return Some(format!("it is incompatible with {}", e.name));
+        }
+    }
+    None
+}
+
+/// Whether `a` must load before `b`: `b` requires or loads after `a`, or
+/// `a` loads before `b`.
+fn must_precede(a: &ModInfo, b: &ModInfo) -> bool {
+    b.requires.iter().any(|(n, _)| same(n, &a.name)) || b.load_after.iter().any(|n| same(n, &a.name)) || a.load_before.iter().any(|n| same(n, &b.name))
+}
+
+/// Load-order relationships the order of `mods` breaks.
+pub fn order_problems(mods: &[ModInfo]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, a) in mods.iter().enumerate() {
+        for b in &mods[..i] {
+            if must_precede(a, b) {
+                out.push(format!("Load order: {} must load after {}", b.name, a.name));
+            }
+        }
+    }
+    out
+}
+
+/// `names` reordered so every relationship holds, moving as little as
+/// possible: at each step the earliest mod whose predecessors are placed.
+/// Mods in a cycle keep their order.
+pub fn sort_by_relationships(names: &[String], installed: &[ModInfo]) -> Vec<String> {
+    let info = |n: &str| installed.iter().find(|m| same(&m.name, n));
+    let mut left: Vec<String> = names.to_vec();
+    let mut out = Vec::new();
+    while !left.is_empty() {
+        let next = (0..left.len())
+            .find(|&i| {
+                let Some(m) = info(&left[i]) else { return true };
+                !left.iter().enumerate().any(|(j, o)| j != i && info(o).is_some_and(|o| must_precede(o, m)))
+            })
+            .unwrap_or(0);
+        out.push(left.remove(next));
+    }
+    out
+}
+
+/// Reorder `modlist.toml` by the relationships.
+pub fn sort_modlist() -> Result<(), String> {
+    save_modlist(&sort_by_relationships(&modlist(), &installed_mods()))
+}
+
+/// `version` against a requirement: `*` (or empty), `=1.2.0`, `>=1.2`, or
+/// `1.2` / `^1.2` (at least 1.2 within its compatibility range: the
+/// left-most non-zero component matches, cargo's caret rule).
+pub fn version_satisfies(version: &str, req: &str) -> bool {
+    let nums = |v: &str| -> Vec<u64> { v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect() };
+    let pad = |v: Vec<u64>| [0, 1, 2].map(|i| v.get(i).copied().unwrap_or(0));
+    let req = req.trim();
+    let have = pad(nums(version));
+    if req.is_empty() || req == "*" {
+        return true;
+    }
+    if let Some(r) = req.strip_prefix(">=") {
+        return have >= pad(nums(r));
+    }
+    if let Some(r) = req.strip_prefix('=') {
+        return have == pad(nums(r));
+    }
+    let want = pad(nums(req.trim_start_matches('^')));
+    let first = want.iter().position(|&n| n != 0).unwrap_or(2);
+    have >= want && have[..=first] == want[..=first]
 }
 
 /// Every file under `root` as (normalized resource path, file).
@@ -450,4 +573,72 @@ pub fn fingerprint(base: &Path, layers: &Layers) -> String {
         hash_part(&mut h, &fs::read(path).unwrap_or_default());
     }
     h.finalize().to_hex().to_string()
+}
+
+#[cfg(test)]
+mod relationship_tests {
+    use super::*;
+
+    fn m(name: &str, version: &str) -> ModInfo {
+        ModInfo {
+            name: name.into(),
+            version: version.into(),
+            author: String::new(),
+            rewrite: String::new(),
+            repository: String::new(),
+            description: String::new(),
+            saves: SaveSafety::Safe,
+            requires: Vec::new(),
+            incompatible: Vec::new(),
+            load_after: Vec::new(),
+            load_before: Vec::new(),
+            folder: PathBuf::new(),
+            problem: None,
+        }
+    }
+
+    #[test]
+    fn versions_follow_the_requirement_forms() {
+        assert!(version_satisfies("1.4.0", "1.2"));
+        assert!(!version_satisfies("2.0.0", "1.2"));
+        assert!(!version_satisfies("1.1.9", "1.2"));
+        assert!(version_satisfies("0.3.5", "0.3.1"));
+        assert!(!version_satisfies("0.4.0", "0.3"));
+        assert!(version_satisfies("2.0.0", ">=1.2"));
+        assert!(!version_satisfies("1.2.1", "=1.2.0"));
+        assert!(version_satisfies("anything", "*"));
+    }
+
+    #[test]
+    fn requirements_and_incompatibilities_are_reported() {
+        let mut a = m("A", "1.0.0");
+        a.requires = vec![("Core".into(), "2".into())];
+        let core = m("Core", "1.5.0");
+        assert_eq!(relationship_problem(&a, &[], &[core.clone()], &[core.clone()]).unwrap(), "it needs Core 2, but Core is version 1.5.0");
+        assert_eq!(relationship_problem(&a, &[], &[], &[core.clone()]).unwrap(), "it needs Core; enable it");
+        assert_eq!(relationship_problem(&a, &[], &[], &[]).unwrap(), "it needs Core, which is not installed");
+        let mut b = m("B", "1.0.0");
+        b.incompatible = vec!["core".into()];
+        // The later of an incompatible pair is the one with the problem.
+        assert_eq!(relationship_problem(&core, &[b.clone()], &[b.clone(), core.clone()], &[]).unwrap(), "it is incompatible with B");
+        assert_eq!(relationship_problem(&b, &[], &[b.clone(), core.clone()], &[]), None);
+    }
+
+    #[test]
+    fn sorting_moves_as_little_as_possible() {
+        let mut a = m("A", "1");
+        a.requires = vec![("Core".into(), "*".into())];
+        let mut late = m("Late", "1");
+        late.load_after = vec!["B".into()];
+        let mut early = m("Early", "1");
+        early.load_before = vec!["A".into()];
+        let installed = [a.clone(), late, early, m("B", "1"), m("Core", "1")];
+        let names: Vec<String> = ["Late", "A", "B", "Core", "Early"].map(String::from).to_vec();
+        let sorted = sort_by_relationships(&names, &installed);
+        assert_eq!(sorted, ["B", "Late", "Core", "Early", "A"]);
+        let mods: Vec<ModInfo> = sorted.iter().map(|n| installed.iter().find(|m| &m.name == n).unwrap().clone()).collect();
+        assert!(order_problems(&mods).is_empty());
+        let unsorted: Vec<ModInfo> = names.iter().map(|n| installed.iter().find(|m| &m.name == n).unwrap().clone()).collect();
+        assert!(order_problems(&unsorted).contains(&"Load order: A must load after Core".to_string()));
+    }
 }

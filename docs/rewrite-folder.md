@@ -18,6 +18,7 @@ DH2Rewrite/
   cache/target/             build output
   cache/build.txt           what the current game executable was built from
   logs/                     session-*.log (game), build-*.log (launcher)
+  resolutions/<id>/         how merge conflicts between mods were resolved
   modlist.toml              enabled mods by name, in load order
 ```
 
@@ -32,9 +33,10 @@ source, so mods with patches cannot be enabled with it; resource mods work.
 
 Code: `src/platform/home.rs` (layout, imports, settings, mods, resources,
 fingerprint), `src/platform/game_folder.rs` (folder and question dialogs),
-`src/bin/launcher/` (window `main.rs`, `source.rs`, `toolchain.rs`,
-`merge.rs`, `build.rs`, `updates.rs`), `src/assets/archive.rs` (mod resource
-overlay).
+`src/bin/launcher/` (window `main.rs`, command line `cli.rs`, operations
+`ops.rs`, `source.rs`, `toolchain.rs`, `merge.rs`, `manifest.rs`,
+`resolutions.rs`, `build.rs`, `updates.rs`), `src/assets/archive.rs` (mod
+resource overlay).
 
 ## Mods
 
@@ -52,6 +54,10 @@ rewrite = "v0.4.0"             # the rewrite tag or commit the patches were made
 repository = "https://github.com/user/better-stealth"   # optional, for update checks
 description = "..."
 saves = "safe"                 # safe | cleanup | permanent
+requires = { "Core Fixes" = "1.2" }   # or ["Core Fixes"]: any version
+incompatible = ["Other Stealth"]
+load_after = ["Bigger Maps"]   # when both are enabled
+load_before = []
 ```
 
 - `name`, `version` and `saves` are required; `rewrite` is required when the
@@ -76,6 +82,36 @@ saves = "safe"                 # safe | cleanup | permanent
 - Resources replace or add game resources at run time (a later mod wins);
   they need no build.
 
+### Relationships
+
+- `requires`: the mods must be enabled and load earlier. A version
+  requirement is `*`, `1.2` (1.2 or newer within its compatibility range,
+  cargo's caret rule), `>=1.2` or `=1.2.0`. Enabling a mod also enables the
+  installed mods it requires.
+- `incompatible` (either side may declare it): of the two, the one later in
+  load order is skipped.
+- `load_after` / `load_before`: order only, when both are enabled.
+- A mod whose requirement is missing is skipped (and so is anything needing
+  it). After enabling or moving a mod the list is reordered as little as
+  possible to satisfy the relationships; mods in a cycle keep their order.
+
+### Conflicts
+
+The launcher merges the enabled mods in memory whenever the mods change and
+lists every conflict: the file, the mod and what it was merged onto. The merge
+continues past an unresolved conflict with the earlier side, so the later
+mods' conflicts are found in the same pass. A conflict is resolved by keeping
+the earlier version, taking the mod's, or editing the file: Edit… writes
+`resolutions/<id>/<file>` with conflict markers (labelled with the mods) and
+opens it; "Use edited" accepts it once no markers are left (a `Cargo.toml`
+must also be valid TOML).
+
+A resolution's `<id>` is a hash of the path and the three versions of the
+file (common, earlier side, mod). It applies on every build while they are
+unchanged; a mod update or a load-order change that changes them makes the
+conflict open again. Resolutions are the user's, kept in the rewrite folder,
+not in the mods.
+
 ## The launcher
 
 1. **Rewrite source:** Download clones
@@ -88,8 +124,9 @@ saves = "safe"                 # safe | cleanup | permanent
    open the download pages without winget.
 3. **Game folder:** found as the game does (`game_path`, Steam), or chosen with
    Browse… (any store's installation).
-4. **Mods:** checkboxes and ▲/▼ load order (`modlist.toml`), save-safety
-   badges, update notices (the mod repository's newest version tag), problems.
+4. **Mods:** checkboxes, load order by dragging ≡ (`modlist.toml`; only
+   enabled mods have an order), save-safety badges, update notices (the mod
+   repository's newest version tag), problems, and the conflicts below them.
 5. **Launch:** if the rewrite commit or the enabled mods' names, versions or
    patches changed since the last build (`cache/build.txt`), the mods are
    merged into `source/` and `cargo build --release --features game --bin
@@ -97,6 +134,17 @@ saves = "safe"                 # safe | cleanup | permanent
    game executable is copied next to the launcher and started.
 6. **Saves and config** are imported only on request (Import saves…, Import
    config…; or `dishonored2-rust.exe --import-saves [folder]`).
+
+## Command line
+
+`dishonored2-launcher.exe <command>` runs without the window, prints one JSON
+object on stdout (`"ok"`, the result or `"error"`), progress on stderr, and
+exits with 0 on success. `help` lists the commands: `status [--updates]`,
+`conflicts`, `resolve <id> edit|earlier|mod|edited|undo`, `enable`, `disable
+[--force]`, `move <mod> <position>`, `sort`, `download [--update]`,
+`use-local <folder>`, `use-download`, `game-path`, `import-saves`,
+`import-config`, `build` and `launch`. In PowerShell, pipe it
+(`| Out-String`) to wait for the output.
 
 ## Setup fingerprint
 

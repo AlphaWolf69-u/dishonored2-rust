@@ -2473,6 +2473,7 @@ dependencies = [
  "half",
  "log",
  "png",
+ "serde_json",
  "slint",
  "swf",
  "toml_edit",

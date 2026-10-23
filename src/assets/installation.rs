@@ -16,8 +16,13 @@ pub fn base_of(path: &Path) -> Option<PathBuf> {
 
 /// The installed game: `DH2_GAME_BASE` (authoritative, including when it is
 /// invalid), the folder saved in the rewrite's `config/rewrite.toml`, then a
-/// Steam installation.
+/// Steam installation. Separators are the platform's (Steam's registry path
+/// uses `/`).
 pub fn game_base() -> io::Result<PathBuf> {
+    find_game_base().map(|p| p.components().collect())
+}
+
+fn find_game_base() -> io::Result<PathBuf> {
     if let Some(path) = env::var_os("DH2_GAME_BASE") {
         let path = PathBuf::from(path);
         return if valid_base(&path) {
@@ -163,5 +168,16 @@ mod tests {
             vdf_value(r#""installdir" "Dishonored2""#, "installdir").as_deref(),
             Some("Dishonored2")
         );
+    }
+}
+
+#[cfg(test)]
+mod separator_tests {
+    #[test]
+    #[cfg(windows)]
+    fn mixed_separators_become_the_platforms() {
+        let p = std::path::PathBuf::from("d:/programs/steam").join("steamapps/common").join("Dishonored2").join("base");
+        let native: std::path::PathBuf = p.components().collect();
+        assert_eq!(native.to_str(), Some(r"d:\programs\steam\steamapps\common\Dishonored2\base"));
     }
 }

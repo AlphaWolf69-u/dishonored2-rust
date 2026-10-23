@@ -1,11 +1,15 @@
 //! The rewrite's launcher and mod manager. It keeps the rewrite source
 //! (`source/`), checks the build tools, merges the enabled mods' patches,
 //! builds the game when the source or the mod selection changed, and
-//! launches it. Folder layout: `platform::home`.
+//! launches it. Folder layout: `platform::home`. With a command it runs
+//! without its window (`cli`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod build;
+mod cli;
 mod manifest;
 mod merge;
+mod ops;
+mod resolutions;
 mod source;
 mod toolchain;
 mod updates;
@@ -14,7 +18,7 @@ use dishonored2_rust::assets::installation;
 use dishonored2_rust::platform::{game_folder, home};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 slint::slint! {
     import { ScrollView } from "std-widgets.slint";
@@ -85,14 +89,16 @@ slint::slint! {
         border-radius: 2px;
     }
 
-    // One status line: a mark, a text with detail, and an optional action.
+    // One status line: a mark, a text with detail, and up to two actions.
     component Line inherits HorizontalLayout {
         in property <bool> ok;
         in property <string> text;
         in property <string> detail;
         in property <string> action;
+        in property <string> action2;
         in property <bool> action-enabled: true;
         callback act();
+        callback act2();
         spacing: 12px;
         Text { text: root.ok ? "✓" : "×"; color: root.ok ? Theme.good : Theme.warn; font-size: 16px; font-weight: 800; vertical-alignment: center; width: 16px; }
         VerticalLayout {
@@ -102,10 +108,12 @@ slint::slint! {
             Text { text: root.text; color: Theme.ink; overflow: elide; }
             if root.detail != "" : Text { text: root.detail; color: Theme.faint; font-size: 12px; overflow: elide; }
         }
+        if root.action2 != "" : Action { text: root.action2; enabled: root.action-enabled; clicked => { root.act2(); } }
         if root.action != "" : Action { text: root.action; enabled: root.action-enabled; clicked => { root.act(); } }
     }
 
-    export struct ModRow { name: string, detail: string, badge: string, badge-warn: bool, update: string, problem: string, enabled: bool, can-enable: bool, first: bool, last: bool }
+    export struct ModRow { name: string, detail: string, badge: string, badge-warn: bool, update: string, problem: string, enabled: bool, can-enable: bool }
+    export struct ConflictRow { id: string, path: string, mods: string, module: string, detail: string, resolved: bool, editing: bool }
 
     export component Launcher inherits Window {
         title: "Dishonored 2 Rewrite";
@@ -128,6 +136,13 @@ slint::slint! {
         in property <bool> game-found;
         in property <string> game-path;
         in property <[ModRow]> mods;
+        in property <int> enabled-count;
+        in property <[ConflictRow]> conflicts;
+        in property <int> unresolved;
+        // The row being dragged and where it would go (-1: none).
+        property <int> drag-from: -1;
+        property <int> drag-to: -1;
+        property <length> row-pitch: 50px;
         in property <string> build-text;
         in property <string> fingerprint;
         in property <string> status;
@@ -139,7 +154,10 @@ slint::slint! {
         callback install-build-tools();
         callback browse-game();
         callback toggle-mod(string, bool);
-        callback move-mod(string, int);
+        callback drop-mod(string, int);
+        callback conflict-edit(string);
+        callback conflict-choose(string, string);
+        callback conflict-undo(string);
         callback import-saves();
         callback import-config();
         callback open(string);
@@ -170,14 +188,10 @@ slint::slint! {
                         padding: 10px; spacing: 6px;
                         Line {
                             ok: root.source-ok; text: root.source-text; detail: root.source-detail; action: root.source-action; action-enabled: !root.busy;
+                            // For developers: build an own checkout as it is.
+                            action2: root.source-is-local ? "" : "Use local source…";
                             act => { if root.source-is-local { root.source-local(); } else { root.source-act(); } }
-                        }
-                        if !root.source-is-local : Line {
-                            ok: true;
-                            text: "Developing the rewrite? Launch can build your own checkout as it is.";
-                            action: "Use local source…";
-                            action-enabled: !root.busy;
-                            act => { root.source-local(); }
+                            act2 => { root.source-local(); }
                         }
                         Line { ok: root.rust-ok; text: root.rust-text; action: root.rust-ok ? "" : "Install Rust"; action-enabled: !root.busy; act => { root.install-rust(); } }
                         Line {
@@ -226,12 +240,46 @@ slint::slint! {
                             visible: root.mods.length > 0;
                             VerticalLayout {
                                 spacing: 2px;
-                                for row in root.mods : Rectangle {
-                                    height: 56px;
-                                    background: row-hit.has-hover ? #231e1a : transparent;
+                                for row[i] in root.mods : Rectangle {
+                                    height: root.row-pitch - 2px;
+                                    background: root.drag-from == i ? #2e2722 : row-hit.has-hover ? #231e1a : transparent;
                                     row-hit := TouchArea {}
+                                    // Where the dragged row would be dropped.
+                                    if root.drag-from >= 0 && root.drag-to == i && root.drag-to != root.drag-from : Rectangle {
+                                        x: 0; width: parent.width; height: 2px;
+                                        y: root.drag-to < root.drag-from ? 0 : parent.height - 2px;
+                                        background: Theme.brass;
+                                    }
                                     HorizontalLayout {
-                                        padding-left: 10px; padding-right: 10px; spacing: 14px;
+                                        padding-left: 4px; padding-right: 10px; spacing: 10px;
+                                        // Drag handle: enabled mods have a load order.
+                                        Rectangle {
+                                            width: 20px;
+                                            Text {
+                                                text: row.enabled ? "≡" : "";
+                                                color: handle.pressed || handle.has-hover ? Theme.ink : Theme.faint;
+                                                font-size: 20px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            handle := TouchArea {
+                                                enabled: row.enabled && !root.busy;
+                                                mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                                                moved => {
+                                                    root.drag-from = i;
+                                                    root.drag-to = clamp(i + round((self.mouse-y - self.pressed-y) / root.row-pitch), 0, root.enabled-count - 1);
+                                                }
+                                                pointer-event(e) => {
+                                                    if e.kind == PointerEventKind.up {
+                                                        if root.drag-from == i && root.drag-to >= 0 && root.drag-to != i {
+                                                            root.drop-mod(row.name, root.drag-to);
+                                                        }
+                                                        root.drag-from = -1;
+                                                        root.drag-to = -1;
+                                                    }
+                                                }
+                                            }
+                                        }
                                         VerticalLayout { alignment: center; Toggle {
                                             checked: row.enabled;
                                             enabled: !root.busy && (row.can-enable || row.enabled);
@@ -255,14 +303,31 @@ slint::slint! {
                                                 overflow: elide;
                                             }
                                         }
-                                        if row.enabled : VerticalLayout {
-                                            alignment: center;
-                                            HorizontalLayout {
-                                                spacing: 6px;
-                                                Action { text: "▲"; min-width: 34px; enabled: !root.busy && !row.first; clicked => { root.move-mod(row.name, -1); } }
-                                                Action { text: "▼"; min-width: 34px; enabled: !root.busy && !row.last; clicked => { root.move-mod(row.name, 1); } }
-                                            }
+                                    }
+                                }
+                                if root.conflicts.length > 0 : Text {
+                                    text: root.unresolved > 0 ? "CONFLICTS  ·  " + root.unresolved + " to resolve before building" : "CONFLICTS  ·  all resolved";
+                                    color: root.unresolved > 0 ? Theme.warn : Theme.good;
+                                    font-size: 11px; font-weight: 700; letter-spacing: 2px;
+                                    height: 30px; vertical-alignment: bottom;
+                                }
+                                for c in root.conflicts : Rectangle {
+                                    height: root.row-pitch - 2px;
+                                    background: c-hit.has-hover ? #231e1a : transparent;
+                                    c-hit := TouchArea {}
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                        Text { text: c.resolved ? "✓" : "×"; color: c.resolved ? Theme.good : Theme.warn; font-size: 16px; font-weight: 800; vertical-alignment: center; width: 16px; }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                            Text { text: c.path; color: Theme.ink; font-weight: 600; overflow: elide; }
+                                            Text { text: c.detail != "" ? c.mods + "  ·  " + c.detail : c.mods; color: Theme.faint; font-size: 12px; overflow: elide; }
                                         }
+                                        if !c.resolved : VerticalLayout { alignment: center; Action { text: c.editing ? "Open again" : "Edit…"; enabled: !root.busy; clicked => { root.conflict-edit(c.id); } } }
+                                        if !c.resolved && c.editing : VerticalLayout { alignment: center; Action { text: "Use edited"; enabled: !root.busy; clicked => { root.conflict-choose(c.id, "edited"); } } }
+                                        if !c.resolved && !c.editing : VerticalLayout { alignment: center; Action { text: "Keep earlier"; enabled: !root.busy; clicked => { root.conflict-choose(c.id, "earlier"); } } }
+                                        if !c.resolved && !c.editing : VerticalLayout { alignment: center; Action { text: "Take " + c.module; enabled: !root.busy; clicked => { root.conflict-choose(c.id, "mod"); } } }
+                                        if c.resolved : VerticalLayout { alignment: center; Action { text: "Undo"; enabled: !root.busy; clicked => { root.conflict-undo(c.id); } } }
                                     }
                                 }
                             }
@@ -271,7 +336,7 @@ slint::slint! {
                 }
                 HorizontalLayout {
                     spacing: 10px;
-                    Text { text: "Enabled mods are merged top to bottom into the rewrite before it is built."; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                    Text { text: "Enabled mods are merged top to bottom into the rewrite before it is built; drag ≡ to reorder."; color: Theme.faint; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
                     Action { text: "Mods folder"; clicked => { root.open("mods"); } }
                     Action { text: "Refresh"; enabled: !root.busy; clicked => { root.refresh(); } }
                 }
@@ -311,6 +376,10 @@ slint::slint! {
 struct Found {
     toolchain: toolchain::Toolchain,
     updates: updates::Updates,
+    /// The enabled mods' merge conflicts (an in-memory merge), or why the
+    /// merge could not be checked.
+    conflicts: Vec<resolutions::Conflict>,
+    merge_error: Option<String>,
 }
 
 thread_local! {
@@ -318,24 +387,31 @@ thread_local! {
     static FOUND: RefCell<Found> = RefCell::new(Found::default());
 }
 
-fn rows(installed: &[home::ModInfo], enabled: &[String], updates: &updates::Updates) -> Vec<ModRow> {
-    let row = |name: &str, m: Option<&home::ModInfo>, on: bool, i: usize| {
+fn rows(installed: &[home::ModInfo], enabled: &[String], problems: &[String], updates: &updates::Updates) -> Vec<ModRow> {
+    let row = |name: &str, m: Option<&home::ModInfo>, on: bool| {
         let detail = m.map_or(String::new(), |m| {
             let mut parts = vec![format!("v{}", m.version)];
             if !m.author.is_empty() {
                 parts.push(format!("by {}", m.author));
             }
             if !m.rewrite.is_empty() {
-                parts.push(format!("for rewrite {}", m.rewrite));
+                // A commit id is shown short, as git does.
+                let hex = m.rewrite.len() == 40 && m.rewrite.bytes().all(|b| b.is_ascii_hexdigit());
+                parts.push(format!("for rewrite {}", if hex { &m.rewrite[..8] } else { &m.rewrite }));
+            }
+            if !m.requires.is_empty() {
+                parts.push(format!("needs {}", m.requires.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")));
             }
             if !m.description.is_empty() {
                 parts.push(m.description.clone());
             }
             parts.join("  ·  ")
         });
+        // An enabled mod's relationship problem ("skipped: it needs ...").
+        let skipped = format!("Mod {name} skipped: ");
         let problem = match m {
             None => "Enabled in modlist.toml but not installed".to_string(),
-            Some(m) => m.problem.clone().unwrap_or_default(),
+            Some(m) => m.problem.clone().or_else(|| problems.iter().find_map(|p| p.strip_prefix(&skipped)).filter(|_| on).map(|p| format!("Skipped: {p}"))).unwrap_or_default(),
         };
         ModRow {
             name: name.into(),
@@ -346,17 +422,14 @@ fn rows(installed: &[home::ModInfo], enabled: &[String], updates: &updates::Upda
             problem: problem.into(),
             enabled: on,
             can_enable: m.is_some_and(|m| m.problem.is_none()),
-            first: on && i == 0,
-            last: on && i + 1 == enabled.len(),
         }
     };
     let mut out: Vec<ModRow> = enabled
         .iter()
-        .enumerate()
-        .map(|(i, name)| row(name, installed.iter().find(|m| m.name.eq_ignore_ascii_case(name)), true, i))
+        .map(|name| row(name, installed.iter().find(|m| m.name.eq_ignore_ascii_case(name)), true))
         .collect();
     for m in installed.iter().filter(|m| !enabled.iter().any(|e| e.eq_ignore_ascii_case(&m.name))) {
-        out.push(row(&m.name, Some(m), false, 0));
+        out.push(row(&m.name, Some(m), false));
     }
     out
 }
@@ -404,20 +477,49 @@ fn refresh(ui: &Launcher, status: Option<(String, bool)>) {
         ui.set_game_path(base.as_ref().map(|b| b.display().to_string()).unwrap_or_default().into());
         let installed = home::installed_mods();
         let enabled = home::modlist();
-        ui.set_mods(ModelRc::new(VecModel::from(rows(&installed, &enabled, &found.updates))));
         let layers = home::layers();
+        ui.set_mods(ModelRc::new(VecModel::from(rows(&installed, &enabled, &layers.problems, &found.updates))));
+        ui.set_enabled_count(enabled.len() as i32);
+        let store = resolutions::Store::home();
+        let conflict_rows: Vec<ConflictRow> = found
+            .conflicts
+            .iter()
+            .map(|c| ConflictRow {
+                id: c.id.as_str().into(),
+                path: c.path.as_str().into(),
+                mods: format!("{} vs {}", c.module, c.earlier).into(),
+                module: c.module.as_str().into(),
+                detail: match c.choice {
+                    Some(choice) => format!("resolved: {}", match choice {
+                        resolutions::Choice::Earlier => "kept the earlier version",
+                        resolutions::Choice::Mod => "took the mod's version",
+                        resolutions::Choice::Edited => "edited",
+                    }),
+                    None => c.detail.clone(),
+                }
+                .into(),
+                resolved: c.choice.is_some(),
+                editing: c.choice.is_none() && store.working_file(c).exists(),
+            })
+            .collect();
+        ui.set_unresolved(found.conflicts.iter().filter(|c| c.choice.is_none()).count() as i32);
+        ui.set_conflicts(ModelRc::new(VecModel::from(conflict_rows)));
         ui.set_fingerprint(base.as_deref().map_or("unavailable (no game folder)".into(), |b| home::fingerprint(b, &layers)).into());
+        let open_conflicts = found.conflicts.iter().filter(|c| c.choice.is_none()).count();
         ui.set_build_text(match target {
             None if local.is_some() => "Launch builds the local checkout as it is (cargo rebuilds only what changed)".into(),
             None => "Not built: the source is missing".into(),
             Some(id) if build::built().as_deref() == Some(build::fingerprint(&id.to_string(), &layers.mods).as_str()) => {
                 "Built and up to date with the enabled mods".into()
             }
+            Some(_) if open_conflicts > 0 => format!("Resolve {open_conflicts} conflict(s) before building").into(),
             Some(_) => "Launch will build the rewrite with the enabled mods first".into(),
         });
         let (text, error) = status.unwrap_or_else(|| {
-            if let Some(p) = layers.problems.first().or(found.updates.problems.first()) {
+            if let Some(p) = layers.problems.first().or(found.merge_error.as_ref()).or(found.updates.problems.first()) {
                 (p.clone(), true)
+            } else if let Some(c) = found.conflicts.iter().find(|c| c.choice.is_none()) {
+                (format!("{}. Resolve the conflicts below to build.", c.describe()), true)
             } else if repo.is_none() {
                 ("Download the rewrite source to start.".into(), true)
             } else if !t.ready() {
@@ -472,8 +574,9 @@ fn discover(ui: &Launcher) {
         let branch = repo.as_ref().and_then(|r| r.find_reference(&format!("refs/remotes/origin/{revision}")).ok()?.target());
         let mut problems = Vec::new();
         let updates = updates::check(&revision, branch, &home::enabled_mods(&mut problems));
+        let (conflicts, merge_error) = check_merge();
         let _ = weak.upgrade_in_event_loop(move |ui| {
-            FOUND.with(|f| *f.borrow_mut() = Found { toolchain, updates });
+            FOUND.with(|f| *f.borrow_mut() = Found { toolchain, updates, conflicts, merge_error });
             if !ui.get_busy() {
                 // Keep a result the user has not seen replaced (a build error,
                 // "Game started"); only the checking notice gives way.
@@ -484,51 +587,35 @@ fn discover(ui: &Launcher) {
     });
 }
 
-/// Merge, build if needed, start the game.
-fn launch(cargo: Option<PathBuf>, progress: &mut dyn FnMut(String)) -> Result<String, String> {
-    let repo = source::open().ok_or("Download the rewrite source first.")?;
-    installation::game_base().map_err(|_| "Choose the game folder first.".to_string())?;
-    let mut problems = Vec::new();
-    let mods = home::enabled_mods(&mut problems);
-    if let Some(p) = problems.first() {
-        return Err(format!("{p}. Fix or disable it first."));
+fn check_merge() -> (Vec<resolutions::Conflict>, Option<String>) {
+    match ops::merge_check() {
+        Ok(m) => (m.map(|m| m.conflicts).unwrap_or_default(), None),
+        Err(e) => (Vec::new(), Some(e)),
     }
-    if let Some(checkout) = source::local() {
-        // The checkout is the developer's work: merging mods into it would
-        // replace that, so only resource mods apply.
-        if let Some(m) = mods.iter().find(|m| !m.patches().is_empty()) {
-            return Err(format!("{} changes the source; mods with patches are not merged into a local source. Disable it, or use the download.", m.name));
-        }
-        let cargo = cargo.ok_or("Install Rust and the C++ Build Tools to build the rewrite.")?;
-        progress("Building the local source…".into());
-        build::build_local(&cargo, &checkout, progress)?;
-        return start();
-    }
-    let revision = source::revision(Some(&repo));
-    let target = source::resolve(&repo, &revision)?;
-    let fingerprint = build::fingerprint(&target.to_string(), &mods);
-    if build::built().as_deref() != Some(fingerprint.as_str()) {
-        let cargo = cargo.ok_or("Install Rust and the C++ Build Tools to build the rewrite.")?;
-        progress("Merging the enabled mods into the rewrite source…".into());
-        merge::prepare(&repo, target, &mods)?;
-        progress("Building the rewrite (the first build takes a while)…".into());
-        build::build(&cargo, &fingerprint, progress)?;
-    }
-    start()
 }
 
-/// Start the built game in the rewrite folder.
-fn start() -> Result<String, String> {
-    let exe = build::game_exe();
-    std::process::Command::new(&exe)
-        .env("DH2_REWRITE_HOME", &home::home().root)
-        .current_dir(&home::home().root)
-        .spawn()
-        .map_err(|e| format!("Could not start {}: {e}", exe.display()))?;
-    Ok("Game started.".into())
+/// Merge the mods again (after a resolution or a mod change) and show the
+/// conflicts; `status` is shown when done.
+fn recheck(ui: &Launcher, status: Option<(String, bool)>) {
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let (conflicts, merge_error) = check_merge();
+        let _ = weak.upgrade_in_event_loop(move |ui| {
+            FOUND.with(|f| {
+                let mut f = f.borrow_mut();
+                f.conflicts = conflicts;
+                f.merge_error = merge_error;
+            });
+            refresh(&ui, status);
+        });
+    });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        std::process::exit(cli::run(&args));
+    }
     let ui = Launcher::new()?;
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     refresh(&ui, Some((CHECKING.into(), false)));
@@ -545,14 +632,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_source_act(move || {
         let Some(ui) = weak.upgrade() else { return };
         let update = FOUND.with(|f| f.borrow().updates.rewrite.clone());
-        background(&ui, move |progress| {
-            source::download(progress)?;
-            if let Some(newer) = update.filter(|v| !source::version_key(v).is_empty()) {
-                source::set_revision(&newer)?;
-                return Ok(format!("Updated the rewrite to {newer}."));
-            }
-            Ok("The rewrite source is downloaded and current.".into())
-        });
+        background(&ui, move |progress| ops::download(update, progress));
     });
 
     let s = status.clone();
@@ -563,39 +643,60 @@ fn main() -> Result<(), slint::PlatformError> {
     let s = status.clone();
     ui.on_browse_game(move || {
         let Some(picked) = game_folder::pick_folder("Select your Dishonored 2 installation folder (the one containing \"base\").") else { return };
-        s(Some(match installation::base_of(&picked) {
-            Some(base) => match home::save_game_path(&base) {
-                Ok(()) => (format!("Game folder set: {}", base.display()), false),
-                Err(e) => (e, true),
-            },
-            None => (format!("{} has no Dishonored 2 game files (base\\game1_patch.index).", picked.display()), true),
-        }));
+        s(Some(ops::set_game_folder(&picked).map_or_else(|e| (e, true), |m| (m, false))));
     });
 
-    let s = status.clone();
+    let weak = ui.as_weak();
     ui.on_toggle_mod(move |name, on| {
+        let Some(ui) = weak.upgrade() else { return };
         let permanent = home::installed_mods().iter().any(|m| m.name.eq_ignore_ascii_case(&name) && m.saves == home::SaveSafety::Permanent);
         if !on && permanent && !game_folder::confirm(&format!("{name} is permanent in saves: saves started with it need it to load.\n\nDisable it anyway?")) {
             return;
         }
-        let mut list = home::modlist();
-        list.retain(|m| !m.eq_ignore_ascii_case(&name));
-        if on {
-            list.push(name.to_string());
-        }
-        s(home::save_modlist(&list).err().map(|e| (e, true)));
+        recheck(&ui, Some(ops::set_enabled(&name, on).map_or_else(|e| (e, true), |m| (m, false))));
     });
 
-    let s = status.clone();
-    ui.on_move_mod(move |name, step| {
-        let mut list = home::modlist();
-        if let Some(i) = list.iter().position(|m| m.eq_ignore_ascii_case(&name)) {
-            let j = i as i32 + step;
-            if (0..list.len() as i32).contains(&j) {
-                list.swap(i, j as usize);
+    let weak = ui.as_weak();
+    ui.on_drop_mod(move |name, index| {
+        let Some(ui) = weak.upgrade() else { return };
+        recheck(&ui, Some(ops::move_to(&name, index.max(0) as usize).map_or_else(|e| (e, true), |m| (m, false))));
+    });
+
+    let weak = ui.as_weak();
+    ui.on_conflict_edit(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
+        let opened = FOUND.with(|f| {
+            let f = f.borrow();
+            let c = f.conflicts.iter().find(|c| c.id == id.as_str()).ok_or("The conflict is gone; refresh.".to_string())?;
+            let repo = source::open().ok_or("Download the rewrite source first.".to_string())?;
+            resolutions::Store::home().open(&repo, c)
+        });
+        let status = match opened {
+            Ok(file) => {
+                let _ = std::process::Command::new("explorer").arg(&file).spawn();
+                (format!("Editing {}: remove the conflict markers, save, then press Use edited.", file.display()), false)
             }
-        }
-        s(home::save_modlist(&list).err().map(|e| (e, true)));
+            Err(e) => (e, true),
+        };
+        refresh(&ui, Some(status));
+    });
+
+    let weak = ui.as_weak();
+    ui.on_conflict_choose(move |id, how| {
+        let Some(ui) = weak.upgrade() else { return };
+        let result = FOUND.with(|f| {
+            let f = f.borrow();
+            let c = f.conflicts.iter().find(|c| c.id == id.as_str()).ok_or("The conflict is gone; refresh.".to_string())?;
+            let choice = resolutions::Choice::parse(&how).ok_or("unknown resolution".to_string())?;
+            resolutions::Store::home().choose(c, choice).map(|()| format!("Resolved {}.", c.path))
+        });
+        recheck(&ui, Some(result.map_or_else(|e| (e, true), |m| (m, false))));
+    });
+
+    let weak = ui.as_weak();
+    ui.on_conflict_undo(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
+        recheck(&ui, Some(resolutions::Store::home().discard(&id).map_or_else(|e| (e, true), |()| ("The conflict is open again.".into(), false))));
     });
 
     let s = status.clone();
@@ -633,17 +734,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let s = status.clone();
     ui.on_source_local(move || {
         if source::local().is_some() {
-            return s(Some(source::set_local(None).map_or_else(|e| (e, true), |()| ("Launch builds the downloaded source again.".into(), false))));
+            return s(Some(ops::set_local_source(None).map_or_else(|e| (e, true), |m| (m, false))));
         }
         let Some(folder) = game_folder::pick_folder("Select your rewrite checkout (the folder with Cargo.toml).") else { return };
-        s(Some(if !folder.join("Cargo.toml").is_file() {
-            (format!("{} has no Cargo.toml.", folder.display()), true)
-        } else {
-            match source::set_local(Some(&folder)) {
-                Ok(()) => (format!("Launch now builds {} as it is.", folder.display()), false),
-                Err(e) => (e, true),
-            }
-        }));
+        s(Some(ops::set_local_source(Some(&folder)).map_or_else(|e| (e, true), |m| (m, false))));
     });
 
     let weak = ui.as_weak();
@@ -653,7 +747,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let t = &f.borrow().toolchain;
             t.ready().then(|| t.cargo.clone()).flatten()
         });
-        background(&ui, move |progress| launch(cargo, progress));
+        background(&ui, move |progress| ops::launch(cargo, progress));
     });
 
     ui.run()

@@ -6,16 +6,54 @@ source and development tools, not the original game or its assets.
 
 The Windows client currently supports selected world/model formats, visibility
 and asset streaming, authored material textures, basic first-person movement,
-and decoded collision. It is **not a complete playable replacement**: NPCs,
-combat, missions, saves, animation, and parts of lighting/material rendering
-remain incomplete. Visual and gameplay parity are still being verified.
+decoded collision, and the pause menu with its options (the game's own Flash
+movies, settings and key bindings). It is **not a complete playable
+replacement**: NPCs, combat, missions, saves, animation, and parts of
+lighting/material rendering remain incomplete. Visual and gameplay parity are
+still being verified.
+
+The rewrite exists to be modded: mods change its source, and the launcher
+merges the enabled mods and builds the game from them.
+
+## Playing: the launcher
+
+Download `dishonored2-launcher.exe` into an empty folder and run it. That
+folder becomes the rewrite folder: the launcher downloads the rewrite source,
+installs nothing elsewhere, and keeps everything beside itself:
+
+```
+config/      dishonored2Config.cfg (settings and key bindings), rewrite.toml
+saves/       the rewrite's saves
+mods/        one folder per mod
+source/      the rewrite source the launcher builds
+cache/ logs/ build output, session and build logs
+```
+
+Building needs Rust and the Visual Studio C++ build tools; the launcher detects
+them and offers to install them. Choose the game folder if it is not found
+(any store's installation). Settings and saves are separate from the original
+game's; **Import saves…** and **Import config…** copy them in on request.
+
+Mods are folders under `mods/` with a `mod.toml` and changes to the source
+(`patches/*.patch`) and/or replacement and new game files (`resources/`). The
+launcher merges enabled mods top to bottom (drag to reorder), merges
+`Cargo.toml` changes by key, shows conflicts and lets you resolve them (keep
+one side, or edit the file), and checks relationships between mods
+(`requires`, `incompatible`, `load_after`, `load_before`). See
+[docs/rewrite-folder.md](docs/rewrite-folder.md) for the mod format and the
+launcher's rules.
+
+`dishonored2-launcher.exe <command>` does the same without the window and
+prints JSON (`help` lists the commands: status, conflicts, resolve, enable,
+disable, move, sort, download, build, launch and more).
 
 ## Requirements
 
 - Windows and the Rust MSVC toolchain (`rustup`, Cargo, and Visual Studio C++
   build tools).
 - A recent stable Rust compiler and a graphics driver supporting Bevy's renderer.
-- Dishonored 2 installed through Steam, or `DH2_GAME_BASE` set to its `base` directory.
+- Dishonored 2 installed (Steam is found automatically; other stores' installations
+  are chosen once), or `DH2_GAME_BASE` set to its `base` directory.
 - Disk space for Cargo dependencies. No map extraction is required.
 
 ## Build and test
@@ -42,6 +80,12 @@ Apache-2.0 licenses. Their licensed auxiliary assets are not Dishonored assets.
 ```powershell
 .\target\release\dishonored2-rust.exe
 ```
+
+The folder beside the executable is its rewrite folder (`target/release/` for
+development builds; `DH2_REWRITE_HOME` selects another): settings are read from
+`config/dishonored2Config.cfg` there, and nothing is imported automatically, so
+a fresh folder starts with the game's defaults. Copy a config in, or run
+`dishonored2-rust.exe --import-saves <folder>` to copy saves.
 
 The client discovers Steam libraries and AppID 403640's installation. It reads
 world geometry, entities, visibility, collision, models, textures, probes and
@@ -76,14 +120,17 @@ shadow cost. A value of `0` also selects the authored ranges.
 ## Controls and diagnostics
 
 - Each launch saves renderer warnings/errors, panic backtraces and the exit result
-  under `%LOCALAPPDATA%/Dishonored2Rewrite/logs/`, even if the console closes.
-- Click the window to capture the mouse; Esc releases it.
+  under the rewrite folder's `logs/`, even if the console closes.
+- Click the window to capture the mouse. Esc (the game's pause binding) opens the
+  pause menu: Options, help and Quit.
 - WASD moves, Shift moves faster, Space jumps. G toggles walking/free-fly;
   Q/E move vertically in free-fly.
 - F8 saves a screenshot and collision/render diagnostics under ignored
   `artifacts/`. Use matching captures when reporting a rendering defect.
 - `DH2_GAME_BASE` selects the installed asset directory.
-- `DH2_HOST_CONFIG_PATH` selects an existing game configuration when running under a different Windows account; normal launches discover Saved Games automatically.
+- `DH2_HOST_CONFIG_PATH` selects a configuration file instead of the rewrite folder's.
+- `DH2_DEBUG_DEVELOPER=1` lets a configuration set developer-only cvars, as the
+  game's developer flag does.
 - `DH2_RENDER_PROFILE=1` enables rendering timing/streaming diagnostics.
 - `DH2_BENCHMARK_SECONDS` runs a fixed-camera benchmark; it disables movement
   during that measurement.
