@@ -201,12 +201,15 @@ impl Builder<'_> {
         self.push(Texture::Bitmap(c), false, smooth, blend, [a, b, cc, a, cc, d]);
     }
 
+    /// `FUN_14102dcd0`: the engine's visible glyphs, tessellated as vectors
+    /// (the glyph bitmap cache is not ported).
     fn text(&mut self, o: &Obj, m: &Affine, c: &Colour, blend: u8) {
-        for glyph in super::text_layout::approximate_glyphs(self.vm, o) {
+        let glyphs = super::text::text_object(o).map(|t| t.glyphs()).unwrap_or_default();
+        for glyph in glyphs {
             let colour = [((glyph.colour >> 16) & 0xff) as f32 / 255.0, ((glyph.colour >> 8) & 0xff) as f32 / 255.0, (glyph.colour & 0xff) as f32 / 255.0, 1.0];
             let gm = Affine { a: glyph.size as f64, b: 0.0, c: 0.0, d: glyph.size as f64, tx: glyph.x as f64, ty: glyph.y as f64 }.then(m);
             let scale = ((gm.a * gm.a + gm.b * gm.b).sqrt()) as f32;
-            for layer in &glyph.shape.layers {
+            for layer in &glyph.font.glyphs[glyph.glyph].layers {
                 // Glyph paths reference fill 1 and carry no fill list.
                 let tris = triangulate(&fill_edges(layer, 1, scale));
                 let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);

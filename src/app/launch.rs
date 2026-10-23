@@ -912,11 +912,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_systems(
             Update,
             (
-                camera_controls,
+                camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::machinery::update_machinery,
                 super::fog_scene::update_world_wind,
                 update_coordinate_overlay,
-                interact_pickup,
+                interact_pickup.run_if(super::pause_menu::game_not_paused),
                 snapshot_once,
                 benchmark_frames,
                 show_frame_rate,
@@ -1026,7 +1026,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, stream_visible_textures)
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
-        .add_systems(Update, super::pause_menu::update_pause_menu);
+        .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls));
     bevy::asset::load_internal_asset!(
         app,
         PROBE_SHADER_HANDLE,

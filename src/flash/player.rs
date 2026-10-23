@@ -51,11 +51,14 @@ pub struct PlayerState {
     pub strings: Option<Rc<crate::assets::lang::StringTable>>,
     /// Embedded fonts of all loaded libraries, in load order.
     pub fonts: Vec<Rc<crate::assets::iggy::font::Font>>,
+    /// Font aliases installed for the UI library language (`FUN_140031140`).
+    pub font_aliases: Vec<(String, String)>,
     pub stage: Option<Obj>,
     pub root: Option<Obj>,
     /// `ExternalInterface.call`s queued for the game (`FUN_14002b7e0`), in
     /// call order; the game drains them later (`FUN_14002b610`).
     pub notifications: Vec<(String, Vec<Value>)>,
+    pub modifiers: super::keyboard::Modifiers,
     /// Stage size in pixels.
     pub stage_size: (f64, f64),
     pub frame_rate: f64,

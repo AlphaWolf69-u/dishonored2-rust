@@ -95,16 +95,71 @@ pub fn handle_notifications(player: &mut Player, unhandled: &mut Vec<String>) ->
 /// OnFlashLoaded (`FUN_14078f170` -> root `FUN_1407898c0`) for the parts
 /// the rewrite can supply: the bindable actions from the installed and
 /// user configs.
-pub fn on_flash_loaded(player: &mut Player, base: &Path, user_config: Option<&str>, keyboard: &mut Keyboard) -> std::result::Result<(), String> {
+pub fn on_flash_loaded(
+    player: &mut Player,
+    base: &Path,
+    user_config: Option<&str>,
+    keyboard: &mut Keyboard,
+    state: &GameState,
+) -> std::result::Result<(), String> {
     let bindings = bindings::game_bindings(base, user_config)?;
     let strings = player.state.borrow().strings.clone().ok_or("no string table")?;
     let actions = bindings::bindable_actions(&bindings, &strings, keyboard);
-    write_bindable_actions(player, &actions).map_err(|e| format!("bindableActionsData: {}", player.describe(&e)))
+    write_bindable_actions(player, &actions).map_err(|e| format!("bindableActionsData: {}", player.describe(&e)))?;
+    write_stats_available(player, state).map_err(|e| format!("statsEntryAvailable: {}", player.describe(&e)))
+}
+
+/// The game state FillData reads, as far as the rewrite has it. `default()`
+/// is the rewrite's current state: no save writer or loader, no mission,
+/// chapter, tutorial log or statistics components yet.
+#[derive(Clone, Debug, Default)]
+pub struct GameState {
+    /// Save system idle (`!FUN_140465db0`) and able to save now
+    /// (`FUN_140465020`). The rewrite cannot write saves yet.
+    pub can_save: bool,
+    /// Save system idle and not in mode 2 (`FUN_140464f90`).
+    pub can_load: bool,
+    /// A quick save slot exists and its map chunk is installed (`FUN_140464fb0`).
+    pub quick_save_available: bool,
+    /// A mission-start save of the current chapter exists (`FUN_1404f3d10`).
+    /// The rewrite has no current chapter, so none matches.
+    pub restart_available: bool,
+    /// The player has the mission component (`DAT_1439c5ac0`) with stats.
+    pub stats_available: bool,
+    /// New and read tutorial counts of the tutorial log component.
+    pub new_tutorials: usize,
+    pub read_tutorials: usize,
+}
+
+/// FillData entries (`FUN_14078e740`, `FUN_1404f3800`, `FUN_14078e6c0`,
+/// `FUN_14078e9e0`, `FUN_14078e850`), in the game's write order.
+pub fn write_entries(player: &mut Player, state: &GameState) -> Result<()> {
+    let set = |player: &mut Player, path: &str, v: bool| player.set_value(path, v.into());
+    // `FUN_14078e740` (vtable +0xa0).
+    set(player, "pauseData.saveEntry.locked", !state.can_save)?;
+    set(player, "pauseData.loadEntry.locked", !state.can_load)?;
+    set(player, "pauseData.quickLoadEntry.locked", !(state.can_load && state.quick_save_available))?;
+    set(player, "pauseData.quickSaveEntry.locked", !state.can_save)?;
+    // `FUN_14078e9e0`.
+    set(player, "pauseData.hasTutorials", state.new_tutorials + state.read_tutorials != 0)?;
+    set(player, "pauseData.tutorialsEntry.hasNewElements", state.new_tutorials != 0)?;
+    // `FUN_14078e850`.
+    set(player, "pauseData.statsEntry.locked", false)?;
+    // `FUN_1404f3800`.
+    set(player, "pauseData.restartEntry.locked", !state.restart_available)?;
+    set(player, "pauseData.optionsEntry.locked", false)?;
+    Ok(())
 }
 
 /// `Show(1)` (`FUN_1404f45a0`): FillData, then `_C_ShowPauseMenu()` with no
 /// arguments on the root. Returns whether the call succeeded (the state
 /// retries every frame until it does).
-pub fn show(player: &mut Player) -> std::result::Result<(), String> {
+pub fn show(player: &mut Player, state: &GameState) -> std::result::Result<(), String> {
+    write_entries(player, state).map_err(|e| format!("FillData: {}", player.describe(&e)))?;
     player.call_root_method("_C_ShowPauseMenu", &[]).map(|_| ()).map_err(|e| format!("_C_ShowPauseMenu: {}", player.describe(&e)))
+}
+
+/// OnFlashLoaded's `pauseData.statsEntryAvailable` (`FUN_14078f170`).
+pub fn write_stats_available(player: &mut Player, state: &GameState) -> Result<()> {
+    player.set_value("pauseData.statsEntryAvailable", state.stats_available.into())
 }

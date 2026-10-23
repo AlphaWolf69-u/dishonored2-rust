@@ -59,6 +59,14 @@ struct LoadedClock {
 }
 
 impl LoadedClock {
+    /// A paused frame (`FUN_1408ad580`): 0450d0 still updates the frame
+    /// estimator, but 8af320 (frame counter and 059990) is not called.
+    fn paused(&mut self) -> Result<(), String> {
+        self.timing.update(|| self.source.microseconds())?;
+        self.advanced = false;
+        Ok(())
+    }
+
     fn advance(&mut self) -> Result<(), String> {
         // 0450d0 updates the frame estimator before running the game. 8af320
         // increments the clock's frame counter before invoking 059990.
@@ -184,9 +192,16 @@ fn publish_gameplay_view_clock(owner: Res<ClockRuntime>, mut view: ResMut<Gamepl
         .map_err(str::to_owned);
 }
 
-fn advance_clock(mut owner: ResMut<ClockRuntime>) {
+/// `idGameLocal::IsPaused` (vtable slot 29, `FUN_1408a89b0`): the top game
+/// logic state's decl `m_pause` (or `gameLocal+0xc`). While set, the game
+/// frame renders the world without simulating it.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct GamePaused(pub bool);
+
+fn advance_clock(mut owner: ResMut<ClockRuntime>, paused: Res<GamePaused>) {
     if let Ok(state) = &mut owner.0 {
-        if let Err(error) = state.advance() {
+        let result = if paused.0 { state.paused() } else { state.advance() };
+        if let Err(error) = result {
             error!("Game clock unavailable: {error}");
             owner.0 = Err(error);
         }
@@ -197,6 +212,7 @@ pub struct ClockRuntimePlugin;
 impl Plugin for ClockRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClockRuntime>()
+            .init_resource::<GamePaused>()
             .init_resource::<GameplayViewClock>()
             .add_plugins(ExtractResourcePlugin::<GameplayViewClock>::default())
             .add_systems(First, advance_clock.in_set(ClockSystems::Advance))

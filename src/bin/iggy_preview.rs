@@ -40,8 +40,9 @@ fn run() -> Result<(), String> {
         // The preview renders at stage size, so the RGB and viewport sizes match.
         let screen = pause_state::screen_size((size.0 as u32, size.1 as u32), (size.0 as u32, size.1 as u32));
         pause_state::file_ready(&mut player, screen)?;
-        pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut Keyboard::default())?;
-        pause_state::show(&mut player)?;
+        let state = pause_state::GameState::default();
+        pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut Keyboard::default(), &state)?;
+        pause_state::show(&mut player, &state)?;
     }
     for call in &calls {
         player.call_root_method(call, &[]).map_err(|e| format!("{call}: {}", player.describe(&e)))?;

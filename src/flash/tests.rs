@@ -120,8 +120,9 @@ fn debug_pause_menu_elements() {
     let (mut player, _) = Player::load_installed(&catalog, language, "ui/emily_pause_menu.iggy").unwrap();
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
-    crate::gameplay::pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut crate::platform::bindings::Keyboard::default()).unwrap();
-    crate::gameplay::pause_state::show(&mut player).unwrap();
+    let state = crate::gameplay::pause_state::GameState::default();
+    crate::gameplay::pause_state::on_flash_loaded(&mut player, &base, user.as_deref(), &mut crate::platform::bindings::Keyboard::default(), &state).unwrap();
+    crate::gameplay::pause_state::show(&mut player, &state).unwrap();
     for _ in 0..30 {
         player.tick(1.0 / 30.0).unwrap();
     }

@@ -9,6 +9,7 @@ pub mod geom;
 pub mod graphics;
 pub mod hit;
 pub mod iggy_functions;
+pub mod keyboard;
 pub mod native_decl;
 pub mod native_table;
 pub mod player;
@@ -16,7 +17,7 @@ pub mod raster;
 pub mod render;
 pub mod tessellate;
 pub mod text;
-pub mod text_layout;
+pub mod text_engine;
 mod text_record;
 pub mod timeline;
 pub mod transform;
@@ -38,7 +39,7 @@ pub struct Native {
     pub display: Option<display::Display>,
     pub timer: Option<utils::TimerState>,
     pub graphics: Option<graphics::GraphicsState>,
-    pub text: Option<text::TextState>,
+    pub text: Option<text_engine::TextObject>,
     pub bitmap_data: Option<bitmap::BitmapDataState>,
     pub matrix3d: Option<[f64; 16]>,
     /// The display object a Transform describes.
@@ -188,6 +189,8 @@ impl Player {
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
         let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
         player.state.borrow_mut().strings = Some(Rc::new(lang::StringTable::load(catalog, language)?));
+        let library_language = lang::LANGUAGES.iter().position(|(n, _)| *n == lang::library_language(language)).unwrap_or(0);
+        player.state.borrow_mut().font_aliases = text_engine::Fonts::language_aliases(library_language as u32);
         let mut resources = Vec::new();
         for import in &info.imports {
             let path = lang::library_resource(&import.library, language);
@@ -293,6 +296,13 @@ impl Player {
     /// A native AS3 Array (`FUN_140029470` + `FUN_141009f00`).
     pub fn array(&self, items: Vec<Value>) -> Value {
         Value::Object(self.vm.array(items))
+    }
+
+    /// A host key event (virtual key, keyLocation), then deferred gotos.
+    pub fn key_event(&mut self, down: bool, vk: u32, location: u32) -> Result<()> {
+        keyboard::key_event(&mut self.vm, down, vk, location)?;
+        timeline::run_deferred_gotos(&mut self.vm)?;
+        Ok(())
     }
 
     /// The queued `ExternalInterface.call`s, oldest first.

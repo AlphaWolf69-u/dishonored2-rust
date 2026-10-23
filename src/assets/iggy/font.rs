@@ -12,10 +12,16 @@ pub struct Font {
     pub name: String,
     pub bold: bool,
     pub italic: bool,
-    /// Em-relative ascent, descent and leading.
+    /// Em-relative ascent, descent and leading (+0x22/+0x24/+0x26).
     pub ascent: f32,
     pub descent: f32,
     pub leading: f32,
+    /// +0x2a: the record has layout metrics; without them `FUN_14102ba20`
+    /// uses the glyph union bounds.
+    pub has_layout: bool,
+    /// Union of the glyph bounds, em units (+0x50 ymin, +0x58 ymax).
+    pub union_ymin: f32,
+    pub union_ymax: f32,
     /// Sorted character codes; glyph `i` draws `codes[i]`.
     pub codes: Vec<u16>,
     /// Advance of each glyph in em units.
@@ -80,6 +86,9 @@ impl IggyFile {
             ascent: rec.i16(0x22)? as f32 * units,
             descent: rec.i16(0x24)? as f32 * units,
             leading: rec.i16(0x26)? as f32 * units,
+            has_layout: rec.u8(0x2a)? != 0,
+            union_ymin: rec.f32(0x50)?,
+            union_ymax: rec.f32(0x58)?,
             codes,
             advances,
             glyphs,

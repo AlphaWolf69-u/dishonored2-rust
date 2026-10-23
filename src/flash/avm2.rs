@@ -1128,6 +1128,16 @@ impl Vm {
     /// accessors read and write 32-bit floats), Boolean fields as bytes.
     fn native_field(&mut self, this: &Value, offset: u32, ty: &str, set: bool, args: &[Value]) -> Result<Value> {
         let Some(o) = this.as_object() else { return Err(self.type_error(1009, "null receiver")) };
+        // TextField bytes live in the text object.
+        if let Some(mut t) = crate::flash::text::text_object(o) {
+            if let Some(v) = t.flag(offset) {
+                if set {
+                    t.set_flag(offset, args.first().is_some_and(Value::to_boolean));
+                    return Ok(Value::Undefined);
+                }
+                return Ok(Value::Bool(v));
+            }
+        }
         if set {
             let v = args.first().cloned().unwrap_or_default();
             let v = match ty {

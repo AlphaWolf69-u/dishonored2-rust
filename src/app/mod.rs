@@ -134,6 +134,7 @@ use light_culling::{
 mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};
 mod launch;
+mod engine_keys;
 mod pause_menu;
 
 /// Run the desktop application with installed game resources.
