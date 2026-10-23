@@ -1,5 +1,6 @@
 //! Shared original-data formats, verified engine rules and client integration.
 mod float;
+pub mod flash;
 pub use assets::archive;
 pub use assets::bmd6;
 pub use assets::bmodel;

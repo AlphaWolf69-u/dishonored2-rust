@@ -1,7 +1,9 @@
 //! The movie root record that `FUN_141028ea0` copies into a new player.
 use super::{Error, IggyFile, Node, Result};
 
-/// An imported library and the character slots it fills.
+/// A declared library import. Every installed movie's import list is
+/// empty: classes from other files resolve by SymbolClass name instead
+/// (`FUN_141023b00`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
     /// The authored SWF name, e.g. `lib_main.swf`.
