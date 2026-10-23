@@ -14,6 +14,7 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
 mod water;
+mod boat;
 pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
 

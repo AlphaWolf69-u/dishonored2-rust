@@ -233,8 +233,7 @@ depth target and consumes it in distance/height fog. The owner also supplies
 current camera depth, the sky/cloud mask, authored LUT/noise, environment
 parameters and directional shadow resources. GPU tests compare numeric output
 and exercise the actual Core3d owner without a window. The same owner submits
-placed-water depth and local-light scattering. Ocean/boat depth and the
-underwater mask remain separate unfinished parts of the water sequence.
+placed-water depth and local-light scattering. Ocean depth and the underwater mask remain separate unfinished parts of the water sequence.
 
 `fog::lookup` selects the two retained fog-curve history banks and the separate
 override output. It preserves ordered weight decreases, raw transition weights,
@@ -284,8 +283,12 @@ constructor separately excludes `sortBoatVolume` from ordinary shadow gathering
 and forces the final `arkWater` sort after overrides. Boat/water depth-stencil
 states and shared indexed/nonindexed mesh submission have numeric tests.
 `water_depth_scene` submits visible placed-water depth, its motion output,
-opaque restoration and the separate full/half alpha-depth copies. Boat-volume
-and ocean geometry still require submission into that sequence. The shared
+opaque restoration and the separate full/half alpha-depth copies. `boat_scene`
+publishes visible world and rigid-model boat volumes through the same
+`water_depth_meshes` allocator and pipeline owner. It inserts their depth and
+stencil phases before water, restores opaque depth inside the resulting mask,
+and marks the reduced alpha and actual camera stencil after the alpha copies.
+Ocean geometry still requires submission into that sequence. The shared
 position-mesh allocation owner is also used by interior fog geometry.
 
 Placed `arkWater` uses `MaterialHandle::Water` and `WaterMesh`, independently
@@ -295,8 +298,12 @@ The immutable registry is shared across main/render worlds; visible instances
 carry current transforms, stable scene order and world/model provenance while
 reusing the scene allocator. Unresolved material input errors remain explicit.
 The depth owner retains model transforms by frame and uses the shared camera
-history for world geometry. Water colour, ocean and underwater submission remain
-unfinished; publishing or drawing depth does not imply those passes are active.
+history for world geometry. The atmosphere owner now submits the admitted
+horizontal world water colour paths, with or without probes, between fog-source production and fog
+composition, using actual GPU exposure, the current sun atlas, retained material
+inputs and shared depth reduction. Other water colour ABIs, ocean and underwater
+submission remain unfinished. Mansion and Stilton pools have numeric gameplay checks;
+human appearance confirmation remains pending.
 
 `bevy_backend/water_depth.rs` owns the full-size depth/stencil water target,
 copies the current view's immutable opaque depth, and restores opaque depth
@@ -305,11 +312,16 @@ the verified stencil predicate; the alternate task branch preserves stencil.
 World depth uses its material-derived cached state and reference zero, whereas
 model water uses the separate forced state and reference four. Numeric tests
 exercise ordinary copy, alternate copy, and masked restoration on both graphics
-backends. Geometry submission and gameplay scheduling still need to connect
-these operations before the result can feed alpha depth, fog, and water colour.
+backends. The gameplay owner connects placed-water depth to alpha depth, fog
+and admitted water colour. Boat volumes use the actual material MAIN state for
+world geometry and the forced `arkBoatVolume` state for rigid models. World
+stencil reference two and model reference eight remain distinct. The camera
+attachment clears stencil with its first depth clear; the reduced alpha
+attachment clears stencil once per frame before preserving subsequent masks.
+Ocean geometry remains unconnected.
 
 `bevy_backend/underwater_stencil.rs` implements the ocean-mask and water-volume
-marking draws over the full and reduced alpha-depth attachments. It consumes
+marking draws over the full camera and reduced alpha-depth attachments. It consumes
 the actual wave-height mask or water matrix, preserves scene depth and all
 stencil bits except the underwater bit, and retains the boat-interior exclusion.
 The two target sizes have independent uniform buffers and bounded bindings.
@@ -388,8 +400,13 @@ shared by whole-view depth, directional shadows, local shadows and water.
 `WorldProbeVertexStage` binds that stream and the shared probe buffers with an
 explicit raw-position/normal-W vertex layout. Numeric raster checks cover real
 vertex fetch, nonzero allocator offsets, draw-relative instances and projection
-against the cached shader's stream output. Gameplay draw ownership and the
-complete colour pipeline remain pending.
+against the cached shader's stream output. `water_colour_scene.rs` owns admitted
+horizontal world colour draws in gameplay. Cached stage checks admit both the
+probe and non-probe variants. The latter binds only instance and matrix buffers
+in its vertex stage. The owner retains resource bindings, skips private depth
+reduction when SSR is disabled and reports unsupported classes explicitly.
+The shared current-depth reduction remains available while host materials
+compile; only the persistent adaptive-shadow readback waits for complete depth.
 Water material loading also resolves slot4 separately for rigid bank0 and world
 bank2, respecting authored depth-program nulls, constructor finalization and the
 direct/multi-instancing exclusion. The shader cache admits only the actual
@@ -407,8 +424,8 @@ base before the source remap lookup. Normal depth writes the
 material-selected RG16F motion channels; alpha depth has no fragment output.
 The shared motion helper also serves ocean depth. Raster comparisons use the
 installed cached vertex/pixel stages and verify all depth, stencil, and motion
-samples. Scene mesh publication, wind/skinned variants, colour raster, and
-gameplay frame ownership for this placed-water path remain unfinished.
+samples. Gameplay owns rigid/world depth and horizontal world colour; other
+colour ABIs and wind/skinned variants remain unfinished.
 
 Resident BIM texture arrays retain their authored block format and mip/layer
 order through `assets/texture.rs` and `bevy_backend/layered_images.rs`. The shared
@@ -517,9 +534,9 @@ initial selection, zero-time updates and interrupted ordinary area blends.
 This rule is shared by atmosphere, display, water and shadow-range inputs.
 The shared texture loader supports RGBA32F sky cubes without reducing their
 precision.
-These inputs are prepared by the real application, but water raster submission
-and its full depth/fog/history dependencies remain unfinished. Retaining a CPU
-image chain does not submit a GPU upload or draw.
+The placed-water owner consumes these inputs in actual gameplay draws and
+uploads the immutable image chains it needs. Ocean and underwater
+dependencies remain unfinished.
 The world-probe colour program has a view-exposure variant that reads the
 camera's existing `MaterialExposure` GPU record for every HDR decode and encode.
 It preserves the uniform white level and does not require CPU exposure readback
@@ -530,8 +547,8 @@ live exposure record, and restores working RGB while preserving host alpha.
 The pre-water source stays separate from subsequent water writes; two bounded
 bindings retain the host's alternating views. This reproduces native storage
 rounding at the water boundary, without claiming the preceding host opaque
-passes already reproduce every native framebuffer store. Connecting these
-targets to the actual water draw owner and gameplay pass order remains required.
+passes already reproduce every native framebuffer store. These targets are
+connected to the placed-water colour owner between fog production and composition.
 
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
@@ -999,6 +1016,23 @@ and offset to XYZ when required, preserves W bits, and selects the original
 radius override and support-kind code. Reusable workspaces keep both query
 sides alive independently. Its 224-case fixture executes the original wrapper;
 the distance solver and asset-to-runtime shape publication remain separate work.
+`physworld::convex_polytope` reads the authored float4 vertices, planes, radius,
+face records and optional connectivity through inherited Havok type metadata.
+This opt-in reader leaves ordinary movement collision allocations unchanged.
+`gameplay::polytope_query` implements the incident-edge distance hint used by the
+point/polytope kernel. It preserves the unrefined reciprocal-square-root estimate
+and source edge-ring traversal; 2,400 executed synthetic cases match every result
+bit, including nonfinite inputs. The hint is a bound, never a contact result.
+The finite zero-radius, zero-distance render-view point predicate preserves the
+actual plane arithmetic and strict boundary exclusion; 6,086 calls through the
+installed point/polytope kernel verify it, including adjacent floats at a face.
+Installed audits cover 540,135 level polytopes and 11,338 environment-trigger
+polytopes, all with zero radius. The two trigger polytopes without connectivity
+explicitly require the general distance kernel. Neither missing
+connectivity nor an unsupported query becomes a fabricated contact or miss.
+The general distance solver, body transforms and ordered runtime contact owner
+still need integration before ocean or underwater selection can consume these
+shapes.
 
 `ocean::OceanUpdateState` retains water height, the nine-word FFT control cache,
 spectrum invalidation and independent spectrum/surface task flags. Its initial

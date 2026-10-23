@@ -3,6 +3,7 @@
 //! were cross-checked against MIT-licensed TagTools by Skyth.
 use std::collections::BTreeMap;
 pub mod mass;
+pub mod polytope;
 
 #[derive(Debug)]
 pub struct PhysWorld {

@@ -166,7 +166,10 @@ impl Plugin for WaterPlugin {
         app.init_resource::<WaterWorldMeshes>();
         app.init_resource::<WaterImageSources>();
         app.init_resource::<WaterSceneFrame>();
+        app.init_resource::<super::boat_scene::BoatMaterials>();
         app.add_plugins((
+            bevy::render::extract_component::ExtractComponentPlugin::<super::boat_scene::BoatMesh>::default(),
+            bevy::render::extract_resource::ExtractResourcePlugin::<super::boat_scene::BoatMaterials>::default(),
             bevy::render::extract_component::ExtractComponentPlugin::<WaterMesh>::default(),
             bevy::render::extract_resource::ExtractResourcePlugin::<WaterMaterials>::default(),
             bevy::render::extract_resource::ExtractResourcePlugin::<WaterLighting>::default(),

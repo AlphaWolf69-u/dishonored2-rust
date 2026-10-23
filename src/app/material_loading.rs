@@ -456,6 +456,7 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) cache: MaterialCache,
     pub(super) shadow_materials: ShadowMaterials,
     pub(super) water_materials: crate::rendering::bevy_backend::water_scene::WaterMaterials,
+    pub(super) boat_materials: crate::rendering::bevy_backend::boat_scene::BoatMaterials,
     pub(super) diffuse_image_slots: HashMap<String, usize>,
     pub(super) diffuse_image_paths: Vec<String>,
     pub(super) misses: usize,
@@ -1038,6 +1039,17 @@ impl MaterialResolver<'_> {
         let handle = if surface.program() == material_surface::Program::InteriorVolume {
             MaterialHandle::Interior(path.into())
         } else if boat_volume || surface.program() == material_surface::Program::BoatVolume {
+            let result=(||->Result<_,String>{
+                let library=self.programs.as_deref_mut().ok_or("boat program library unavailable")?.as_mut().map_err(|e|e.clone())?;
+                if self.boat_materials.model.is_none() {
+                    self.boat_materials.model=Some(library.boat_volume_program_state(b"arkBoatVolume",&render_program::SerializedParameterBlock{flags:0,parameters:Vec::new()},false));
+                }
+                let main=surface.main_program.as_deref().unwrap_or("arkDefault");
+                let options=material_option_overrides(library,bytes)?;
+                let base=library.boat_volume_program_state(main.as_bytes(),&options,true)?;
+                render_state::material_render_state(&entities::declaration_text(bytes),base)
+            })();
+            std::sync::Arc::make_mut(&mut self.boat_materials.world).insert(path.into(),result);
             MaterialHandle::BoatVolume(path.into())
         } else if surface.program() == material_surface::Program::Water {
             let inputs = (|| -> Result<_, String> {

@@ -70,6 +70,28 @@ fn installed_world_water_colour_preserves_selected_program_and_stages() {
             .unwrap_or_else(|e| panic!("{path}: {e}"))
             .unwrap();
         assert_eq!(source.program, main);
+        let class = source
+            .class
+            .as_ref()
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        let probes = library
+            .option_value(
+                main.as_bytes(),
+                &source.options,
+                b"water/UseIBLProbesOption",
+            )
+            .unwrap()
+            != 0;
+        assert_eq!(
+            *class,
+            if probes {
+                crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal
+            } else {
+                crate::rendering::water::program::WorldWaterColourClass::Horizontal
+            },
+            "{path}"
+        );
+        assert!(source.colour_options.horizontal, "{path}");
         let view = crate::assets::environment::ParameterReader {
             catalog: &catalog,
             parameters: &crate::assets::entities::EnvironmentRenderParameters {

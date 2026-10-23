@@ -327,6 +327,7 @@ pub(super) fn setup(
         cache: default(),
         shadow_materials: ShadowMaterials::default(),
         water_materials: default(),
+        boat_materials: default(),
         diffuse_image_slots: HashMap::new(),
         diffuse_image_paths: Vec::new(),
         misses: 0,
@@ -813,7 +814,6 @@ pub(super) fn setup(
         // Authoring helpers carry debug colours but are not visible objects.
         if placement.resource_path.contains("/collisions/")
             || placement.resource_path.contains("/templates/occlusion/")
-            || placement.resource_path.contains("/small_boat_gabarit_")
             || placement.resource_path.contains("/skiff_01_noswim")
         {
             continue;
@@ -1636,6 +1636,7 @@ pub(super) fn setup(
         commands.insert_resource(sources);
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.boat_materials));
     let vegetation_vertices: usize = vegetation_meshes
         .0
         .values()

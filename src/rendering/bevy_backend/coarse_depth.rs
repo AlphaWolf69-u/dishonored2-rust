@@ -141,9 +141,7 @@ impl DepthPyramid {
             || !source.format().has_depth_aspect()
             || !source.usage().contains(TextureUsages::TEXTURE_BINDING)
         {
-            return Err(
-                "depth reduction requires the actual single-sample 2D depth input".into(),
-            );
+            return Err("depth reduction requires the actual single-sample 2D depth input".into());
         }
         let source_extent = [source.width(), source.height()];
         let [width, height] = depth_pyramid_extent(source_extent)?;
@@ -509,7 +507,10 @@ impl CoarseDepthReadback {
                 .usage()
                 .contains(bevy::render::render_resource::TextureUsages::COPY_SRC)
         {
-            return Err("coarseDepth copy needs the owner's 64x64 single-sample R32G32 COPY_SRC texture".into());
+            return Err(
+                "coarseDepth copy needs the owner's 64x64 single-sample R32G32 COPY_SRC texture"
+                    .into(),
+            );
         }
         let next = (self.current + 1) & 3;
         let slot = &mut self.slots[next as usize];
@@ -575,8 +576,7 @@ impl CoarseDepthReadback {
                     }
                     cpu.mapping = false;
                     if let Err(error) = result {
-                        cpu.error =
-                            Some(format!("coarse-depth staging map failed: {error}"));
+                        cpu.error = Some(format!("coarse-depth staging map failed: {error}"));
                         return;
                     }
                     let mapped = buffer.slice(..).get_mapped_range();
@@ -698,7 +698,8 @@ impl CoarseDepthGpu {
     /// reflection shares its four mips instead of repeating the compute pass.
     pub(super) fn pyramid_for(&self, texture: TextureId) -> Option<&DepthPyramid> {
         (self.recorded && self.source_texture_id == Some(texture))
-            .then_some(self.pyramid.as_ref()).flatten()
+            .then_some(self.pyramid.as_ref())
+            .flatten()
     }
     fn ensure(
         &mut self,
@@ -764,10 +765,7 @@ impl Plugin for CoarseDepthPlugin {
                     .after(bevy::core_pipeline::core_3d::main_opaque_pass_3d)
                     .before(super::fog_scene::AtmospherePass),
             )
-            .add_systems(
-                Render,
-                map_coarse_depth.in_set(RenderSystems::Cleanup),
-            );
+            .add_systems(Render, map_coarse_depth.in_set(RenderSystems::Cleanup));
     }
 }
 
@@ -793,7 +791,13 @@ fn publish_ready_coarse_depth(
                             [v[0].min(p[channel]), v[1].max(p[channel])]
                         })
                 };
-                eprintln!("Coarse mapped sequence={sequence} ranges={:?}/{:?} samples={:?} inverse={:?}",range(0),range(1),&pixels[..8],metadata.inverse_projection);
+                eprintln!(
+                    "Coarse mapped sequence={sequence} ranges={:?}/{:?} samples={:?} inverse={:?}",
+                    range(0),
+                    range(1),
+                    &pixels[..8],
+                    metadata.inverse_projection
+                );
             }
             let source_extent = metadata.source_extent;
             let first_mapped_frame = gpu.last_published_sequence == 0;
@@ -838,15 +842,12 @@ fn render_coarse_depth(
 ) {
     let _span = profile.as_deref().map(|profile| profile.measure(43));
     gpu.recorded = false;
-    // The original has resident shaders before drawing gameplay depth. An
-    // asynchronously compiling forward pass supplies an incomplete depth image
-    // and must not seed the native persistent cascade/movement cache.
-    if readiness
+    // Water consumes the current reduction even while host forward materials
+    // compile. Only the persistent adaptive-shadow readback must exclude those
+    // incomplete frames; otherwise a new material makes visible water vanish.
+    let adaptive_ready = !readiness
         .as_ref()
-        .is_some_and(|r| r.0.load(std::sync::atomic::Ordering::Acquire) == 0)
-    {
-        return;
-    }
+        .is_some_and(|r| r.0.load(std::sync::atomic::Ordering::Acquire) == 0);
     let Ok((entity, depth, view, camera)) = views.single() else {
         return;
     };
@@ -871,18 +872,14 @@ fn render_coarse_depth(
     if !full_target || !full_rect {
         report_coarse_depth_error(
             &mut last_error,
-            "decompressedDepth producer does not match the full gameplay target extent"
-                .into(),
+            "decompressedDepth producer does not match the full gameplay target extent".into(),
         );
         return;
     }
     let projection = mat4_to_shadow_rows(view.clip_from_view);
     let mut inverse_projection = [[0.0; 4]; 4];
     if !crate::render_shadow::invert_rows(&projection, &mut inverse_projection) {
-        report_coarse_depth_error(
-            &mut last_error,
-            "depth projection is singular".into(),
-        );
+        report_coarse_depth_error(&mut last_error, "depth projection is singular".into());
         return;
     }
     let view_from_world = mat4_to_shadow_rows(view.world_from_view.to_matrix().inverse());
@@ -905,6 +902,10 @@ fn render_coarse_depth(
             source_extent,
             inverse_projection,
         )?;
+        gpu.recorded = true;
+        if !adaptive_ready {
+            return Ok(());
+        }
         let parameters =
             CoarseDepthParameters::from_reduction(coverage, [1.0, 1.0], inverse_projection)?;
         gpu.output
@@ -944,7 +945,6 @@ fn render_coarse_depth(
                 Some(metadata),
             )?;
         gpu.next_sequence = sequence;
-        gpu.recorded = true;
         Ok(())
     })();
     match result {
@@ -986,6 +986,111 @@ fn mat4_to_shadow_rows(matrix: bevy::math::Mat4) -> crate::render_shadow::Shadow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a graphics adapter; exercises the real Core3d producer"]
+    fn pending_materials_keep_current_reduction_without_publishing_shadow_history() {
+        use bevy::camera::RenderTarget;
+        use bevy::prelude::*;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .set(bevy::window::WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        );
+        app.add_plugins(CoarseDepthPlugin);
+        app.finish();
+        app.cleanup();
+        let readiness = Arc::new(AtomicU32::new(0));
+        app.sub_app_mut(RenderApp).world_mut().insert_resource(
+            crate::shadow_pass::ShadowCaptureReadiness(readiness.clone()),
+        );
+        let image = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_target_texture(
+                32,
+                32,
+                TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d {
+                    depth_texture_usages: (TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::TEXTURE_BINDING)
+                        .into(),
+                    ..default()
+                },
+                Camera::default(),
+                Msaa::Off,
+                RenderTarget::Image(image.into()),
+                Transform::IDENTITY,
+                CoarseDepthSource,
+            ))
+            .id();
+        for _ in 0..4 {
+            app.update();
+        }
+        let old_texture = {
+            let gpu = app.sub_app(RenderApp).world().resource::<CoarseDepthGpu>();
+            assert!(
+                gpu.recorded,
+                "water reduction must run before materials are ready"
+            );
+            assert_eq!(
+                gpu.next_sequence, 0,
+                "incomplete depth must not seed adaptive history"
+            );
+            let texture = gpu.source_texture_id.unwrap();
+            assert!(gpu.pyramid_for(texture).is_some());
+            texture
+        };
+        readiness.store(1, Ordering::Release);
+        app.update();
+        let sequence = app
+            .sub_app(RenderApp)
+            .world()
+            .resource::<CoarseDepthGpu>()
+            .next_sequence;
+        assert!(sequence > 0, "complete depth must feed adaptive history");
+        readiness.store(0, Ordering::Release);
+        let image = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_target_texture(
+                64,
+                48,
+                TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
+        app.world_mut()
+            .entity_mut(camera)
+            .insert(RenderTarget::Image(image.into()));
+        for _ in 0..3 {
+            app.update();
+        }
+        let gpu = app.sub_app(RenderApp).world().resource::<CoarseDepthGpu>();
+        assert!(gpu.recorded);
+        assert_eq!(gpu.source_extent, Some([64, 48]));
+        assert_ne!(gpu.source_texture_id, Some(old_texture));
+        assert!(
+            gpu.pyramid_for(old_texture).is_none(),
+            "do not reuse another depth attachment"
+        );
+        assert!(gpu.pyramid_for(gpu.source_texture_id.unwrap()).is_some());
+        assert_eq!(
+            gpu.next_sequence, sequence,
+            "pending materials must not publish new history"
+        );
+    }
 
     #[test]
     #[ignore = "requires a graphics adapter; validates captured D24S8 sampled-depth bindings and the native reduction/generator pipelines"]
@@ -1085,8 +1190,7 @@ mod tests {
         ];
         let mut inverse = [[0.0; 4]; 4];
         assert!(crate::render_shadow::invert_rows(&projection, &mut inverse));
-        let parameters =
-            CoarseDepthParameters::from_owner([120, 68], [1.0; 2], inverse).unwrap();
+        let parameters = CoarseDepthParameters::from_owner([120, 68], [1.0; 2], inverse).unwrap();
         let [a, b, c, _] = parameters.inverse_projection;
         // Installed coarsedepthgeneration.decl's de-linearization, retaining
         // its native plus sign. A 50-metre receiver must not collapse to 2m.
@@ -1110,15 +1214,10 @@ mod tests {
             written_mips: [[16, 8], [8, 4], [4, 2], [2, 1]],
         };
         let inverse = [[0.0; 4]; 4];
-        assert!(
-            CoarseDepthParameters::from_reduction(coverage, [1.0, 1.0], inverse).is_err()
-        );
-        let p =
-            CoarseDepthParameters::from_reduction(coverage, [0.5, 0.25], inverse).unwrap();
+        assert!(CoarseDepthParameters::from_reduction(coverage, [1.0, 1.0], inverse).is_err());
+        let p = CoarseDepthParameters::from_reduction(coverage, [0.5, 0.25], inverse).unwrap();
         assert_eq!(p.source_max, [1, 0]);
-        assert!(
-            CoarseDepthParameters::from_reduction(coverage, [0.75, 0.25], inverse).is_err()
-        );
+        assert!(CoarseDepthParameters::from_reduction(coverage, [0.75, 0.25], inverse).is_err());
     }
 
     #[test]

@@ -54,11 +54,13 @@ struct Key {
     layout: MeshVertexBufferLayoutRef,
     state: crate::render_state::RenderState,
     reversed: bool,
+    class: crate::rendering::water::program::WorldWaterColourClass,
 }
 struct Program {
     colour: WorldProbeColourProgram,
     parameters: Option<([BufferId; 2], BindGroup, BindGroup)>,
     inputs: Option<([BufferId; 5], BindGroup)>,
+    probes: bool,
 }
 struct Draw {
     program: usize,
@@ -89,7 +91,14 @@ pub struct WaterColourScene {
     vertex: Option<Buffer>,
     fragment: Option<Buffer>,
     remap: Option<Buffer>,
-    skies: HashMap<usize, (Arc<crate::texture::InlineCubeChain>, LayeredImage)>,
+    skies: HashMap<
+        usize,
+        (
+            Arc<crate::texture::InlineCubeChain>,
+            LayeredImage,
+            TextureView,
+        ),
+    >,
     caustics: HashMap<usize, (Arc<crate::texture::InlineArrayChain>, LayeredImage)>,
     bindings: HashMap<(usize, Arc<str>), MaterialBinding>,
     opaque: Option<(TextureId, TextureView)>,
@@ -101,6 +110,10 @@ pub struct WaterColourScene {
     comparison: Sampler,
 }
 impl WaterColourScene {
+    pub(super) fn draw_count(&self) -> usize {
+        self.draws.len()
+    }
+
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,
@@ -172,6 +185,7 @@ impl WaterColourScene {
     ) -> Result<BTreeSet<String>, String> {
         self.draws.clear();
         let mut pending = BTreeSet::new();
+        let mut needs_reflections = false;
         let alignment = u64::from(r.device.limits().min_uniform_buffer_offset_alignment);
         let vertex_stride = 80u64.next_multiple_of(alignment) as usize;
         let fragment_stride = 1008u64.next_multiple_of(alignment) as usize;
@@ -195,14 +209,19 @@ impl WaterColourScene {
             let Some(source) = material.world_colour.as_ref().map_err(Clone::clone)? else {
                 continue;
             };
-            if let Err(error) = &source.class {
-                pending.insert(error.clone());
-                continue;
-            }
+            let class = match &source.class {
+                Ok(class) => *class,
+                Err(error) => {
+                    pending.insert(error.clone());
+                    continue;
+                }
+            };
             if !source.colour_options.horizontal {
                 return Err("water colour admission disagrees with horizontal option".into());
             }
             let settings = source.settings(&view.frame.values)?;
+            needs_reflections |=
+                source.colour_options.reflections && view.frame.ocean_environment.view.enable_ssr;
             let world = r
                 .world
                 .objects
@@ -225,6 +244,7 @@ impl WaterColourScene {
                 layout: mesh.layout.clone(),
                 state,
                 reversed: world.indices_reversed,
+                class,
             };
             let program = if let Some(&i) = self.keys.get(&key) {
                 i
@@ -240,12 +260,15 @@ impl WaterColourScene {
                     },
                     state,
                     world.indices_reversed,
+                    class,
                 )?;
                 let i = self.programs.len();
                 self.programs.push(Program {
                     colour,
                     parameters: None,
                     inputs: None,
+                    probes: class
+                        == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
                 });
                 self.keys.insert(key, i);
                 i
@@ -270,6 +293,7 @@ impl WaterColourScene {
                 source.colour_options,
                 self.extent,
                 self.compressed,
+                class == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
             )?;
             let fragment_parameters = parameters.uniform_bytes()?;
             let sky = r
@@ -279,10 +303,14 @@ impl WaterColourScene {
                 .ok_or("water sky cube source unavailable")?;
             let sky_id = Arc::as_ptr(sky) as usize;
             if !self.skies.contains_key(&sky_id) {
-                self.skies.insert(
-                    sky_id,
-                    (sky.clone(), LayeredImage::cube(r.device, r.queue, sky)?),
-                );
+                let image = LayeredImage::cube(r.device, r.queue, sky)?;
+                // The non-probe specialization never samples the IBL binding.
+                // Reuse its real sky allocation for the fixed host layout.
+                let array = image.texture().create_view(&TextureViewDescriptor {
+                    dimension: Some(TextureViewDimension::CubeArray),
+                    ..default()
+                });
+                self.skies.insert(sky_id, (sky.clone(), image, array));
             }
             let caustics = r
                 .images
@@ -337,13 +365,18 @@ impl WaterColourScene {
         if self.draws.is_empty() {
             return Ok(pending);
         }
-        let probes = r
-            .lighting
-            .0
-            .as_ref()
-            .map_err(Clone::clone)?
-            .as_ref()
-            .ok_or("world water probes unavailable")?;
+        let probes = if self.draws.iter().any(|d| self.programs[d.program].probes) {
+            Some(
+                r.lighting
+                    .0
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .as_ref()
+                    .ok_or("world water probes unavailable")?,
+            )
+        } else {
+            None
+        };
         let buffer = |h: &Handle<bevy::render::storage::ShaderBuffer>| {
             r.buffers
                 .get(h)
@@ -356,9 +389,15 @@ impl WaterColourScene {
                 .as_ref()
                 .ok_or("water colour world matrices unavailable")?,
         )?;
-        let references = buffer(&probes.vertex_references)?;
-        let info = buffer(&probes.probe_info)?;
-        let cubes = buffer(&probes.cube_indices)?;
+        let probe_buffers = probes
+            .map(|p| {
+                Ok::<_, &str>((
+                    buffer(&p.vertex_references)?,
+                    buffer(&p.probe_info)?,
+                    buffer(&p.cube_indices)?,
+                ))
+            })
+            .transpose()?;
         let vertices = upload(
             r.device,
             r.queue,
@@ -380,7 +419,10 @@ impl WaterColourScene {
             &remap,
             BufferUsages::STORAGE,
         );
-        for p in &mut self.programs {
+        for (index, p) in self.programs.iter_mut().enumerate() {
+            if !self.draws.iter().any(|draw| draw.program == index) {
+                continue;
+            }
             let ids = [vertices.id(), fragments.id()];
             if p.parameters.as_ref().is_none_or(|v| v.0 != ids) {
                 p.parameters = Some((
@@ -389,6 +431,11 @@ impl WaterColourScene {
                     p.colour.parameter_binding(r.device, fragments),
                 ));
             }
+            let (references, info, cubes) = if p.probes {
+                probe_buffers.ok_or("world water probe buffers unavailable")?
+            } else {
+                (matrices, matrices, matrices)
+            };
             let ids = [
                 instances.id(),
                 matrices.id(),
@@ -399,16 +446,22 @@ impl WaterColourScene {
             if p.inputs.as_ref().is_none_or(|v| v.0 != ids) {
                 p.inputs = Some((
                     ids,
-                    p.colour.vertex.bind_inputs(
-                        r.device,
-                        WorldProbeVertexBuffers {
-                            instances,
-                            matrices,
-                            references,
-                            probe_info: info,
-                            cube_indices: cubes,
-                        },
-                    ),
+                    if !p.probes {
+                        p.colour
+                            .vertex
+                            .bind_world_inputs(r.device, instances, matrices)
+                    } else {
+                        p.colour.vertex.bind_inputs(
+                            r.device,
+                            WorldProbeVertexBuffers {
+                                instances,
+                                matrices,
+                                references,
+                                probe_info: info,
+                                cube_indices: cubes,
+                            },
+                        )
+                    },
                 ));
             }
         }
@@ -421,7 +474,12 @@ impl WaterColourScene {
                 }),
             ));
         }
-        let reduced = if let Some(pyramid) = view.pyramid {
+        let reduced = if !needs_reflections {
+            // The selected source shaders do not read reduced depth with SSR
+            // disabled. Alias an existing sampled image for the host layout;
+            // do not allocate or dispatch an unused depth pyramid.
+            view.fog
+        } else if let Some(pyramid) = view.pyramid {
             if self
                 .shared_pyramid
                 .as_ref()
@@ -458,10 +516,13 @@ impl WaterColourScene {
             )?;
             texture
         };
-        let probe_cube = r
-            .image_assets
-            .get(&probes.cubes)
-            .ok_or("water probe cube array awaits GPU preparation")?;
+        let probe_cube = probes
+            .map(|p| {
+                r.image_assets
+                    .get(&p.cubes)
+                    .ok_or("water probe cube array awaits GPU preparation")
+            })
+            .transpose()?;
         let native = self.hdr.prepare(
             r.device,
             r.queue,
@@ -481,7 +542,13 @@ impl WaterColourScene {
                 native.source(),
                 view.fog,
                 self.caustics[&draw.caustics].1.view(),
-                &probe_cube.texture_view,
+                if self.programs[draw.program].probes {
+                    &probe_cube
+                        .ok_or("water probe cube array unavailable")?
+                        .texture_view
+                } else {
+                    &self.skies[&draw.sky].2
+                },
                 self.skies[&draw.sky].1.view(),
                 view.atlas,
             ];
@@ -605,6 +672,7 @@ fn parameters(
     options: crate::rendering::water::program::WaterColourOptions,
     extent: [u32; 2],
     compressed: bool,
+    use_probes: bool,
 ) -> Result<WorldProbeColourParameters, String> {
     let matrices = view.frame.matrices.current;
     let parallel = view
@@ -682,5 +750,6 @@ fn parameters(
             settings.sky_cube_radius,
         ],
         use_sky_cube: options.sky_cube,
+        use_probes,
     })
 }

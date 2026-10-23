@@ -43,6 +43,7 @@ fn installed_water_view_inputs_prepare_for_every_level() {
         cache: default(),
         shadow_materials: default(),
         water_materials: default(),
+        boat_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),
         misses: 0,

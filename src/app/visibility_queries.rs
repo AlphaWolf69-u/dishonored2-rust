@@ -546,8 +546,16 @@ pub(super) fn stream_visible_models(
                         instance.transform,
                         Visibility::Visible,
                     )),
-                    MaterialHandle::BoatVolume(_) => commands.spawn((
+                    MaterialHandle::BoatVolume(material) => commands.spawn((
                         Mesh3d(instance.mesh.clone()),
+                        crate::rendering::bevy_backend::boat_scene::BoatMesh {
+                            material:material.clone(),order:index,
+                            geometry:match instance.source.map(|s|s.surface) {
+                                Some(super::RenderModelSurface::World{object,matrix})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::World{object,matrix},
+                                Some(super::RenderModelSurface::Bmodel{..})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::RigidModel,
+                                _=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::Unsupported,
+                            },
+                        },
                         instance.transform,
                         Visibility::Visible,
                     )),

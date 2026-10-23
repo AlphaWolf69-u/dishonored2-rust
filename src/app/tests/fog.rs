@@ -193,6 +193,7 @@ fn installed_atmosphere_materials_retain_geometry_and_images() {
         cache: default(),
         shadow_materials: default(),
         water_materials: default(),
+        boat_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),
         misses: 0,

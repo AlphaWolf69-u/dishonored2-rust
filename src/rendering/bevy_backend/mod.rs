@@ -112,6 +112,10 @@ pub mod fog_light_scattering;
 pub mod tiled_lighting_pass;
 #[cfg(feature = "game")]
 pub mod water_depth_scene;
+#[cfg(feature = "game")]
+pub mod water_depth_meshes;
+#[cfg(feature = "game")]
+pub mod boat_scene;
 #[cfg(all(test, feature = "game"))]
 mod fog_light_scattering_tests;
 #[cfg(all(test, feature = "game"))]

@@ -10,9 +10,12 @@ pub mod scene_motion;
 pub mod constraint_solver;
 pub mod rigid_body;
 pub mod point_query;
+pub mod collision_queries;
+pub mod compound_query;
 pub mod collision_filter;
 pub mod collision_dispatch;
 pub mod convex_support;
+pub mod polytope_query;
 pub mod runtime;
 
 pub mod wind;

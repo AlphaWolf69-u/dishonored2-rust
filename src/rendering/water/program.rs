@@ -1,9 +1,10 @@
 //! Selected world-water colour program, before GPU bytecode admission.
 use crate::render_program::{D3dVariantData, SerializedParameterBlock};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WorldWaterColourClass {
     ProbeHorizontal,
+    Horizontal,
 }
 
 #[derive(Clone, Copy, Debug)]
