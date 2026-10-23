@@ -1,4 +1,4 @@
-# The rewrite folder
+# The rewrite folder and launcher
 
 The rewrite keeps everything it writes in one folder next to its executable
 (`DH2_REWRITE_HOME` selects another one). The installed game is only read.
@@ -6,6 +6,7 @@ The first launch creates the layout below.
 
 ```
 DH2Rewrite/
+  dishonored2-launcher.exe  launcher and mod manager
   dishonored2-rust.exe
   config/
     dishonored2Config.cfg   the game's config format (bindings and cvars)
@@ -29,13 +30,24 @@ Code: `src/platform/home.rs` (layout, import, settings, mods, fingerprint),
   found, a folder dialog asks for the installation (the folder with `base`, or
   `base` itself) and the choice is saved to `rewrite.toml`. Any store's
   installation with the standard `base/game*_patch.index` files works.
-- **Config:** when `config/dishonored2Config.cfg` does not exist, the
-  original's `Saved Games/Arkane Studios/Dishonored2/base/dishonored2Config.cfg`
-  is copied. The original's files are never written.
-- **Saves are imported only on request:** `dishonored2-rust.exe --import-saves`
-  opens a folder dialog, `--import-saves <folder>` uses that folder (the one
-  with `profile.bin` and the `SLOTxx` folders). Files already in `saves/` are
-  kept; the game does not start.
+- **Config and saves are imported only on request**, never guessed from the
+  original's location. A new folder starts with the game's defaults
+  (`default.cfg`, the cvar defaults).
+  - Launcher: **Import saves…** (a folder with `profile.bin` and the `SLOTxx`
+    folders; files already in `saves/` are kept) and **Import config…** (a
+    folder with `dishonored2Config.cfg`; it replaces the rewrite's).
+  - Command line: `dishonored2-rust.exe --import-saves [folder]` (a dialog
+    when no folder is given); the game does not start.
+- The original's files are never written.
+
+## Launcher
+
+`dishonored2-launcher.exe` (built with `--features launcher`, Slint) shows the
+game folder (Browse…), the installed mods with enable checkboxes and ▲/▼ load
+order (written to `modlist.toml`; invalid or missing mods are listed with the
+reason), the override count, the imports, folder shortcuts, the setup
+fingerprint, and Launch, which starts `dishonored2-rust.exe` from the same
+folder on the same rewrite folder. Code: `src/bin/launcher.rs`.
 
 ## Resource overrides
 
@@ -47,7 +59,7 @@ Overrides win over every mod.
 ## Mods
 
 ```
-mods/<id>/mod.toml        id = "<id>", name = "...", version = "..."
+mods/<id>/mod.toml        id = "<id>", name = "...", version = "...", description = "..."
 mods/<id>/resources/...   files at the game's resource paths
 ```
 

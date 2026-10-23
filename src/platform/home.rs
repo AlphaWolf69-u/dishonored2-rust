@@ -56,7 +56,6 @@ pub struct Home {
 #[derive(Clone, Debug, Default)]
 pub struct Setup {
     pub created: bool,
-    pub imported_config: Option<PathBuf>,
     pub problems: Vec<String>,
 }
 
@@ -100,8 +99,8 @@ impl Home {
         self.root.join(MODLIST_FILE)
     }
 
-    /// Create the layout and import the original's config when the rewrite
-    /// has none yet. Saves are imported only on request ([`import_saves`]).
+    /// Create the layout. Config and saves are imported only on request
+    /// ([`import_config`], [`import_saves`]).
     fn ensure(&self) -> Setup {
         let mut setup = Setup::default();
         let mut note = |r: io::Result<()>, what: &str| {
@@ -117,14 +116,6 @@ impl Home {
         note(write_new(&self.settings_file(), SETTINGS_TEMPLATE), SETTINGS_FILE);
         note(write_new(&self.overrides_dir().join("README.txt"), OVERRIDES_README), "overrides/README.txt");
         note(write_new(&self.mods_dir().join("README.txt"), MODS_README), "mods/README.txt");
-        if let Ok(original) = crate::platform::game_settings::original_configuration_path() {
-            if !self.config_file().exists() && original.is_file() {
-                match fs::copy(&original, self.config_file()) {
-                    Ok(_) => setup.imported_config = Some(original.clone()),
-                    Err(e) => setup.problems.push(format!("config import: {e}")),
-                }
-            }
-        }
         setup
     }
 }
@@ -150,6 +141,16 @@ fn write_new(path: &Path, text: &str) -> io::Result<()> {
         return Ok(());
     }
     fs::write(path, text)
+}
+
+/// Copy a game config (`dishonored2Config.cfg`) the user chose into
+/// `config/`, replacing the rewrite's.
+pub fn import_config(from: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    if !text.trim_start().starts_with("configVersion") {
+        return Err(format!("{} is not a Dishonored 2 config (no configVersion header)", from.display()));
+    }
+    fs::write(home().config_file(), text).map_err(|e| e.to_string())
 }
 
 /// The result of [`import_saves`].
@@ -218,6 +219,75 @@ fn contained(path: &str) -> bool {
     !path.is_empty() && Path::new(path).components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// A mod folder under `mods/`, valid or not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Installed {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    /// Why the folder cannot be enabled, if it cannot.
+    pub problem: Option<String>,
+}
+
+fn read_manifest(id: &str, folder: &Path) -> Result<toml_edit::DocumentMut, String> {
+    if !folder.is_dir() {
+        return Err("the mod folder is not installed".into());
+    }
+    fs::read_to_string(folder.join(MOD_MANIFEST))
+        .map_err(|e| if e.kind() == io::ErrorKind::NotFound { format!("{MOD_MANIFEST} is missing") } else { format!("{MOD_MANIFEST}: {e}") })
+        .and_then(|t| t.parse::<toml_edit::DocumentMut>().map_err(|e| format!("{MOD_MANIFEST}: {e}")))
+        .and_then(|m| {
+            let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if field("id") != id || field("version").is_empty() {
+                Err(format!("{MOD_MANIFEST}: id must be {id:?} and version is required"))
+            } else {
+                Ok(m)
+            }
+        })
+}
+
+/// Every folder under `mods/`, by name.
+pub fn installed_mods() -> Vec<Installed> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(home().mods_dir()) else { return out };
+    for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let (name, version, description, problem) = match read_manifest(&id, &entry.path()) {
+            Ok(m) => {
+                let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (field("name"), field("version"), field("description"), None)
+            }
+            Err(e) => (String::new(), String::new(), String::new(), Some(e)),
+        };
+        out.push(Installed { id, name, version, description, problem });
+    }
+    out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    out
+}
+
+/// The ids `modlist.toml` lists, in order (valid or not).
+pub fn modlist() -> Vec<String> {
+    fs::read_to_string(home().modlist_file())
+        .ok()
+        .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|d| d.get("enabled")?.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()))
+        .unwrap_or_default()
+}
+
+/// Write `enabled` to `modlist.toml`, keeping its comments.
+pub fn save_modlist(ids: &[String]) -> Result<(), String> {
+    let file = home().modlist_file();
+    let text = fs::read_to_string(&file).unwrap_or_else(|_| MODLIST_TEMPLATE.to_string());
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{}: {e}", file.display()))?;
+    let mut array = toml_edit::Array::new();
+    for id in ids {
+        array.push(id.as_str());
+    }
+    doc["enabled"] = toml_edit::value(array);
+    fs::write(&file, doc.to_string()).map_err(|e| format!("{}: {e}", file.display()))
+}
+
 /// The mods `modlist.toml` enables, in load order. A mod that is missing or
 /// whose `mod.toml` is invalid is reported and skipped.
 pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<Mod> {
@@ -238,18 +308,14 @@ pub fn enabled_mods(problems: &mut Vec<String>) -> Vec<Mod> {
             continue;
         }
         let folder = home.mods_dir().join(id);
-        let manifest = match fs::read_to_string(folder.join(MOD_MANIFEST)).map_err(|e| e.to_string()).and_then(|t| t.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())) {
+        let manifest = match read_manifest(id, &folder) {
             Ok(m) => m,
             Err(e) => {
-                problems.push(format!("mods/{id}/{MOD_MANIFEST}: {e}"));
+                problems.push(format!("Mod {id} skipped: {e}"));
                 continue;
             }
         };
         let field = |k: &str| manifest.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if field("id") != id || field("version").is_empty() {
-            problems.push(format!("mods/{id}/{MOD_MANIFEST}: id must be {id:?} and version is required"));
-            continue;
-        }
         mods.push(Mod { id: id.to_string(), name: field("name"), version: field("version"), folder });
     }
     mods

@@ -31,6 +31,11 @@ pub fn game_base_or_ask() -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// A folder dialog (`None` when cancelled or unavailable).
+pub fn pick_folder(prompt: &str) -> Option<PathBuf> {
+    os::pick_folder(prompt)
+}
+
 /// `--import-saves [folder]`: copy a save folder the user names (or picks)
 /// into the rewrite's `saves/`, then report. Existing files are kept.
 pub fn import_saves(folder: Option<PathBuf>) {

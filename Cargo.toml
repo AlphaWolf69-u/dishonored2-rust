@@ -13,6 +13,8 @@ png = "0.18.1"
 # tree through proc-macro-crate) and the setup fingerprint (through Bevy).
 toml_edit = "0.25.15"
 blake3 = "1.8.7"
+# The launcher window (the `launcher` feature only).
+slint = { version = "1.18", optional = true, default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
 half = "2.7.1"
 # AVM2 bytecode (ABC) parsing only; Iggy movies embed standard ABC blocks.
 swf = { version = "0.3.0", default-features = false }
@@ -32,11 +34,17 @@ bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 
 [features]
 game = ["dep:bevy", "dep:log"]
+launcher = ["dep:slint"]
 
 [[bin]]
 name = "dishonored2-rust"
 path = "src/bin/game.rs"
 required-features = ["game"]
+
+[[bin]]
+name = "dishonored2-launcher"
+path = "src/bin/launcher.rs"
+required-features = ["launcher"]
 
 [[bin]]
 name = "dishonored2-tools"

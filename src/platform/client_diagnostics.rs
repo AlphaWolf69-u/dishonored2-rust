@@ -74,9 +74,6 @@ pub fn record_setup(base: &std::path::Path) {
     if setup.created {
         record("Rewrite folder created");
     }
-    if let Some(from) = &setup.imported_config {
-        record(&format!("Imported config from {}", from.display()));
-    }
     let layers = home::layers();
     for problem in setup.problems.iter().chain(&layers.problems) {
         record(&format!("Setup problem: {problem}"));
