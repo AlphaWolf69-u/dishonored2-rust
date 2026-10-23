@@ -7,7 +7,7 @@
 use crate::assets::{archive::Catalog, installation, lang};
 use crate::flash::{player::CharRef, raster, render, Player};
 use crate::gameplay::game_clock_runtime::GamePaused;
-use crate::gameplay::pause_state::{self, Character, Request};
+use crate::gameplay::pause_state::{self, Character, Movie, Request};
 use crate::platform::bindings::{self, Keyboard};
 use crate::platform::game_settings;
 use crate::rendering::bevy_backend::flash_ui::{FlashFrame, FlashUiFrame, Image};
@@ -44,6 +44,7 @@ enum Command {
 enum Event {
     Frame(FlashFrame),
     Resume,
+    Quit,
     Failed(String),
 }
 
@@ -55,9 +56,50 @@ struct Loaded {
     /// The first keyboard key pressed since the last tick, else the first
     /// mouse button (the options key capture reads it).
     pressed: Option<u32>,
+    /// The pause movie's bitmaps, and those plus the open box's global
+    /// movie (shifted by `LAYER_LIBRARY_OFFSET`).
+    pause_images: HashMap<CharRef, Arc<Image>>,
     images: Arc<HashMap<CharRef, Arc<Image>>>,
+    /// The focus entries (`iggyMain+0x18`); input goes to the top one.
+    focus: Vec<Movie>,
     pending: f64,
     frame_interval: f64,
+}
+
+fn decode(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
+    let mut decoded = raster::Images::default();
+    for (index, path) in resources {
+        let file = player.state.borrow().file(*index);
+        decoded.load(catalog, *index, path, &file)?;
+    }
+    Ok(decoded.images.into_iter().map(|(c, (width, height, rgba))| (c, Arc::new(Image { width, height, rgba }))).collect())
+}
+
+impl Loaded {
+    /// The movie of the top focus entry.
+    fn target(&mut self) -> &mut Player {
+        if self.focus.last() == Some(&Movie::Global) {
+            if let Some(g) = self.pause.boxes.global() {
+                return g;
+            }
+        }
+        &mut self.player
+    }
+
+    /// The pause images plus the front box's global movie.
+    fn rebuild_images(&mut self) -> Result<(), String> {
+        let mut images = self.pause_images.clone();
+        if let Some((g, resources)) = self.pause.boxes.global_with_resources() {
+            let base = installation::game_base().map_err(|e| e.to_string())?;
+            let catalog = Catalog::open(&base).map_err(|e| e.to_string())?;
+            for (mut c, image) in decode(&catalog, g, resources)? {
+                c.library += render::LAYER_LIBRARY_OFFSET;
+                images.insert(c, image);
+            }
+        }
+        self.images = Arc::new(images);
+        Ok(())
+    }
 }
 
 /// Main-thread owner of the pause state.
@@ -116,22 +158,31 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
     pause_state::file_ready(&mut player, screen)?;
     let state = pause_state::current_state(&player, &language);
     let config = game_settings::configuration_path().ok();
-    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, user_config().as_deref(), state, config)?;
+    // A message box loads its own `global.iggy` (`FUN_1404627e0`).
+    let global_base = base.clone();
+    let load_global = Box::new(move || {
+        let catalog = Catalog::open(&global_base).map_err(|e| e.to_string())?;
+        let (mut g, resources) = Player::load_installed(&catalog, language, crate::gameplay::message_box::MOVIE)?;
+        pause_state::file_ready(&mut g, screen)?;
+        Ok((g, resources))
+    });
+    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, user_config().as_deref(), state, config, load_global)?;
     pause.on_flash_loaded(&mut player)?;
     pause.show(&mut player)?;
-    let mut decoded = raster::Images::default();
-    for (index, path) in &resources {
-        let file = player.state.borrow().file(*index);
-        decoded.load(&catalog, *index, path, &file)?;
-    }
-    let images = decoded
-        .images
-        .into_iter()
-        .map(|(c, (width, height, rgba))| (c, Arc::new(Image { width, height, rgba })))
-        .collect();
+    let pause_images = decode(&catalog, &player, &resources)?;
     let frame_interval = 1.0 / player.state.borrow().frame_rate;
     info!("Pause movie {movie} ({language}) loaded in {:.2} s", started.elapsed().as_secs_f64());
-    Ok(Loaded { player, pause, cursor: (1e30, 1e30), pressed: None, images: Arc::new(images), pending: 0.0, frame_interval })
+    Ok(Loaded {
+        player,
+        pause,
+        cursor: (1e30, 1e30),
+        pressed: None,
+        images: Arc::new(pause_images.clone()),
+        pause_images,
+        focus: Vec::new(),
+        pending: 0.0,
+        frame_interval,
+    })
 }
 
 fn report_uncaught(player: &mut Player) {
@@ -166,10 +217,11 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 // `FUN_140033740`: engine keys as virtual keys (`FUN_140032f20`), keyLocation 0.
                 let vk = keyboard.virtual_key(key).unwrap_or(key);
-                if let Err(e) = l.player.key_event(down, vk, 0) {
-                    warn!("Pause movie key: {}", l.player.describe(&e));
+                let target = l.target();
+                if let Err(e) = target.key_event(down, vk, 0) {
+                    warn!("Pause movie key: {}", target.describe(&e));
                 }
-                report_uncaught(&mut l.player);
+                report_uncaught(target);
             }
             Command::Cursor { x, y } => {
                 let Some(l) = loaded.as_mut() else { continue };
@@ -177,15 +229,15 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 // the Iggy move event.
                 if (l.cursor.0 - x).abs() > 0.1 || (l.cursor.1 - y).abs() > 0.1 {
                     l.cursor = (x, y);
-                    let moved = l
-                        .player
+                    let target = l.target();
+                    let moved = target
                         .set_value("mouseCursor.x", x.into())
-                        .and_then(|_| l.player.set_value("mouseCursor.y", y.into()))
-                        .and_then(|_| l.player.mouse_move(x, y));
+                        .and_then(|_| target.set_value("mouseCursor.y", y.into()))
+                        .and_then(|_| target.mouse_move(x, y));
                     if let Err(e) = moved {
-                        warn!("Pause movie cursor: {}", l.player.describe(&e));
+                        warn!("Pause movie cursor: {}", target.describe(&e));
                     }
-                    report_uncaught(&mut l.player);
+                    report_uncaught(target);
                 }
             }
             Command::MouseButton { code, down } => {
@@ -195,25 +247,27 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 // The Iggy button event first (left/right/middle), then
                 // `IG_OnMouseEvent(code, state)` for every button.
+                let target = l.target();
                 let mut result = Ok(());
                 if (0xe0..=0xe2).contains(&code) {
-                    result = l.player.mouse_button((code - 0xe0) as u8, down);
+                    result = target.mouse_button((code - 0xe0) as u8, down);
                 }
                 let state = if down { 1.0 } else { 0.0 };
                 let result = result.and_then(|_| {
-                    l.player.call_path_method("inputsManager.mouseHandler", "IG_OnMouseEvent", &[(code as f64).into(), state.into()]).map(|_| ())
+                    target.call_path_method("inputsManager.mouseHandler", "IG_OnMouseEvent", &[(code as f64).into(), state.into()]).map(|_| ())
                 });
                 if let Err(e) = result {
-                    warn!("Pause movie mouse: {}", l.player.describe(&e));
+                    warn!("Pause movie mouse: {}", target.describe(&e));
                 }
-                report_uncaught(&mut l.player);
+                report_uncaught(target);
             }
             Command::Wheel(delta) => {
                 let Some(l) = loaded.as_mut() else { continue };
-                if let Err(e) = l.player.mouse_wheel(delta) {
-                    warn!("Pause movie wheel: {}", l.player.describe(&e));
+                let target = l.target();
+                if let Err(e) = target.mouse_wheel(delta) {
+                    warn!("Pause movie wheel: {}", target.describe(&e));
                 }
-                report_uncaught(&mut l.player);
+                report_uncaught(target);
             }
             Command::Tick(dt) => {
                 let Some(l) = loaded.as_mut() else { continue };
@@ -226,22 +280,42 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         warn!("Pause movie tick: {}", l.player.describe(&e));
                     }
                     report_uncaught(&mut l.player);
+                    if let Some(g) = l.pause.boxes.global() {
+                        if let Err(e) = g.tick(step) {
+                            warn!("Message box movie tick: {}", g.describe(&e));
+                        }
+                        report_uncaught(g);
+                    }
                 }
                 let pressed = l.pressed.take();
                 if let Err(e) = l.pause.update(&mut l.player, pressed) {
                     warn!("Pause options: {e}");
                 }
-                match l.pause.handle_notifications(&mut l.player, &mut unhandled) {
+                let handled = l.pause.handle_notifications(&mut l.player, &mut unhandled).and_then(|mut r| {
+                    r.extend(l.pause.handle_global_notifications(&mut l.player, &mut unhandled)?);
+                    Ok(r)
+                });
+                match handled {
                     Ok(requests) => {
                         for request in requests {
                             match request {
                                 Request::Resume => {
                                     let _ = outbox.send(Event::Resume);
                                 }
-                                // The message-box host (`global.iggy`) is not ported yet.
-                                Request::MessageBox(b) => warn!("Pause message box not shown yet: {}", b.text),
+                                Request::Quit => {
+                                    let _ = outbox.send(Event::Quit);
+                                }
                                 // The renderer mode switch is not wired to the window yet.
                                 Request::DisplayChanged => warn!("Pause display settings changed; applied on the next start"),
+                                // `FUN_140033b50` / `FUN_140034360`.
+                                Request::Focus(movie, true) => l.focus.push(movie),
+                                Request::Focus(movie, false) => l.focus.retain(|m| *m != movie),
+                                Request::GlobalChanged => {
+                                    generation += 1;
+                                    if let Err(e) = l.rebuild_images() {
+                                        warn!("Message box movie: {e}");
+                                    }
+                                }
                             }
                         }
                     }
@@ -252,7 +326,10 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 // Diagnostic: DH2_DEBUG_FLASH_ALL=1 also draws hidden objects.
                 let debug_all = std::env::var_os("DH2_DEBUG_FLASH_ALL").is_some_and(|v| v == "1");
-                let list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list(&l.player.vm) };
+                let mut list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list(&l.player.vm) };
+                if let Some(g) = l.pause.boxes.global() {
+                    render::stack(&mut list, render::draw_list(&g.vm));
+                }
                 let _ = outbox.send(Event::Frame(FlashFrame { list: Arc::new(list), images: l.images.clone(), generation }));
             }
         }
@@ -273,6 +350,7 @@ pub fn update_pause_menu(
     mut cursors: Query<&mut CursorOptions>,
     mut paused: ResMut<GamePaused>,
     mut frame: ResMut<FlashUiFrame>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let menu = &mut *menu;
     for input in keys.read() {
@@ -336,6 +414,10 @@ pub fn update_pause_menu(
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
                 let _ = menu.commands.send(Command::Close);
                 menu.open = false;
+            }
+            // The `quit` command ends the application.
+            Event::Quit => {
+                exit.write(AppExit::Success);
             }
             Event::Failed(e) => {
                 error!("Pause menu unavailable: {e}");

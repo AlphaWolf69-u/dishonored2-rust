@@ -366,3 +366,25 @@ fn build(vm: &Vm, debug_ignore_visibility: bool) -> DrawList {
     }
     b.out
 }
+
+/// Library indices of a movie drawn above the first one are shifted by
+/// this much, so both movies' bitmaps share one image map.
+pub const LAYER_LIBRARY_OFFSET: usize = 1000;
+
+/// Append `top` (a movie on a higher layer, e.g. `global.iggy` at layer 3
+/// over the pause movie at 2) to `base`.
+pub fn stack(base: &mut DrawList, mut top: DrawList) {
+    let first = base.vertices.len() as u32;
+    let ramps = base.ramps.len();
+    for b in &mut top.batches {
+        b.first += first;
+        match &mut b.texture {
+            Texture::Bitmap(c) => c.library += LAYER_LIBRARY_OFFSET,
+            Texture::Ramp(i) => *i += ramps,
+            Texture::White => {}
+        }
+    }
+    base.vertices.append(&mut top.vertices);
+    base.batches.append(&mut top.batches);
+    base.ramps.append(&mut top.ramps);
+}

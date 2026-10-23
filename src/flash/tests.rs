@@ -121,7 +121,7 @@ fn debug_pause_menu_elements() {
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
     let state = crate::gameplay::pause_state::current_state(&player, language);
-    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None).unwrap();
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
     pause.on_flash_loaded(&mut player).unwrap();
     pause.show(&mut player).unwrap();
     for _ in 0..30 {
@@ -247,7 +247,7 @@ fn debug_pause_mouse_hover() {
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
     let state = crate::gameplay::pause_state::current_state(&player, language);
-    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None).unwrap();
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
     pause.on_flash_loaded(&mut player).unwrap();
     pause.show(&mut player).unwrap();
     for _ in 0..60 {

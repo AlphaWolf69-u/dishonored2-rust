@@ -43,7 +43,15 @@ fn run() -> Result<(), String> {
         pause_state::file_ready(&mut player, screen)?;
         let state = pause_state::current_state(&player, &language);
         // The preview never writes the user's config.
-        let mut p = pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None)?;
+        let global_base = base.clone();
+        let global_language = language.clone();
+        let load_global = Box::new(move || {
+            let catalog = Catalog::open(&global_base).map_err(|e| e.to_string())?;
+            let (mut g, resources) = Player::load_installed(&catalog, &global_language, dishonored2_rust::gameplay::message_box::MOVIE)?;
+            pause_state::file_ready(&mut g, screen)?;
+            Ok((g, resources))
+        });
+        let mut p = pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None, load_global)?;
         p.on_flash_loaded(&mut player)?;
         p.show(&mut player)?;
         pause = Some(p);
@@ -64,25 +72,41 @@ fn run() -> Result<(), String> {
     let clicks = at("--debug-click");
     let notifies = at("--debug-notify");
     let keys = at("--debug-key");
+    // `--debug-set PATH=NUMBER@FRAME` sets a movie value (as a user edit would).
+    let sets = at("--debug-set");
     let mut unhandled = Vec::new();
     for frame in 0..frames {
         for (_, xy) in clicks.iter().filter(|c| c.0 == frame) {
             let (x, y) = xy.split_once(',').ok_or("--debug-click X,Y@FRAME")?;
             let (x, y): (f64, f64) = (x.parse().map_err(|_| "click x")?, y.parse().map_err(|_| "click y")?);
-            player.mouse_move(x, y).map_err(|e| player.describe(&e))?;
-            player.mouse_button(0, true).map_err(|e| player.describe(&e))?;
-            player.mouse_button(0, false).map_err(|e| player.describe(&e))?;
+            // Input goes to the top focus entry: an open box's global movie.
+            let target = match pause.as_mut().and_then(|p| p.boxes.global()) {
+                Some(g) => g,
+                None => &mut player,
+            };
+            target.mouse_move(x, y).map_err(|e| target.describe(&e))?;
+            target.mouse_button(0, true).map_err(|e| target.describe(&e))?;
+            target.mouse_button(0, false).map_err(|e| target.describe(&e))?;
         }
         for (_, n) in notifies.iter().filter(|c| c.0 == frame) {
             let (name, arg) = n.split_once('=').unwrap_or((n.as_str(), ""));
             let args = arg.parse::<f64>().map(|v| vec![v.into()]).unwrap_or_default();
             player.state.borrow_mut().notifications.push((name.to_string(), args));
         }
+        for (_, a) in sets.iter().filter(|c| c.0 == frame) {
+            let (path, v) = a.split_once('=').ok_or("--debug-set PATH=NUMBER@FRAME")?;
+            let v: f64 = v.parse().map_err(|_| "--debug-set value")?;
+            player.set_value(path, v.into()).map_err(|e| player.describe(&e))?;
+        }
         let pressed = keys.iter().find(|k| k.0 == frame).and_then(|k| k.1.parse::<u32>().ok());
         player.tick(1.0 / frame_rate).map_err(|e| format!("frame {frame}: {}", player.describe(&e)))?;
         if let Some(p) = pause.as_mut() {
+            if let Some(g) = p.boxes.global() {
+                g.tick(1.0 / frame_rate).map_err(|e| format!("global frame {frame}: {}", g.describe(&e)))?;
+            }
             p.update(&mut player, pressed)?;
-            let requests = p.handle_notifications(&mut player, &mut unhandled)?;
+            let mut requests = p.handle_notifications(&mut player, &mut unhandled)?;
+            requests.extend(p.handle_global_notifications(&mut player, &mut unhandled)?);
             for r in requests {
                 eprintln!("frame {frame}: request {r:?}");
             }
@@ -90,6 +114,12 @@ fn run() -> Result<(), String> {
     }
     if !unhandled.is_empty() {
         eprintln!("unhandled notifications: {unhandled:?}");
+    }
+    // `--debug-cvar NAME` prints a cvar of the pause state's console.
+    for w in args.windows(2).filter(|w| w[0] == "--debug-cvar") {
+        if let Some(c) = pause.as_ref().and_then(|p| p.console.cvars.get(&w[1])) {
+            eprintln!("cvar {} = {:?}", c.name, c.value);
+        }
     }
     for e in player.state.borrow().uncaught.iter() {
         eprintln!("uncaught: {e}");
@@ -106,11 +136,24 @@ fn run() -> Result<(), String> {
         let file = player.state.borrow().file(*index);
         images.load(&catalog, *index, path, &file)?;
     }
-    let list = if args.iter().any(|a| a == "--debug-ignore-visibility") {
+    let mut list = if args.iter().any(|a| a == "--debug-ignore-visibility") {
         render::debug_draw_all(&player.vm)
     } else {
         render::draw_list(&player.vm)
     };
+    // An open message box's global movie draws above the pause movie.
+    if let Some((g, g_resources)) = pause.as_ref().and_then(|p| p.boxes.global_with_resources()) {
+        let mut top = raster::Images::default();
+        for (index, path) in g_resources {
+            let file = g.state.borrow().file(*index);
+            top.load(&catalog, *index, path, &file)?;
+        }
+        for (mut c, image) in top.images {
+            c.library += render::LAYER_LIBRARY_OFFSET;
+            images.images.insert(c, image);
+        }
+        render::stack(&mut list, render::draw_list(&g.vm));
+    }
     eprintln!("{} batches, {} vertices", list.batches.len(), list.vertices.len());
     let (w, h) = (size.0 as u32, size.1 as u32);
     let rgba = raster::rasterize(&list, &images, w, h, [0, 0, 0, 255]);

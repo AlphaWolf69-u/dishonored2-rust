@@ -72,10 +72,25 @@ pub fn controller_type() -> i32 {
 pub enum Request {
     /// `ResumeGame` (`FUN_14078ca40`): pop the pause state.
     Resume,
-    /// A message box request (`FUN_1408832b0` vfunc +0x70 -> +0x18).
-    MessageBox(options::MessageBox),
     /// A display setting changed (visuals Update applies the mode).
     DisplayChanged,
+    /// `SetFlashFocus` / `KillFlashFocus` from a movie (`FUN_140035020` /
+    /// `FUN_140034fe0`): push or remove its focus entry.
+    Focus(Movie, bool),
+    /// The front message box's global movie appeared or went away.
+    GlobalChanged,
+    /// `QuitGame` (`LAB_1404f2970` -> `FUN_1404f3290(0)`): the `quit`
+    /// command.
+    Quit,
+}
+
+/// The movies of the pause state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Movie {
+    /// The pause movie (the message boxes' parent file).
+    Pause,
+    /// The front message box's `global.iggy`.
+    Global,
 }
 
 /// `arkGameLogicStatePause` for one pause: the command state, the options
@@ -92,6 +107,9 @@ pub struct Pause {
     /// Where the config save writes `dishonored2Config.cfg`; `None` keeps
     /// the user's file untouched (diagnostic runs).
     pub config_path: Option<PathBuf>,
+    /// The message box manager and the loader of its global movie.
+    pub boxes: crate::gameplay::message_box::Manager,
+    pub load_global: Box<dyn FnMut() -> std::result::Result<(Player, Vec<(usize, String)>), String>>,
 }
 
 impl Pause {
@@ -104,6 +122,7 @@ impl Pause {
         user_config: Option<&str>,
         state: GameState,
         config_path: Option<PathBuf>,
+        load_global: Box<dyn FnMut() -> std::result::Result<(Player, Vec<(usize, String)>), String>>,
     ) -> std::result::Result<Pause, String> {
         let mut console = Console::load(base, user_config)?;
         let mut read = |path: &str| catalog.read(path).ok().flatten();
@@ -121,6 +140,8 @@ impl Pause {
             base: base.to_path_buf(),
             state,
             config_path,
+            boxes: Default::default(),
+            load_global,
         };
         let EnvParts { options, mut env } = pause.env(player);
         options.start(&mut env);
@@ -181,8 +202,16 @@ impl Pause {
                     player
                         .call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[(controller_type() as f64).into()])
                         .map_err(|e| format!("_C_UpdateControllerType: {}", player.describe(&e)))?;
+                    requests.push(Request::Focus(Movie::Pause, true));
                 }
+                "KillFlashFocus" => requests.push(Request::Focus(Movie::Pause, false)),
                 "ResumeGame" => requests.push(Request::Resume),
+                "QuitGame" => requests.push(Request::Quit),
+                // `FUN_1404630f0`, registered by OnFlashLoaded (`FUN_1407898c0`).
+                "MessageBoxRequest" => {
+                    let info = crate::gameplay::message_box::Info::from_request(player, &args);
+                    self.show_box(player, info, None, &mut requests)?;
+                }
                 // `OnOptionsClicked` has no C++ registration (dropped by the hub).
                 "OnOptionsClicked" => {}
                 _ => {
@@ -207,7 +236,13 @@ impl Pause {
     fn apply_effects(&mut self, player: &mut Player, effects: Vec<Effect>, requests: &mut Vec<Request>) -> std::result::Result<(), String> {
         for effect in effects {
             match effect {
-                Effect::MessageBox(b) => requests.push(Request::MessageBox(b)),
+                Effect::MessageBox(b) => {
+                    // `FUN_140517470`: the leave-section box answers the options
+                    // container; the video-card notice has no callback.
+                    let confirm = self.options.pending.is_some().then_some(crate::gameplay::message_box::Confirm::Options);
+                    let info = crate::gameplay::message_box::Info::with_buttons(b.text, b.buttons, 0.0);
+                    self.show_box(player, info, confirm, requests)?;
+                }
                 // `FUN_1406509f0`: the pause state shows bindings.
                 Effect::BindingsChanged => self.write_bindable_actions(player)?,
                 Effect::RefillTutorials => {
@@ -221,6 +256,62 @@ impl Pause {
             }
         }
         Ok(())
+    }
+
+    fn show_box(
+        &mut self,
+        player: &mut Player,
+        info: crate::gameplay::message_box::Info,
+        confirm: Option<crate::gameplay::message_box::Confirm>,
+        requests: &mut Vec<Request>,
+    ) -> std::result::Result<(), String> {
+        let (_, events) = self.boxes.show(info, 0, confirm, player, &self.strings, &mut *self.load_global)?;
+        if !events.is_empty() {
+            requests.push(Request::GlobalChanged);
+        }
+        Ok(())
+    }
+
+    /// The front message box's global movie: its notifications (the
+    /// global file's registrations `FUN_140462210` and the global focus
+    /// callbacks). `parent` is the pause movie.
+    pub fn handle_global_notifications(&mut self, parent: &mut Player, unhandled: &mut Vec<String>) -> std::result::Result<Vec<Request>, String> {
+        use crate::gameplay::message_box::{Confirm, Event};
+        let mut requests = Vec::new();
+        let Some(global) = self.boxes.global() else { return Ok(requests) };
+        let notifications = global.take_notifications();
+        for (name, args) in notifications {
+            match name.as_str() {
+                "SetFlashFocus" => {
+                    if let Some(g) = self.boxes.global() {
+                        g.call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[(controller_type() as f64).into()])
+                            .map_err(|e| format!("_C_UpdateControllerType: {}", g.describe(&e)))?;
+                    }
+                    requests.push(Request::Focus(Movie::Global, true));
+                }
+                "KillFlashFocus" => requests.push(Request::Focus(Movie::Global, false)),
+                // `FUN_140463090`.
+                "OnMessageBoxConfirmed" => {
+                    if let Some(Event::Confirmed { confirm: Confirm::Options, answer }) = self.boxes.confirmed(&args) {
+                        requests.extend(self.answer(parent, answer.max(0) as u32)?);
+                    }
+                    self.boxes.close_front(parent, &self.strings, &mut *self.load_global)?;
+                    requests.push(Request::GlobalChanged);
+                    // The closed movie's remaining notifications go with it.
+                    break;
+                }
+                "MessageBoxRequest" => {
+                    let Some(g) = self.boxes.global() else { continue };
+                    let info = crate::gameplay::message_box::Info::from_request(g, &args);
+                    self.show_box(parent, info, None, &mut requests)?;
+                }
+                // The `arkMessageBox::On*` names and the empty names of
+                // AS3-requested boxes have no registration.
+                n if n.is_empty() || n.starts_with("arkMessageBox::") => {}
+                _ => unhandled.push(name),
+            }
+        }
+        Ok(requests)
     }
 
     /// The answer of a message box the options asked for.
@@ -238,6 +329,7 @@ impl Pause {
     /// Pause Update (`FUN_14078ff90`): the options' per-frame work. `pressed`
     /// is the first engine key pressed this frame.
     pub fn update(&mut self, player: &mut Player, pressed: Option<u32>) -> std::result::Result<(), String> {
+        self.boxes.update(&self.strings)?;
         let EnvParts { options, mut env } = self.env(player);
         options.update(&mut env, pressed)
     }
