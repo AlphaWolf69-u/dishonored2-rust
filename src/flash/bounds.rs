@@ -32,7 +32,9 @@ pub fn content(vm: &Vm, o: &Obj) -> [f64; 4] {
         if let Some(r) = super::text::field_bounds(o) {
             include(&mut acc, &id, r);
         }
-    } else if kind == DisplayKind::Bitmap {
+    } else if kind == DisplayKind::Bitmap && character.is_none() {
+        // A placed bitmap measures its character record (DO +0xa8), as it
+        // draws; a script Bitmap measures its BitmapData.
         if let Some((w, h)) = super::bitmap::bitmap_size(o) {
             include(&mut acc, &id, [0.0, 0.0, w, h]);
         }

@@ -183,6 +183,16 @@ fn debug_pause_menu_elements() {
                 cur = parent;
             }
             println!("{path} chain:{chain}");
+            fn tree(o: &Obj, depth: usize) {
+                if depth > 2 { return; }
+                for c in display::children(o) {
+                    let d = display::display(&c).unwrap();
+                    println!("{}{} kind {:?} char {:?} matrix {:?}", "  ".repeat(depth + 1), d.name, d.kind, d.character, d.matrix);
+                    drop(d);
+                    tree(&c, depth + 1);
+                }
+            }
+            tree(&o, 0);
             let tr = player.vm.get_property(&v, &avm2::name::Name::public("transform")).unwrap();
             let m3 = player.vm.get_property(&tr, &avm2::name::Name::public("matrix3D")).unwrap();
             if !m3.is_nullish() {
@@ -200,7 +210,7 @@ fn debug_pause_menu_elements() {
                     println!("{path}.bounds.{k} = {r:?}");
                 }
             }
-            for p in ["blendMode", "alpha", "visible", "width", "height"] {
+            for p in ["numChildren", "width", "height"] {
                 let r = player.vm.get_property(&v, &avm2::name::Name::public(p));
                 let text = match r {
                     Ok(v) => format!("{v:?}").chars().take(100).collect::<String>(),

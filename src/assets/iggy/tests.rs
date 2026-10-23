@@ -329,3 +329,28 @@ fn debug_emily_portrait_sprite() {
         }
     }
 }
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_pause_backdrop_symbols() {
+    let catalog = catalog();
+    for path in catalog.paths_containing("ui/lib") {
+    let Ok(Some(bytes)) = catalog.read(&path) else { continue };
+    let Ok(file) = IggyFile::parse(bytes) else { continue };
+    for (name, id) in file.symbol_classes().unwrap_or_default() {
+        let lower = name.to_lowercase();
+        if !(lower.contains("halo") || lower.contains("vignette") || lower.contains("texture") || lower.contains("noise")) {
+            continue;
+        }
+        println!("{path}: class {name} -> char {id} kind {:?}", file.character_kind(id as usize).ok().flatten());
+        let Some(t) = file.sprite(id as usize).unwrap() else { continue };
+        for c in &t.commands {
+            if let super::timeline::Command::Place(p) = c {
+                let kind = p.character.map(|c| file.character_kind(c as usize).ok().flatten());
+                let bounds = p.character.and_then(|c| file.character_bounds(c as usize).ok().flatten());
+                println!("  depth {} char {:?} kind {kind:?} flags {:#x} name {:?} bounds {bounds:?}", p.depth, p.character, p.flags, p.name);
+            }
+        }
+    }
+    }
+}
