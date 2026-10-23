@@ -18,6 +18,8 @@ pub mod mode {
     pub const TEXTURE: u32 = 0;
     pub const RADIAL: u32 = 1;
     pub const FOCAL: u32 = 2;
+    /// Texture coordinates into a premultiplied gradient ramp.
+    pub const LINEAR_RAMP: u32 = 3;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -157,7 +159,7 @@ impl Builder<'_> {
                         let inv = matrix(fm).invert();
                         (Texture::Ramp(ramp), false, true, [1.0; 4], Box::new(move |p| {
                             let (x, _) = inv.apply(p[0] as f64, p[1] as f64);
-                            ([(x / 32768.0 + 0.5) as f32, 0.5], [mode::TEXTURE as f32, 0.0])
+                            ([(x / 32768.0 + 0.5) as f32, 0.5], [mode::LINEAR_RAMP as f32, 0.0])
                         }))
                     }
                     Fill::Radial { matrix: fm, gradient } | Fill::Focal { matrix: fm, gradient } => {

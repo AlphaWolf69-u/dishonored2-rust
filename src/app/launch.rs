@@ -873,6 +873,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
+        .add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
         .add_plugins(game_clock_runtime::ClockRuntimePlugin)
         .add_plugins(shadow_pass::ShadowScenePlugin)
         .add_plugins(screen_shadow_pass::ScreenShadowScenePlugin)
@@ -1023,7 +1024,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
-        .add_systems(Update, stream_visible_textures);
+        .add_systems(Update, stream_visible_textures)
+        .insert_non_send_resource(super::pause_menu::PauseMenu::default())
+        .add_systems(Update, super::pause_menu::update_pause_menu);
     bevy::asset::load_internal_asset!(
         app,
         PROBE_SHADER_HANDLE,
