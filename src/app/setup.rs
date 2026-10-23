@@ -1373,6 +1373,19 @@ pub(super) fn setup(
                         clip_to_world,
                     }
                 });
+                // tlf/cull_lights excludes LIGHT_SCATTER_ONLY from surface
+                // lists. Keep the source for fog admission and volumetric
+                // shadows, without adding a host surface-light component.
+                if light.scatter_only && light.kind != entities::LightType::Parallel {
+                    commands.spawn((
+                        Transform::from_translation(position),
+                        Visibility::Inherited,
+                        cull.expect("local scattering light cull data"),
+                        local_shadow_updates::LocalLightSource(light_index),
+                    ));
+                    spawned += 1;
+                    continue;
+                }
                 match light.kind {
                     entities::LightType::Point => {
                         commands.spawn((

@@ -212,6 +212,11 @@ checks the real material layout, UV1 sampling, luminance scaling and alpha clip.
 The private generator is `analysis/probe_vista_lighting.py`; it reads shader
 captures locally and must not publish the captured game shader source.
 
+Lights marked `m_scatterOnly` retain their source entity, visibility admission,
+fog packets and volumetric shadow owner. They receive no host surface-light
+component: the installed TLF shader excludes this flag from its ordinary light
+lists. This applies to point, half-point, spot and area sources across levels.
+
 `atm/worldDistanceFog/arkInteriorVolume` writes signed linear depths with additive
 ONE/ONE blending into the original interior-volume fog target, without depth
 testing/writing. It is excluded from forward colour submission by program class,
