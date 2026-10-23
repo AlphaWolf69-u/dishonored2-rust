@@ -182,8 +182,12 @@ fn place_command(vm: &mut Vm, parent: &Obj, library: usize, p: &Place, frame: u3
         }
         return Ok(());
     }
+    // `FUN_141023360`: a script-touched object (`DO+1 & 4`) ignores the
+    // timeline's modify and reset entirely.
     if let Some(child) = existing {
-        apply_place(&child, p, reset);
+        if !display_ref(&child).is_some_and(|d| d.script_moved) {
+            apply_place(&child, p, reset);
+        }
     }
     Ok(())
 }
@@ -405,10 +409,37 @@ fn frame_arg(vm: &mut Vm, o: &Obj, v: &Value) -> Result<Option<u32>> {
     }
 }
 
-/// `FUN_14107dbc0`: gotos are always deferred (`DAT_143eb3288` has no
-/// writer) and consumed by `run_deferred_gotos`.
+/// `FUN_14107dbc0` (`DAT_143eb3288` has no writer): modify placements up
+/// to the target apply at once (`FUN_14107e120`); the frame change itself
+/// is deferred and consumed by `run_deferred_gotos`.
 fn queue_goto(vm: &mut Vm, o: &Obj, frame: u32, play: bool) {
+    apply_modifies(o, frame);
     player::state(vm).borrow_mut().gotos.push((o.clone(), frame, play));
+}
+
+/// `FUN_14107e120`: walk the commands from the current frame (from the
+/// start when going back) through `target`, applying characterless
+/// placements that stay alive at both frames to existing children
+/// (`FUN_141023360` with param_4 = 1: skipped for script-touched objects).
+fn apply_modifies(o: &Obj, target: u32) {
+    let Some(t) = timeline(o) else { return };
+    let current = t.current.saturating_sub(1);
+    let start = if target < current { 0 } else { current };
+    let frames = t.timeline.frames();
+    for f in start..=target {
+        for c in frames.get(f as usize).copied().unwrap_or_default() {
+            if let Command::Place(p) = c {
+                let alive = p.end_frame as u32 > target && p.end_frame as u32 > current;
+                if p.character.is_none() && p.class_name.is_none() && alive {
+                    if let Some(child) = child_at_depth(o, p.depth as i32) {
+                        if !display_ref(&child).is_some_and(|d| d.script_moved) {
+                            apply_place(&child, p, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn set_playing(o: &Obj, playing: bool) {

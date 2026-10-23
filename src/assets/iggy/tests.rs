@@ -316,14 +316,15 @@ fn debug_emily_pause_screen_timeline() {
 #[ignore = "diagnostic listing"]
 fn debug_emily_portrait_sprite() {
     let file = IggyFile::parse(catalog().read("ui/emily_pause_menu.iggy").unwrap().unwrap()).unwrap();
-    for id in [112usize, 59, 98] {
+    for id in [96usize] {
         let t = file.sprite(id).unwrap().unwrap();
         println!("sprite {id}: frames {}", t.frame_count);
-        for c in t.commands.iter().take(12) {
+        for c in t.commands.iter() {
+            if matches!(c, super::timeline::Command::ShowFrame) { println!("  -- frame"); }
             if let super::timeline::Command::Place(p) = c {
                 let kind = p.character.map(|c| file.character_kind(c as usize).ok().flatten());
                 let bounds = p.character.and_then(|c| file.character_bounds(c as usize).ok().flatten());
-                println!("  depth {} char {:?} kind {kind:?} matrix {:?} name {:?} bounds {bounds:?}", p.depth, p.character, p.matrix, p.name);
+                println!("  depth {} char {:?} kind {kind:?} flags {:#x} matrix {:?} name {:?} bounds {bounds:?}", p.depth, p.character, p.flags, p.matrix, p.name);
             }
         }
     }
