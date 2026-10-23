@@ -342,10 +342,9 @@ pub struct Saves {
 }
 
 impl Saves {
-    /// `Saved Games/Arkane Studios/Dishonored2/base/savegame`.
+    /// The rewrite's `saves/` (the original's `savegame` folder layout).
     pub fn locate() -> Option<Saves> {
-        let config = crate::platform::game_settings::configuration_path().ok()?;
-        let folder = config.parent()?.join("savegame");
+        let folder = crate::platform::home::home().saves_dir();
         let profile = read_profile(&folder).unwrap_or_default();
         let int = |k: &str| profile.get(k).map_or(0, |v| strtol(v));
         let campaign = int("campaignIndex");

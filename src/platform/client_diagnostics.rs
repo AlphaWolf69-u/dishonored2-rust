@@ -10,11 +10,7 @@ static SESSION_LOG: OnceLock<Arc<File>> = OnceLock::new();
 
 pub fn initialize() {
     let result = (|| -> std::io::Result<_> {
-        let root = std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("Dishonored2Rewrite")
-            .join("logs");
+        let root = crate::platform::home::home().logs_dir();
         fs::create_dir_all(&root)?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -53,6 +49,7 @@ pub fn initialize() {
         "DH2_BORDERLESS",
         "DH2_BENCHMARK_SIZE",
         "DH2_GAME_BASE",
+        "DH2_REWRITE_HOME",
     ] {
         record(&format!("{name}={:?}", std::env::var_os(name)));
     }
@@ -65,6 +62,32 @@ pub fn initialize() {
         ));
         previous(info);
     }));
+}
+
+/// The rewrite folder's first-run work and the active setup: game folder,
+/// enabled mods, overrides and the setup fingerprint.
+pub fn record_setup(base: &std::path::Path) {
+    use crate::platform::home;
+    let h = home::home();
+    let setup = home::setup();
+    record(&format!("Rewrite folder: {}", h.root.display()));
+    if setup.created {
+        record("Rewrite folder created");
+    }
+    if let Some(from) = &setup.imported_config {
+        record(&format!("Imported config from {}", from.display()));
+    }
+    let layers = home::layers();
+    for problem in setup.problems.iter().chain(&layers.problems) {
+        record(&format!("Setup problem: {problem}"));
+        eprintln!("Setup problem: {problem}");
+    }
+    record(&format!("Game folder: {}", base.display()));
+    for m in &layers.mods {
+        record(&format!("Mod: {} {} ({})", m.id, m.version, m.name));
+    }
+    record(&format!("Replaced resources: {}", layers.files.len()));
+    record(&format!("Setup fingerprint: {}", home::fingerprint(base, &layers)));
 }
 
 pub fn record(message: &str) {

@@ -509,8 +509,9 @@ pub fn game_clock_controls(source: &str) -> Result<crate::game_clock::ClockContr
     Ok(controls)
 }
 
-/// A host may select the existing configuration when running under a different
-/// Windows account. Automatic discovery remains the ordinary launch path.
+/// The rewrite's `config/dishonored2Config.cfg` (imported from the
+/// original's on first run). A host may select another existing
+/// configuration with `DH2_HOST_CONFIG_PATH`.
 pub fn configuration_path() -> Result<PathBuf, String> {
     if let Some(value) = std::env::var_os("DH2_HOST_CONFIG_PATH") {
         let path = PathBuf::from(value);
@@ -522,13 +523,13 @@ pub fn configuration_path() -> Result<PathBuf, String> {
         }
         return Ok(path);
     }
-    saved_games_configuration_path()
+    Ok(crate::platform::home::home().config_file())
 }
 
-/// Windows resolves redirected/localized Saved Games folders itself.
-/// The subpath is the installed original's existing configuration location.
+/// The installed original's configuration. Windows resolves
+/// redirected/localized Saved Games folders itself.
 #[cfg(target_os = "windows")]
-fn saved_games_configuration_path() -> Result<PathBuf, String> {
+pub fn original_configuration_path() -> Result<PathBuf, String> {
     use std::{
         ffi::{c_void, OsString},
         os::windows::ffi::OsStringExt,
@@ -583,7 +584,7 @@ fn saved_games_configuration_path() -> Result<PathBuf, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn saved_games_configuration_path() -> Result<PathBuf, String> {
+pub fn original_configuration_path() -> Result<PathBuf, String> {
     Err("original Saved Games configuration discovery requires Windows".into())
 }
 

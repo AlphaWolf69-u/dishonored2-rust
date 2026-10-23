@@ -34,7 +34,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         LOCAL_LIGHT_MIN_AREA_PIXELS,
     );
     let startup = std::time::Instant::now();
-    let game_base = Some(crate::assets::installation::game_base()?);
+    // A first launch without a known installation asks for the game folder.
+    let Some(base) = crate::platform::game_folder::game_base_or_ask()? else {
+        crate::platform::client_diagnostics::record("No game folder chosen");
+        return Ok(());
+    };
+    crate::platform::client_diagnostics::record_setup(&base);
+    let game_base = Some(base);
     let catalog = Some(archive::Catalog::open(game_base.as_deref().unwrap())?);
     let requested = env::args()
         .nth(1)
@@ -1137,6 +1143,12 @@ fn read_installed_visuals(catalog: &archive::Catalog) -> Result<String, String> 
 }
 
 pub fn main() {
+    // `--import-saves [folder]` imports saves and exits.
+    let args: Vec<String> = env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--import-saves") {
+        crate::platform::game_folder::import_saves(args.get(i + 1).map(PathBuf::from));
+        return;
+    }
     crate::platform::client_diagnostics::initialize();
     if let Err(error) = run() {
         crate::platform::client_diagnostics::record(&format!("Game client error: {error}"));

@@ -8,7 +8,15 @@ fn valid_base(path: &Path) -> bool {
     (1..=4).all(|group| path.join(format!("game{group}_patch.index")).is_file())
 }
 
-/// An explicit override is authoritative, including when it is invalid.
+/// The `base` folder of a chosen game folder: the folder itself or its
+/// `base` subfolder (any store's installation with the standard files).
+pub fn base_of(path: &Path) -> Option<PathBuf> {
+    [path.to_path_buf(), path.join("base")].into_iter().find(|p| valid_base(p))
+}
+
+/// The installed game: `DH2_GAME_BASE` (authoritative, including when it is
+/// invalid), the folder saved in the rewrite's `config/rewrite.toml`, then a
+/// Steam installation.
 pub fn game_base() -> io::Result<PathBuf> {
     if let Some(path) = env::var_os("DH2_GAME_BASE") {
         let path = PathBuf::from(path);
@@ -24,6 +32,14 @@ pub fn game_base() -> io::Result<PathBuf> {
             ))
         };
     }
+    if let Some(base) = crate::platform::home::saved_game_path().as_deref().and_then(base_of) {
+        return Ok(base);
+    }
+    steam_base()
+}
+
+/// A Steam installation of AppID 403640.
+pub fn steam_base() -> io::Result<PathBuf> {
     let mut roots = Vec::new();
     #[cfg(windows)]
     if let Ok(output) = std::process::Command::new("reg")
@@ -69,7 +85,7 @@ pub fn game_base() -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::new(io::ErrorKind::NotFound,
-        "cannot locate installed Dishonored 2 (Steam 403640); set DH2_GAME_BASE to its base directory"))
+        "cannot locate installed Dishonored 2: choose its folder when the rewrite asks, set game_path in config/rewrite.toml, or set DH2_GAME_BASE"))
 }
 
 /// The language Steam selected for AppID 403640 (`UserConfig` `language` in

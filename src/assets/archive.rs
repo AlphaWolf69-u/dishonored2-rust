@@ -20,6 +20,9 @@ struct Entry {
 pub struct Catalog {
     base: PathBuf,
     entries: Vec<(String, Entry)>,
+    // Loose files of the rewrite's enabled mods and overrides/ by
+    // normalized resource path, sorted; they win over the archives.
+    overlay: Vec<(String, PathBuf)>,
     // Image source names are authoritative index aliases, including imageprog
     // expressions and option suffixes. Values index the final override table.
     image_sources: Vec<(String, usize)>,
@@ -150,7 +153,32 @@ impl Catalog {
             entries,
             image_sources,
             image_programs,
+            overlay: crate::platform::home::layers().files,
         })
+    }
+
+    /// The overlay file replacing `path`, if any.
+    fn overlay_file(&self, path: &str) -> Option<&Path> {
+        let normalized = path.replace('\\', "/").to_ascii_lowercase();
+        self.overlay
+            .binary_search_by(|(key, _)| key.as_str().cmp(&normalized))
+            .ok()
+            .map(|i| self.overlay[i].1.as_path())
+    }
+
+    /// Resource paths of the archives and the overlay, sorted and unique.
+    fn all_paths<'a>(&'a self, keep: impl Fn(&str) -> bool + 'a) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .entries
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .chain(self.overlay.iter().map(|(path, _)| path.as_str()))
+            .filter(|path| keep(path))
+            .map(str::to_string)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
     }
 
     pub fn len(&self) -> usize {
@@ -158,11 +186,15 @@ impl Catalog {
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        self.entry(path).is_some()
+        self.overlay_file(path).is_some() || self.entry(path).is_some()
     }
 
-    /// Decoded size recorded by the installed resource index.
+    /// Decoded size recorded by the installed resource index (an overlay
+    /// file's own size).
     pub fn resource_size(&self, path: &str) -> Option<usize> {
+        if let Some(file) = self.overlay_file(path) {
+            return std::fs::metadata(file).ok().map(|m| m.len() as usize);
+        }
         self.entry(path).map(|entry| entry.size as usize)
     }
 
@@ -197,31 +229,18 @@ impl Catalog {
 
     pub fn paths_with_suffix(&self, suffix: &str) -> Vec<String> {
         let suffix = suffix.to_ascii_lowercase();
-        let mut paths: Vec<_> = self
-            .entries
-            .iter()
-            .map(|(path, _)| path)
-            .filter(|path| path.ends_with(&suffix))
-            .cloned()
-            .collect();
-        paths.sort();
-        paths
+        self.all_paths(move |path| path.ends_with(&suffix))
     }
 
     pub fn paths_containing(&self, needle: &str) -> Vec<String> {
         let needle = needle.to_ascii_lowercase();
-        let mut paths: Vec<_> = self
-            .entries
-            .iter()
-            .map(|(path, _)| path)
-            .filter(|path| path.contains(&needle))
-            .cloned()
-            .collect();
-        paths.sort();
-        paths
+        self.all_paths(move |path| path.contains(&needle))
     }
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(file) = self.overlay_file(path) {
+            return Ok(Some(std::fs::read(file)?));
+        }
         self.entry(path)
             .map(|entry| read_location(&self.base, path, entry))
             .transpose()
@@ -230,6 +249,11 @@ impl Catalog {
     /// Read only the start of an installed resource. This is useful for large
     /// indexed files whose header tables precede a much larger payload.
     pub fn read_prefix(&self, path: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+        if let Some(file) = self.overlay_file(path) {
+            let mut output = Vec::new();
+            File::open(file)?.take(limit as u64).read_to_end(&mut output)?;
+            return Ok(Some(output));
+        }
         let Some(entry) = self.entry(path) else {
             return Ok(None);
         };
