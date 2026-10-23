@@ -10,6 +10,8 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 bcdec_rs = "0.2.0"
 png = "0.18.1"
 half = "2.7.1"
+# AVM2 bytecode (ABC) parsing only; Iggy movies embed standard ABC blocks.
+swf = { version = "0.3.0", default-features = false }
 # Reuse Bevy/wgpu's existing logging facade to set its fast runtime level cap.
 log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }

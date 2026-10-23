@@ -129,3 +129,18 @@ fn corvo_pause_movie_root() {
         ]
     );
 }
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn installed_abc_blocks_parse() {
+    let catalog = catalog();
+    for path in catalog.paths_with_suffix(".iggy") {
+        let file = IggyFile::parse(catalog.read(&path).unwrap().unwrap()).unwrap();
+        if let Some(abc) = file.abc().unwrap() {
+            let parsed = swf::avm2::read::Reader::new(abc)
+                .read()
+                .unwrap_or_else(|e| panic!("{path}: {e}"));
+            assert!(!parsed.classes.is_empty(), "{path}");
+        }
+    }
+}
