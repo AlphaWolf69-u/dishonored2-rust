@@ -7,7 +7,7 @@ use crate::assets::{archive::Catalog, iggy::IggyFile, installation};
 fn corvo_pause_movie_loads() {
     let base = installation::game_base().unwrap();
     let catalog = Catalog::open(&base).unwrap();
-    let language = installation::game_language(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
     let read = |p: &str| IggyFile::parse(catalog.read(p).unwrap().unwrap_or_else(|| panic!("{p} not indexed"))).unwrap();
     let mut player = Player::new((1920.0, 1080.0), 30.0).unwrap();
     player.state.borrow_mut().strings = Some(std::rc::Rc::new(crate::assets::lang::StringTable::load(&catalog, &language).unwrap()));
@@ -58,4 +58,47 @@ fn rust_natives_match_iggy_table() {
     // member that contradicts Iggy's table.
     let mismatches: Vec<_> = player.vm.native_report.iter().filter(|l| !l.contains("is not ported")).collect();
     assert!(mismatches.is_empty(), "{mismatches:#?}");
+}
+
+/// Every installed language loads both characters' pause movies with its
+/// string table and localized libraries.
+#[test]
+#[ignore = "requires installed game archives"]
+fn pause_movies_load_in_every_installed_language() {
+    let catalog = Catalog::open(&installation::game_base().unwrap()).unwrap();
+    let languages: Vec<String> = catalog
+        .paths_with_suffix("_m.lang")
+        .iter()
+        .filter_map(|p| p.strip_prefix("strings/")?.strip_suffix("_m.lang").map(str::to_string))
+        .collect();
+    println!("languages: {languages:?}");
+    assert!(!languages.is_empty());
+    let read = |p: &str| IggyFile::parse(catalog.read(p).unwrap().unwrap_or_else(|| panic!("{p} not indexed"))).unwrap();
+    let mut failures = Vec::new();
+    for language in &languages {
+        for movie_path in ["ui/corvo_pause_menu.iggy", "ui/emily_pause_menu.iggy"] {
+            let mut player = Player::new((1920.0, 1080.0), 30.0).unwrap();
+            player.state.borrow_mut().strings =
+                Some(std::rc::Rc::new(crate::assets::lang::StringTable::load(&catalog, language).unwrap()));
+            let movie = read(movie_path);
+            let result = movie
+                .movie()
+                .unwrap()
+                .imports
+                .iter()
+                .try_for_each(|import| {
+                    let path = crate::assets::lang::library_resource(&import.library, language);
+                    if !catalog.contains(&path) {
+                        return Err(format!("{path} missing"));
+                    }
+                    player.load_library(read(&path)).map(|_| ()).map_err(|e| format!("{path}: {}", player.describe(&e)))
+                })
+                .and_then(|_| player.load_movie(movie).map(|_| ()).map_err(|e| player.describe(&e)))
+                .and_then(|_| player.call_root_method("_C_ShowPauseMenu", &[]).map(|_| ()).map_err(|e| player.describe(&e)));
+            if let Err(e) = result {
+                failures.push(format!("{language} {movie_path}: {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

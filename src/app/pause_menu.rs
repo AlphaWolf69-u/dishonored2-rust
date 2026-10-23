@@ -33,7 +33,7 @@ fn load(generation: u64) -> Result<LoadedMenu, String> {
     let started = std::time::Instant::now();
     let base = installation::game_base().map_err(|e| e.to_string())?;
     let catalog = Catalog::open(&base).map_err(|e| e.to_string())?;
-    let language = installation::game_language(&base).map_err(|e| e.to_string())?;
+    let language = lang::read_text_language(&base)?;
     let read = |p: &str| -> Result<IggyFile, String> {
         let bytes = catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?;
         IggyFile::parse(bytes).map_err(|e| format!("{p}: {e}"))

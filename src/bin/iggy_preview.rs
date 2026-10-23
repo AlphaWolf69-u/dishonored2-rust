@@ -2,7 +2,7 @@
 //! stage (CPU reference rasterizer).
 //!
 //! Usage: iggy-preview <movie resource> <out.png> [frames] [--call <method>]...
-//!        [--tree] [--debug-ignore-visibility]
+//!        [--tree] [--debug-ignore-visibility] [--debug-language <name>]
 use dishonored2_rust::assets::{archive::Catalog, iggy::IggyFile, installation, lang};
 use dishonored2_rust::flash::{raster, render, Player};
 use std::env;
@@ -18,7 +18,11 @@ fn main() -> Result<(), String> {
     let calls: Vec<String> = args.windows(2).filter(|w| w[0] == "--call").map(|w| w[1].clone()).collect();
     let base = installation::game_base().map_err(|e| e.to_string())?;
     let catalog = Catalog::open(&base).map_err(|e| e.to_string())?;
-    let language = installation::game_language(&base).map_err(|e| e.to_string())?;
+    // Diagnostic: --debug-language replaces the installed text language.
+    let language = match args.windows(2).find(|w| w[0] == "--debug-language") {
+        Some(w) => w[1].clone(),
+        None => lang::read_text_language(&base)?.to_string(),
+    };
     let read = |p: &str| -> Result<IggyFile, String> {
         let bytes = catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?;
         IggyFile::parse(bytes).map_err(|e| format!("{p}: {e}"))

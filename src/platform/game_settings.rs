@@ -77,6 +77,29 @@ fn four_float_cvar(value: &str) -> Option<[f32; 4]> {
     ])
 }
 
+/// `ark_savedTextLanguage` (`FUN_141357110`) and `ark_savedAudioLanguage`
+/// (`FUN_1413570c0`): language ids, 65535 (`eLID_NotSet`) by default.
+pub fn saved_languages(source: &str) -> Result<(u32, u32), String> {
+    let id = |name: &str| -> Result<u32, String> {
+        Ok(match quoted_setting(source, name)? {
+            // idCVar integers use the numeric prefix (atoi).
+            Some(value) => {
+                let digits: String = value.trim_start().chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().unwrap_or(0)
+            }
+            None => 0xffff,
+        })
+    };
+    Ok((id("ark_savedTextLanguage")?, id("ark_savedAudioLanguage")?))
+}
+
+pub fn read_saved_languages() -> Result<(u32, u32), String> {
+    match read_configuration()? {
+        (_, Some(source)) => saved_languages(&source),
+        (_, None) => Ok((0xffff, 0xffff)),
+    }
+}
+
 /// Missing quality stays missing: no guessed preset or capture fallback.
 pub fn shadow_quality_preset(source: &str) -> Result<Option<u32>, String> {
     quoted_setting(source, "r_shadowQualityPreset")?

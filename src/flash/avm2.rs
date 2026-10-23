@@ -100,6 +100,8 @@ pub struct Vm {
     pub table_classes: HashMap<&'static str, Rc<Class>>,
     /// Differences between the Rust natives and Iggy's table.
     pub native_report: Vec<String>,
+    /// The `findpropstrict` holder of `natives`, rebuilt when they change.
+    pub native_holder: Option<Obj>,
     pub random: u64,
 }
 
@@ -120,6 +122,7 @@ impl Vm {
             failure_stack: None,
             table_classes: HashMap::new(),
             native_report: Vec::new(),
+            native_holder: None,
             random: 0x9e37_79b9_7f4a_7c15,
         };
         builtins::install(&mut vm);

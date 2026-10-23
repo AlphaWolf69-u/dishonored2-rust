@@ -278,3 +278,11 @@ fn list_localized_font_names() {
         }
     }
 }
+
+#[test]
+#[ignore = "diagnostic listing"]
+fn debug_list_localized_libraries() {
+    for path in catalog().paths_containing("ui/lib_loc_") {
+        println!("lib: {path}");
+    }
+}

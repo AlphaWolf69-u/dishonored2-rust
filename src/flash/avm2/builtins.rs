@@ -409,10 +409,7 @@ pub fn install(vm: &mut Vm) {
 
 /// The holder object through which `findpropstrict` returns natives.
 pub fn native_globals(vm: &mut Vm) -> Obj {
-    thread_local! {
-        static HOLDER: RefCell<Option<Obj>> = const { RefCell::new(None) };
-    }
-    if let Some(h) = HOLDER.with(|h| h.borrow().clone()) {
+    if let Some(h) = vm.native_holder.clone() {
         if h.borrow().traits.as_ref().is_some_and(|t| t.bindings.len() == vm.natives.len()) {
             return h;
         }
@@ -426,7 +423,7 @@ pub fn native_globals(vm: &mut Vm) -> Obj {
         slots.push(v.clone());
     }
     let holder = Obj::new(ObjectData { traits: Some(Rc::new(traits)), slots, ..ObjectData::plain(None) });
-    HOLDER.with(|h| *h.borrow_mut() = Some(holder.clone()));
+    vm.native_holder = Some(holder.clone());
     holder
 }
 
