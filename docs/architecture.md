@@ -25,6 +25,12 @@ tools. New APIs should follow the owning subsystem rather than add
 executable-local copies. `FUN_...` addresses belong in documentation for evidence,
 not in ordinary API names.
 
+Initial render placements apply component startup visibility. Umbra gate
+components hide their owner models when initialized, independently of model,
+material or entity names. The parsed entity and `placed_models` data remain
+available to visibility and gameplay consumers. Runtime gate toggling and its
+script-driven connection to model visibility remain separate gameplay work.
+
 ## Naming
 
 Game behavior is the default. Name files, modules and fixtures by what they do;
