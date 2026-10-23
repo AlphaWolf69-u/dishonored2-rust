@@ -144,3 +144,61 @@ fn installed_abc_blocks_parse() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn installed_timelines_are_consistent() {
+    use timeline::Command;
+    let catalog = catalog();
+    for path in catalog.paths_with_suffix(".iggy") {
+        let file = IggyFile::parse(catalog.read(&path).unwrap().unwrap()).unwrap();
+        let movie = file.movie().unwrap();
+        let mut timelines = vec![file.main_timeline().unwrap()];
+        for id in 0..movie.character_count as usize {
+            if let Some(t) = file.sprite(id).unwrap() {
+                timelines.push(t);
+            }
+        }
+        for t in &timelines {
+            // Every frame ends with SHOWFRAME and placements fit the depth array.
+            let frames = t.commands.iter().filter(|c| **c == Command::ShowFrame).count();
+            assert_eq!(frames, t.frame_count as usize, "{path}");
+            for c in &t.commands {
+                if let Command::Place(p) = c {
+                    assert!(p.depth < t.depth_size, "{path}");
+                    if let Some(id) = p.character {
+                        assert!(file.character(id as usize).unwrap().is_some(), "{path}: missing character {id}");
+                    }
+                }
+            }
+        }
+        let classes = file.symbol_classes().unwrap();
+        for (name, index) in classes.iter().filter(|(_, i)| *i != 0) {
+            assert!(file.character(*index as usize).unwrap().is_some(), "{path}: {name}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires installed game archives"]
+fn corvo_main_timeline_places_screens() {
+    use timeline::Command;
+    let file = IggyFile::parse(catalog().read("ui/corvo_pause_menu.iggy").unwrap().unwrap()).unwrap();
+    assert_eq!(file.document_class().unwrap().as_deref(), Some("com.bsp.pause.PauseMenuScene"));
+    let main = file.main_timeline().unwrap();
+    let places: Vec<_> = main
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::Place(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    let halo = places.iter().find(|p| p.depth == 1).unwrap();
+    assert_eq!(halo.name.as_deref(), Some("whiteHalo"));
+    assert_eq!(halo.class_name.as_deref(), Some("lib_whiteHalo"));
+    assert_eq!((halo.matrix[4], halo.matrix[5]), (960.0, 540.0));
+    let noise = places.iter().find(|p| p.name.as_deref() == Some("noise")).unwrap();
+    assert_eq!(noise.colour.unwrap().mul[3], 0.8515625);
+    assert!(places.iter().any(|p| p.depth == 201 && p.class_name.as_deref() == Some("PromotionScreen_main")));
+}

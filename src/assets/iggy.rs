@@ -11,6 +11,7 @@ use std::fmt;
 use std::ops::Range;
 
 mod movie;
+pub mod timeline;
 pub use movie::{Import, Movie};
 
 /// `DAT_142422f14` / `DAT_142427354`.
