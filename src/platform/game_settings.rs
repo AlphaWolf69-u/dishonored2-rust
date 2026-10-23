@@ -1,4 +1,4 @@
-//! Read existing original-game graphics configuration; never create or modify it.
+//! Graphics settings from the client's cvars (the rewrite's config).
 use std::path::PathBuf;
 #[path = "camera_settings.rs"]
 mod camera_settings;
@@ -588,14 +588,12 @@ pub fn original_configuration_path() -> Result<PathBuf, String> {
     Err("original Saved Games configuration discovery requires Windows".into())
 }
 
+/// The settings source: the client's cvars (`console::shared`, loaded from
+/// default.cfg and the config) as `name "value"` lines for every cvar that
+/// differs from its default, so readers see the settings the options edit.
 fn read_configuration() -> Result<(PathBuf, Option<String>), String> {
     let path = configuration_path()?;
-    let source = match std::fs::read_to_string(&path) {
-        Ok(source) => Some(source),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
-    };
-    Ok((path, source))
+    Ok((path, Some(super::console::shared().cvar_text())))
 }
 
 /// FUN_14136b010 and FUN_141378660 register r_hbao and r_skipSSAO with

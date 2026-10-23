@@ -4,8 +4,66 @@
 use super::bindings::{versions, Bindings, ACTIONS, BINDING_SETS, CONFIG_VERSION, KEY_NAMES};
 use super::cvars::{flag, CVars};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{OnceLock, RwLock, RwLockReadGuard};
 
 pub const CONFIG_FILE: &str = "dishonored2Config.cfg";
+
+/// The client's one command state (the game keeps one cvar system and one
+/// binding manager for the process). Settings readers take their values from
+/// it; the pause menu's options edit it.
+pub struct Shared {
+    console: RwLock<Console>,
+    generation: AtomicU64,
+}
+
+static SHARED: OnceLock<Shared> = OnceLock::new();
+
+/// Loaded once from the installed `default.cfg` and the rewrite's config.
+/// Without a game folder only the registered cvar defaults exist.
+pub fn shared() -> &'static Shared {
+    SHARED.get_or_init(|| {
+        let user = super::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
+        let console = crate::assets::installation::game_base()
+            .ok()
+            .and_then(|base| Console::load(&base, user.as_deref()).ok())
+            .unwrap_or_else(|| Console { bindings: Bindings::default(), cvars: CVars::new(), default_versions: (None, None) });
+        Shared { console: RwLock::new(console), generation: AtomicU64::new(0) }
+    })
+}
+
+impl Shared {
+    pub fn read(&self) -> RwLockReadGuard<'_, Console> {
+        self.console.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Change the state; readers see a new [`Shared::generation`] when a cvar
+    /// or a binding changed.
+    pub fn write<R>(&self, f: impl FnOnce(&mut Console) -> R) -> R {
+        let mut guard = self.console.write().unwrap_or_else(|e| e.into_inner());
+        let (changes, bindings) = (guard.cvars.changes, guard.bindings.sets.clone());
+        let r = f(&mut guard);
+        if guard.cvars.changes != changes || guard.bindings.sets != bindings {
+            self.generation.fetch_add(1, Ordering::Release);
+        }
+        r
+    }
+
+    /// Advances when settings changed.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Every registered cvar with its current value (defaults included), in
+    /// the config file's `name "value"` lines the settings readers parse.
+    pub fn cvar_text(&self) -> String {
+        let mut out = String::new();
+        for c in &self.read().cvars.list {
+            out.push_str(&format!("{} \"{}\"\n", c.name, c.value));
+        }
+        out
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Console {

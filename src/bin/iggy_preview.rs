@@ -9,7 +9,6 @@
 use dishonored2_rust::assets::{archive::Catalog, installation, lang};
 use dishonored2_rust::flash::{raster, render, Player};
 use dishonored2_rust::gameplay::pause_state;
-use dishonored2_rust::platform::game_settings;
 use std::env;
 
 fn main() -> Result<(), String> {
@@ -37,7 +36,6 @@ fn run() -> Result<(), String> {
     let size = player.state.borrow().stage_size;
     let mut pause = None;
     if args.iter().any(|a| a == "--pause-state") {
-        let user = game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
         // The preview renders at stage size, so the RGB and viewport sizes match.
         let screen = pause_state::screen_size((size.0 as u32, size.1 as u32), (size.0 as u32, size.1 as u32));
         pause_state::file_ready(&mut player, screen)?;
@@ -51,7 +49,7 @@ fn run() -> Result<(), String> {
             pause_state::file_ready(&mut g, screen)?;
             Ok((g, resources))
         });
-        let mut p = pause_state::Pause::new(&mut player, &catalog, &base, user.as_deref(), state, None, load_global)?;
+        let mut p = pause_state::Pause::new(&mut player, &catalog, &base, state, None, load_global)?;
         p.on_flash_loaded(&mut player)?;
         p.show(&mut player)?;
         pause = Some(p);
@@ -117,7 +115,7 @@ fn run() -> Result<(), String> {
     }
     // `--debug-cvar NAME` prints a cvar of the pause state's console.
     for w in args.windows(2).filter(|w| w[0] == "--debug-cvar") {
-        if let Some(c) = pause.as_ref().and_then(|p| p.console.cvars.get(&w[1])) {
+        if let Some(c) = dishonored2_rust::platform::console::shared().read().cvars.get(&w[1]) {
             eprintln!("cvar {} = {:?}", c.name, c.value);
         }
     }

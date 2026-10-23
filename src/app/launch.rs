@@ -705,6 +705,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.insert_resource(super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(),entity_document.as_ref()).map_err(std::io::Error::other)?);
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     let presentation = game_settings::read_presentation_settings().map_err(std::io::Error::other)?;
+    let mut display_state = None;
     let mut graphics = bevy::render::settings::WgpuSettings::default();
     #[cfg(target_os = "windows")]
     if env::var_os("WGPU_BACKEND").is_none() {
@@ -757,7 +758,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     task_pool_options: task_pools,
                 })
                 .set(bevy::window::WindowPlugin {
-                    primary_window: Some(bevy::window::Window {
+                    primary_window: Some({
+                        // The cvars choose the window (display_settings).
+                        let (window, state) = super::display_settings::initial_window(bevy::window::Window {
                         // Match the installed game's measured r_fullscreen=2 borderless mode.
                         // DH2_BORDERLESS=0 remains available for windowed debugging.
                         resolution: benchmark_resolution.clone().unwrap_or_default(),
@@ -790,6 +793,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                             bevy::window::Window::default().present_mode
                         },
                         ..default()
+                    });
+                        display_state = Some(state);
+                        window
                     }),
                     ..default()
                 })
@@ -889,6 +895,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
         .add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
+        .add_plugins(super::display_settings::DisplaySettingsPlugin(std::sync::Mutex::new(display_state.take())))
         .add_plugins(game_clock_runtime::ClockRuntimePlugin)
         .add_plugins(shadow_pass::ShadowScenePlugin)
         .add_plugins(screen_shadow_pass::ScreenShadowScenePlugin)

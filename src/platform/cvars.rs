@@ -199,12 +199,22 @@ impl CVar {
     }
 }
 
+/// The developer flag `DAT_1432cd1c8` (zero in retail, so cvars without the
+/// retail flag refuse unforced sets). Diagnostic: `DH2_DEBUG_DEVELOPER=1`
+/// sets it, so a config may set debug cvars.
+pub fn developer() -> bool {
+    static DEVELOPER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEVELOPER.get_or_init(|| std::env::var("DH2_DEBUG_DEVELOPER").as_deref() == Ok("1"))
+}
+
 #[derive(Clone, Debug)]
 pub struct CVars {
     /// Registration order (the archive writer walks it backwards).
     pub list: Vec<CVar>,
     /// The system's modified-flags accumulator (vfunc +0x88 / +0x90).
     pub modified_flags: u32,
+    /// Counts value changes (rewrite bookkeeping for live settings).
+    pub changes: u64,
 }
 
 impl Default for CVars {
@@ -225,7 +235,7 @@ impl CVars {
                 c
             })
             .collect();
-        CVars { list, modified_flags: 0 }
+        CVars { list, modified_flags: 0, changes: 0 }
     }
 
     /// `FUN_1401013e0`: case-insensitive lookup.
@@ -246,12 +256,11 @@ impl CVars {
     }
 
     /// `FUN_140102400`: set the value string. Unforced sets respect the
-    /// command-line-only, read-only and retail gates (the retail flag
-    /// `DAT_1432cd1c8` is zero-initialised and never written). Returns
-    /// whether the value changed.
+    /// command-line-only, read-only and retail gates ([`developer`]).
+    /// Returns whether the value changed.
     pub fn set(&mut self, index: usize, value: Option<&str>, force: bool) -> bool {
         let c = &mut self.list[index];
-        if !force && (c.flags & (flag::COMMAND_LINE_ONLY | flag::READ_ONLY) != 0 || c.flags & flag::RETAIL == 0) {
+        if !force && (c.flags & (flag::COMMAND_LINE_ONLY | flag::READ_ONLY) != 0 || c.flags & flag::RETAIL == 0 && !developer()) {
             return false;
         }
         let value = value.unwrap_or(c.reset);
@@ -262,6 +271,7 @@ impl CVars {
         c.validate();
         self.modified_flags |= c.flags;
         c.flags |= flag::CHANGED;
+        self.changes += 1;
         true
     }
 
@@ -284,6 +294,9 @@ impl CVars {
     /// changed bit).
     pub fn reset(&mut self, index: usize) {
         let c = &mut self.list[index];
+        if !same(&c.value, c.reset) {
+            self.changes += 1;
+        }
         c.value = c.reset.to_string();
         c.validate();
     }
@@ -341,6 +354,18 @@ mod tests {
         assert_eq!((cvars.list[filter].value.as_str(), cvars.list[filter].int), ("ANISO", 2));
         assert_eq!(float_string(100.0), "100");
         assert_eq!(float_string(0.85), "0.85");
+    }
+
+    #[test]
+    fn changes_count_only_real_changes() {
+        let mut cvars = CVars::new();
+        let i = cvars.find("com_timeScaler").unwrap();
+        cvars.set(i, Some("2"), true);
+        assert_eq!(cvars.changes, 0);
+        cvars.set(i, Some("4"), true);
+        cvars.reset(i);
+        cvars.reset(i);
+        assert_eq!(cvars.changes, 2);
     }
 
     #[test]

@@ -102,6 +102,34 @@ impl Monitors {
         out
     }
 
+    /// `FUN_140348bb0` with vfunc +0x198 (`FUN_1403488a0`): the default mode
+    /// when `r_mode` is unset. Starts from 1920x1200 on the first primary
+    /// monitor (else 0); `r_mode` becomes the last mode with the desktop's
+    /// aspect seen before the first mode larger than the request. Returns
+    /// (r_mode, monitor, w, h).
+    pub fn default_mode(&self, desktop: (i32, i32)) -> (i32, i32, i32, i32) {
+        let (w, h) = (1920, 1200);
+        let mon = self.monitors.iter().position(|m| m.primary).unwrap_or(0) as i32;
+        let aspect = desktop.0 as f32 / desktop.1 as f32;
+        let (mut bw, mut bh) = (w, h);
+        let mut r_mode = -1;
+        let mut i = 0;
+        while let Some((mw, mh, mm)) = self.mode(i) {
+            i += 1;
+            if mm != mon {
+                continue;
+            }
+            if mw * mh > w * h {
+                return (r_mode, mon, w, h);
+            }
+            if mw as f32 / mh as f32 == aspect {
+                r_mode = i - 1;
+                (bw, bh) = (mw, mh);
+            }
+        }
+        (r_mode, mon, bw, bh)
+    }
+
     /// The borderless branch of `FUN_140345f40`: `r_mode`'s maximum
     /// refresh, walked with `>` as the engine does.
     pub fn borderless_refresh(&self, r_mode: i32) -> f32 {
@@ -158,6 +186,9 @@ mod os {
 
     #[link(name = "user32")]
     unsafe extern "system" {
+        fn GetDesktopWindow() -> isize;
+        fn GetDC(window: isize) -> isize;
+        fn ReleaseDC(window: isize, dc: isize) -> i32;
         fn EnumDisplayMonitors(hdc: isize, clip: *const Rect, callback: unsafe extern "system" fn(isize, isize, *mut Rect, isize) -> i32, data: isize) -> i32;
         fn GetMonitorInfoA(monitor: isize, info: *mut MonitorInfoEx) -> i32;
         fn EnumDisplaySettingsExA(device: *const u8, mode: u32, devmode: *mut u8, flags: u32) -> i32;
@@ -229,6 +260,22 @@ mod os {
             i += 1;
         }
         Monitors { monitors }
+    }
+
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn GetDeviceCaps(dc: isize, index: i32) -> i32;
+    }
+
+    /// `GetDeviceCaps(GetDC(GetDesktopWindow()), HORZRES/VERTRES)`.
+    pub fn desktop_size() -> (i32, i32) {
+        unsafe {
+            let window = GetDesktopWindow();
+            let dc = GetDC(window);
+            let size = (GetDeviceCaps(dc, 8), GetDeviceCaps(dc, 10));
+            ReleaseDC(window, dc);
+            size
+        }
     }
 
     /// `FUN_1403463a0` (vfunc +0x188).
@@ -341,7 +388,7 @@ mod os {
 }
 
 #[cfg(target_os = "windows")]
-pub use os::{dxgi_modes, monitors, names, registry_refresh};
+pub use os::{desktop_size, dxgi_modes, monitors, names, registry_refresh};
 
 #[cfg(not(target_os = "windows"))]
 pub fn monitors() -> Monitors {
@@ -358,6 +405,10 @@ pub fn registry_refresh(_: &Monitor) -> f32 {
 #[cfg(not(target_os = "windows"))]
 pub fn dxgi_modes(_: isize) -> Vec<(u32, u32)> {
     Vec::new()
+}
+#[cfg(not(target_os = "windows"))]
+pub fn desktop_size() -> (i32, i32) {
+    (1920, 1080)
 }
 
 #[cfg(test)]
@@ -381,6 +432,9 @@ mod tests {
         assert_eq!(table.menu_modes(0, &[(1920, 1080), (640, 480), (1280, 720)]), vec![(1920, 1080), (1280, 720)]);
         // `>` walk: r_mode 2 reads past monitor 0's list.
         assert_eq!(table.borderless_refresh(1), 144.0);
+        // A mode larger than 1920x1200 is not on monitor 0: the last mode
+        // with the desktop aspect wins.
+        assert_eq!(table.default_mode((1920, 1080)), (1, 0, 1920, 1080));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::flash::avm2::{value::Value, Result};
 use crate::flash::Player;
 use crate::gameplay::options::{self, Effect, Options};
 use crate::platform::bindings::{self, BindableAction, Keyboard};
-use crate::platform::console::Console;
+use crate::platform::console;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -97,7 +97,6 @@ pub enum Movie {
 /// container (created by pause Init, `FUN_14078eff0`) and the inputs the
 /// writers need.
 pub struct Pause {
-    pub console: Console,
     pub options: Options,
     pub keyboard: Keyboard,
     pub strings: std::rc::Rc<StringTable>,
@@ -113,26 +112,23 @@ pub struct Pause {
 }
 
 impl Pause {
-    /// Pause Init: the console from the installed and user configs, the
-    /// options sections from their decls, and the difficulty manager.
+    /// Pause Init: the options sections from their decls over the client's
+    /// command state (`console::shared`), and the difficulty manager.
     pub fn new(
         player: &mut Player,
         catalog: &crate::assets::archive::Catalog,
         base: &Path,
-        user_config: Option<&str>,
         state: GameState,
         config_path: Option<PathBuf>,
         load_global: Box<dyn FnMut() -> std::result::Result<(Player, Vec<(usize, String)>), String>>,
     ) -> std::result::Result<Pause, String> {
-        let mut console = Console::load(base, user_config)?;
         let mut read = |path: &str| catalog.read(path).ok().flatten();
-        let options = options::read(&mut read, &mut console)?;
+        let options = console::shared().write(|console| options::read(&mut read, console))?;
         let strings = player.state.borrow().strings.clone().ok_or("no string table")?;
         let profile = crate::gameplay::save_list::Saves::locate()
             .and_then(|s| crate::gameplay::save_list::read_profile(&s.folder))
             .unwrap_or_default();
         let mut pause = Pause {
-            console,
             options,
             keyboard: Keyboard::default(),
             strings,
@@ -143,28 +139,28 @@ impl Pause {
             boxes: Default::default(),
             load_global,
         };
-        let EnvParts { options, mut env } = pause.env(player);
-        options.start(&mut env);
+        pause.with_env(player, |options, env| options.start(env));
         Ok(pause)
     }
 
-    /// The options' view of the game: the pause state is active, the main
-    /// menu is not, and the current map is a level.
-    fn env<'a>(&'a mut self, player: &'a mut Player) -> EnvParts<'a> {
-        EnvParts {
-            options: &mut self.options,
-            env: options::Env {
+    /// Run `f` with the options' view of the game: the shared command state,
+    /// the pause state active, the main menu not, and a level as the map.
+    fn with_env<R>(&mut self, player: &mut Player, f: impl FnOnce(&mut Options, &mut options::Env) -> R) -> R {
+        let Pause { options, keyboard, strings, profile, base, .. } = self;
+        console::shared().write(|console| {
+            let mut env = options::Env {
                 player,
-                console: &mut self.console,
-                strings: &self.strings,
-                keyboard: &mut self.keyboard,
-                profile: &self.profile,
+                console,
+                strings,
+                keyboard,
+                profile,
                 pause_active: true,
                 main_menu_active: false,
                 main_menu_map: false,
-                base: &self.base,
-            },
-        }
+                base,
+            };
+            f(options, &mut env)
+        })
     }
 
     /// OnFlashLoaded (`FUN_14078f170` -> root `FUN_1407898c0`) for the parts
@@ -176,7 +172,7 @@ impl Pause {
     }
 
     fn write_bindable_actions(&mut self, player: &mut Player) -> std::result::Result<(), String> {
-        let actions = bindings::bindable_actions(&self.console.bindings, &self.strings, &mut self.keyboard);
+        let actions = bindings::bindable_actions(&console::shared().read().bindings, &self.strings, &mut self.keyboard);
         write_bindable_actions(player, &actions).map_err(|e| format!("bindableActionsData: {}", player.describe(&e)))
     }
 
@@ -184,8 +180,7 @@ impl Pause {
     /// `optionsData.sections`), then `_C_ShowPauseMenu()` with no arguments.
     pub fn show(&mut self, player: &mut Player) -> std::result::Result<(), String> {
         write_entries(player, &self.state).map_err(|e| format!("FillData: {}", player.describe(&e)))?;
-        let EnvParts { options, mut env } = self.env(player);
-        options.write_sections(&mut env)?;
+        self.with_env(player, |options, env| options.write_sections(env))?;
         player.call_root_method("_C_ShowPauseMenu", &[]).map(|_| ()).map_err(|e| format!("_C_ShowPauseMenu: {}", player.describe(&e)))
     }
 
@@ -215,10 +210,7 @@ impl Pause {
                 // `OnOptionsClicked` has no C++ registration (dropped by the hub).
                 "OnOptionsClicked" => {}
                 _ => {
-                    let handled = {
-                        let EnvParts { options, mut env } = self.env(player);
-                        options.handle(&mut env, &name, &args)
-                    };
+                    let handled = self.with_env(player, |options, env| options.handle(env, &name, &args));
                     match handled {
                         Some(effects) => {
                             let effects = effects?;
@@ -316,10 +308,7 @@ impl Pause {
 
     /// The answer of a message box the options asked for.
     pub fn answer(&mut self, player: &mut Player, answer: u32) -> std::result::Result<Vec<Request>, String> {
-        let effects = {
-            let EnvParts { options, mut env } = self.env(player);
-            options.answer(&mut env, answer)?
-        };
+        let effects = self.with_env(player, |options, env| options.answer(env, answer))?;
         let mut requests = Vec::new();
         self.apply_effects(player, effects, &mut requests)?;
         self.save_if_requested()?;
@@ -330,8 +319,7 @@ impl Pause {
     /// is the first engine key pressed this frame.
     pub fn update(&mut self, player: &mut Player, pressed: Option<u32>) -> std::result::Result<(), String> {
         self.boxes.update(&self.strings)?;
-        let EnvParts { options, mut env } = self.env(player);
-        options.update(&mut env, pressed)
+        self.with_env(player, |options, env| options.update(env, pressed))
     }
 
     /// The profile update after a config save (`FUN_1400d2f10`).
@@ -340,16 +328,12 @@ impl Pause {
             return Ok(());
         }
         match &self.config_path {
-            Some(path) => self.console.save_config(path),
+            Some(path) => console::shared().write(|c| c.save_config(path)),
             None => Ok(()),
         }
     }
 }
 
-struct EnvParts<'a> {
-    options: &'a mut Options,
-    env: options::Env<'a>,
-}
 /// The game state FillData reads, as far as the rewrite has it. `default()`
 /// is the rewrite's current state: no save writer or loader, no mission,
 /// chapter, tutorial log or statistics components yet.

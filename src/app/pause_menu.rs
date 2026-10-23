@@ -106,8 +106,6 @@ impl Loaded {
 pub struct PauseMenu {
     commands: Sender<Command>,
     events: Receiver<Event>,
-    /// Engine keys bound to PAUSE in the IN_GAME set.
-    pause_keys: Vec<u32>,
     open: bool,
 }
 
@@ -120,22 +118,8 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        let pause_keys = match installation::game_base()
-            .map_err(|e| e.to_string())
-            .and_then(|base| bindings::game_bindings(&base, user_config().as_deref()))
-        {
-            Ok(b) => b.keys_for_action(bindings::IN_GAME, PAUSE_ACTION),
-            Err(e) => {
-                error!("Pause bindings unavailable: {e}");
-                Vec::new()
-            }
-        };
-        Self { commands, events, pause_keys, open: false }
+        Self { commands, events, open: false }
     }
-}
-
-fn user_config() -> Option<String> {
-    game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 /// The player character. The rewrite has no player/save state yet, so the
@@ -166,7 +150,7 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
         pause_state::file_ready(&mut g, screen)?;
         Ok((g, resources))
     });
-    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, user_config().as_deref(), state, config, load_global)?;
+    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, state, config, load_global)?;
     pause.on_flash_loaded(&mut player)?;
     pause.show(&mut player)?;
     let pause_images = decode(&catalog, &player, &resources)?;
@@ -305,8 +289,8 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::Quit => {
                                     let _ = outbox.send(Event::Quit);
                                 }
-                                // The renderer mode switch is not wired to the window yet.
-                                Request::DisplayChanged => warn!("Pause display settings changed; applied on the next start"),
+                                // The window follows the cvars (`display_settings`).
+                                Request::DisplayChanged => {}
                                 // `FUN_140033b50` / `FUN_140034360`.
                                 Request::Focus(movie, true) => l.focus.push(movie),
                                 Request::Focus(movie, false) => l.focus.retain(|m| *m != movie),
@@ -362,7 +346,7 @@ pub fn update_pause_menu(
         let down = input.state == ButtonState::Pressed;
         if menu.open {
             let _ = menu.commands.send(Command::Key { down, key });
-        } else if down && menu.pause_keys.contains(&key) {
+        } else if down && crate::platform::console::shared().read().bindings.keys_for_action(bindings::IN_GAME, PAUSE_ACTION).contains(&key) {
             // `SwitchState(GAME_LOGIC_STATE_PAUSE)`; the UI renders at window size.
             let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
             let screen = pause_state::screen_size(size, size);

@@ -189,6 +189,15 @@ impl DisplayScene {
                 });
         let post_process = self.lens.settings();
         let hdr_white_level = post_process.hdr_white_level(values[2].x);
+        // Live cvars: r_gamma, r_brightness, r_skipPostProcess.
+        let cvars = {
+            let c = crate::platform::console::shared().read();
+            (
+                c.cvars.float("r_gamma").unwrap_or(2.2),
+                c.cvars.float("r_brightness").unwrap_or(1.0),
+                c.cvars.int("r_skipPostProcess").unwrap_or(0) != 0,
+            )
+        };
         let exposure = ExposureParameters {
             range: Vec4::new(values[7].x, values[8].x, values[9].x, values[10].x),
             adaptation: Vec4::new(values[11].x, hdr_white_level, values[13].x, values[14].x),
@@ -204,10 +213,14 @@ impl DisplayScene {
                 toe: values[4].x,
                 shoulder: values[5].x,
             }),
-            gamma: values[6].x,
-            brightness: values[6].y,
+            // FUN_140326af0 overwrites env/tonemapping/gamma_brightness with
+            // (1 / (r_gamma / 2.2), r_brightness) before the tone-mapping draw.
+            gamma: 1.0 / (cvars.0 / 2.2),
+            brightness: cvars.1,
             exposure: 1.,
-            use_curve: !post_process.skip_tone_mapping,
+            // The ToneMapping1 variant needs neither r_skipToneMapping nor
+            // r_skipPostProcess (notes-gamma.md).
+            use_curve: !post_process.skip_tone_mapping && !cvars.2,
             use_colour_cube: true,
         };
         let lens = self.lens.update(
