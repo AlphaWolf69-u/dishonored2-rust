@@ -934,6 +934,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::player::update_player,
+                super::player_arms::update_player_arms,
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
                 super::machinery::update_machinery,

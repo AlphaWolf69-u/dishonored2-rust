@@ -32,6 +32,10 @@ struct Vertex {
     @location(11) vegetation_normal: vec2<f32>,
     @location(12) vegetation_color: vec3<f32>,
 #endif
+#ifdef DH2_MODEL_DEPTH_HACK
+    // The render model's cb_modeldepthhack (positive-hack models only).
+    @location(13) model_depth_hack: f32,
+#endif
 #ifdef SKINNED
     @location(6) joint_indices: vec4<u32>,
     @location(7) joint_weights: vec4<f32>,

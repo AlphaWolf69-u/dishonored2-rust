@@ -155,6 +155,8 @@ mod fog_tests;
 #[cfg(feature = "game")]
 pub mod pipeline_state;
 #[cfg(feature = "game")]
+pub mod depth_buffer_hack;
+#[cfg(feature = "game")]
 pub mod screen_shadow_pass;
 #[cfg(feature = "game")]
 mod screen_visibility;
