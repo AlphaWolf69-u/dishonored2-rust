@@ -662,7 +662,8 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
                 let d = Vec3::new(m[0][3], m[1][3], m[2][3]) - eye;
                 (d.dot(axis.x_axis), d.dot(axis.y_axis), d.dot(axis.z_axis))
             };
-            println!("NAV PROBE arm {label} {side} {} joints={} root={:?} j1={:?} last={:?}", arm.model, arm.joints.len(), at(0), at(1), at(arm.joints.len() - 1));
+            let front = (0..arm.joints.len()).max_by(|a, b| at(*a).0.total_cmp(&at(*b).0)).unwrap();
+            println!("NAV PROBE arm {label} {side} {} joints={} root={:?} j1={:?} last={:?} front j{front}={:?}", arm.model, arm.joints.len(), at(0), at(1), at(arm.joints.len() - 1), at(front));
         }
     };
     arm_report(&mut player, "idle");
