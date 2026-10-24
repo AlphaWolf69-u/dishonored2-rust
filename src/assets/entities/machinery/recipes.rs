@@ -482,4 +482,33 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_dust_cable_constraint_audit() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| {
+            catalog
+                .read(p)
+                .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        for joint in super::super::constraints(&document, read).unwrap() {
+            let ends = [joint.entity_a.as_deref().unwrap_or("-"), joint.entity_b.as_deref().unwrap_or("-")];
+            if ends.iter().any(|e| e.contains("cable") || e.contains("speaker")) || joint.constraint_id.contains("cable") {
+                println!("{joint:?}");
+            }
+        }
+        for body in entities::rigid_body_settings(&document) {
+            if body.entity_id.contains("speaker") || body.entity_id.contains("cable") {
+                println!("BODY {} {:?} {:?}", body.entity_id, body.physics_behavior, body.start_asleep);
+            }
+        }
+    }
+
 }

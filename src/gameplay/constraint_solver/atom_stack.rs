@@ -1,9 +1,10 @@
-//! hkpRagdollConstraintData atoms through the generic atom Jacobian builder
-//! 140c45400: local transforms (2), setup stabilization (0x17), ragdoll
+//! Atom constraint stacks through the generic Jacobian builder 140c45400:
+//! hkpRagdollConstraintData and the arkCpntConstraint cone (140713850).
+//! Local transforms (2), setup stabilization (0x17), disabled ragdoll
 //! motors (0x13), angular friction (0x11), twist limit (0xf), cone and
 //! planes limits (0x10) and the ball socket (5, 140c49b20).
 use super::{
-    angular::AngularLimitRow,
+    angular::{AngularFrictionRow, AngularLimitRow},
     ball_socket::{AnchorFrame, BallSocketBody, BallSocketBuild, BallSocketRow},
     schema_axis,
 };
@@ -88,15 +89,27 @@ pub struct AngularLimit {
     pub damping: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrictionAtom {
+    /// isEnabled with a non-zero maxFrictionTorque; otherwise a skip row.
+    pub active: bool,
+    pub first_axis: u8,
+    pub axes: u8,
+    pub torque: f32,
+}
+
+/// Atoms in their 140c45400 order. `disabled_motors` is the ragdoll's
+/// disabled hkpRagdollMotorConstraintAtom (a skip row and 0x30 runtime).
 #[derive(Clone, Copy, Debug)]
-pub struct RagdollAtoms {
+pub struct AtomStack {
     pub transform_a: Transform,
     pub transform_b: Transform,
     pub stabilization: Option<[f32; 3]>,
-    pub friction_axes: u8,
-    pub twist: AngularLimit,
-    pub cone: AngularLimit,
-    pub planes: AngularLimit,
+    pub disabled_motors: bool,
+    pub friction: Option<FrictionAtom>,
+    pub twist: Option<AngularLimit>,
+    pub cone: Option<AngularLimit>,
+    pub planes: Option<AngularLimit>,
     pub limited: bool,
     pub breach_impulse: f32,
     pub inertia_stabilization: f32,
@@ -118,6 +131,8 @@ pub struct AtomBody {
 /// (tau).
 #[derive(Clone, Copy, Debug)]
 pub struct AtomStep {
+    /// +4: solver info +0x40 times +0xb4 (friction impulse seconds).
+    pub torque_seconds: f32,
     pub inverse_step: f32,
     pub offset_rate: f32,
     pub export_seconds: f32,
@@ -133,19 +148,24 @@ pub enum LimitRow {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct RagdollRows {
-    pub friction_axes: u8,
-    pub twist: LimitRow,
-    pub cone: LimitRow,
-    pub planes: LimitRow,
-    pub pivot: BallSocketRow,
+pub enum FrictionRows {
+    /// Skip header over `axes * 2` runtime words.
+    Skip(u8),
+    Rows([Option<AngularFrictionRow>; 3]),
 }
 
-/// Runtime layout after 140c45400: ragdoll motors 0x30, friction 0x10 per
-/// axis, then 8 per limit and the ball socket.
-pub fn runtime_limit_slots(friction_axes: u8) -> [usize; 3] {
-    let start = 0x30 + friction_axes as usize * 0x10;
-    [start, start + 8, start + 16]
+/// Rows in stream order; `None` for atoms absent from the stack.
+#[derive(Clone, Copy, Debug)]
+pub struct AtomRows {
+    pub disabled_motors: bool,
+    pub friction: Option<FrictionRows>,
+    pub twist: Option<LimitRow>,
+    pub cone: Option<LimitRow>,
+    pub planes: Option<LimitRow>,
+    pub pivot: BallSocketRow,
+    /// Runtime offsets of the twist, cone and planes slots (8 bytes each).
+    pub limit_slots: [usize; 3],
+    pub friction_slot: usize,
 }
 
 fn frame(body: &Transform, local: &Transform) -> [[f32; 4]; 4] {
@@ -198,12 +218,12 @@ fn limit_row(
 /// runtime block (cone angle offsets live at their memory offsets and read
 /// the previous export of their own row, word 1 of its slot).
 pub fn build(
-    atoms: &RagdollAtoms,
+    atoms: &AtomStack,
     a: &AtomBody,
     b: &AtomBody,
     step: &AtomStep,
     runtime: &mut [u8],
-) -> RagdollRows {
+) -> AtomRows {
     let fa = frame(&a.transform, &atoms.transform_a);
     let fb = frame(&b.transform, &atoms.transform_b);
     let read = |runtime: &[u8], at: usize| f32::from_le_bytes(runtime[at..at + 4].try_into().unwrap());
@@ -241,8 +261,36 @@ pub fn build(
         }
         None => ([0.; 4], [0.; 4], HUGE, HUGE),
     };
-    let twist = {
-        let t = &atoms.twist;
+    let mut cursor = if atoms.disabled_motors { 0x30 } else { 0 };
+    let friction_slot = cursor;
+    let friction = atoms.friction.map(|f| {
+        cursor += f.axes as usize * 0x10;
+        if !f.active {
+            return FrictionRows::Skip(f.axes);
+        }
+        let mut rows = [None; 3];
+        for k in 0..f.axes as usize {
+            let axis = fa[f.first_axis as usize + k];
+            let ja = principal(a, axis);
+            let jb = principal(b, axis.map(|v| -v));
+            let lane = |i: usize| {
+                ja[i] * ja[i] * a.inverse_inertia[i] + jb[i] * jb[i] * b.inverse_inertia[i]
+            };
+            let inverse = (lane(1) + lane(0)) + lane(2) + EPSILON;
+            let r = rcp_estimate(inverse);
+            rows[k] = Some(AngularFrictionRow {
+                axis_a: [schema_axis(ja[0], 14), ja[1], ja[2]],
+                axis_b: [jb[0], jb[1], jb[2]],
+                effective_mass: (2. - r * inverse) * r * 1.,
+                correction: step.export_seconds * read(runtime, friction_slot + k * 0x10 + 4),
+                maximum_impulse: f.torque * step.torque_seconds,
+            });
+        }
+        FrictionRows::Rows(rows)
+    });
+    let twist_slot = cursor;
+    let twist = atoms.twist.as_ref().map(|t| {
+        cursor += 8;
         let (tw, rf) = (t.axis as usize, t.reference as usize);
         let sum: [f32; 3] = std::array::from_fn(|i| fa[tw][i] + fb[tw][i]);
         let s = (sum[1] * sum[1] + sum[0] * sum[0]) + sum[2] * sum[2];
@@ -275,8 +323,7 @@ pub fn build(
         let angle = packed_atan2(y, x);
         let tau = step.tau * t.tau * half * half;
         LimitRow::Limit(limit_row(axis, angle, t, tau, a, b, step))
-    };
-    let [_, cone_slot, planes_slot] = runtime_limit_slots(atoms.friction_axes);
+    });
     let mut cone = |limit: &AngularLimit, slot: usize| {
         let (tw, rf) = (limit.axis as usize, limit.reference as usize);
         let (av, bv) = (fa[tw], fb[rf]);
@@ -327,8 +374,13 @@ pub fn build(
         }
         LimitRow::Limit(limit_row(axis, angle, limit, tau, a, b, step))
     };
-    let cone_row = cone(&atoms.cone, cone_slot);
-    let planes_row = cone(&atoms.planes, planes_slot);
+    let cone_slot = cursor;
+    let cone_row = atoms.cone.as_ref().map(|limit| {
+        cursor += 8;
+        cone(limit, cone_slot)
+    });
+    let planes_slot = cursor;
+    let planes_row = atoms.planes.as_ref().map(|limit| cone(limit, planes_slot));
     let body = |body: &AtomBody| BallSocketBody {
         frame: AnchorFrame {
             center: body.center,
@@ -349,24 +401,42 @@ pub fn build(
         maximum_impulse: if atoms.limited { linear_cap } else { HUGE },
         angular_impulse_limit: angular_cap,
     });
-    RagdollRows {
-        friction_axes: atoms.friction_axes,
+    AtomRows {
+        disabled_motors: atoms.disabled_motors,
+        friction,
         twist,
         cone: cone_row,
         planes: planes_row,
         pivot,
+        limit_slots: [twist_slot, cone_slot, planes_slot],
+        friction_slot,
     }
 }
 
-impl RagdollRows {
-    /// The Jacobian stream 140c45400 writes: skip headers for the disabled
-    /// ragdoll motors and zero-torque friction, three limits, the pivot.
+impl AtomRows {
+    /// The Jacobian stream 140c45400 writes, in atom order.
     pub fn schema_words(&self) -> Vec<u32> {
         let skip = |count: u32| [0x3400_0003, count, 0, 0];
         let mut words = Vec::new();
-        words.extend(skip(6));
-        words.extend(skip(self.friction_axes as u32 * 2));
-        for limit in [self.twist, self.cone, self.planes] {
+        if self.disabled_motors {
+            words.extend(skip(6));
+        }
+        match self.friction {
+            Some(FrictionRows::Skip(axes)) => words.extend(skip(axes as u32 * 2)),
+            Some(FrictionRows::Rows(rows)) => {
+                for (k, row) in rows.iter().enumerate() {
+                    let Some(row) = row else { continue };
+                    let fields = [
+                        row.axis_a[0], row.axis_a[1], row.axis_a[2], row.effective_mass,
+                        row.axis_b[0], row.axis_b[1], row.axis_b[2], row.correction,
+                        row.maximum_impulse, f32::from_bits(k as u32), 0., 0.,
+                    ];
+                    words.extend(fields.map(f32::to_bits));
+                }
+            }
+            None => {}
+        }
+        for limit in [self.twist, self.cone, self.planes].into_iter().flatten() {
             match limit {
                 LimitRow::Skip => words.extend(skip(1)),
                 LimitRow::Limit(row) => {
@@ -392,7 +462,7 @@ mod tests {
         (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect()
     }
 
-    pub(super) fn atoms_from_runtime(b: &[u8]) -> RagdollAtoms {
+    pub(super) fn atoms_from_runtime(kind: &str, b: &[u8]) -> AtomStack {
         let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         let transform = |at: usize| std::array::from_fn(|c| std::array::from_fn(|i| f(at + 16 * c + 4 * i)));
         let limit = |at: usize, cone: bool| AngularLimit {
@@ -406,30 +476,39 @@ mod tests {
             tau: f(at + 16),
             damping: f(at + 20),
         };
-        RagdollAtoms {
+        let friction = |at: usize| FrictionAtom {
+            active: b[at + 2] != 0 && f(at + 8) != 0.,
+            first_axis: b[at + 3],
+            axes: b[at + 4],
+            torque: f(at + 8),
+        };
+        let ragdoll = kind == "ragdoll";
+        let (friction_at, twist_at, ball_at) = if ragdoll { (0x100, 0x110, 0x170) } else { (0xa0, 0xb0, 0xf0) };
+        AtomStack {
             transform_a: transform(0x10),
             transform_b: transform(0x50),
             stabilization: (b[0x92] != 0).then(|| [f(0x94), f(0x98), f(0x9c)]),
-            friction_axes: b[0x104],
-            twist: limit(0x110, false),
-            cone: limit(0x130, true),
-            planes: limit(0x150, true),
-            limited: b[0x175] != 0,
-            breach_impulse: f(0x178),
-            inertia_stabilization: f(0x17c),
+            disabled_motors: ragdoll,
+            friction: Some(friction(friction_at)),
+            twist: Some(limit(twist_at, false)),
+            cone: Some(limit(twist_at + 0x20, true)),
+            planes: ragdoll.then(|| limit(0x150, true)),
+            limited: b[ball_at + 5] != 0,
+            breach_impulse: f(ball_at + 8),
+            inertia_stabilization: f(ball_at + 12),
         }
     }
 
     #[test]
-    fn ragdoll_atoms_match_executable() {
+    fn atom_stacks_match_executable() {
         let mut count = 0;
-        for line in include_str!("../../../tests/fixtures/ragdoll_atoms.txt")
+        for line in include_str!("../../../tests/fixtures/atom_stacks.txt")
             .lines()
             .filter(|l| !l.starts_with('#') && !l.is_empty())
         {
             let fields: Vec<&str> = line.split(' ').collect();
-            let atoms = atoms_from_runtime(&bytes(fields[0]));
-            let info: Vec<f32> = fields[1..7]
+            let atoms = atoms_from_runtime(fields[0], &bytes(fields[1]));
+            let info: Vec<f32> = fields[2..9]
                 .iter()
                 .map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap()))
                 .collect();
@@ -437,6 +516,7 @@ mod tests {
                 bytes(hex).chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
             };
             let step = AtomStep {
+                torque_seconds: info[6],
                 inverse_step: info[0],
                 offset_rate: info[1],
                 export_seconds: info[2],
@@ -455,11 +535,11 @@ mod tests {
                     world_to_mass: std::array::from_fn(|i| m[20 + i]),
                 }
             };
-            let a = body(fields[7], fields[9]);
-            let b = body(fields[8], fields[10]);
-            let runtime_in = bytes(fields[11]);
-            let rows_out = bytes(fields[12]);
-            let runtime_out = bytes(fields[13]);
+            let a = body(fields[9], fields[11]);
+            let b = body(fields[10], fields[12]);
+            let runtime_in = bytes(fields[13]);
+            let rows_out = bytes(fields[14]);
+            let runtime_out = bytes(fields[15]);
             let mut runtime = runtime_in.clone();
             runtime.resize(0x100, 0);
             let rows = build(&atoms, &a, &b, &step, &mut runtime);
