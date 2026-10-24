@@ -138,6 +138,7 @@ use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rat
 mod launch;
 mod engine_keys;
 mod player;
+mod player_arms;
 mod pause_menu;
 mod pause_fx;
 mod display_settings;

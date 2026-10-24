@@ -442,6 +442,7 @@ pub(super) fn initialize_screen_shadow_source(
                 depth_default,
                 current: None,
                 ambient_occlusion: None,
+                player_depth_hack: 0.0,
                 produced: Default::default(),
                 directional_produced: Default::default(),
             });
@@ -461,6 +462,7 @@ pub(super) fn prepare_screen_shadow_frame(
     mut screen: Option<ResMut<screen_shadow_pass::ScreenShadowFrame>>,
     cameras: Query<(&Transform, &Projection, &Camera), With<Camera3d>>,
     mut images: ResMut<Assets<Image>>,
+    player_view: Option<Res<super::player_arms::PlayerArms>>,
     mut last_error: Local<Option<String>>,
 ) {
     let Some(ref mut screen) = screen else {
@@ -468,6 +470,9 @@ pub(super) fn prepare_screen_shadow_frame(
     };
     screen.current = None;
     screen.ambient_occlusion = None;
+    // r_playerDepthHack keeps its cvar default 0 without the body component.
+    let player_depth_hack = player_view.map_or(0.0, |view| view.player_depth_hack);
+    screen.player_depth_hack = player_depth_hack;
     let result = (|| -> Result<screen_shadow_pass::ScreenShadowView, String> {
         let source = source.0.as_ref().map_err(Clone::clone)?;
         let (transform, projection, camera) = cameras.single().map_err(|e| e.to_string())?;
@@ -551,7 +556,13 @@ pub(super) fn prepare_screen_shadow_frame(
                 0.0,
             ),
             camera_time: Vec4::new(position[0], position[1], position[2], world_time),
-            depth_scale_step_hack: Vec4::new(1.0, 1.0, source.step, 1.0),
+            // FUN_14032c7f0's stencil-one draw: r_playerDepthHack, or 1.
+            depth_scale_step_hack: Vec4::new(
+                1.0,
+                1.0,
+                source.step,
+                if player_depth_hack > 0.0 { player_depth_hack } else { 1.0 },
+            ),
             target: UVec4::new(extent.x, extent.y, 0, 0),
             blur: Vec4::ZERO,
             cloud_motion: source.cloud_motion,

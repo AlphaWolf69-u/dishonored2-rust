@@ -84,6 +84,7 @@ pub fn main_opaque_pass_3d(
             &mut depth_stencil_attachment,
             viewport.as_ref(),
             chunk_size.batch_size(),
+            0,
         ) {
             error!("Error encountered while rendering the opaque phase {err:?}");
         }
@@ -98,6 +99,7 @@ pub fn main_opaque_pass_3d(
                 &mut depth_stencil_attachment,
                 viewport.as_ref(),
                 chunk_size.batch_size(),
+                0,
             ) {
                 error!("Error encountered while rendering the alpha mask phase {err:?}");
             }

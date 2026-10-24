@@ -690,6 +690,7 @@ pub(super) fn stream_visible_textures(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
+    arms: Option<Res<super::player_arms::PlayerArms>>,
 ) {
     let Some(mut worker) = worker else {
         return;
@@ -712,6 +713,11 @@ pub(super) fn stream_visible_textures(
             }
         },
     );
+    for material in arms.iter().flat_map(|arms| arms.shown_materials()) {
+        for &slot in queue.material_images.get(material).into_iter().flatten() {
+            requested[slot] = true;
+        }
+    }
     for &slot in &queue.shadow_diffuse_slots {
         if let Some(needed) = requested.get_mut(slot) {
             *needed = true;

@@ -102,6 +102,161 @@ fn character_name(character: Character) -> &'static str {
     }
 }
 
+/// An md6's skeleton (with its init offset as the root), its animsets'
+/// aliases (a later animset wins) and its decl tokens.
+struct Rig {
+    skeleton: crate::edge_skeleton::EdgeSkeleton,
+    root: crate::edge_skeleton::JointRestPose,
+    aliases: HashMap<String, String>,
+    tokens: Vec<String>,
+    path: String,
+}
+
+fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
+    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+}
+
+fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
+    let stem = model.strip_suffix(".md6").ok_or_else(|| format!("{model} is not an md6"))?;
+    let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| text_of(catalog, path).ok().flatten())?
+        .ok_or_else(|| format!("{model} has no skeleton"))?;
+    let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
+    let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
+    let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
+    let skeleton = crate::edge_skeleton::parse(&bytes)?;
+    let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
+    let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
+    let md6 = text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?;
+    let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
+    let mut aliases = HashMap::new();
+    if let Some(start) = tokens.iter().position(|t| t == "animsets") {
+        for token in tokens[start + 2..].iter().take_while(|t| *t != "}") {
+            let name = token.trim_matches('"');
+            let animset = format!("generated/decls/animset/{name}.decl");
+            let source = text_of(catalog, &animset)?.ok_or_else(|| format!("{animset} is absent"))?;
+            crate::edge_animation::animset_aliases(&source, &mut aliases)?;
+        }
+    }
+    Ok(Rig { skeleton, root, aliases, tokens, path })
+}
+
+impl Rig {
+    fn joint(&self, name: &str) -> Result<usize, String> {
+        self.skeleton.joint_names.iter().position(|n| n == name).ok_or_else(|| format!("{} has no joint {name}", self.path))
+    }
+
+    /// An md6 `tag "<name>" { trans ( x y z ) rot ( x y z w ) parent "<joint>" }`.
+    fn tag(&self, name: &str) -> Result<(usize, Vec3, Mat3), String> {
+        let at = self.tokens.windows(2).position(|w| w[0] == "tag" && w[1] == name).ok_or_else(|| format!("md6 has no tag {name}"))?;
+        let body = &self.tokens[at + 2..];
+        let numbers = |key: &str, n: usize| -> Result<Vec<f32>, String> {
+            let i = body.iter().position(|t| t == key).ok_or_else(|| format!("tag {name} has no {key}"))?;
+            body[i + 2..i + 2 + n].iter().map(|t| t.parse::<f32>().map_err(|_| format!("tag {name} {key}"))).collect()
+        };
+        let t = numbers("trans", 3)?;
+        let r = numbers("rot", 4)?;
+        let parent = body.iter().position(|t| t == "parent").map(|i| body[i + 1].trim_matches('"').to_owned()).ok_or_else(|| format!("tag {name} has no parent"))?;
+        Ok((self.joint(&parent)?, Vec3::new(t[0], t[1], t[2]), Mat3::from_quat(bevy::math::Quat::from_xyzw(r[0], r[1], r[2], r[3]))))
+    }
+
+    /// A decl the md6 names (`locomotionDecl`, `animBasicDecl`).
+    fn decl(&self, key: &str) -> Option<String> {
+        self.tokens.iter().position(|t| t == key).and_then(|i| self.tokens.get(i + 1)).map(|t| t.trim_matches('"').to_owned())
+    }
+}
+
+/// Loads clips by alias once, validated against the rig's rest pose.
+struct Clips<'a> {
+    catalog: &'a Catalog,
+    aliases: &'a HashMap<String, String>,
+    rest: &'a [crate::edge_skeleton::JointRestPose],
+    animations: Vec<crate::edge_animation::EdgeAnimation>,
+    loaded: HashMap<String, usize>,
+}
+
+impl Clips<'_> {
+    fn clip(&mut self, alias: &str) -> Result<usize, String> {
+        if let Some(&index) = self.loaded.get(alias) {
+            return Ok(index);
+        }
+        let anim = self.aliases.get(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
+        let resource = crate::edge_animation::resource_path(anim).ok_or_else(|| format!("{anim} is not an md6anim"))?;
+        let bytes = self.catalog.read(&resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} is absent"))?;
+        let animation = crate::edge_animation::EdgeAnimation::parse(&bytes).map_err(|e| format!("{resource}: {e}"))?;
+        animation.sample(self.rest, 0.0).map_err(|e| format!("{resource}: {e}"))?;
+        self.animations.push(animation);
+        self.loaded.insert(alias.to_owned(), self.animations.len() - 1);
+        Ok(self.animations.len() - 1)
+    }
+}
+
+/// An md6's animBasic list as an AnimBasicNode.
+fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]) -> Result<crate::gameplay::player::animation::AnimBasicNode, String> {
+    use crate::gameplay::player::animation::{AnimBasicItem, AnimBasicNode};
+    let (list, stop_blend_out) = decls::anim_basic_list(fields)?;
+    let mut node = AnimBasicNode::default();
+    node.stop_blend_out = stop_blend_out;
+    for (alias, blend_in, blend_out) in list {
+        node.items.push(AnimBasicItem { clip: clips.clip(&alias)?, alias, blend_in, blend_out });
+    }
+    Ok(node)
+}
+
+/// One arm part (FUN_140770560 spawn + bind, FUN_140771a00 start): its
+/// entity def's render model, the body tag it binds to, and its tree from
+/// the shared locomotion decl in the "Empty" equip state.
+fn load_arm(
+    catalog: &Catalog,
+    side: usize,
+    part: &(Option<String>, String, bool),
+    body: &Rig,
+    camera: &CameraDecl,
+    locomotion: &[(String, crate::entities::Value)],
+    body_decl: &[(String, crate::entities::Value)],
+) -> Result<crate::gameplay::player::arms::Arm, String> {
+    use crate::gameplay::player::animation::{LocoData, LocoNode, SpeedSet, Transition};
+    use crate::gameplay::player::arms::{Arm, ArmSkeleton};
+    const EQUIP: &str = "Empty";
+    let (Some(def), tag, visible) = part else { return Err(format!("arm part {side} has no entity")) };
+    let read = |path: &str| text_of(catalog, path);
+    let entity = crate::entities::player::resolved_decl("entitydef", def, read)?;
+    let model = crate::entities::scene_motion::atom(crate::entities::scene_motion::child(&entity, "renderModelInfo"), "model")
+        .ok_or_else(|| format!("{def} has no render model"))?
+        .to_owned();
+    let rig = load_rig(catalog, &model)?;
+    let (bind_joint, bind_t, bind_r) = body.tag(tag)?;
+    let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
+    let mut data = LocoData::default();
+    for (stance, speeds) in decls::loco_stances(locomotion, [EQUIP; 2])? {
+        let mut sets: [Option<SpeedSet>; 4] = Default::default();
+        for entry in speeds {
+            if entry.speed >= 4 {
+                continue;
+            }
+            if let Some(names) = &entry.arms[side] {
+                sets[entry.speed] = Some(SpeedSet { clips: [clips.clip(&names[0])?, clips.clip(&names[1])?, clips.clip(&names[2])?, clips.clip(&names[3])?], speeds: entry.speeds });
+            }
+        }
+        data.stances.insert(stance, sets);
+    }
+    for (from, to, alias, blend_in, blend_out) in decls::loco_arm_transitions(locomotion, side, EQUIP)? {
+        data.transitions.insert((from, to), Transition { clip: clips.clip(&alias)?, blend_in, blend_out });
+    }
+    let additives_name = rig.decl("animBasicDecl").ok_or_else(|| format!("{model} has no animBasicDecl"))?;
+    let additives_fields = crate::entities::player::resolved_decl("animbasic", &additives_name, read)?;
+    let additives = anim_basic(&mut clips, &additives_fields)?;
+    let jump_items = decls::arm_jump_aliases(body_decl, side, EQUIP).map(|alias| alias.and_then(|a| additives.index_of(&a)));
+    let skeleton = ArmSkeleton {
+        rest: rig.skeleton.rest.clone(),
+        hierarchy: rig.skeleton.hierarchy.clone(),
+        parents: rig.skeleton.parents.clone(),
+        root: rig.root.clone(),
+        shoulder: rig.joint(&camera.arm_joints[side])?,
+    };
+    let animations = clips.animations;
+    Ok(Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items))
+}
+
 /// The body skeleton, its animsets' aliases and the stance clips
 /// (`gameplay::player::body`).
 fn load_body(
@@ -113,64 +268,23 @@ fn load_body(
     additives: &[(String, crate::entities::Value)],
     scene_paths: &[String],
 ) -> Result<(Body, Scenes), String> {
-    let stem = body_model.strip_suffix(".md6").ok_or("player body model is not an md6")?;
-    let text = |path: &str| -> Result<Option<String>, String> {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
-    };
-    let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| text(path).ok().flatten())?
-        .ok_or("player body has no skeleton")?;
-    let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
-    let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
-    let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-    let skeleton = crate::edge_skeleton::parse(&bytes)?;
-    let joint = |name: &str| {
-        skeleton.joint_names.iter().position(|n| n == name).ok_or_else(|| format!("{path} has no joint {name}"))
-    };
+    let text = |path: &str| text_of(catalog, path);
+    let rig = load_rig(catalog, body_model)?;
     let body_skeleton = BodySkeleton {
-        rest: skeleton.rest.clone(),
-        hierarchy: skeleton.hierarchy.clone(),
-        parents: skeleton.parents.clone(),
-        root: crate::edge_skeleton::JointRestPose {
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            translation: binding.offset.unwrap_or([0.0; 3]),
-            scale: [1.0; 3],
-        },
-        camera: joint(&camera.camera_joint)?,
-        controls: [joint(&camera.head_joint)?, joint(&camera.neck_joint)?, joint(&camera.arms_joint)?],
-        anchor: skeleton.joint_names.iter().position(|n| n == "anchor_jnt"),
+        rest: rig.skeleton.rest.clone(),
+        hierarchy: rig.skeleton.hierarchy.clone(),
+        parents: rig.skeleton.parents.clone(),
+        root: rig.root.clone(),
+        camera: rig.joint(&camera.camera_joint)?,
+        controls: [rig.joint(&camera.head_joint)?, rig.joint(&camera.neck_joint)?, rig.joint(&camera.arms_joint)?],
+        anchor: rig.skeleton.joint_names.iter().position(|n| n == "anchor_jnt"),
     };
-    // The md6 `animsets` block, in order.
-    let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
-    let md6 = text(&md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?;
-    let tokens = crate::entities::declaration_lexemes(&md6)?;
-    let mut aliases = HashMap::new();
-    if let Some(start) = tokens.iter().position(|t| *t == "animsets") {
-        for token in tokens[start + 2..].iter().take_while(|t| **t != "}") {
-            let name = token.trim_matches('"');
-            let path = format!("generated/decls/animset/{name}.decl");
-            let source = text(&path)?.ok_or_else(|| format!("{path} is absent"))?;
-            crate::edge_animation::animset_aliases(&source, &mut aliases)?;
-        }
-    }
-    let mut animations = Vec::new();
-    let mut loaded: HashMap<String, usize> = HashMap::new();
-    let mut clip = |alias: &str| -> Result<usize, String> {
-        if let Some(&index) = loaded.get(alias) {
-            return Ok(index);
-        }
-        let anim = aliases.get(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
-        let resource = crate::edge_animation::resource_path(anim).ok_or_else(|| format!("{anim} is not an md6anim"))?;
-        let bytes = catalog.read(&resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} is absent"))?;
-        let animation = crate::edge_animation::EdgeAnimation::parse(&bytes).map_err(|e| format!("{resource}: {e}"))?;
-        animation.sample(&body_skeleton.rest, 0.0).map_err(|e| format!("{resource}: {e}"))?;
-        animations.push(animation);
-        loaded.insert(alias.to_owned(), animations.len() - 1);
-        Ok(animations.len() - 1)
-    };
+    let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &body_skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
+    let mut clip = |alias: &str| clips.clip(alias);
     use crate::gameplay::player::animation::{LocoData, SpeedSet, Transition};
     let mut body_data = LocoData::default();
     let mut bob_data = LocoData::default();
-    for (stance, speeds) in decls::loco_stances(locomotion)? {
+    for (stance, speeds) in decls::loco_stances(locomotion, ["Empty"; 2])? {
         let (mut body_sets, mut bob_sets): ([Option<SpeedSet>; 4], [Option<SpeedSet>; 4]) = Default::default();
         for entry in speeds {
             if entry.speed >= 4 {
@@ -200,13 +314,8 @@ fn load_body(
             *slot = Some(clip(&alias)?);
         }
     }
-    use crate::gameplay::player::animation::{AnimBasicItem, AnimBasicNode};
-    let (list, stop_blend_out) = decls::anim_basic_list(additives)?;
-    let mut node = AnimBasicNode::default();
-    node.stop_blend_out = stop_blend_out;
-    for (alias, blend_in, blend_out) in list {
-        node.items.push(AnimBasicItem { clip: clip(&alias)?, alias, blend_in, blend_out });
-    }
+    let node = anim_basic(&mut clips, additives)?;
+    let mut clip = |alias: &str| clips.clip(alias);
     let jump_items = decls::camera_jump_aliases(body_decl).map(|alias| alias.and_then(|a| node.index_of(&a)));
     // The states' midnight scenes: the player group's clips of every scene
     // the graph reaches for this body md6.
@@ -228,9 +337,17 @@ fn load_body(
         }
         scenes.insert(path.clone(), std::sync::Arc::new(prepared));
     }
+    let animations = clips.animations;
+    let parts = decls::arm_parts(body_decl)?;
+    let mut arms = Vec::new();
+    for (side, part) in parts.iter().enumerate() {
+        arms.push(load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?);
+    }
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.arms = arms;
+
     body.lean_clips = lean_clips;
     body.additives = node;
     body.jump_items = jump_items;
@@ -536,6 +653,20 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     let settled = player.feet();
     report("settle 3s", &player, feet, 3.0);
     println!("NAV PROBE spawn drop {:.3}m, eye {:?}", feet.z - settled.z, player.view().origin);
+    let arm_report = |player: &mut Player, label: &str| {
+        let eye = player.view().origin;
+        let axis = player.axis();
+        for (side, arm) in player.arms().iter().enumerate() {
+            let at = |j: usize| {
+                let m = arm.joints[j];
+                let d = Vec3::new(m[0][3], m[1][3], m[2][3]) - eye;
+                (d.dot(axis.x_axis), d.dot(axis.y_axis), d.dot(axis.z_axis))
+            };
+            let front = (0..arm.joints.len()).max_by(|a, b| at(*a).0.total_cmp(&at(*b).0)).unwrap();
+            println!("NAV PROBE arm {label} {side} {} joints={} root={:?} j1={:?} last={:?} front j{front}={:?}", arm.model, arm.joints.len(), at(0), at(1), at(arm.joints.len() - 1), at(front));
+        }
+    };
+    arm_report(&mut player, "idle");
     if !full {
         // DH2_NAV_YAW (degrees): hold forward and trace the proxy.
         if let Some(degrees) = std::env::var("DH2_NAV_YAW").ok().and_then(|v| v.parse::<f32>().ok()) {
@@ -624,6 +755,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         high = high.max(eye);
     }
     report("run 1s after 0.5s", &player, from, 1.0);
+    arm_report(&mut player, "run");
     println!("NAV PROBE run eye height {low:.4}..{high:.4} m (body speed {:.3})", player.body.speed);
     run(&mut player, 1, vec![key(ACTION_CROUCH, true)]);
     run(&mut player, 1, vec![key(ACTION_CROUCH, false)]);

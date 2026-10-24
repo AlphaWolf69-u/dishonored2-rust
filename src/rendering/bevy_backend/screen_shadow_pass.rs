@@ -26,6 +26,8 @@ pub struct ScreenShadowFrame {
     pub depth_default: Option<Handle<Image>>,
     pub current: Option<ScreenShadowView>,
     pub ambient_occlusion: Option<AmbientOcclusionView>,
+    /// r_playerDepthHack: the unhack factor's source (FUN_1402fcff0).
+    pub player_depth_hack: f32,
     /// Ambient visibility submissions can finish before the directional atlas.
     pub produced: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub directional_produced: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -109,6 +111,7 @@ fn ensure_screen_depth_source(
 
 #[derive(Resource, Default)]
 struct ScreenGpu {
+    unhack: Option<super::depth_buffer_hack::DepthBufferHack>,
     cached: Option<ScreenTargets>,
     ambient: Option<AmbientTargets>,
     reported: bool,
@@ -125,6 +128,7 @@ struct AmbientTargets {
 struct ScreenTargets {
     extent: [u32; 2],
     depth_id: TextureId,
+    sampled_id: TextureId,
     output_id: TextureId,
     cloud_id: TextureId,
     atlas_id: TextureId,
@@ -149,8 +153,8 @@ fn clear_view_stencil(
         return;
     }
     // Native view depth begins with stencil zero; modelDepthHack owners mark
-    // bit0 when their actual geometry is submitted. The rewrite currently has
-    // no first-person hand draw. Never synthesize a stencil-1 silhouette.
+    // bit0 when their actual geometry is submitted in the depth prepass (the
+    // first-person arms). Never synthesize a stencil-1 silhouette.
     let view = depth.texture.create_view(&TextureViewDescriptor::default());
     let _pass = context
         .command_encoder()
@@ -187,6 +191,7 @@ impl ScreenTargets {
     fn new(
         device: &RenderDevice,
         depth: &ViewDepthTexture,
+        sampled: &Texture,
         output: &GpuImage,
         cloud: &GpuImage,
         atlas: &GpuImage,
@@ -218,7 +223,8 @@ impl ScreenTargets {
                 },
             )
         });
-        let depth_view = depth.texture.create_view(&TextureViewDescriptor {
+        // screenShadows/DepthBuffer is the unhacked copy (0x21181874).
+        let depth_view = sampled.create_view(&TextureViewDescriptor {
             aspect: TextureAspect::DepthOnly,
             ..Default::default()
         });
@@ -256,6 +262,7 @@ impl ScreenTargets {
         Ok(Self {
             extent,
             depth_id: depth.texture.id(),
+            sampled_id: sampled.id(),
             output_id: output.texture.id(),
             cloud_id: cloud.texture.id(),
             atlas_id: atlas.texture.id(),
@@ -295,9 +302,24 @@ fn render_screen_shadow(
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let span = diagnostics.time_span(context.command_encoder(), "screen_shadow_pipeline");
+    let unhacked = (|| -> Result<Texture, String> {
+        let (depth, _, _) = views.single().map_err(|e| e.to_string())?;
+        if gpu.unhack.as_ref().is_none_or(|old| old.source_id() != depth.texture.id()) {
+            gpu.unhack = None;
+            gpu.unhack = Some(super::depth_buffer_hack::DepthBufferHack::new(
+                &device,
+                &pipelines,
+                &depth.texture,
+            )?);
+        }
+        let unhack = gpu.unhack.as_ref().unwrap();
+        unhack.record(&queue, context.command_encoder(), &depth.texture, frame.player_depth_hack);
+        Ok(unhack.texture.clone())
+    })();
     let ambient_result = (|| -> Result<(), String> {
         let view = frame.ambient_occlusion.as_ref().ok_or("AO current view pending")?;
-        let (depth, _, camera) = views.single().map_err(|e| e.to_string())?;
+        let unhacked = unhacked.as_ref().map_err(Clone::clone)?;
+        let (_, _, camera) = views.single().map_err(|e| e.to_string())?;
         if camera.physical_viewport_size != camera.physical_target_size
             || camera.viewport.as_ref().is_some_and(|v| v.physical_position != UVec2::ZERO) {
             return Err("AO sub-view owner is unresolved".into());
@@ -309,17 +331,17 @@ fn render_screen_shadow(
         }
         let depth_default = frame.depth_default.as_ref().map(|image| images.get(image.id()).ok_or("AO depth initializer pending GPU upload")).transpose()?;
         let depth_default_id = depth_default.map(|image|image.texture.id());
-        if gpu.ambient.as_ref().is_none_or(|old| old.depth_id != depth.texture.id()
+        if gpu.ambient.as_ref().is_none_or(|old| old.depth_id != unhacked.id()
             || old.output_id != output.texture.id() || old.mode != view.parameters.mode()
             || old.blur_state != view.blur_state || old.depth_default_id != depth_default_id) {
             gpu.ambient = Some(AmbientTargets {
                 depth_default_id,
-                depth_id: depth.texture.id(), output_id: output.texture.id(),
+                depth_id: unhacked.id(), output_id: output.texture.id(),
                 mode: view.parameters.mode(), blur_state: view.blur_state,
                 producer: super::ambient_occlusion::AmbientOcclusionPass::new(
-                    &device, &pipelines, &depth.texture, &view.parameters)?,
+                    &device, &pipelines, unhacked, &view.parameters)?,
                 filter: super::screen_visibility::ScreenVisibilityFilter::new(
-                    &device, &depth.texture, &output.texture_view, view.extent, view.blur_state, depth_default.map(|image| &image.texture_view))?,
+                    &device, unhacked, &output.texture_view, view.extent, view.blur_state, depth_default.map(|image| &image.texture_view))?,
             });
         }
         let cached = gpu.ambient.as_mut().unwrap();
@@ -363,8 +385,10 @@ fn render_screen_shadow(
             .as_ref()
             .and_then(|s| buffers.get(s.buffer.id()))
             .ok_or("parallel parameters pending GPU upload")?;
+        let unhacked = unhacked.as_ref().map_err(Clone::clone)?;
         if gpu.cached.as_ref().is_none_or(|old| {
             old.depth_id != depth.texture.id()
+                || old.sampled_id != unhacked.id()
                 || old.output_id != output.texture.id()
                 || old.cloud_id != cloud.texture.id()
                 || old.atlas_id != atlas.texture.id()
@@ -373,6 +397,7 @@ fn render_screen_shadow(
             gpu.cached = Some(ScreenTargets::new(
                 &device,
                 depth,
+                unhacked,
                 output,
                 cloud,
                 atlas,

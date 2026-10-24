@@ -277,6 +277,18 @@ pub fn camera(fields: &Fields) -> Result<CameraDecl, String> {
         speed_fov_additional_value: number(fields, "m_speedFovAdditionalValue", d.speed_fov_additional_value)?,
         speed_fov_max_increase_speed: number(fields, "m_speedFovMaxIncreaseSpeed", d.speed_fov_max_increase_speed)?,
         speed_fov_max_decrease_speed: number(fields, "m_speedFovMaxDecreaseSpeed", d.speed_fov_max_decrease_speed)?,
+        arm_joints: [
+            atom(fields, "m_leftArmControlJointName").unwrap_or(&d.arm_joints[0]).to_owned(),
+            atom(fields, "m_rightArmControlJointName").unwrap_or(&d.arm_joints[1]).to_owned(),
+        ],
+        arms_inertia_min_angular_speed: number(fields, "m_armsInertiaMinAngularSpeed", d.arms_inertia_min_angular_speed)?,
+        arms_inertia_max_angular_speed: number(fields, "m_armsInertiaMaxAngularSpeed", d.arms_inertia_max_angular_speed)?,
+        arms_inertia_max_angle: number(fields, "m_armsInertiaMaxAngle", d.arms_inertia_max_angle)?,
+        arm_pitch_shift_ratios: [
+            number(fields, "m_leftArmPitchShiftRatio", d.arm_pitch_shift_ratios[0])?,
+            number(fields, "m_rightArmPitchShiftRatio", d.arm_pitch_shift_ratios[1])?,
+        ],
+
         constraints_blend_speed: number(fields, "m_constraintsBlendSpeed", d.constraints_blend_speed)?,
         mode_blend_duration: seconds(fields, "m_modeBlendDuration", d.mode_blend_duration)?,
     })
@@ -624,15 +636,22 @@ pub fn lean_aliases(body: &Fields) -> [Option<String>; 2] {
 }
 
 /// One `m_stances[].m_speeds[]` entry: speed-set index (by `m_speedList`),
-
-/// body and bob clip aliases in back/right/front/left order (empty
+/// body, bob and arm clip aliases in back/right/front/left order (empty
 /// directions filled with front) and clip speeds (front/back, strafe for
 /// left and right; default 0).
 pub struct LocoSpeedDecl {
     pub speed: usize,
     pub body: Option<[String; 4]>,
     pub bob: Option<[String; 4]>,
+    /// `m_leftArm` / `m_rightArm` entries of the arms' equip states
+    /// (FUN_1407021d0: an entry with no name has no speed definition).
+    pub arms: [Option<[String; 4]>; 2],
     pub speeds: [f32; 4],
+}
+
+/// The `m_equipState == equip` item of an equip-state list.
+fn equip_item<'a>(fields: &'a Fields, key: &str, equip: &str) -> Option<&'a Fields> {
+    items(fields, key).into_iter().find(|item| atom(item, "m_equipState") == Some(equip))
 }
 
 fn moves(fields: Option<&Fields>) -> Option<[String; 4]> {
@@ -643,8 +662,9 @@ fn moves(fields: Option<&Fields>) -> Option<[String; 4]> {
     all.iter().any(|name| !name.is_empty()).then_some(all)
 }
 
-/// `m_stances` with their speed sets (FUN_1407030a0 → FUN_140249400).
-pub fn loco_stances(locomotion: &Fields) -> Result<Vec<(String, Vec<LocoSpeedDecl>)>, String> {
+/// `m_stances` with their speed sets (FUN_1407030a0 → FUN_140249400) and
+/// the arms' clips for their equip states `arm_equip` (left, right).
+pub fn loco_stances(locomotion: &Fields, arm_equip: [&str; 2]) -> Result<Vec<(String, Vec<LocoSpeedDecl>)>, String> {
     let speed_list: Vec<String> = scope(locomotion, "m_speedList")
         .map(|list| {
             let mut entries: Vec<(usize, String)> = list
@@ -672,12 +692,65 @@ pub fn loco_stances(locomotion: &Fields) -> Result<Vec<(String, Vec<LocoSpeedDec
                 speed,
                 body: moves(scope(entry, "m_body")),
                 bob: moves(scope(entry, "m_bob")),
+                arms: [
+                    moves(equip_item(entry, "m_leftArm", arm_equip[0])),
+                    moves(equip_item(entry, "m_rightArm", arm_equip[1])),
+                ],
                 speeds: [back, strafe, front, strafe],
             });
         }
         result.push((name.to_owned(), speeds));
     }
     Ok(result)
+}
+
+/// An arm's `m_stanceTransitions` (side 0 left, 1 right) for its equip
+/// state: (from, to, anim, blend in, blend out; ctor 0.25 / 0.25).
+pub fn loco_arm_transitions(locomotion: &Fields, side: usize, equip: &str) -> Result<Vec<(String, String, String, f32, f32)>, String> {
+    let (key, blend) = if side == 0 { ("m_leftArm", "m_leftArm") } else { ("m_rightArm", "m_rightArm") };
+    let mut result = Vec::new();
+    for item in items(locomotion, "m_stanceTransitions") {
+        let (Some(from), Some(to)) = (atom(item, "m_fromStance"), atom(item, "m_toStance")) else { continue };
+        let Some(anim) = equip_item(item, key, equip).and_then(|e| atom(e, "m_anim")).filter(|a| !a.is_empty()) else { continue };
+        result.push((
+            from.to_owned(),
+            to.to_owned(),
+            anim.to_owned(),
+            number(item, &format!("{blend}BlendIn"), 0.25)?,
+            number(item, &format!("{blend}BlendOut"), 0.25)?,
+        ));
+    }
+    Ok(result)
+}
+
+/// The body decl's `m_leftArmAnims` / `m_rightArmAnims` jump additive
+/// aliases of an equip state, in FUN_1407730c0's kind order.
+pub fn arm_jump_aliases(body: &Fields, side: usize, equip: &str) -> [Option<String>; 6] {
+    let key = if side == 0 { "m_leftArmAnims" } else { "m_rightArmAnims" };
+    let entry = items(body, key).into_iter().find(|item| atom(item, "m_equipStateName") == Some(equip));
+    [
+        "m_jumpInAnimAlias",
+        "m_jumpLoopAnimAlias",
+        "m_jumpOutAnimAlias",
+        "m_jumpSneakInAnimAlias",
+        "m_jumpSneakLoopAnimAlias",
+        "m_jumpSneakOutAnimAlias",
+    ]
+    .map(|k| entry.and_then(|e| atom(e, k)).filter(|a| !a.is_empty()).map(str::to_owned))
+}
+
+/// arkDeclCpntPlayerBody::arkBodyPart m_leftArm / m_rightArm: (m_entity,
+/// m_bindTag, m_visible).
+pub fn arm_parts(body: &Fields) -> Result<[(Option<String>, String, bool); 2], String> {
+    let part = |key: &str| -> Result<(Option<String>, String, bool), String> {
+        let p = scope(body, key).unwrap_or(&[]);
+        Ok((
+            atom(p, "m_entity").filter(|v| !v.is_empty()).map(str::to_owned),
+            atom(p, "m_bindTag").unwrap_or("").to_owned(),
+            boolean(p, "m_visible", true)?,
+        ))
+    };
+    Ok([part("m_leftArm")?, part("m_rightArm")?])
 }
 
 /// `m_stanceTransitions` with their body blend times (ctor FUN_140701770:

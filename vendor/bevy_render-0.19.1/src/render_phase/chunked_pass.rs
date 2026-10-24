@@ -47,6 +47,7 @@ pub fn render_binned_phase_in_chunks<BPI: BinnedPhaseItem>(
     depth: &mut Option<RenderPassDepthStencilAttachment<'_>>,
     viewport: Option<&Viewport>,
     chunk_size: usize,
+    stencil_reference: u32,
 ) -> Result<(), DrawError> {
     let count = phase.direct_batch_count().expect("direct camera phase");
     let chunk_size = chunk_size.max(1);
@@ -61,6 +62,9 @@ pub fn render_binned_phase_in_chunks<BPI: BinnedPhaseItem>(
         });
         if let Some(viewport) = viewport {
             pass.set_camera_viewport(viewport);
+        }
+        if stencil_reference != 0 {
+            pass.set_stencil_reference(stencil_reference);
         }
         let result = if phase.is_empty() {
             Ok(())
