@@ -49,10 +49,12 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
 2. `m_isLightVM` default: classes gated on `VM+0x6b40` are installed on the
    assumption that the pause decl's unset bit is 0. Next: read the decl
    default in `FUN_1404f2cd0` or the VM flag at runtime.
-3. Rendering not yet ported: filters other than the text emulation of
-   `FUN_14102e950` (drop shadows: one offset copy for blurs up to 2, else
-   three rings of copies; bevels and script filters such as the message
-   box blur and colour matrix are not ported), blend modes beyond normal/add,
+3. Filters: text drop shadows are emulated as `FUN_14102e950` does (one
+   offset copy for blurs up to 2, else three rings); other filtered objects
+   draw through a layer render target with GDraw's blur (`FUN_1402e15d0`:
+   bilinear box taps, downsampled for wide blurs) and colour matrix passes
+   (notes-filters.md). Not ported: shadows/glows/bevels through the layer
+   path, convolution. Rendering not yet ported: blend modes beyond normal/add,
    cacheAsBitmap, the glyph bitmap cache, the exact curve flattening tolerance
    (`player+0x1e80`), game textures (save screenshots). Masks and clip layers
    follow `FUN_141037100` and GDraw's stencil state (notes-masks.md) except
@@ -120,7 +122,9 @@ waits for that tick's draw list (the game ticks Iggy within the frame).
 Queued input is merged so it never waits behind a backlog of frames. The
 catalog, decoded bitmaps, movie bytes and string tables are kept between
 opens, and while the menu is closed the next player is built ahead
-(movie, libraries, screen size, bitmaps); an open then only reads the current
-state (options, saves) and shows the menu. Every open uses a new player. `DH2_DEBUG_PAUSE_TIMING=1` logs
+(movie, libraries, screen size, bitmaps, the options sections, which the
+game creates with the game, and the loaded map's mapinfo, cached per map);
+an open then only reads the saves and shows the menu (about 20 ms measured
+on the first open, release build). Every open uses a new player. `DH2_DEBUG_PAUSE_TIMING=1` logs
 the open phases and, each second, the queue wait and the per-frame work
 (input, tick, options, draw list).

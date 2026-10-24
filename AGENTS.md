@@ -30,6 +30,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 ## Working in this repository
 
+- Build and test with the debug (dev) profile, or `cargo check` when only compilation matters. Use `--release` only for the main branch build the user tests from and for performance measurements (timings, frame rate, latency); the release profile uses LTO and takes several times longer.
 - Keep compilation hidden with output redirected to logs while continuing other work. Do not open build-monitor terminals unless the user requests one or the agent is handing control back immediately after starting the build.
 - Game behavior is the naming default: name files, modules, types, functions, fields, constants, shaders and fixtures by responsibility without redundant `Native`, `Original`, `native_` or `original_` qualifiers. This also applies to project-authored dependency patches and diagnostic controls. Mark host integration or deliberate deviations explicitly (for example `bevy_backend`, `debug_` or `approximate_`); keep meaningful comparison provenance in comments and test descriptions. Preserve installed resource names and historical evidence paths.
 - Prefer a general asset-format or engine-rule fix over addingdate object-name exceptions. If an exception is needed, record why it is specific.

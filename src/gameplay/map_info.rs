@@ -36,6 +36,21 @@ pub fn find(catalog: &Catalog, map: &str) -> Option<Fields> {
     })
 }
 
+/// The loaded map's loading info, looked up once per map (the game holds
+/// the decl as `m_mapInfo` from the map load).
+pub fn current_loading_info(catalog: &Catalog) -> Option<LoadingInfo> {
+    static CACHE: RwLock<Option<(String, Option<LoadingInfo>)>> = RwLock::new(None);
+    let map = current_map()?;
+    if let Some((cached, info)) = CACHE.read().unwrap().as_ref() {
+        if *cached == map {
+            return info.clone();
+        }
+    }
+    let info = find(catalog, &map).and_then(|edit| loading_info(&edit));
+    *CACHE.write().unwrap() = Some((map, info.clone()));
+    info
+}
+
 pub fn loading_info(edit: &Fields) -> Option<LoadingInfo> {
     let info = scope(edit, "m_loadingInfo")?;
     Some(LoadingInfo { mission_index: int(info, "m_missionIndex", 0), mission_name: atom(info, "m_missionName").unwrap_or("").to_string() })
@@ -53,3 +68,4 @@ mod tests {
         assert_eq!(info, super::LoadingInfo { mission_index: 2, mission_name: "Mission_EotW".into() });
     }
 }
+

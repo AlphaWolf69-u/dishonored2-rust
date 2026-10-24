@@ -185,6 +185,7 @@ struct Prepared {
     screen: (i32, i32),
     player: Player,
     images: HashMap<CharRef, Arc<Image>>,
+    options: crate::gameplay::options::Options,
 }
 
 fn prepare(screen: (i32, i32)) -> Result<Prepared, String> {
@@ -195,7 +196,10 @@ fn prepare(screen: (i32, i32)) -> Result<Prepared, String> {
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     pause_state::file_ready(&mut player, screen)?;
     let images = decode(&catalog, &player, &resources)?;
-    Ok(Prepared { screen, player, images })
+    let options = pause_state::read_options(&catalog)?;
+    // The chapter header's map lookup, cached per map.
+    crate::gameplay::map_info::current_loading_info(&catalog);
+    Ok(Prepared { screen, player, images, options })
 }
 
 fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String> {
@@ -205,7 +209,7 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
     let catalog = installed_catalog()?;
     let language = lang::read_text_language(&base)?;
     let movie = pause_state::movie(debug_character());
-    let Prepared { mut player, images: pause_images, .. } = match prepared.filter(|p| p.screen == screen) {
+    let Prepared { mut player, images: pause_images, options, .. } = match prepared.filter(|p| p.screen == screen) {
         Some(p) => p,
         None => prepare(screen)?,
     };
@@ -221,7 +225,7 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
         pause_state::file_ready(&mut g, screen)?;
         Ok((g, resources))
     });
-    let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, state, config, load_global)?;
+    let mut pause = pause_state::Pause::with_options(&mut player, options, &base, state, config, load_global)?;
     phases.push(("pause state", std::time::Instant::now()));
     pause.on_flash_loaded(&mut player)?;
     pause.show(&mut player)?;

@@ -125,8 +125,18 @@ impl Pause {
         config_path: Option<PathBuf>,
         load_global: Box<dyn FnMut() -> std::result::Result<(Player, Vec<(usize, String)>), String>>,
     ) -> std::result::Result<Pause, String> {
-        let mut read = |path: &str| catalog.read(path).ok().flatten();
-        let options = console::shared().write(|console| options::read(&mut read, console))?;
+        Pause::with_options(player, read_options(catalog)?, base, state, config_path, load_global)
+    }
+
+    /// [`Pause::new`] with options already read ([`read_options`]).
+    pub fn with_options(
+        player: &mut Player,
+        options: Options,
+        base: &Path,
+        state: GameState,
+        config_path: Option<PathBuf>,
+        load_global: Box<dyn FnMut() -> std::result::Result<(Player, Vec<(usize, String)>), String>>,
+    ) -> std::result::Result<Pause, String> {
         let strings = player.state.borrow().strings.clone().ok_or("no string table")?;
         let profile = crate::gameplay::save_list::Saves::locate()
             .and_then(|s| crate::gameplay::save_list::read_profile(&s.folder))
@@ -452,13 +462,17 @@ pub fn current_state(player: &Player, language: &str, catalog: &crate::assets::a
     }
 }
 
+/// The options sections the pause state shows (`FUN_140516d70`); the game
+/// creates them with the game, so the client reads them before the open.
+pub fn read_options(catalog: &crate::assets::archive::Catalog) -> std::result::Result<Options, String> {
+    let mut read = |path: &str| catalog.read(path).ok().flatten();
+    Ok(console::shared().write(|console| options::read(&mut read, console))?)
+}
+
 /// The chapter header's values (`FUN_1404f3640`).
 pub fn with_chapter(mut state: GameState, strings: &crate::assets::lang::StringTable, catalog: &crate::assets::archive::Catalog) -> GameState {
     use crate::gameplay::map_info;
-    state.chapter = map_info::current_map()
-        .and_then(|map| map_info::find(catalog, &map))
-        .and_then(|edit| map_info::loading_info(&edit))
-        .map(|info| (strings.lookup(&info.mission_name).to_string(), info.mission_index));
+    state.chapter = map_info::current_loading_info(catalog).map(|info| (strings.lookup(&info.mission_name).to_string(), info.mission_index));
     let seconds = crate::gameplay::save_list::Saves::locate().map_or(0, |s| s.profile_int(&format!("PlayTime_{}", s.campaign)));
     state.play_time = crate::gameplay::save_list::format_playtime(strings, seconds);
     state.playthrough_index = 1;
