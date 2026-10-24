@@ -2146,4 +2146,62 @@ mod tests {
         );
         assert!(convex_quad_order(&[[0.0; 3]; 4]).is_err());
     }
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_cable_physics_system_layout() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        let path = "generated/physsystem/models/environment/gameplay/speaker_01/cables_speaker/cable_01_rgdl.hkx";
+        let bytes = catalog.read(path).unwrap().unwrap();
+        let world = parse_embedded_havok(&bytes).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        fn dump(world: &PhysWorld, index: usize, depth: usize, seen: &mut std::collections::BTreeSet<usize>) {
+            if depth > 6 || !seen.insert(index) {
+                return;
+            }
+            let ty = &world.types[index];
+            println!("{}TYPE {} size={} parent={} sub={:#x} ptr={}", "  ".repeat(depth), ty.name, ty.byte_size,
+                world.types.get(ty.parent).map(|p| p.name.as_str()).unwrap_or("-"), ty.subtype, ty.pointer);
+            for field in &ty.fields {
+                println!("{}  +{:#x} {} : {}", "  ".repeat(depth), field.offset, field.name, world.types[field.type_index].name);
+                dump(world, field.type_index, depth + 2, seen);
+            }
+            if ty.parent != 0 && ty.parent < world.types.len() {
+                dump(world, ty.parent, depth + 1, seen);
+            }
+            if ty.pointer != 0 && ty.pointer < world.types.len() {
+                dump(world, ty.pointer, depth + 1, seen);
+            }
+        }
+        for wanted in ["hknpBodyCinfo", "hknpShapeMassProperties", "hknpConvexPolytopeShape", "hknpConvexShape", "hknpShape", "hkpRagdollMotorConstraintAtom", "hkpConstraintMotor", "hkCompressedMassProperties", "hkpPositionConstraintMotor"] {
+            if let Some(index) = world.types.iter().position(|t| t.name == wanted) {
+                let mut fresh = std::collections::BTreeSet::new();
+                dump(&world, index, 0, &mut fresh);
+            }
+        }
+        for (index, item) in world.items.iter().enumerate() {
+            let ty = &world.types[item.type_index];
+            if ["hkVector4", "hkVector4f", "char", "hkUint8", "hkRefPtr"].contains(&ty.name.as_str()) {
+                continue;
+            }
+            println!("ITEM {index} {} count={} offset={:#x}", ty.name, item.count, item.offset);
+            dump(&world, item.type_index, 1, &mut seen);
+            let at = world.data_start + item.offset;
+            let size = ty.byte_size * item.count;
+            let data = &bytes[at..at + size.min(0x400)];
+            for row in (0..data.len()).step_by(16) {
+                let end = (row + 16).min(data.len());
+                let words: Vec<String> = data[row..end].chunks(4).map(|c| {
+                    let mut w = [0u8; 4];
+                    w[..c.len()].copy_from_slice(c);
+                    format!("{:08x}", u32::from_le_bytes(w))
+                }).collect();
+                let floats: Vec<String> = data[row..end].chunks_exact(4).map(|c| format!("{:.4}", f32::from_le_bytes(c.try_into().unwrap()))).collect();
+                println!("    +{row:04x} {}  {}", words.join(" "), floats.join(" "));
+            }
+        }
+    }
+
 }
