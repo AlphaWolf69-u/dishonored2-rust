@@ -658,4 +658,88 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "audit; requires installed archives"]
+    fn installed_bind_info_audit() {
+        let catalog = crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let mut keys = std::collections::BTreeMap::<String, usize>::new();
+        for path in catalog.paths_with_suffix(".entities") {
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            let Ok(document) = entities::parse(&entities::declaration_text(&bytes)) else { continue };
+            let class = |d: &entities::Definition| {
+                d.fields
+                    .iter()
+                    .find(|(k, _)| k == "class")
+                    .and_then(|(_, v)| match v {
+                        entities::Value::Atom(a) => Some(a.trim_matches('"').to_owned()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "?".into())
+            };
+            let classes: HashMap<&str, String> = document.definitions.iter().map(|d| (d.id.as_str(), class(d))).collect();
+            for d in &document.definitions {
+                let Some((_, entities::Value::Scope(edit))) = d.fields.iter().find(|(k, _)| k == "edit") else { continue };
+                let Some((_, entities::Value::Scope(bind))) = edit.iter().find(|(k, _)| k == "bindInfo") else { continue };
+                let parent = bind.iter().find(|(k, _)| k == "bindParent").and_then(|(_, v)| match v {
+                    entities::Value::Atom(a) => Some(a.trim_matches('"').to_owned()),
+                    _ => None,
+                });
+                let fields: Vec<_> = bind.iter().map(|(k, _)| k.as_str()).collect();
+                let parent_class = parent.as_deref().and_then(|p| classes.get(p).cloned()).unwrap_or("?".into());
+                *keys.entry(format!("{} -> {parent_class} {:?}", class(d), fields)).or_default() += 1;
+            }
+        }
+        for (kind, count) in keys {
+            println!("{count:6} {kind}");
+        }
+    }
+
+    #[test]
+    #[ignore = "audit; requires installed archives"]
+    fn installed_moving_bind_parent_audit() {
+        let catalog = crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+        for path in catalog.paths_with_suffix(".entities") {
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            let Ok(document) = entities::parse(&entities::declaration_text(&bytes)) else { continue };
+            let read = |p: &str| {
+                catalog.read(p).map(|b| b.map(|b| entities::declaration_text(&b).into_owned())).map_err(|e| e.to_string())
+            };
+            let mut placements = entities::render_placements(&document);
+            let Ok(more) = entities::placed_models_with_inheritance(&document, read) else { continue };
+            placements.extend(more);
+            let Ok(recipes) = super::load(&catalog, &document, &placements) else { continue };
+            let bodies: HashSet<&str> = recipes
+                .assemblies
+                .iter()
+                .flat_map(|a| a.bodies.iter().filter(|b| b.mass.is_some()).map(|b| b.entity_id.as_str()))
+                .collect();
+            let systems: HashSet<&str> = recipes.systems.iter().map(|s| s.entity_id.as_str()).collect();
+            let class = |id: &str| {
+                document.definitions.iter().find(|d| d.id == id).and_then(|d| {
+                    d.fields.iter().find(|(k, _)| k == "class").map(|(_, v)| format!("{v:?}"))
+                })
+            };
+            for bind in entities::entity_binds(&document) {
+                let parent = if bodies.contains(bind.parent.as_str()) {
+                    "rigid body"
+                } else if systems.contains(bind.parent.as_str()) {
+                    "physics system"
+                } else {
+                    continue;
+                };
+                let rendered = placements.iter().any(|p| p.id == bind.entity_id);
+                *kinds
+                    .entry(format!(
+                        "{parent} tag={} rendered={rendered} child {:?}",
+                        bind.tag.is_some(),
+                        class(&bind.entity_id)
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        for (kind, count) in kinds {
+            println!("{count:6} {kind}");
+        }
+    }
 }

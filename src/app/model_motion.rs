@@ -18,6 +18,59 @@ pub(super) struct ModelPose {
 #[derive(Resource, Default)]
 pub(super) struct ModelPoseUpdates(pub Vec<ModelPose>);
 
+/// Entities placed from a bind parent every frame (1407506d0): the child
+/// keeps its spawn transform relative to the parent (or the parent's tag
+/// joint, rigid with a rigidly moved parent), so it takes the parent's world
+/// delta. Children of a child follow transitively.
+#[derive(Resource, Default)]
+pub(super) struct BoundModels {
+    binds: Vec<crate::entities::EntityBind>,
+    /// Bound child placements by parent placement, resolved on first use.
+    children: Option<HashMap<usize, Vec<usize>>>,
+}
+
+impl BoundModels {
+    pub(super) fn new(binds: Vec<crate::entities::EntityBind>) -> Self {
+        Self { binds, children: None }
+    }
+
+    fn children(&mut self, placements: &[crate::entities::PlacedModel]) -> &HashMap<usize, Vec<usize>> {
+        self.children.get_or_insert_with(|| {
+            let mut by_id = HashMap::<&str, Vec<usize>>::new();
+            for (index, placement) in placements.iter().enumerate() {
+                by_id.entry(placement.id.as_str()).or_default().push(index);
+            }
+            let mut children = HashMap::<usize, Vec<usize>>::new();
+            for bind in &self.binds {
+                let (Some(parents), Some(bound)) = (by_id.get(bind.parent.as_str()), by_id.get(bind.entity_id.as_str()))
+                else {
+                    continue;
+                };
+                for &parent in parents {
+                    children.entry(parent).or_default().extend(bound);
+                }
+            }
+            children
+        })
+    }
+
+    /// Add the poses of children whose nearest posed ancestor moved.
+    pub(super) fn propagate(&mut self, poses: &mut Vec<ModelPose>, placements: &[crate::entities::PlacedModel]) {
+        let children = self.children(placements);
+        let mut posed: std::collections::HashSet<usize> = poses.iter().map(|p| p.placement).collect();
+        let mut stack: Vec<ModelPose> = poses.clone();
+        while let Some(pose) = stack.pop() {
+            for &child in children.get(&pose.placement).into_iter().flatten() {
+                if posed.insert(child) {
+                    let child = ModelPose { placement: child, delta: pose.delta };
+                    poses.push(child);
+                    stack.push(child);
+                }
+            }
+        }
+    }
+}
+
 struct SurfaceBinding {
     index: usize,
     /// World-baked vertices retain their initial pose. Only their rigid delta
@@ -78,7 +131,11 @@ pub(super) fn publish_model_poses(
     scene: Option<Res<super::SceneData>>,
     probe_buffer: Option<Res<ModelProbeLighting>>,
     mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
+    bound: Option<ResMut<BoundModels>>,
 ) {
+    if let Some(mut bound) = bound {
+        bound.propagate(&mut pending.0, &placements.0);
+    }
     for pose in pending.0.drain(..) {
         let Some(placement) = placements.0.get_mut(pose.placement) else {
             error!(
@@ -228,6 +285,39 @@ pub(super) fn publish_model_poses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bound_children_take_the_nearest_posed_ancestor_delta() {
+        let placement = |id: &str| crate::entities::PlacedModel {
+            id: id.into(),
+            resource_path: String::new(),
+            position: [0.; 3],
+            scale: [1.; 3],
+            rotation: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+            custom_materials: Vec::new(),
+            max_visible_range: None,
+        };
+        let placements = ["turnbuckle", "speaker", "grille", "lamp", "other"].map(placement);
+        let bind = |child: &str, parent: &str| crate::entities::EntityBind {
+            entity_id: child.into(),
+            parent: parent.into(),
+            tag: None,
+        };
+        let mut bound = BoundModels::new(vec![
+            bind("speaker", "turnbuckle"),
+            bind("grille", "speaker"),
+            bind("lamp", "turnbuckle"),
+        ]);
+        let moved = |x: f32| [[1., 0., 0., x], [0., 1., 0., 0.], [0., 0., 1., 0.]];
+        let mut poses = vec![
+            ModelPose { placement: 0, delta: moved(1.) },
+            ModelPose { placement: 3, delta: moved(5.) },
+        ];
+        bound.propagate(&mut poses, &placements);
+        let mut got: Vec<_> = poses.iter().map(|p| (p.placement, p.delta[0][3])).collect();
+        got.sort_by_key(|p| p.0);
+        assert_eq!(got, [(0, 1.), (1, 1.), (2, 1.), (3, 5.)]);
+    }
 
     #[test]
     fn physics_pose_updates_geometry_queries_and_both_shadow_bound_sources() {

@@ -94,6 +94,10 @@ pair rule, and only systems on a layer that collides with nothing (HIDDEN,
 every placed system in the game) are simulated, since machinery bodies have
 no contacts. `app/physics_skinning.rs` poses those MD6 placements from the
 bodies each frame (per-placement meshes and shadow palettes).
+Entities with `bindInfo` follow their bind parent (140752900 attach,
+1407506d0 per frame): `app/model_motion.rs` gives bound children, transitively,
+the world delta of their nearest moved ancestor (machinery bodies, scene
+motion). Unrendered children (FX, sounds) have no consumer yet.
 
 Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
 scene loops and their startup graph bindings from the installed archives.
