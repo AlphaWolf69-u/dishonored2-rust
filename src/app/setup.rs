@@ -79,6 +79,7 @@ pub(super) fn setup(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     view_settings: Res<ViewSettings>,
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
+    machinery: Option<Res<super::machinery::AmbientMachinery>>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -579,6 +580,7 @@ pub(super) fn setup(
     let mut skin_palettes =
         HashMap::<String, Result<Arc<shadow_updates::RestSkinning>, String>>::new();
     let mut placed_model_default_ranges = 0usize;
+    let deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
     for (number, placement) in expanded_placements.iter().enumerate() {
         if trace_startup {
             eprintln!(
@@ -698,6 +700,17 @@ pub(super) fn setup(
                             )),
                             Transform::IDENTITY,
                         )
+                    } else if deformed.contains(&number) {
+                        (
+                            meshes.add(source_mesh(
+                                &surface.positions,
+                                &surface.uvs,
+                                &surface.indices,
+                                &surface.packed_channels,
+                                instance.to_matrix().determinant() < 0.0,
+                            )),
+                            instance,
+                        )
                     } else {
                         (
                             model_mesh_handles
@@ -722,6 +735,10 @@ pub(super) fn setup(
                     };
                     retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
                     if let Some(mut mesh) = meshes.get_mut(&mesh) {
+                        // Physics-system skinning re-poses these every frame.
+                        if deformed.contains(&number) {
+                            mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
+                        }
                         retain_skin_inputs(&mut mesh, surface);
                         if skin_influences != 0 {
                             match skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
