@@ -9,6 +9,30 @@ use bevy::camera::PerspectiveProjection;
 use bevy::prelude::*;
 use std::path::Path;
 
+/// Bevy keys mesh attributes by id: a shared id silently replaces one
+/// channel with another and makes every layout check match both.
+#[test]
+fn custom_vertex_attribute_ids_are_distinct() {
+    use crate::rendering::bevy_backend::{shadow_pass, water_world_colour};
+    let ids = [
+        DH2_BITANGENT,
+        DH2_NORMAL_W,
+        super::materials::DH2_MODEL_DEPTH_HACK,
+        shadow_pass::VEGETATION_NORMAL,
+        shadow_pass::VEGETATION_COLOR,
+        shadow_pass::VEGETATION_POSITION,
+        shadow_pass::SKIN_INDICES_0,
+        shadow_pass::SKIN_WEIGHTS_0,
+        shadow_pass::SKIN_INDICES_1,
+        shadow_pass::SKIN_WEIGHTS_1,
+        water_world_colour::NORMAL_W,
+    ]
+    .map(|attribute| attribute.id);
+    for (i, id) in ids.iter().enumerate() {
+        assert!(!ids[..i].contains(id), "attribute {i} reuses an id");
+    }
+}
+
 #[path = "tests/approach_visibility.rs"]
 mod approach_visibility;
 #[path = "tests/environment_reflection.rs"]
