@@ -85,6 +85,7 @@ mod camera_effects;
 mod lens_scene;
 mod fog_volumes;
 mod fog_objects;
+mod vegetation_wind;
 use materials::{
     DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT, DH2_NORMAL_W,
 };

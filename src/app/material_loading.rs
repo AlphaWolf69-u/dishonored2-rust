@@ -455,6 +455,7 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) probes: Option<&'a probe_lighting::ProbeLightingSet>,
     pub(super) cache: MaterialCache,
     pub(super) shadow_materials: ShadowMaterials,
+    pub(super) vegetation: super::vegetation_wind::VegetationMaterials,
     pub(super) water_materials: crate::rendering::bevy_backend::water_scene::WaterMaterials,
     pub(super) boat_materials: crate::rendering::bevy_backend::boat_scene::BoatMaterials,
     pub(super) diffuse_image_slots: HashMap<String, usize>,
@@ -574,6 +575,13 @@ impl MaterialResolver<'_> {
         let index = self.probe_sh_records.len() as u32;
         self.probe_sh_records.push(record);
         index
+    }
+
+    /// VS14200 shadow casters and every forward arkVegetation material read
+    /// the original local position, NORMAL.xy and COLOR channels.
+    pub(super) fn needs_vegetation_channels(&self, material: &MaterialHandle) -> bool {
+        self.shadow_materials.uses_vegetation(material)
+            || self.vegetation.parameters.contains_key(material)
     }
 
     pub(super) fn upload_probe_records(&mut self) {
@@ -1227,9 +1235,44 @@ impl MaterialResolver<'_> {
                     cloud_density: None,
                     cloud_back_density: None,
                     linear_clamp_image: Some(self.linear_clamp_image.clone()),
+                    vegetation_slots: self.vegetation.slots.clone(),
+                    vegetation_instances: self.vegetation.instances.clone(),
                 },
             }))
         };
+        if surface.program() == material_surface::Program::Vegetation {
+            // The forward VS reads the same vegetAnim vectors as VS14200,
+            // whichever shadow class (or none) this material resolves to.
+            let parameters = (|| {
+                let catalog = self
+                    .catalog
+                    .ok_or("vegetation parameter catalog is unavailable")?;
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let p = resolve_shadow_material_parameters(
+                    library,
+                    catalog,
+                    bytes,
+                    shader_cache::CachedRigidShadowClass::Vegetation,
+                    false,
+                )?
+                .vegetation(None)?;
+                Ok([
+                    p.main_variation[0],
+                    p.main_frequency[0],
+                    p.main_amplitude[0],
+                    p.minimum_wind[0],
+                    p.leaf_frequency[0],
+                    p.leaf_amplitude[0],
+                    p.branch_amplitude[0],
+                ])
+            })();
+            self.vegetation.parameters.insert(handle.clone(), parameters);
+        }
         let shadow = resolve_shadow_source_inputs(
             self.programs.as_deref_mut(),
             bytes,

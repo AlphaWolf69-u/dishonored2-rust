@@ -59,3 +59,12 @@ The atmosphere scene fixture exercises an ordinary StandardMaterial alongside
 the rewrite's sky and fog. Validation of this guard is pending that GPU check.
 
 - Transparent fog vertex calls carry the existing mesh tag to the shared per-object area-fog parameter table (binding167), without altering irradiance tags or mesh geometry. Numerical area-selection fixtures and material GPU validation cover the transport.
+
+- arkVegetation wind: `forward_io.wgsl`/`prepass_io.wgsl` add the optional
+  `DH2_VEGETATION_WIND` inputs at locations 10..12 (original local position,
+  NORMAL.xy, COLOR.xyz). `mesh.wgsl` and `prepass.wgsl` replace only the world
+  position with the rewrite-owned `dh2_vegetation_wind::vegetation_world_position`
+  (material bindings 168/169) before clip projection, so probe lighting and fog
+  see the bent position as in the installed forward VS. Normals, tangents and
+  upstream materials are unchanged; a missing per-instance record keeps the
+  rest position.

@@ -13,6 +13,9 @@
 #ifdef DH2_FOG_VERTEX
 #import dh2_material_fog::material_fog_vertex
 #endif
+#ifdef DH2_VEGETATION_WIND
+#import dh2_vegetation_wind::{vegetation_slot, vegetation_world_position}
+#endif
 
 #ifdef DH2_DECAL
 @group(#{MATERIAL_BIND_GROUP}) @binding(155) var<uniform> decal_zbias: f32;
@@ -89,6 +92,13 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 
 #ifdef VERTEX_POSITIONS
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+#ifdef DH2_VEGETATION_WIND
+    let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+    if vegetation != 0xffffffffu {
+        out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
+            vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
+    }
+#endif
     out.position = position_world_to_clip(out.world_position.xyz);
 #ifdef DH2_DECAL
     // arkDecal: offset homogeneous Z, preserving the authored world position.

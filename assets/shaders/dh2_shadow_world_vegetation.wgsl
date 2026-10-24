@@ -7,7 +7,7 @@ struct WorldVegetationShadowCB {
     y: vec4<f32>,
     x: vec4<f32>,
     uv_scale_bias: vec4<f32>,
-    parameters: ShadowWindParameters,
+    parameters: VegetationAnimation,
     local_time: vec2<f32>,
     instance_buffer_offset: u32,
     wind_buffer_offset: u32,
@@ -37,7 +37,7 @@ fn world_vegetation_shadow_position(local_position: vec3<f32>, normal_xy: vec2<f
     let row_x = inverseSqrt(dot(model.x.xyz, model.x.xyz)) * model.x.xyz;
     let row_y = inverseSqrt(dot(model.y.xyz, model.y.xyz)) * model.y.xyz;
     let local_wind = vec2<f32>(dot(row_x, wind.xyz), dot(row_y, wind.xyz)) * wind.w;
-    let bent = vec4<f32>(shadow_wind_position(state.parameters, state.local_time.x,
+    let bent = vec4<f32>(animate_vegetation(state.parameters, state.local_time.x,
         local_wind, max(wind.w, state.parameters.leaf_minimum.x),
         local_position, normal_xy, color), 1.0);
     let world = vec4<f32>(dot(bent, model.x), dot(bent, model.y), dot(bent, model.z), 1.0);
@@ -51,7 +51,7 @@ fn world_fixed_vegetation_shadow_position(position: vec3<f32>, normal_xy: vec2<f
 {
     let index = visible_indices[state.instance_buffer_offset + instance_id] & 0x00ffffffu;
     let model = matrices[index];
-    let bent = vec4<f32>(shadow_wind_position(state.parameters, state.local_time.x,
+    let bent = vec4<f32>(animate_vegetation(state.parameters, state.local_time.x,
         vec2<f32>(0.0, 0.01), max(state.parameters.leaf_minimum.x, 0.0),
         position, normal_xy, color), 1.0);
     let world = vec4<f32>(dot(bent, model.x), dot(bent, model.y), dot(bent, model.z), 1.0);

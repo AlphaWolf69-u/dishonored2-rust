@@ -9,6 +9,9 @@
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 }
+#ifdef DH2_VEGETATION_WIND
+#import dh2_vegetation_wind::{vegetation_slot, vegetation_world_position}
+#endif
 
 #ifdef DEFERRED_PREPASS
 #import bevy_pbr::rgb9e5
@@ -89,6 +92,15 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif // SKINNED
 
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+#ifdef DH2_VEGETATION_WIND
+    // Same placement as the forward pass; this rewrite has no motion-vector
+    // prepass, so the HLSL's previous-frame AnimateVegetation is not needed.
+    let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+    if vegetation != 0xffffffffu {
+        out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
+            vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
+    }
+#endif
     out.position = position_world_to_clip(out.world_position.xyz);
 #ifdef UNCLIPPED_DEPTH_ORTHO_EMULATION
     out.unclipped_depth = out.position.z;

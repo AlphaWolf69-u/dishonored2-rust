@@ -1583,6 +1583,7 @@ fn authored_surface_gpu_pipelines_compile() {
         Shader::from_wgsl
     );
     shadow_sampling::register_shaders(&mut app);
+    crate::rendering::bevy_backend::vegetation_wind::register_shaders(&mut app);
     crate::rendering::bevy_backend::fog_material::register_shaders(&mut app);
     app.add_plugins(auto_exposure::ExposurePlugin);
     app.finish();
@@ -1617,7 +1618,15 @@ fn authored_surface_gpu_pipelines_compile() {
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; n]);
     mesh.insert_attribute(DH2_BITANGENT, vec![[0.0, 1.0, 0.0]; n]);
     mesh.insert_attribute(DH2_NORMAL_W, vec![0.0; n]);
+    let mut wind_mesh = mesh.clone();
+    wind_mesh.insert_attribute(shadow_pass::VEGETATION_POSITION, vec![[0.0, 0.0, 0.5]; n]);
+    wind_mesh.insert_attribute(shadow_pass::VEGETATION_NORMAL, vec![[0.5, -0.5]; n]);
+    wind_mesh.insert_attribute(shadow_pass::VEGETATION_COLOR, vec![[0.2, 0.4, 0.6]; n]);
+    let wind_mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(wind_mesh);
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+    let vegetation_buffers = super::vegetation_wind::VegetationMaterials::new(
+        &mut app.world_mut().resource_mut::<Assets<ShaderBuffer>>(),
+    );
     let sh = app
         .world_mut()
         .resource_mut::<Assets<ShaderBuffer>>()
@@ -1725,6 +1734,8 @@ fn authored_surface_gpu_pipelines_compile() {
                 cloud_density: None,
                 cloud_back_density: None,
                 linear_clamp_image: None,
+                vegetation_slots: vegetation_buffers.slots.clone(),
+                vegetation_instances: vegetation_buffers.instances.clone(),
             },
         });
     // Establish the target, then add a material without a binding while the
@@ -1859,7 +1870,7 @@ fn authored_surface_gpu_pipelines_compile() {
         Transform::from_xyz(0.6, 0.0, 0.0),
     ));
     app.world_mut().spawn((
-        Mesh3d(mesh.clone()),
+        Mesh3d(wind_mesh.clone()),
         MeshMaterial3d(vegetation),
         Transform::from_xyz(0.0, 0.6, 0.0),
     ));
@@ -1906,6 +1917,7 @@ fn authored_surface_gpu_pipelines_compile() {
     let mut validated = 0;
     let mut prepass_validated = 0;
     let mut fog_validated = 0;
+    let mut wind_validated = [0; 2];
     for _ in 0..100 {
         app.update();
         let cache = app
@@ -1915,6 +1927,7 @@ fn authored_surface_gpu_pipelines_compile() {
         validated = 0;
         prepass_validated = 0;
         fog_validated = 0;
+        wind_validated = [0; 2];
         for p in cache.pipelines() {
             if let CachedPipelineState::Err(e) = &p.state {
                 panic!("GPU shader failure: {e}");
@@ -1922,6 +1935,14 @@ fn authored_surface_gpu_pipelines_compile() {
             if let (CachedPipelineState::Ok(_), PipelineDescriptor::RenderPipelineDescriptor(d)) =
                 (&p.state, &p.descriptor)
             {
+                let defined = |wanted: &str| {
+                    d.vertex.shader_defs.iter().any(|value| {
+                        matches!(value, bevy::shader::ShaderDefVal::Bool(name, true) if name == wanted)
+                    })
+                };
+                if defined("DH2_VEGETATION_WIND") {
+                    wind_validated[usize::from(defined("PREPASS_PIPELINE"))] += 1;
+                }
                 if let Some(fragment) = d.fragment.as_ref() {
                     if fragment.shader == PROBE_SHADER_HANDLE
                         || fragment.shader == DECAL_SHADER_HANDLE
@@ -1938,7 +1959,11 @@ fn authored_surface_gpu_pipelines_compile() {
                 }
             }
         }
-        if validated >= 7 && prepass_validated > 0 && fog_validated >= 2 {
+        if validated >= 7
+            && prepass_validated > 0
+            && fog_validated >= 2
+            && wind_validated.iter().all(|count| *count > 0)
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1946,6 +1971,10 @@ fn authored_surface_gpu_pipelines_compile() {
     assert!(
         validated >= 7 && prepass_validated > 0 && fog_validated>=2,
         "surface, decal, vegetation, prepass and both fog routes must compile: {validated} colour / {prepass_validated} prepass / {fog_validated} fog"
+    );
+    assert!(
+        wind_validated.iter().all(|count| *count > 0),
+        "forward and prepass vegetation wind must compile: {wind_validated:?}"
     );
 
     app.world_mut().entity_mut(camera).insert(Msaa::Off);
@@ -7422,6 +7451,8 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             cloud_density: None,
             cloud_back_density: None,
             linear_clamp_image: None,
+            vegetation_slots: default(),
+            vegetation_instances: default(),
         },
     });
     app.insert_resource(materials);

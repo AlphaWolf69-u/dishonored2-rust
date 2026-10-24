@@ -79,7 +79,7 @@ fn vegetation_shadow_vs_matches_stream_output_gpu() {
         "{}\n{}\n{}",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/assets/shaders/dh2_shadow_wind.wgsl"
+            "/assets/shaders/dh2_animate_vegetation.wgsl"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -1,7 +1,9 @@
-// Shared bending arithmetic from the installed rigid and instanced
-// arkvegetation shadow VS. Wind is supplied by each ORIGINAL input ABI;
-// this helper does not choose a clock, wind direction, amplitude or fallback.
-struct ShadowWindParameters {
+// arkvegetation's AnimateVegetation, as compiled into the installed rigid and
+// instanced shadow VS and the forward VS (674e25d0: identical bending ops).
+// Wind is supplied by each ORIGINAL input ABI; this helper does not choose a
+// clock, wind direction, amplitude or fallback. Shadow programs concatenate
+// this file; forward materials import it as `dh2_animate_vegetation`.
+struct VegetationAnimation {
     main_variance: vec4<f32>,
     main_frequency: vec4<f32>,
     main_amplitude: vec4<f32>,
@@ -10,7 +12,7 @@ struct ShadowWindParameters {
     leaf_amplitude: vec4<f32>,
     branch_amplitude: vec4<f32>,
 }
-fn shadow_wind_position(p: ShadowWindParameters, time: f32,
+fn animate_vegetation(p: VegetationAnimation, time: f32,
     local_wind: vec2<f32>, leaf_strength: f32,
     position: vec3<f32>, normal_xy: vec2<f32>, color: vec3<f32>) -> vec3<f32>
 {

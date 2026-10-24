@@ -708,6 +708,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
     app.insert_resource(super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(),entity_document.as_ref()).map_err(std::io::Error::other)?);
+    app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(catalog.as_ref().unwrap(),entity_document.as_ref()));
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     let presentation = game_settings::read_presentation_settings().map_err(std::io::Error::other)?;
     let mut display_state = None;
@@ -930,6 +931,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             (
                 shadow_updates::initialize_screen_shadow_source,
                 setup,
+                super::vegetation_wind::initialize_vegetation_wind,
                 initialize_parallel_shadow_owner,
                 shadow_updates::initialize_parallel_receiver_source,
                 local_shadow_updates::initialize_local_shadow_owner,
@@ -1047,6 +1049,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .after(game_clock_runtime::ClockSystems::PublishView)
                 .after(bevy::transform::TransformSystems::Propagate),
         )
+        .add_systems(
+            PostUpdate,
+            super::vegetation_wind::update_vegetation_wind
+                .after(game_clock_runtime::ClockSystems::PublishView),
+        )
         .add_systems(PostUpdate,super::water_scene::publish_water_frame
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
@@ -1105,6 +1112,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         Shader::from_wgsl
     );
     shadow_sampling::register_shaders(&mut app);
+    crate::rendering::bevy_backend::vegetation_wind::register_shaders(&mut app);
     app.add_systems(
         PostUpdate,
         (

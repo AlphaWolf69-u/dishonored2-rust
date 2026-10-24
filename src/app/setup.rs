@@ -282,6 +282,7 @@ pub(super) fn setup(
     sampler.anisotropy_clamp = 1;
     let linear_clamp_image = images.add(linear_clamp);
     let material_exposure = probe_sh_buffers.add(auto_exposure::initial_material_exposure());
+    let vegetation = super::vegetation_wind::VegetationMaterials::new(&mut probe_sh_buffers);
     let loaded_reflections =
         super::environment_reflection::load(
             catalog,
@@ -326,6 +327,7 @@ pub(super) fn setup(
         probes: scene.environment_probes.as_ref(),
         cache: default(),
         shadow_materials: ShadowMaterials::default(),
+        vegetation,
         water_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: HashMap::new(),
@@ -526,9 +528,7 @@ pub(super) fn setup(
                 }
             };
             vegetation_meshes.prepare(
-                resolver
-                    .shadow_materials
-                    .uses_vegetation(&render_instance.material),
+                resolver.needs_vegetation_channels(&render_instance.material),
                 &render_instance.mesh,
                 &mut meshes,
                 &source.positions,
@@ -731,7 +731,7 @@ pub(super) fn setup(
                         }
                     }
                     vegetation_meshes.prepare(
-                        resolver.shadow_materials.uses_vegetation(&mat.handle),
+                        resolver.needs_vegetation_channels(&mat.handle),
                         &mesh,
                         &mut meshes,
                         &surface.positions,
@@ -932,7 +932,7 @@ pub(super) fn setup(
             };
             retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
             vegetation_meshes.prepare(
-                resolver.shadow_materials.uses_vegetation(&mat.handle),
+                resolver.needs_vegetation_channels(&mat.handle),
                 &mesh,
                 &mut meshes,
                 &surface.positions,
@@ -1629,6 +1629,7 @@ pub(super) fn setup(
     shadow_image_slots.sort_unstable();
     shadow_image_slots.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
         let (water,sources)=super::water_scene::WaterScene::load(catalog,parameters,&scene.area_environments,&resolver.water_materials)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));

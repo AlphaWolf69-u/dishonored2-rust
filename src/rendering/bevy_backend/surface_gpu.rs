@@ -48,10 +48,12 @@ pub struct SurfaceUniform {
 pub struct SurfaceKey(pub [u32; 16]);
 
 impl SurfaceKey {
-    /// These ordinary Z programs return without sampling when alphaTest is off.
-    /// Procedural liquid/sky and unsupported programs retain their material path.
+    /// arkDefault's Z program returns without sampling when alphaTest is off.
+    /// arkVegetation's Z VS still runs AnimateVegetation from its material's
+    /// wind records; procedural liquid/sky and unsupported programs also keep
+    /// their material path.
     pub fn depth_needs_material(self) -> bool {
-        !matches!(self.0[6], 1 | 2) || self.0[7] & 1 != 0
+        self.0[6] != 1 || self.0[7] & 1 != 0
     }
 
     /// The Z shader reads only the program/alpha switches. Keep procedural
