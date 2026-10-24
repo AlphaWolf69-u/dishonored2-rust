@@ -6,6 +6,7 @@ pub mod navigation;
 pub mod message_box;
 pub mod options;
 pub mod pause_state;
+pub mod map_info;
 pub mod save_list;
 pub mod machinery;
 pub mod machinery_world;

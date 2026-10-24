@@ -131,7 +131,7 @@ fn debug_pause_menu_elements() {
     let (mut player, _) = Player::load_installed(&catalog, language, "ui/emily_pause_menu.iggy").unwrap();
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
-    let state = crate::gameplay::pause_state::current_state(&player, language);
+    let state = crate::gameplay::pause_state::current_state(&player, language, &catalog);
     let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
     pause.on_flash_loaded(&mut player).unwrap();
     pause.show(&mut player).unwrap();
@@ -257,7 +257,7 @@ fn debug_pause_mouse_hover() {
     let (mut player, _) = Player::load_installed(&catalog, language, "ui/emily_pause_menu.iggy").unwrap();
     crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
     let user = crate::platform::game_settings::configuration_path().ok().and_then(|p| std::fs::read_to_string(p).ok());
-    let state = crate::gameplay::pause_state::current_state(&player, language);
+    let state = crate::gameplay::pause_state::current_state(&player, language, &catalog);
     let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
     pause.on_flash_loaded(&mut player).unwrap();
     pause.show(&mut player).unwrap();

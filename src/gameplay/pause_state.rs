@@ -366,6 +366,16 @@ pub struct GameState {
     pub trial: bool,
     /// Text of `m_newSaveSlotLabel` (`UI_createnewsave`).
     pub new_save_label: String,
+    /// The chapter header (`FUN_1404f3640`): the mission name's text and
+    /// index. The rewrite has no mission component, so this is the branch for
+    /// a player without a current mission: the loaded map's
+    /// `m_loadingInfo` (`gameLocal.m_mapInfo + 0x210 / +0x20c`); `None`
+    /// without a map info, which writes neither.
+    pub chapter: Option<(String, i32)>,
+    /// `PlayTime_<campaignIndex>` from the profile, formatted (`FUN_14080cf50`).
+    pub play_time: String,
+    /// The playthrough statistic (0x22, scope 3) + 1; no statistics yet, so 1.
+    pub playthrough_index: i32,
 }
 
 /// The element fields shared by both lists, in the writers' order.
@@ -429,12 +439,25 @@ pub fn write_load_data(player: &mut Player, state: &GameState) -> Result<()> {
 /// The rewrite's game state for a player: the installed full game (not the
 /// trial) and the user's saves, formatted for the text language (English
 /// dates use the 12-hour US format, `sys_date_format_europa` otherwise).
-pub fn current_state(player: &Player, language: &str) -> GameState {
+pub fn current_state(player: &Player, language: &str, catalog: &crate::assets::archive::Catalog) -> GameState {
     let strings = player.state.borrow().strings.clone();
     match strings {
-        Some(strings) => with_saves(GameState::default(), &strings, language == "english"),
+        Some(strings) => with_chapter(with_saves(GameState::default(), &strings, language == "english"), &strings, catalog),
         None => GameState::default(),
     }
+}
+
+/// The chapter header's values (`FUN_1404f3640`).
+pub fn with_chapter(mut state: GameState, strings: &crate::assets::lang::StringTable, catalog: &crate::assets::archive::Catalog) -> GameState {
+    use crate::gameplay::map_info;
+    state.chapter = map_info::current_map()
+        .and_then(|map| map_info::find(catalog, &map))
+        .and_then(|edit| map_info::loading_info(&edit))
+        .map(|info| (strings.lookup(&info.mission_name).to_string(), info.mission_index));
+    let seconds = crate::gameplay::save_list::Saves::locate().map_or(0, |s| s.profile_int(&format!("PlayTime_{}", s.campaign)));
+    state.play_time = crate::gameplay::save_list::format_playtime(strings, seconds);
+    state.playthrough_index = 1;
+    state
 }
 
 /// The save lists from the user's saves (`FUN_140658950`, `FUN_140467010`).
@@ -465,6 +488,14 @@ pub fn write_entries(player: &mut Player, state: &GameState) -> Result<()> {
     // `FUN_14078e9e0`.
     set(player, "pauseData.hasTutorials", state.new_tutorials + state.read_tutorials != 0)?;
     set(player, "pauseData.tutorialsEntry.hasNewElements", state.new_tutorials != 0)?;
+    // `FUN_1404f3640`: the chapter header.
+    if let Some((name, index)) = &state.chapter {
+        player.set_value("chapterData.chapterName", Value::from(name.as_str()))?;
+        player.set_value("chapterData.chapterIndex", (*index as f64).into())?;
+    }
+    set(player, "chapterData.missionPlus", state.mission_plus)?;
+    player.set_value("chapterData.playTime", Value::from(state.play_time.as_str()))?;
+    player.set_value("chapterData.playthroughIndex", (state.playthrough_index as f64).into())?;
     // `FUN_14078e850`.
     set(player, "pauseData.statsEntry.locked", false)?;
     // `FUN_1404f3800`.

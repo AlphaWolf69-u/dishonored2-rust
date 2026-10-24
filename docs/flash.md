@@ -57,8 +57,9 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    and masks under 3D.
 4. Game state the rewrite does not simulate yet, so the pause state writes
    what the game would for "unavailable": no save writer or loader (save,
-   load and quick entries locked), no mission/chapter component
-   (`chapterData`, restart lock), no tutorial log, no statistics component,
+   load and quick entries locked), no mission component (the chapter header
+   takes the branch for no current mission: the loaded map's mapinfo
+   `m_loadingInfo`; restart lock), no tutorial log, no statistics component,
    no mission+ flag, no player character (`DH2_DEBUG_CHARACTER=emily`
    selects Emily's movie). Callbacks needing them (`CreateSave`,
    `LoadSave`, `QuickLoad`, `QuickSave`, `Restart`, `BackToMain`,

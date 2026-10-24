@@ -182,7 +182,7 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     phases.push(("movie and libraries", std::time::Instant::now()));
     pause_state::file_ready(&mut player, screen)?;
-    let state = pause_state::current_state(&player, &language);
+    let state = pause_state::current_state(&player, &language, &catalog);
     let config = game_settings::configuration_path().ok();
     // A message box loads its own `global.iggy` (`FUN_1404627e0`).
     let load_global = Box::new(move || {

@@ -39,7 +39,11 @@ fn run() -> Result<(), String> {
         // The preview renders at stage size, so the RGB and viewport sizes match.
         let screen = pause_state::screen_size((size.0 as u32, size.1 as u32), (size.0 as u32, size.1 as u32));
         pause_state::file_ready(&mut player, screen)?;
-        let state = pause_state::current_state(&player, &language);
+        // `--map <maps/....map>` stands in for the level the client loaded.
+        if let Some(w) = args.windows(2).find(|w| w[0] == "--map") {
+            dishonored2_rust::gameplay::map_info::set_current_map(&w[1]);
+        }
+        let state = pause_state::current_state(&player, &language, &catalog);
         // The preview never writes the user's config.
         let global_base = base.clone();
         let global_language = language.clone();
@@ -121,6 +125,30 @@ fn run() -> Result<(), String> {
     }
     for e in player.state.borrow().uncaught.iter() {
         eprintln!("uncaught: {e}");
+    }
+    // `--debug-texts` prints each visible text field's path and text.
+    if args.iter().any(|a| a == "--debug-texts") {
+        use dishonored2_rust::flash::display::{children, display_ref, DisplayKind};
+        fn walk(o: &dishonored2_rust::flash::avm2::object::Obj, path: &str) {
+            let Some(d) = display_ref(o) else { return };
+            if !d.visible {
+                return;
+            }
+            let path = format!("{path}.{}", d.name);
+            let kind = d.kind;
+            drop(d);
+            if kind == DisplayKind::Text {
+                if let Some(t) = dishonored2_rust::flash::text::text_object(o) {
+                    eprintln!("text {path} = {:?}", t.text());
+                }
+            }
+            for c in children(o) {
+                walk(&c, &path);
+            }
+        }
+        if let Some(stage) = player.state.borrow().stage.clone() {
+            walk(&stage, "");
+        }
     }
     if args.iter().any(|a| a == "--tree") {
         let mut tree = String::new();

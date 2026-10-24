@@ -47,6 +47,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
     let level =
         crate::assets::level::LevelResources::resolve(catalog.as_ref().unwrap(), &requested)?;
+    // The map beside the level's entities (`gameLocal.m_mapInfo` is the decl
+    // naming it).
+    if let Some(map) = level.entities.strip_suffix(".entities") {
+        crate::gameplay::map_info::set_current_map(&format!("{map}.map"));
+    }
     let path = PathBuf::from(&level.world);
     println!(
         "Level source: installed resource archives; world={}, entities={}, tome={}, physics={:?}",
