@@ -25,6 +25,16 @@ use physics::{MotionInput, PlayerPhysics};
 use sensors::{AutoCrouchSensor, LeanSensor, MantleSensor, VaultSensor};
 use states::{Attributes, Frame, Kind, LocoStances, MotionRequests, Retargeting, Scenes, StateId, StateMachine};
 
+/// One first-person arm for the renderer (arkCpntPlayerBody arm parts):
+/// its md6 and its joints' world transforms (game Z-up, rows of [R | t]),
+/// in the arm skeleton's joint order. `visible` is the part's m_visible.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArmRender {
+    pub model: String,
+    pub joints: Vec<[[f32; 4]; 3]>,
+    pub visible: bool,
+}
+
 pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
@@ -50,6 +60,8 @@ pub struct Player {
     /// lean limits, set by the host.
     pub body_settings: body::BodySettings,
     requests: MotionRequests,
+    /// The arms as of the last view (PRE_RENDER).
+    arm_render: Vec<ArmRender>,
 }
 
 /// Everything `Player::new` reads from the installed declarations.
@@ -110,6 +122,7 @@ impl Player {
             md6: setup.md6,
             health: setup.health,
             random: 0,
+            arm_render: Vec::new(),
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -270,6 +283,12 @@ impl Player {
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {
         self.physics.teleport(feet, yaw);
+    }
+
+    /// Both arms (left, right) as of the last `view`; empty until the arms
+    /// are loaded.
+    pub fn arms(&self) -> &[ArmRender] {
+        &self.arm_render
     }
 
     pub fn feet(&self) -> Vec3 {
