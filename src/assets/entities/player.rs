@@ -13,6 +13,7 @@ pub struct PlayerDeclarations {
     pub camera: Vec<(String, Value)>,
     pub controller: Vec<(String, Value)>,
     pub attributes: Vec<(String, Value)>,
+    pub autocrouch_sensor: Vec<(String, Value)>,
     /// The state machine's startup mode.
     pub mode: Vec<(String, Value)>,
     /// The mode's `m_states`: (decl kind, resolved fields).
@@ -23,7 +24,7 @@ pub struct PlayerDeclarations {
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 5] = ["cpntplayerphysics", "cpntplayercamera", "cpntplayercontroller", "cpntattributesplayer", "cpntplayerstatemachine"];
+const PLAYER_COMPONENTS: [&str; 6] = ["cpntplayerphysics", "cpntplayercamera", "cpntplayercontroller", "cpntattributesplayer", "cpntplayerstatemachine", "cpntplayersensorautocrouch"];
 
 fn kind_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(_, kind)| kind)
@@ -105,6 +106,7 @@ pub fn player_declarations(
     let camera = take("cpntplayercamera")?;
     let controller = take("cpntplayercontroller")?;
     let attributes = take("cpntattributesplayer")?;
+    let autocrouch_sensor = take("cpntplayersensorautocrouch")?;
     let machine = take("cpntplayerstatemachine")?;
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
@@ -125,7 +127,7 @@ pub fn player_declarations(
         Some(name) => component_fields("playerlocomotion", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, camera, controller, attributes, mode, states, locomotion, body_model })
+    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, mode, states, locomotion, body_model })
 }
 
 /// The md6 declaration's `locomotionDecl` (inherited through `inherit`).

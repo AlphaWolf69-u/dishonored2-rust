@@ -143,17 +143,36 @@ fn load_body(catalog: &Catalog, body_model: &str, camera: &CameraDecl, locomotio
         loaded.insert(alias.to_owned(), animations.len() - 1);
         Ok(animations.len() - 1)
     };
-    let mut idle = HashMap::new();
-    for (stance, alias) in decls::stance_idle_animations(locomotion) {
-        idle.insert(stance, clip(&alias)?);
+    use crate::gameplay::player::animation::{LocoData, SpeedSet, Transition};
+    let mut body_data = LocoData::default();
+    let mut bob_data = LocoData::default();
+    for (stance, speeds) in decls::loco_stances(locomotion)? {
+        let (mut body_sets, mut bob_sets): ([Option<SpeedSet>; 4], [Option<SpeedSet>; 4]) = Default::default();
+        for entry in speeds {
+            if entry.speed >= 4 {
+                continue;
+            }
+            let set = |names: &[String; 4], clip: &mut dyn FnMut(&str) -> Result<usize, String>| -> Result<SpeedSet, String> {
+                Ok(SpeedSet { clips: [clip(&names[0])?, clip(&names[1])?, clip(&names[2])?, clip(&names[3])?], speeds: entry.speeds })
+            };
+            if let Some(names) = &entry.body {
+                body_sets[entry.speed] = Some(set(names, &mut clip)?);
+            }
+            if let Some(names) = &entry.bob {
+                bob_sets[entry.speed] = Some(set(names, &mut clip)?);
+            }
+        }
+        body_data.stances.insert(stance.clone(), body_sets);
+        bob_data.stances.insert(stance, bob_sets);
     }
-    let mut transitions = HashMap::new();
-    for (from, to, alias) in decls::stance_transitions(locomotion) {
+    for (from, to, alias, blend_in, blend_out) in decls::loco_transitions(locomotion)? {
         if !alias.is_empty() {
-            transitions.insert((from, to), clip(&alias)?);
+            body_data.transitions.insert((from, to), Transition { clip: clip(&alias)?, blend_in, blend_out });
         }
     }
-    Ok(Body::new(body_skeleton, animations, idle, transitions))
+    let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
+    let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
+    Ok(Body::new(body_skeleton, animations, Default::default(), body_node, bob_node))
 }
 
 pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Result<PlayerSetup, String> {
@@ -171,6 +190,8 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
         default_state: decls::default_state(&declarations.mode),
         attributes: decls::attributes(&declarations.attributes)?,
         body,
+        autocrouch: decls::autocrouch_sensor(&declarations.autocrouch_sensor)?,
+        slipping: decls::slipping_thresholds(&declarations.controller)?,
     })
 }
 
@@ -223,6 +244,15 @@ pub(super) fn look_settings() -> LookSettings {
             cvars.float("g_lookStickSensitivityY").unwrap_or(1.0),
         ],
         sprint_toggle: cvars.int("g_sprintToggle").is_none_or(|v| v != 0),
+    }
+}
+
+/// `ark_playerSmoothedLoco` and the head-bob option `ark_playerBobAmount`.
+pub(super) fn body_settings() -> crate::gameplay::player::body::BodySettings {
+    let console = console::shared().read();
+    crate::gameplay::player::body::BodySettings {
+        smoothed_loco: console.cvars.int("ark_playerSmoothedLoco").is_none_or(|v| v != 0),
+        bob_amount: console.cvars.float("ark_playerBobAmount").unwrap_or(1.0),
     }
 }
 
@@ -343,6 +373,7 @@ pub(super) fn update_player(
             let dt = game_clock.delta(3).unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
             let events = std::mem::take(&mut input.events);
+            player.body_settings = body_settings();
             player.frame(&world, &events, &look_settings(), dt, frame_delta, base);
         }
     }
@@ -398,12 +429,44 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     report("settle 3s", &player, feet, 3.0);
     println!("NAV PROBE spawn drop {:.3}m, eye {:?}", feet.z - settled.z, player.view().origin);
     if !full {
+        // DH2_NAV_YAW (degrees): hold forward and trace the proxy.
+        if let Some(degrees) = std::env::var("DH2_NAV_YAW").ok().and_then(|v| v.parse::<f32>().ok()) {
+            player.teleport(player.feet(), degrees.to_radians());
+            run(&mut player, 1, vec![key(ACTION_MOVE_FORWARD, true)]);
+            for step in 0..12 {
+                run(&mut player, 10, Vec::new());
+                println!(
+                    "NAV PROBE push +{}: feet={:?} velocity={:?} support={:?} states={:?} penetrating={} ground={:.3}",
+                    (step + 1) * 10,
+                    player.feet(),
+                    player.physics.velocity,
+                    player.physics.ground.state,
+                    player.machine.active_states(),
+                    player.physics.penetrating,
+                    player.physics.ground_distance,
+                );
+                for (position, normal, distance, key) in player.physics.proxy.contacts() {
+                    println!("    contact tri {key} at {position:?} n={normal:?} d={distance:.4}");
+                }
+            }
+            let feet = player.feet();
+            for (key, triangle, owner) in world.0.triangles_in(to_view(feet) - Vec3::splat(0.7), to_view(feet) + Vec3::splat(0.7)) {
+                println!("    nearby tri {key} owner {owner}: {:?}", triangle.map(to_game));
+            }
+        }
         return Ok(());
     }
     run(&mut player, 60, vec![key(ACTION_MOVE_FORWARD, true)]);
     let from = player.feet();
-    run(&mut player, 120, Vec::new());
+    let (mut low, mut high) = (f32::MAX, f32::MIN);
+    for _ in 0..120 {
+        run(&mut player, 1, Vec::new());
+        let eye = player.view().origin.z - player.feet().z;
+        low = low.min(eye);
+        high = high.max(eye);
+    }
     report("run 1s after 0.5s", &player, from, 1.0);
+    println!("NAV PROBE run eye height {low:.4}..{high:.4} m (body speed {:.3})", player.body.speed);
     run(&mut player, 1, vec![key(ACTION_CROUCH, true)]);
     run(&mut player, 1, vec![key(ACTION_CROUCH, false)]);
     run(&mut player, 60, Vec::new());
@@ -412,6 +475,19 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     report("sneak 1s", &player, from, 1.0);
     run(&mut player, 1, vec![key(ACTION_CROUCH, true)]);
     run(&mut player, 1, vec![key(ACTION_CROUCH, false)]);
+    run(&mut player, 60, Vec::new());
+    // Face the longest clear run (rays at 0.5 m and 1.7 m) for the sprint and slide.
+    let feet = player.feet();
+    let clear = |yaw: f32| {
+        let direction = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
+        [0.5f32, 1.7]
+            .iter()
+            .map(|h| world.cast_ray(feet + Vec3::Z * *h, direction, 40.0).map_or(40.0, |hit| hit.distance))
+            .fold(40.0f32, f32::min)
+    };
+    let yaw = (0..16).map(|k| k as f32 * std::f32::consts::TAU / 16.0).max_by(|a, b| clear(*a).total_cmp(&clear(*b))).unwrap();
+    println!("NAV PROBE sprint direction yaw={yaw:.3} clear={:.2}m", clear(yaw));
+    player.teleport(feet, yaw);
     run(&mut player, 60, Vec::new());
     for frame in 0..8 {
         let events = match frame {
@@ -422,10 +498,35 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         run(&mut player, 1, events);
         println!("NAV PROBE sprint frame {frame}: states={:?} speed={:.3}", player.machine.active_states(), player.physics.velocity.truncate().length());
     }
-    run(&mut player, 120, Vec::new());
+    for step in 0..5 {
+        run(&mut player, 10, Vec::new());
+        println!(
+            "NAV PROBE sprint +{}: feet={:?} velocity={:?} support={:?} contacts={} gravity={:?} states={:?}",
+            (step + 1) * 10,
+            player.feet(),
+            player.physics.velocity,
+            player.physics.ground.state,
+            player.physics.proxy.contact_count(),
+            player.physics.gravity_velocity,
+            player.machine.active_states(),
+        );
+    }
+    run(&mut player, 1, vec![key(ACTION_CROUCH, true)]);
+    run(&mut player, 1, vec![key(ACTION_CROUCH, false)]);
+    for step in 0..24 {
+        run(&mut player, 15, Vec::new());
+        println!(
+            "NAV PROBE slide t={:.3}s: states={:?} speed={:.3} posture={} feet={:?}",
+            (step + 1) as f32 * 15.0 / 120.0,
+            player.machine.active_states(),
+            player.physics.velocity.truncate().length(),
+            player.physics.posture,
+            player.feet(),
+        );
+    }
     let from = player.feet();
     run(&mut player, 120, Vec::new());
-    report("sprint 1s", &player, from, 1.0);
+    report("after slide 1s", &player, from, 1.0);
     run(&mut player, 1, vec![key(ACTION_MOVE_FORWARD, false)]);
     run(&mut player, 240, Vec::new());
     let ground = player.feet().z;

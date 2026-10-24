@@ -3,12 +3,14 @@
 //! frame's stage order (FUN_1408ad260):
 //! input dispatch → QUERY_PHYSICS (physics queries) → DEFAULT (physics query
 //! results, controller, state machine, camera) → PRE_PHYSICS (physics step).
+pub mod animation;
 pub mod body;
 pub mod camera;
 pub mod character_proxy;
 pub mod controller;
 pub mod decls;
 pub mod physics;
+pub mod sensors;
 pub mod shape;
 pub mod simplex_solver;
 pub mod states;
@@ -19,6 +21,7 @@ use camera::{BodyPose, PlayerCamera, View};
 use character_proxy::PlayerWorld;
 use controller::{ActionEvent, Controller, LookSettings};
 use physics::{MotionInput, PlayerPhysics};
+use sensors::AutoCrouchSensor;
 use states::{Attributes, Frame, LocoStances, MotionRequests, StateId, StateMachine};
 
 pub struct Player {
@@ -31,6 +34,9 @@ pub struct Player {
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
+    pub autocrouch: AutoCrouchSensor,
+    /// `ark_playerSmoothedLoco` / `ark_playerBobAmount`, set by the host.
+    pub body_settings: body::BodySettings,
     requests: MotionRequests,
 }
 
@@ -44,23 +50,31 @@ pub struct PlayerSetup {
     pub default_state: StateId,
     pub attributes: Attributes,
     pub body: Body,
+    pub autocrouch: sensors::AutoCrouchDecl,
+    pub slipping: controller::SlippingThresholds,
 }
 
 impl Player {
     /// Spawn with the feet at `position` (idPlayerStart.spawnPosition) facing
     /// `yaw` radians.
     pub fn new(setup: PlayerSetup, position: Vec3, yaw: f32, base_fov: f32) -> Result<Self, String> {
-        let stances = LocoStances { current: None, transitions: setup.body.stance_transition_durations() };
+        let stances = LocoStances { transitions: setup.body.stance_transition_durations(), ..Default::default() };
         let pose = setup.body.pose()?;
+        let physics = PlayerPhysics::new(&setup.physics, position, yaw);
+        let autocrouch = AutoCrouchSensor::new(setup.autocrouch, &physics);
+        let mut controller = Controller::new(setup.mapping);
+        controller.slipping = setup.slipping;
         Ok(Self {
-            physics: PlayerPhysics::new(&setup.physics, position, yaw),
-            controller: Controller::new(setup.mapping),
+            physics,
+            controller,
             machine: StateMachine::new(setup.states, &setup.rules, setup.default_state),
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
             attributes: setup.attributes,
             body: setup.body,
             pose,
+            autocrouch,
+            body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
     }
@@ -70,28 +84,44 @@ impl Player {
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, base_fov: f32) {
         self.controller.process_input(events, settings);
+        // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
+        // before the controller (it depends on both), then the states.
         self.physics.update_queries(world);
-        self.controller.think(settings, frame_delta, self.physics.ground.state, self.physics.ground_distance, &mut self.machine);
+        let sliding = self.machine.is_active(StateId::SLIDING);
+        self.autocrouch.update(world, &self.physics, self.requests.linear_priority0, dt, sliding);
+        self.controller.think(settings, frame_delta);
         self.requests = MotionRequests::default();
         let origin = self.physics.position();
         let axis = self.physics.axis();
         let velocity = self.physics.velocity;
-        let mut frame = Frame {
-            dt,
-            controller: &mut self.controller,
-            physics: &mut self.physics,
-            body: &mut self.stances,
-            camera: &mut self.camera.turn,
-            requests: &mut self.requests,
-            origin,
-            axis,
-            velocity,
-            attributes: &self.attributes,
-            sprint_toggle: settings.sprint_toggle,
-            look_stick_sensitivity: settings.look_stick_sensitivity,
-        };
-        self.machine.think(&mut frame);
-        self.body.update(dt, &self.stances);
+        macro_rules! frame {
+            () => {
+                Frame {
+                    dt,
+                    world,
+                    controller: &mut self.controller,
+                    physics: &mut self.physics,
+                    body: &mut self.stances,
+                    camera: &mut self.camera.turn,
+                    requests: &mut self.requests,
+                    autocrouch: &mut self.autocrouch,
+                    origin,
+                    axis,
+                    velocity,
+                    attributes: &self.attributes,
+                    sprint_toggle: settings.sprint_toggle,
+                    look_stick_sensitivity: settings.look_stick_sensitivity,
+                }
+            };
+        }
+        self.machine.controller_support(&mut frame!());
+        self.controller.apply_mapping(&mut self.machine);
+        self.machine.think(&mut frame!());
+        // The body's jump stage forces its speed to 0 while jumping
+        // (FUN_140774f10 from Jumping Activate; animBasic not ported).
+        let jumping = self.machine.is_active(StateId::JUMPING);
+        let input_velocity = self.physics.input_velocity();
+        self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), jumping, self.body_settings);
         if dt != 0.0 {
             self.camera.update_pitch(dt, self.controller.input_look.x, self.controller.look_is_analog, &self.physics);
             let speed_state = self.machine.is_active(StateId::SPRINTING)

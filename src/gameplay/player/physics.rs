@@ -158,6 +158,8 @@ pub struct PlayerPhysics {
     pub ground_ray_normal: [Vec3; 5],
     pub ground_ray_distance_min: f32,
     pub ground_ray_distance_max: f32,
+    /// m_groundRayNormalAvg (cpnt+0x33c).
+    pub ground_ray_normal_average: Vec3,
 }
 
 /// FUN_1401b3060 angle wrap into (-π, π].
@@ -258,6 +260,7 @@ impl PlayerPhysics {
             ground_ray_normal: [Vec3::Z; 5],
             ground_ray_distance_min: decl.ground_ray_query_length,
             ground_ray_distance_max: -decl.ground_ray_query_length,
+            ground_ray_normal_average: Vec3::Z,
         }
     }
 
@@ -405,6 +408,32 @@ impl PlayerPhysics {
         self.posture_settings(posture).height <= self.ceil_distance
     }
 
+    /// The body hull of a posture's shape (FUN_1401b4430).
+    pub fn posture_body(&self, posture: usize) -> &[Vec3] {
+        &self.shapes[self.posture_shape[posture.min(POSTURE_COUNT - 1)]].body
+    }
+
+    /// FUN_1407fdab0: normal of the shortest ground ray when it is within the
+    /// ground query length, else up.
+    pub fn shortest_ground_ray_normal(&self) -> Vec3 {
+        let (index, distance) = self
+            .ground_ray_distance
+            .iter()
+            .enumerate()
+            .fold((0, f32::MAX), |best, (i, &d)| if d < best.1 { (i, d) } else { best });
+        if distance <= self.ground_query_length { self.ground_ray_normal[index] } else { Vec3::Z }
+    }
+
+    /// pp+0x98: project gravity on the ground plane this step (slip-fall).
+    pub fn set_slip(&mut self) {
+        self.slip = true;
+    }
+
+    /// FUN_1401b4400: proxy keep distance (+0xf0).
+    pub fn keep_distance(&self) -> f32 {
+        self.proxy.settings.keep_distance
+    }
+
     /// FUN_1407fdc30.
     pub fn ceiling_blocks(&self, extra: f32) -> bool {
         self.ceil_distance <= self.proxy.settings.keep_distance + self.posture_settings(self.posture).height + 1e-4 + extra
@@ -481,7 +510,7 @@ impl PlayerPhysics {
             self.ground_ray_distance_max = self.ground_ray_distance_max.max(distance);
             sum += normal;
         }
-        let _average_normal = sum.normalize_or_zero();
+        self.ground_ray_normal_average = sum.normalize_or_zero();
     }
 
     /// FUN_1401b3ac0: linear acceleration limiter.

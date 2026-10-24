@@ -1,17 +1,19 @@
 //! arkCpntPlayerStateMachine (vtable 0x141c73d58) with the locomotion states
-//! Running, Sneaking, Sprinting, Jumping and Falling (arkPlayerStateNavigation
-//! 0x141c3f198 and subclasses; InAir 0x141c7b238 is the base of the last two).
+//! Running, Sneaking, Sprinting, Sliding, Slipping, AutoCrouch, Jumping and
+//! Falling (arkPlayerStateNavigation 0x141c3f198 and subclasses; InAir
+//! 0x141c7b238 is the base of Jumping and Falling).
 //!
 //! Command processing follows FUN_140804850 and the rule table FUN_1408644e0
-//! plus the mode's `m_rules`. States the port does not implement (slipping,
-//! sliding, mantle, vault, autocrouch, wallcrouch, catfall, actions and
-//! powers) are "missing" from the mode, so requests for them are rejected as
-//! the game rejects a state its mode lacks; footsteps, animation, fall damage,
-//! stats and sensors are not ported.
-use super::character_proxy::SupportState;
-use super::controller::Controller;
+//! plus the mode's `m_rules`. States the port does not implement (mantle,
+//! vault, wallcrouch, catfall, leaning, actions and powers) are "missing"
+//! from the mode, so requests for them are rejected as the game rejects a
+//! state its mode lacks. Footsteps, fall damage, stats, slide slow-time,
+//! shoves, breakables and camera constraint modes are not ported.
+use super::character_proxy::{PlayerWorld, SupportState};
+use super::controller::{Controller, ACTION_JUMP};
 use super::physics::{PlayerPhysics, UNSET};
-use super::shape::{POSTURE_KEEP_PREVIOUS, POSTURE_SNEAKING, POSTURE_STANDING};
+use super::sensors::AutoCrouchSensor;
+use super::shape::{POSTURE_AUTOCROUCHING, POSTURE_KEEP_PREVIOUS, POSTURE_SLIDING, POSTURE_SNEAKING, POSTURE_STANDING};
 use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
 
@@ -24,16 +26,20 @@ impl StateId {
     pub const SPRINTING: Self = Self(1);
     pub const JUMPING: Self = Self(2);
     pub const FALLING: Self = Self(3);
+    pub const SLIPPING: Self = Self(5);
     pub const SNEAKING: Self = Self(6);
     pub const SLIDING: Self = Self(7);
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
+    pub const WALLCROUCH: Self = Self(11);
+    pub const GRAPPLE: Self = Self(27);
     pub const NULL: Self = Self(91);
     pub const ANY: Self = Self(92);
 }
 
 /// Body-part flags (decl +0x65/+0x66/+0x67).
 pub const BODY: u8 = 1;
+pub const LEGS: u8 = 0x10;
 
 /// arkDeclPlayerState base fields.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +73,8 @@ pub struct NavigationDecl {
     pub strafe_angle_snap: f32,
     pub max_ground_distance: f32,
     pub loco_stance_name: String,
+    /// m_headBobStanceName (empty: the loco stance).
+    pub head_bob_stance_name: String,
     pub next_crushed_state: StateId,
     pub physics_shape_transition_speed_factor: f32,
 }
@@ -89,6 +97,7 @@ impl Default for NavigationDecl {
             strafe_angle_snap: 30.0,
             max_ground_distance: 0.5,
             loco_stance_name: String::new(),
+            head_bob_stance_name: String::new(),
             next_crushed_state: StateId::SNEAKING,
             physics_shape_transition_speed_factor: 1.0,
         }
@@ -125,11 +134,12 @@ impl Default for JumpingDecl {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FallingDecl {
     pub smooth_gravity_adjustment: f32,
+    pub resume_sliding_max_height: f32,
 }
 
 impl Default for FallingDecl {
     fn default() -> Self {
-        Self { smooth_gravity_adjustment: 0.75 }
+        Self { smooth_gravity_adjustment: 0.75, resume_sliding_max_height: 4.0 }
     }
 }
 
@@ -145,11 +155,54 @@ impl Default for SprintingDecl {
     }
 }
 
+/// arkDeclPlayerStateSliding (ctor FUN_14086d3f0) fields the port uses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlidingDecl {
+    pub in_speed: f32,
+    pub out_speed: f32,
+    pub distance: f32,
+    pub max_forward_angle: f32,
+    pub max_wall_angle: f32,
+    pub min_slope_angle: f32,
+    pub max_slope_angle: f32,
+    pub slope_influence: f32,
+}
+
+impl Default for SlidingDecl {
+    fn default() -> Self {
+        Self {
+            in_speed: 6.0,
+            out_speed: 4.0,
+            distance: 10.0,
+            max_forward_angle: 45.0,
+            max_wall_angle: 20.0,
+            min_slope_angle: 30.0,
+            max_slope_angle: 90.0,
+            slope_influence: 0.33,
+        }
+    }
+}
+
+/// arkDeclPlayerStateSlipping (ctor FUN_14086fc90).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlippingDecl {
+    pub gravity_strength: f32,
+}
+
+impl Default for SlippingDecl {
+    fn default() -> Self {
+        Self { gravity_strength: 1.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Running,
     Sneaking,
     Sprinting(SprintingDecl),
+    Sliding(SlidingDecl),
+    Slipping(SlippingDecl),
+    AutoCrouch,
     Jumping(JumpingDecl),
     Falling(FallingDecl),
 }
@@ -178,20 +231,41 @@ impl StateDecl {
             canceling: false,
             allow_camera_out_of_shape: false,
         };
-        let (id, locked, air_friction, posture) = match kind {
-            Kind::Running => (StateId::RUNNING, 0, 0.0, POSTURE_STANDING),
-            Kind::Sneaking => (StateId::SNEAKING, 0, 0.0, POSTURE_STANDING),
-            Kind::Sprinting(_) => (StateId::SPRINTING, 0, 0.0, POSTURE_STANDING),
-            Kind::Jumping(_) => (StateId::JUMPING, BODY, 0.0, POSTURE_STANDING),
-            Kind::Falling(_) => (StateId::FALLING, BODY, 0.1, POSTURE_KEEP_PREVIOUS),
+        let mut navigation = NavigationDecl::default();
+        let mut flags = navigation_flags;
+        let (id, air_friction) = match kind {
+            Kind::Running => (StateId::RUNNING, 0.0),
+            Kind::Sneaking => (StateId::SNEAKING, 0.0),
+            Kind::Sprinting(_) => (StateId::SPRINTING, 0.0),
+            Kind::Sliding(_) => {
+                flags.body_parts |= BODY | LEGS;
+                flags.locked_body_parts |= BODY | LEGS;
+                navigation.max_ground_distance = 3.0;
+                (StateId::SLIDING, 0.0)
+            }
+            Kind::Slipping(_) => {
+                navigation.max_linear_acceleration = 10.0;
+                navigation.max_linear_deceleration = 10.0;
+                (StateId::SLIPPING, 0.0)
+            }
+            Kind::AutoCrouch => {
+                navigation.posture = POSTURE_AUTOCROUCHING;
+                navigation.max_forward_speed = 1.0;
+                navigation.max_backward_speed = 0.5;
+                navigation.max_strafe_speed = 0.5;
+                (StateId::AUTOCROUCH, 0.0)
+            }
+            Kind::Jumping(_) => {
+                flags.locked_body_parts = BODY;
+                (StateId::JUMPING, 0.0)
+            }
+            Kind::Falling(_) => {
+                flags.locked_body_parts = BODY;
+                navigation.posture = POSTURE_KEEP_PREVIOUS;
+                (StateId::FALLING, 0.1)
+            }
         };
-        Self {
-            id,
-            flags: StateFlags { locked_body_parts: locked, ..navigation_flags },
-            navigation: NavigationDecl { posture, ..Default::default() },
-            air_friction,
-            kind,
-        }
+        Self { id, flags, navigation, air_friction, kind }
     }
 }
 
@@ -212,34 +286,70 @@ pub struct RuleDecl {
 }
 
 /// The movement object's request lists (`entity+0x358` +0xe0 / +0x250):
-/// one-frame requests; a push goes before older entries of the same
-/// priority (FUN_14074fb40) and the consumer FUN_140753a90 takes the first.
+/// one-frame requests. A push goes before older entries of lower or equal
+/// priority (FUN_14074fb40) and the consumer FUN_140753a90 takes the first:
+/// the highest priority wins, the newest on a tie.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MotionRequests {
     pub linear: Option<Vec3>,
     pub angular: Option<Vec3>,
+    linear_priority: i32,
+    angular_priority: i32,
+    /// The first priority-0 linear request (FUN_140750de0), as sensors read it.
+    pub linear_priority0: Option<Vec3>,
+}
+
+impl MotionRequests {
+    pub fn push_linear(&mut self, priority: i32, velocity: Vec3) {
+        if self.linear.is_none() || priority >= self.linear_priority {
+            self.linear = Some(velocity);
+            self.linear_priority = priority;
+        }
+        if priority == 0 {
+            self.linear_priority0 = Some(velocity);
+        }
+    }
+
+    pub fn push_angular(&mut self, priority: i32, velocity: Vec3) {
+        if self.angular.is_none() || priority >= self.angular_priority {
+            self.angular = Some(velocity);
+            self.angular_priority = priority;
+        }
+    }
 }
 
 /// arkCpntPlayerBody locomotion stance (body slot 7) and its transition
 /// durations (FUN_140770e90 → FUN_140771270).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LocoStances {
     pub current: Option<String>,
+    /// Body slot 8, the head-bob stance.
+    pub bob: Option<String>,
     /// (from, to) → duration in seconds.
     pub transitions: HashMap<(String, String), f32>,
+    /// body+0xd98 m_maxSpeeds {back, strafe, fwd, strafe} (1e30 unset).
+    pub max_speeds: [f32; 4],
+}
+
+impl Default for LocoStances {
+    fn default() -> Self {
+        Self { current: None, bob: None, transitions: HashMap::new(), max_speeds: [UNSET; 4] }
+    }
 }
 
 impl LocoStances {
-    fn enter(&mut self, stance: &str) -> f32 {
+    /// FUN_140770e70: the transition time between two stances (0 if none).
+    pub fn duration(&self, from: &str, to: &str) -> f32 {
+        self.transitions.get(&(from.to_owned(), to.to_owned())).copied().unwrap_or(0.0)
+    }
+
+    /// Enter `stance` (body slot 7); returns the transition time from the
+    /// current stance.
+    pub fn enter(&mut self, stance: &str) -> f32 {
         if stance.is_empty() {
             return 0.0;
         }
-        let duration = self
-            .current
-            .as_ref()
-            .and_then(|from| self.transitions.get(&(from.clone(), stance.to_owned())))
-            .copied()
-            .unwrap_or(0.0);
+        let duration = self.current.as_deref().map_or(0.0, |from| self.duration(from, stance));
         self.current = Some(stance.to_owned());
         duration
     }
@@ -248,11 +358,13 @@ impl LocoStances {
 /// Values other components give the states each frame.
 pub struct Frame<'a> {
     pub dt: f32,
+    pub world: &'a dyn PlayerWorld,
     pub controller: &'a mut Controller,
     pub physics: &'a mut PlayerPhysics,
     pub body: &'a mut LocoStances,
     pub camera: &'a mut CameraTurn,
     pub requests: &'a mut MotionRequests,
+    pub autocrouch: &'a mut AutoCrouchSensor,
     /// Entity origin, axis (rows forward/left/up as columns) and velocity.
     pub origin: Vec3,
     pub axis: Mat3,
@@ -293,7 +405,9 @@ struct Navigation {
 struct InAir {
     from_sneaking: bool,
     from_sprinting: bool,
+    from_sliding: bool,
     from_jumping: bool,
+    from_grappling: bool,
     inherited_velocity: Vec3,
 }
 
@@ -316,6 +430,27 @@ struct Fall {
     last_origin: Vec3,
 }
 
+/// arkPlayerStateSliding runtime (size 0x108).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Slide {
+    from_standing: f32,
+    to_sneaking: f32,
+    to_autocrouch: f32,
+    to_standing: f32,
+    blend_in_timer: f32,
+    direction: Vec3,
+    last_direction: Vec3,
+    max_distance: f32,
+    distance: f32,
+    max_forward_cos: f32,
+    max_wall_cos: f32,
+    speed: f32,
+    blend_out_state: Option<StateId>,
+    blend_out_done: bool,
+    keep_sprinting: bool,
+    want_jump: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub decl: StateDecl,
@@ -324,13 +459,20 @@ pub struct State {
     in_air: InAir,
     jump: Jump,
     fall: Fall,
-    sneaking_first_frame: bool,
+    slide: Slide,
+    /// Slipping +0x6c.
+    slipping_velocity: Vec3,
+    /// Slipping +0x68.
+    slipping_sneaking: bool,
+    first_frame: bool,
     sprinting_button_down: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Command {
     Request(StateId),
+    /// FUN_1408024d0 with Sliding's params {uid, 7, speed}.
+    RequestSlide(f32),
     Quit(StateId),
     /// FUN_1407fbb20's landing request: the first available of Running,
     /// Sneaking, AutoCrouch and the mode default.
@@ -356,6 +498,22 @@ fn cos_snap(degrees: f32) -> f32 {
     angle.cos()
 }
 
+/// acos clamped as the decompiled callers do (π at ≤ -1, 0 at ≥ 1).
+fn slope_of(z: f32) -> f32 {
+    if z <= -1.0 {
+        std::f32::consts::PI
+    } else if z >= 1.0 {
+        0.0
+    } else {
+        z.acos()
+    }
+}
+
+/// FUN_140001050.
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    (1.0 - t) * a + t * b
+}
+
 impl StateMachine {
     pub fn empty() -> Self {
         Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING }
@@ -377,7 +535,10 @@ impl StateMachine {
                 in_air: InAir::default(),
                 jump: Jump::default(),
                 fall: Fall::default(),
-                sneaking_first_frame: false,
+                slide: Slide::default(),
+                slipping_velocity: Vec3::ZERO,
+                slipping_sneaking: false,
+                first_frame: false,
                 sprinting_button_down: false,
             })
             .collect();
@@ -438,6 +599,10 @@ impl StateMachine {
         self.states.iter().position(|s| s.decl.id == id)
     }
 
+    fn stance(&self, id: StateId) -> &str {
+        self.state(id).map_or("", |s| s.decl.navigation.loco_stance_name.as_str())
+    }
+
     fn rule(&self, from: StateId, to: StateId) -> Rule {
         self.rules.get(&(from, to)).copied().unwrap_or(Rule { allow: true, quit: false })
     }
@@ -456,9 +621,16 @@ impl StateMachine {
         self.queue.push(Command::Landing);
     }
 
-    /// FUN_140803400: the state exists and CanActivate.
+    /// FUN_140803400: the state exists and CanActivate (no mode rules).
     fn available(&self, id: StateId, frame: &Frame) -> bool {
         self.index(id).is_some_and(|index| self.can_activate(index, frame))
+    }
+
+    /// FUN_1408034b0 with Sliding's params: slot 7 (FUN_14086ea10) is the
+    /// attribute/body-part gate and `speed > outSpeed`.
+    fn slide_available(&self, speed: f32) -> bool {
+        self.state(StateId::SLIDING)
+            .is_some_and(|s| matches!(s.decl.kind, Kind::Sliding(d) if speed > d.out_speed))
     }
 
     /// Slot 6 CanActivate.
@@ -467,13 +639,16 @@ impl StateMachine {
         let physics = &*frame.physics;
         let navigation = physics.can_use_posture(state.decl.navigation.posture);
         match &state.decl.kind {
-            Kind::Running => navigation,
+            Kind::Running | Kind::Slipping(_) | Kind::AutoCrouch => navigation,
             Kind::Sneaking => {
-                // FUN_140864ea0.
+                // FUN_140864ea0 (wallcrouch sensor not ported).
                 let mut ok = navigation;
                 if ok {
                     ok = physics.near_ground()
                         && !(self.is_active(StateId::SPRINTING) && self.available(StateId::SLIDING, frame));
+                    if self.is_active(StateId::AUTOCROUCH) && frame.autocrouch.fires {
+                        ok = false;
+                    }
                 }
                 ok
             }
@@ -483,14 +658,110 @@ impl StateMachine {
                     && !physics.vertical_active()
                     && physics.near_ground()
             }
+            Kind::Sliding(decl) => navigation && self.slide_can_activate(decl, frame),
             Kind::Jumping(decl) => {
-                // FUN_140867f90; slipping and vault are not ported.
+                // FUN_140867f90 (vault is not ported).
                 let slip_moving = frame.controller.support_state == SupportState::Sliding && frame.velocity.length_squared() > 0.01;
                 (self.is_active(StateId::VAULT) || navigation)
                     && !physics.ceiling_blocks(decl.min_clear_distance_above)
                     && !slip_moving
             }
             Kind::Falling(_) => true,
+        }
+    }
+
+    /// FUN_14086e410 after the navigation test.
+    fn slide_can_activate(&self, decl: &SlidingDecl, frame: &Frame) -> bool {
+        let physics = &*frame.physics;
+        if !physics.near_ground() {
+            return true;
+        }
+        let normal = physics.ground_ray_normal_average;
+        if frame.axis.x_axis.dot(normal) < 0.0 && slope_of(normal.z) >= decl.max_slope_angle * 0.017453292 {
+            return false;
+        }
+        let velocity = frame.velocity.truncate().normalize_or_zero();
+        let facing = frame.axis.x_axis.truncate().normalize_or_zero();
+        if !(velocity.dot(facing) > cos_snap(decl.max_forward_angle)) {
+            return false;
+        }
+        // Synchronous obstacle cast of the SLIDING shape (movable and
+        // flagged entities are not distinguished: the world is static).
+        let to_autocrouch = frame.body.duration(self.stance(StateId::SLIDING), self.stance(StateId::AUTOCROUCH));
+        let factor = self.state(StateId::SLIDING).map_or(1.0, |s| s.decl.navigation.physics_shape_transition_speed_factor);
+        let mut hits = Vec::new();
+        frame.world.cast_shape(
+            physics.posture_body(POSTURE_SLIDING),
+            frame.axis,
+            frame.origin,
+            frame.velocity * (to_autocrouch * factor),
+            0.0,
+            &mut hits,
+            None,
+        );
+        let step = physics.posture_settings(POSTURE_SLIDING).step_height;
+        !hits.iter().any(|hit| hit.position.z > frame.origin.z + step)
+    }
+
+    /// FUN_1407fbb20 including the slipping block (every controller think).
+    pub fn controller_support(&mut self, frame: &mut Frame) {
+        let was_slip_fall = frame.controller.is_slip_falling;
+        frame.controller.is_slip_falling = false;
+        let support = frame.physics.ground.state;
+        let mut result = None;
+        if support != frame.controller.support_state {
+            match support {
+                SupportState::Unsupported => {
+                    if frame.physics.ground_distance >= f32::MAX {
+                        frame.controller.support_state = support;
+                        result = Some(StateId::FALLING);
+                    }
+                }
+                SupportState::Sliding | SupportState::Supported => {
+                    frame.controller.support_state = support;
+                    result = Some(StateId::RUNNING);
+                }
+            }
+        }
+        let slip_active = self.is_active(StateId::SLIPPING);
+        let normal = frame.physics.shortest_ground_ray_normal();
+        let thresholds = frame.controller.slipping;
+        let slip = self.available(StateId::SLIPPING, frame)
+            && normal.z <= thresholds.slope_cos
+            && (frame.physics.ground_ray_distance_max > thresholds.min_ground_distance
+                || frame.physics.ground_ray_normal_average.z <= thresholds.average_slope_cos);
+        let falling = self.is_active(StateId::FALLING);
+        let slip_fall = slip && normal.z <= if was_slip_fall { thresholds.fall_stop_cos } else { thresholds.fall_start_cos };
+        frame.controller.is_slip_falling = slip_fall;
+        if slip_fall {
+            frame.controller.support_state = SupportState::Unsupported;
+            frame.physics.set_slip();
+            if !falling {
+                self.request(StateId::FALLING);
+            }
+            return;
+        }
+        if slip {
+            frame.controller.support_state = SupportState::Sliding;
+            if !slip_active {
+                self.request(StateId::SLIPPING);
+            }
+            return;
+        }
+        if slip_active || was_slip_fall {
+            match frame.controller.support_state {
+                SupportState::Supported => result = Some(StateId::RUNNING),
+                SupportState::Unsupported if !falling => {
+                    self.request(StateId::FALLING);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        match result {
+            Some(StateId::FALLING) => self.request(StateId::FALLING),
+            Some(_) => self.request_landing(),
+            None => {}
         }
     }
 
@@ -518,12 +789,12 @@ impl StateMachine {
     fn process_commands(&mut self, frame: &mut Frame) {
         let queue = std::mem::take(&mut self.queue);
         let mut snapshot = self.active.clone();
-        let mut accepted: Vec<StateId> = Vec::new();
+        let mut accepted: Vec<(StateId, Option<f32>)> = Vec::new();
         let mut quits = Vec::new();
         for command in queue {
             match command {
                 Command::Quit(id) => {
-                    if let Some(position) = accepted.iter().position(|&a| a == id) {
+                    if let Some(position) = accepted.iter().position(|&(a, _)| a == id) {
                         accepted.remove(position);
                     } else if let Some(position) = snapshot.iter().position(|&a| a == id) {
                         snapshot.remove(position);
@@ -539,13 +810,14 @@ impl StateMachine {
                         }
                     }
                     if let Some(id) = landing {
-                        self.accept(id, &snapshot, &mut accepted, frame);
+                        self.accept(id, None, &snapshot, &mut accepted, frame);
                     }
                 }
-                Command::Request(id) => self.accept(id, &snapshot, &mut accepted, frame),
+                Command::Request(id) => self.accept(id, None, &snapshot, &mut accepted, frame),
+                Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
             }
         }
-        for &id in &accepted {
+        for &(id, _) in &accepted {
             let index = self.index(id).unwrap();
             self.on_request_accepted(index);
         }
@@ -558,13 +830,13 @@ impl StateMachine {
         }
         for position in (0..self.active.len()).rev() {
             let id = self.active[position];
-            if accepted.iter().any(|&r| self.rule(id, r).quit) {
+            if accepted.iter().any(|&(r, _)| self.rule(id, r).quit) {
                 self.active.remove(position);
                 let index = self.index(id).unwrap();
                 self.deactivate(index, frame);
             }
         }
-        for id in accepted {
+        for (id, speed) in accepted {
             let index = self.index(id).unwrap();
             if !self.states[index].active {
                 if self.states[index].decl.flags.primary {
@@ -572,7 +844,7 @@ impl StateMachine {
                 } else {
                     self.active.push(id);
                 }
-                self.activate(index, frame);
+                self.activate(index, speed, frame);
             }
         }
         if !self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.primary)) {
@@ -582,7 +854,7 @@ impl StateMachine {
                 if self.can_activate(index, frame) {
                     self.on_request_accepted(index);
                     self.active.insert(0, id);
-                    self.activate(index, frame);
+                    self.activate(index, None, frame);
                     break;
                 }
                 id = self.states[index].decl.navigation.next_crushed_state;
@@ -590,27 +862,37 @@ impl StateMachine {
         }
     }
 
-    fn accept(&self, id: StateId, snapshot: &[StateId], accepted: &mut Vec<StateId>, frame: &Frame) {
+    fn accept(&self, id: StateId, slide_speed: Option<f32>, snapshot: &[StateId], accepted: &mut Vec<(StateId, Option<f32>)>, frame: &Frame) {
         let Some(index) = self.index(id) else { return };
-        let ok = self.can_activate(index, frame)
+        let can = match slide_speed {
+            Some(speed) => self.slide_available(speed),
+            None => self.can_activate(index, frame),
+        };
+        let ok = can
             && snapshot.iter().all(|&a| self.rule(a, id).allow)
-            && accepted.iter().all(|&r| self.rule(r, id).allow);
+            && accepted.iter().all(|&(r, _)| self.rule(r, id).allow);
         if ok {
-            accepted.retain(|&r| !self.rule(r, id).quit);
-            accepted.push(id);
+            accepted.retain(|&(r, _)| !self.rule(r, id).quit);
+            accepted.push((id, slide_speed));
         }
     }
 
     /// Slot 8 OnRequestAccepted (InAir FUN_14083eb00, Jumping FUN_1408681a0,
-    /// Falling FUN_140865b90).
+    /// Falling FUN_140865b90, Slipping FUN_140870030).
     fn on_request_accepted(&mut self, index: usize) {
+        if matches!(self.states[index].decl.kind, Kind::Slipping(_)) {
+            self.states[index].slipping_sneaking = self.is_active(StateId::SNEAKING);
+            return;
+        }
         if !matches!(self.states[index].decl.kind, Kind::Jumping(_) | Kind::Falling(_)) {
             return;
         }
         let mut in_air = InAir {
             from_sneaking: self.is_active(StateId::SNEAKING),
             from_sprinting: self.is_active(StateId::SPRINTING),
+            from_sliding: self.is_active(StateId::SLIDING),
             from_jumping: self.is_active(StateId::JUMPING),
+            from_grappling: self.is_active(StateId::GRAPPLE),
             inherited_velocity: Vec3::ZERO,
         };
         if matches!(self.states[index].decl.kind, Kind::Jumping(_)) && self.is_active(StateId::FALLING) {
@@ -623,6 +905,7 @@ impl StateMachine {
                 if let Some(jumping) = self.state(StateId::JUMPING) {
                     in_air.from_sneaking = jumping.in_air.from_sneaking;
                     in_air.from_sprinting = jumping.in_air.from_sprinting;
+                    in_air.from_sliding = jumping.in_air.from_sliding;
                 }
             }
             self.states[index].fall.accumulated_height = 0.0;
@@ -630,8 +913,8 @@ impl StateMachine {
         self.states[index].in_air = in_air;
     }
 
-    /// Slot 10 Activate.
-    fn activate(&mut self, index: usize, frame: &mut Frame) {
+    /// Slot 10 Activate (slot 11 with Sliding's params speed).
+    fn activate(&mut self, index: usize, slide_speed: Option<f32>, frame: &mut Frame) {
         self.states[index].active = true;
         let decl = self.states[index].decl.clone();
         // Navigation Activate FUN_1408686e0.
@@ -639,6 +922,11 @@ impl StateMachine {
         // FUN_140869500 (crush test not ported).
         let duration = frame.body.enter(&decl.navigation.loco_stance_name) * decl.navigation.physics_shape_transition_speed_factor;
         frame.physics.set_posture(decl.navigation.posture, duration);
+        // Slot 8: the head-bob stance, else the loco stance (Navigation Init).
+        let bob = if decl.navigation.head_bob_stance_name.is_empty() { &decl.navigation.loco_stance_name } else { &decl.navigation.head_bob_stance_name };
+        if !bob.is_empty() {
+            frame.body.bob = Some(bob.clone());
+        }
         match decl.kind {
             Kind::Running => {
                 // FUN_140869c20.
@@ -649,15 +937,15 @@ impl StateMachine {
                 }
             }
             Kind::Sneaking => {
-                // FUN_140864b60 (autocrouch/wallcrouch sensors not ported).
-                if frame.physics.ceiling_blocks(0.0) {
+                // FUN_140864b60 (wallcrouch sensor not ported).
+                if frame.physics.ceiling_blocks(0.0) || frame.autocrouch.fires {
                     self.request(StateId::AUTOCROUCH);
                 } else {
                     let action = frame.controller.sneak_action;
                     frame.controller.set_toggled(action, true);
                 }
                 frame.controller.stop_sprint();
-                self.states[index].sneaking_first_frame = true;
+                self.states[index].first_frame = true;
             }
             Kind::Sprinting(_) => {
                 // FUN_140869f60.
@@ -665,6 +953,17 @@ impl StateMachine {
                 let action = frame.controller.sneak_action;
                 frame.controller.set_toggled(action, false);
                 self.states[index].sprinting_button_down = frame.controller.down(frame.controller.sprinting_action);
+            }
+            Kind::Sliding(sliding) => self.activate_slide(index, &sliding, slide_speed, frame),
+            Kind::Slipping(_) => {
+                // FUN_14086fba0 (grapple inertia not ported).
+                self.states[index].slipping_velocity = Vec3::ZERO;
+            }
+            Kind::AutoCrouch => {
+                // FUN_140856e00.
+                self.states[index].first_frame = true;
+                let action = frame.controller.sneak_action;
+                frame.controller.set_toggled(action, true);
             }
             Kind::Jumping(jumping) => {
                 self.activate_in_air(index, frame);
@@ -699,6 +998,41 @@ impl StateMachine {
         }
     }
 
+    /// Sliding Activate FUN_14086d670 / FUN_14086d960 and Init FUN_14086db40.
+    fn activate_slide(&mut self, index: usize, decl: &SlidingDecl, speed: Option<f32>, frame: &mut Frame) {
+        let action = frame.controller.sneak_action;
+        frame.controller.set_toggled(action, false);
+        frame.controller.stop_sprint();
+        frame.controller.must_sprint = false;
+        let (standing, sliding) = (self.stance(StateId::SPRINTING).to_owned(), self.stance(StateId::SLIDING).to_owned());
+        let sneaking = self.stance(StateId::SNEAKING).to_owned();
+        let autocrouch = self.stance(StateId::AUTOCROUCH).to_owned();
+        let horizontal = Vec3::new(frame.velocity.x, frame.velocity.y, 0.0);
+        let start = speed.unwrap_or(horizontal.length()).min(decl.in_speed);
+        let t = (decl.in_speed - start) / (decl.in_speed - decl.out_speed);
+        let direction = horizontal.normalize_or_zero();
+        let slide = Slide {
+            from_standing: frame.body.duration(&standing, &sliding),
+            to_sneaking: frame.body.duration(&sliding, &sneaking),
+            to_autocrouch: frame.body.duration(&sliding, &autocrouch),
+            to_standing: frame.body.duration(&sliding, &standing),
+            blend_in_timer: frame.body.duration(&standing, &sliding),
+            direction,
+            last_direction: direction,
+            max_distance: decl.distance,
+            distance: decl.distance * t,
+            max_forward_cos: cos_snap(decl.max_forward_angle),
+            max_wall_cos: cos_snap(decl.max_wall_angle),
+            speed: start,
+            blend_out_state: None,
+            blend_out_done: false,
+            keep_sprinting: true,
+            want_jump: false,
+        };
+        frame.autocrouch.set_detection_distance(slide.max_distance - slide.distance);
+        self.states[index].slide = slide;
+    }
+
     /// InAir Activate FUN_14083e870.
     fn activate_in_air(&mut self, index: usize, frame: &Frame) {
         self.states[index].in_air.inherited_velocity = Vec3::new(frame.velocity.x, frame.velocity.y, 0.0);
@@ -714,6 +1048,8 @@ impl StateMachine {
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
         self.states[index].active = false;
+        // Navigation Deactivate FUN_140868d70.
+        frame.body.max_speeds = [UNSET; 4];
         match self.states[index].decl.kind {
             Kind::Jumping(_) => {
                 // FUN_140867ef0.
@@ -726,6 +1062,10 @@ impl StateMachine {
                 // FUN_140865630.
                 frame.physics.ground_query_length = self.states[index].decl.navigation.max_ground_distance;
                 self.states[index].in_air = InAir::default();
+            }
+            Kind::Sliding(_) => {
+                // FUN_14086e050.
+                frame.autocrouch.set_detection_distance(0.0);
             }
             _ => {}
         }
@@ -741,13 +1081,15 @@ impl StateMachine {
                 self.navigation_update(index, frame);
             }
             Kind::Sneaking => {
-                // FUN_140865050.
+                // FUN_140865050 (wallcrouch sensor not ported).
                 self.states[index].navigation.speed_multiplier = frame.attributes.get("ARK_ATTRIBUTE_SPEED_MULTIPLIER")
                     * frame.attributes.get("ARK_ATTRIBUTE_MOVE_SPEED_SNEAKING_FACTOR");
                 self.navigation_update(index, frame);
                 let stand = frame.physics.posture_settings(POSTURE_STANDING).height;
                 let sneak = frame.physics.posture_settings(POSTURE_SNEAKING).height;
-                if !self.states[index].sneaking_first_frame
+                if frame.autocrouch.fires {
+                    self.request(StateId::AUTOCROUCH);
+                } else if !self.states[index].first_frame
                     && frame.physics.free_to_stand(stand - sneak)
                     && !frame.controller.toggled(frame.controller.sneak_action)
                     && self.available(StateId::RUNNING, frame)
@@ -755,7 +1097,7 @@ impl StateMachine {
                     self.quit(id);
                     self.request(StateId::RUNNING);
                 }
-                self.states[index].sneaking_first_frame = false;
+                self.states[index].first_frame = false;
             }
             Kind::Sprinting(decl) => {
                 // FUN_14086a5b0 (breath is not ported).
@@ -779,6 +1121,23 @@ impl StateMachine {
                     frame.controller.must_sprint = false;
                 }
             }
+            Kind::Sliding(decl) => self.sliding_update(index, &decl, frame),
+            Kind::Slipping(decl) => self.slipping_update(index, &decl, frame),
+            Kind::AutoCrouch => {
+                // FUN_1408570c0.
+                self.navigation_update(index, frame);
+                let sneak = frame.physics.posture_settings(POSTURE_SNEAKING).height;
+                let crouch = frame.physics.posture_settings(POSTURE_AUTOCROUCHING).height;
+                if !self.states[index].first_frame
+                    && frame.physics.free_to_stand(sneak - crouch)
+                    && !frame.autocrouch.fires
+                    && self.available(StateId::SNEAKING, frame)
+                {
+                    self.quit(id);
+                    self.request(StateId::SNEAKING);
+                }
+                self.states[index].first_frame = false;
+            }
             Kind::Jumping(decl) => {
                 self.in_air_update(index, frame);
                 self.jumping_update(index, &decl, frame);
@@ -790,9 +1149,153 @@ impl StateMachine {
         }
     }
 
-    /// ComputeMoveVelocity (slot 24, FUN_140868a80).
+    /// Sliding Update FUN_14086ef50 (wallcrouch, vault and slow-time are not
+    /// ported).
+    fn sliding_update(&mut self, index: usize, decl: &SlidingDecl, frame: &mut Frame) {
+        let id = self.states[index].decl.id;
+        self.navigation_update(index, frame);
+        frame.body.max_speeds = [decl.in_speed; 4];
+        let factor = frame.attributes.0.get("ARK_ATTRIBUTE_MOVE_SPEED_SLIDING_FACTOR").copied().unwrap_or(1.0);
+        self.states[index].navigation.speed_multiplier = factor;
+        let velocity = frame.velocity;
+        let inverse = 1.0 / velocity.truncate().length_squared().max(f32::MIN_POSITIVE).sqrt();
+        let slope_distance = self.slope_distance(decl, frame);
+        let ac_hit = frame.autocrouch.fires;
+        let mut slide = self.states[index].slide;
+        slide.max_distance = slide.max_distance.min(slope_distance);
+        slide.want_jump |= frame.controller.pressed(ACTION_JUMP);
+        let mut next = None;
+        let sneak_available = self.available(StateId::SNEAKING, frame);
+        if slide.want_jump && slide.blend_in_timer <= 0.0 && slide.blend_out_done {
+            next = Some(StateId::JUMPING);
+        } else if slide.speed < decl.out_speed
+            || (velocity.truncate() * inverse).dot(slide.last_direction.truncate()) < slide.max_wall_cos
+            || slide.max_distance <= slide.distance
+        {
+            next = Some(if !sneak_available || ac_hit { StateId::AUTOCROUCH } else { StateId::SNEAKING });
+        } else {
+            slide.distance += slide.speed * frame.dt;
+            slide.speed = lerp(decl.in_speed, decl.out_speed, slide.distance / slide.max_distance);
+            let navigation = self.states[index].decl.navigation.clone();
+            let mut steer = self.move_velocity(index, frame, navigation.max_forward_speed, navigation.max_backward_speed, navigation.max_strafe_speed);
+            if steer.length_squared() > 1e-4 {
+                steer *= 1.0 - (steer / steer.length()).dot(slide.direction).abs();
+            }
+            let w = (slide.direction * slide.speed + steer).truncate();
+            let pushed = (w / w.length_squared().max(f32::MIN_POSITIVE).sqrt() * slide.speed * factor).extend(0.0);
+            slide.last_direction = pushed.normalize_or_zero();
+            frame.requests.push_linear(0, pushed);
+            if !slide.blend_out_done {
+                let settings = *frame.physics.posture_settings(POSTURE_SLIDING);
+                if frame.physics.posture == POSTURE_SLIDING
+                    && ac_hit
+                    && frame.autocrouch.hole_depth <= settings.extrude_length + settings.radius
+                    && frame.autocrouch.sneak_distance <= settings.extrude_length + settings.radius
+                {
+                    if let Some(posture) = self.state(StateId::AUTOCROUCH).map(|s| s.decl.navigation.posture) {
+                        frame.physics.set_posture(posture, 0.0);
+                    }
+                }
+                let time_left = (slide.max_distance - slide.distance) * 2.0 / (slide.speed + decl.out_speed);
+                let candidate = if slide.want_jump {
+                    Some((StateId::RUNNING, slide.to_standing))
+                } else if !sneak_available {
+                    ac_hit.then_some((StateId::AUTOCROUCH, slide.to_autocrouch)).filter(|&(_, d)| d >= time_left)
+                } else if ac_hit {
+                    Some((StateId::AUTOCROUCH, slide.to_autocrouch)).filter(|&(_, d)| d >= time_left)
+                } else {
+                    Some((StateId::SNEAKING, slide.to_sneaking)).filter(|&(_, d)| d >= time_left)
+                };
+                if let Some((state, duration)) = candidate {
+                    slide.blend_out_state = Some(state);
+                    slide.blend_out_done = true;
+                    if !slide.keep_sprinting || state != StateId::SNEAKING {
+                        if let Some(target) = self.state(state) {
+                            let (posture, stance) = (target.decl.navigation.posture, target.decl.navigation.loco_stance_name.clone());
+                            frame.physics.set_posture(posture, duration);
+                            frame.body.enter(&stance);
+                        }
+                    }
+                }
+            }
+        }
+        if !frame.physics.near_ground() {
+            next = Some(StateId::FALLING);
+        } else if next.is_none() && slide.blend_out_state == Some(StateId::SNEAKING) && ac_hit {
+            next = Some(StateId::AUTOCROUCH);
+        }
+        if slide.blend_in_timer >= 0.0 {
+            slide.blend_in_timer -= frame.dt;
+        }
+        if slide.keep_sprinting {
+            if frame.controller.input_move.truncate().length_squared() < 0.25 {
+                slide.keep_sprinting = false;
+            }
+            if slide.keep_sprinting && slide.blend_out_done && next.is_none() && slide.blend_out_state == Some(StateId::SNEAKING) {
+                next = Some(StateId::SNEAKING);
+            }
+        }
+        if let Some(next) = next {
+            if !slide.blend_out_done {
+                slide.blend_out_state = Some(next);
+            }
+            self.quit(id);
+            if slide.keep_sprinting && next == StateId::SNEAKING && self.available(StateId::SPRINTING, frame) {
+                frame.controller.resume_sprint();
+                self.request(StateId::SPRINTING);
+            } else {
+                frame.controller.must_sprint = false;
+                frame.controller.stop_sprint();
+                self.request(next);
+            }
+        }
+        let remaining = (slide.max_distance - slide.distance).max(0.0);
+        frame.autocrouch.set_detection_distance(remaining);
+        self.states[index].slide = slide;
+    }
+
+    /// FUN_14086ddf0: facing uphill shortens the slide.
+    fn slope_distance(&self, decl: &SlidingDecl, frame: &Frame) -> f32 {
+        let mut distance = decl.distance;
+        let normal = frame.physics.ground_ray_normal_average;
+        if decl.max_slope_angle > 0.0 && frame.axis.x_axis.dot(normal) < 0.0 {
+            let hi = decl.max_slope_angle * 0.017453292;
+            let lo = decl.min_slope_angle * 0.017453292;
+            let angle = slope_of(normal.z).min(hi);
+            if angle >= lo && (hi - lo).abs() >= f32::MIN_POSITIVE {
+                distance -= (angle - lo) / (hi - lo) * decl.distance * decl.slope_influence;
+            }
+        }
+        distance
+    }
+
+    /// Slipping Update FUN_1408700a0.
+    fn slipping_update(&mut self, index: usize, decl: &SlippingDecl, frame: &mut Frame) {
+        let speed = frame.velocity.length();
+        let state = &mut self.states[index];
+        if state.slipping_velocity != Vec3::ZERO {
+            state.slipping_velocity = state.slipping_velocity.normalize() * speed;
+        }
+        let normal = frame.physics.shortest_ground_ray_normal();
+        let gravity = super::physics::GRAVITY;
+        state.slipping_velocity += (gravity - normal * normal.dot(gravity)) * (decl.gravity_strength * frame.dt);
+        let crouch = frame.controller.toggled(frame.controller.sneak_action);
+        let sneaking = state.slipping_sneaking;
+        if sneaking && !crouch && frame.physics.can_use_posture(POSTURE_STANDING) {
+            let stance = self.stance(StateId::RUNNING).to_owned();
+            frame.body.enter(&stance);
+        } else if !sneaking && crouch {
+            let stance = self.stance(StateId::SNEAKING).to_owned();
+            frame.body.enter(&stance);
+        }
+        self.states[index].slipping_sneaking = crouch;
+        self.navigation_update(index, frame);
+    }
+
+    /// ComputeMoveVelocity (slot 24, FUN_140868a80; Slipping FUN_14086fd00).
     fn move_velocity(&self, index: usize, frame: &Frame, forward: f32, backward: f32, strafe: f32) -> Vec3 {
-        let navigation = &self.states[index].navigation;
+        let state = &self.states[index];
+        let navigation = &state.navigation;
         let input = frame.controller.input_move;
         let (fw, lf) = (frame.axis.x_axis, frame.axis.y_axis);
         let longitudinal = if input.x > 0.0 { forward } else { backward };
@@ -808,6 +1311,12 @@ impl StateMachine {
             } else if input.y.abs() > navigation.strafe_cos_snap {
                 velocity = velocity.normalize_or_zero() * (magnitude * strafe);
             }
+        }
+        if matches!(state.decl.kind, Kind::Slipping(_)) {
+            let normal = frame.physics.shortest_ground_ray_normal();
+            velocity -= normal * normal.dot(velocity);
+            let k = (state.slipping_velocity.normalize_or_zero().dot(velocity.normalize_or_zero()) + 1.0) * 0.5;
+            velocity = velocity * k + state.slipping_velocity;
         }
         velocity
     }
@@ -827,6 +1336,7 @@ impl StateMachine {
         let move_as_unequipped = frame.attributes.get("ARK_ATTRIBUTE_PLAYER_MOVE_AS_UNEQUIPED") > 0.0;
         let bonus = if equipped && !move_as_unequipped { 0.0 } else { decl.unequipped_speed_increase * 0.01 };
         let factor = (1.0 + bonus) * if !equipped { frame.attributes.get("ARK_ATTRIBUTE_UNEQUIPPED_SPEED_FACTOR") } else { 1.0 };
+        frame.body.max_speeds = [decl.max_backward_speed, decl.max_strafe_speed, decl.max_forward_speed, decl.max_strafe_speed];
         let navigation = self.states[index].navigation;
         let mut velocity = self.move_velocity(
             index,
@@ -846,8 +1356,8 @@ impl StateMachine {
         let yaw_rate = if frame.controller.look_is_analog { joystick } else { mouse } * frame.controller.input_look.y;
         frame.camera.turn_speed_mouse = mouse;
         frame.camera.turn_speed_joystick = joystick * frame.camera.pitch_speed_ratio;
-        frame.requests.linear = Some(velocity);
-        frame.requests.angular = Some(Vec3::new(0.0, 0.0, yaw_rate));
+        frame.requests.push_linear(0, velocity);
+        frame.requests.push_angular(0, Vec3::new(0.0, 0.0, yaw_rate));
         let navigation = &mut self.states[index].navigation;
         navigation.speed_multiplier = 1.0;
         navigation.agility_run_increase = 0.0;
@@ -868,13 +1378,13 @@ impl StateMachine {
         let k = self.states[index].decl.air_friction * frame.dt;
         let in_air = &mut self.states[index].in_air;
         in_air.inherited_velocity -= in_air.inherited_velocity * k;
-        frame.requests.linear = Some(combined);
+        frame.requests.push_linear(0, combined);
     }
 
     /// Jumping Update FUN_140868200.
     fn jumping_update(&mut self, index: usize, decl: &JumpingDecl, frame: &mut Frame) {
         let id = self.states[index].decl.id;
-        let jump_held = frame.controller.down(super::controller::ACTION_JUMP);
+        let jump_held = frame.controller.down(ACTION_JUMP);
         let crouch = frame.controller.toggled(frame.controller.sneak_action);
         let from = self.states[index].in_air;
         let jump = self.states[index].jump;
@@ -926,14 +1436,17 @@ impl StateMachine {
         self.states[index].jump.timer += frame.dt;
     }
 
-    /// Falling Update FUN_140865c50 (landing without catfall/slide/damage).
+    /// Falling Update FUN_140865c50 (landing without catfall and damage).
     fn falling_update(&mut self, index: usize, decl: &FallingDecl, frame: &mut Frame) {
         let id = self.states[index].decl.id;
         let fall = &mut self.states[index].fall;
         fall.accumulated_height += fall.last_origin.z - frame.origin.z;
         fall.last_origin = frame.origin;
+        let accumulated = fall.accumulated_height;
         let from = self.states[index].in_air;
-        if frame.physics.ground_distance == f32::MAX && frame.physics.ground.state == SupportState::Unsupported {
+        if (frame.physics.ground_distance == f32::MAX && frame.physics.ground.state == SupportState::Unsupported)
+            || frame.controller.is_slip_falling
+        {
             if from.from_jumping && frame.physics.gravity_velocity.z > 0.0 {
                 let mut velocity = frame.physics.gravity_velocity;
                 velocity.z *= decl.smooth_gravity_adjustment;
@@ -941,16 +1454,27 @@ impl StateMachine {
             }
             // pp+0xc0 is the speed scale (1 unless scaled).
             frame.physics.ground_query_length = frame.velocity.z.abs() * frame.dt + self.states[index].decl.navigation.max_ground_distance;
+            return;
+        }
+        self.states[index].fall.accumulated_height = 0.0;
+        self.quit(id);
+        let slide_speed = frame.velocity.truncate().length();
+        let crouch_action = frame.controller.sneak_action;
+        if from.from_sliding && !from.from_jumping && accumulated < decl.resume_sliding_max_height && self.slide_available(slide_speed) {
+            self.queue.push(Command::RequestSlide(slide_speed));
+        } else if ((from.from_jumping && from.from_sprinting) || from.from_grappling)
+            && frame.controller.down(crouch_action)
+            && self.available(StateId::SLIDING, frame)
+        {
+            frame.controller.stop_sprint();
+            frame.controller.set_toggled(crouch_action, false);
+            self.request(StateId::SLIDING);
+        } else if frame.controller.toggled(crouch_action) {
+            self.request(StateId::SNEAKING);
+        } else if from.from_sprinting {
+            self.request(StateId::SPRINTING);
         } else {
-            self.states[index].fall.accumulated_height = 0.0;
-            self.quit(id);
-            if frame.controller.toggled(frame.controller.sneak_action) {
-                self.request(StateId::SNEAKING);
-            } else if from.from_sprinting {
-                self.request(StateId::SPRINTING);
-            } else {
-                self.request(StateId::RUNNING);
-            }
+            self.request(StateId::RUNNING);
         }
     }
 }

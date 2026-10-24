@@ -34,6 +34,7 @@ pub const POSTURE_COUNT: usize = 20;
 pub const POSTURE_STANDING: usize = 0;
 pub const POSTURE_SNEAKING: usize = 1;
 pub const POSTURE_AUTOCROUCHING: usize = 2;
+pub const POSTURE_SLIDING: usize = 5;
 pub const POSTURE_SWIMMING: usize = 7;
 pub const POSTURE_KEEP_PREVIOUS: usize = 21;
 

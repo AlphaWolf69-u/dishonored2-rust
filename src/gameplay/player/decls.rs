@@ -5,8 +5,11 @@ use super::camera::CameraDecl;
 use super::controller::{ButtonUsage, StateMapping};
 use super::physics::{PhysicsDecl, PhysicsSettings};
 use super::shape::{self, ShapeSettings};
+use super::controller::SlippingThresholds;
+use super::sensors::AutoCrouchDecl;
 use super::states::{
-    Attributes, FallingDecl, JumpingDecl, Kind, NavigationDecl, RuleDecl, SprintingDecl, StateDecl, StateId,
+    Attributes, FallingDecl, JumpingDecl, Kind, NavigationDecl, RuleDecl, SlidingDecl, SlippingDecl, SprintingDecl,
+    StateDecl, StateId,
 };
 use crate::entities::player::PlayerDeclarations;
 use crate::entities::Value;
@@ -235,6 +238,7 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
         strafe_angle_snap: number(fields, "m_strafeAngleSnap", d.strafe_angle_snap)?,
         max_ground_distance: number(fields, "m_maxGroundDistance", d.max_ground_distance)?,
         loco_stance_name: atom(fields, "m_locoStanceName").map(str::to_owned).unwrap_or(d.loco_stance_name.clone()),
+        head_bob_stance_name: atom(fields, "m_headBobStanceName").map(str::to_owned).unwrap_or(d.head_bob_stance_name.clone()),
         physics_shape_transition_speed_factor: number(fields, "m_physicsShapeTransitionSpeedFactor", d.physics_shape_transition_speed_factor)?,
         ..d
     })
@@ -246,7 +250,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
     for (kind, fields) in &declarations.states {
         let kind = match kind.as_str() {
             "playerstaterunning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
-            "playerstatesneaking" => Kind::Sneaking,
+            "playerstatesneaking" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             "playerstatesprinting" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
                 let d = SprintingDecl::default();
                 Kind::Sprinting(SprintingDecl {
@@ -254,7 +258,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     minimum_speed: number(fields, "m_minimumSpeed", d.minimum_speed)?,
                 })
             }
-            "playerstatejumping" => {
+            "playerstatejumping" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Jumping(_))) => {
                 let d = JumpingDecl::default();
                 Kind::Jumping(JumpingDecl {
                     min_clear_distance_above: number(fields, "m_minClearDistanceAbove", d.min_clear_distance_above)?,
@@ -270,8 +274,27 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                 let d = FallingDecl::default();
                 Kind::Falling(FallingDecl {
                     smooth_gravity_adjustment: number(fields, "m_smoothGravityAdjustment", d.smooth_gravity_adjustment)?,
+                    resume_sliding_max_height: number(fields, "m_resumeSlidingMaxHeight", d.resume_sliding_max_height)?,
                 })
             }
+            "playerstatesliding" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sliding(_))) => {
+                let d = SlidingDecl::default();
+                Kind::Sliding(SlidingDecl {
+                    in_speed: number(fields, "m_inSpeed", d.in_speed)?,
+                    out_speed: number(fields, "m_outSpeed", d.out_speed)?,
+                    distance: number(fields, "m_distance", d.distance)?,
+                    max_forward_angle: number(fields, "m_maxForwardAngle", d.max_forward_angle)?,
+                    max_wall_angle: number(fields, "m_maxWallAngle", d.max_wall_angle)?,
+                    min_slope_angle: number(fields, "m_minSlopeAngle", d.min_slope_angle)?,
+                    max_slope_angle: number(fields, "m_maxSlopeAngle", d.max_slope_angle)?,
+                    slope_influence: number(fields, "m_slopeInfluence", d.slope_influence)?,
+                })
+            }
+            "playerstateslipping" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slipping(_))) => {
+                let d = SlippingDecl::default();
+                Kind::Slipping(SlippingDecl { gravity_strength: number(fields, "m_gravityStrength", d.gravity_strength)? })
+            }
+            "playerstateautocrouch" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::AutoCrouch)) => Kind::AutoCrouch,
             _ => continue,
         };
         for key in ["m_bodyParts", "m_lockedBodyParts", "m_exclusiveBodyParts", "m_primary"] {
@@ -327,4 +350,100 @@ pub fn stance_idle_animations(locomotion: &Fields) -> Vec<(String, String)> {
             Some((name.to_owned(), front.to_owned()))
         })
         .collect()
+}
+
+/// The controller decl's slipping fields (ctor FUN_1407f7a60).
+pub fn slipping_thresholds(controller: &Fields) -> Result<SlippingThresholds, String> {
+    Ok(SlippingThresholds::from_degrees(
+        number(controller, "m_slippingSlopeAngle", 49.0)?,
+        number(controller, "m_slippingAvgSlopeAngle", 36.0)?,
+        number(controller, "m_slippingFallSlopeStartAngle", 70.0)?,
+        number(controller, "m_slippingFallSlopeStopAngle", 60.0)?,
+        number(controller, "m_slippingMinGroundDistance", 0.5)?,
+    ))
+}
+
+/// arkDeclCpntPlayerSensorAutoCrouch (ctor FUN_1403a2120).
+pub fn autocrouch_sensor(fields: &Fields) -> Result<AutoCrouchDecl, String> {
+    let d = AutoCrouchDecl::default();
+    Ok(AutoCrouchDecl {
+        min_detection_distance: number(fields, "m_minDetectionDistance", d.min_detection_distance)?,
+        shape_radius: number(fields, "m_shapeRadius", d.shape_radius)?,
+        min_hole_depth: number(fields, "m_minHoleDepth", d.min_hole_depth)?,
+        push_duration: number(fields, "m_pushDuration", d.push_duration)?,
+        uncrouch_if_not_pushing: boolean(fields, "m_uncrouchIfNotPushing", d.uncrouch_if_not_pushing)?,
+    })
+}
+
+/// One `m_stances[].m_speeds[]` entry: speed-set index (by `m_speedList`),
+/// body and bob clip aliases in back/right/front/left order (empty
+/// directions filled with front) and clip speeds (front/back, strafe for
+/// left and right; default 0).
+pub struct LocoSpeedDecl {
+    pub speed: usize,
+    pub body: Option<[String; 4]>,
+    pub bob: Option<[String; 4]>,
+    pub speeds: [f32; 4],
+}
+
+fn moves(fields: Option<&Fields>) -> Option<[String; 4]> {
+    let fields = fields?;
+    let front = atom(fields, "m_front").unwrap_or("").to_owned();
+    let pick = |key: &str| atom(fields, key).filter(|v| !v.is_empty()).map(str::to_owned).unwrap_or_else(|| front.clone());
+    let all = [pick("m_back"), pick("m_right"), front.clone(), pick("m_left")];
+    all.iter().any(|name| !name.is_empty()).then_some(all)
+}
+
+/// `m_stances` with their speed sets (FUN_1407030a0 → FUN_140249400).
+pub fn loco_stances(locomotion: &Fields) -> Result<Vec<(String, Vec<LocoSpeedDecl>)>, String> {
+    let speed_list: Vec<String> = scope(locomotion, "m_speedList")
+        .map(|list| {
+            let mut entries: Vec<(usize, String)> = list
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Atom(text) => Some((k.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?, text.trim_matches('"').to_owned())),
+                    Value::Scope(_) => None,
+                })
+                .collect();
+            entries.sort();
+            entries.into_iter().map(|(_, name)| name).collect()
+        })
+        .unwrap_or_default();
+    let mut result = Vec::new();
+    for stance in items(locomotion, "m_stances") {
+        let Some(name) = atom(stance, "m_stance") else { continue };
+        let mut speeds = Vec::new();
+        for entry in items(stance, "m_speeds") {
+            let Some(speed_name) = atom(entry, "m_speed") else { continue };
+            let Some(speed) = speed_list.iter().position(|s| s == speed_name) else { continue };
+            let front = number(entry, "m_frontSpeed", 0.0)?;
+            let back = number(entry, "m_backSpeed", 0.0)?;
+            let strafe = number(entry, "m_strafeSpeed", 0.0)?;
+            speeds.push(LocoSpeedDecl {
+                speed,
+                body: moves(scope(entry, "m_body")),
+                bob: moves(scope(entry, "m_bob")),
+                speeds: [back, strafe, front, strafe],
+            });
+        }
+        result.push((name.to_owned(), speeds));
+    }
+    Ok(result)
+}
+
+/// `m_stanceTransitions` with their body blend times (ctor FUN_140701770:
+/// 0.25 / 0.25).
+pub fn loco_transitions(locomotion: &Fields) -> Result<Vec<(String, String, String, f32, f32)>, String> {
+    let mut result = Vec::new();
+    for item in items(locomotion, "m_stanceTransitions") {
+        let (Some(from), Some(to)) = (atom(item, "m_fromStance"), atom(item, "m_toStance")) else { continue };
+        result.push((
+            from.to_owned(),
+            to.to_owned(),
+            atom(item, "m_bodyAnim").unwrap_or("").to_owned(),
+            number(item, "m_bodyBlendIn", 0.25)?,
+            number(item, "m_bodyBlendOut", 0.25)?,
+        ));
+    }
+    Ok(result)
 }

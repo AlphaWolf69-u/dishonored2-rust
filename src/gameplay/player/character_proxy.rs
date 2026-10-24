@@ -152,6 +152,11 @@ impl CharacterProxy {
         self.manifold.len()
     }
 
+    /// Diagnostic: (position, normal, distance, triangle key) per contact.
+    pub fn contacts(&self) -> Vec<(Vec3, Vec3, f32, u32)> {
+        self.manifold.iter().map(|m| (m.position, m.normal, m.distance, m.key)).collect()
+    }
+
     /// FUN_140c8ae90.
     fn metric(&self, a: &ManifoldPoint, b: &ManifoldPoint) -> f32 {
         let sensitivity = self.settings.contact_angle_sensitivity;
@@ -468,6 +473,35 @@ mod tests {
         assert!(proxy.position.x < 1.0 - 0.4 + 0.001, "{:?}", proxy.position);
         assert!(proxy.position.x > 1.0 - 0.4 - 0.05, "{:?}", proxy.position);
         assert!(proxy.position.y > 5.0, "{:?}", proxy.position);
+    }
+
+    fn stairs(rise: f32, run: f32, count: usize) -> Vec<[Vec3; 3]> {
+        let mut triangles = floor();
+        for k in 0..count {
+            let x = 1.0 + k as f32 * run;
+            let (z0, z1) = (k as f32 * rise, (k + 1) as f32 * rise);
+            triangles.push([Vec3::new(x, -50.0, z0), Vec3::new(x, 50.0, z0), Vec3::new(x, 0.0, z1)]);
+            triangles.push([Vec3::new(x, -50.0, z0), Vec3::new(x, 50.0, z1), Vec3::new(x, -50.0, z1)]);
+            triangles.push([Vec3::new(x, 50.0, z0), Vec3::new(x, 50.0, z1), Vec3::new(x, 0.0, z1)]);
+            triangles.push([Vec3::new(x, -50.0, z1), Vec3::new(x + run, -50.0, z1), Vec3::new(x + run, 50.0, z1)]);
+            triangles.push([Vec3::new(x, -50.0, z1), Vec3::new(x + run, 50.0, z1), Vec3::new(x, 50.0, z1)]);
+        }
+        triangles
+    }
+
+    #[test]
+    fn stairs_are_climbed_at_run_and_sprint_speed() {
+        for speed in [4.14, 7.13] {
+            let world = Planes { triangles: stairs(0.2, 0.3, 10) };
+            let mut proxy = CharacterProxy::new(Vec3::new(0.0, 0.0, 0.01), Mat3::IDENTITY, standing(), settings());
+            for _ in 0..240 {
+                // Gravity as the physics step composes it while supported is 0;
+                // a downward component keeps contact like the airborne case.
+                proxy.velocity = Vec3::new(speed, 0.0, 0.0);
+                proxy.integrate(&world, 1.0 / 120.0);
+            }
+            assert!(proxy.position.z > 1.9, "speed {speed}: {:?}", proxy.position);
+        }
     }
 
     #[test]

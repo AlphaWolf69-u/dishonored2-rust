@@ -17,6 +17,11 @@ const QUAT_OFFSET: f32 = -0.707_106_77;
 #[derive(Clone, Debug)]
 pub struct EdgeAnimation {
     data: Vec<u8>,
+    /// Per-joint blend weights (u16@0x28 bytes at u32@0x30), if present.
+    pub joint_weights: Option<Vec<u8>>,
+    /// Trailer `m_flags` (FUN_140240210): bit 0 additive, bits 1..3 remove
+    /// root T.x/T.y/T.z, bit 4 remove root rotation.
+    pub flags: u16,
     pub frame_rate: f32,
     pub frame_count: u16,
     frame_set_count: u16,
@@ -76,7 +81,7 @@ fn sin_poly(a: f32) -> f32 {
 }
 
 /// FUN_1412e8f10's polynomial slerp: lerp above |dot| 0.999, no renormalise.
-fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+pub fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let dot: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
     let sign = if dot < 0.0 { -1.0 } else { 1.0 };
     let x = dot.abs();
@@ -123,7 +128,21 @@ impl EdgeAnimation {
             at += ((count + pad - 1) & !(pad - 1)) * 2;
             table
         });
+        // Trailer after the blob: u32 9, length-prefixed md6skl path, u16 m_flags.
+        let trailer = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+        let flags = trailer(size + 4)
+            .and_then(|length| bytes.get(size + 8 + length..size + 10 + length))
+            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+        let weight_count = u16_at(&data, 0x28)? as usize;
+        let joint_weights = if weight_count > 0 {
+            let at = u32_at(&data, 0x30)? as usize;
+            Some(data.get(at..at + weight_count).ok_or("truncated Edge joint weights")?.to_vec())
+        } else {
+            None
+        };
         Ok(Self {
+            joint_weights,
+            flags,
             frame_rate: f32_at(&data, 0x08)?,
             frame_count: u16_at(&data, 0x10)?,
             frame_set_count: u16_at(&data, 0x12)?,

@@ -1,7 +1,7 @@
 //! arkCpntPlayerController (vtable 0x141c72918): the input pass
-//! FUN_1407f9ea0 (ProcessInput, slot 29), the DEFAULT think FUN_1407fb5c0,
-//! ground-support state selection FUN_1407fbb20 and the decl states mapping
-//! FUN_1407f8270.
+//! FUN_1407f9ea0 (ProcessInput, slot 29), the DEFAULT think FUN_1407fb5c0 and
+//! the decl states mapping FUN_1407f8270. Ground-support and slipping state
+//! selection (FUN_1407fbb20) is `StateMachine::controller_support`.
 use super::character_proxy::SupportState;
 use super::states::{StateId, StateMachine};
 use bevy_math::Vec3;
@@ -77,6 +77,45 @@ pub struct StateMapping {
     pub priority_when_available: i32,
 }
 
+/// Slip thresholds (decl ctor FUN_1407f7a60 degrees, Start FUN_1407f9530
+/// cosines at ctrl+0x178..0x184).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlippingThresholds {
+    pub slope_cos: f32,
+    pub average_slope_cos: f32,
+    pub fall_start_cos: f32,
+    pub fall_stop_cos: f32,
+    pub min_ground_distance: f32,
+}
+
+impl SlippingThresholds {
+    /// From the decl's degrees (49 / 36 / 70 / 60 by default) and minimum
+    /// ground distance (0.5).
+    pub fn from_degrees(slope: f32, average: f32, fall_start: f32, fall_stop: f32, min_ground_distance: f32) -> Self {
+        let cos = |degrees: f32| {
+            use std::f32::consts::TAU;
+            let mut angle = degrees * 0.017453292;
+            if angle < 0.0 || angle >= TAU {
+                angle -= (angle * (1.0 / TAU)).floor() * TAU;
+            }
+            angle.cos()
+        };
+        Self {
+            slope_cos: cos(slope),
+            average_slope_cos: cos(average),
+            fall_start_cos: cos(fall_start),
+            fall_stop_cos: cos(fall_stop),
+            min_ground_distance,
+        }
+    }
+}
+
+impl Default for SlippingThresholds {
+    fn default() -> Self {
+        Self::from_degrees(49.0, 36.0, 70.0, 60.0, 0.5)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Controller {
     pub mapping: Vec<StateMapping>,
@@ -104,6 +143,9 @@ pub struct Controller {
     sprinting_button_down_before_stop: bool,
     /// +0x170.
     pub must_sprint: bool,
+    pub slipping: SlippingThresholds,
+    /// +0x188.
+    pub is_slip_falling: bool,
 }
 
 fn bit(action: i32) -> u64 {
@@ -137,6 +179,8 @@ impl Controller {
             sprinting_stopped: false,
             sprinting_button_down_before_stop: false,
             must_sprint: false,
+            slipping: SlippingThresholds::default(),
+            is_slip_falling: false,
         }
     }
 
@@ -167,6 +211,14 @@ impl Controller {
         self.pressed = 0;
         self.released = 0;
         self.held = 0;
+    }
+
+    /// FUN_1407fa770: undo a sprint stop.
+    pub fn resume_sprint(&mut self) {
+        self.sprinting_stopped = false;
+        if self.sprinting_button_down_before_stop {
+            self.held |= bit(self.sprinting_action);
+        }
     }
 
     /// FUN_1407fb2f0 "stop sprint".
@@ -261,7 +313,7 @@ impl Controller {
 
     /// FUN_1407fb5c0 up to the state requests. `frame_delta` is clock
     /// group 0's delta.
-    pub fn think(&mut self, settings: &LookSettings, frame_delta: f32, physics_support: SupportState, ground_distance: f32, machine: &mut StateMachine) {
+    pub fn think(&mut self, settings: &LookSettings, frame_delta: f32) {
         let mut look = Vec3::new(self.raw_look.x, self.raw_look.y, 0.0);
         self.look_is_analog = !self.keyboard_look && !self.mouse_look;
         if !self.mouse_look {
@@ -289,31 +341,10 @@ impl Controller {
             self.sprinting_stopped = false;
             self.sprinting_button_down_before_stop = false;
         }
-        self.update_support(physics_support, ground_distance, false, machine);
-        self.apply_mapping(machine);
-    }
-
-    /// FUN_1407fbb20 (slipping is not ported).
-    fn update_support(&mut self, support: SupportState, ground_distance: f32, force: bool, machine: &mut StateMachine) {
-        if !force && support == self.support_state {
-            return;
-        }
-        match support {
-            SupportState::Unsupported => {
-                if force || ground_distance == f32::MAX {
-                    self.support_state = SupportState::Unsupported;
-                    machine.request(StateId::FALLING);
-                }
-            }
-            SupportState::Sliding | SupportState::Supported => {
-                self.support_state = support;
-                machine.request_landing();
-            }
-        }
     }
 
     /// FUN_1407f8270.
-    fn apply_mapping(&self, machine: &mut StateMachine) {
+    pub fn apply_mapping(&self, machine: &mut StateMachine) {
         for mapping in &self.mapping {
             let fire = match mapping.usage {
                 // Entries with a priority go through the INTERACT picker
@@ -359,8 +390,7 @@ mod tests {
         let mouse = |dx: f32, dy: f32| ActionEvent { action: ACTION_LOOK, key: MOUSE_MOVE_KEY, value: [dx, dy], flags: 3 };
         controller.process_input(&[mouse(36.0, 0.0), mouse(36.0, -18.0)], &settings);
         assert_eq!(controller.raw_look, Vec3::new(-0.05, -0.2, 0.0));
-        let mut machine = StateMachine::empty();
-        controller.think(&settings, 1.0 / 120.0, SupportState::Supported, 0.0, &mut machine);
+        controller.think(&settings, 1.0 / 120.0);
         assert!(controller.input_look.distance(Vec3::new(-0.1, -0.4, 0.0)) < 1e-6);
         assert!(!controller.look_is_analog);
         controller.process_input(&[], &settings);
