@@ -1,6 +1,6 @@
 //! Authored hinge motor bindings. Positions and basis vectors remain Z-up.
 use super::components::{atom, component_fields, overlay};
-use super::{field, parse_declaration, scope, vector, Document};
+use super::{field, scope, vector, Document};
 use std::collections::HashMap;
 pub mod recipes;
 
@@ -270,34 +270,14 @@ pub fn constraints(
 /// 14008b640 initializes it to 1000; inherited declarations override m_Density.
 pub fn material_density(
     name: &str,
-    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+    read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<f32, String> {
-    fn resolve(
-        name: &str,
-        depth: usize,
-        read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
-    ) -> Result<f32, String> {
-        if depth > 32 {
-            return Err(format!("physics material inheritance exceeds 32: {name}"));
-        }
-        let path = format!("generated/decls/physicsmaterial/{name}.decl");
-        let source = read(&path)?.ok_or_else(|| format!("missing physics material {path}"))?;
-        let fields = parse_declaration(&source)?;
-        let inherited = match atom(&fields, "inherit") {
-            Some(parent) => resolve(parent, depth + 1, read)?,
-            None => 1000.,
-        };
-        let edit = scope(field(&fields, "edit")).unwrap_or(&fields);
-        match atom(edit, "m_Density") {
-            Some(value) => value
-                .parse::<f32>()
-                .ok()
-                .filter(|v| v.is_finite() && *v > 0.)
-                .ok_or_else(|| format!("invalid density in {path}")),
-            None => Ok(inherited),
-        }
+    let density = super::physics_material::physics_material(name, read)?.density;
+    if density > 0. {
+        Ok(density)
+    } else {
+        Err(format!("invalid density in physics material {name}"))
     }
-    resolve(name, 0, &mut read)
 }
 
 /// Convenience selection for the ambient motor audit; passive supporting

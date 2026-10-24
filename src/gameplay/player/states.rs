@@ -10,7 +10,13 @@
 //! from the mode, so requests for them are rejected as the game rejects a
 //! state its mode lacks. Footsteps, fall damage, stats, slide slow-time,
 //! shoves, breakables and camera constraint modes are not ported.
-use super::body::{JumpAnim, Lean};
+use super::body::{FollowSlope, JumpAnim, Lean};
+use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS};
+use super::midnight::{Midnight, PreparedScene};
+use super::sensors::{MantleHeight, MantleSensor, VaultLimits, VaultSensor};
+use super::shape::{POSTURE_LEAN_FORWARD, POSTURE_VAULTING};
+use crate::edge_animation::EdgeAnimation;
+use std::sync::Arc;
 use super::character_proxy::{PlayerWorld, SupportState};
 use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
@@ -28,9 +34,11 @@ impl StateId {
     pub const SPRINTING: Self = Self(1);
     pub const JUMPING: Self = Self(2);
     pub const FALLING: Self = Self(3);
+    pub const CATFALL: Self = Self(4);
     pub const SLIPPING: Self = Self(5);
     pub const SNEAKING: Self = Self(6);
     pub const SLIDING: Self = Self(7);
+    pub const MANTLE: Self = Self(8);
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
     pub const WALLCROUCH: Self = Self(11);
@@ -56,6 +64,8 @@ pub struct StateFlags {
     pub cancelable: bool,
     pub canceling: bool,
     pub allow_camera_out_of_shape: bool,
+    /// +0x69 bit 0x20: a midnight break event quits it.
+    pub breakable: bool,
 }
 
 /// arkDeclPlayerStateNavigation (ctor FUN_1408684c0).
@@ -83,6 +93,10 @@ pub struct NavigationDecl {
     /// +0x148 / +0x14c.
     pub small_fall_min_height: f32,
     pub small_fall_anim_weight: f32,
+    /// +0xc0 m_cameraMode / +0xc4 m_cameraModeBlendDuration (-1: the
+    /// camera decl's).
+    pub camera_mode: i32,
+    pub camera_mode_blend_duration: f32,
 }
 
 impl Default for NavigationDecl {
@@ -108,6 +122,8 @@ impl Default for NavigationDecl {
             physics_shape_transition_speed_factor: 1.0,
             small_fall_min_height: 0.0,
             small_fall_anim_weight: 0.33,
+            camera_mode: 0,
+            camera_mode_blend_duration: -1.0,
         }
     }
 }
@@ -145,11 +161,105 @@ pub struct FallingDecl {
     pub resume_sliding_max_height: f32,
     /// +0x170.
     pub full_fall_anim_height: f32,
+    /// +0x158 m_catFallHeight, +0x15c m_damageHeight, +0x164 m_deathHeight.
+    pub cat_fall_height: f32,
+    pub damage_height: f32,
+    pub death_height: f32,
+    /// m_fallDamageDecl is set.
+    pub fall_damage: bool,
 }
 
 impl Default for FallingDecl {
     fn default() -> Self {
-        Self { smooth_gravity_adjustment: 0.75, resume_sliding_max_height: 4.0, full_fall_anim_height: 4.0 }
+        Self {
+            smooth_gravity_adjustment: 0.75,
+            resume_sliding_max_height: 4.0,
+            full_fall_anim_height: 4.0,
+            cat_fall_height: 6.0,
+            damage_height: f32::from_bits(0x4107_0a3d),
+            death_height: f32::from_bits(0x4160_7ae1),
+            fall_damage: false,
+        }
+    }
+}
+
+/// arkDeclPlayerStateCatFall (ctor FUN_14085a780) fields the port uses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatFallDecl {
+    pub low_damage_midnight: Option<String>,
+    pub high_damage_midnight: Option<String>,
+    pub damage_threshold: f32,
+    /// m_lookAtParams (degrees: pitch up, down, yaw left, right).
+    pub look_at_params: [f32; 4],
+}
+
+impl Default for CatFallDecl {
+    fn default() -> Self {
+        Self { low_damage_midnight: None, high_damage_midnight: None, damage_threshold: 10.0, look_at_params: [50.0, 0.0, 50.0, 50.0] }
+    }
+}
+
+/// arkDeclPlayerStateMantle (ctor FUN_14085e7b0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MantleStateDecl {
+    /// [crouching, sneaking, idle] final postures, by height.
+    pub low_midnights: [Option<String>; 3],
+    pub mid_midnights: [Option<String>; 3],
+    pub high_midnights: [Option<String>; 3],
+    pub constraint_params: [f32; 4],
+    pub low_mantle_duration: f32,
+}
+
+impl Default for MantleStateDecl {
+    fn default() -> Self {
+        Self {
+            low_midnights: Default::default(),
+            mid_midnights: Default::default(),
+            high_midnights: Default::default(),
+            constraint_params: [30.0, 30.0, 45.0, 45.0],
+            low_mantle_duration: 0.3,
+        }
+    }
+}
+
+/// arkDeclPlayerStateVault (ctor FUN_140871350) fields the port uses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VaultDecl {
+    pub min_speed: f32,
+    pub limits: VaultLimits,
+    pub small_midnights: Vec<String>,
+    pub small_distance: f32,
+    pub high_threshold: f32,
+    pub high_midnights: Vec<String>,
+    pub high_distance: f32,
+    /// +0xf0 (unnamed): the minimum exit offset.
+    pub exit_offset: f32,
+    pub constraint_params: [f32; 4],
+}
+
+impl Default for VaultDecl {
+    fn default() -> Self {
+        Self {
+            min_speed: 6.0,
+            limits: VaultLimits {
+                max_distance: 4.0,
+                min_distance: 1.0,
+                min_height: 0.25,
+                max_height: 1.0,
+                max_depth: 1.0,
+                clear_above: 2.0,
+                clear_behind: 3.0,
+                clear_left: 0.5,
+                clear_right: 0.5,
+            },
+            small_midnights: Vec::new(),
+            small_distance: 1.5,
+            high_threshold: 0.5,
+            high_midnights: Vec::new(),
+            high_distance: 1.5,
+            exit_offset: 0.25,
+            constraint_params: [70.0, 70.0, 70.0, 70.0],
+        }
     }
 }
 
@@ -176,6 +286,8 @@ pub struct SlidingDecl {
     pub min_slope_angle: f32,
     pub max_slope_angle: f32,
     pub slope_influence: f32,
+    /// +0x164 m_constraintParams (degrees: pitch up, down, yaw left, right).
+    pub constraint_params: [f32; 4],
 }
 
 impl Default for SlidingDecl {
@@ -189,6 +301,7 @@ impl Default for SlidingDecl {
             min_slope_angle: 30.0,
             max_slope_angle: 90.0,
             slope_influence: 0.33,
+            constraint_params: [45.0, 10.0, 50.0, 50.0],
         }
     }
 }
@@ -265,6 +378,9 @@ pub enum Kind {
     Jumping(JumpingDecl),
     Falling(FallingDecl),
     Leaning(LeaningDecl),
+    CatFall(CatFallDecl),
+    Mantle(MantleStateDecl),
+    Vault(VaultDecl),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -290,6 +406,7 @@ impl StateDecl {
             cancelable: false,
             canceling: false,
             allow_camera_out_of_shape: false,
+            breakable: false,
         };
         let mut navigation = NavigationDecl::default();
         let mut flags = navigation_flags;
@@ -328,6 +445,19 @@ impl StateDecl {
                 // Not a navigation state: no body parts, allowSelf.
                 flags = StateFlags { primary: false, body_parts: 0, exclusive_body_parts: 0, allow_self: true, ..flags };
                 (StateId::LEANING, 0.0)
+            }
+            // Body + both arms (bits 1, 2, 4), breakable.
+            Kind::CatFall(_) => {
+                flags = StateFlags { primary: false, body_parts: 7, locked_body_parts: 7, exclusive_body_parts: 0, breakable: true, ..flags };
+                (StateId::CATFALL, 0.0)
+            }
+            Kind::Mantle(_) => {
+                flags = StateFlags { primary: false, body_parts: 0x17, locked_body_parts: 0x17, exclusive_body_parts: 0, ..flags };
+                (StateId::MANTLE, 0.0)
+            }
+            Kind::Vault(_) => {
+                flags = StateFlags { primary: false, body_parts: 0x15, locked_body_parts: 0x05, exclusive_body_parts: 0x11, ..flags };
+                (StateId::VAULT, 0.0)
             }
         };
         Self { id, flags, navigation, air_friction, kind }
@@ -394,11 +524,13 @@ pub struct LocoStances {
     pub transitions: HashMap<(String, String), f32>,
     /// body+0xd98 m_maxSpeeds {back, strafe, fwd, strafe} (1e30 unset).
     pub max_speeds: [f32; 4],
+    /// body+0xc48: the head bob plays (mantle clears it).
+    pub bob_enabled: bool,
 }
 
 impl Default for LocoStances {
     fn default() -> Self {
-        Self { current: None, bob: None, transitions: HashMap::new(), max_speeds: [UNSET; 4] }
+        Self { current: None, bob: None, transitions: HashMap::new(), max_speeds: [UNSET; 4], bob_enabled: true }
     }
 }
 
@@ -427,7 +559,8 @@ pub struct Frame<'a> {
     pub controller: &'a mut Controller,
     pub physics: &'a mut PlayerPhysics,
     pub body: &'a mut LocoStances,
-    pub camera: &'a mut CameraTurn,
+    pub camera: &'a mut PlayerCamera,
+    pub follow_slope: &'a mut FollowSlope,
     pub requests: &'a mut MotionRequests,
     pub autocrouch: &'a mut AutoCrouchSensor,
     /// Entity origin, axis (rows forward/left/up as columns) and velocity.
@@ -440,6 +573,19 @@ pub struct Frame<'a> {
     pub lean: &'a mut Lean,
     pub lean_sensor: &'a mut LeanSensor,
     pub jump_anim: &'a mut JumpAnim,
+    pub midnight: &'a mut Midnight,
+    pub scenes: &'a Scenes,
+    /// The player body md6 (CONDMD6 choices).
+    pub md6: &'a str,
+    pub animations: &'a [EdgeAnimation],
+    pub mantle_sensor: &'a mut MantleSensor,
+    pub vault_sensor: &'a mut VaultSensor,
+    pub retargeting: &'a mut Option<Retargeting>,
+    /// The player's health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX);
+    /// the rewrite has no damage, so it stays full.
+    pub health: f32,
+    /// The game's global LCG at gameLocal+0x600f8.
+    pub random: &'a mut u32,
     /// `ark_playerSmallFallCooldown` (cvar 0x143996320, "0.5").
     pub small_fall_cooldown: f32,
     pub lean_toggle: bool,
@@ -484,6 +630,8 @@ struct InAir {
     from_sliding: bool,
     from_jumping: bool,
     from_grappling: bool,
+    /// Jumping +0xb8.
+    from_vault: bool,
     inherited_velocity: Vec3,
 }
 
@@ -525,6 +673,48 @@ struct Slide {
     blend_out_done: bool,
     keep_sprinting: bool,
     want_jump: bool,
+}
+
+/// The installed midnight scenes the states play, by decl path.
+pub type Scenes = std::collections::HashMap<String, Arc<PreparedScene>>;
+
+/// arkCpntRetargeting of the mantle dummy with the player as its slave
+/// (FUN_140860680 setup, FUN_1407583e0 update, FUN_140757c10 release).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Retargeting {
+    pub duration: f32,
+    pub timer: f32,
+    /// The slave joint anchor_jnt (None: the identity joint).
+    pub anchor: bool,
+    pub orientation: bool,
+    pub start: Vec3,
+    pub start_yaw: f32,
+    pub target: Vec3,
+    pub target_yaw: f32,
+    /// The slave's last anim (FUN_140758f10: with no current anim, its last
+    /// frame).
+    pub last_clip: Option<usize>,
+}
+
+/// Mantle runtime (arkPlayerStateMantle +0xac params, +0xe0 dummy).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct MantleRun {
+    final_posture: usize,
+    final_state: i32,
+    destination: Vec3,
+    destination_yaw: f32,
+    height: u8,
+}
+
+/// Vault runtime (arkPlayerStateVault +0x38..+0x7c).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct VaultRun {
+    phase: u8,
+    velocity: Vec3,
+    forward: Vec3,
+    interpolate: Vec3,
+    exit: Vec3,
+    height: f32,
 }
 
 /// arkPlayerStateLeaning +0x34..+0x58 (sounds and the save flag aside).
@@ -588,6 +778,12 @@ pub struct State {
     first_frame: bool,
     sprinting_button_down: bool,
     leaning: Leaning,
+    /// +0x24: the state's midnight scene handle.
+    pub midnight: u32,
+    /// CatFall m_damageAmount.
+    damage: f32,
+    mantle: MantleRun,
+    vault: VaultRun,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -595,6 +791,8 @@ enum Command {
     Request(StateId),
     /// FUN_1408024d0 with Sliding's params {uid, 7, speed}.
     RequestSlide(f32),
+    /// Falling Land()'s CATFALL request with params {uid, damage}.
+    RequestCatFall(f32),
     Quit(StateId),
     /// FUN_1407fbb20's landing request: the first available of Running,
     /// Sneaking, AutoCrouch and the mode default.
@@ -665,7 +863,12 @@ impl StateMachine {
                 first_frame: false,
                 sprinting_button_down: false,
                 leaning: Leaning::default(),
+                midnight: 0,
+                damage: 0.0,
+                mantle: MantleRun::default(),
+                vault: VaultRun::default(),
             })
+
             .collect();
         let mut rules = HashMap::new();
         for a in &states {
@@ -785,15 +988,66 @@ impl StateMachine {
             }
             Kind::Sliding(decl) => navigation && self.slide_can_activate(decl, frame),
             Kind::Jumping(decl) => {
-                // FUN_140867f90 (vault is not ported).
+                // FUN_140867f90.
                 let slip_moving = frame.controller.support_state == SupportState::Sliding && frame.velocity.length_squared() > 0.01;
                 (self.is_active(StateId::VAULT) || navigation)
                     && !physics.ceiling_blocks(decl.min_clear_distance_above)
                     && !slip_moving
+                    && !self.allowed(StateId::VAULT, frame)
             }
             Kind::Falling(_) => true,
             // FUN_14085d9a0: the base body-part test passes with no parts.
             Kind::Leaning(_) => physics.near_ground(),
+            // FUN_14085b2e0 (swimming is not ported).
+            Kind::CatFall(_) => true,
+            // FUN_140860180 (blink-to-mantle is not ported).
+            Kind::Mantle(_) => !self.is_active(StateId::MANTLE) && frame.mantle_sensor.can_mantle(),
+            // FUN_140872380.
+            Kind::Vault(decl) => {
+                let v = frame.velocity;
+                physics.near_ground()
+                    && frame.vault_sensor.enabled
+                    && frame.vault_sensor.can_vault
+                    && (self.is_active(StateId::SLIDING) || v.x * v.x + v.y * v.y >= decl.min_speed * decl.min_speed)
+            }
+        }
+    }
+
+    /// FUN_1408031b0: available and allowed by every active state.
+    fn allowed(&self, id: StateId, frame: &Frame) -> bool {
+        self.available(id, frame) && self.active.iter().all(|&a| self.rule(a, id).allow)
+    }
+
+    /// The installed scene at `path` started on the player (FUN_1408549c0);
+    /// 0 when it is missing or fails to start.
+    fn play(path: Option<&String>, rate: f32, frame: &mut Frame) -> u32 {
+        let Some(path) = path else { return 0 };
+        let Some(scene) = frame.scenes.get(path) else {
+            eprintln!("Midnight scene {path} was not loaded");
+            return 0;
+        };
+        match frame.midnight.start(scene, frame.md6, rate, frame.animations) {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("Midnight scene {path}: {error}");
+                0
+            }
+        }
+    }
+
+    /// The midnight messages of this frame (flushed before DEFAULT):
+    /// BREAK_PLAYER_STATE quits the breakable state playing that scene
+    /// (FUN_140802e10).
+    pub fn handle_message(&mut self, event: &str, handle: u32) {
+        if event != "ARK_MDNT_MSG_BREAK_PLAYER_STATE" {
+            return;
+        }
+        for id in self.active.clone() {
+            if let Some(state) = self.state(id) {
+                if state.decl.flags.breakable && state.midnight == handle && handle != 0 {
+                    self.quit(id);
+                }
+            }
         }
     }
 
@@ -942,6 +1196,7 @@ impl StateMachine {
                 }
                 Command::Request(id) => self.accept(id, None, &snapshot, &mut accepted, frame),
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
+                Command::RequestCatFall(damage) => self.accept(StateId::CATFALL, Some(damage), &snapshot, &mut accepted, frame),
             }
         }
         for &(id, _) in &accepted {
@@ -992,8 +1247,8 @@ impl StateMachine {
     fn accept(&self, id: StateId, slide_speed: Option<f32>, snapshot: &[StateId], accepted: &mut Vec<(StateId, Option<f32>)>, frame: &Frame) {
         let Some(index) = self.index(id) else { return };
         let can = match slide_speed {
-            Some(speed) => self.slide_available(speed),
-            None => self.can_activate(index, frame),
+            Some(speed) if id == StateId::SLIDING => self.slide_available(speed),
+            _ => self.can_activate(index, frame),
         };
         let ok = can
             && snapshot.iter().all(|&a| self.rule(a, id).allow)
@@ -1020,6 +1275,7 @@ impl StateMachine {
             from_sliding: self.is_active(StateId::SLIDING),
             from_jumping: self.is_active(StateId::JUMPING),
             from_grappling: self.is_active(StateId::GRAPPLE),
+            from_vault: self.is_active(StateId::VAULT),
             inherited_velocity: Vec3::ZERO,
         };
         if matches!(self.states[index].decl.kind, Kind::Jumping(_)) && self.is_active(StateId::FALLING) {
@@ -1044,6 +1300,46 @@ impl StateMachine {
     fn activate(&mut self, index: usize, slide_speed: Option<f32>, frame: &mut Frame) {
         self.states[index].active = true;
         let decl = self.states[index].decl.clone();
+        if let Kind::CatFall(catfall) = &decl.kind {
+            // FUN_14085a910 (arms, equipment, the wind blast, fail chance and
+            // footsteps are not ported).
+            self.states[index].damage = slide_speed.unwrap_or(0.0);
+            frame.physics.set_posture(POSTURE_LEAN_FORWARD, 0.0);
+            frame.camera.constraints = camera::constraints(catfall.look_at_params);
+            frame.camera.set_target_mode(MODE_CATFALL, -1.0);
+            let high = self.states[index].damage >= catfall.damage_threshold && catfall.high_damage_midnight.is_some();
+            let scene = if high { catfall.high_damage_midnight.as_ref() } else { catfall.low_damage_midnight.as_ref() };
+            frame.follow_slope.midnight_requests += 1;
+            let rate = frame.attributes.0.get("ARK_ATTRIBUTE_CATFALL_SPEED_FACTOR").copied().unwrap_or(1.0);
+            self.states[index].midnight = Self::play(scene, rate, frame);
+            return;
+        }
+        if let Kind::Mantle(mantle) = &decl.kind {
+            self.activate_mantle(index, mantle, frame);
+            return;
+        }
+        if let Kind::Vault(vault) = &decl.kind {
+            // FUN_1408715a0.
+            let sensor = &*frame.vault_sensor;
+            let forward = sensor.axis.x_axis;
+            let speed = frame.velocity.length().max(vault.min_speed);
+            let height = sensor.vault_height;
+            let distance = if height > vault.high_threshold { vault.high_distance } else { vault.small_distance };
+            let radius = frame.physics.active_shape().radius;
+            self.states[index].vault = VaultRun {
+                phase: 0,
+                velocity: forward * speed,
+                forward,
+                interpolate: sensor.vault_position - forward * distance,
+                exit: sensor.vault_exit + forward * vault.exit_offset.max(radius),
+                height,
+            };
+            frame.camera.constraints = camera::constraints(vault.constraint_params);
+            frame.camera.set_target_mode(MODE_CONSTRAINED, -1.0);
+            frame.physics.disable_gravity(true);
+            frame.physics.set_posture(POSTURE_VAULTING, 0.0);
+            return;
+        }
         if let Kind::Leaning(leaning) = decl.kind {
             // FUN_14085d170: continue from the body's (possibly fading) lean.
             let lean = &*frame.lean;
@@ -1071,6 +1367,7 @@ impl StateMachine {
         // FUN_140869500 (crush test not ported).
         let duration = frame.body.enter(&decl.navigation.loco_stance_name) * decl.navigation.physics_shape_transition_speed_factor;
         frame.physics.set_posture(decl.navigation.posture, duration);
+        frame.camera.set_target_mode(decl.navigation.camera_mode, decl.navigation.camera_mode_blend_duration);
         // Slot 8: the head-bob stance, else the loco stance (Navigation Init).
         let bob = if decl.navigation.head_bob_stance_name.is_empty() { &decl.navigation.loco_stance_name } else { &decl.navigation.head_bob_stance_name };
         if !bob.is_empty() {
@@ -1098,6 +1395,8 @@ impl StateMachine {
             }
             Kind::Sprinting(_) => {
                 // FUN_140869f60.
+                let normal = frame.physics.ground_ray_normal_average;
+                frame.vault_sensor.enable(true, normal);
                 frame.controller.must_sprint = true;
                 let action = frame.controller.sneak_action;
                 frame.controller.set_toggled(action, false);
@@ -1126,10 +1425,12 @@ impl StateMachine {
                 } else {
                     jumping.jump_height
                 };
+                // A jump out of a vault adds the obstacle height (+0x10c).
+                let height = if in_air.from_vault { basic + frame.vault_sensor.vault_height } else { basic };
                 let jump = &mut self.states[index].jump;
                 *jump = Jump {
                     basic_height: basic,
-                    height: basic,
+                    height,
                     successive: 1,
                     timer: 0.0,
                     takeoff_z: frame.origin.z,
@@ -1158,12 +1459,19 @@ impl StateMachine {
                 }
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) => {}
         }
     }
 
     /// Sliding Activate FUN_14086d670 / FUN_14086d960 and Init FUN_14086db40.
     fn activate_slide(&mut self, index: usize, decl: &SlidingDecl, speed: Option<f32>, frame: &mut Frame) {
+        let normal = frame.physics.ground_ray_normal_average;
+        frame.vault_sensor.enable(true, normal);
+
+        frame.camera.constraints = super::camera::constraints(decl.constraint_params);
+        // FollowSlope tilts the body to the slope while sliding (unless the
+        // state machine's +0x1c bit 30 is set, which the player never sets).
+        frame.follow_slope.requests += 1;
         let action = frame.controller.sneak_action;
         frame.controller.set_toggled(action, false);
         frame.controller.stop_sprint();
@@ -1212,6 +1520,45 @@ impl StateMachine {
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
         self.states[index].active = false;
+        match self.states[index].decl.kind.clone() {
+            Kind::CatFall(_) => {
+                // FUN_14085b1e0 (the scene keeps playing).
+                let crouch = frame.controller.toggled(frame.controller.sneak_action);
+                self.request(if crouch { StateId::SNEAKING } else { StateId::RUNNING });
+                frame.follow_slope.midnight_requests -= 1;
+                return;
+            }
+            Kind::Mantle(_) => {
+                // FUN_14085fd40.
+                frame.controller.support_state = SupportState::Supported;
+                frame.physics.disable_gravity(false);
+                frame.body.bob_enabled = true;
+                frame.body.max_speeds = [UNSET; 4];
+                if frame.retargeting.take().is_some() {
+                    frame.physics.skip_inertia(false);
+                    frame.physics.disable_gravity(false);
+                }
+                frame.midnight.stop(self.states[index].midnight);
+                self.states[index].midnight = 0;
+                return;
+            }
+            Kind::Vault(_) => {
+                // FUN_140871d90.
+                frame.physics.set_posture(POSTURE_STANDING, 0.0);
+                if self.states[index].vault.phase != 2 {
+                    frame.physics.disable_gravity(false);
+                }
+                if self.states[index].midnight != 0 {
+                    frame.midnight.stop(self.states[index].midnight);
+                    self.states[index].midnight = 0;
+                }
+                if frame.physics.ground_distance < 0.0 {
+                    frame.physics.proxy.position.z -= frame.physics.ground_distance;
+                }
+                return;
+            }
+            _ => {}
+        }
         if let Kind::Leaning(leaning) = self.states[index].decl.kind {
             // FUN_14085d490.
             frame.lean.end(leaning.blend_duration);
@@ -1245,8 +1592,18 @@ impl StateMachine {
                 frame.physics.ground_query_length = self.states[index].decl.navigation.max_ground_distance;
                 self.states[index].in_air = InAir::default();
             }
+            Kind::Sprinting(_) => {
+                // FUN_14086a220.
+                let normal = frame.physics.ground_ray_normal_average;
+                frame.vault_sensor.enable(false, normal);
+            }
             Kind::Sliding(_) => {
                 // FUN_14086e050.
+                let normal = frame.physics.ground_ray_normal_average;
+                frame.vault_sensor.enable(false, normal);
+                if frame.follow_slope.requests > 0 {
+                    frame.follow_slope.requests -= 1;
+                }
                 frame.autocrouch.set_detection_distance(0.0);
             }
             _ => {}
@@ -1329,7 +1686,183 @@ impl StateMachine {
                 self.falling_update(index, &decl, frame);
             }
             Kind::Leaning(decl) => self.leaning_update(index, &decl, frame),
+            Kind::CatFall(_) => {
+                // FUN_14085b8a0.
+                frame.requests.push_angular(0, Vec3::ZERO);
+                frame.requests.push_linear(0, Vec3::ZERO);
+                if frame.midnight.finished(self.states[index].midnight) {
+                    self.quit(id);
+                }
+            }
+            Kind::Mantle(_) => self.mantle_update(index, frame),
+            Kind::Vault(decl) => self.vault_update(index, &decl, frame),
         }
+    }
+
+    /// Mantle Activate FUN_14085eaf0 (shadow walk, corpses, moving
+    /// platforms, legs, footsteps and equipment are not ported).
+    fn activate_mantle(&mut self, index: usize, decl: &MantleStateDecl, frame: &mut Frame) {
+        let sensor = &*frame.mantle_sensor;
+        let Some((final_posture, final_state)) = sensor.final_posture() else { return };
+        let height = sensor.height(frame.origin);
+        let destination = sensor.destination;
+        let axis = sensor.destination_axis.x_axis;
+        let destination_yaw = axis.y.atan2(axis.x);
+        frame.requests.push_angular(0, Vec3::ZERO);
+        let mut final_state = StateId(final_state);
+        if final_state != StateId::AUTOCROUCH && frame.controller.toggled(frame.controller.sneak_action) {
+            final_state = StateId::SNEAKING;
+        }
+        if height != MantleHeight::Low {
+            let stance = self.stance(final_state).to_owned();
+            frame.body.enter(&stance);
+        }
+        frame.body.bob_enabled = false;
+        frame.body.max_speeds = [0.0; 4];
+        let slot = if final_state == StateId::SNEAKING { 1 } else if final_state == StateId::AUTOCROUCH { 0 } else { 2 };
+        let scenes = match height {
+            MantleHeight::Low => &decl.low_midnights,
+            MantleHeight::Mid => &decl.mid_midnights,
+            MantleHeight::High => &decl.high_midnights,
+        };
+        self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8 };
+        if scenes[slot].is_some() {
+            let rate = frame.attributes.0.get("ARK_ATTRIBUTE_MANTLE_SPEED_FACTOR").copied().unwrap_or(1.0);
+            self.states[index].midnight = Self::play(scenes[slot].as_ref(), rate, frame);
+            // FUN_140860680: retarget the player onto the dummy at the destination.
+            let low = height == MantleHeight::Low;
+            *frame.retargeting = Some(Retargeting {
+                // 0.2 (DAT_141ab3818).
+                duration: if low { decl.low_mantle_duration } else { 0.2 },
+                timer: 0.0,
+                anchor: !low,
+                orientation: !low,
+                start: frame.origin,
+                start_yaw: frame.physics.yaw,
+                target: destination,
+                target_yaw: destination_yaw,
+                last_clip: None,
+            });
+            // FUN_140757730: no smoothing; axis z disables gravity again.
+            frame.physics.skip_inertia(true);
+            frame.physics.disable_gravity(true);
+        }
+        frame.physics.instant_motion();
+        frame.physics.set_gravity_velocity(Vec3::ZERO);
+        let posture = if final_posture == POSTURE_AUTOCROUCHING { POSTURE_AUTOCROUCHING } else { POSTURE_SNEAKING };
+        frame.physics.set_posture(posture, 0.0);
+        frame.physics.disable_gravity(true);
+        if height == MantleHeight::Low {
+            frame.camera.constraints = camera::constraints(decl.constraint_params);
+            frame.camera.set_target_mode(MODE_CONSTRAINED_WITH_ARMS, -1.0);
+        } else {
+            frame.camera.set_target_mode(MODE_ANIMATED, -1.0);
+        }
+    }
+
+    /// Mantle Update FUN_1408607f0.
+    fn mantle_update(&mut self, index: usize, frame: &mut Frame) {
+        let id = self.states[index].decl.id;
+        let run = self.states[index].mantle;
+        // FUN_14085fa90: the AUTOCROUCHING shape overlapping at the dummy.
+        let (mut cast, mut start) = (Vec::new(), Vec::new());
+        let rotation = Mat3::from_rotation_z(run.destination_yaw);
+        let at = run.destination + Vec3::Z * 0.01;
+        frame.world.cast_shape(frame.physics.posture_body(POSTURE_AUTOCROUCHING), rotation, at, Vec3::ZERO, 0.001, &mut cast, Some(&mut start));
+        let overlap = start.iter().any(|h| h.value <= 0.0);
+        let mut final_state = StateId(run.final_state);
+        if overlap {
+            final_state = StateId::AUTOCROUCH;
+            self.states[index].mantle.final_state = final_state.0;
+            frame.physics.set_posture(POSTURE_AUTOCROUCHING, 0.0);
+        }
+        let handle = self.states[index].midnight;
+        if !overlap && handle != 0 && !frame.midnight.finished(handle) {
+            return;
+        }
+        if final_state == StateId::AUTOCROUCH {
+            let action = frame.controller.sneak_action;
+            frame.controller.set_toggled(action, false);
+        }
+        self.quit(id);
+        self.request(final_state);
+    }
+
+    /// Vault Update FUN_1408725d0 (breakables, NPC damage, the left-arm
+    /// scenes and window scenes need entities the static world lacks).
+    fn vault_update(&mut self, index: usize, decl: &VaultDecl, frame: &mut Frame) {
+        let id = self.states[index].decl.id;
+        let action = frame.controller.sneak_action;
+        frame.controller.set_toggled(action, false);
+        let run = self.states[index].vault;
+        match run.phase {
+            0 => {
+                frame.requests.push_angular(0, Vec3::ZERO);
+                frame.requests.push_linear(0, run.velocity);
+                let lost = !frame.physics.near_ground();
+                if lost || ((frame.origin - run.interpolate).dot(run.forward) >= 0.0 && !self.start_vault(index, decl, frame)) {
+                    self.quit(id);
+                    self.request(StateId::SPRINTING);
+                }
+            }
+            1 => {
+                frame.requests.push_angular(0, Vec3::ZERO);
+                frame.requests.push_linear(0, run.velocity);
+                if (frame.origin - run.exit).dot(run.forward) >= 0.0 {
+                    frame.physics.set_posture(POSTURE_STANDING, 0.0);
+                    frame.physics.disable_gravity(false);
+                    // The scene keeps playing untracked.
+                    self.states[index].midnight = 0;
+                    self.states[index].vault.phase = 2;
+                }
+            }
+            _ => {
+                let keep = self.state(StateId::SPRINTING).and_then(|s| match &s.decl.kind {
+                    Kind::Sprinting(d) => Some(can_keep_sprinting(d, frame)),
+                    _ => None,
+                }) == Some(true);
+                frame.requests.push_angular(0, Vec3::ZERO);
+                frame.requests.push_linear(0, if keep { run.velocity } else { Vec3::ZERO });
+                if frame.physics.near_ground() {
+                    if frame.controller.support_state == SupportState::Supported {
+                        self.quit(id);
+                        let speed = run.velocity.truncate().length();
+                        if frame.controller.down(frame.controller.slide_action) && self.slide_available(speed) {
+                            self.queue.push(Command::RequestSlide(speed));
+                        } else {
+                            if !keep {
+                                frame.controller.must_sprint = false;
+                                frame.controller.stop_sprint();
+                            }
+                            self.request(if keep { StateId::SPRINTING } else { StateId::RUNNING });
+                        }
+                    }
+                } else {
+                    // FUN_1407fbb20(ctrl, force).
+                    self.quit(id);
+                    frame.controller.support_state = SupportState::Unsupported;
+                    self.request(StateId::FALLING);
+                }
+            }
+        }
+    }
+
+    /// FUN_140872490 with the scene choice FUN_140872080 (the game's LCG).
+    fn start_vault(&mut self, index: usize, decl: &VaultDecl, frame: &mut Frame) -> bool {
+        let high = self.states[index].vault.height > decl.high_threshold;
+        let list = if high || decl.small_midnights.is_empty() { &decl.high_midnights } else { &decl.small_midnights };
+        if list.is_empty() {
+            return false;
+        }
+        *frame.random = frame.random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
+        let pick = ((*frame.random >> 10) & 0x7fff) as usize % list.len();
+        let handle = Self::play(Some(&list[pick]), 1.0, frame);
+        if handle == 0 {
+            return false;
+        }
+        self.states[index].midnight = handle;
+        self.states[index].vault.phase = 1;
+        true
     }
 
     /// Leaning Update FUN_14085dcc0.
@@ -1541,9 +2074,13 @@ impl StateMachine {
                     if !slide.keep_sprinting || state != StateId::SNEAKING {
                         if let Some(target) = self.state(state) {
                             let (posture, stance) = (target.decl.navigation.posture, target.decl.navigation.loco_stance_name.clone());
+                            let camera_mode = target.decl.navigation.camera_mode;
                             frame.physics.set_posture(posture, duration);
                             frame.body.enter(&stance);
+                            frame.camera.set_target_mode(camera_mode, -1.0);
+                            frame.follow_slope.requests -= 1;
                         }
+
                     }
                 }
             }
@@ -1683,8 +2220,9 @@ impl StateMachine {
         let joystick = scale * decl.max_turn_speed_joystick;
         let mouse = scale * decl.max_turn_speed_mouse;
         let yaw_rate = if frame.controller.look_is_analog { joystick } else { mouse } * frame.controller.input_look.y;
-        frame.camera.turn_speed_mouse = mouse;
-        frame.camera.turn_speed_joystick = joystick * frame.camera.pitch_speed_ratio;
+        let turn = &mut frame.camera.turn;
+        turn.turn_speed_mouse = mouse;
+        turn.turn_speed_joystick = joystick * turn.pitch_speed_ratio;
         frame.requests.push_linear(0, velocity);
         frame.requests.push_angular(0, Vec3::new(0.0, 0.0, yaw_rate));
         let id = self.states[index].decl.id;
@@ -1805,7 +2343,15 @@ impl StateMachine {
             frame.physics.ground_query_length = frame.velocity.z.abs() * frame.dt + self.states[index].decl.navigation.max_ground_distance;
             return;
         }
+        // Land() FUN_1408658c0: fall damage, then CATFALL above
+        // m_catFallHeight. Health and death are not ported: no fall kills.
+        let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
         self.states[index].fall.accumulated_height = 0.0;
+        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
+            self.quit(id);
+            self.queue.push(Command::RequestCatFall(damage));
+            return;
+        }
         self.quit(id);
         let slide_speed = frame.velocity.truncate().length();
         let crouch_action = frame.controller.sneak_action;
@@ -1828,6 +2374,18 @@ impl StateMachine {
         // The landing camera additive.
         let crouch = frame.controller.toggled(crouch_action);
         frame.jump_anim.end(crouch, false);
+    }
+}
+
+/// FUN_1408657c0 (no enhanced heights: the reduction attribute keeps its
+/// base value without modifiers).
+fn fall_damage(decl: &FallingDecl, height: f32, frame: &Frame) -> f32 {
+    let (d, death) = (decl.damage_height, decl.death_height);
+    if height - d < death {
+        let factor = frame.attributes.0.get("ARK_ATTRIBUTE_FALL_DAMAGE_FACTOR").copied().unwrap_or(1.0);
+        factor * frame.health * ((height - d) / (death - d))
+    } else {
+        f32::MAX
     }
 }
 

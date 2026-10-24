@@ -11,14 +11,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = fs::read(&path)?;
     let world = physworld::parse(&bytes)?;
     if env::args().any(|argument| argument == "--schema") {
+        let filter = env::args().skip_while(|arg| arg != "--schema").nth(1);
         for typ in &world.types {
-            if typ.name.contains("Compressed")
-                || typ.name.contains("StaticTree")
-                || typ.name.contains("StaticMesh")
-                || typ.name.contains("ShapeInstance")
-                || typ.name.contains("Primitive")
-                || typ.name.contains("Palette")
-            {
+            let selected = match filter.as_deref().filter(|value| !value.starts_with("--")) {
+                Some(filter) => typ.name.contains(filter),
+                None => {
+                    typ.name.contains("Compressed")
+                        || typ.name.contains("StaticTree")
+                        || typ.name.contains("StaticMesh")
+                        || typ.name.contains("ShapeInstance")
+                        || typ.name.contains("Primitive")
+                        || typ.name.contains("Palette")
+                }
+            };
+            if selected {
                 println!(
                     "TYPE {} size={} parent={}",
                     typ.name, typ.byte_size, typ.parent
@@ -135,6 +141,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let collision = world.collision_shapes(&bytes)?;
+    if env::args().any(|argument| argument == "--materials") {
+        println!(
+            "{} materials, {} material-map entries, map {:?}",
+            world.materials.len(),
+            world.material_map.len(),
+            world.material_map
+        );
+        let mut paths = std::collections::BTreeMap::<String, usize>::new();
+        let mut tag_paths = std::collections::BTreeMap::<Vec<u16>, usize>::new();
+        for triangle in &collision.triangles {
+            let name = match triangle.material {
+                Some(index) => world.materials[index as usize].clone(),
+                None => "<unresolved>".into(),
+            };
+            *paths.entry(name).or_default() += 1;
+            let tags: Vec<u16> = triangle
+                .shape_tags
+                .iter()
+                .copied()
+                .filter(|&tag| tag != physworld::NO_SHAPE_TAG)
+                .collect();
+            *tag_paths.entry(tags).or_default() += 1;
+        }
+        for (name, count) in paths {
+            println!("  {count:>8} triangles  {name}");
+        }
+        println!("distinct non-empty tag paths (outermost first):");
+        for (tags, count) in tag_paths {
+            println!("  {count:>8} {tags:x?}");
+        }
+        return Ok(());
+    }
     if let Some(raw) = env::args().skip_while(|arg| arg != "--triangle").nth(1) {
         let values = raw
             .split(',')

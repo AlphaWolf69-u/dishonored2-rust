@@ -22,6 +22,9 @@ pub struct EdgeAnimation {
     /// Trailer `m_flags` (FUN_140240210): bit 0 additive, bits 1..3 remove
     /// root T.x/T.y/T.z, bit 4 remove root rotation.
     pub flags: u16,
+    /// Trailer `m_animProperties` after m_flags (FUN_140247190): the weight
+    /// group a midnight ANIM_EXPORT_MASK clip plays on.
+    pub properties: u32,
     pub frame_rate: f32,
     pub frame_count: u16,
     frame_set_count: u16,
@@ -133,6 +136,9 @@ impl EdgeAnimation {
         let flags = trailer(size + 4)
             .and_then(|length| bytes.get(size + 8 + length..size + 10 + length))
             .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+        let properties = trailer(size + 4)
+            .and_then(|length| bytes.get(size + 10 + length..size + 14 + length))
+            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         let weight_count = u16_at(&data, 0x28)? as usize;
         let joint_weights = if weight_count > 0 {
             let at = u32_at(&data, 0x30)? as usize;
@@ -143,6 +149,7 @@ impl EdgeAnimation {
         Ok(Self {
             joint_weights,
             flags,
+            properties,
             frame_rate: f32_at(&data, 0x08)?,
             frame_count: u16_at(&data, 0x10)?,
             frame_set_count: u16_at(&data, 0x12)?,

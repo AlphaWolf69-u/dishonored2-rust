@@ -2,8 +2,12 @@
 //! authored Havok physics world, with owner activation for collected pickups.
 //! Coordinates are Bevy Y-up metres; the player queries it through
 //! `player::character_proxy::PlayerWorld`.
+use crate::entities::physics_material::PhysicsMaterial;
 use bevy_math::Vec3;
 use std::collections::{HashMap, HashSet};
+
+/// `material` value of a triangle whose physics material is not resolved.
+pub const NO_MATERIAL: u32 = u32::MAX;
 
 const CELL: f32 = 4.0;
 
@@ -15,6 +19,7 @@ struct Triangle {
     min: Vec3,
     max: Vec3,
     owner: u32,
+    material: u32,
 }
 
 pub struct CollisionWorld {
@@ -23,6 +28,7 @@ pub struct CollisionWorld {
     large: Vec<usize>,
     owner_ids: HashMap<String, Vec<u32>>,
     owner_active: Vec<bool>,
+    materials: Vec<PhysicsMaterial>,
 }
 
 impl CollisionWorld {
@@ -37,6 +43,22 @@ impl CollisionWorld {
         source: impl IntoIterator<Item = ([Vec3; 3], u32)>,
         owners: Vec<String>,
     ) -> Self {
+        Self::with_materials(
+            source
+                .into_iter()
+                .map(|(triangle, owner)| (triangle, owner, NO_MATERIAL)),
+            owners,
+            Vec::new(),
+        )
+    }
+
+    /// Triangles carry an owner and an index into `materials` (or
+    /// `NO_MATERIAL`); see `physics_material`.
+    pub fn with_materials(
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32)>,
+        owners: Vec<String>,
+        materials: Vec<PhysicsMaterial>,
+    ) -> Self {
         let mut owner_ids = HashMap::<String, Vec<u32>>::new();
         for (index, id) in owners.iter().enumerate() {
             owner_ids.entry(id.clone()).or_default().push(index as u32);
@@ -47,8 +69,9 @@ impl CollisionWorld {
             large: Vec::new(),
             owner_ids,
             owner_active: vec![true; owners.len()],
+            materials,
         };
-        for ([a, b, c], owner) in source {
+        for ([a, b, c], owner, material) in source {
             if owner != u32::MAX && owner as usize >= world.owner_active.len() {
                 continue;
             }
@@ -65,6 +88,11 @@ impl CollisionWorld {
                 min,
                 max,
                 owner,
+                material: if (material as usize) < world.materials.len() {
+                    material
+                } else {
+                    NO_MATERIAL
+                },
             });
             let low = cell(min);
             let high = cell(max);
@@ -114,8 +142,18 @@ impl CollisionWorld {
         self.first_hit_details(start, end).map(|hit| hit.0)
     }
 
-    /// Diagnostic provenance of the same nearest hit used by first_hit.
-    pub fn first_hit_details(&self, start: Vec3, end: Vec3) -> Option<(f32, u32, [Vec3; 3])> {
+    /// The arkPhysicsMaterial the game resolves for a triangle (FUN_1400922d0
+    /// + FUN_140092c10), keyed by the index `triangles_in` and
+    /// `first_hit_details` report. `None` where the material is not decoded
+    /// (placed-model colliders, unresolved codec paths).
+    pub fn physics_material(&self, triangle: u32) -> Option<&PhysicsMaterial> {
+        let material = self.triangles.get(triangle as usize)?.material;
+        self.materials.get(material as usize)
+    }
+
+    /// Nearest hit used by first_hit: (distance, triangle index, owner,
+    /// vertices). The index is the key `triangles_in` reports.
+    pub fn first_hit_details(&self, start: Vec3, end: Vec3) -> Option<(f32, u32, u32, [Vec3; 3])> {
         let segment = end - start;
         let length = segment.length();
         if length <= 1e-5 {
@@ -129,6 +167,7 @@ impl CollisionWorld {
                 let distance = segment_triangle_hit(start, direction, triangle)?;
                 (distance > 0.001 && distance < length).then_some((
                     distance,
+                    index as u32,
                     triangle.owner,
                     [triangle.a, triangle.b, triangle.c],
                 ))
@@ -286,6 +325,49 @@ mod tests {
         );
     }
     #[test]
+    fn hit_index_maps_to_the_triangle_physics_material() {
+        let wall = |x: f32| {
+            [
+                Vec3::new(x, 0.0, -1.0),
+                Vec3::new(x, 2.0, -1.0),
+                Vec3::new(x, 0.0, 1.0),
+            ]
+        };
+        let mut grid =
+            PhysicsMaterial::constructor_default("contactsystem/env.metal.grid.mantleoff");
+        grid.flags = 0;
+        let world = CollisionWorld::with_materials(
+            [
+                (wall(1.0), u32::MAX, 1),
+                (wall(2.0), u32::MAX, 0),
+                (wall(3.0), u32::MAX, NO_MATERIAL),
+                (wall(4.0), u32::MAX, 7),
+            ],
+            Vec::new(),
+            vec![
+                PhysicsMaterial::constructor_default("contactsystem/env.stone"),
+                grid,
+            ],
+        );
+        let (distance, index, _, _) = world
+            .first_hit_details(Vec3::new(0.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0))
+            .unwrap();
+        assert_eq!((distance, index), (1.0, 0));
+        let first = world.physics_material(index).unwrap();
+        assert!(!first.allow_mantle() && !first.allow_vault());
+        let keys: Vec<u32> = world
+            .triangles_in(Vec3::new(1.5, 0.0, -1.0), Vec3::new(2.5, 2.0, 1.0))
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect();
+        assert_eq!(keys, [1]);
+        assert!(world.physics_material(1).unwrap().allow_mantle());
+        assert_eq!(world.physics_material(2), None);
+        // Out-of-table material indices are stored as unresolved.
+        assert_eq!(world.physics_material(3), None);
+        assert_eq!(world.physics_material(99), None);
+    }
+    #[test]
     fn collected_entity_can_disable_its_authored_collider() {
         let wall = [
             Vec3::new(0.0, 0.0, -1.0),
@@ -296,7 +378,7 @@ mod tests {
         let from = Vec3::new(-1.0, 0.5, 0.0);
         let to = Vec3::new(1.0, 0.5, 0.0);
         assert_eq!(world.first_hit(from, to), Some(1.0));
-        let (distance, owner, vertices) = world.first_hit_details(from, to).unwrap();
+        let (distance, _, owner, vertices) = world.first_hit_details(from, to).unwrap();
         assert_eq!(distance, 1.0);
         assert_eq!(world.owner_name(owner), Some("pickup_1"));
         assert_eq!(vertices, wall);

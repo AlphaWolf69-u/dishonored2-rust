@@ -136,6 +136,8 @@ pub struct PlayerPhysics {
     angular_acceleration: f32,
     angular_deceleration: f32,
     no_smoothing: bool,
+    /// +0x388 m_skipInertiaCount.
+    skip_inertia_count: i32,
     smoothed_velocity: Vec3,
     yaw_rate: f32,
     speed_scale: f32,
@@ -245,6 +247,7 @@ impl PlayerPhysics {
             angular_acceleration: UNSET,
             angular_deceleration: UNSET,
             no_smoothing: false,
+            skip_inertia_count: 0,
             smoothed_velocity: Vec3::ZERO,
             yaw_rate: 0.0,
             speed_scale: 1.0,
@@ -275,6 +278,31 @@ impl PlayerPhysics {
 
     pub fn axis(&self) -> Mat3 {
         yaw_axis(self.yaw)
+    }
+
+    /// FUN_1407fcbe0: instant accelerations and no smoothed velocity.
+    pub fn instant_motion(&mut self) {
+        self.linear_acceleration = UNSET;
+        self.linear_deceleration = UNSET;
+        self.angular_acceleration = UNSET;
+        self.angular_deceleration = UNSET;
+        self.smoothed_velocity = Vec3::ZERO;
+    }
+
+    /// FUN_1407ff170: the counted smoothing skip (FUN_1401b6e70 sets the
+    /// proxy flag and clears the smoothed velocities).
+    pub fn skip_inertia(&mut self, skip: bool) {
+        self.skip_inertia_count += if skip { 1 } else { -1 };
+        self.no_smoothing = self.skip_inertia_count > 0;
+        if self.no_smoothing {
+            self.smoothed_velocity = Vec3::ZERO;
+            self.yaw_rate = 0.0;
+        }
+    }
+
+    /// FUN_1407fcb70.
+    pub fn add_yaw(&mut self, angle: f32) {
+        self.yaw = wrap_angle(self.yaw + angle);
     }
 
     /// FUN_1407fda30: settings of the current posture.
@@ -656,6 +684,10 @@ mod tests {
     pub(crate) struct Floor(pub Vec<[Vec3; 3]>);
 
     impl PlayerWorld for Floor {
+        fn surface(&self, _hit: &WorldHit) -> crate::gameplay::player::character_proxy::SurfaceFlags {
+            crate::gameplay::player::character_proxy::SurfaceFlags { allow_mantle: true, allow_vault: true }
+        }
+
         fn cast_shape(&self, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
             let points: Vec<Vec3> = shape.iter().map(|p| from + rotation * *p).collect();
             let mut start = start;
@@ -672,7 +704,7 @@ mod tests {
             }
         }
         fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
-            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { distance: from.z, position: Vec3::new(from.x, from.y, 0.0), normal: Vec3::Z })
+            (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { distance: from.z, position: Vec3::new(from.x, from.y, 0.0), normal: Vec3::Z, body: 0, key: 0 })
         }
     }
 

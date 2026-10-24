@@ -187,6 +187,40 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires installed Dishonored 2; decodes every physics world's materials"]
+    fn installed_physics_worlds_resolve_every_static_triangle_material() {
+        let catalog = Catalog::open(&super::super::installation::game_base().unwrap()).unwrap();
+        let read = |path: &str| {
+            catalog
+                .read(path)
+                .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        let (mut worlds, mut triangles, mut no_mantle) = (0, 0, 0);
+        for path in catalog.paths_with_suffix(".bphysworld") {
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            let physics = physworld::parse(&bytes).unwrap();
+            let materials: Vec<_> = physics
+                .materials
+                .iter()
+                .map(|name| entities::physics_material::physics_material(name, read).unwrap())
+                .collect();
+            let geometry = physics.collision_shapes(&bytes).unwrap();
+            for triangle in &geometry.triangles {
+                let material = triangle
+                    .material
+                    .unwrap_or_else(|| panic!("{path}: unresolved {:x?}", triangle.shape_tags));
+                no_mantle += !materials[material as usize].allow_mantle() as usize;
+            }
+            worlds += 1;
+            triangles += geometry.triangles.len();
+            eprintln!("{path}: {} triangles resolved", geometry.triangles.len());
+        }
+        assert!(worlds > 0);
+        eprintln!("{worlds} worlds, {triangles} triangles resolved, {no_mantle} without m_allowMantle");
+    }
+
+    #[test]
     #[ignore = "compares installed resources with private pre-refactor extraction"]
     fn archive_companions_are_byte_identical_to_verified_baseline() {
         let catalog = Catalog::open(&super::super::installation::game_base().unwrap()).unwrap();

@@ -13,6 +13,8 @@ use crate::gameplay::player::body::{Body, BodySkeleton};
 use crate::gameplay::player::camera::CameraDecl;
 use crate::gameplay::player::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::player::controller::{ActionEvent, LookSettings, MOUSE_MOVE_KEY};
+use crate::gameplay::player::midnight::{Midnight, PreparedScene};
+use crate::gameplay::player::states::{Kind, Scenes};
 use crate::gameplay::player::{decls, Player, PlayerSetup};
 use crate::gameplay::shape_cast;
 use crate::platform::{bindings, console};
@@ -36,6 +38,17 @@ fn to_game(v: Vec3) -> Vec3 {
 pub(super) struct GameCollision<'a>(pub &'a CollisionWorld);
 
 impl PlayerWorld for GameCollision<'_> {
+    // The triangle's arkPhysicsMaterial; colliders without a resolved
+    // material (placed models, entities) keep the material ctor's flags 3
+    // (FUN_14008b640: mantle and vault allowed).
+    fn surface(&self, hit: &WorldHit) -> crate::gameplay::player::character_proxy::SurfaceFlags {
+        let material = self.0.physics_material(hit.key);
+        crate::gameplay::player::character_proxy::SurfaceFlags {
+            allow_mantle: material.is_none_or(|m| m.allow_mantle()),
+            allow_vault: material.is_none_or(|m| m.allow_vault()),
+        }
+    }
+
     fn cast_shape(
         &self,
         shape: &[Vec3],
@@ -72,12 +85,13 @@ impl PlayerWorld for GameCollision<'_> {
     fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
         let start = to_view(from);
         let end = to_view(from + direction * length);
-        let (distance, _, [a, b, c]) = self.0.first_hit_details(start, end)?;
+        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details(start, end)?;
         let mut normal = to_game((b - a).cross(c - a).normalize_or_zero());
         if normal.dot(direction) > 0.0 {
             normal = -normal;
         }
-        Some(RayHit { distance, position: from + direction * distance, normal })
+        let body = if owner == u32::MAX { 0 } else { owner + 1 };
+        Some(RayHit { distance, position: from + direction * distance, normal, body, key })
     }
 }
 
@@ -97,7 +111,8 @@ fn load_body(
     locomotion: &[(String, crate::entities::Value)],
     body_decl: &[(String, crate::entities::Value)],
     additives: &[(String, crate::entities::Value)],
-) -> Result<Body, String> {
+    scene_paths: &[String],
+) -> Result<(Body, Scenes), String> {
     let stem = body_model.strip_suffix(".md6").ok_or("player body model is not an md6")?;
     let text = |path: &str| -> Result<Option<String>, String> {
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
@@ -122,6 +137,7 @@ fn load_body(
         },
         camera: joint(&camera.camera_joint)?,
         controls: [joint(&camera.head_joint)?, joint(&camera.neck_joint)?, joint(&camera.arms_joint)?],
+        anchor: skeleton.joint_names.iter().position(|n| n == "anchor_jnt"),
     };
     // The md6 `animsets` block, in order.
     let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
@@ -192,13 +208,33 @@ fn load_body(
         node.items.push(AnimBasicItem { clip: clip(&alias)?, alias, blend_in, blend_out });
     }
     let jump_items = decls::camera_jump_aliases(body_decl).map(|alias| alias.and_then(|a| node.index_of(&a)));
+    // The states' midnight scenes: the player group's clips of every scene
+    // the graph reaches for this body md6.
+    let mut scenes = Scenes::new();
+    for path in scene_paths {
+        let resource = format!("generated/decls/midnightscene/{path}.decl");
+        let source = text(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
+        let decl = crate::entities::midnight::parse(&source).map_err(|e| format!("{resource}: {e}"))?;
+        let mut prepared = PreparedScene { clips: vec![Vec::new(); decl.scenes.len()], decl };
+        let mut next = Some(prepared.decl.first);
+        for _ in 0..16 {
+            let Some(element) = next.take() else { break };
+            let Some(index) = Midnight::resolve(&prepared, element, body_model).map_err(|e| format!("{resource}: {e}"))? else { break };
+            if let Some(g) = prepared.player_group(index).map_err(|e| format!("{resource}: {e}"))? {
+                let keys = prepared.decl.scenes[index].groups[g].anim_keys.clone();
+                prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
+            }
+            next = Some(prepared.decl.scenes[index].next).filter(|n| *n != crate::entities::midnight::Next::Final);
+        }
+        scenes.insert(path.clone(), std::sync::Arc::new(prepared));
+    }
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
     body.lean_clips = lean_clips;
     body.additives = node;
     body.jump_items = jump_items;
-    Ok(body)
+    Ok((body, scenes))
 }
 
 pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Result<PlayerSetup, String> {
@@ -206,19 +242,41 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
     })?;
     let camera = decls::camera(&declarations.camera)?;
-    let body = load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives)?;
+    let states = decls::states(&declarations)?;
+    let mut scene_paths: Vec<String> = Vec::new();
+    for state in &states {
+        let paths: Vec<&String> = match &state.kind {
+            Kind::CatFall(d) => d.low_damage_midnight.iter().chain(d.high_damage_midnight.iter()).collect(),
+            Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
+            Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
+            _ => Vec::new(),
+        };
+        for path in paths {
+            if !scene_paths.contains(path) {
+                scene_paths.push(path.clone());
+            }
+        }
+    }
+    let (body, scenes) =
+        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths)?;
+    let attributes = decls::attributes(&declarations.attributes)?;
+    let health = decls::health(&declarations.health)? + attributes.get("ARK_ATTRIBUTE_HEALTH_MAX");
     Ok(PlayerSetup {
         physics: decls::physics(&declarations.physics)?,
         camera,
         mapping: decls::states_mapping(&declarations.controller)?,
-        states: decls::states(&declarations)?,
+        states,
         rules: decls::rules(&declarations.mode)?,
         default_state: decls::default_state(&declarations.mode),
-        attributes: decls::attributes(&declarations.attributes)?,
+        attributes,
         body,
         autocrouch: decls::autocrouch_sensor(&declarations.autocrouch_sensor)?,
         lean: decls::lean_sensor(&declarations.lean_sensor)?,
+        mantle: decls::mantle_sensor(&declarations.mantle_sensor)?,
         slipping: decls::slipping_thresholds(&declarations.controller)?,
+        scenes,
+        md6: declarations.body_model.clone(),
+        health,
     })
 }
 
@@ -629,5 +687,85 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     }
     println!("NAV PROBE jump eye offset from standing {standing:.4}: {}", trace.join(", "));
     println!("NAV PROBE jump: peak +{:.3}m above {ground:.3}, then feet={:?} states={:?}", peak - ground, player.feet(), player.machine.active_states());
+    Ok(())
+}
+
+/// `DH2_ANIM_PROBE`: catfall, mantle and vault on synthetic collision
+/// (a floor plus one box), traced headlessly.
+pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
+    use crate::gameplay::player::controller::{ACTION_JUMP, ACTION_MOVE_FORWARD, ACTION_SPRINT};
+    let quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| [[to_view(a), to_view(b), to_view(c)], [to_view(a), to_view(c), to_view(d)]];
+    let block = |min: Vec3, max: Vec3| {
+        let p = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+        let (a, b) = (min, max);
+        let mut t = Vec::new();
+        t.extend(quad(p(a.x, a.y, b.z), p(b.x, a.y, b.z), p(b.x, b.y, b.z), p(a.x, b.y, b.z)));
+        t.extend(quad(p(a.x, a.y, a.z), p(a.x, a.y, b.z), p(a.x, b.y, b.z), p(a.x, b.y, a.z)));
+        t.extend(quad(p(b.x, a.y, a.z), p(b.x, b.y, a.z), p(b.x, b.y, b.z), p(b.x, a.y, b.z)));
+        t.extend(quad(p(a.x, a.y, a.z), p(b.x, a.y, a.z), p(b.x, a.y, b.z), p(a.x, a.y, b.z)));
+        t.extend(quad(p(a.x, b.y, a.z), p(a.x, b.y, b.z), p(b.x, b.y, b.z), p(b.x, b.y, a.z)));
+        t
+    };
+    let floor = quad(Vec3::new(-60.0, -60.0, 0.0), Vec3::new(60.0, -60.0, 0.0), Vec3::new(60.0, 60.0, 0.0), Vec3::new(-60.0, 60.0, 0.0)).to_vec();
+    let settings = look_settings();
+    let dt = 1.0 / 120.0;
+    let key = |action: i32, down: bool| ActionEvent { action, key: 0, value: [0.0; 2], flags: down as u32 };
+    let trace = |player: &mut Player, line: &str, t: f32| {
+        let eye = player.view().origin;
+        println!(
+            "ANIM PROBE {line} t={t:.3}: states={:?} feet={:?} eye-feet={:.3} mode={}/{} pitch={:.3} yaw={:.3} scene={:?}",
+            player.machine.active_states(),
+            player.feet(),
+            eye.z - player.feet().z,
+            player.camera.current_mode,
+            player.camera.target_mode,
+            player.camera.pitch,
+            player.physics.yaw,
+            player.body.midnight.playing(),
+        );
+    };
+    let scenario = |label: &str, box_triangles: Vec<[Vec3; 3]>, start: Vec3, seconds: f32, input: &dyn Fn(usize, &Player) -> Vec<ActionEvent>| -> Result<(), String> {
+        let mut triangles = floor.clone();
+        triangles.extend(box_triangles);
+        let world = CollisionWorld::new(triangles);
+        let collision = GameCollision(&world);
+        let setup = load_player_setup(catalog, super::pause_menu::debug_character())?;
+        let mut player = Player::new(setup, start, 0.0, base_fov())?;
+        for frame in 0..(seconds / dt) as usize {
+            let events = input(frame, &player);
+            player.frame(&collision, &events, &settings, dt, dt, 80.0);
+            player.view();
+            if frame % 6 == 5 {
+                trace(&mut player, label, (frame + 1) as f32 * dt);
+            }
+        }
+        Ok(())
+    };
+    // Walk off a pillar.
+    let walk = |frame: usize, _: &Player| if frame == 30 { vec![key(ACTION_MOVE_FORWARD, true)] } else { Vec::new() };
+    scenario("catfall 7m", block(Vec3::new(-2.0, -2.0, 0.0), Vec3::new(0.6, 2.0, 7.0)), Vec3::new(0.0, 0.0, 7.0), 3.0, &walk)?;
+    scenario("catfall 12m", block(Vec3::new(-2.0, -2.0, 0.0), Vec3::new(0.6, 2.0, 12.0)), Vec3::new(0.0, 0.0, 12.0), 3.5, &walk)?;
+    let climb = |frame: usize, _: &Player| match frame {
+        60 => vec![key(ACTION_MOVE_FORWARD, true), key(ACTION_JUMP, true)],
+        _ => Vec::new(),
+    };
+    scenario("mantle high", block(Vec3::new(1.2, -5.0, 0.0), Vec3::new(6.0, 5.0, 1.7)), Vec3::new(0.0, 0.0, 0.0), 2.5, &climb)?;
+    scenario("mantle mid", block(Vec3::new(1.2, -5.0, 0.0), Vec3::new(6.0, 5.0, 1.0)), Vec3::new(0.0, 0.0, 0.0), 2.5, &climb)?;
+    let vault = |frame: usize, player: &Player| {
+        let mut events = Vec::new();
+        match frame {
+            30 => events.push(key(ACTION_MOVE_FORWARD, true)),
+            90 => events.push(key(ACTION_SPRINT, true)),
+            91 => events.push(key(ACTION_SPRINT, false)),
+            _ => {}
+        }
+        if player.vault_sensor.can_vault && frame % 2 == 0 {
+            events.push(key(ACTION_JUMP, true));
+        } else if frame % 2 == 1 {
+            events.push(key(ACTION_JUMP, false));
+        }
+        events
+    };
+    scenario("vault", block(Vec3::new(10.0, -5.0, 0.0), Vec3::new(10.4, 5.0, 0.9)), Vec3::new(0.0, 0.0, 0.0), 4.0, &vault)?;
     Ok(())
 }

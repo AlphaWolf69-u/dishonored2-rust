@@ -8,11 +8,12 @@
 //! swim branch are not ported.
 use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNode, LocoNode, PlayMode, Pose};
 use super::camera::BodyPose;
+use super::midnight::Midnight;
 use super::sensors::LeanSensor;
 use super::states::LocoStances;
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::{self, JointRestPose};
-use bevy_math::{Mat3, Vec3};
+use bevy_math::{Mat3, Quat, Vec3};
 
 pub struct BodySkeleton {
     pub rest: Vec<JointRestPose>,
@@ -23,6 +24,8 @@ pub struct BodySkeleton {
     pub camera: usize,
     /// head, neck, arms control joints.
     pub controls: [usize; 3],
+    /// `anchor_jnt` (DAT_14398df10), the mantle retargeting's slave joint.
+    pub anchor: Option<usize>,
 }
 
 /// arkDeclCpntPlayerBody fields the port uses (none are overridden).
@@ -32,11 +35,69 @@ pub struct BodyDecl {
     pub sync_duration: f32,
     pub min_sync_playrate: f32,
     pub max_sync_playrate: f32,
+    /// m_followSlopeRotationSpeed / m_followSlopeRotationSpeedMidnight
+    /// (degrees per second; decl ctor FUN_14076f960: 45 / 90).
+    pub follow_slope_rotation_speed: f32,
+    pub follow_slope_rotation_speed_midnight: f32,
 }
 
 impl Default for BodyDecl {
     fn default() -> Self {
-        Self { speed_blend_duration: 0.1, sync_duration: 0.5, min_sync_playrate: 0.75, max_sync_playrate: 1.5 }
+        Self {
+            speed_blend_duration: 0.1,
+            sync_duration: 0.5,
+            min_sync_playrate: 0.75,
+            max_sync_playrate: 1.5,
+            follow_slope_rotation_speed: 45.0,
+            follow_slope_rotation_speed_midnight: 90.0,
+        }
+    }
+}
+
+/// FollowSlope (FUN_140775d10) state: +0xdc4 / +0xdc8 the requests
+/// (states count them up and down), +0xdd4 the turned up vector, +0xde0 the
+/// body yaw offset the camera writes when it hands its yaw back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FollowSlope {
+    pub requests: i32,
+    pub midnight_requests: i32,
+    up: Vec3,
+    pub yaw_offset: f32,
+}
+
+impl Default for FollowSlope {
+    fn default() -> Self {
+        Self { requests: 0, midnight_requests: 0, up: Vec3::Z, yaw_offset: 0.0 }
+    }
+}
+
+impl FollowSlope {
+    /// `midnight` is a midnight playing on the body (FUN_140765f70(proxy, 1)).
+    fn update(&mut self, decl: &BodyDecl, dt: f32, ground_normal: Vec3, supported: bool, midnight: bool) {
+        let requests = if midnight { self.midnight_requests } else { self.requests };
+        let target = if requests > 0 && supported { ground_normal } else { Vec3::Z };
+        let c = target.dot(self.up);
+        let angle = if c > -1.0 { if c < 1.0 { c.acos() } else { 0.0 } } else { std::f32::consts::PI };
+        let rate = 0.017453292 * if midnight { decl.follow_slope_rotation_speed_midnight } else { decl.follow_slope_rotation_speed };
+        if angle <= rate * dt {
+            self.up = target;
+        } else {
+            // Turn toward the target by the rate.
+            let axis = self.up.cross(target);
+            let axis = axis / axis.length_squared().max(f32::MIN_POSITIVE).sqrt();
+            let up = Quat::from_axis_angle(axis, rate * dt) * self.up;
+            self.up = up / up.length_squared().max(f32::MIN_POSITIVE).sqrt();
+        }
+    }
+
+    /// The root joint rotation relative to the entity axis.
+    fn rotation(&self, entity: Mat3) -> Mat3 {
+        let up = entity.transpose() * self.up;
+        let left = up.cross(Vec3::X);
+        let left = left / left.length_squared().max(f32::MIN_POSITIVE).sqrt();
+        let forward = left.cross(up);
+        let forward = forward / forward.length_squared().max(f32::MIN_POSITIVE).sqrt();
+        Mat3::from_quat(Quat::from_axis_angle(up, self.yaw_offset)) * Mat3::from_cols(forward, left, up)
     }
 }
 
@@ -254,6 +315,9 @@ pub struct Body {
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
+    pub midnight: Midnight,
+    pub follow_slope: FollowSlope,
+    slope_rotation: Mat3,
     /// The tree's `additives` node and the item index of each jump kind
     /// (arkAdditivesSettings +4..+9).
     pub additives: AnimBasicNode,
@@ -281,6 +345,9 @@ impl Body {
             angle: 0.0,
             bob_amount: 1.0,
             jump: JumpAnim::default(),
+            midnight: Midnight::default(),
+            follow_slope: FollowSlope::default(),
+            slope_rotation: Mat3::IDENTITY,
             additives: AnimBasicNode::default(),
             jump_items: [None; 6],
             lean: Lean { limits: [1.0; 2], ..Lean::default() },
@@ -327,8 +394,10 @@ impl Body {
     }
 
     /// DEFAULT stage FUN_140777280 then the tree's node updates.
-    /// `velocity` is FUN_1407fdb50 (entity velocity minus physics gravity).
-    pub fn update(&mut self, dt: f32, stances: &LocoStances, velocity: Vec3, axis: Mat3, settings: BodySettings) {
+    /// `velocity` is FUN_1407fdb50 (entity velocity minus physics gravity);
+    /// `ground_normal` the physics ground-ray average and `supported` the
+    /// controller support state.
+    pub fn update(&mut self, dt: f32, stances: &LocoStances, velocity: Vec3, axis: Mat3, settings: BodySettings, ground_normal: Vec3, supported: bool) {
         let mut speed = velocity.length();
         if self.jump.stage != 0 {
             speed = 0.0;
@@ -360,8 +429,10 @@ impl Body {
         }
         self.speed = speed;
         self.angle = angle;
-        self.speed_interpolation = (self.speed_interpolation + 4.0 * dt).min(1.0);
-        self.bob_amount = settings.bob_amount.clamp(0.0, 1.0);
+        // BodyPart.Update (FUN_140777180): held at 0 while a midnight plays.
+        let midnight = self.midnight.playing().is_some();
+        self.speed_interpolation = if midnight { 0.0 } else { (self.speed_interpolation + 4.0 * dt).min(1.0) };
+        self.bob_amount = if stances.bob_enabled { settings.bob_amount.clamp(0.0, 1.0) } else { 0.0 };
         self.lean.limits = settings.lean_limits;
 
         self.phase_sync();
@@ -388,11 +459,18 @@ impl Body {
             }
         }
         self.additives.update(dt, command, &self.animations);
+        self.follow_slope.update(&self.decl, dt, ground_normal, supported, midnight);
+        self.slope_rotation = self.follow_slope.rotation(axis);
 
         let body_stance = stances.current.clone().unwrap_or_default();
         let bob_stance = stances.bob.clone().unwrap_or_else(|| body_stance.clone());
         self.body_node.update(dt, &body_stance, speed * self.speed_interpolation, angle, &self.animations);
         self.bob_node.update(dt, &bob_stance, speed, angle, &self.animations);
+        // Clips are sampled once at load, so this cannot fail; a failure
+        // would leave the frame without root motion.
+        if self.midnight.update(dt, &self.animations, &self.skeleton.rest).is_err() {
+            self.midnight.root = None;
+        }
     }
 
     /// FUN_140775440 / FUN_140775610 for the bob slave.
@@ -412,8 +490,25 @@ impl Body {
         self.bob_node.rate_multiplier = rate;
     }
 
+    /// GetAnimModelSpaceJointTransform (FUN_14053e220 → FUN_14024b280): `joint`
+    /// of `clip` at `frame` relative to joint 0, with the origin
+    /// translation zeroed: (translation, rotation).
+    pub fn anchor_transform(&self, clip: usize, frame: f32, joint: usize) -> Option<(Vec3, Mat3)> {
+        let animation = &self.animations[clip];
+        let mut joints = animation.sample(&self.skeleton.rest, frame / animation.frame_rate).ok()?;
+        joints.first_mut()?.translation = [0.0; 3];
+        let matrices = edge_skeleton::pose_matrices(&joints, &self.skeleton.hierarchy, &self.skeleton.root).ok()?;
+        let split = |m: &[[f32; 4]; 3]| {
+            let r = Mat3::from_cols(Vec3::new(m[0][0], m[1][0], m[2][0]), Vec3::new(m[0][1], m[1][1], m[2][1]), Vec3::new(m[0][2], m[1][2], m[2][2]));
+            (Vec3::new(m[0][3], m[1][3], m[2][3]), r)
+        };
+        let (t0, r0) = split(matrices.first()?);
+        let (t, r) = split(matrices.get(joint)?);
+        Some((r0.transpose() * (t - t0), r0.transpose() * r))
+    }
+
     /// The model-space pose: body ⊕ bobAmount·bob ⊕ additives, then the lean layers.
-    pub fn pose(&self) -> Result<BodyPose, String> {
+    pub fn pose(&mut self) -> Result<BodyPose, String> {
         let skeleton = &self.skeleton;
         let mut pose = match self.body_node.evaluate(&self.animations, &skeleton.rest)? {
             Some(pose) => pose,
@@ -427,6 +522,9 @@ impl Body {
         if let Some(additives) = self.additives.evaluate(&self.animations, &skeleton.rest)? {
             blend_add(&mut pose, &additives, 1.0);
         }
+        // The midnight blendarray over locoBobAdditives, then its snapshot
+        // blender.
+        let mut pose = self.midnight.evaluate(pose, &self.animations, &skeleton.rest)?;
 
         // The tree root's blendarray adds its first children last: leafLeanUp,
         // then leafLeanLeft, both ADD_RIGHT 1.0 at their scrubbed frame.
@@ -438,18 +536,30 @@ impl Body {
             }
         }
         let matrices = edge_skeleton::pose_matrices(&pose.joints, &skeleton.hierarchy, &skeleton.root)?;
+        let mut positions: Vec<Vec3> = matrices.iter().map(|m| Vec3::new(m[0][3], m[1][3], m[2][3])).collect();
+        let mut rotations: Vec<Mat3> = matrices
+            .iter()
+            .map(|m| {
+                Mat3::from_cols(
+                    Vec3::new(m[0][0], m[1][0], m[2][0]),
+                    Vec3::new(m[0][1], m[1][1], m[2][1]),
+                    Vec3::new(m[0][2], m[1][2], m[2][2]),
+                )
+            })
+            .collect();
+        // FollowSlope's root joint rotation turns the whole skeleton.
+        let turn = self.slope_rotation;
+        if turn != Mat3::IDENTITY && !positions.is_empty() {
+            let pivot = positions[0];
+            for (p, r) in positions.iter_mut().zip(&mut rotations) {
+                *p = pivot + turn * (*p - pivot);
+                *r = turn * *r;
+            }
+        }
         Ok(BodyPose {
-            positions: matrices.iter().map(|m| Vec3::new(m[0][3], m[1][3], m[2][3])).collect(),
-            rotations: matrices
-                .iter()
-                .map(|m| {
-                    Mat3::from_cols(
-                        Vec3::new(m[0][0], m[1][0], m[2][0]),
-                        Vec3::new(m[0][1], m[1][1], m[2][1]),
-                        Vec3::new(m[0][2], m[1][2], m[2][2]),
-                    )
-                })
-                .collect(),
+            positions,
+            rotations,
+
             parents: skeleton.parents.clone(),
             camera: skeleton.camera,
             controls: skeleton.controls,
@@ -475,6 +585,7 @@ mod tests {
             root: JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3], scale: [1.0; 3] },
             camera: 0,
             controls: [0; 3],
+            anchor: None,
         };
         let empty = || LocoNode::new(Default::default());
         let mut body = Body::new(skeleton, Vec::new(), BodyDecl::default(), empty(), empty());

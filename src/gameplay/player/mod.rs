@@ -9,6 +9,7 @@ pub mod camera;
 pub mod character_proxy;
 pub mod controller;
 pub mod decls;
+pub mod midnight;
 pub mod physics;
 pub mod sensors;
 pub mod shape;
@@ -18,11 +19,11 @@ pub mod states;
 use bevy_math::{Mat3, Vec3};
 use body::Body;
 use camera::{BodyPose, PlayerCamera, View};
-use character_proxy::PlayerWorld;
+use character_proxy::{PlayerWorld, SupportState};
 use controller::{ActionEvent, Controller, LookSettings};
 use physics::{MotionInput, PlayerPhysics};
-use sensors::{AutoCrouchSensor, LeanSensor};
-use states::{Attributes, Frame, LocoStances, MotionRequests, StateId, StateMachine};
+use sensors::{AutoCrouchSensor, LeanSensor, MantleSensor, VaultSensor};
+use states::{Attributes, Frame, Kind, LocoStances, MotionRequests, Retargeting, Scenes, StateId, StateMachine};
 
 pub struct Player {
     pub physics: PlayerPhysics,
@@ -36,6 +37,15 @@ pub struct Player {
     pub pose: BodyPose,
     pub autocrouch: AutoCrouchSensor,
     pub lean_sensor: LeanSensor,
+    pub mantle_sensor: MantleSensor,
+    pub vault_sensor: VaultSensor,
+    /// The mantle dummy's arkCpntRetargeting while it drives the player.
+    pub retargeting: Option<Retargeting>,
+    scenes: Scenes,
+    md6: String,
+    health: f32,
+    /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
+    random: u32,
     /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
     /// lean limits, set by the host.
     pub body_settings: body::BodySettings,
@@ -54,17 +64,32 @@ pub struct PlayerSetup {
     pub body: Body,
     pub autocrouch: sensors::AutoCrouchDecl,
     pub lean: sensors::LeanDecl,
+    pub mantle: sensors::MantleDecl,
     pub slipping: controller::SlippingThresholds,
+    /// The midnight scenes the states play, prepared for the body.
+    pub scenes: Scenes,
+    /// The body md6 the scenes' CONDMD6 nodes match.
+    pub md6: String,
+    /// Health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX.
+    pub health: f32,
 }
 
 impl Player {
     /// Spawn with the feet at `position` (idPlayerStart.spawnPosition) facing
     /// `yaw` radians.
-    pub fn new(setup: PlayerSetup, position: Vec3, yaw: f32, base_fov: f32) -> Result<Self, String> {
+    pub fn new(mut setup: PlayerSetup, position: Vec3, yaw: f32, base_fov: f32) -> Result<Self, String> {
         let stances = LocoStances { transitions: setup.body.stance_transition_durations(), ..Default::default() };
         let pose = setup.body.pose()?;
         let physics = PlayerPhysics::new(&setup.physics, position, yaw);
         let autocrouch = AutoCrouchSensor::new(setup.autocrouch, &physics);
+        let mantle_sensor = MantleSensor::new(setup.mantle, &physics);
+        let limits = setup.states.iter().find_map(|s| match &s.kind {
+            Kind::Vault(v) => Some(v.limits),
+            _ => None,
+        });
+        let limits = limits.unwrap_or_else(|| states::VaultDecl::default().limits);
+        let radius = physics.posture_settings(shape::POSTURE_STANDING).radius;
+        let vault_sensor = VaultSensor::new(limits, radius, physics.ground_ray_normal_average);
         let mut controller = Controller::new(setup.mapping);
         controller.slipping = setup.slipping;
         Ok(Self {
@@ -78,6 +103,13 @@ impl Player {
             pose,
             autocrouch,
             lean_sensor: LeanSensor::new(setup.lean),
+            mantle_sensor,
+            vault_sensor,
+            retargeting: None,
+            scenes: setup.scenes,
+            md6: setup.md6,
+            health: setup.health,
+            random: 0,
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -87,6 +119,16 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, base_fov: f32) {
+        // The midnight manager before the component stages, then its
+        // message flush (BREAK_PLAYER_STATE quits a breakable state).
+        match self.body.midnight.advance(dt, &self.body.animations) {
+            Ok(messages) => {
+                for (event, handle) in messages {
+                    self.machine.handle_message(&event, handle);
+                }
+            }
+            Err(error) => eprintln!("Midnight playback: {error}"),
+        }
         self.controller.process_input(events, settings);
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
@@ -94,6 +136,8 @@ impl Player {
         let sliding = self.machine.is_active(StateId::SLIDING);
         self.autocrouch.update(world, &self.physics, self.requests.linear_priority0, dt, sliding);
         self.lean_sensor.update(world, self.camera.eye, self.physics.position(), self.physics.axis());
+        self.mantle_sensor.update(world, &self.physics, dt, self.physics.velocity.z);
+        self.vault_sensor.update(world, &self.physics, dt);
         self.controller.think(settings, frame_delta);
         self.requests = MotionRequests::default();
         let origin = self.physics.position();
@@ -107,7 +151,8 @@ impl Player {
                     controller: &mut self.controller,
                     physics: &mut self.physics,
                     body: &mut self.stances,
-                    camera: &mut self.camera.turn,
+                    camera: &mut self.camera,
+                    follow_slope: &mut self.body.follow_slope,
                     requests: &mut self.requests,
                     autocrouch: &mut self.autocrouch,
                     origin,
@@ -119,6 +164,15 @@ impl Player {
                     lean: &mut self.body.lean,
                     lean_sensor: &mut self.lean_sensor,
                     jump_anim: &mut self.body.jump,
+                    midnight: &mut self.body.midnight,
+                    scenes: &self.scenes,
+                    md6: &self.md6,
+                    animations: &self.body.animations,
+                    mantle_sensor: &mut self.mantle_sensor,
+                    vault_sensor: &mut self.vault_sensor,
+                    retargeting: &mut self.retargeting,
+                    health: self.health,
+                    random: &mut self.random,
                     small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
                     // The host reads keyboard and mouse only.
@@ -129,23 +183,81 @@ impl Player {
         self.machine.controller_support(&mut frame!());
         self.controller.apply_mapping(&mut self.machine);
         self.machine.think(&mut frame!());
-        let input_velocity = self.physics.input_velocity();
-        self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings);
-
-        self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
-
+        // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.
         if dt != 0.0 {
-            self.camera.update_pitch(dt, self.controller.input_look.x, self.controller.look_is_analog, &self.physics);
+            let yaw_offset = &mut self.body.follow_slope.yaw_offset;
+            self.camera.update(dt, self.controller.input_look, self.controller.look_is_analog, &mut self.physics, yaw_offset);
             let speed_state = self.machine.is_active(StateId::SPRINTING)
                 || self.machine.from_sprinting(StateId::JUMPING)
                 || self.machine.from_sprinting(StateId::FALLING);
             self.camera.update_fov(dt, base_fov, speed_state);
+        }
+        // Body DEFAULT (FUN_140777280).
+        let input_velocity = self.physics.input_velocity();
+        let supported = self.controller.support_state != SupportState::Unsupported;
+        let ground_normal = self.physics.ground_ray_normal_average;
+        self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings, ground_normal, supported);
+        self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
+        // ANIMATION (arkCpntAnimEvolved FUN_14054f500): the midnight root
+        // motion as priority-1 velocities.
+        if let (Some((delta, yaw)), true) = (self.body.midnight.root, dt != 0.0) {
+            let axis = self.physics.axis();
+            self.requests.push_linear(1, axis * delta / dt);
+            self.requests.push_angular(1, Vec3::new(0.0, 0.0, yaw * 0.017453292 / dt));
+        }
+        self.retarget(dt);
+        if dt != 0.0 {
             let input = MotionInput { linear: self.requests.linear, angular: self.requests.angular };
             self.physics.step(world, dt, input);
         }
     }
 
+    /// FUN_1407583e0 for the player slave of the mantle dummy (orientation
+    /// mode 0, no tag offset, a static dummy): priority-3 velocities that
+    /// blend the player from its start onto the anchor's target.
+    fn retarget(&mut self, dt: f32) {
+        let Some(mut r) = self.retargeting else { return };
+        if dt == 0.0 {
+            return;
+        }
+        let t = if r.duration > 0.0 && r.timer / r.duration <= 1.0 { r.timer / r.duration } else { 1.0 };
+        let master = Mat3::from_rotation_z(r.target_yaw);
+        // The slave joint relative to joint 0 with the origin translation
+        // removed (FUN_14024b280), in the slave's current anim.
+        let mut joint = (Vec3::ZERO, Mat3::IDENTITY);
+        if r.anchor {
+            let current = self.body.midnight.main_clip();
+            if let Some((clip, _)) = current {
+                r.last_clip = Some(clip);
+            }
+            let sampled = current.or_else(|| r.last_clip.map(|c| (c, (self.body.animations[c].frame_count as f32 - 1.0).max(0.0))));
+            if let (Some((clip, frame)), Some(anchor)) = (sampled, self.body.skeleton.anchor) {
+                if let Some(local) = self.body.anchor_transform(clip, frame, anchor) {
+                    joint = local;
+                }
+            }
+        }
+        let target_axis = joint.1.transpose() * master;
+        let target = r.target - target_axis * joint.0;
+        let snap = |v: Vec3| Vec3::from_array(v.to_array().map(|c| if c.abs() <= 1e-18 { 0.0 } else { c }));
+        let p = snap(r.start) * (1.0 - t) + snap(target) * t;
+        self.requests.push_linear(3, (p - self.physics.position()) / dt);
+        if r.orientation {
+            let target_yaw = target_axis.x_axis.y.atan2(target_axis.x_axis.x);
+            let yaw = r.start_yaw + physics::wrap_angle(target_yaw - r.start_yaw) * t;
+            let rate = physics::wrap_angle(yaw - self.physics.yaw) / dt;
+            self.requests.push_angular(3, Vec3::new(0.0, 0.0, rate));
+        } else {
+            // The existing angular request, re-pushed.
+            let current = self.requests.angular.unwrap_or(Vec3::ZERO);
+            self.requests.push_angular(3, Vec3::new(0.0, 0.0, current.z));
+        }
+        r.timer += dt;
+        self.retargeting = Some(r);
+    }
+
     /// PRE_RENDER view placement.
+
     pub fn view(&mut self) -> View {
         // A pose that fails to sample keeps the previous one (sampling of
         // every clip is validated when the body loads).
@@ -153,7 +265,7 @@ impl Player {
             self.pose = pose;
         }
         let allow = self.machine.allow_camera_out_of_shape();
-        self.camera.view(&self.pose, &self.physics, allow)
+        self.camera.view(&self.pose, &self.physics, allow, self.body.follow_slope.yaw_offset)
     }
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {

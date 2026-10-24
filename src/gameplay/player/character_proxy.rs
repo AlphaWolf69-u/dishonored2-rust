@@ -28,6 +28,8 @@ pub struct RayHit {
     pub distance: f32,
     pub position: Vec3,
     pub normal: Vec3,
+    pub body: u32,
+    pub key: u32,
 }
 
 /// The two hknp world queries the player uses (world+0x478), in game
@@ -48,6 +50,16 @@ pub trait PlayerWorld {
         start: Option<&mut Vec<WorldHit>>,
     );
     fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit>;
+    /// The physics material flags of a hit's body and shape key
+    /// (FUN_1400922d0 + FUN_140092c10 → arkPhysicsMaterial +0x80).
+    fn surface(&self, hit: &WorldHit) -> SurfaceFlags;
+}
+
+/// arkPhysicsMaterial flag byte +0x80 bits the player sensors read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceFlags {
+    pub allow_mantle: bool,
+    pub allow_vault: bool,
 }
 
 /// hknpCharacterProxyCinfo values as arkPhysicsPlayer fills them
@@ -397,6 +409,10 @@ mod tests {
     }
 
     impl PlayerWorld for Planes {
+        fn surface(&self, _hit: &WorldHit) -> SurfaceFlags {
+            SurfaceFlags { allow_mantle: true, allow_vault: true }
+        }
+
         fn cast_shape(&self, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
             let points: Vec<Vec3> = shape.iter().map(|p| from + rotation * *p).collect();
             let mut start = start;
