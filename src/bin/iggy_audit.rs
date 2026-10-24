@@ -81,6 +81,47 @@ fn main() -> Result<(), String> {
         *kinds.entry(kind).or_default() += 1;
     }
     println!("character kinds (None = imported): {kinds:?}");
+    // Timeline clip layers (placement flag 0x80): sprite, depth, clip depth.
+    if args.iter().any(|a| a == "--clips") {
+        use dishonored2_rust::assets::iggy::timeline::Command;
+        let mut timelines = vec![(None, file.main_timeline().map_err(|e| e.to_string())?)];
+        for i in 0..movie.character_count as usize {
+            if let Ok(Some(t)) = file.sprite(i) {
+                timelines.push((Some(i), t));
+            }
+        }
+        let mut count = 0;
+        for (sprite, timeline) in &timelines {
+            for (frame, commands) in timeline.frames().iter().enumerate() {
+                for c in commands.iter() {
+                    if let Command::Place(p) = c {
+                        if p.has(0x80) {
+                            count += 1;
+                            println!("clip layer: sprite {sprite:?} frame {frame} depth {} clip_depth {} character {:?} name {:?}", p.depth, p.clip_depth, p.character, p.name);
+                        }
+                    }
+                }
+            }
+        }
+        println!("{count} clip layer placements");
+        let mut blends = BTreeMap::<u8, usize>::new();
+        let mut filters = BTreeMap::<String, usize>::new();
+        for (_, timeline) in &timelines {
+            for commands in timeline.frames() {
+                for c in commands.iter() {
+                    if let Command::Place(p) = c {
+                        *blends.entry(p.blend).or_default() += 1;
+                        for f in &p.filters {
+                            let name = format!("{f:?}");
+                            *filters.entry(name.split([' ', '{']).next().unwrap_or_default().to_string()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("placement blends: {blends:?}");
+        println!("placement filters: {filters:?}");
+    }
     let Some(abc) = file.abc().map_err(|e| e.to_string())? else {
         return Ok(());
     };

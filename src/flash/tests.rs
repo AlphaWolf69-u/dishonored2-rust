@@ -53,6 +53,17 @@ fn corvo_pause_movie_loads() {
     for e in player.state.borrow().uncaught.iter() {
         println!("uncaught: {e}");
     }
+    // `root.transform.perspectiveProjection` exists (the root's bit is set
+    // at start-up), so nothing reads fieldOfView from null.
+    assert!(!player.state.borrow().uncaught.iter().any(|e| e.contains("fieldOfView")));
+    // Masks: the clip layers find slots, and draws behind a mask test its
+    // bit (an empty mask, like the completion pie at 0%, hides them).
+    let list = render::draw_list(&player.vm);
+    let masks = list.batches.iter().filter(|b| b.stencil_set != 0).count();
+    let masked = list.batches.iter().filter(|b| b.stencil_test != 0 && b.stencil_set == 0).count();
+    println!("draw list: {} batches, {masks} mask draws, {masked} masked draws", list.batches.len());
+    assert!(masked > 0);
+    assert!(!player.state.borrow().uncaught.iter().any(|e| e.contains("0x6a")));
 }
 
 #[test]

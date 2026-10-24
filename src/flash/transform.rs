@@ -179,10 +179,20 @@ pub fn install(vm: &mut Vm) {
             let v = display_ref(&o).unwrap().transform3d.clone();
             Ok(v.unwrap_or(Value::Null))
         }),
+        // `0x14101ad80`: with the projection bit set (always on the root
+        // timeline, `FUN_141029e30`), a new PerspectiveProjection linked to
+        // the object; otherwise null.
         ("perspectiveProjection", |vm, this, _| {
             let o = target(vm, this)?;
-            let v = display_ref(&o).unwrap().projection.clone();
-            Ok(v.unwrap_or(Value::Null))
+            if object_projection(vm, &o).is_none() {
+                return Ok(Value::Null);
+            }
+            let class = native_class(vm, "flash.geom", "PerspectiveProjection");
+            let p = vm.construct_class(&class, &[])?;
+            if let Some(mut n) = p.as_object().and_then(|p| p.host_mut::<Native>()) {
+                n.target = Some(o);
+            }
+            Ok(p)
         }),
         ("pixelBounds", |vm, this, _| {
             let o = target(vm, this)?;
@@ -228,10 +238,19 @@ pub fn install(vm: &mut Vm) {
             d.script_moved = true;
             Ok(Value::Undefined)
         }),
+        // `0x14101b480`: copies the projection's values (its own, or its
+        // linked object's) and sets the bit; the object is not linked. A
+        // value that is not a PerspectiveProjection throws (0x78); null
+        // dereferences a null object in the game and is refused the same way.
         ("perspectiveProjection", |vm, this, a| {
             let o = target(vm, this)?;
             let v = arg(a, 0);
-            display(&o).unwrap().projection = (!v.is_nullish()).then_some(v);
+            let is_projection = v.as_object().is_some_and(|p| p.host::<Native>().is_some_and(|n| n.projection.is_some()));
+            if !is_projection {
+                return Err(vm.iggy_error(0x78));
+            }
+            let values = projection_values(vm, &v);
+            set_object_projection(vm, &o, values);
             Ok(Value::Undefined)
         }),
     ];
@@ -352,25 +371,114 @@ pub fn install(vm: &mut Vm) {
     ];
     define(vm, s);
 
+    // PerspectiveProjection (`0x141017e40` and the accessors after it): its
+    // own values, or the linked object's read and written live.
     let mut s = Spec::new("flash.geom", "PerspectiveProjection", Some(object));
-    s.vars = vec![("fieldOfView", 55.into()), ("focalLength", 0.into())];
-    s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native::default())))), call: None, init: None };
-    s.getters = vec![("projectionCenter", |vm, this, _| {
-        let c = this.as_object().and_then(|o| o.host::<Native>().and_then(|n| n.target_value.clone()));
-        match c {
-            Some(c) => Ok(c),
-            None => {
-                let (w, h) = super::player::state(vm).borrow().stage_size;
-                geom::new_point(vm, w / 2.0, h / 2.0)
-            }
-        }
-    })];
-    s.setters = vec![("projectionCenter", |_, this, a| {
-        if let Some(mut n) = this.as_object().and_then(|o| o.host_mut::<Native>()) {
-            n.target_value = Some(arg(a, 0));
-        }
-        Ok(Value::Undefined)
-    })];
+    s.native = NativeClass {
+        // The constructor ignores its arguments: fov 55, centre (250, 250).
+        allocate: Some(|_, _| Ok(Kind::Host(Box::new(Native { projection: Some([55.0, 250.0, 250.0]), ..Native::default() })))),
+        call: None,
+        init: None,
+    };
+    s.getters = vec![
+        // `0x141017e80`: the raw f32.
+        ("fieldOfView", |vm, this, _| Ok((projection_values(vm, this)[0] as f64).into())),
+        // `0x141017ee0`: ((f32)W·0.5) / tan((f64)(fov·0.5)·3.141592/180).
+        ("focalLength", |vm, this, _| {
+            let fov = projection_values(vm, this)[0];
+            let w = stage_width(vm) as f32;
+            Ok(((w * 0.5) as f64 / ((fov * 0.5) as f64 * 3.141592 * (1.0 / 180.0)).tan()).into())
+        }),
+        // A Point copy of the centre.
+        ("projectionCenter", |vm, this, _| {
+            let [_, x, y] = projection_values(vm, this);
+            geom::new_point(vm, x as f64, y as f64)
+        }),
+    ];
+    s.setters = vec![
+        // `0x141018020`: stored as f32, no range check.
+        ("fieldOfView", |vm, this, a| {
+            let v = vm.to_number(&arg(a, 0))? as f32;
+            update_projection(vm, this, |p| p[0] = v);
+            Ok(Value::Undefined)
+        }),
+        // `0x141018090`: fov = (f32)(atan(((f32)W·0.5) / v)·180·(1/π)·2).
+        ("focalLength", |vm, this, a| {
+            let v = vm.to_number(&arg(a, 0))?;
+            let w = stage_width(vm) as f32;
+            let fov = (((w * 0.5) as f64 / v).atan() * 180.0 * 0.3183099524062959 * 2.0) as f32;
+            update_projection(vm, this, |p| p[0] = fov);
+            Ok(Value::Undefined)
+        }),
+        ("projectionCenter", |vm, this, a| {
+            let point = arg(a, 0);
+            let (x, y) = (num(vm, &point, "x")? as f32, num(vm, &point, "y")? as f32);
+            update_projection(vm, this, |p| {
+                p[1] = x;
+                p[2] = y;
+            });
+            Ok(Value::Undefined)
+        }),
+    ];
     define(vm, s);
     let _ = set_num;
+}
+
+/// `P+0x10`: the stage width as the integer the natives read.
+fn stage_width(vm: &Vm) -> i32 {
+    super::player::state(vm).borrow().stage_size.0 as i32
+}
+
+/// The root timeline, `P+0x2510` (the Stage, `P+0x26b0`, is its parent:
+/// `FUN_141029f00`).
+fn is_root(vm: &Vm, o: &Obj) -> bool {
+    super::player::state(vm).borrow().root.as_ref() == Some(o)
+}
+
+/// A display object's projection (DO+0x188..0x190) when its bit is set. The
+/// root timeline's is the projection the renderer uses (P+0x2698..0x26a0),
+/// set at start-up with fov 55 and the centre at half the stage size
+/// (`FUN_141029e30`).
+fn object_projection(vm: &Vm, o: &Obj) -> Option<[f32; 3]> {
+    if is_root(vm, o) {
+        let state = super::player::state(vm);
+        let p = state.borrow();
+        let (w, h) = (p.stage_size.0 as i32, p.stage_size.1 as i32);
+        let [x, y] = p.stage_projection.1.unwrap_or([w as f32 * 0.5, h as f32 * 0.5]);
+        return Some([p.stage_projection.0, x, y]);
+    }
+    display_ref(o).and_then(|d| d.projection)
+}
+
+fn set_object_projection(vm: &Vm, o: &Obj, v: [f32; 3]) {
+    if is_root(vm, o) {
+        super::player::state(vm).borrow_mut().stage_projection = (v[0], Some([v[1], v[2]]));
+    } else if let Some(mut d) = display(o) {
+        d.projection = Some(v);
+    }
+}
+
+/// A PerspectiveProjection's values: the linked object's, else its own.
+fn projection_values(vm: &Vm, this: &Value) -> [f32; 3] {
+    let Some(p) = this.as_object() else { return [55.0, 250.0, 250.0] };
+    let (link, own) = match p.host::<Native>() {
+        Some(n) => (n.target.clone(), n.projection),
+        None => (None, None),
+    };
+    link.and_then(|o| object_projection(vm, &o)).or(own).unwrap_or([55.0, 250.0, 250.0])
+}
+
+fn update_projection(vm: &Vm, this: &Value, f: impl FnOnce(&mut [f32; 3])) {
+    let Some(p) = this.as_object() else { return };
+    let link = p.host::<Native>().and_then(|n| n.target.clone());
+    let mut values = projection_values(vm, this);
+    f(&mut values);
+    match link {
+        Some(o) => set_object_projection(vm, &o, values),
+        None => {
+            if let Some(mut n) = p.host_mut::<Native>() {
+                n.projection = Some(values);
+            }
+        }
+    }
 }

@@ -36,7 +36,8 @@ enum Command {
     MouseButton { code: u32, down: bool },
     /// Wheel notches (Iggy type 8).
     Wheel(i32),
-    Tick(f64),
+    /// The frame's time step, and when the frame sent it.
+    Tick(f64, std::time::Instant),
     /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
     Close,
 }
@@ -64,15 +65,47 @@ struct Loaded {
     focus: Vec<Movie>,
     pending: f64,
     frame_interval: f64,
+    /// Draw-list reuse for the pause movie and the message box movie.
+    draw_cache: render::Cache,
+    global_cache: render::Cache,
+}
+
+thread_local! {
+    // What the movie thread keeps between opens: the installed catalog and
+    // each library resource's decoded bitmaps (the files do not change while
+    // the game runs). Every open still builds a new player, as the game does
+    // (`m_cacheResources` 0).
+    static CATALOG: std::cell::RefCell<Option<std::rc::Rc<Catalog>>> = const { std::cell::RefCell::new(None) };
+    static DECODED: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<(u16, Arc<Image>)>>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn installed_catalog() -> Result<std::rc::Rc<Catalog>, String> {
+    if let Some(c) = CATALOG.with(|c| c.borrow().clone()) {
+        return Ok(c);
+    }
+    let base = installation::game_base().map_err(|e| e.to_string())?;
+    let c = std::rc::Rc::new(Catalog::open(&base).map_err(|e| e.to_string())?);
+    CATALOG.with(|slot| *slot.borrow_mut() = Some(c.clone()));
+    Ok(c)
 }
 
 fn decode(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
-    let mut decoded = raster::Images::default();
+    let mut out = HashMap::new();
     for (index, path) in resources {
-        let file = player.state.borrow().file(*index);
-        decoded.load(catalog, *index, path, &file)?;
+        let images = match DECODED.with(|d| d.borrow().get(path).cloned()) {
+            Some(images) => images,
+            None => {
+                let mut decoded = raster::Images::default();
+                let file = player.state.borrow().file(*index);
+                decoded.load(catalog, *index, path, &file)?;
+                let images = std::rc::Rc::new(decoded.images.into_iter().map(|(c, (width, height, rgba))| (c.id, Arc::new(Image { width, height, rgba }))).collect::<Vec<_>>());
+                DECODED.with(|d| d.borrow_mut().insert(path.clone(), images.clone()));
+                images
+            }
+        };
+        out.extend(images.iter().map(|(id, image)| (CharRef { library: *index, id: *id }, image.clone())));
     }
-    Ok(decoded.images.into_iter().map(|(c, (width, height, rgba))| (c, Arc::new(Image { width, height, rgba }))).collect())
+    Ok(out)
 }
 
 impl Loaded {
@@ -90,8 +123,7 @@ impl Loaded {
     fn rebuild_images(&mut self) -> Result<(), String> {
         let mut images = self.pause_images.clone();
         if let Some((g, resources)) = self.pause.boxes.global_with_resources() {
-            let base = installation::game_base().map_err(|e| e.to_string())?;
-            let catalog = Catalog::open(&base).map_err(|e| e.to_string())?;
+            let catalog = installed_catalog()?;
             for (mut c, image) in decode(&catalog, g, resources)? {
                 c.library += render::LAYER_LIBRARY_OFFSET;
                 images.insert(c, image);
@@ -107,7 +139,14 @@ pub struct PauseMenu {
     commands: Sender<Command>,
     events: Receiver<Event>,
     open: bool,
+    /// The movie has produced a frame since it was opened: each frame then
+    /// waits for its own tick's draw list.
+    ready: bool,
 }
+
+/// The longest a frame waits for the movie's draw list (a slow tick is
+/// shown on a later frame instead).
+const FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Default for PauseMenu {
     fn default() -> Self {
@@ -118,7 +157,7 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        Self { commands, events, open: false }
+        Self { commands, events, open: false, ready: false }
     }
 }
 
@@ -134,26 +173,36 @@ fn debug_character() -> Character {
 
 fn load(screen: (i32, i32)) -> Result<Loaded, String> {
     let started = std::time::Instant::now();
+    let mut phases: Vec<(&str, std::time::Instant)> = vec![("start", started)];
     let base = installation::game_base().map_err(|e| e.to_string())?;
-    let catalog = Catalog::open(&base).map_err(|e| e.to_string())?;
+    let catalog = installed_catalog()?;
+    phases.push(("catalog", std::time::Instant::now()));
     let language = lang::read_text_language(&base)?;
     let movie = pause_state::movie(debug_character());
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
+    phases.push(("movie and libraries", std::time::Instant::now()));
     pause_state::file_ready(&mut player, screen)?;
     let state = pause_state::current_state(&player, &language);
     let config = game_settings::configuration_path().ok();
     // A message box loads its own `global.iggy` (`FUN_1404627e0`).
-    let global_base = base.clone();
     let load_global = Box::new(move || {
-        let catalog = Catalog::open(&global_base).map_err(|e| e.to_string())?;
+        let catalog = installed_catalog()?;
         let (mut g, resources) = Player::load_installed(&catalog, language, crate::gameplay::message_box::MOVIE)?;
         pause_state::file_ready(&mut g, screen)?;
         Ok((g, resources))
     });
+    phases.push(("file ready", std::time::Instant::now()));
     let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, state, config, load_global)?;
+    phases.push(("pause state", std::time::Instant::now()));
     pause.on_flash_loaded(&mut player)?;
     pause.show(&mut player)?;
+    phases.push(("loaded and shown", std::time::Instant::now()));
     let pause_images = decode(&catalog, &player, &resources)?;
+    phases.push(("images", std::time::Instant::now()));
+    if std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_some_and(|v| v == "1") {
+        let parts: Vec<String> = phases.windows(2).map(|w| format!("{} {:.0} ms", w[1].0, (w[1].1 - w[0].1).as_secs_f64() * 1000.0)).collect();
+        info!("Pause open timing: {}", parts.join(", "));
+    }
     let frame_interval = 1.0 / player.state.borrow().frame_rate;
     info!("Pause movie {movie} ({language}) loaded in {:.2} s", started.elapsed().as_secs_f64());
     Ok(Loaded {
@@ -166,6 +215,8 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
         focus: Vec::new(),
         pending: 0.0,
         frame_interval,
+        draw_cache: render::Cache::default(),
+        global_cache: render::Cache::default(),
     })
 }
 
@@ -176,13 +227,42 @@ fn report_uncaught(player: &mut Player) {
     }
 }
 
+/// Everything queued since the thread last looked, in order, with each run
+/// of cursor moves reduced to its last position and the frames' ticks
+/// merged into the last one (their time steps summed, the first frame's
+/// send time kept): input is never processed behind a backlog of frames.
+fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
+    let first = inbox.recv().ok()?;
+    let mut out: Vec<Command> = Vec::new();
+    let mut tick: Option<(f64, std::time::Instant)> = None;
+    for command in std::iter::once(first).chain(inbox.try_iter()) {
+        match command {
+            Command::Tick(dt, sent) => {
+                tick = Some(tick.map_or((dt, sent), |(sum, first)| (sum + dt, first)));
+            }
+            Command::Cursor { .. } if matches!(out.last(), Some(Command::Cursor { .. })) => *out.last_mut().unwrap() = command,
+            // A reload or unload ends the batch's earlier frames.
+            Command::Open { .. } | Command::Close => {
+                tick = None;
+                out.push(command);
+            }
+            other => out.push(other),
+        }
+    }
+    out.extend(tick.map(|(dt, sent)| Command::Tick(dt, sent)));
+    Some(out)
+}
+
 /// The movie thread: one player at a time, rebuilt on every Open.
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut loaded: Option<Loaded> = None;
     let keyboard = Keyboard::default();
     let mut generation = 0u64;
     let mut unhandled = Vec::new();
-    for command in inbox {
+    let mut timing = debug_timing::Timing::default();
+    while let Some(commands) = batch(&inbox) {
+      let batch_started = std::time::Instant::now();
+      for command in commands {
         match command {
             Command::Open { screen } => {
                 generation += 1;
@@ -253,8 +333,11 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 report_uncaught(target);
             }
-            Command::Tick(dt) => {
+            Command::Tick(dt, sent) => {
                 let Some(l) = loaded.as_mut() else { continue };
+                let tick_started = std::time::Instant::now();
+                let mut phases = [std::time::Duration::ZERO; 4];
+                phases[0] = tick_started - batch_started;
                 // `IggyPlayerReadyToTick`/`FUN_141021b40`: one tick per frame interval.
                 l.pending += dt;
                 if l.pending >= l.frame_interval {
@@ -271,6 +354,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         report_uncaught(g);
                     }
                 }
+                phases[1] = tick_started.elapsed();
                 let pressed = l.pressed.take();
                 if let Err(e) = l.pause.update(&mut l.player, pressed) {
                     warn!("Pause options: {e}");
@@ -296,6 +380,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::Focus(movie, false) => l.focus.retain(|m| *m != movie),
                                 Request::GlobalChanged => {
                                     generation += 1;
+                                    l.global_cache = render::Cache::default();
                                     if let Err(e) = l.rebuild_images() {
                                         warn!("Message box movie: {e}");
                                     }
@@ -308,15 +393,20 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 for name in unhandled.drain(..) {
                     debug!("Pause movie notification not handled yet: {name}");
                 }
+                phases[2] = tick_started.elapsed() - phases[1];
                 // Diagnostic: DH2_DEBUG_FLASH_ALL=1 also draws hidden objects.
                 let debug_all = std::env::var_os("DH2_DEBUG_FLASH_ALL").is_some_and(|v| v == "1");
-                let mut list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list(&l.player.vm) };
+                let mut list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list_cached(&l.player.vm, &mut l.draw_cache) };
                 if let Some(g) = l.pause.boxes.global() {
-                    render::stack(&mut list, render::draw_list(&g.vm));
+                    // The message box player is replaced on GlobalChanged.
+                    render::stack(&mut list, render::draw_list_cached(&g.vm, &mut l.global_cache));
                 }
                 let _ = outbox.send(Event::Frame(FlashFrame { list: Arc::new(list), images: l.images.clone(), generation }));
+                phases[3] = tick_started.elapsed() - phases[1] - phases[2];
+                timing.record(batch_started.duration_since(sent), batch_started.elapsed(), phases);
             }
         }
+      }
     }
 }
 
@@ -352,6 +442,7 @@ pub fn update_pause_menu(
             let screen = pause_state::screen_size(size, size);
             let _ = menu.commands.send(Command::Open { screen });
             menu.open = true;
+            menu.ready = false;
         }
     }
     if menu.open {
@@ -385,14 +476,31 @@ pub fn update_pause_menu(
                 let _ = menu.commands.send(Command::Wheel(notches.signum()));
             }
         }
-        let _ = menu.commands.send(Command::Tick(time.delta_secs_f64()));
+        let _ = menu.commands.send(Command::Tick(time.delta_secs_f64(), std::time::Instant::now()));
     } else {
         buttons.clear();
         wheels.clear();
     }
-    for event in menu.events.try_iter() {
+    // The game ticks its Flash players within the frame, so this frame shows
+    // this frame's input: once the movie is loaded, wait for the draw list
+    // of the tick just sent.
+    let waiting = menu.open && menu.ready;
+    let mut framed = false;
+    loop {
+        let event = match menu.events.try_recv() {
+            Ok(e) => e,
+            Err(_) if waiting && !framed => match menu.events.recv_timeout(FRAME_WAIT) {
+                Ok(e) => e,
+                Err(_) => break,
+            },
+            Err(_) => break,
+        };
         match event {
-            Event::Frame(f) if menu.open => frame.0 = Some(f),
+            Event::Frame(f) if menu.open => {
+                framed = true;
+                menu.ready = true;
+                frame.0 = Some(f);
+            }
             Event::Frame(_) => {}
             Event::Resume => {
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
@@ -431,4 +539,55 @@ pub fn update_pause_menu(
 /// (`m_blockPlayerInput`, binding set EMPTY) while the pause state is active.
 pub fn game_not_paused(paused: Res<GamePaused>) -> bool {
     !paused.0
+}
+
+/// Diagnostic: `DH2_DEBUG_PAUSE_TIMING=1` logs, once a second, how long a
+/// frame's tick waited in the movie thread's queue and how long it took.
+mod debug_timing {
+    use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    pub struct Timing {
+        since: Option<Instant>,
+        ticks: u32,
+        waited: Duration,
+        waited_max: Duration,
+        work: Duration,
+        work_max: Duration,
+        /// Input, player tick, options and notifications, draw list.
+        phases: [Duration; 4],
+    }
+
+    impl Timing {
+        pub fn record(&mut self, waited: Duration, work: Duration, phases: [Duration; 4]) {
+            if std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_none_or(|v| v != "1") {
+                return;
+            }
+            let since = *self.since.get_or_insert_with(Instant::now);
+            self.ticks += 1;
+            self.waited += waited;
+            self.waited_max = self.waited_max.max(waited);
+            self.work += work;
+            self.work_max = self.work_max.max(work);
+            for (sum, p) in self.phases.iter_mut().zip(phases) {
+                *sum += p;
+            }
+            if since.elapsed() >= Duration::from_secs(1) {
+                let n = self.ticks.max(1);
+                bevy::log::info!(
+                    "Pause timing: {} ticks/s, queue wait avg {:.1} ms max {:.1} ms, work avg {:.1} ms max {:.1} ms (input {:.1}, tick {:.1}, options {:.1}, draw list {:.1})",
+                    self.ticks,
+                    self.waited.as_secs_f64() * 1000.0 / n as f64,
+                    self.waited_max.as_secs_f64() * 1000.0,
+                    self.work.as_secs_f64() * 1000.0 / n as f64,
+                    self.work_max.as_secs_f64() * 1000.0,
+                    self.phases[0].as_secs_f64() * 1000.0 / n as f64,
+                    self.phases[1].as_secs_f64() * 1000.0 / n as f64,
+                    self.phases[2].as_secs_f64() * 1000.0 / n as f64,
+                    self.phases[3].as_secs_f64() * 1000.0 / n as f64
+                );
+                *self = Timing { since: Some(Instant::now()), ..Default::default() };
+            }
+        }
+    }
 }

@@ -77,7 +77,9 @@ pub struct Display {
     pub hit_area: Option<Obj>,
     pub graphics: Option<Obj>,
     pub transform3d: Option<Value>,
-    pub projection: Option<Value>,
+    /// `perspectiveProjection` fov and centre (DO+0x188..0x190), when set
+    /// (DO+0xbc bit 3). The Stage's are the player's stage projection.
+    pub projection: Option<[f32; 3]>,
     /// Constructed by the timeline but its class constructor has not run.
     pub constructed: bool,
     /// `IggyFunctions.setHittestProperties` flags (DO byte1 bits 4..6).

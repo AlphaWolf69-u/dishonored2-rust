@@ -1,13 +1,15 @@
 //! Display-list traversal into GPU-ready triangle batches (Iggy's GDraw
 //! input). Fill texgen follows `FUN_141089760`/`FUN_141088fa0`/`FUN_141088c80`.
 //!
-//! Not yet drawn: masks and clip layers (mask objects are skipped), filters,
-//! cacheAsBitmap, non-normal blend modes beyond the batch flag, and 3D
-//! transforms.
+//! Masks and clip layers follow `FUN_141037100`: stencil bits per mask slot,
+//! carried on each batch as GDraw's stencil test and set bits.
+//!
+//! Not yet drawn: filters, cacheAsBitmap, non-normal blend modes beyond the
+//! batch flag.
 use super::three_d;
 use super::avm2::object::Obj;
 use super::avm2::Vm;
-use super::display::{children, display_ref, DisplayKind};
+use super::display::{children, concatenated, display_ref, DisplayKind};
 use super::geom::{Affine, Colour};
 use super::player::{self, CharRef};
 use super::tessellate::{fill_edges, triangulate};
@@ -55,7 +57,21 @@ pub struct Batch {
     pub blend: u8,
     pub first: u32,
     pub count: u32,
+    /// GDraw stencil state: the bits that must be set where this draws (the
+    /// finished masks), and the bits it writes instead of colour (a mask
+    /// being drawn). Both 0: no stencil.
+    pub stencil_test: u8,
+    pub stencil_set: u8,
+    /// Non-zero: a full-target draw that clears these stencil bits (GDraw
+    /// slot `+0x28`), not colour.
+    pub stencil_clear: u8,
 }
+
+/// Mask slots: GDraw's stencil bits (`FUN_14109a670` resets eight).
+const MASK_SLOTS: usize = 8;
+/// A free slot whose stencil bit is clean (`-1`) or still set (`-2`).
+const FREE: i16 = -1;
+const DIRTY: i16 = -2;
 
 #[derive(Clone, Debug, Default)]
 pub struct DrawList {
@@ -96,8 +112,51 @@ fn matrix(m: &[f32; 6]) -> Affine {
     Affine { a: m[0] as f64, c: m[1] as f64, b: m[2] as f64, d: m[3] as f64, tx: m[4] as f64, ty: m[5] as f64 }
 }
 
+type Triangles = std::rc::Rc<Vec<[f32; 2]>>;
+
+/// What draw lists of one player reuse from frame to frame: parsed shape
+/// characters, and the triangles of each shape fill and glyph layer at the
+/// exact scale they were tessellated for (so they are the same triangles a
+/// fresh tessellation gives). Script `Graphics` shapes change and are not
+/// kept.
+#[derive(Default)]
+pub struct Cache {
+    shapes: HashMap<(usize, u16), Option<std::rc::Rc<Shape>>>,
+    /// (library, character, layer, fill, scale bits).
+    fills: HashMap<(usize, u16, usize, usize, u32), Triangles>,
+    /// (font, glyph, layer, scale bits); the font is held so its address
+    /// stays its identity.
+    glyphs: HashMap<(usize, usize, usize, u32), (std::rc::Rc<crate::assets::iggy::font::Font>, Triangles)>,
+}
+
+/// Entries kept before the cache starts over (animated scales add new ones).
+const CACHE_LIMIT: usize = 50_000;
+
+impl Cache {
+    fn trim(&mut self) {
+        if self.fills.len() > CACHE_LIMIT {
+            self.fills.clear();
+        }
+        if self.glyphs.len() > CACHE_LIMIT {
+            self.glyphs.clear();
+        }
+    }
+}
+
 struct Builder<'a> {
     vm: &'a Vm,
+    cache: &'a mut Cache,
+    /// Per slot: the clip depth it lasts to (`P+0x2290`; FREE / DIRTY) and
+    /// the parent whose clip layer claimed it (`P+0x2250`; none for a
+    /// script mask).
+    slots: [(i16, Option<Obj>); MASK_SLOTS],
+    /// Level bytes `P+0x1f94..0x1f97`: allocated, test, set, dirty bits.
+    allocated: u8,
+    test: u8,
+    set: u8,
+    dirty: u8,
+    /// Objects that are another object's script mask (`DO+0x70`).
+    script_masks: Vec<Obj>,
     /// Diagnostic: draw objects whose `visible` is false.
     debug_ignore_visibility: bool,
     out: DrawList,
@@ -127,13 +186,84 @@ impl Builder<'_> {
         if count == 0 {
             return;
         }
+        let (stencil_test, stencil_set) = (self.test, self.set);
         if let Some(last) = self.out.batches.last_mut() {
-            if last.texture == texture && last.repeat == repeat && last.smooth == smooth && last.blend == blend && last.first + last.count == first {
+            if last.texture == texture
+                && last.repeat == repeat
+                && last.smooth == smooth
+                && last.blend == blend
+                && last.first + last.count == first
+                && last.stencil_test == stencil_test
+                && last.stencil_set == stencil_set
+                && last.stencil_clear == 0
+            {
                 last.count += count;
                 return;
             }
         }
-        self.out.batches.push(Batch { texture, repeat, smooth, blend, first, count });
+        self.out.batches.push(Batch { texture, repeat, smooth, blend, first, count, stencil_test, stencil_set, stencil_clear: 0 });
+    }
+
+    /// `FUN_14109a670`: clear every dirty bit (GDraw `+0x28`); dirty slots
+    /// become clean.
+    fn clear_dirty(&mut self) {
+        push_clear(&mut self.out, self.dirty);
+        for slot in &mut self.slots {
+            if slot.0 == DIRTY {
+                slot.0 = FREE;
+            }
+        }
+        self.dirty = 0;
+    }
+
+    /// `FUN_141036460`: the first clean slot, else the last dirty one after
+    /// clearing the dirty bits. Claiming sets its allocated and set bits.
+    fn allocate(&mut self, owner: Option<Obj>, limit: i16) -> Option<usize> {
+        let slot = match self.slots.iter().position(|s| s.0 == FREE) {
+            Some(i) => i,
+            None => {
+                let i = self.slots.iter().rposition(|s| s.0 == DIRTY);
+                if i.is_some() {
+                    self.clear_dirty();
+                }
+                match i {
+                    Some(i) => i,
+                    None => {
+                        player::state(self.vm).borrow_mut().uncaught.push("Iggy error 0x6a: Too many masks are nested inside each other".into());
+                        return None;
+                    }
+                }
+            }
+        };
+        self.slots[slot] = (limit, owner);
+        self.allocated |= 1 << slot;
+        self.set |= 1 << slot;
+        Some(slot)
+    }
+
+    /// `FUN_14103b5b0`: the mask is drawn; later draws test its bit.
+    fn finish_mask(&mut self, slot: usize) {
+        self.set &= !(1 << slot);
+        self.test |= 1 << slot;
+    }
+
+    /// Release a slot: its bit stays set in the stencil until cleared.
+    fn release(&mut self, slot: usize) {
+        self.slots[slot] = (DIRTY, None);
+        self.dirty |= 1 << slot;
+        self.test &= !(1 << slot);
+        self.allocated &= !(1 << slot);
+    }
+
+    /// Release the slots `owner`'s clip layers claimed whose clip depth is
+    /// below `depth` (all of them for `None`).
+    fn release_owned(&mut self, owner: &Obj, depth: Option<i32>) {
+        for i in 0..MASK_SLOTS {
+            let (limit, ref slot_owner) = self.slots[i];
+            if limit >= 0 && slot_owner.as_ref() == Some(owner) && depth.is_none_or(|d| (limit as i32) < d) {
+                self.release(i);
+            }
+        }
     }
 
     fn ramp(&mut self, g: &Gradient) -> usize {
@@ -149,7 +279,9 @@ impl Builder<'_> {
 
     /// `script` names the library bitmaps of script bitmap fills
     /// (`Graphics.beginBitmapFill`): (layer, fill number, character).
-    fn shape(&mut self, shape: &Shape, library: usize, m: &Affine, c: &Colour, blend: u8, script: &[(usize, u16, CharRef)]) {
+    /// `character` is the shape's character when it is one (its fills'
+    /// triangles are cached).
+    fn shape(&mut self, shape: &Shape, library: usize, character: Option<u16>, m: &Affine, c: &Colour, blend: u8, script: &[(usize, u16, CharRef)]) {
         let scale = ((m.a * m.a + m.b * m.b).sqrt().max((m.c * m.c + m.d * m.d).sqrt())) as f32;
         let file = player::state(self.vm).borrow().file(library);
         for (layer_index, layer) in shape.layers.iter().enumerate() {
@@ -172,7 +304,15 @@ impl Builder<'_> {
                     Fill::Bitmap { .. } => script.iter().find(|s| s.0 == layer_index && s.1 == i as u16 + 1).map_or(library, |s| s.2.library),
                     _ => library,
                 };
-                let tris = triangulate(&fill_edges(layer, i as u16 + 1, scale));
+                let tris: Triangles = match character {
+                    Some(id) => self
+                        .cache
+                        .fills
+                        .entry((library, id, layer_index, i, scale.to_bits()))
+                        .or_insert_with(|| std::rc::Rc::new(triangulate(&fill_edges(layer, i as u16 + 1, scale))))
+                        .clone(),
+                    None => std::rc::Rc::new(triangulate(&fill_edges(layer, i as u16 + 1, scale))),
+                };
                 if tris.is_empty() {
                     continue;
                 }
@@ -218,8 +358,8 @@ impl Builder<'_> {
                 let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);
                 let add = c.add.map(|v| v as f32 / 255.0);
                 let vertices: Vec<Vertex> = tris
-                    .into_iter()
-                    .map(|p| {
+                    .iter()
+                    .map(|&p| {
                         let (uv, params) = texgen(p);
                         let (x, y) = m.apply(p[0] as f64, p[1] as f64);
                         Vertex { position: [x as f32, y as f32], uv, mul, add, params, w: 1.0 }
@@ -249,14 +389,16 @@ impl Builder<'_> {
             let colour = [((glyph.colour >> 16) & 0xff) as f32 / 255.0, ((glyph.colour >> 8) & 0xff) as f32 / 255.0, (glyph.colour & 0xff) as f32 / 255.0, 1.0];
             let gm = Affine { a: glyph.size as f64, b: 0.0, c: 0.0, d: glyph.size as f64, tx: glyph.x as f64, ty: glyph.y as f64 }.then(m);
             let scale = ((gm.a * gm.a + gm.b * gm.b).sqrt()) as f32;
-            for layer in &glyph.font.glyphs[glyph.glyph].layers {
+            for (li, layer) in glyph.font.glyphs[glyph.glyph].layers.iter().enumerate() {
                 // Glyph paths reference fill 1 and carry no fill list.
-                let tris = triangulate(&fill_edges(layer, 1, scale));
+                let key = (std::rc::Rc::as_ptr(&glyph.font) as usize, glyph.glyph, li, scale.to_bits());
+                let font = glyph.font.clone();
+                let tris = self.cache.glyphs.entry(key).or_insert_with(|| (font, std::rc::Rc::new(triangulate(&fill_edges(layer, 1, scale))))).1.clone();
                 let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);
                 let add = c.add.map(|v| v as f32 / 255.0);
                 let vertices: Vec<Vertex> = tris
-                    .into_iter()
-                    .map(|p| {
+                    .iter()
+                    .map(|&p| {
                         let (x, y) = gm.apply(p[0] as f64, p[1] as f64);
                         Vertex { position: [x as f32, y as f32], uv: [0.0; 2], mul, add, params: [0.0; 2], w: 1.0 }
                     })
@@ -266,19 +408,16 @@ impl Builder<'_> {
         }
     }
 
-    fn node(&mut self, o: &Obj, parent_m: &Affine, parent_c: &Colour, masks: &[Obj]) {
+    /// `FUN_141037930` for a child: its matrix and colour from the parent's.
+    fn node(&mut self, o: &Obj, parent_m: &Affine, parent_c: &Colour) {
         let Some(d) = display_ref(o) else { return };
-        if (!d.visible && !self.debug_ignore_visibility) || masks.contains(o) || d.clip_depth > 0 {
-            return;
-        }
         let own = d.matrix;
         let c = d.colour.then(parent_c);
-        let (kind, character, graphics, blend) = (d.kind, d.character, d.graphics.clone(), d.blend);
         drop(d);
-        // `FUN_141037930`: the first object with a Matrix3D starts the 3D
-        // world from its parent's 2D world and ignores its own 2D matrix;
-        // deeper objects concatenate their Matrix3D or their 2D matrix.
-        // Inside 3D the 2D matrices are identity.
+        // The first object with a Matrix3D starts the 3D world from its
+        // parent's 2D world and ignores its own 2D matrix; deeper objects
+        // concatenate their Matrix3D or their 2D matrix. Inside 3D the 2D
+        // matrices are identity.
         let outer = self.world;
         let (m, world) = match (three_d::matrix(o), outer) {
             (Some(m3), None) => (Affine::default(), Some(three_d::multiply(&three_d::from_affine(parent_m), &m3))),
@@ -287,23 +426,38 @@ impl Builder<'_> {
             (None, None) => (own.then(parent_m), None),
         };
         self.world = world;
+        self.draw(o, &m, &c);
+        self.world = outer;
+    }
+
+    /// Draw `o` at `m` with colour `c`, then its children.
+    fn draw(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         if c.mul[3] <= 0.0 && c.add[3] <= 0.0 {
-            self.world = outer;
             return;
         }
+        let Some(d) = display_ref(o) else { return };
+        let (kind, character, graphics, blend) = (d.kind, d.character, d.graphics.clone(), d.blend);
+        drop(d);
+        let (m, c) = (*m, *c);
         if let Some(g) = graphics {
             if let Some(state) = super::graphics::state(&g) {
                 let shape = state.shape();
                 let script = state.bitmap_chars.clone();
                 drop(state);
-                self.shape(&shape, 0, &m, &c, blend, &script);
+                self.shape(&shape, 0, None, &m, &c, blend, &script);
             }
         }
         match (kind, character) {
             (DisplayKind::Shape, Some(ch)) => {
-                let file = player::state(self.vm).borrow().file(ch.library);
-                if let Ok(Some(shape)) = file.shape(ch.id as usize) {
-                    self.shape(&shape, ch.library, &m, &c, blend, &[]);
+                let vm = self.vm;
+                let shape = self
+                    .cache
+                    .shapes
+                    .entry((ch.library, ch.id))
+                    .or_insert_with(|| player::state(vm).borrow().file(ch.library).shape(ch.id as usize).ok().flatten().map(std::rc::Rc::new))
+                    .clone();
+                if let Some(shape) = shape {
+                    self.shape(&shape, ch.library, Some(ch.id), &m, &c, blend, &[]);
                 }
             }
             (DisplayKind::Bitmap, _) => {
@@ -313,39 +467,111 @@ impl Builder<'_> {
                 let smooth = o.host::<super::Native>().is_some_and(|n| n.flag);
                 let from_data = data.as_ref().and_then(|v| v.as_object()?.host::<super::Native>()?.bitmap_data.clone()).and_then(|s| s.character);
                 if let Some(ch) = character.or(from_data) {
-                    {
-                        let file = player::state(self.vm).borrow().file(ch.library);
-                        if let Ok(Some(b)) = file.bitmap(ch.id as usize) {
-                            self.bitmap(ch, b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
-                        }
+                    let file = player::state(self.vm).borrow().file(ch.library);
+                    if let Ok(Some(b)) = file.bitmap(ch.id as usize) {
+                        self.bitmap(ch, b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
                     }
                 }
             }
             (DisplayKind::Text, _) => self.text(o, &m, &c, blend),
             _ => {}
         }
-        // Objects used as masks are not drawn themselves.
-        let child_masks: Vec<Obj> = children(o).iter().filter_map(|k| display_ref(k).and_then(|d| d.mask.clone())).collect();
-        let mut all = masks.to_vec();
-        all.extend(child_masks);
+        self.children(o, &m, &c);
+    }
+
+    /// `FUN_141037100`: the children in display order with their clip
+    /// layers and script masks.
+    fn children(&mut self, o: &Obj, m: &Affine, c: &Colour) {
+        let mut depth = -1;
         for child in children(o) {
-            self.node(&child, &m, &c, &all);
+            let Some(d) = display_ref(&child) else { continue };
+            let (visible, clip_depth, child_depth, mask) = (d.visible, d.clip_depth, d.depth, d.mask.clone());
+            let has_content = !d.children.is_empty() || d.graphics.is_some() || matches!(d.kind, DisplayKind::Shape | DisplayKind::Bitmap);
+            drop(d);
+            // The depth index (DO+0xc4): the last placed depth.
+            if let Some(cd) = child_depth.filter(|&cd| cd >= 0) {
+                depth = cd;
+            }
+            // Clip layers of this parent end below the current depth.
+            self.release_owned(o, Some(depth));
+            let clip_layer = clip_depth > 0;
+            // Drawn when visible or a clip layer, unless it is another
+            // object's script mask.
+            if !(visible || self.debug_ignore_visibility || clip_layer) || self.script_masks.contains(&child) {
+                continue;
+            }
+            // A clip layer is drawn into a new slot, which then masks the
+            // siblings up to its clip depth.
+            let clip_slot = if clip_layer && depth < clip_depth as i32 && has_content { self.allocate(Some(o.clone()), clip_depth as i16) } else { None };
+            // A script mask is drawn at its own world (its matrices up to the
+            // Stage) into a slot that lasts for this child only.
+            let mask_slot = match mask {
+                Some(mask) => {
+                    let slot = self.allocate(None, 0x7fff);
+                    if let Some(slot) = slot {
+                        let outer = self.world.take();
+                        self.draw(&mask, &concatenated(&mask), &Colour::default());
+                        self.world = outer;
+                        self.finish_mask(slot);
+                    }
+                    slot
+                }
+                None => None,
+            };
+            self.node(&child, m, c);
+            if let Some(slot) = clip_slot {
+                self.finish_mask(slot);
+            }
+            if let Some(slot) = mask_slot {
+                self.release(slot);
+            }
         }
-        self.world = outer;
+        self.release_owned(o, None);
+    }
+}
+
+/// A full-target stencil clear of `bits` (GDraw `+0x28` / the render start's
+/// `ClearDepthStencilView`): a quad over the stage, drawn with no colour.
+fn push_clear(out: &mut DrawList, bits: u8) {
+    if bits == 0 {
+        return;
+    }
+    let (w, h) = out.stage;
+    let first = out.vertices.len() as u32;
+    let corner = |x: f32, y: f32| Vertex { position: [x, y], uv: [0.0; 2], mul: [1.0; 4], add: [0.0; 4], params: [0.0; 2], w: 1.0 };
+    // Generous: the stage may be letterboxed inside the target.
+    let (x0, y0, x1, y1) = (-w, -h, 2.0 * w, 2.0 * h);
+    out.vertices.extend([corner(x0, y0), corner(x1, y0), corner(x1, y1), corner(x0, y0), corner(x1, y1), corner(x0, y1)]);
+    out.batches.push(Batch { texture: Texture::White, repeat: false, smooth: true, blend: 1, first, count: 6, stencil_test: 0, stencil_set: 0, stencil_clear: bits });
+}
+
+/// Every object some display object uses as its script mask (`DO+0x70`).
+fn script_masks(o: &Obj, out: &mut Vec<Obj>) {
+    for child in children(o) {
+        if let Some(mask) = display_ref(&child).and_then(|d| d.mask.clone()) {
+            out.push(mask);
+        }
+        script_masks(&child, out);
     }
 }
 
 /// Build the draw list for the stage.
 pub fn draw_list(vm: &Vm) -> DrawList {
-    build(vm, false)
+    build(vm, &mut Cache::default(), false)
+}
+
+/// The draw list reusing `cache` (one cache per player, kept across frames).
+pub fn draw_list_cached(vm: &Vm, cache: &mut Cache) -> DrawList {
+    build(vm, cache, false)
 }
 
 /// Diagnostic draw list that ignores `visible` (inspection of hidden screens).
 pub fn debug_draw_all(vm: &Vm) -> DrawList {
-    build(vm, true)
+    build(vm, &mut Cache::default(), true)
 }
 
-fn build(vm: &Vm, debug_ignore_visibility: bool) -> DrawList {
+fn build(vm: &Vm, cache: &mut Cache, debug_ignore_visibility: bool) -> DrawList {
+    cache.trim();
     let (stage, size, projection) = {
         let shared = player::state(vm);
         let p = shared.borrow();
@@ -353,8 +579,19 @@ fn build(vm: &Vm, debug_ignore_visibility: bool) -> DrawList {
     };
     // `FUN_14103a4f0`: the Stage projection, rebuilt every draw.
     let projection = three_d::Projection::stage(size, projection.0, projection.1);
+    let mut masks = Vec::new();
+    if let Some(stage) = &stage {
+        script_masks(stage, &mut masks);
+    }
     let mut b = Builder {
         vm,
+        cache,
+        slots: std::array::from_fn(|_| (FREE, None)),
+        allocated: 0,
+        test: 0,
+        set: 0,
+        dirty: 0,
+        script_masks: masks,
         debug_ignore_visibility,
         out: DrawList { stage: (size.0 as f32, size.1 as f32), ..DrawList::default() },
         ramps: HashMap::new(),
@@ -362,7 +599,7 @@ fn build(vm: &Vm, debug_ignore_visibility: bool) -> DrawList {
         projection,
     };
     if let Some(stage) = stage {
-        b.node(&stage, &Affine::default(), &Colour::default(), &[]);
+        b.node(&stage, &Affine::default(), &Colour::default());
     }
     b.out
 }
@@ -374,6 +611,11 @@ pub const LAYER_LIBRARY_OFFSET: usize = 1000;
 /// Append `top` (a movie on a higher layer, e.g. `global.iggy` at layer 3
 /// over the pause movie at 2) to `base`.
 pub fn stack(base: &mut DrawList, mut top: DrawList) {
+    // Each player's render starts with a cleared stencil (GDraw's render
+    // begin, `FUN_1402e5b80`).
+    if base.batches.iter().any(|b| b.stencil_set != 0) {
+        push_clear(base, 0xff);
+    }
     let first = base.vertices.len() as u32;
     let ramps = base.ramps.len();
     for b in &mut top.batches {

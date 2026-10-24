@@ -49,9 +49,12 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
 2. `m_isLightVM` default: classes gated on `VM+0x6b40` are installed on the
    assumption that the pause decl's unset bit is 0. Next: read the decl
    default in `FUN_1404f2cd0` or the VM flag at runtime.
-3. Rendering not yet ported: masks and clip layers, filters, blend modes
-   beyond normal/add, cacheAsBitmap, the glyph bitmap cache, the exact curve
-   flattening tolerance (`player+0x1e80`), game textures (save screenshots).
+3. Rendering not yet ported: filters, blend modes beyond normal/add,
+   cacheAsBitmap, the glyph bitmap cache, the exact curve flattening tolerance
+   (`player+0x1e80`), game textures (save screenshots). Masks and clip layers
+   follow `FUN_141037100` and GDraw's stencil state (notes-masks.md) except
+   the mask scissor (no pixel effect), the off-Stage mask prefix (`P+0x2788`)
+   and masks under 3D.
 4. Game state the rewrite does not simulate yet, so the pause state writes
    what the game would for "unavailable": no save writer or loader (save,
    load and quick entries locked), no mission/chapter component
@@ -97,7 +100,18 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    are not connected to audio.
 9. Tab focus traversal on keyDown (`FUN_141027340`) and SimpleButton states
    (`FUN_1410279b0`) are not ported.
-10. The PerspectiveProjection natives are approximations (fields as AS
-    vars); rendering uses only the Stage projection, kept in player state.
+10. PerspectiveProjection follows the natives (own or linked values,
+    focalLength from the stage width); the root timeline's projection is the
+    one rendering uses (`P+0x2510` is the root, `P+0x26b0` the Stage).
 11. `profile.bin` layout (pair count at 0x1a) is read from the file, not
     from a traced loader.
+
+## Pause menu timing
+
+The movie runs on its own thread; each frame sends its input and tick and
+waits for that tick's draw list (the game ticks Iggy within the frame).
+Queued input is merged so it never waits behind a backlog of frames. The
+catalog, decoded bitmaps, movie bytes and string tables are kept between
+opens; every open still builds a new player. `DH2_DEBUG_PAUSE_TIMING=1` logs
+the open phases and, each second, the queue wait and the per-frame work
+(input, tick, options, draw list).

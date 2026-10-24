@@ -46,6 +46,9 @@ pub struct Native {
     pub matrix3d: Option<[f64; 16]>,
     /// A Matrix3D's cached Euler angles in degrees (box+0x68..0x74).
     pub euler: Option<[f32; 3]>,
+    /// A PerspectiveProjection's own fov and centre (box+0x27), used while
+    /// it is not linked to a display object (`target`).
+    pub projection: Option<[f32; 3]>,
     /// The display object a Transform describes.
     pub target: Option<Obj>,
     /// A Bitmap's BitmapData or a projection's centre point.
@@ -184,15 +187,37 @@ impl Player {
         movie_path: &str,
     ) -> std::result::Result<(Player, Vec<(usize, String)>), String> {
         use crate::assets::lang;
+        thread_local! {
+            // Installed movie bytes and string tables, kept for the next
+            // player on this thread (the files do not change while the game
+            // runs; each player still parses its own copy).
+            static BYTES: RefCell<std::collections::HashMap<String, Rc<Vec<u8>>>> = RefCell::new(std::collections::HashMap::new());
+            static STRINGS: RefCell<std::collections::HashMap<String, Rc<lang::StringTable>>> = RefCell::new(std::collections::HashMap::new());
+        }
         let read = |p: &str| -> std::result::Result<IggyFile, String> {
-            let bytes = catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?;
-            IggyFile::parse(bytes).map_err(|e| format!("{p}: {e}"))
+            let bytes = match BYTES.with(|b| b.borrow().get(p).cloned()) {
+                Some(b) => b,
+                None => {
+                    let b = Rc::new(catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?);
+                    BYTES.with(|cache| cache.borrow_mut().insert(p.to_string(), b.clone()));
+                    b
+                }
+            };
+            IggyFile::parse((*bytes).clone()).map_err(|e| format!("{p}: {e}"))
         };
         let movie = read(movie_path)?;
         let info = movie.movie().map_err(|e| e.to_string())?;
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
         let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
-        player.state.borrow_mut().strings = Some(Rc::new(lang::StringTable::load(catalog, language)?));
+        let strings = match STRINGS.with(|s| s.borrow().get(language).cloned()) {
+            Some(s) => s,
+            None => {
+                let s = Rc::new(lang::StringTable::load(catalog, language)?);
+                STRINGS.with(|cache| cache.borrow_mut().insert(language.to_string(), s.clone()));
+                s
+            }
+        };
+        player.state.borrow_mut().strings = Some(strings);
         let library_language = lang::LANGUAGES.iter().position(|(n, _)| *n == lang::library_language(language)).unwrap_or(0);
         player.state.borrow_mut().font_aliases = text_engine::Fonts::language_aliases(library_language as u32);
         let mut resources = Vec::new();
