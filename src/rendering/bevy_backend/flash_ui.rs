@@ -519,7 +519,8 @@ fn filter_passes(filters: &[FilterRecord], scale: [f32; 2], size: (i32, i32), mu
                 }
             }
             FilterRecord::ColourMatrix(m) => out.push(FilterPass::Matrix(*m)),
-            FilterRecord::Unsupported => {}
+            // Shadows through the render target (`FUN_14109b310`) are not ported.
+            FilterRecord::DropShadow { .. } | FilterRecord::Unsupported => {}
         }
     }
     out

@@ -527,3 +527,34 @@ pub fn write_entries(player: &mut Player, state: &GameState) -> Result<()> {
 pub fn write_stats_available(player: &mut Player, state: &GameState) -> Result<()> {
     player.set_value("pauseData.statsEntryAvailable", state.stats_available.into())
 }
+
+/// The pause state's OnEnter cvar work (`FUN_1404f2fc0`): the depth of field
+/// is kept while paused, the user's `r_skipDOF` saved in `r_skipDofBck`.
+pub fn enter(cvars: &mut crate::platform::cvars::CVars) {
+    let (Some(skip), Some(backup)) = (cvars.find("r_skipDOF"), cvars.find("r_skipDofBck")) else { return };
+    let saved = cvars.list[skip].int != 0;
+    cvars.set_bool(backup, saved, true);
+    cvars.set_bool(skip, false, true);
+}
+
+/// OnExit (`FUN_1404f3240`): `r_skipDOF` back from `r_skipDofBck`.
+pub fn exit(cvars: &mut crate::platform::cvars::CVars) {
+    let (Some(skip), Some(backup)) = (cvars.find("r_skipDOF"), cvars.find("r_skipDofBck")) else { return };
+    let saved = cvars.list[backup].int != 0;
+    cvars.set_bool(skip, saved, true);
+}
+
+#[cfg(test)]
+mod dof_tests {
+    #[test]
+    fn the_pause_state_keeps_depth_of_field_and_restores_the_setting() {
+        let mut cvars = crate::platform::cvars::CVars::new();
+        let skip = cvars.find("r_skipDOF").unwrap();
+        cvars.set_bool(skip, true, true);
+        super::enter(&mut cvars);
+        assert_eq!(cvars.int("r_skipDOF"), Some(0));
+        assert_eq!(cvars.int("r_skipDofBck"), Some(1));
+        super::exit(&mut cvars);
+        assert_eq!(cvars.int("r_skipDOF"), Some(1));
+    }
+}

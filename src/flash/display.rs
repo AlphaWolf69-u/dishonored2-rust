@@ -1053,6 +1053,26 @@ fn filter_record(vm: &mut Vm, f: &Value) -> Result<super::filter_passes::FilterR
             let quality = vm.get_property(f, &Name::public("quality"))?;
             FilterRecord::Blur { blur: [num(vm, "blurX")? as f32, num(vm, "blurY")? as f32], passes: vm.to_int(&quality)? as u8 }
         }
+        "DropShadowFilter" => {
+            let colour = super::avm2::value::to_uint32(num(vm, "color")?);
+            // `FUN_141012600`: below 0 is 0, above 1 is 255, else a × 255.5.
+            let alpha = num(vm, "alpha")? as f32;
+            let alpha = if alpha < 0.0 { 0 } else if alpha > 1.0 { 255 } else { (alpha * 255.5) as i32 as u8 };
+            let flag = |vm: &mut Vm, field: &str| -> Result<bool> { Ok(vm.get_property(f, &Name::public(field))?.to_boolean()) };
+            let quality = vm.get_property(f, &Name::public("quality"))?;
+            FilterRecord::DropShadow {
+                colour: [(colour >> 16) as u8, (colour >> 8) as u8, colour as u8, alpha],
+                blur: [num(vm, "blurX")? as f32, num(vm, "blurY")? as f32],
+                // `FUN_141012690`: degrees × π × (1/180), in single precision.
+                angle: num(vm, "angle")? as f32 * std::f32::consts::PI * (1.0f32 / 180.0),
+                distance: num(vm, "distance")? as f32,
+                strength: num(vm, "strength")? as f32,
+                passes: vm.to_int(&quality)? as u8,
+                inner: flag(vm, "inner")?,
+                knockout: flag(vm, "knockout")?,
+                hide_object: flag(vm, "hideObject")?,
+            }
+        }
         "ColorMatrixFilter" => {
             let matrix = vm.get_property(f, &Name::public("matrix"))?;
             let items = match &matrix {

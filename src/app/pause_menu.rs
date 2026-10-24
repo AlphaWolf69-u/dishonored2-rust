@@ -595,6 +595,7 @@ pub fn update_pause_menu(
     // The movie draws its own cursor; the OS cursor is released and hidden
     // while the pause state is open (whether the game hides it is not traced).
     if menu.open != paused.0 {
+        crate::platform::console::shared().write(|c| if menu.open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });
         for mut c in &mut cursors {
             if menu.open {
                 c.grab_mode = CursorGrabMode::None;

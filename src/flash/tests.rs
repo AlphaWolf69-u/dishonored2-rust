@@ -291,3 +291,42 @@ fn debug_pause_mouse_hover() {
         println!("uncaught: {e}");
     }
 }
+
+/// The pause labels' script drop shadow (`PauseMenuElementLabel`:
+/// `new DropShadowFilter(5, 110, 0, 1, 6, 6, ..., 2)` on `tf_label`) becomes
+/// the record the text emulation draws.
+#[test]
+#[ignore = "requires installed game archives"]
+fn pause_labels_carry_their_script_drop_shadow() {
+    use super::filter_passes::FilterRecord;
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/corvo_pause_menu.iggy").unwrap();
+    crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
+    let state = crate::gameplay::pause_state::current_state(&player, language, &catalog);
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
+    pause.on_flash_loaded(&mut player).unwrap();
+    pause.show(&mut player).unwrap();
+    for _ in 0..30 {
+        player.tick(1.0 / 30.0).unwrap();
+    }
+    fn walk(o: &Obj, out: &mut Vec<FilterRecord>) {
+        if let Some(d) = display::display(o) {
+            out.extend(d.filter_records.iter().cloned());
+        }
+        for c in display::children(o) {
+            walk(&c, out);
+        }
+    }
+    let stage = player.state.borrow().stage.clone().unwrap();
+    let mut records = Vec::new();
+    walk(&stage, &mut records);
+    let shadow = records.iter().find(|r| matches!(r, FilterRecord::DropShadow { .. })).expect("a label drop shadow");
+    let FilterRecord::DropShadow { colour, blur, angle, distance, passes, inner, knockout, hide_object, .. } = shadow else { unreachable!() };
+    assert_eq!(*colour, [0, 0, 0, 255]);
+    assert_eq!(*blur, [6.0, 6.0]);
+    assert!((angle - 110f32.to_radians()).abs() < 1e-5, "{angle}");
+    assert_eq!((*distance, *passes), (5.0, 2));
+    assert!(!inner && !knockout && !hide_object);
+}

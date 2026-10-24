@@ -49,7 +49,9 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
 2. `m_isLightVM` default: classes gated on `VM+0x6b40` are installed on the
    assumption that the pause decl's unset bit is 0. Next: read the decl
    default in `FUN_1404f2cd0` or the VM flag at runtime.
-3. Filters: text drop shadows are emulated as `FUN_14102e950` does (one
+3. Filters: text drop shadows (timeline records, or script
+   `DropShadowFilter`s converted as their setters store them: angle in
+   radians, alpha × 255.5) are emulated as `FUN_14102e950` does (one
    offset copy for blurs up to 2, else three rings); other filtered objects
    draw through a layer render target with GDraw's blur (`FUN_1402e15d0`:
    bilinear box taps, downsampled for wide blurs) and colour matrix passes
@@ -102,9 +104,12 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    from the last game frame while the paused frame skips the clock step,
    `FUN_1407913f0`), and is removed on OnExit or `DisableUIPostFX`; its
    blend weights the override in 88e220's override stage (numeric values
-   base + (v - base)·w, the cube into `m_overrideColorCubes`). Open: the FX
-   render entity's time scale (`+0xf8`) is taken as 1.0 (its initializer is
-   not traced); `r_skipDOF` has no consumer in the renderer.
+   base + (v - base)·w, the cube into `m_overrideColorCubes`). The FX record's
+   time scale (`+0xf8`) stays at its initial 1.0 (`FUN_14021dc10`).
+   OnEnter saves `r_skipDOF` in `r_skipDofBck` and clears it (`FUN_1404f2fc0`);
+   OnExit restores it (`FUN_1404f3240`). Open: `r_skipDOF` has no consumer in the renderer (`FUN_140374e40` sets view
+   flag `+0x3a37` bit 0; `0x140315634` then branches to `0x14031573b`, not yet
+   traced, instead of camera-combine).
 8. Sound: `PostSoundEvent` and UI sound IDs (`_soundHandler.soundsList`)
    are not connected to audio.
 9. Tab focus traversal on keyDown (`FUN_141027340`) and SimpleButton states

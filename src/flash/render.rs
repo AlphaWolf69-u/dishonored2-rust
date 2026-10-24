@@ -413,14 +413,11 @@ impl Builder<'_> {
         // `FUN_14102e950`: text filters are emulated by drawing the glyphs
         // again, before the text, around the drop shadow's offset
         // ((cos, sin)(angle) × distance in stage pixels).
-        let filters = display_ref(o).filter(|d| d.filters.is_empty()).map(|d| d.timeline_filters.clone()).unwrap_or_default();
-        for filter in &filters {
-            if let crate::assets::iggy::timeline::Filter::DropShadow { colour, blur, angle, distance, strength, .. } = filter {
-                let base = ((angle.cos() * distance) as f64, (angle.sin() * distance) as f64);
-                for (offset, alpha) in shadow_copies(*blur, *strength, colour[3]) {
-                    let rgba = [colour[0] as f32 / 255.0, colour[1] as f32 / 255.0, colour[2] as f32 / 255.0, alpha as f32 / 255.0];
-                    self.glyphs(&glyphs, m, c, blend, (base.0 + offset.0 as f64, base.1 + offset.1 as f64), Some(rgba));
-                }
+        for Shadow { colour, blur, angle, distance, strength } in text_shadows(o).unwrap_or_default() {
+            let base = ((angle.cos() * distance) as f64, (angle.sin() * distance) as f64);
+            for (offset, alpha) in shadow_copies(blur, strength, colour[3]) {
+                let rgba = [colour[0] as f32 / 255.0, colour[1] as f32 / 255.0, colour[2] as f32 / 255.0, alpha as f32 / 255.0];
+                self.glyphs(&glyphs, m, c, blend, (base.0 + offset.0 as f64, base.1 + offset.1 as f64), Some(rgba));
             }
         }
         self.glyphs(&glyphs, m, c, blend, (0.0, 0.0), None);
@@ -526,12 +523,12 @@ impl Builder<'_> {
     fn layer_filters(&self, o: &Obj) -> Vec<super::filter_passes::FilterRecord> {
         use super::filter_passes::FilterRecord;
         use crate::assets::iggy::timeline::Filter;
+        if text_shadows(o).is_some() {
+            return Vec::new();
+        }
         let Some(d) = display_ref(o) else { return Vec::new() };
         if !d.filters.is_empty() {
-            return d.filter_records.iter().filter(|r| !matches!(r, FilterRecord::Unsupported)).cloned().collect();
-        }
-        if d.kind == DisplayKind::Text && d.timeline_filters.iter().all(|f| matches!(f, Filter::DropShadow { inner: false, knockout: false, .. })) {
-            return Vec::new();
+            return d.filter_records.iter().filter(|r| matches!(r, FilterRecord::Blur { .. } | FilterRecord::ColourMatrix(_))).cloned().collect();
         }
         d.timeline_filters
             .iter()
@@ -647,6 +644,45 @@ impl Builder<'_> {
 /// of n at angle j·2π/n, offset (sin, cos) × radius; each copy's alpha
 /// A / (n · k · {3.5, 2.5, 1.3}) with k = min(1/strength, 1), truncated to a
 /// byte.
+/// A drop shadow the text emulation draws.
+struct Shadow {
+    colour: [u8; 4],
+    blur: [f32; 2],
+    angle: f32,
+    distance: f32,
+    strength: f32,
+}
+
+/// `FUN_141037930`'s text test: a text object whose filter records (script
+/// `filters` replace the timeline's) are all drop shadows without inner,
+/// knockout or hideObject is drawn by `FUN_14102e950`'s emulation; `None`
+/// otherwise (no filters also gives an empty emulation).
+fn text_shadows(o: &Obj) -> Option<Vec<Shadow>> {
+    use super::filter_passes::FilterRecord;
+    use crate::assets::iggy::timeline::Filter;
+    let d = display_ref(o)?;
+    if d.kind != DisplayKind::Text {
+        return None;
+    }
+    if !d.filters.is_empty() {
+        return d
+            .filter_records
+            .iter()
+            .map(|r| match *r {
+                FilterRecord::DropShadow { colour, blur, angle, distance, strength, inner: false, knockout: false, hide_object: false, .. } => Some(Shadow { colour, blur, angle, distance, strength }),
+                _ => None,
+            })
+            .collect();
+    }
+    d.timeline_filters
+        .iter()
+        .map(|f| match *f {
+            Filter::DropShadow { colour, blur, angle, distance, strength, inner: false, knockout: false, .. } => Some(Shadow { colour, blur, angle, distance, strength }),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn shadow_copies(blur: [f32; 2], strength: f32, alpha: u8) -> Vec<((f32, f32), u8)> {
     if blur[0] <= 2.0 && blur[1] <= 2.0 {
         return vec![((0.0, 0.0), alpha)];

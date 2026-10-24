@@ -214,6 +214,10 @@ pub enum FilterRecord {
     Blur { blur: [f32; 2], passes: u8 },
     /// Type 6: the shader's layout ([`colour_matrix`]).
     ColourMatrix([f32; 20]),
+    /// Type 0, as the `DropShadowFilter` setters store it: colour bytes and
+    /// alpha (`FUN_1410126f0`, `FUN_141012600`), angle in radians
+    /// (`FUN_141012690`), flags inner/knockout/hideObject (bits 0..2 of +2).
+    DropShadow { colour: [u8; 4], blur: [f32; 2], angle: f32, distance: f32, strength: f32, passes: u8, inner: bool, knockout: bool, hide_object: bool },
     /// Other types (shadows, glows, bevels, convolution): not drawn by the
     /// render-target path yet.
     Unsupported,

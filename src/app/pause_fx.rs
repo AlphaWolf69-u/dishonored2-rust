@@ -22,9 +22,9 @@ const PAUSE_STATE: &str = "ui/gamelogic/state_pause.gamelogicstatepause";
 
 /// The FX record's time scale (`+0xf8`). An entity's render entity copies its
 /// clock group's rate (`FUN_1408780a0`, 1.0); the pause FX clears that copy
-/// (`FUN_140791240`) and keeps the render entity's initial value, taken as
-/// the same 1.0 (UNVERIFIED: the initializer is not traced; next step: read
-/// the record in the running game).
+/// (`FUN_140791240`, flags `+0x138 & 0xfc`) and keeps the record's initial
+/// value: `FUN_14019d100` -> `FUN_1401679d0` -> `FUN_14021dc10(rec + 0x38)`
+/// stores 1.0 at `+0xc0`.
 const TIME_SCALE: f32 = 1.0;
 
 pub(super) struct ScreenFx {
