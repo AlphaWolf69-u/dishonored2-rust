@@ -8,6 +8,42 @@ use crate::{archive, physworld};
 pub struct TriggerVolume {
     pub bounds: [[f32; 3]; 2],
     pub hulls: Vec<Vec<[f32; 4]>>,
+    /// Placed hull vertices and triangle edge directions, for body overlap.
+    pub hull_vertices: Vec<Vec<[f32; 3]>>,
+    pub hull_edges: Vec<Vec<[f32; 3]>>,
+}
+
+/// A convex body hull in world space, for trigger overlap tests.
+pub struct ConvexHull<'a> {
+    pub vertices: &'a [[f32; 3]],
+    pub normals: &'a [[f32; 3]],
+    pub edges: &'a [[f32; 3]],
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn separated(a: &[[f32; 3]], b: &[[f32; 3]], axis: [f32; 3]) -> bool {
+    if axis.iter().all(|v| *v == 0.) {
+        return false;
+    }
+    let range = |points: &[[f32; 3]]| {
+        points.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |[lo, hi], p| {
+            let d = dot(*p, axis);
+            [lo.min(d), hi.max(d)]
+        })
+    };
+    let ([a0, a1], [b0, b1]) = (range(a), range(b));
+    a1 < b0 || b1 < a0
 }
 
 impl TriggerVolume {
@@ -19,6 +55,22 @@ impl TriggerVolume {
                     .iter()
                     .all(|p| ((p[0] * point[0] + p[1] * point[1]) + p[2] * point[2]) + p[3] <= 0.0)
             })
+    }
+
+    /// Whether a convex body hull overlaps any hull of this trigger: the
+    /// separating-axis test over both face sets and all edge pairs.
+    pub fn overlaps(&self, body: &ConvexHull<'_>) -> bool {
+        self.hulls.iter().enumerate().any(|(index, planes)| {
+            let vertices = &self.hull_vertices[index];
+            !(planes
+                .iter()
+                .map(|p| [p[0], p[1], p[2]])
+                .chain(body.normals.iter().copied())
+                .chain(self.hull_edges[index].iter().flat_map(|a| {
+                    body.edges.iter().map(move |b| cross(*a, *b))
+                }))
+                .any(|axis| separated(vertices, body.vertices, axis)))
+        })
     }
 
     pub fn size_squared(&self) -> f32 {
@@ -59,6 +111,8 @@ impl TriggerVolume {
         };
         let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
         let mut hulls = Vec::new();
+        let mut hull_vertices = Vec::new();
+        let mut hull_edges = Vec::new();
         for hull in &geometry.convex {
             let vertices: Vec<_> = hull.vertices.iter().copied().map(placed).collect();
             let center: [f32; 3] = std::array::from_fn(|i| {
@@ -71,6 +125,7 @@ impl TriggerVolume {
                 }
             }
             let mut planes = Vec::new();
+            let mut edges = Vec::new();
             for triangle in geometry
                 .triangles
                 .iter()
@@ -79,6 +134,7 @@ impl TriggerVolume {
                 let [a, b, c] = triangle.vertices.map(placed);
                 let u: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
                 let v: [f32; 3] = std::array::from_fn(|i| c[i] - a[i]);
+                edges.extend([u, v, std::array::from_fn(|i| c[i] - b[i])]);
                 let n = [
                     u[1] * v[2] - u[2] * v[1],
                     u[2] * v[0] - u[0] * v[2],
@@ -102,7 +158,14 @@ impl TriggerVolume {
                 return Err(format!("{id}: trigger hull is not closed"));
             }
             hulls.push(planes);
+            hull_vertices.push(vertices);
+            hull_edges.push(edges);
         }
-        Ok(Self { bounds, hulls })
+        Ok(Self {
+            bounds,
+            hulls,
+            hull_vertices,
+            hull_edges,
+        })
     }
 }

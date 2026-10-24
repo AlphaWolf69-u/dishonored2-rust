@@ -248,8 +248,25 @@ impl ShadowWinds<'_> {
     }
 }
 
-/// Advances the trigger winds with the world wind's actor clock group and
-/// rewrites every instance record. The record count never changes, so the
+/// 7800b0 for every trigger wind, beside the world wind and before the wind
+/// manager update (8af460 runs component think before 7b8340).
+pub(super) fn advance_trigger_winds(
+    clock: Res<ClockRuntime>,
+    wind: Option<ResMut<VegetationWind>>,
+) {
+    if let (true, Ok(clock), Some(mut wind)) = (clock.advanced(), clock.clock(), wind) {
+        // Default entity timespace 0 -> clock group3 (877eb0), as WorldWind.
+        wind.manager.advance(clock.delta(3).expect("five clock groups"));
+    }
+}
+
+impl VegetationWind {
+    pub(super) fn manager(&self) -> &WindManager {
+        &self.manager
+    }
+}
+
+/// Rewrites every instance record. The record count never changes, so the
 /// GPU buffer and material bindings stay in place.
 pub(super) fn update_vegetation_wind(
     clock: Res<ClockRuntime>,
@@ -263,12 +280,6 @@ pub(super) fn update_vegetation_wind(
         return;
     };
     let advanced = clock.advanced();
-    if advanced {
-        if let Ok(clock) = clock.clock() {
-            // Default entity timespace 0 -> clock group3 (877eb0), as WorldWind.
-            wind.manager.advance(clock.delta(3).expect("five clock groups"));
-        }
-    }
     if wind.uploaded && !advanced {
         return;
     }

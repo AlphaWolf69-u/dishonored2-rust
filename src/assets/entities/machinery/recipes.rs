@@ -13,6 +13,23 @@ pub struct BodyRecipe {
     pub orientation: [f32; 4],
     pub mass: Option<PrincipalMassProperties>,
     pub angular_damping: f32,
+    pub wind: Option<BodyWind>,
+}
+
+/// A body registered with the wind manager (positive `m_windSpeedFactor`):
+/// its factor and its shape's aero faces (14008be50 -> 14008b830).
+pub struct BodyWind {
+    pub speed_factor: f32,
+    pub faces: Vec<crate::gameplay::aerodynamics::AeroFace>,
+    /// Body-space convex hulls, for trigger-wind overlap.
+    pub hulls: Vec<BodyHull>,
+}
+
+#[derive(Clone)]
+pub struct BodyHull {
+    pub vertices: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub edges: Vec<[f32; 3]>,
 }
 pub struct AssemblyRecipe {
     pub bodies: Vec<BodyRecipe>,
@@ -72,11 +89,19 @@ pub fn load(
         assemblies: Vec::new(),
         unsupported: Vec::new(),
     };
-    for (seed, joint) in constraints
-        .iter()
-        .enumerate()
-        .filter(|(_, j)| j.motor.is_some() && j.started)
-    {
+    // Assemblies a force drives: motors, or a dynamic body that the wind
+    // manager pushes (809d80 registers positive m_windSpeedFactor).
+    let windy = |id: &str| {
+        dynamic(id) && bodies.get(id).is_some_and(|b| b.wind_speed_factor.unwrap_or(0.) > 0.)
+    };
+    for (seed, joint) in constraints.iter().enumerate().filter(|(_, j)| {
+        j.started
+            && (j.motor.is_some()
+                || [j.entity_a.as_deref(), j.entity_b.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .any(windy))
+    }) {
         if visited.contains(&seed) {
             continue;
         }
@@ -143,12 +168,10 @@ pub fn load(
                     .ok_or_else(|| format!("{id}: missing render placement"))?;
                 let basis = physworld::rigid_body_basis(p.rotation.map(|v| [v[0], v[1], v[2], 0.]));
                 let orientation = physworld::rotation_quaternion(basis);
+                let mut wind = None;
                 let mass = match body.physics_behavior.as_deref() {
                     Some("BEHAVIOR_STATIC") => None,
                     Some("BEHAVIOR_DYNAMIC") => {
-                        if body.lock_rotation.into_iter().any(|v| v) {
-                            return Err(format!("{id}: locked mass distribution is not supported"));
-                        }
                         let source = p
                             .resource_path
                             .strip_prefix("generated/model/")
@@ -187,6 +210,74 @@ pub fn load(
                             mass.volume * material_density(name, read)?
                         };
                         mass.set_mass(target);
+                        // 140808ea0: a locked axis (decl +0xc4 bits 3..5)
+                        // replaces the major-axis space with identity and
+                        // zeroes that inertia lane; set-zero reciprocals then
+                        // give it no inverse inertia.
+                        if body.lock_rotation.into_iter().any(|v| v) {
+                            mass.orientation = [0., 0., 0., 1.];
+                            for (axis, locked) in body.lock_rotation.into_iter().enumerate() {
+                                if locked {
+                                    mass.inertia[axis] = 0.;
+                                }
+                            }
+                        }
+                        if let Some(speed_factor) =
+                            body.wind_speed_factor.filter(|factor| *factor > 0.)
+                        {
+                            let path = physworld::physics_shape_asset_path(&key);
+                            let bytes = catalog
+                                .read(&path)
+                                .map_err(|e| e.to_string())?
+                                .ok_or_else(|| format!("{id}: missing {path}"))?;
+                            let geometry = physworld::parse_hkx(&bytes)?.standalone_shapes(&bytes)?;
+                            if !geometry.unknown_shapes.is_empty()
+                                || !geometry.compressed_decode_failures.is_empty()
+                            {
+                                return Err(format!(
+                                    "{id}: unsupported wind shape geometry {:?}",
+                                    geometry.unknown_shapes
+                                ));
+                            }
+                            let faces = crate::gameplay::aerodynamics::aero_faces(
+                                geometry.triangles.iter().map(|t| t.vertices),
+                            );
+                            let sub = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
+                                std::array::from_fn(|i| b[i] - a[i])
+                            };
+                            let hulls = geometry
+                                .convex
+                                .iter()
+                                .map(|hull| {
+                                    let triangles: Vec<_> = geometry
+                                        .triangles
+                                        .iter()
+                                        .filter(|t| t.source_shape_item == hull.source_shape_item)
+                                        .map(|t| t.vertices)
+                                        .collect();
+                                    BodyHull {
+                                        vertices: hull.vertices.clone(),
+                                        normals: crate::gameplay::aerodynamics::aero_faces(
+                                            triangles.iter().copied(),
+                                        )
+                                        .iter()
+                                        .map(|f| [f.normal[0], f.normal[1], f.normal[2]])
+                                        .collect(),
+                                        edges: triangles
+                                            .iter()
+                                            .flat_map(|[a, b, c]| {
+                                                [sub(*a, *b), sub(*a, *c), sub(*b, *c)]
+                                            })
+                                            .collect(),
+                                    }
+                                })
+                                .collect();
+                            wind = Some(BodyWind {
+                                speed_factor,
+                                faces,
+                                hulls,
+                            });
+                        }
                         Some(mass)
                     }
                     other => return Err(format!("{id}: unsupported behavior {other:?}")),
@@ -200,6 +291,7 @@ pub fn load(
                     angular_damping: body
                         .angular_damping
                         .ok_or_else(|| format!("{id}: invalid angular damping"))?,
+                    wind,
                 });
             }
             Ok(AssemblyRecipe {
@@ -216,6 +308,72 @@ pub fn load(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "audit; requires installed level archives"]
+    fn installed_wind_body_audit() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        for path in catalog.paths_with_suffix(".decl") {
+            if !path.contains("cpntrigidbody") {
+                continue;
+            }
+            let text = entities::declaration_text(&catalog.read(&path).unwrap().unwrap()).into_owned();
+            if text.contains("m_windSpeedFactor") {
+                println!("DECL {path}: {}", text.lines().find(|l| l.contains("m_windSpeedFactor")).unwrap().trim());
+            }
+        }
+        for path in catalog.paths_with_suffix(".entities") {
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            let document =
+                entities::parse(&entities::declaration_text(&bytes)).unwrap();
+            let read = |p: &str| {
+                catalog
+                    .read(p)
+                    .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
+                    .map_err(|e| e.to_string())
+            };
+            let joints = super::super::constraints(&document, read).unwrap();
+            let bodies = entities::rigid_body_settings(&document);
+            let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+            for body in bodies.iter().filter(|b| b.wind_speed_factor.unwrap_or(0.) > 0.) {
+                let linked: Vec<_> = joints
+                    .iter()
+                    .filter(|j| {
+                        [j.entity_a.as_deref(), j.entity_b.as_deref()].contains(&Some(&*body.entity_id))
+                    })
+                    .map(|j| {
+                        format!(
+                            "{}/{}/{}/started={}/motor={}",
+                            j.linear_constraint,
+                            j.angular_constraint,
+                            [j.entity_a.is_some(), j.entity_b.is_some()]
+                                .map(|b| if b { "E" } else { "W" })
+                                .concat(),
+                            j.started,
+                            j.motor.is_some()
+                        )
+                    })
+                    .collect();
+                *kinds
+                    .entry(format!(
+                        "{:?} f={:?} {:?}",
+                        body.physics_behavior,
+                        body.wind_speed_factor,
+                        linked
+                    ))
+                    .or_default() += 1;
+            }
+            if !kinds.is_empty() {
+                println!("{path}");
+                for (kind, count) in kinds {
+                    println!("  {count:4} {kind}");
+                }
+            }
+        }
+    }
+
     use super::*;
     #[test]
     #[ignore = "requires installed game archives"]

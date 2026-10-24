@@ -942,8 +942,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             Update,
             (
                 camera_controls.run_if(super::pause_menu::game_not_paused),
-                super::machinery::update_machinery,
                 super::fog_scene::update_world_wind,
+                super::vegetation_wind::advance_trigger_winds,
+                super::machinery::update_machinery,
                 update_coordinate_overlay,
                 interact_pickup.run_if(super::pause_menu::game_not_paused),
                 snapshot_once,
