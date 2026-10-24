@@ -9062,7 +9062,7 @@ fn mouse_capture_and_debug_free_camera_look_reach_camera_system() {
         }],
         active: 0,
     });
-    app.insert_resource(super::player::PlayerState { player: None, debug_free_fly: true });
+    app.insert_resource(super::player::PlayerState { player: None, debug_free_fly: true, difficulty: None });
     app.insert_resource(super::player::PlayerInput::default());
     let cursor = app.world_mut().spawn(CursorOptions::default()).id();
     let camera = app

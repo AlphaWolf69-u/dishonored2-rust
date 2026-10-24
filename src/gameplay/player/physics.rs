@@ -145,6 +145,10 @@ pub struct PlayerPhysics {
     pub yaw: f32,
     /// Output velocity of the last step (entity +0x33c).
     pub velocity: Vec3,
+    /// pp+0x110: the body lean's view offset. The step's trigger-only sweep
+    /// to it and the post-step SetPosition (FUN_1407ffab0, target untraced)
+    /// are not ported; the camera clamp reads it.
+    pub lean_offset: Vec3,
     pub proxy: CharacterProxy,
     disable_gravity_count: i32,
     // arkCpntPlayerPhysics query state.
@@ -248,6 +252,7 @@ impl PlayerPhysics {
             speed_scale_rate: 0.0,
             yaw: wrap_angle(yaw),
             velocity: Vec3::ZERO,
+            lean_offset: Vec3::ZERO,
             proxy,
             disable_gravity_count: 0,
             ground_query_length: decl.ground_query_length,

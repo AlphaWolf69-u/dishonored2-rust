@@ -14,6 +14,8 @@ pub struct PlayerDeclarations {
     pub controller: Vec<(String, Value)>,
     pub attributes: Vec<(String, Value)>,
     pub autocrouch_sensor: Vec<(String, Value)>,
+    pub lean_sensor: Vec<(String, Value)>,
+    pub body: Vec<(String, Value)>,
     /// The state machine's startup mode.
     pub mode: Vec<(String, Value)>,
     /// The mode's `m_states`: (decl kind, resolved fields).
@@ -24,7 +26,16 @@ pub struct PlayerDeclarations {
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 6] = ["cpntplayerphysics", "cpntplayercamera", "cpntplayercontroller", "cpntattributesplayer", "cpntplayerstatemachine", "cpntplayersensorautocrouch"];
+const PLAYER_COMPONENTS: [&str; 8] = [
+    "cpntplayerphysics",
+    "cpntplayercamera",
+    "cpntplayercontroller",
+    "cpntattributesplayer",
+    "cpntplayerstatemachine",
+    "cpntplayersensorautocrouch",
+    "cpntplayersensorlean",
+    "cpntplayerbody",
+];
 
 fn kind_of(name: &str) -> Option<&str> {
     name.rsplit_once('.').map(|(_, kind)| kind)
@@ -107,6 +118,8 @@ pub fn player_declarations(
     let controller = take("cpntplayercontroller")?;
     let attributes = take("cpntattributesplayer")?;
     let autocrouch_sensor = take("cpntplayersensorautocrouch")?;
+    let lean_sensor = take("cpntplayersensorlean")?;
+    let body = take("cpntplayerbody")?;
     let machine = take("cpntplayerstatemachine")?;
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
@@ -127,7 +140,8 @@ pub fn player_declarations(
         Some(name) => component_fields("playerlocomotion", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, mode, states, locomotion, body_model })
+    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, body, mode, states, locomotion, body_model })
+
 }
 
 /// The md6 declaration's `locomotionDecl` (inherited through `inherit`).

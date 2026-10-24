@@ -169,3 +169,81 @@ impl AutoCrouchSensor {
         };
     }
 }
+
+/// arkDeclCpntPlayerSensorLean (ctor FUN_1403b91c0; the installed decl is
+/// `{}`). `m_collisionLayers` 0x802b is not distinguished: the world is the
+/// level's static collision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeanDecl {
+    pub head_shape_size: Vec3,
+    pub lean_amplitude: f32,
+    pub lean_up_amplitude: f32,
+}
+
+impl Default for LeanDecl {
+    fn default() -> Self {
+        Self { head_shape_size: Vec3::new(0.05, 0.2, 0.1), lean_amplitude: 0.8, lean_up_amplitude: 0.35 }
+    }
+}
+
+/// arkCpntPlayerSensorLean (PLAYER_SENSOR 8): two head-box casts along the
+/// body's left and right that limit the lateral lean. Submit FUN_1403b9650
+/// and results FUN_1403b9460 run synchronously, as for AutoCrouch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeanSensor {
+    pub decl: LeanDecl,
+    pub enabled: bool,
+    head: Vec<Vec3>,
+    /// +0x80 / +0x84: fractions of the amplitude.
+    pub left_limit: f32,
+    pub right_limit: f32,
+}
+
+impl LeanSensor {
+    pub fn new(decl: LeanDecl) -> Self {
+        let size = decl.head_shape_size;
+        Self { decl, enabled: false, head: box_points(-size, size), left_limit: 1.0, right_limit: 1.0 }
+    }
+
+    /// FUN_1403b93f0 (vtbl+0xd8).
+    pub fn enable(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.left_limit = 1.0;
+            self.right_limit = 1.0;
+        }
+    }
+
+    /// `eye` is the camera's gameplay eye of the previous PRE_RENDER;
+    /// `axis` columns are the entity's forward, left and up.
+    pub fn update(&mut self, world: &dyn PlayerWorld, eye: Vec3, origin: Vec3, axis: Mat3) {
+        if !self.enabled {
+            return;
+        }
+        let left = axis.y_axis;
+        let mut from = eye - left * (eye.dot(left) - origin.dot(left));
+        // 0.05 (0x141c71ff4) and 0.01 (0x141ab3810).
+        from.z -= (self.decl.head_shape_size.z - 0.05) + 0.01;
+        let amplitude = self.decl.lean_amplitude;
+        let limit = |direction: Vec3| {
+            let (distance, hit) = AutoCrouchSensor::hit_distance(world, &self.head, axis, from, direction, amplitude);
+            if hit.is_some() { distance / amplitude } else { 1.0 }
+        };
+        self.left_limit = limit(left);
+        self.right_limit = limit(-left);
+    }
+
+    /// FUN_1403b9220: clamp a lean (negative is left) into the free range;
+    /// false when it reached a limit (reaching it exactly counts).
+    pub fn clamp(&self, lean: &mut f32) -> bool {
+        if *lean <= -self.left_limit {
+            *lean = -self.left_limit;
+            false
+        } else if self.right_limit <= *lean {
+            *lean = self.right_limit;
+            false
+        } else {
+            true
+        }
+    }
+}

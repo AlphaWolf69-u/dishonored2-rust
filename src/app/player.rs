@@ -7,6 +7,7 @@ use super::{game_to_view, view_to_game, BenchmarkSeconds, CursorGrabMode, Cursor
 use crate::archive::Catalog;
 use crate::gameplay::game_clock_runtime::{ClockRuntime, GamePaused};
 use crate::gameplay::navigation::CollisionWorld;
+use crate::gameplay::options::DifficultyManager;
 use crate::gameplay::pause_state::Character;
 use crate::gameplay::player::body::{Body, BodySkeleton};
 use crate::gameplay::player::camera::CameraDecl;
@@ -89,7 +90,13 @@ fn character_name(character: Character) -> &'static str {
 
 /// The body skeleton, its animsets' aliases and the stance clips
 /// (`gameplay::player::body`).
-fn load_body(catalog: &Catalog, body_model: &str, camera: &CameraDecl, locomotion: &[(String, crate::entities::Value)]) -> Result<Body, String> {
+fn load_body(
+    catalog: &Catalog,
+    body_model: &str,
+    camera: &CameraDecl,
+    locomotion: &[(String, crate::entities::Value)],
+    body_decl: &[(String, crate::entities::Value)],
+) -> Result<Body, String> {
     let stem = body_model.strip_suffix(".md6").ok_or("player body model is not an md6")?;
     let text = |path: &str| -> Result<Option<String>, String> {
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
@@ -170,9 +177,17 @@ fn load_body(catalog: &Catalog, body_model: &str, camera: &CameraDecl, locomotio
             body_data.transitions.insert((from, to), Transition { clip: clip(&alias)?, blend_in, blend_out });
         }
     }
+    let mut lean_clips = [None; 2];
+    for (slot, alias) in lean_clips.iter_mut().zip(decls::lean_aliases(body_decl)) {
+        if let Some(alias) = alias {
+            *slot = Some(clip(&alias)?);
+        }
+    }
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
-    Ok(Body::new(body_skeleton, animations, Default::default(), body_node, bob_node))
+    let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.lean_clips = lean_clips;
+    Ok(body)
 }
 
 pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Result<PlayerSetup, String> {
@@ -180,7 +195,7 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
     })?;
     let camera = decls::camera(&declarations.camera)?;
-    let body = load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion)?;
+    let body = load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body)?;
     Ok(PlayerSetup {
         physics: decls::physics(&declarations.physics)?,
         camera,
@@ -191,6 +206,7 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
         attributes: decls::attributes(&declarations.attributes)?,
         body,
         autocrouch: decls::autocrouch_sensor(&declarations.autocrouch_sensor)?,
+        lean: decls::lean_sensor(&declarations.lean_sensor)?,
         slipping: decls::slipping_thresholds(&declarations.controller)?,
     })
 }
@@ -202,6 +218,23 @@ pub(super) struct PlayerState {
     pub(super) player: Option<Player>,
     /// Host diagnostic free camera (G); the player does not simulate.
     pub(super) debug_free_fly: bool,
+    /// The difficulty manager the body's lean limits read.
+    pub(super) difficulty: Option<DifficultyManager>,
+}
+
+/// The installed difficulty manager as the game creates it (FUN_140648590):
+/// the current preset from `ark_difficulty_current` and the profile's
+/// custom values.
+pub(super) fn load_difficulty(catalog: &Catalog) -> Option<DifficultyManager> {
+    let mut manager = DifficultyManager::read(&mut |path| catalog.read(path).ok().flatten())
+        .map_err(|error| eprintln!("Difficulty manager unavailable, lean unlimited: {error}"))
+        .ok()?;
+    manager.current = console::shared().read().cvars.int("ark_difficulty_current").unwrap_or(0);
+    let profile = crate::gameplay::save_list::Saves::locate()
+        .and_then(|s| crate::gameplay::save_list::read_profile(&s.folder))
+        .unwrap_or_default();
+    manager.read_custom(&profile);
+    Some(manager)
 }
 
 /// Bound action events since the last simulated frame, the mouse sample
@@ -244,15 +277,18 @@ pub(super) fn look_settings() -> LookSettings {
             cvars.float("g_lookStickSensitivityY").unwrap_or(1.0),
         ],
         sprint_toggle: cvars.int("g_sprintToggle").is_none_or(|v| v != 0),
+        lean_toggle: cvars.int("g_leanToggle").is_none_or(|v| v != 0),
     }
 }
 
 /// `ark_playerSmoothedLoco` and the head-bob option `ark_playerBobAmount`.
-pub(super) fn body_settings() -> crate::gameplay::player::body::BodySettings {
+pub(super) fn body_settings(difficulty: Option<&DifficultyManager>) -> crate::gameplay::player::body::BodySettings {
     let console = console::shared().read();
+    let current = console.cvars.int("ark_difficulty_current").unwrap_or(0);
     crate::gameplay::player::body::BodySettings {
         smoothed_loco: console.cvars.int("ark_playerSmoothedLoco").is_none_or(|v| v != 0),
         bob_amount: console.cvars.float("ark_playerBobAmount").unwrap_or(1.0),
+        lean_limits: difficulty.map_or([1.0; 2], |manager| manager.lean_limits(current)),
     }
 }
 
@@ -354,7 +390,8 @@ pub(super) fn update_player(
         input.events.clear();
         return;
     }
-    let (Some(player), Some(collision)) = (state.player.as_mut(), collision) else { return };
+    let PlayerState { player, difficulty, .. } = &mut *state;
+    let (Some(player), Some(collision)) = (player.as_mut(), collision) else { return };
     if paused.0 {
         // In a non-game logic state the input components are cleared.
         input.events.clear();
@@ -373,7 +410,8 @@ pub(super) fn update_player(
             let dt = game_clock.delta(3).unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
             let events = std::mem::take(&mut input.events);
-            player.body_settings = body_settings();
+            player.body_settings = body_settings(difficulty.as_ref());
+
             player.frame(&world, &events, &look_settings(), dt, frame_delta, base);
         }
     }
@@ -455,6 +493,39 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
             }
         }
         return Ok(());
+    }
+    // Lean right (toggle mode by default): hold, release, then walk away.
+    {
+        use crate::gameplay::player::controller::ACTION_LEAN_RIGHT;
+        let lean_step = |player: &mut Player, label: &str, frames: usize, events: Vec<ActionEvent>| {
+            for frame in 0..frames {
+                let events = if frame == 0 { events.clone() } else { Vec::new() };
+                player.frame(&world, &events, &settings, dt, dt, 80.0);
+                player.view();
+            }
+            let axis = player.axis();
+            let eye = player.view().origin - player.feet();
+            let lean = player.body.lean;
+            println!(
+                "NAV PROBE lean {label}: states={:?} left={:.3} up={:.3} blend={:.3} limits=({:.3},{:.3}) offset={:?} eye fwd={:.4} right={:.4} up={:.4}",
+                player.machine.active_states(),
+                lean.left,
+                lean.up,
+                lean.blend,
+                player.lean_sensor.left_limit,
+                player.lean_sensor.right_limit,
+                player.physics.lean_offset,
+                eye.dot(axis.x_axis),
+                -eye.dot(axis.y_axis),
+                eye.dot(axis.z_axis),
+            );
+        };
+        lean_step(&mut player, "neutral", 1, Vec::new());
+        lean_step(&mut player, "E held 0.1s", 12, vec![key(ACTION_LEAN_RIGHT, true)]);
+        lean_step(&mut player, "E held 0.3s", 24, Vec::new());
+        lean_step(&mut player, "E released +0.25s", 30, vec![key(ACTION_LEAN_RIGHT, false)]);
+        lean_step(&mut player, "walk +0.5s", 60, vec![key(ACTION_MOVE_FORWARD, true)]);
+        lean_step(&mut player, "stop +0.5s", 60, vec![key(ACTION_MOVE_FORWARD, false)]);
     }
     run(&mut player, 60, vec![key(ACTION_MOVE_FORWARD, true)]);
     let from = player.feet();

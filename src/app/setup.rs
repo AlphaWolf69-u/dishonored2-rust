@@ -1245,7 +1245,7 @@ pub(super) fn setup(
             camera_entity.insert((exposure, auto_exposure::MaterialExposure(material_exposure)));
         }
     }
-    commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player });
+    commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player, difficulty: catalog.and_then(super::player::load_difficulty) });
     commands.insert_resource(super::player::PlayerInput::default());
     commands.insert_resource(PickupState {
         items: scene

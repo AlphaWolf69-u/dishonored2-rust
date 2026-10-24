@@ -4,10 +4,10 @@
 //! chains (FUN_1406e7cb0) and the Edge joint blends (lerp FUN_1412e6000,
 //! additive FUN_1412e4c70) through the command executor (FUN_14024b600).
 //!
-//! `locoBobAdditives = body ⊕ bobAmount·bob ⊕ additives`. The jump/land
-//! additives node (arkAnimTreeNode_AnimBasic), midnight scenes, grapple,
-//! versus and lean layers are not ported; lean at its neutral frame and an
-//! empty midnight pass the pose through unchanged.
+//! `locoBobAdditives = body ⊕ bobAmount·bob ⊕ additives`, then the root's
+//! lean layers (`body.rs`). The jump/land additives node
+//! (arkAnimTreeNode_AnimBasic), midnight scenes, grapple and versus are not
+//! ported; an empty midnight passes the pose through unchanged.
 use crate::edge_animation::{slerp, EdgeAnimation};
 use crate::edge_skeleton::JointRestPose;
 use std::collections::HashMap;

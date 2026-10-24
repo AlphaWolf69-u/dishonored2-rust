@@ -219,7 +219,15 @@ group 0.
   manager with transition clips, phase sync, `ark_playerBobAmount`), folded
   with the Edge lerp/additive blends; inputs come from the body DEFAULT
   stage (start delay, max-speed clamp, `ark_playerSmoothedLoco` smoothing).
-  Clips are read by `assets/edge_animation.rs`.
+  Clips are read by `assets/edge_animation.rs`; an alias resolves to the
+  last md6 animset defining it (Corvo's clips over the base/Emily ones).
+- Leaning (state 18) runs beside the navigation state: LEAN/LEAN_LEFT/
+  LEAN_RIGHT requests, `g_leanToggle` hold or toggle mode, latched input,
+  recentering, the 1.5 m/s and 60° exits and the 0.3 s fade. The body scrubs
+  `ply_body_common_lean_leftright`/`_up` as root additives, offsets the
+  capsule clamp base (pp+0x110), and the lean sensor's two head-box casts
+  from the gameplay eye limit the lateral lean. The very-hard
+  `m_limitedLean` halves both ranges.
 - `assets/entities/player.rs` resolves the character's body def components,
   startup mode, states, locomotion decl and md6 animsets.
 
@@ -227,11 +235,37 @@ Measured in the running game (sample_player_motion.py, tlf_view capture):
 run 4.14 m/s unequipped, jump apex 1.500 m with the 5.1 m/s / 0.74 vertical
 move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
 at 11.5° pitch, matching the port within the camera idle bob (a few mm).
+A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
 
 Not ported: the jump/land camera additives (animBasic node), footsteps, hand
 equipment (the player moves unequipped), mantle (retargeting onto the scene
-dummy is not traced), vault, catfall, fall damage, leaning, camera constraint
-modes, swimming, powers, impulses and moving or dynamic bodies.
+dummy is not traced), vault, catfall, fall damage, lean sounds and HUD labels, camera
+constraint modes, swimming, powers, impulses and moving or dynamic bodies.
+
+Open questions and blockers (evidence in the local `artifacts/locomotion/`
+research notes):
+
+1. Mantle and vault move the player by a midnight scene and
+   arkCpntRetargeting toward the scene dummy. Next: decompile the
+   retargeting update FUN_1407583e0 and the group root-motion playback
+   (FUN_1407d6040 / FUN_1407d9270), then log the entity origin per frame
+   during a high mantle onto a 1.0 m ledge in the running game.
+2. Catfall (falls above `m_catFallHeight` 6 m) plays `cat_fall_light` /
+   `cat_fall_strong` with posture LEAN_FORWARD and MODE_CAMERA_CATFALL; it
+   needs the same midnight playback, and the strong roll's 2.0 m root motion
+   reaches the entity by an untraced path. Next: trace arkCpntMidnightProxy
+   root extraction or measure ent.origin and the view during a 6+ m fall.
+3. Jump/land camera additives: the body fall-anim state machine
+   (FUN_140774f10 / FUN_140775270 / FUN_140776a40) feeds the animBasic node
+   through FUN_14053eef0, whose reference pose and weighting are untraced,
+   and the small-fall cooldown DAT_14399634c is BSS. Next: decompile
+   FUN_14053eef0 and read the cooldown at runtime during a 0.3-1 m drop.
+4. Lean: the post-step `SetPosition(owner + pp+0x110)` (FUN_1407ffab0 →
+   FUN_1401b30c0 → FUN_140085160 command 6) moves either the hitbox or the
+   proxy. Next: check the body id it uses (pp+0x210 or the proxy body).
+5. The stage of the body update FUN_140777280 (ApplyLean, fall anims)
+   relative to the state machine think is taken as right after it. Next:
+   find the arkCpntPlayerBody factory slot that calls it (FUN_140946640).
 
 ## Background materials and fog-volume routing
 

@@ -17,6 +17,8 @@ pub const ACTION_LOOK_UP: i32 = 7;
 pub const ACTION_LOOK_DOWN: i32 = 8;
 pub const ACTION_LOOK_LEFT: i32 = 9;
 pub const ACTION_LOOK_RIGHT: i32 = 10;
+pub const ACTION_LEAN_LEFT: i32 = 12;
+pub const ACTION_LEAN_RIGHT: i32 = 13;
 pub const ACTION_JUMP: i32 = 14;
 pub const ACTION_SPRINT: i32 = 15;
 pub const ACTION_CROUCH: i32 = 16;
@@ -42,6 +44,8 @@ pub struct LookSettings {
     pub fix_mouse_sensibility: bool,
     pub look_stick_sensitivity: [f32; 2],
     pub sprint_toggle: bool,
+    /// `g_leanToggle` (0x143995628, default "1").
+    pub lean_toggle: bool,
 }
 
 impl Default for LookSettings {
@@ -54,6 +58,7 @@ impl Default for LookSettings {
             fix_mouse_sensibility: true,
             look_stick_sensitivity: [1.0, 1.0],
             sprint_toggle: true,
+            lean_toggle: true,
         }
     }
 }
@@ -139,6 +144,8 @@ pub struct Controller {
     pub support_state: SupportState,
     pub sneak_action: i32,
     pub sprinting_action: i32,
+    /// FUN_1407f8870(ctrl, LEANING): the first LEANING mapping's action.
+    pub lean_action: i32,
     sprinting_stopped: bool,
     sprinting_button_down_before_stop: bool,
     /// +0x170.
@@ -158,6 +165,7 @@ impl Controller {
         let action_of = |state| mapping.iter().find(|m| m.state == state).map_or(0, |m| m.action);
         let sneak_action = action_of(StateId::SNEAKING);
         let sprinting_action = action_of(StateId::SPRINTING);
+        let lean_action = action_of(StateId::LEANING);
         Self {
             mapping,
             allowed: !0,
@@ -176,6 +184,7 @@ impl Controller {
             support_state: SupportState::Unsupported,
             sneak_action,
             sprinting_action,
+            lean_action,
             sprinting_stopped: false,
             sprinting_button_down_before_stop: false,
             must_sprint: false,

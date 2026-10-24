@@ -282,7 +282,9 @@ impl EdgeAnimation {
 }
 
 /// `animsets` alias tables (`alias { name ... anim ... }`): alias name →
-/// md6anim resource, first definition in animset order.
+/// md6anim resource. Call it in the md6's animset order: a later animset's
+/// alias replaces an earlier one, as the model def's lookups
+/// (FUN_1401c7030 / FUN_1401c7bf0) search the list from its last entry.
 pub fn animset_aliases(source: &str, aliases: &mut std::collections::HashMap<String, String>) -> Result<(), String> {
     let tokens = crate::entities::declaration_lexemes(source)?;
     let mut i = 0;
@@ -291,16 +293,20 @@ pub fn animset_aliases(source: &str, aliases: &mut std::collections::HashMap<Str
             let mut name = None;
             let mut anim = None;
             let mut k = i + 2;
-            while k < tokens.len() && tokens[k] != "}" {
+            // Nested blocks (`flags { forceLoad }`, events) end before the alias.
+            let mut depth = 0;
+            while k < tokens.len() && !(depth == 0 && tokens[k] == "}") {
                 match tokens[k] {
-                    "name" => name = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
-                    "anim" => anim = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
+                    "{" => depth += 1,
+                    "}" => depth -= 1,
+                    "name" if depth == 0 => name = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
+                    "anim" if depth == 0 => anim = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
                     _ => {}
                 }
                 k += 1;
             }
             if let (Some(name), Some(anim)) = (name, anim) {
-                aliases.entry(name).or_insert(anim);
+                aliases.insert(name, anim);
             }
             i = k;
         }
@@ -317,6 +323,17 @@ pub fn resource_path(anim: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aliases_skip_nested_blocks_and_later_animsets_win() {
+        let mut aliases = std::collections::HashMap::new();
+        let base = r#"{ alias { name "lean" flags { forceLoad } anim "base/lean.md6anim" } group 0
+            alias { name "run" anim "emily/run.md6anim" } }"#;
+        animset_aliases(base, &mut aliases).unwrap();
+        animset_aliases(r#"{ alias { name "run" anim "corvo/run.md6anim" } }"#, &mut aliases).unwrap();
+        assert_eq!(aliases.get("lean").map(String::as_str), Some("base/lean.md6anim"));
+        assert_eq!(aliases.get("run").map(String::as_str), Some("corvo/run.md6anim"));
+    }
 
     #[test]
     fn smallest_three_restores_the_dropped_component() {

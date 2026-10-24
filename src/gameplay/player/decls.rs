@@ -6,13 +6,14 @@ use super::controller::{ButtonUsage, StateMapping};
 use super::physics::{PhysicsDecl, PhysicsSettings};
 use super::shape::{self, ShapeSettings};
 use super::controller::SlippingThresholds;
-use super::sensors::AutoCrouchDecl;
+use super::sensors::{AutoCrouchDecl, LeanDecl};
 use super::states::{
-    Attributes, FallingDecl, JumpingDecl, Kind, NavigationDecl, RuleDecl, SlidingDecl, SlippingDecl, SprintingDecl,
-    StateDecl, StateId,
+    Attributes, FallingDecl, JumpingDecl, Kind, LeaningDecl, NavigationDecl, RuleDecl, SlidingDecl, SlippingDecl,
+    SprintingDecl, StateDecl, StateId,
 };
 use crate::entities::player::PlayerDeclarations;
 use crate::entities::Value;
+use bevy_math::Vec3;
 use std::collections::HashMap;
 
 type Fields = [(String, Value)];
@@ -71,6 +72,29 @@ fn items<'a>(fields: &'a Fields, key: &str) -> Vec<&'a Fields> {
         .collect();
     entries.sort_by_key(|(i, _)| *i);
     entries.into_iter().map(|(_, f)| f).collect()
+}
+
+/// An eActions_t field (`ACTION_` names, binding_tables.rs `ACTIONS`).
+fn action(fields: &Fields, key: &str, default: i32) -> Result<i32, String> {
+    match atom(fields, key).and_then(|a| a.strip_prefix("ACTION_")) {
+        None => Ok(default),
+        Some(name) => crate::platform::bindings::ACTIONS
+            .iter()
+            .find(|a| a.1 == name)
+            .map(|a| a.0)
+            .ok_or_else(|| format!("unknown action ACTION_{name}")),
+    }
+}
+
+/// A `durationTime_t` field (`{ m_seconds = ... }`).
+fn seconds(fields: &Fields, key: &str, default: f32) -> Result<f32, String> {
+    scope(fields, key).map_or(Ok(default), |duration| number(duration, "m_seconds", default))
+}
+
+/// A vector field (`{ x = ...; y = ...; z = ... }`).
+fn vector(fields: &Fields, key: &str, default: Vec3) -> Result<Vec3, String> {
+    let Some(v) = scope(fields, key) else { return Ok(default) };
+    Ok(Vec3::new(number(v, "x", default.x)?, number(v, "y", default.y)?, number(v, "z", default.z)?))
 }
 
 /// arkPlayerStateId_t names the port resolves (enum table 0x142391a90).
@@ -295,6 +319,28 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                 Kind::Slipping(SlippingDecl { gravity_strength: number(fields, "m_gravityStrength", d.gravity_strength)? })
             }
             "playerstateautocrouch" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::AutoCrouch)) => Kind::AutoCrouch,
+            "playerstateleaning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Leaning(_))) => {
+                let d = LeaningDecl::default();
+                Kind::Leaning(LeaningDecl {
+                    lean_speed_gamepad: number(fields, "m_leanSpeedGamepad", d.lean_speed_gamepad)?,
+                    lean_speed_keyboard: number(fields, "m_leanSpeedKeyboard", d.lean_speed_keyboard)?,
+                    lean_up_speed_gamepad: number(fields, "m_leanUpSpeedGamepad", d.lean_up_speed_gamepad)?,
+                    lean_up_speed_keyboard: number(fields, "m_leanUpSpeedKeyboard", d.lean_up_speed_keyboard)?,
+                    maximum_linear_speed: number(fields, "m_maximumLinearSpeed", d.maximum_linear_speed)?,
+                    minimum_rotation_angle: number(fields, "m_minimumRotationAngle", d.minimum_rotation_angle)?,
+                    maximum_rotation_angle: number(fields, "m_maximumRotationAngle", d.maximum_rotation_angle)?,
+                    recenter_threshold: number(fields, "m_recenterThreshold", d.recenter_threshold)?,
+                    dead_zone_inner_radius: number(fields, "m_deadZoneInnerRadius", d.dead_zone_inner_radius)?,
+                    dead_zone_outer_radius: number(fields, "m_deadZoneOuterRadius", d.dead_zone_outer_radius)?,
+                    recenter_delay: seconds(fields, "m_recenterDelay", d.recenter_delay)?,
+                    exit_delay: seconds(fields, "m_exitDelay", d.exit_delay)?,
+                    blend_duration: seconds(fields, "m_blendDuration", d.blend_duration)?,
+                    lean_left_button: action(fields, "m_leanLeftButton", d.lean_left_button)?,
+                    lean_right_button: action(fields, "m_leanRightButton", d.lean_right_button)?,
+                    lean_up_button: action(fields, "m_leanUpButton", d.lean_up_button)?,
+                    lean_down_button: action(fields, "m_leanDownButton", d.lean_down_button)?,
+                })
+            }
             _ => continue,
         };
         for key in ["m_bodyParts", "m_lockedBodyParts", "m_exclusiveBodyParts", "m_primary"] {
@@ -375,7 +421,23 @@ pub fn autocrouch_sensor(fields: &Fields) -> Result<AutoCrouchDecl, String> {
     })
 }
 
+/// arkDeclCpntPlayerSensorLean (ctor FUN_1403b91c0).
+pub fn lean_sensor(fields: &Fields) -> Result<LeanDecl, String> {
+    let d = LeanDecl::default();
+    Ok(LeanDecl {
+        head_shape_size: vector(fields, "m_headShapeSize", d.head_shape_size)?,
+        lean_amplitude: number(fields, "m_leanAmplitude", d.lean_amplitude)?,
+        lean_up_amplitude: number(fields, "m_leanUpAmplitude", d.lean_up_amplitude)?,
+    })
+}
+
+/// The body decl's `m_leanLeftAnimAlias` / `m_leanUpAnimAlias`.
+pub fn lean_aliases(body: &Fields) -> [Option<String>; 2] {
+    ["m_leanLeftAnimAlias", "m_leanUpAnimAlias"].map(|key| atom(body, key).filter(|a| !a.is_empty()).map(str::to_owned))
+}
+
 /// One `m_stances[].m_speeds[]` entry: speed-set index (by `m_speedList`),
+
 /// body and bob clip aliases in back/right/front/left order (empty
 /// directions filled with front) and clip speeds (front/back, strafe for
 /// left and right; default 0).
