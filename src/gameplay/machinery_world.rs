@@ -13,10 +13,16 @@ use super::{
         AngularLockRow, AngularMotorRow, AngularVelocityAccumulator, Basis, ConstraintBody,
         HingeHistory, HingeRowInput,
     },
+    deactivation::{
+        DeactivationProfile, MotionDeactivation, MODE_ALWAYS_ACTIVE, MODE_DEACTIVATE,
+        MODE_KEEP_DEACTIVATED,
+    },
+    entity_lod::EntityLod,
     machinery::{AngularMotorHistory, ConstraintMotor, MotorStep},
     rigid_body::{BodyMotion, BodyPose},
 };
 use crate::{entities::machinery::ConstraintSettings, physworld};
+mod atoms;
 
 fn vector(v: [f32; 3]) -> [f32; 4] {
     [v[0], v[1], v[2], 0.]
@@ -52,6 +58,22 @@ pub struct MachineryBody {
     angular: [f32; 3],
     integrated_linear: [f32; 3],
     pub wind: Option<BodyWindState>,
+    /// Owner entity placement: its LOD level, static owners included. Only
+    /// the first body of an entity group carries it.
+    pub entity_placement: Option<usize>,
+    /// The first body of this body's owner entity (a physics system owns
+    /// several); freezing and LOD levels act on the whole group.
+    pub group: usize,
+    /// Body-space mass frame (orientation, center): motion = body * frame.
+    mass_frame: ([f32; 4], [f32; 4]),
+    pub lod: EntityLod,
+    deactivation: MotionDeactivation,
+    profile: DeactivationProfile,
+    /// hknpBody IS_ACTIVE (+0x44 bit 3).
+    active: bool,
+    /// arkCpntRigidBody +0xd2: 0 thawed, 1 frozen while active, 2 frozen asleep.
+    frozen: u8,
+    candidate: bool,
 }
 
 /// A wind-manager rigid body: its `m_windSpeedFactor`, aero faces and the
@@ -60,6 +82,7 @@ pub struct BodyWindState {
     pub speed_factor: f32,
     pub faces: Vec<super::aerodynamics::AeroFace>,
     hulls: Vec<crate::entities::machinery::recipes::BodyHull>,
+    convex_radius: f32,
     frame_orientation: [f32; 4],
     frame_center: [f32; 4],
     /// Overlapped trigger winds, highest 1405ff500 priority first. Enter
@@ -77,6 +100,15 @@ impl MachineryBody {
             angular: [0.; 3],
             integrated_linear: [0.; 3],
             wind: None,
+            entity_placement: placement,
+            group: 0,
+            mass_frame: ([0., 0., 0., 1.], [0.; 4]),
+            lod: EntityLod::spawned(0),
+            deactivation: MotionDeactivation::new(0, MODE_DEACTIVATE),
+            profile: DeactivationProfile::default(),
+            active: true,
+            frozen: 0,
+            candidate: false,
             // Motion profile 1, c9f050; observed default machinery profile.
             properties: MotionProperties {
                 gravity_factor: 1.,
@@ -101,6 +133,41 @@ impl MachineryBody {
             },
             0.,
         )
+    }
+    /// A dynamic motion; static owners and the world body share motion 0.
+    pub fn dynamic(&self) -> bool {
+        self.motion.inverse_mass_values()[3] != 0.
+    }
+    pub fn active(&self) -> bool {
+        self.active
+    }
+    /// The hknpBody transform (columns and translation): the motion frame
+    /// composed with the inverse body-space mass frame.
+    pub fn body_transform(&self) -> [[f32; 4]; 4] {
+        let [x, y, z, w] = self.motion.pose.orientation;
+        let ([fx, fy, fz, fw], c) = self.mass_frame;
+        let [qx, qy, qz] = [-fx, -fy, -fz];
+        let body = [
+            ((qz * y - z * qy) + w * qx) + x * fw,
+            ((qx * z - x * qz) + w * qy) + y * fw,
+            ((qy * x - y * qx) + w * qz) + z * fw,
+            fw * w - ((y * qy + x * qx) + z * qz),
+        ];
+        let basis = physworld::quaternion_basis(body);
+        let center = self.motion.pose.center;
+        let origin: [f32; 4] = std::array::from_fn(|i| {
+            if i == 3 {
+                1.
+            } else {
+                center[i] - ((c[1] * basis[1][i] + c[0] * basis[0][i]) + c[2] * basis[2][i])
+            }
+        });
+        [basis[0], basis[1], basis[2], origin].map(|mut v| {
+            if v[3] != 1. {
+                v[3] = 0.;
+            }
+            v
+        })
     }
     fn constraint_body(&self) -> ConstraintBody {
         let mass = self.motion.inverse_mass_values();
@@ -155,40 +222,32 @@ impl MachineryBody {
         };
         let offset = rotate([columns[0][3], columns[1][3], columns[2][3]]);
         let origin: [f32; 3] = std::array::from_fn(|i| self.motion.pose.center[i] - offset[i]);
-        let hulls: Vec<_> = state
+        let hulls: Vec<Vec<[f32; 3]>> = state
             .hulls
             .iter()
             .map(|hull| {
-                let vertices: Vec<[f32; 3]> = hull
-                    .vertices
+                hull.vertices
                     .iter()
                     .map(|v| {
                         let r = rotate(*v);
                         std::array::from_fn(|i| r[i] + origin[i])
                     })
-                    .collect();
-                let normals: Vec<_> = hull.normals.iter().map(|v| rotate(*v)).collect();
-                let edges: Vec<_> = hull.edges.iter().map(|v| rotate(*v)).collect();
-                (vertices, normals, edges)
+                    .collect()
             })
             .collect();
+        let radius = state.convex_radius;
         let inside: Vec<usize> = shapes
             .iter()
             .enumerate()
-            .filter(|(_, (_, _, shape))| {
-                hulls.iter().any(|(vertices, normals, edges)| {
-                    shape.overlaps(&super::trigger_volume::ConvexHull {
-                        vertices,
-                        normals,
-                        edges,
-                    })
-                })
-            })
+            .filter(|(_, (_, _, shape))| shape.touches(&hulls, radius))
             .map(|(index, _)| index)
             .collect();
         let state = self.wind.as_mut().unwrap();
         state.triggers.retain(|index| inside.contains(index));
-        for index in inside {
+        // Same-step enter events arrive in reverse trigger order: the live
+        // Dust capture keeps vistatun, fosterbldg_shutter, vista (file order)
+        // front to back with equal priorities and insert-before-equal.
+        for index in inside.into_iter().rev() {
             if state.triggers.contains(&index) {
                 continue;
             }
@@ -207,20 +266,17 @@ impl MachineryBody {
         xyz(self.motion.pose.center)
     }
 
-    /// 14077f050: add the wind drag velocity change for `seconds` of the
-    /// body's actor clock. `wind` is 77edf0's velocity at the mass center.
-    pub fn apply_wind(&mut self, wind: [f32; 3], seconds: f32) {
-        let Some(state) = &self.wind else {
-            return;
-        };
+    /// 14077f050: the wind drag velocity change for `seconds` of the body's
+    /// actor clock, or None below the inactive-body thresholds.
+    fn wind_change(&self, wind: [f32; 3], seconds: f32) -> Option<([f32; 4], [f32; 4])> {
+        let state = self.wind.as_ref()?;
         let columns = self.body_columns(state);
         let motion = super::aerodynamics::MotionMass {
             center: self.motion.pose.center,
             orientation: self.motion.pose.orientation,
             inverse_mass: self.motion.inverse_mass,
         };
-        // Machinery bodies stay active (hknpBody IS_ACTIVE, flag 8).
-        let Some((linear, angular)) = super::aerodynamics::wind_velocity_change(
+        super::aerodynamics::wind_velocity_change(
             &columns,
             &state.faces,
             &motion,
@@ -228,10 +284,10 @@ impl MachineryBody {
             wind,
             state.speed_factor,
             seconds,
-            true,
-        ) else {
-            return;
-        };
+            self.active,
+        )
+    }
+    fn add_velocity(&mut self, linear: [f32; 4], angular: [f32; 4]) {
         let orientation = self.motion.pose.orientation;
         let world = super::aerodynamics::rotate(orientation, self.angular);
         self.linear = std::array::from_fn(|i| self.linear[i] + linear[i]);
@@ -262,6 +318,8 @@ impl MachineryBody {
 
 struct Joint {
     settings: ConstraintSettings,
+    /// arkCpntConstraint +0x8c bit 1: the motor 1407149f0 disabled on freeze.
+    motor_suspended: bool,
     a: usize,
     b: usize,
     local_a: Basis,
@@ -285,13 +343,29 @@ struct JointRows {
     friction_scale: f32,
     limit_impulse: f32,
 }
+/// A simulated physics system and its body-to-joint map for skinning.
+pub struct SystemState {
+    pub placement: usize,
+    pub skeleton: String,
+    /// Machinery body index per physics-system body, in cinfo order.
+    pub bodies: Vec<usize>,
+    pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+    /// Entity spawn transform (position, orientation).
+    pub position: [f32; 3],
+    pub orientation: [f32; 4],
+}
+
 #[derive(Default)]
 pub struct MachineryWorld {
     windmills: std::collections::HashMap<String, WindmillMotor>,
     pub bodies: Vec<MachineryBody>,
+    pub systems: Vec<SystemState>,
     joints: Vec<Joint>,
-    rows: Vec<JointRows>,
+    atom_joints: Vec<atoms::AtomJoint>,
+    rows: Vec<Option<JointRows>>,
     velocities: Vec<SolverVelocities>,
+    /// hknpWorld +0x818 clear: no motion checks, sleep or activation modes.
+    pub deactivation_disabled: bool,
 }
 struct WindmillMotor {
     constraint: String,
@@ -328,11 +402,23 @@ impl MachineryWorld {
                     motion,
                     body.angular_damping,
                 );
+                created.entity_placement = Some(body.placement);
+                created.group = world.bodies.len();
+                if let Some(mass) = body.mass {
+                    created.mass_frame = (mass.orientation, mass.center);
+                }
+                // 140c908f0 -> 140ce90e0. Motion ids follow creation order
+                // here; they only phase the check frames (id & 3).
+                created.deactivation =
+                    MotionDeactivation::new(world.bodies.len() as u32, MODE_DEACTIVATE);
+                // 809d80 -> 140c8e930: m_startAsleep adds the body inactive.
+                created.active = !body.start_asleep || world.deactivation_disabled;
                 if let (Some(wind), Some(mass)) = (&body.wind, body.mass) {
                     created.wind = Some(BodyWindState {
                         speed_factor: wind.speed_factor,
                         faces: wind.faces.clone(),
                         hulls: wind.hulls.clone(),
+                        convex_radius: wind.convex_radius,
                         frame_orientation: mass.orientation,
                         frame_center: mass.center,
                         triggers: Vec::new(),
@@ -341,23 +427,90 @@ impl MachineryWorld {
                 world.bodies.push(created);
             }
         }
+        // 14076abc0 -> 14008e560: physics-system bodies at the entity transform
+        // applied to each body cinfo pose, added awake; its constraints are
+        // the ragdoll atom stacks between body frames.
+        let mut system_keys = std::collections::HashMap::<String, usize>::new();
+        for system in &recipes.systems {
+            let group = world.bodies.len();
+            let mut members = Vec::new();
+            let q = system.orientation;
+            for (k, body) in system.system.bodies.iter().enumerate() {
+                let p = crate::gameplay::constraint_solver::ball_socket::rotate_direction(
+                    q,
+                    [body.position[0], body.position[1], body.position[2]],
+                );
+                let translation = [
+                    p[0] + system.position[0],
+                    p[1] + system.position[1],
+                    p[2] + system.position[2],
+                    0.,
+                ];
+                let [x, y, z, w] = q;
+                let [bx, by, bz, bw] = body.orientation;
+                let orientation = [
+                    ((y * bz - z * by) + w * bx) + x * bw,
+                    ((z * bx - x * bz) + w * by) + y * bw,
+                    ((x * by - y * bx) + w * bz) + z * bw,
+                    w * bw - ((y * by + x * bx) + z * bz),
+                ];
+                let motion = BodyMotion::from_mass_frame(body.mass, orientation, translation);
+                let mut created = MachineryBody::new(None, motion, 0.);
+                created.entity_placement = (k == 0).then_some(system.placement);
+                created.group = group;
+                created.mass_frame = (body.mass.orientation, body.mass.center);
+                created.deactivation =
+                    MotionDeactivation::new(world.bodies.len() as u32, MODE_DEACTIVATE);
+                system_keys.insert(format!("{}#{}", system.entity_id, body.name), world.bodies.len());
+                members.push(world.bodies.len());
+                world.bodies.push(created);
+            }
+            for constraint in &system.system.constraints {
+                world.atom_joints.push(atoms::AtomJoint::new(
+                    members[constraint.body_a],
+                    members[constraint.body_b],
+                    constraint.atoms,
+                    false,
+                ));
+            }
+            world.systems.push(SystemState {
+                placement: system.placement,
+                skeleton: system.skeleton.clone(),
+                bodies: members,
+                ragdoll: system.ragdoll.clone(),
+                position: system.position,
+                orientation: system.orientation,
+            });
+        }
         for assembly in &recipes.assemblies {
             for joint in &assembly.joints {
-                let endpoint = |id: &Option<String>| -> Result<usize, String> {
-                    match id {
-                        None => Ok(0),
-                        Some(id) => indices
+                let endpoint = |id: &Option<String>, bone: &Option<String>| -> Result<usize, String> {
+                    match (id, bone) {
+                        (None, _) => Ok(0),
+                        (Some(id), Some(bone)) => system_keys
+                            .get(&format!("{id}#{bone}"))
+                            .copied()
+                            .ok_or_else(|| format!("unresolved physics-system endpoint {id}#{bone}")),
+                        (Some(id), None) => indices
                             .get(id.as_str())
                             .copied()
                             .ok_or_else(|| format!("unresolved machinery endpoint {id}")),
                     }
                 };
-                let a = endpoint(&joint.entity_a)?;
-                let b = endpoint(&joint.entity_b)?;
+                let a = endpoint(&joint.entity_a, &joint.joint_a)?;
+                let b = endpoint(&joint.entity_b, &joint.joint_b)?;
                 // 140712da0 returns without creating a constraint when both
                 // resolved body IDs are equal, including two missing owners.
-                if a != b {
+                if a != b && joint.angular_constraint == "ANGULAR_CONSTRAINT_CONE" {
+                    let stack = atoms::cone_stack(joint, &world.bodies[a], &world.bodies[b]);
+                    world.atom_joints.push(atoms::AtomJoint::new(a, b, stack, true));
+                } else if a != b {
                     world.add_joint(joint.clone(), a, b)?;
+                    // 140714cd0 -> 140c91140 -> 140c92dd0: an enabled motor
+                    // adds the constraint with activation; others keep sleep.
+                    if joint.motor.is_some() && joint.started {
+                        world.wake_joint(world.joints.len() - 1);
+                    }
                 }
             }
         }
@@ -421,6 +574,7 @@ impl MachineryWorld {
         measurement.measure(frame, frame, xyz(local_a[settings.angular_axis]), 1., 1.);
         self.joints.push(Joint {
             settings,
+            motor_suspended: false,
             a,
             b,
             local_a,
@@ -514,6 +668,7 @@ impl MachineryWorld {
         let Some(m) = j.motor.as_mut() else {
             return false;
         };
+        let before = (j.settings.started, j.settings.target_position, m.target_velocity, m.target_acceleration);
         if let Some(v) = enabled {
             j.settings.started = v;
         }
@@ -530,25 +685,264 @@ impl MachineryWorld {
         if let Some(v) = acceleration {
             m.target_acceleration = v.abs();
         }
+        let after = (j.settings.started, j.settings.target_position, m.target_velocity, m.target_acceleration);
+        if before != after {
+            let index = self.joints.iter().position(|j| j.settings.constraint_id == id).unwrap();
+            self.wake_joint(index);
+        }
         true
+    }
+
+    /// 140c91230(world, body, 0): activate a dynamic body that is not kept
+    /// deactivated, restarting its stillness counter. The deactivation
+    /// manager's group pass (140cdd770) then activates its island mates.
+    fn activate(&mut self, index: usize) -> bool {
+        if self.deactivation_disabled {
+            return false;
+        }
+        let body = &self.bodies[index];
+        if !body.dynamic() || body.active || body.deactivation.mode() == MODE_KEEP_DEACTIVATED {
+            return false;
+        }
+        let island = body.deactivation.island();
+        for (i, other) in self.bodies.iter_mut().enumerate() {
+            let mate = island != -1
+                && other.deactivation.island() == island
+                && other.deactivation.mode() != MODE_KEEP_DEACTIVATED;
+            if i == index || mate {
+                other.active = true;
+                other.deactivation.restart();
+                other.deactivation.set_island(-1);
+            }
+        }
+        true
+    }
+    /// 140c91230(world, body, 1) for a single body (island -1).
+    fn deactivate(&mut self, index: usize) {
+        let body = &mut self.bodies[index];
+        if body.deactivation.mode() == MODE_ALWAYS_ACTIVE {
+            return;
+        }
+        body.active = false;
+        body.deactivation.set_island(-1);
+    }
+    /// 140712a90: activate both constraint bodies that are not static.
+    fn wake_joint(&mut self, joint: usize) {
+        let (a, b) = (self.joints[joint].a, self.joints[joint].b);
+        self.activate(a);
+        self.activate(b);
+    }
+    /// 140c87ca0: mode 2 first deactivates an active motion.
+    fn set_activation_mode(&mut self, index: usize, mode: u8) {
+        if self.deactivation_disabled {
+            return;
+        }
+        if mode == MODE_KEEP_DEACTIVATED && self.bodies[index].active {
+            self.bodies[index].deactivation.set_mode(MODE_DEACTIVATE);
+            self.deactivate(index);
+        }
+        self.bodies[index].deactivation.set_mode(mode);
+    }
+    fn members(&self, index: usize) -> Vec<usize> {
+        let group = self.bodies[index].group;
+        (0..self.bodies.len()).filter(|&i| i == index || (group != 0 && self.bodies[i].group == group)).collect()
+    }
+    /// arkCpntRigidBody 808220 / arkCpntPhysicsSystem 140769d90 (vtable
+    /// +0x138): every body of the owner.
+    fn freeze(&mut self, index: usize) {
+        for index in self.members(index) {
+            let body = &self.bodies[index];
+            if body.frozen != 0 || !body.dynamic() {
+                continue;
+            }
+            self.bodies[index].frozen = if body.active { 1 } else { 2 };
+            self.set_activation_mode(index, MODE_KEEP_DEACTIVATED);
+        }
+    }
+    /// arkCpntRigidBody 808010 / arkCpntPhysicsSystem 140769a40 (vtable
+    /// +0x140) -> 807890 for a body that was active when frozen.
+    fn thaw(&mut self, index: usize) {
+        for index in self.members(index) {
+            let frozen = self.bodies[index].frozen;
+            if frozen == 0 {
+                continue;
+            }
+            self.set_activation_mode(index, MODE_DEACTIVATE);
+            if frozen == 1 {
+                self.activate(index);
+            }
+            self.bodies[index].frozen = 0;
+        }
+    }
+    /// Component constraint endpoints: hinge joints, then component atom joints.
+    fn component_endpoints(&self) -> Vec<(usize, usize)> {
+        self.joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().filter(|j| j.component).map(|j| (j.a, j.b)))
+            .collect()
+    }
+    /// 14087bb70 -> arkCpntRigidBody 140727390: an owner level change reaches
+    /// each attached constraint when it crosses the frozen state, which needs
+    /// every attached owner (the world counts as frozen) at level 6+.
+    pub fn entity_level_changed(&mut self, body: usize, old: i32, new: i32) {
+        let group = self.bodies[body].group;
+        let owned = |i: usize, bodies: &[MachineryBody]| i == body || (group != 0 && bodies[i].group == group);
+        for (joint, (a, b)) in self.component_endpoints().into_iter().enumerate() {
+            let (mine, other) = match (owned(a, &self.bodies), owned(b, &self.bodies)) {
+                (true, false) => (a, b),
+                (false, true) => (b, a),
+                _ => continue,
+            };
+            let _ = mine;
+            let leader = self.bodies[other].group;
+            let other_frozen = other == 0 || self.bodies[leader].lod.level > 5;
+            let call = if new > 5 && other_frozen { old <= 5 } else { old > 5 };
+            if call {
+                if joint < self.joints.len() {
+                    self.constraint_level_changed(joint, old, new);
+                } else if new < 6 {
+                    self.thaw(a);
+                    self.thaw(b);
+                } else {
+                    self.freeze(a);
+                    self.freeze(b);
+                }
+            }
+        }
+    }
+    /// arkCpntConstraint 1407149f0 (vtable +0x68).
+    fn constraint_level_changed(&mut self, joint: usize, old: i32, new: i32) {
+        let (a, b) = (self.joints[joint].a, self.joints[joint].b);
+        if new < 6 {
+            if old > 5 {
+                let j = &mut self.joints[joint];
+                if j.motor_suspended && j.motor.is_some() && !j.settings.started {
+                    j.settings.started = true;
+                    self.wake_joint(joint);
+                }
+                self.joints[joint].motor_suspended = false;
+                self.thaw(a);
+                self.thaw(b);
+            }
+        } else if old < 6 {
+            let j = &mut self.joints[joint];
+            if j.motor.is_some() && j.settings.started {
+                j.settings.started = false;
+                j.motor_suspended = true;
+                self.wake_joint(joint);
+            }
+            self.freeze(a);
+            self.freeze(b);
+        }
+    }
+    /// 807680: a body is skipped when static or kept deactivated; an
+    /// inactive body takes the change only above its thresholds, and
+    /// setBodyVelocity (140c85dc0) activates it first.
+    pub fn apply_wind(&mut self, index: usize, wind: [f32; 3], seconds: f32) {
+        let body = &self.bodies[index];
+        if !body.dynamic() || body.deactivation.mode() == MODE_KEEP_DEACTIVATED {
+            return;
+        }
+        let Some((linear, angular)) = body.wind_change(wind, seconds) else {
+            return;
+        };
+        if !self.bodies[index].active && !self.activate(index) {
+            return;
+        }
+        self.bodies[index].add_velocity(linear, angular);
+    }
+
+    /// 140cdc150: groups of active motions linked by constraints deactivate
+    /// together when every member is a candidate; an always-active member
+    /// blocks its group.
+    fn deactivate_islands(&mut self) {
+        let count = self.bodies.len();
+        let mut parent: Vec<usize> = (0..count).collect();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        let member = |b: &MachineryBody| b.dynamic() && b.active;
+        let links: Vec<(usize, usize)> = self
+            .joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().map(|j| (j.a, j.b)))
+            .collect();
+        for &(a, b) in &links {
+            if member(&self.bodies[a]) && member(&self.bodies[b]) {
+                let (x, y) = (root(&mut parent, a), root(&mut parent, b));
+                parent[x.max(y)] = x.min(y);
+            }
+        }
+        let mut groups = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        for i in (0..count).filter(|&i| member(&self.bodies[i])) {
+            groups.entry(root(&mut parent, i)).or_default().push(i);
+        }
+        for (island, members) in groups {
+            let sleeps = members.iter().all(|&i| {
+                let b = &self.bodies[i];
+                b.candidate && b.deactivation.mode() != MODE_ALWAYS_ACTIVE
+            });
+            if sleeps {
+                for i in members {
+                    self.bodies[i].active = false;
+                    self.bodies[i].deactivation.set_island(island as i32);
+                }
+            }
+        }
+    }
+    /// 140cdd770: an active constrained body activates its linked group
+    /// members that are not kept deactivated.
+    fn activate_linked(&mut self) {
+        if self.deactivation_disabled {
+            return;
+        }
+        let links: Vec<(usize, usize)> = self
+            .joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().map(|j| (j.a, j.b)))
+            .collect();
+        loop {
+            let mut changed = false;
+            for &(a, b) in &links {
+                for (from, to) in [(a, b), (b, a)] {
+                    let (f, t) = (&self.bodies[from], &self.bodies[to]);
+                    if f.dynamic() && f.active && t.dynamic() && !t.active && self.activate(to) {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
     pub fn step(&mut self, deltas: [f32; 5]) {
         let Some(step) = SolverParameters::from_game_deltas(&deltas, [0., 0., -9.81, 0.]) else {
             return;
         };
+        self.activate_linked();
         self.velocities.clear();
         self.velocities.extend(self.bodies.iter().map(|body| {
             let mut properties = body.properties;
-            if body.motion.inverse_mass_values()[3] == 0. {
+            let solved = body.dynamic() && body.active;
+            if !solved {
                 properties.gravity_factor = 0.;
             }
-            SolverVelocities::begin_motion(
-                body.linear,
-                body.angular,
-                body.motion.inverse_mass_values(),
-                properties,
-                &step,
-            )
+            // A deactivated motion leaves the solver (140cd7820) and keeps
+            // its velocity in the motion until it is activated again.
+            let (linear, angular, mass) = if solved || !body.dynamic() {
+                (body.linear, body.angular, body.motion.inverse_mass_values())
+            } else {
+                ([0.; 3], [0.; 3], [0.; 4])
+            };
+            SolverVelocities::begin_motion(linear, angular, mass, properties, &step)
         }));
         self.rows.clear();
         // Query coefficients measured at the game's motor callback: its
@@ -556,12 +950,31 @@ impl MachineryWorld {
         // full step. Stabilized constraint tau/damping are separate from
         // the velocity solver's .6/1 coefficients.
         let query = ConstraintParameters::from_step(&step);
+        // Physics-system constraints precede the constraint components in
+        // the solver (14076abc0 adds the system before components start).
+        let atom_step = atoms::atom_step(&step, &query);
+        for joint in &mut self.atom_joints {
+            let inactive = [joint.a, joint.b]
+                .iter()
+                .any(|&i| self.bodies[i].dynamic() && !self.bodies[i].active);
+            if inactive {
+                joint.skip();
+            } else {
+                joint.build(&self.bodies, &atom_step);
+            }
+        }
         let constraint_tau = query.stabilized_tau;
         let constraint_damping = query.stabilized_damping;
         let inverse_step_tau = query.inverse_step_tau;
         for joint in &mut self.joints {
             let a = &self.bodies[joint.a];
             let b = &self.bodies[joint.b];
+            // approximate_: a constraint touching a deactivated motion is not
+            // solved; freezing and island deactivation keep both sides alike.
+            if [a, b].iter().any(|body| body.dynamic() && !body.active) {
+                self.rows.push(None);
+                continue;
+            }
             let fa = transform(a.motion.pose.orientation, joint.local_a);
             let fb = transform(b.motion.pose.orientation, joint.local_b);
             let ca = a.constraint_body();
@@ -682,7 +1095,7 @@ impl MachineryWorld {
                 maximum_impulse: huge,
                 angular_impulse_limit: huge,
             });
-            self.rows.push(JointRows {
+            self.rows.push(Some(JointRows {
                 angular,
                 motor,
                 limit,
@@ -691,11 +1104,17 @@ impl MachineryWorld {
                 motor_scale: 1.,
                 friction_scale: 1.,
                 limit_impulse: 0.,
-            });
+            }));
         }
         for substep in 0..step.substeps {
             let phase = step.phase(substep, 0);
+            for joint in &mut self.atom_joints {
+                joint.solve(&mut self.velocities, &step);
+            }
             for (joint, rows) in self.joints.iter().zip(&mut self.rows) {
+                let Some(rows) = rows else {
+                    continue;
+                };
                 let mut a = self.velocities[joint.a];
                 let mut b = self.velocities[joint.b];
                 let mut angular_a = AngularVelocityAccumulator {
@@ -760,6 +1179,7 @@ impl MachineryWorld {
             if velocity.inverse_mass[3] == 0. {
                 continue;
             }
+            let previous = body.linear;
             let result = velocity.finish_motion(
                 body.properties,
                 &step,
@@ -778,10 +1198,27 @@ impl MachineryWorld {
             body.linear = result.linear;
             body.angular = result.angular;
             body.integrated_linear = result.integration_linear;
+            // 1412b5130 -> 140ce91c0 on the integrated motion.
+            body.candidate = !self.deactivation_disabled && body.deactivation.check(
+                body.motion.pose.center,
+                body.motion.pose.orientation,
+                vector(body.linear),
+                vector(previous),
+                &body.profile,
+            );
+        }
+        if !self.deactivation_disabled {
+            self.deactivate_islands();
+        }
+        for joint in &mut self.atom_joints {
+            joint.export(&self.velocities, &step);
         }
         // Exported solver motor history (14129c3f0 schema15), not accumulated
         // impulse or the transient saturation float from the iteration loop.
         for (joint, rows) in self.joints.iter_mut().zip(&self.rows) {
+            let Some(rows) = rows else {
+                continue;
+            };
             let accumulator = |index: usize| {
                 let v = self.velocities[index];
                 AngularVelocityAccumulator {
@@ -840,7 +1277,9 @@ impl MachineryWorld {
 mod tests {
     use super::*;
     fn rotor(axis: usize) -> MachineryWorld {
-        let mut world = MachineryWorld::default();
+        // The rotor fixtures replay the solver pipeline without the
+        // deactivation maintenance task.
+        let mut world = MachineryWorld { deactivation_disabled: true, ..Default::default() };
         world.bodies.push(MachineryBody::fixed());
         let mass = physworld::mass::PrincipalMassProperties {
             volume: 1.,
@@ -874,6 +1313,7 @@ mod tests {
                     target_position: 0.,
                     linear_constraint: "LINEAR_CONSTRAINT_FIXED".into(),
                     angular_friction: -1.,
+                    angular_limits_tau_factor: 1.,
                     motor: Some(crate::entities::machinery::AngularMotorSettings {
                         mode: crate::entities::machinery::MotorMode::Velocity,
                         target_velocity: 3.,
@@ -887,6 +1327,107 @@ mod tests {
             .unwrap();
         world
     }
+    fn resting_hinge() -> MachineryWorld {
+        let mut world = rotor(0);
+        world.deactivation_disabled = false;
+        world.joints[0].motor = None;
+        world
+    }
+    #[test]
+    fn resting_hinge_deactivates_after_its_checks() {
+        let mut world = resting_hinge();
+        let mut slept = None;
+        for frame in 0..600 {
+            world.step([1. / 60.; 5]);
+            if slept.is_none() && !world.bodies[1].active() {
+                slept = Some(frame);
+            }
+        }
+        // Four checks at 4 frames, then the slow rule completes the counter.
+        let slept = slept.expect("a still hinge deactivates");
+        assert!((10..40).contains(&slept), "slept at frame {slept}");
+        assert_eq!(world.bodies[1].deactivation.island(), 1);
+        let pose = world.bodies[1].motion.pose;
+        world.step([1. / 60.; 5]);
+        assert_eq!(world.bodies[1].motion.pose, pose);
+    }
+    #[test]
+    fn lod_freeze_keeps_bodies_deactivated_until_thawed() {
+        let mut world = resting_hinge();
+        world.bodies[1].angular = [2., 0., 0.];
+        world.bodies[1].lod.level = 7;
+        world.entity_level_changed(1, 0, 7);
+        assert!(!world.bodies[1].active());
+        assert_eq!(world.bodies[1].deactivation.mode(), MODE_KEEP_DEACTIVATED);
+        assert_eq!(world.bodies[1].frozen, 1);
+        let pose = world.bodies[1].motion.pose;
+        for _ in 0..10 {
+            world.step([1. / 60.; 5]);
+        }
+        assert_eq!(world.bodies[1].motion.pose, pose);
+        assert!(!world.activate(1), "mode 2 refuses activation");
+        world.bodies[1].lod.level = 3;
+        world.entity_level_changed(1, 7, 3);
+        assert!(world.bodies[1].active());
+        assert_eq!((world.bodies[1].frozen, world.bodies[1].deactivation.mode()), (0, 0));
+        // The retained velocity resumes after the thaw.
+        world.step([1. / 60.; 5]);
+        assert_ne!(world.bodies[1].motion.pose, pose);
+    }
+    #[test]
+    #[ignore = "requires installed Dust District archives"]
+    fn installed_dust_speaker_cables_settle_like_the_live_game() {
+        let catalog =
+            crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| {
+            catalog
+                .read(p)
+                .map(|b| b.map(|b| crate::entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        let mut placements = crate::entities::render_placements(&document);
+        placements.extend(crate::entities::placed_models_with_inheritance(&document, read).unwrap());
+        let recipes = crate::entities::machinery::recipes::load(&catalog, &document, &placements).unwrap();
+        for problem in &recipes.unsupported {
+            if problem.contains("cable") || problem.contains("turnbuckle") {
+                panic!("{problem}");
+            }
+        }
+        assert_eq!(recipes.systems.len(), 3, "speaker cable systems");
+        let mut world = MachineryWorld::from_recipes(&recipes).unwrap();
+        let cable = recipes.systems.iter().position(|s| s.entity_id == "ld_cable_01_1").unwrap();
+        let middle = world.systems[cable].bodies[6];
+        let start = world.bodies[middle].body_transform()[3];
+        for frame in 0..900 {
+            world.step([1. / 60.; 5]);
+            if frame % 150 == 0 {
+                let t = world.bodies[middle].body_transform()[3];
+                println!("frame {frame}: joint6 {:?} active {}", &t[..3], world.bodies[middle].active());
+            }
+        }
+        let end = world.bodies[middle].body_transform()[3];
+        println!("ld_cable_01_1 joint6 start {:?} end {:?}; live -17.994 -57.672 -16.101", &start[..3], &end[..3]);
+        for system in &world.systems {
+            for &i in &system.bodies {
+                let pose = world.bodies[i].motion.pose;
+                assert!(pose.center.iter().chain(&pose.orientation).all(|v| v.is_finite()));
+            }
+        }
+        assert!(end[2] < start[2], "the cable sags under gravity");
+        // Live capture: the cable entity at LOD 6/7 holds all twelve bodies in
+        // activation mode 2 through its arkCpntConstraint endpoints.
+        let leader = world.systems[cable].bodies[0];
+        world.bodies[leader].lod.level = 7;
+        world.entity_level_changed(leader, 0, 7);
+        for &i in &world.systems[cable].bodies {
+            assert!(!world.bodies[i].active());
+            assert_eq!(world.bodies[i].deactivation.mode(), MODE_KEEP_DEACTIVATED);
+        }
+    }
+
     #[test]
     #[ignore = "requires installed game archives"]
     fn installed_dust_machinery_stays_constrained() {

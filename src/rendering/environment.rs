@@ -47,7 +47,6 @@ mod tests {
                     [0.0, 0.0, -1.0, -1.0],
                 ]],
                 hull_vertices: vec![Vec::new()],
-                hull_edges: vec![Vec::new()],
             },
         };
         let mut track = EnvironmentScalar::new(70.0);

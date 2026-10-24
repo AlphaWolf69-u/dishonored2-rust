@@ -50,6 +50,7 @@ mod fog_lights;
 mod environment_reflection;
 mod model_motion;
 mod machinery;
+mod physics_skinning;
 mod shadow_updates;
 mod shadow_diagnostics;
 mod world_instances;
