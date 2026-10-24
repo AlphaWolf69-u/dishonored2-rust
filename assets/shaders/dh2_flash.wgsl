@@ -1,8 +1,9 @@
 // Iggy display-list triangles (GDraw equivalent) over the display output.
 struct Stage {
-    // Stage size in movie pixels, then viewport scale and offset in NDC.
-    size: vec2<f32>,
+    // Stage pixels to NDC: ndc = position * scale + offset (the display
+    // target, or a filter layer's render target).
     scale: vec2<f32>,
+    offset: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> stage: Stage;
 @group(1) @binding(0) var fill_texture: texture_2d<f32>;
@@ -28,10 +29,10 @@ struct VertexOut {
 @vertex
 fn flash_vertex(v: VertexIn) -> VertexOut {
     var out: VertexOut;
-    let ndc = vec2(v.position.x / stage.size.x * 2.0 - 1.0, 1.0 - v.position.y / stage.size.y * 2.0);
+    let ndc = v.position * stage.scale + stage.offset;
     // Homogeneous w gives perspective-correct interpolation like GDraw's
     // o1 = uv / r.z.
-    out.clip = vec4(ndc * stage.scale * v.w, 0.0, v.w);
+    out.clip = vec4(ndc * v.w, 0.0, v.w);
     out.uv = v.uv;
     out.mul = v.mul;
     out.add = v.add;

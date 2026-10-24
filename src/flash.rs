@@ -5,6 +5,7 @@ pub mod bounds;
 pub mod display;
 pub mod events;
 pub mod filters;
+pub mod filter_passes;
 pub mod geom;
 pub mod graphics;
 pub mod hit;

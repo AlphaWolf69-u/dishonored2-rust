@@ -73,10 +73,32 @@ const MASK_SLOTS: usize = 8;
 const FREE: i16 = -1;
 const DIRTY: i16 = -2;
 
+/// An object drawn through a filter render target (`FUN_141037930`'s
+/// filter branch): its batches go to an offscreen target covering their
+/// bounds, the filters run in order, and the result is drawn back with the
+/// object's colour transform and blend.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    /// Batches `first..end` belong to the layer (layers nest).
+    pub first: u32,
+    pub end: u32,
+    /// Stage-space bounds of the layer's vertices.
+    pub bounds: [f32; 4],
+    pub filters: Vec<super::filter_passes::FilterRecord>,
+    /// The colour transform and blend of the composite.
+    pub mul: [f32; 4],
+    pub add: [f32; 4],
+    pub blend: u8,
+    /// The stencil test bits in effect for the composite.
+    pub stencil_test: u8,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DrawList {
     pub vertices: Vec<Vertex>,
     pub batches: Vec<Batch>,
+    /// Filtered objects, in the order they begin.
+    pub layers: Vec<Layer>,
     /// 64×1 RGBA8 gradient ramps.
     pub ramps: Vec<[u8; 256]>,
     pub stage: (f32, f32),
@@ -146,6 +168,8 @@ impl Cache {
 struct Builder<'a> {
     vm: &'a Vm,
     cache: &'a mut Cache,
+    /// Batches before this index are closed (a layer began or ended).
+    batch_floor: usize,
     /// Per slot: the clip depth it lasts to (`P+0x2290`; FREE / DIRTY) and
     /// the parent whose clip layer claimed it (`P+0x2250`; none for a
     /// script mask).
@@ -187,7 +211,8 @@ impl Builder<'_> {
             return;
         }
         let (stencil_test, stencil_set) = (self.test, self.set);
-        if let Some(last) = self.out.batches.last_mut() {
+        let mergeable = self.out.batches.len() > self.batch_floor;
+        if let Some(last) = self.out.batches.last_mut().filter(|_| mergeable) {
             if last.texture == texture
                 && last.repeat == repeat
                 && last.smooth == smooth
@@ -451,11 +476,74 @@ impl Builder<'_> {
         self.world = outer;
     }
 
-    /// Draw `o` at `m` with colour `c`, then its children.
+    /// Draw `o` at `m` with colour `c`, then its children. An object with
+    /// filters the render-target path draws (any but text whose filters are
+    /// all emulated drop shadows) goes through a layer; its colour transform
+    /// applies when the layer is drawn back.
     fn draw(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         if c.mul[3] <= 0.0 && c.add[3] <= 0.0 {
             return;
         }
+        let filters = self.layer_filters(o);
+        if !filters.is_empty() {
+            let blend = display_ref(o).map_or(1, |d| d.blend);
+            let first = self.out.batches.len();
+            let first_vertex = self.out.vertices.len();
+            let stencil_test = self.test;
+            self.batch_floor = first;
+            self.draw_content(o, m, &Colour::default());
+            self.batch_floor = self.out.batches.len();
+            let vertices = &self.out.vertices[first_vertex..];
+            if vertices.is_empty() {
+                return;
+            }
+            let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for v in vertices {
+                bounds = [bounds[0].min(v.position[0]), bounds[1].min(v.position[1]), bounds[2].max(v.position[0]), bounds[3].max(v.position[1])];
+            }
+            self.out.layers.push(Layer {
+                first: first as u32,
+                end: self.out.batches.len() as u32,
+                bounds,
+                filters,
+                mul: c.mul.map(|v| v as f32),
+                add: c.add.map(|v| v as f32 / 255.0),
+                blend,
+                stencil_test,
+            });
+            // Layers record in the order they begin.
+            let layer = self.out.layers.pop().unwrap();
+            let at = self.out.layers.iter().position(|l| l.first > layer.first || (l.first == layer.first && l.end < layer.end)).unwrap_or(self.out.layers.len());
+            self.out.layers.insert(at, layer);
+            return;
+        }
+        self.draw_content(o, m, c);
+    }
+
+    /// The filters a layer draws for `o`: its script filters' records, else
+    /// its timeline filters; none for text whose filters are all drop
+    /// shadows without inner/knockout (`FUN_14102e950` emulates those).
+    fn layer_filters(&self, o: &Obj) -> Vec<super::filter_passes::FilterRecord> {
+        use super::filter_passes::FilterRecord;
+        use crate::assets::iggy::timeline::Filter;
+        let Some(d) = display_ref(o) else { return Vec::new() };
+        if !d.filters.is_empty() {
+            return d.filter_records.iter().filter(|r| !matches!(r, FilterRecord::Unsupported)).cloned().collect();
+        }
+        if d.kind == DisplayKind::Text && d.timeline_filters.iter().all(|f| matches!(f, Filter::DropShadow { inner: false, knockout: false, .. })) {
+            return Vec::new();
+        }
+        d.timeline_filters
+            .iter()
+            .filter_map(|f| match f {
+                Filter::Blur { blur, passes } => Some(FilterRecord::Blur { blur: *blur, passes: *passes }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The object's own drawing and its children.
+    fn draw_content(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         let Some(d) = display_ref(o) else { return };
         let (kind, character, graphics, blend) = (d.kind, d.character, d.graphics.clone(), d.blend);
         drop(d);
@@ -640,6 +728,7 @@ fn build(vm: &Vm, cache: &mut Cache, debug_ignore_visibility: bool) -> DrawList 
     let mut b = Builder {
         vm,
         cache,
+        batch_floor: 0,
         slots: std::array::from_fn(|_| (FREE, None)),
         allocated: 0,
         test: 0,
@@ -670,6 +759,12 @@ pub fn stack(base: &mut DrawList, mut top: DrawList) {
     if base.batches.iter().any(|b| b.stencil_set != 0) {
         push_clear(base, 0xff);
     }
+    let batch_offset = base.batches.len() as u32;
+    for l in &mut top.layers {
+        l.first += batch_offset;
+        l.end += batch_offset;
+    }
+    base.layers.append(&mut top.layers);
     let first = base.vertices.len() as u32;
     let ramps = base.ramps.len();
     for b in &mut top.batches {

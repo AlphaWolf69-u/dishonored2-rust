@@ -50,6 +50,9 @@ pub struct Display {
     /// Iggy blend code (1 normal).
     pub blend: u8,
     pub filters: Vec<Value>,
+    /// The records `filters` was converted to (`FUN_141011300` copies each
+    /// filter object's native record).
+    pub filter_records: Vec<super::filter_passes::FilterRecord>,
     /// Filters placed by the timeline (until script assigns `filters`).
     pub timeline_filters: Vec<crate::assets::iggy::timeline::Filter>,
     pub mask: Option<Obj>,
@@ -106,6 +109,7 @@ impl Display {
             visible: true,
             blend: 1,
             filters: Vec::new(),
+            filter_records: Vec::new(),
             timeline_filters: Vec::new(),
             mask: None,
             clip_depth: 0,
@@ -704,12 +708,16 @@ fn display_setters() -> Vec<(&'static str, NativeFn)> {
                 },
                 _ => Vec::new(),
             };
-            // Filters are copied on assignment.
+            // Filters are copied on assignment, as their records.
             let mut copies = Vec::with_capacity(list.len());
+            let mut records = Vec::with_capacity(list.len());
             for f in list {
+                records.push(filter_record(vm, &f)?);
                 copies.push(vm.call_property(&f, &Name::public("clone"), &[]).unwrap_or(f));
             }
-            display(&o).unwrap().filters = copies;
+            let mut d = display(&o).unwrap();
+            d.filters = copies;
+            d.filter_records = records;
             Ok(Value::Undefined)
         }),
         ("blendMode", |vm, this, a| {
@@ -1021,4 +1029,51 @@ pub fn debug_tree(o: &Obj, depth: usize, out: &mut String) {
     for c in children(o) {
         debug_tree(&c, depth + 1, out);
     }
+}
+
+/// A filter object's record: the `flash.filters` class it is, with the
+/// fields its native setters store (blur floats, the quality byte of
+/// `FUN_1410127a0`, the matrix of `FUN_14100d950`).
+fn filter_record(vm: &mut Vm, f: &Value) -> Result<super::filter_passes::FilterRecord> {
+    use super::filter_passes::{colour_matrix, FilterRecord};
+    let mut class = f.as_object().and_then(|o| o.class());
+    while let Some(c) = class.clone() {
+        if c.name.ns.uri() == "flash.filters" {
+            break;
+        }
+        class = c.super_class.clone();
+    }
+    let name = class.map(|c| c.name.name.to_string()).unwrap_or_default();
+    let num = |vm: &mut Vm, field: &str| -> Result<f64> {
+        let v = vm.get_property(f, &Name::public(field))?;
+        vm.to_number(&v)
+    };
+    Ok(match name.as_str() {
+        "BlurFilter" => {
+            let quality = vm.get_property(f, &Name::public("quality"))?;
+            FilterRecord::Blur { blur: [num(vm, "blurX")? as f32, num(vm, "blurY")? as f32], passes: vm.to_int(&quality)? as u8 }
+        }
+        "ColorMatrixFilter" => {
+            let matrix = vm.get_property(f, &Name::public("matrix"))?;
+            let items = match &matrix {
+                Value::Object(o) => match &o.borrow().kind {
+                    Kind::Array(items) => items.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            // Numbers convert to f32, booleans to 0/1, anything else to 0.
+            let values: Vec<f32> = items
+                .iter()
+                .take(20)
+                .map(|v| match v {
+                    Value::Number(n) => *n as f32,
+                    Value::Bool(b) => *b as i32 as f32,
+                    _ => 0.0,
+                })
+                .collect();
+            FilterRecord::ColourMatrix(colour_matrix(&values))
+        }
+        _ => FilterRecord::Unsupported,
+    })
 }
