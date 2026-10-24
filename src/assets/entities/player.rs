@@ -163,6 +163,47 @@ pub fn player_declarations(
 
 }
 
+/// What the body component's start puts on screen for the first-person view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerViewModels {
+    /// The left and right arm entities' `renderModelInfo.model`
+    /// (arkDeclCpntPlayerBody m_leftArm / m_rightArm `m_entity`, spawned by
+    /// FUN_140770560). None when the part has no entity.
+    pub arms: [Option<String>; 2],
+    /// `r_playerDepthHack` after FUN_1407724f0: the body decl's m_depthHack
+    /// (+0x1f8, ctor 5.0) when positive, otherwise the cvar's default 0.
+    pub depth_hack: f32,
+}
+
+/// arkDeclCpntPlayerBody m_depthHack constructor value.
+const BODY_DEPTH_HACK: f32 = 5.0;
+
+/// The arm models and depth hack from the resolved body component.
+pub fn player_view_models(
+    body: &[(String, Value)],
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<PlayerViewModels, String> {
+    let mut arms = [None, None];
+    for (arm, part) in arms.iter_mut().zip(["m_leftArm", "m_rightArm"]) {
+        let Some(entity) = scope(field(body, part)).and_then(|part| atom(part, "m_entity")) else {
+            continue;
+        };
+        for fields in entity_chain(entity, &mut read)? {
+            if let Some(model) = scope(field(&fields, "edit"))
+                .and_then(|edit| scope(field(edit, "renderModelInfo")))
+                .and_then(|info| atom(info, "model"))
+            {
+                *arm = Some(model.to_owned());
+            }
+        }
+    }
+    let decl = match atom(body, "m_depthHack") {
+        Some(text) => text.parse::<f32>().map_err(|e| format!("body m_depthHack {text}: {e}"))?,
+        None => BODY_DEPTH_HACK,
+    };
+    Ok(PlayerViewModels { arms, depth_hack: if decl > 0.0 { decl } else { 0.0 } })
+}
+
 /// A decl named by the md6 declaration (`locomotionDecl`, `animBasicDecl`),
 /// inherited through `inherit`.
 fn md6_decl(model: &str, key: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<String>, String> {
@@ -179,4 +220,34 @@ fn md6_decl(model: &str, key: &str, read: &mut impl FnMut(&str) -> Result<Option
         path = format!("generated/decls/md6def/{}.md6.decl", parent.trim_matches('"').trim_end_matches(".md6"));
     }
     Err(format!("{model}: md6 inheritance exceeds 16"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arm_models_come_from_the_part_entity_defs() {
+        let read = |path: &str| -> Result<Option<String>, String> {
+            Ok(match path {
+                "generated/decls/entitydef/models/characters/player/base/left_arm.def.decl" => {
+                    Some("{ edit = { renderModelInfo = { noShadows = true; } } }".into())
+                }
+                "generated/decls/entitydef/models/characters/player/corvo/left_arm.def.decl" => Some(
+                    "{ inherit = \"models/characters/player/base/left_arm.def\"; edit = { renderModelInfo = { model = \"models/characters/player/corvo/left_arm.md6\"; m_castShadows = false; } } }".into(),
+                ),
+                _ => None,
+            })
+        };
+        let body = super::super::parse_declaration(
+            "{ m_leftArm = { m_entity = \"models/characters/player/corvo/left_arm.def\"; m_bindTag = \"left_arm_attach_tag\"; } m_rightArm = { m_bindTag = \"right_arm_attach_tag\"; } }",
+        )
+        .unwrap();
+        let view = player_view_models(&body, read).unwrap();
+        assert_eq!(view.arms, [Some("models/characters/player/corvo/left_arm.md6".into()), None]);
+        // An unauthored m_depthHack keeps the constructor's 5.0.
+        assert_eq!(view.depth_hack, 5.0);
+        let zero = super::super::parse_declaration("{ m_depthHack = 0; }").unwrap();
+        assert_eq!(player_view_models(&zero, read).unwrap().depth_hack, 0.0);
+    }
 }

@@ -402,15 +402,7 @@ pub(super) fn rest_skinning(
         .filter(|name| !name.is_empty())
         .or_else(|| (!model.skeleton_name.is_empty()).then_some(model.skeleton_name.as_str()))
         .ok_or("MD6 init has no actual skeleton binding")?;
-    let stem = name
-        .strip_suffix(".md6skl")
-        .ok_or("unsupported skeleton resource suffix")?;
-    let path = format!("generated/skeleton/{stem}.edgeskl");
-    let bytes = catalog
-        .read(&path)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("skeleton {path} is absent"))?;
-    let skeleton = edge_skeleton::parse(&bytes)?;
+    let skeleton = read_skeleton(catalog, name)?;
     let root = edge_skeleton::JointRestPose {
         rotation: [0.0, 0.0, 0.0, 1.0],
         translation: binding
@@ -439,6 +431,22 @@ pub(super) fn rest_skinning(
         palette: buffers.add(ShaderBuffer::from(gpu)),
         matrices,
     }))
+}
+
+/// `generated/skeleton/<stem>.edgeskl` for an md6skl resource name.
+pub(super) fn read_skeleton(
+    catalog: &archive::Catalog,
+    name: &str,
+) -> Result<edge_skeleton::EdgeSkeleton, String> {
+    let stem = name
+        .strip_suffix(".md6skl")
+        .ok_or("unsupported skeleton resource suffix")?;
+    let path = format!("generated/skeleton/{stem}.edgeskl");
+    let bytes = catalog
+        .read(&path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("skeleton {path} is absent"))?;
+    edge_skeleton::parse(&bytes)
 }
 
 pub(super) fn retain_skin_inputs(mesh: &mut Mesh, surface: &bmd6::SurfaceInfo) {
@@ -484,22 +492,48 @@ pub(super) fn apply_rest_pose(
     placement: &entities::PlacedModel,
     world_baked: bool,
 ) -> Result<(), String> {
+    skin_surface(
+        mesh,
+        surface,
+        palette,
+        influences,
+        |p| {
+            if world_baked {
+                placed_vertex(placement, p.to_array())
+            } else {
+                game_to_view(p.to_array())
+            }
+        },
+        |v| {
+            if world_baked {
+                placed_direction(placement, v)
+            } else {
+                game_to_view(v.to_array())
+            }
+        },
+    )
+}
+
+/// CPU skinning with the installed skin VS blend: palette-weighted game-space
+/// position, normal, tangent and bitangent, then `position`/`direction` map
+/// them into the mesh's space.
+pub(super) fn skin_surface(
+    mesh: &mut Mesh,
+    surface: &bmd6::SurfaceInfo,
+    palette: &[[[f32; 4]; 3]],
+    influences: u8,
+    position: impl Fn(Vec3) -> Vec3,
+    direction: impl Fn(Vec3) -> Vec3,
+) -> Result<(), String> {
     if surface.skin_indices.len() != surface.positions.len()
         || surface.skin_weights.len() != surface.positions.len()
     {
         return Err("skin vertex streams have different lengths".into());
     }
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut tangents = Vec::new();
-    let mut bitangents = Vec::new();
-    let direction = |v| {
-        if world_baked {
-            placed_direction(placement, v)
-        } else {
-            game_to_view(v.to_array())
-        }
-    };
+    let mut positions = Vec::with_capacity(surface.positions.len());
+    let mut normals = Vec::with_capacity(surface.positions.len());
+    let mut tangents = Vec::with_capacity(surface.positions.len());
+    let mut bitangents = Vec::with_capacity(surface.positions.len());
     for i in 0..surface.positions.len() {
         let matrix = edge_skeleton::vertex_skin_matrix(
             palette,
@@ -512,11 +546,7 @@ pub(super) fn apply_rest_pose(
             Vec3::from_array(matrix.map(|r| Vec4::from_array(r).dot(v.extend(w))))
         };
         let p = transform(Vec3::from_array(surface.positions[i]), 1.0);
-        positions.push(if world_baked {
-            placed_vertex(placement, p.to_array()).to_array()
-        } else {
-            game_to_view(p.to_array()).to_array()
-        });
+        positions.push(position(p).to_array());
         let packed = surface.packed_channels[i];
         let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
         let n = transform(

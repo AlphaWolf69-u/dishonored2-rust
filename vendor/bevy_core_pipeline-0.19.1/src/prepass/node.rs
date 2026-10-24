@@ -134,6 +134,11 @@ pub fn late_prepass(
     clippy::too_many_arguments,
     reason = "render system with many view components"
 )]
+/// FUN_1402fcff0 draws models with a positive modelDepthHack with stencil
+/// reference 1 (bit 0). Only those pipelines write stencil; every other
+/// prepass pipeline ignores the reference.
+pub const MODEL_DEPTH_HACK_STENCIL_REFERENCE: u32 = 1;
+
 fn run_prepass_system(
     world: &World,
     view_entity: Entity,
@@ -208,6 +213,7 @@ fn run_prepass_system(
             &mut depth_stencil_attachment,
             viewport.as_ref(),
             chunk_size.batch_size(),
+            MODEL_DEPTH_HACK_STENCIL_REFERENCE,
         ) {
             error!("Error encountered while rendering the opaque prepass phase {err:?}");
         }
@@ -222,6 +228,7 @@ fn run_prepass_system(
                 &mut depth_stencil_attachment,
                 viewport.as_ref(),
                 chunk_size.batch_size(),
+                MODEL_DEPTH_HACK_STENCIL_REFERENCE,
             ) {
                 error!("Error encountered while rendering the alpha mask prepass phase {err:?}");
             }
@@ -243,6 +250,7 @@ fn run_prepass_system(
         {
             render_pass.set_camera_viewport(&viewport);
         }
+        render_pass.set_stencil_reference(MODEL_DEPTH_HACK_STENCIL_REFERENCE);
 
         if !opaque_prepass_phase.is_empty() {
             #[cfg(feature = "trace")]

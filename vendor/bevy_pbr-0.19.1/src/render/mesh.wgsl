@@ -100,6 +100,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     }
 #endif
     out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef DH2_MODEL_DEPTH_HACK
+    // Installed vertex programs: clip.z = dot(pos, mvpZ) * cb_modeldepthhack;
+    // X, Y and W keep the world view projection.
+    out.position.z *= vertex.model_depth_hack;
+#endif
 #ifdef DH2_DECAL
     // arkDecal: offset homogeneous Z, preserving the authored world position.
     out.position.z -= decal_zbias;

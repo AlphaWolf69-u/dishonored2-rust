@@ -137,6 +137,53 @@ pub(super) const DH2_BITANGENT: MeshVertexAttribute =
     MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
 pub(super) const DH2_NORMAL_W: MeshVertexAttribute =
     MeshVertexAttribute::new("DH2_NormalW", 0x4448_3201, VertexFormat::Float32);
+/// The render model's modelDepthHack (+0x18b8 / cb_modeldepthhack, published
+/// by FUN_14087e0a0). Every installed vertex program multiplies only clip Z by
+/// it. Bevy's per-instance record has no free slot (its tag is the probe
+/// index), so the model's value travels with its vertices. Only meshes of a
+/// model with a positive hack carry the attribute.
+pub(super) const DH2_MODEL_DEPTH_HACK: MeshVertexAttribute =
+    MeshVertexAttribute::new("DH2_ModelDepthHack", 0x4448_3202, VertexFormat::Float32);
+
+/// Depth-hacked models scale clip Z in the depth prepass and forward vertex
+/// programs. In the prepass, FUN_1402fcff0's per-model partition
+/// (`main_depth_surface_state`) also writes stencil bit 0 with reference 1;
+/// the prepass binds that reference for the whole pass, which leaves every
+/// pipeline without stencil writes unchanged.
+pub(super) fn specialize_model_depth_hack(
+    descriptor: &mut RenderPipelineDescriptor,
+    layout: &MeshVertexBufferLayoutRef,
+) -> Result<(), SpecializedMeshPipelineError> {
+    if !layout.0.contains(DH2_MODEL_DEPTH_HACK) {
+        return Ok(());
+    }
+    let extra = layout
+        .0
+        .get_layout(&[DH2_MODEL_DEPTH_HACK.at_shader_location(13)])?;
+    descriptor.vertex.buffers[0]
+        .attributes
+        .extend(extra.attributes);
+    descriptor
+        .vertex
+        .shader_defs
+        .push("DH2_MODEL_DEPTH_HACK".into());
+    let prepass = descriptor.vertex.shader_defs.iter().any(
+        |value| matches!(value, bevy::shader::ShaderDefVal::Bool(name, true) if name == "PREPASS_PIPELINE"),
+    );
+    if let (true, Some(depth)) = (prepass, descriptor.depth_stencil.as_mut()) {
+        // The attribute exists only for a positive hack; the partition
+        // depends on nothing else (its stencil fields replace the source's).
+        let mut source = [0; 9];
+        crate::render_state::reset_render_state(&mut source);
+        let (state, _reference) = crate::render_state::main_depth_surface_state(source, 1.0);
+        match crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(&state, depth.format)
+        {
+            Ok(partition) => depth.stencil = partition.stencil,
+            Err(error) => error!("Depth-hacked prepass keeps no stencil partition: {error}"),
+        }
+    }
+    Ok(())
+}
 
 use surface_gpu::SurfaceKey;
 
@@ -308,6 +355,7 @@ impl MaterialExtension for ProbeExtension {
         specialize_vertex_lighting(descriptor, layout, key.bind_group_data);
         specialize_surface(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)?;
+        specialize_model_depth_hack(descriptor, layout)?;
         crate::rendering::bevy_backend::vegetation_wind::specialize(
             descriptor,
             layout,

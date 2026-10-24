@@ -102,6 +102,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     }
 #endif
     out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef DH2_MODEL_DEPTH_HACK
+    // Installed vertex programs: clip.z = dot(pos, mvpZ) * cb_modeldepthhack;
+    // X, Y and W keep the world view projection.
+    out.position.z *= vertex.model_depth_hack;
+#endif
 #ifdef UNCLIPPED_DEPTH_ORTHO_EMULATION
     out.unclipped_depth = out.position.z;
     out.position.z = min(out.position.z, 1.0); // Clamp depth to avoid clipping

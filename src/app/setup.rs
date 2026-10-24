@@ -1033,6 +1033,12 @@ pub(super) fn setup(
             resolver.diffuse_image_paths.len()
         );
     }
+    if let Some(catalog) = catalog {
+        match super::player_arms::load_player_arms(catalog, &mut resolver, &mut meshes, &mut commands) {
+            Ok(arms) => commands.insert_resource(arms),
+            Err(error) => eprintln!("First-person arms unavailable: {error}"),
+        }
+    }
     let probe_sh_record_count = resolver.probe_sh_records.len().saturating_sub(1);
     commands.insert_resource(super::model_motion::ModelProbeLighting(
         resolver.probe_sh_buffer.clone(),
@@ -1202,8 +1208,10 @@ pub(super) fn setup(
             .is_some_and(|controls| controls.tighten_parallel_shadows);
     let camera_3d = {
         Camera3d {
+            // COPY_SRC: the "Depth buffer hack" pass copies view depth/stencil.
             depth_texture_usages: (bevy::render::render_resource::TextureUsages::RENDER_ATTACHMENT
-                | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING)
+                | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING
+                | bevy::render::render_resource::TextureUsages::COPY_SRC)
                 .into(),
             ..default()
         }
