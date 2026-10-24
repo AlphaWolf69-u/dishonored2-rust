@@ -122,10 +122,22 @@ pub(super) fn setup(
             &mut images,
         )
         .unwrap_or_else(|error| panic!("fog scene preparation failed: {error}"));
+        let screen_fx = super::pause_fx::load(catalog)
+            .inspect_err(|e| warn!("Pause screen FX unavailable: {e}"))
+            .ok();
+        let screen_fx_environment = screen_fx
+            .as_ref()
+            .and_then(|fx| {
+                super::pause_fx::environment_parameters(catalog, &fx.environment)
+                    .inspect_err(|e| warn!("Pause screen FX environment: {e}"))
+                    .ok()
+            });
+        commands.insert_resource(super::pause_fx::PauseScreenFx::new(screen_fx));
         let display = super::display_scene::DisplayScene::load(
             catalog,
             parameters,
             &scene.area_environments,
+            screen_fx_environment.as_ref(),
             &mut images,
         )
         .unwrap_or_else(|error| panic!("display scene preparation failed: {error}"));

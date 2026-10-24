@@ -82,6 +82,9 @@ pub enum Request {
     /// `QuitGame` (`LAB_1404f2970` -> `FUN_1404f3290(0)`): the `quit`
     /// command.
     Quit,
+    /// `EnableUIPostFX` (`FUN_140790ef0`) / `DisableUIPostFX`
+    /// (`FUN_140791370`): start or remove the screen FX.
+    ScreenFx(bool),
 }
 
 /// The movies of the pause state.
@@ -202,6 +205,8 @@ impl Pause {
                 "KillFlashFocus" => requests.push(Request::Focus(Movie::Pause, false)),
                 "ResumeGame" => requests.push(Request::Resume),
                 "QuitGame" => requests.push(Request::Quit),
+                "EnableUIPostFX" => requests.push(Request::ScreenFx(true)),
+                "DisableUIPostFX" => requests.push(Request::ScreenFx(false)),
                 // `FUN_1404630f0`, registered by OnFlashLoaded (`FUN_1407898c0`).
                 "MessageBoxRequest" => {
                     let info = crate::gameplay::message_box::Info::from_request(player, &args);

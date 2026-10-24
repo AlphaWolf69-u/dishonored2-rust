@@ -94,12 +94,15 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    accept-all-controller-inputs (`FUN_1400326a0`), and passing an AS3 data
    object between movies (the global call gets 0). `BackToMain` needs the
    main-menu state.
-7. Pause screen FX (`models/effects/gui/pause.fx`: `env/fx/ui_pause` with
-   the `gui_pause_01_cc` colour cube and DOF, `r_skipDOF 0` while paused)
-   is not applied. Open: which clock advances FX while the game clock is
-   frozen (the clock step `FUN_1408af320` does not run in the paused frame
-   `FUN_1408ad580`). Next: break on the env blend producer (21a240) during
-   pause and read its time input.
+7. Pause screen FX (`app/pause_fx.rs`): `m_screenFX` (`pause.fx`, the
+   `env/fx/ui_pause` override: pause colour cube and depth of field) starts
+   on OnEnter or `EnableUIPostFX`, advances by clock group 0's delta (kept
+   from the last game frame while the paused frame skips the clock step,
+   `FUN_1407913f0`), and is removed on OnExit or `DisableUIPostFX`; its
+   blend weights the override in 88e220's override stage (numeric values
+   base + (v - base)·w, the cube into `m_overrideColorCubes`). Open: the FX
+   render entity's time scale (`+0xf8`) is taken as 1.0 (its initializer is
+   not traced); `r_skipDOF` has no consumer in the renderer.
 8. Sound: `PostSoundEvent` and UI sound IDs (`_soundHandler.soundsList`)
    are not connected to audio.
 9. Tab focus traversal on keyDown (`FUN_141027340`) and SimpleButton states

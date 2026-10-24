@@ -18,6 +18,8 @@ pub(super) struct CameraScene {
     blur_resources: std::sync::Arc<BlurResources>,
     world: Inputs,
     areas: Vec<(String, Inputs)>,
+    /// The pause screen FX's override environment.
+    screen_fx: Option<Inputs>,
     tracks: [ParameterTrack<FloatParameter>; 33],
     controls: CameraRenderSettings,
     state: CameraSettings,
@@ -28,6 +30,7 @@ impl CameraScene {
         catalog: &Catalog,
         world: &EnvironmentRenderParameters,
         areas: &[AreaEnvironment],
+        screen_fx: Option<&EnvironmentRenderParameters>,
     ) -> Result<Self, String> {
         let empty = EnvironmentRenderParameters { layers: Vec::new() };
         let defaults = ParameterReader {
@@ -60,6 +63,7 @@ impl CameraScene {
                 .iter()
                 .map(|area| Ok((area.id.clone(), prepare(&area.parameters)?)))
                 .collect::<Result<_, String>>()?,
+            screen_fx: screen_fx.map(prepare).transpose()?,
             tracks: std::array::from_fn(|i| ParameterTrack::new(FloatParameter(values[i]))),
             controls: read_camera_render_settings()?,
             state,
@@ -72,6 +76,7 @@ impl CameraScene {
     pub(super) fn update(
         &mut self,
         areas: &[AreaEnvironment],
+        screen_fx: f32,
         position: [f32; 3],
         world_duration: f32,
         delta: f32,
@@ -109,6 +114,10 @@ impl CameraScene {
                 )
                 .0
                 .x;
+            // 88e220's override stage: base + (v - base)·w.
+            if let Some(v) = self.screen_fx.as_ref().and_then(|s| s.values[i]).filter(|_| screen_fx > 0.) {
+                values[i] += (v.x - values[i]) * screen_fx.clamp(0., 1.);
+            }
         }
         self.initialized = true;
         // This free-camera gameplay view has no optics-suppression mode. Future

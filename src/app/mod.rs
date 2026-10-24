@@ -136,6 +136,7 @@ use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rat
 mod launch;
 mod engine_keys;
 mod pause_menu;
+mod pause_fx;
 mod display_settings;
 
 /// Run the desktop application with installed game resources.

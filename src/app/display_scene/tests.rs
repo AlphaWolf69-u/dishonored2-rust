@@ -33,16 +33,16 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
         };
         let areas = crate::rendering::environment::load_area_environments(&doc, &catalog).unwrap();
         let mut images = Assets::<Image>::default();
-        let mut scene = DisplayScene::load(&catalog, &parameters, &areas, &mut images)
+        let mut scene = DisplayScene::load(&catalog, &parameters, &areas, None, &mut images)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let resident_count = images.len();
         let camera = scene.camera_effects
-            .update(&areas, [0., 0., 0.], 1., 0.016)
+            .update(&areas, 0., [0., 0., 0.], 1., 0.016)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let combine = camera.settings.combine(camera.far_clip);
         assert!(combine.far.into_iter().all(f32::is_finite), "{path}");
         let (frame, cube, weight, exposure, lens) = scene
-            .update(&areas, [0., 0., 0.], 1., 0.016, 0.0)
+            .update(&areas, 0., [0., 0., 0.], 1., 0.016, 0.0)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         assert_eq!(
             images.len(),
@@ -127,4 +127,28 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
     }
     assert!(count >= 36);
     eprintln!("{count} actual gameplay display owners / {area_count} area dictionaries prepared");
+}
+
+#[test]
+#[ignore = "requires installed archives; the pause screen FX through the display owner"]
+fn the_pause_screen_fx_overrides_depth_of_field_and_colour_cube() {
+    let catalog = Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let fx = crate::app::pause_fx::load(&catalog).unwrap();
+    let environment = crate::app::pause_fx::environment_parameters(&catalog, &fx.environment).unwrap();
+    let world = EnvironmentRenderParameters { layers: Vec::new() };
+    let mut images = Assets::<Image>::default();
+    let mut scene = DisplayScene::load(&catalog, &world, &[], Some(&environment), &mut images).unwrap();
+    let at = |scene: &mut DisplayScene, weight: f32| {
+        let camera = scene.camera_effects.update(&[], weight, [0., 0., 0.], 1., 0.).unwrap();
+        camera.settings.bokeh_size()
+    };
+    let base = at(&mut scene, 0.);
+    let half = at(&mut scene, 0.5);
+    let full = at(&mut scene, 1.);
+    // base + (2.5 - base)·w
+    assert!((full - 2.5).abs() < 1e-5, "{base} {half} {full}");
+    assert!((half - (base + (2.5 - base) * 0.5)).abs() < 1e-5, "{base} {half} {full}");
+    assert!(scene.cube_overrides(0.).is_none());
+    let overrides = scene.cube_overrides(1.).unwrap();
+    assert_eq!(overrides.weights, Vec4::new(1., 0., 0., 0.));
 }

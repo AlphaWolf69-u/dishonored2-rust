@@ -48,6 +48,7 @@ enum Event {
     Frame(FlashFrame),
     Resume,
     Quit,
+    ScreenFx(bool),
     Failed(String),
 }
 
@@ -143,6 +144,8 @@ pub struct PauseMenu {
     open: bool,
     /// The screen size the next player was last prepared for.
     prepared_for: Option<(i32, i32)>,
+    /// `DH2_DEBUG_OPEN_PAUSE_AFTER` has opened the pause state.
+    debug_opened: bool,
     /// The movie has produced a frame since it was opened: each frame then
     /// waits for its own tick's draw list.
     ready: bool,
@@ -161,7 +164,7 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        Self { commands, events, open: false, ready: false, prepared_for: None }
+        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false }
     }
 }
 
@@ -406,6 +409,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::Quit => {
                                     let _ = outbox.send(Event::Quit);
                                 }
+                                Request::ScreenFx(on) => {
+                                    let _ = outbox.send(Event::ScreenFx(on));
+                                }
                                 // The window follows the cvars (`display_settings`).
                                 Request::DisplayChanged => {}
                                 // `FUN_140033b50` / `FUN_140034360`.
@@ -458,8 +464,21 @@ pub fn update_pause_menu(
     mut paused: ResMut<GamePaused>,
     mut frame: ResMut<FlashUiFrame>,
     mut exit: MessageWriter<AppExit>,
+    mut screen_fx: Option<ResMut<super::pause_fx::PauseScreenFx>>,
 ) {
     let menu = &mut *menu;
+    // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
+    // once, that long after start (captures without keyboard input).
+    let debug_open = !menu.debug_opened
+        && std::env::var("DH2_DEBUG_OPEN_PAUSE_AFTER").ok().and_then(|v| v.parse::<f64>().ok()).is_some_and(|after| time.elapsed_secs_f64() >= after);
+    if debug_open && !menu.open {
+        menu.debug_opened = true;
+        let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
+        let _ = menu.commands.send(Command::Open { screen: pause_state::screen_size(size, size) });
+        menu.open = true;
+        menu.ready = false;
+        menu.prepared_for = None;
+    }
     for input in keys.read() {
         // Engine keyboard events do not repeat.
         if input.repeat {
@@ -545,6 +564,11 @@ pub fn update_pause_menu(
             // The `quit` command ends the application.
             Event::Quit => {
                 exit.write(AppExit::Success);
+            }
+            Event::ScreenFx(on) => {
+                if let Some(fx) = screen_fx.as_mut() {
+                    fx.requested = Some(on);
+                }
             }
             Event::Failed(e) => {
                 error!("Pause menu unavailable: {e}");

@@ -1053,7 +1053,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, stream_visible_textures)
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
-        .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls));
+        .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls))
+        .add_systems(
+            Update,
+            super::pause_fx::update_pause_screen_fx
+                .after(super::pause_menu::update_pause_menu)
+                .run_if(resource_exists::<super::pause_fx::PauseScreenFx>),
+        );
     bevy::asset::load_internal_asset!(
         app,
         PROBE_SHADER_HANDLE,

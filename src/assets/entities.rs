@@ -660,12 +660,17 @@ pub fn world_far_shadow_bounds(document: &Document) -> Result<Option<[[f32; 3]; 
     Ok(Some(bounds))
 }
 
+/// Env decl text with its escapes decoded and line breaks unified: some
+/// shipped env decls (the FX environments, e.g. `env/fx/ui_pause`) separate
+/// lines with a bare CR, which the decl lexer also treats as a line break.
 fn decode_environment_source(source: &str) -> String {
     source
         .trim_matches('"')
         .replace("\\t", "\t")
         .replace("\\n", "\n")
         .replace("\\\"", "\"")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
 
 /// idDeclEnv constructor 140017b30 initializes blendDuration to one second.
@@ -3680,4 +3685,33 @@ fn material_resource_scopes_keep_root_order_and_skip_unrelated_values() {
     let actual=material_resource_parameters(text,selected).unwrap();
     assert_eq!(actual,vec![("water/skycubemap".into(),"_defaultCube".into()),("water/causticstex".into(),"rendering/water/caustics3.dds".into()),("water/skycubemap".into(),"sky/final.dds".into())]);
     assert!(material_resource_parameters("{ water/skycubemap ipr_color(1,2,3) }",selected).is_err());
+}
+
+#[cfg(test)]
+mod line_break_tests {
+    #[test]
+    fn bare_carriage_returns_separate_render_parameters() {
+        let source = "{\r\tversion\t18\r\trenderParms {\renv/dof/settings/bokeh_size\t2.500000\renv/tonemapping/colorcube\tx.png\r\t}\r}";
+        let p = super::parse_environment_render_parameters(source);
+        assert_eq!(p, vec![("env/dof/settings/bokeh_size".to_string(), "2.500000".to_string()), ("env/tonemapping/colorcube".to_string(), "x.png".to_string())]);
+    }
+
+    #[test]
+    #[ignore = "diagnostic: requires installed game archives"]
+    fn count_env_decls_with_bare_carriage_returns() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let catalog = crate::assets::archive::Catalog::open(&base).unwrap();
+        let mut bare = Vec::new();
+        let paths: Vec<String> = catalog.paths_containing("generated/decls/env/").into_iter().filter(|p| p.ends_with(".decl")).collect();
+        for path in &paths {
+            let bytes = catalog.read(path).unwrap().unwrap();
+            if bytes.windows(2).any(|w| w[0] == b'\r' && w[1] != b'\n') {
+                bare.push(path.clone());
+            }
+        }
+        println!("{} of {} env decls use bare CR", bare.len(), paths.len());
+        for p in bare.iter().take(40) {
+            println!("  {p}");
+        }
+    }
 }
