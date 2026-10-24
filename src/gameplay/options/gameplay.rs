@@ -4,6 +4,7 @@ use super::decl;
 use super::{apply_cvar, load_cvar, read_back, Effect, Env, Kind, Result, Section, CURRENT};
 use crate::assets::entities::Value as DeclValue;
 use crate::flash::avm2::value::Value;
+use std::collections::BTreeMap;
 
 /// `ARK_GPSETTING_DIFFICULTY`.
 const DIFFICULTY: usize = 0;
@@ -77,6 +78,37 @@ const SLOT_FIELDS: [&str; VALUES] = [
     "m_mergeHealthMana",
 ];
 
+/// arkDeclDifficultyPreset's members by value index (reflection 0x143ca0840,
+/// `+0x68 + 4 * index`); 15..17 and 22 differ from the UI slot names.
+const PRESET_FIELDS: [&str; VALUES] = [
+    "m_ennemyDamage",
+    "m_ennemyPerception",
+    "m_sleepDartEfficiency",
+    "m_potionEffect",
+    "m_potionSpeed",
+    "m_searchEfficiency",
+    "m_rangedAccuracy",
+    "m_alarmCount",
+    "m_ammoQuantity",
+    "m_panicChance",
+    "m_attackFequency",
+    "m_attackSlots",
+    "m_leanVisibility",
+    "m_npcVisionHeight",
+    "m_playerStepNoise",
+    "m_manaReplenish",
+    "m_healthRegen",
+    "m_limitedLean",
+    "m_lightVisibility",
+    "m_saveModel",
+    "m_realTimeHud",
+    "m_chaseEfficiency",
+    "m_numDifficultyOption",
+    "m_mergeHealthMana",
+];
+/// `m_limitedLean`'s value index.
+const LIMITED_LEAN: usize = 17;
+
 /// The profile keys of the custom values (`FUN_140648590`), by value index.
 const CUSTOM_KEYS: [(usize, &str); 22] = [
     (0, "difficultyEnemyDamage"),
@@ -136,6 +168,9 @@ pub struct Manager {
     pub custom: [i32; VALUES],
     /// `mgr+4`.
     pub current: i32,
+    /// tweakParameters_t `m_limitedMaxHorzLeanFactor` / `m_limitedMaxVertLeanFactor`
+    /// (decl +0x25c / +0x260, ctor FUN_1406472a0: 0.5).
+    pub limited_lean_factors: [f32; 2],
 }
 
 fn slot(fields: &[(String, DeclValue)]) -> Slot {
@@ -162,7 +197,14 @@ fn level(fields: &[(String, DeclValue)], name: &str, default: i32) -> i32 {
     }
 }
 
+/// A profile key of the current campaign (`<name>_<campaignIndex:02>`).
+fn campaign_key(profile: &BTreeMap<String, String>, name: &str) -> String {
+    let campaign = profile.get("campaignIndex").map_or(0, |v| crate::platform::cvars::atoi(v));
+    format!("{name}_{campaign:02}")
+}
+
 impl Manager {
+
     pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<Manager> {
         let edit = decl::read_edit(read, "difficultymanager", "difficulty/difficultysettings.difficultymanager")?;
         let mut presets = Vec::new();
@@ -172,13 +214,14 @@ impl Manager {
             let kind = "difficultypreset";
             let p = decl::read_edit(read, kind, name)?;
             let mut values = PRESET_DEFAULTS;
-            for (i, field) in SLOT_FIELDS.iter().enumerate() {
-                if !field.is_empty() {
-                    values[i] = level(&p, field, values[i]);
-                }
+            for (i, field) in PRESET_FIELDS.iter().enumerate() {
+                values[i] = level(&p, field, values[i]);
             }
             presets.push(Preset { name: decl::string_id(&p, "m_presetName"), values });
         }
+        let parameters = decl::scope(&edit, "m_parameters").unwrap_or(&[]);
+        let limited_lean_factors =
+            [decl::float(parameters, "m_limitedMaxHorzLeanFactor", 0.5), decl::float(parameters, "m_limitedMaxVertLeanFactor", 0.5)];
         let ui = decl::scope(&edit, "m_uiInformation").unwrap_or(&[]);
         let slots = SLOT_FIELDS[..ROWS + 1]
             .iter()
@@ -191,6 +234,7 @@ impl Manager {
             slots,
             custom: PRESET_DEFAULTS,
             current: 0,
+            limited_lean_factors,
         })
     }
 
@@ -198,23 +242,27 @@ impl Manager {
     /// profile's `difficultyPresetIndex_<campaign>`, 1 when missing) and the
     /// custom values, then SetDifficulty.
     pub fn init(&mut self, env: &mut Env) {
-        let suffix = format!("_{:02}", env.profile_int("campaignIndex"));
-        let key = |name: &str| format!("{name}{suffix}");
         let override_index = env.cvar("ark_difficulty_level_override");
         let forced = env.console.cvars.list[override_index].int;
         self.current = if forced < 0 {
-            env.profile.get(&key("difficultyPresetIndex")).map_or(1, |v| crate::platform::cvars::atoi(v))
+            env.profile.get(&campaign_key(env.profile, "difficultyPresetIndex")).map_or(1, |v| crate::platform::cvars::atoi(v))
         } else {
             env.console.cvars.set_int(override_index, -1, true);
             forced
         };
+        self.read_custom(env.profile);
+        self.set_difficulty(env, self.current);
+    }
+
+    /// FUN_140648590's custom-value reads for the current preset.
+    pub fn read_custom(&mut self, profile: &BTreeMap<String, String>) {
+        let value = |name: &str| profile.get(&campaign_key(profile, name)).map_or(0, |v| crate::platform::cvars::atoi(v));
         if self.current == CUSTOM {
             for (i, name) in CUSTOM_KEYS {
-                self.custom[i] = env.profile.get(&key(name)).map_or(0, |v| crate::platform::cvars::atoi(v));
+                self.custom[i] = value(name);
             }
         }
-        self.custom[19] = env.profile.get(&key("difficultySaveModel")).map_or(0, |v| crate::platform::cvars::atoi(v));
-        self.set_difficulty(env, self.current);
+        self.custom[19] = value("difficultySaveModel");
     }
 
     /// `FUN_140648f20`. The entity attribute reset/apply (`FUN_1406491f0`,
@@ -240,6 +288,16 @@ impl Manager {
             self.preset(difficulty)[slot]
         } else {
             self.custom[slot]
+        }
+    }
+
+    /// FUN_1406481d0 / FUN_140648200: the horizontal and vertical lean
+    /// limits of `difficulty` (1 unless its `m_limitedLean` is above LVL1).
+    pub fn lean_limits(&self, difficulty: i32) -> [f32; 2] {
+        if self.preset(difficulty)[LIMITED_LEAN] != 0 {
+            self.limited_lean_factors
+        } else {
+            [1.0; 2]
         }
     }
 

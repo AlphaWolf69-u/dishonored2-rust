@@ -126,9 +126,10 @@ shadow cost. A value of `0` also selects the authored ranges.
 - The player uses the key bindings of `config/dishonored2Config.cfg` (the
   game's IN_GAME binding set; defaults from the installed `default.cfg`):
   move, jump, sprint (toggle or hold per `g_sprintToggle`), crouch toggle,
-  mouse look with `g_mouseSensitivity`, `g_invertMouseYAxis` and
-  `g_mouseSmooth`, and interact. Movement, jumping, falling, sneaking and
-  sprinting follow the game's player decls and physics.
+  lean (Q/E, LALT; toggle or hold per `g_leanToggle`), mouse look with
+  `g_mouseSensitivity`, `g_invertMouseYAxis` and `g_mouseSmooth`, and
+  interact. Movement, jumping, falling, sneaking, sprinting, sliding and
+  leaning follow the game's player decls and physics.
 - Debug views: G toggles a debug free camera (bound move actions, MOVE_UP /
   MOVE_DOWN vertically, SPRINT for speed); Home/End/PageUp/PageDown cycle
   focus targets, returning the player to the start where it has one.

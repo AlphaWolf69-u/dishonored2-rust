@@ -18,6 +18,7 @@ use crate::platform::console::Console;
 use decl::{availability, platform, widget, SectionDecl, Setting};
 use std::collections::BTreeMap;
 
+pub use gameplay::Manager as DifficultyManager;
 pub use tables::MENU_ITEMS;
 
 /// `arkOptionMenuItem_t`.

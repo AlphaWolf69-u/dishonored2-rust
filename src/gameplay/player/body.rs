@@ -1,11 +1,13 @@
 //! arkCpntPlayerBody: the DEFAULT-stage loco inputs (FUN_140777280), the
-//! body and bob loco nodes with their phase sync (FUN_140775440) and the
-//! pose the camera reads `camera_jnt` from (`animation.rs`).
+//! body and bob loco nodes with their phase sync (FUN_140775440), the lean
+//! (SetLean FUN_1407747e0, EndLean FUN_140775370, ApplyLean FUN_140776b70)
+//! and the pose the camera reads `camera_jnt` from (`animation.rs`).
 //!
 //! The jump/land camera additives (animBasic node), arms, footsteps, follow
 //! slope and the swim branch are not ported.
-use super::animation::{blend_add, wrap180, LocoNode, Pose};
+use super::animation::{blend_add, sample, wrap180, LocoNode, Pose};
 use super::camera::BodyPose;
+use super::sensors::LeanSensor;
 use super::states::LocoStances;
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::{self, JointRestPose};
@@ -37,17 +39,18 @@ impl Default for BodyDecl {
     }
 }
 
-/// The cvars the body reads: `ark_playerSmoothedLoco` and the head-bob
-/// option `ark_playerBobAmount`.
+/// The cvars the body reads (`ark_playerSmoothedLoco`, the head-bob option
+/// `ark_playerBobAmount`) and the difficulty's lean limits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     pub smoothed_loco: bool,
     pub bob_amount: f32,
+    pub lean_limits: [f32; 2],
 }
 
 impl Default for BodySettings {
     fn default() -> Self {
-        Self { smoothed_loco: true, bob_amount: 1.0 }
+        Self { smoothed_loco: true, bob_amount: 1.0, lean_limits: [1.0; 2] }
     }
 }
 
@@ -116,6 +119,46 @@ impl SmoothAngle {
     }
 }
 
+/// The body's lean (+0xe08..+0xe18) as the Leaning state sets it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lean {
+    /// m_leanLeft (+ is right), m_leanUp, m_leanBlend, m_leanBlendSpeed.
+    pub left: f32,
+    pub up: f32,
+    pub blend: f32,
+    pub blend_speed: f32,
+    /// +0xe18, not saved.
+    pub rotation_blend: f32,
+    /// The difficulty's horizontal/vertical limits (FUN_1406481d0 /
+    /// FUN_140648200), set by the host.
+    pub limits: [f32; 2],
+}
+
+impl Lean {
+    /// FUN_1407747e0.
+    pub fn set(&mut self, left: f32, up: f32, rotation_blend: f32, sensor: &mut LeanSensor) {
+        let [h, v] = self.limits;
+        self.left = left.clamp(-h, h);
+        self.up = up.clamp(0.0, v);
+        self.rotation_blend = rotation_blend;
+        self.blend = 1.0;
+        self.blend_speed = 0.0;
+        if (self.left != 0.0 || self.up != 0.0) && !sensor.enabled {
+            sensor.enable(true);
+        }
+    }
+
+    /// FUN_140775370: fade out over `duration`.
+    pub fn end(&mut self, duration: f32) {
+        if duration > 0.0 {
+            self.blend = 1.0;
+            self.blend_speed = 1.0 / duration;
+        } else {
+            *self = Self { limits: self.limits, ..Self::default() };
+        }
+    }
+}
+
 pub struct Body {
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
@@ -130,6 +173,11 @@ pub struct Body {
     pub speed: f32,
     pub angle: f32,
     bob_amount: f32,
+    pub lean: Lean,
+    /// `m_leanLeftAnimAlias` / `m_leanUpAnimAlias` clips (paused leaves of
+    /// the tree root) and the frames ApplyLean scrubs them to.
+    pub lean_clips: [Option<usize>; 2],
+    lean_frames: [f32; 2],
 }
 
 impl Body {
@@ -147,7 +195,42 @@ impl Body {
             speed: 0.0,
             angle: 0.0,
             bob_amount: 1.0,
+            lean: Lean { limits: [1.0; 2], ..Lean::default() },
+            lean_clips: [None; 2],
+            lean_frames: [0.0; 2],
         }
+    }
+
+    /// FUN_140776b70 (the body update's Lean step): scrub the lean clips and
+    /// return the world offset of the view (pp+0x110). `axis` columns are the
+    /// entity's forward, left and up.
+    pub fn apply_lean(&mut self, dt: f32, sensor: &mut LeanSensor, axis: Mat3) -> Vec3 {
+        let [h, v] = self.lean.limits;
+        let lean = &mut self.lean;
+        lean.left = lean.left.clamp(-h, h).clamp(-sensor.left_limit, sensor.right_limit);
+        lean.up = lean.up.clamp(0.0, v);
+        let w = lean.rotation_blend * lean.blend;
+        let last_frame = |clip: Option<usize>| clip.map(|c| (self.animations[c].frame_count as f32 - 1.0).max(0.0));
+        if let Some(n) = last_frame(self.lean_clips[0]) {
+            // 0.5 (0x141ab3764).
+            self.lean_frames[0] = (w * lean.left + 1.0) * n * 0.5;
+        }
+        if let Some(n) = last_frame(self.lean_clips[1]) {
+            self.lean_frames[1] = n * lean.up * lean.blend;
+        }
+        let mut lateral = -(sensor.decl.lean_amplitude * lean.left * w);
+        let mut vertical = sensor.decl.lean_up_amplitude * lean.up * lean.blend;
+        if lean.blend_speed > 0.0 {
+            lean.blend -= lean.blend_speed * dt;
+            if lean.blend <= 0.0 {
+                lean.blend = 0.0;
+                lean.blend_speed = 0.0;
+                sensor.enable(false);
+                lateral = 0.0;
+                vertical = 0.0;
+            }
+        }
+        axis.y_axis * lateral + axis.z_axis * vertical
     }
 
     /// Transition durations for the states' posture timing (FUN_140771270).
@@ -192,6 +275,8 @@ impl Body {
         self.angle = angle;
         self.speed_interpolation = (self.speed_interpolation + 4.0 * dt).min(1.0);
         self.bob_amount = settings.bob_amount.clamp(0.0, 1.0);
+        self.lean.limits = settings.lean_limits;
+
         self.phase_sync();
         let body_stance = stances.current.clone().unwrap_or_default();
         let bob_stance = stances.bob.clone().unwrap_or_else(|| body_stance.clone());
@@ -228,6 +313,15 @@ impl Body {
                 blend_add(&mut pose, &bob, self.bob_amount);
             }
         }
+        // The tree root's blendarray adds its first children last: leafLeanUp,
+        // then leafLeanLeft, both ADD_RIGHT 1.0 at their scrubbed frame.
+        for (clip, frame) in self.lean_clips.into_iter().zip(self.lean_frames).rev() {
+            if let Some(clip) = clip {
+                let animation = &self.animations[clip];
+                let layer = sample(animation, &skeleton.rest, frame / animation.frame_rate)?;
+                blend_add(&mut pose, &layer, 1.0);
+            }
+        }
         let matrices = edge_skeleton::pose_matrices(&pose.joints, &skeleton.hierarchy, &skeleton.root)?;
         Ok(BodyPose {
             positions: matrices.iter().map(|m| Vec3::new(m[0][3], m[1][3], m[2][3])).collect(),
@@ -251,6 +345,52 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lean_offset_follows_the_sensor_amplitudes_and_fades_out() {
+        use crate::gameplay::player::sensors::{LeanDecl, LeanSensor};
+        let mut sensor = LeanSensor::new(LeanDecl::default());
+        let mut lean = Lean { limits: [1.0; 2], ..Lean::default() };
+        lean.set(1.0, 0.5, 1.0, &mut sensor);
+        assert!(sensor.enabled);
+        let skeleton = BodySkeleton {
+            rest: Vec::new(),
+            hierarchy: Vec::new(),
+            parents: Vec::new(),
+            root: JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3], scale: [1.0; 3] },
+            camera: 0,
+            controls: [0; 3],
+        };
+        let empty = || LocoNode::new(Default::default());
+        let mut body = Body::new(skeleton, Vec::new(), BodyDecl::default(), empty(), empty());
+        body.lean = lean;
+        // Right (+1) moves the view along -left by the 0.8 amplitude; up by
+        // 0.35 * up.
+        let offset = body.apply_lean(0.0, &mut sensor, Mat3::IDENTITY);
+        assert!(offset.distance(Vec3::new(0.0, -0.8, 0.175)) < 1e-6, "{offset:?}");
+        body.lean.end(0.3);
+        let offset = body.apply_lean(0.15, &mut sensor, Mat3::IDENTITY);
+        assert!(offset.distance(Vec3::new(0.0, -0.8, 0.175)) < 1e-6, "{offset:?}");
+        assert!((body.lean.blend - 0.5).abs() < 1e-6);
+        let offset = body.apply_lean(0.1, &mut sensor, Mat3::IDENTITY);
+        assert!(offset.distance(Vec3::new(0.0, -0.4, 0.0875)) < 1e-6, "{offset:?}");
+        let offset = body.apply_lean(0.2, &mut sensor, Mat3::IDENTITY);
+        assert_eq!(offset, Vec3::ZERO);
+        assert!(!sensor.enabled && body.lean.blend == 0.0);
+    }
+
+    #[test]
+    fn lean_is_clamped_by_the_sensor_limits() {
+        use crate::gameplay::player::sensors::{LeanDecl, LeanSensor};
+        let mut sensor = LeanSensor::new(LeanDecl::default());
+        sensor.right_limit = 0.25;
+        let mut lean = 0.2;
+        assert!(sensor.clamp(&mut lean) && lean == 0.2);
+        lean = 0.25;
+        assert!(!sensor.clamp(&mut lean) && lean == 0.25);
+        lean = -1.5;
+        assert!(!sensor.clamp(&mut lean) && lean == -1.0);
+    }
 
     #[test]
     fn smoother_converges_to_a_constant_input() {

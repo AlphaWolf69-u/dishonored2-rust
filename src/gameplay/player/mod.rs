@@ -21,7 +21,7 @@ use camera::{BodyPose, PlayerCamera, View};
 use character_proxy::PlayerWorld;
 use controller::{ActionEvent, Controller, LookSettings};
 use physics::{MotionInput, PlayerPhysics};
-use sensors::AutoCrouchSensor;
+use sensors::{AutoCrouchSensor, LeanSensor};
 use states::{Attributes, Frame, LocoStances, MotionRequests, StateId, StateMachine};
 
 pub struct Player {
@@ -35,7 +35,9 @@ pub struct Player {
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
     pub autocrouch: AutoCrouchSensor,
-    /// `ark_playerSmoothedLoco` / `ark_playerBobAmount`, set by the host.
+    pub lean_sensor: LeanSensor,
+    /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
+    /// lean limits, set by the host.
     pub body_settings: body::BodySettings,
     requests: MotionRequests,
 }
@@ -51,6 +53,7 @@ pub struct PlayerSetup {
     pub attributes: Attributes,
     pub body: Body,
     pub autocrouch: sensors::AutoCrouchDecl,
+    pub lean: sensors::LeanDecl,
     pub slipping: controller::SlippingThresholds,
 }
 
@@ -74,6 +77,7 @@ impl Player {
             body: setup.body,
             pose,
             autocrouch,
+            lean_sensor: LeanSensor::new(setup.lean),
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -89,6 +93,7 @@ impl Player {
         self.physics.update_queries(world);
         let sliding = self.machine.is_active(StateId::SLIDING);
         self.autocrouch.update(world, &self.physics, self.requests.linear_priority0, dt, sliding);
+        self.lean_sensor.update(world, self.camera.eye, self.physics.position(), self.physics.axis());
         self.controller.think(settings, frame_delta);
         self.requests = MotionRequests::default();
         let origin = self.physics.position();
@@ -111,6 +116,11 @@ impl Player {
                     attributes: &self.attributes,
                     sprint_toggle: settings.sprint_toggle,
                     look_stick_sensitivity: settings.look_stick_sensitivity,
+                    lean: &mut self.body.lean,
+                    lean_sensor: &mut self.lean_sensor,
+                    lean_toggle: settings.lean_toggle,
+                    // The host reads keyboard and mouse only.
+                    keyboard: true,
                 }
             };
         }
@@ -122,6 +132,8 @@ impl Player {
         let jumping = self.machine.is_active(StateId::JUMPING);
         let input_velocity = self.physics.input_velocity();
         self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), jumping, self.body_settings);
+        self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
+
         if dt != 0.0 {
             self.camera.update_pitch(dt, self.controller.input_look.x, self.controller.look_is_analog, &self.physics);
             let speed_state = self.machine.is_active(StateId::SPRINTING)

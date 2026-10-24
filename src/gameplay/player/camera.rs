@@ -77,12 +77,17 @@ impl BodyPose {
     /// about the body's left axis by their share of the pitch (positive pitch
     /// looks down); returns camera_jnt's model-space position and rotation.
     pub fn camera_with_pitch(&self, pitch: f32, forward_ratios: [f32; 3], backward_ratios: [f32; 3]) -> (Vec3, Mat3) {
+        self.joint_with_pitch(self.camera, pitch, forward_ratios, backward_ratios)
+    }
+
+    /// `joint`'s model-space position and rotation under the joint control.
+    pub fn joint_with_pitch(&self, joint: usize, pitch: f32, forward_ratios: [f32; 3], backward_ratios: [f32; 3]) -> (Vec3, Mat3) {
         let ratios = if pitch > 0.0 { forward_ratios } else { backward_ratios };
-        let mut position = self.positions[self.camera];
-        let mut rotation = self.rotations[self.camera];
+        let mut position = self.positions[joint];
+        let mut rotation = self.rotations[joint];
         // Arms (spine03) first, then neck, then head, each in model space.
         for (control, ratio) in [(self.controls[2], ratios[2]), (self.controls[1], ratios[1]), (self.controls[0], ratios[0])] {
-            if !self.descends_from(self.camera, control) {
+            if !self.descends_from(joint, control) {
                 continue;
             }
             let pivot = self.positions[control];
@@ -107,6 +112,8 @@ pub struct PlayerCamera {
     /// cam+0x2547c, degrees.
     pub fov: f32,
     out_of_shape: bool,
+    /// +0x2527c: the gameplay eye FUN_1407f4b30 writes after the view.
+    pub eye: Vec3,
 }
 
 pub struct View {
@@ -127,6 +134,7 @@ impl PlayerCamera {
             turn,
             fov: base_fov,
             out_of_shape: false,
+            eye: Vec3::ZERO,
         }
     }
 
@@ -160,8 +168,9 @@ impl PlayerCamera {
     pub fn view(&mut self, pose: &BodyPose, physics: &PlayerPhysics, allow_out_of_shape: bool) -> View {
         let (local, local_rotation) = pose.camera_with_pitch(self.pitch, self.decl.forward_ratios, self.decl.backward_ratios);
         let axis = physics.axis();
-        let base = physics.position();
-        let mut origin = base + axis * local;
+        let position = physics.position();
+        let base = position + physics.lean_offset;
+        let mut origin = position + axis * local;
         let mut delta = origin - base;
         // 0.05 (DAT_141ab3814).
         let radius = physics.active_shape().radius - 0.05;
@@ -178,11 +187,24 @@ impl PlayerCamera {
             delta.z = height;
             out = true;
         }
+        let mut from_joint = true;
         if !allow_out_of_shape && !self.out_of_shape && out {
             origin = base + delta;
             out = false;
+            from_joint = false;
         }
         self.out_of_shape = out;
+        // FUN_1407f4b30: from the head joint along the entity's forward
+        // pitched about its left (the yaw offset is 0 outside the
+        // constrained modes); the clamped view itself otherwise.
+        self.eye = if from_joint {
+            let (head, _) = pose.joint_with_pitch(pose.controls[0], self.pitch, self.decl.forward_ratios, self.decl.backward_ratios);
+            let head = position + axis * head;
+            let forward = Quat::from_axis_angle(axis.y_axis, self.pitch) * axis.x_axis;
+            head + forward * origin.distance(head)
+        } else {
+            origin
+        };
         View { origin, axis: axis * local_rotation }
     }
 }

@@ -1,18 +1,20 @@
 //! arkCpntPlayerStateMachine (vtable 0x141c73d58) with the locomotion states
 //! Running, Sneaking, Sprinting, Sliding, Slipping, AutoCrouch, Jumping and
 //! Falling (arkPlayerStateNavigation 0x141c3f198 and subclasses; InAir
-//! 0x141c7b238 is the base of Jumping and Falling).
+//! 0x141c7b238 is the base of Jumping and Falling), and Leaning (vtable
+//! 0x141c82b28), which runs beside them.
 //!
 //! Command processing follows FUN_140804850 and the rule table FUN_1408644e0
 //! plus the mode's `m_rules`. States the port does not implement (mantle,
-//! vault, wallcrouch, catfall, leaning, actions and powers) are "missing"
+//! vault, wallcrouch, catfall, actions and powers) are "missing"
 //! from the mode, so requests for them are rejected as the game rejects a
 //! state its mode lacks. Footsteps, fall damage, stats, slide slow-time,
 //! shoves, breakables and camera constraint modes are not ported.
+use super::body::Lean;
 use super::character_proxy::{PlayerWorld, SupportState};
-use super::controller::{Controller, ACTION_JUMP};
+use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
-use super::sensors::AutoCrouchSensor;
+use super::sensors::{AutoCrouchSensor, LeanSensor};
 use super::shape::{POSTURE_AUTOCROUCHING, POSTURE_KEEP_PREVIOUS, POSTURE_SLIDING, POSTURE_SNEAKING, POSTURE_STANDING};
 use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
@@ -32,6 +34,7 @@ impl StateId {
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
     pub const WALLCROUCH: Self = Self(11);
+    pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const NULL: Self = Self(91);
     pub const ANY: Self = Self(92);
@@ -195,6 +198,55 @@ impl Default for SlippingDecl {
     }
 }
 
+/// arkDeclPlayerStateLeaning (ctor FUN_14085d010). Durations are seconds;
+/// buttons are eActions_t. The start/stop sounds and HUD labels are not
+/// ported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeaningDecl {
+    pub lean_speed_gamepad: f32,
+    pub lean_speed_keyboard: f32,
+    pub lean_up_speed_gamepad: f32,
+    pub lean_up_speed_keyboard: f32,
+    pub maximum_linear_speed: f32,
+    /// Degrees.
+    pub minimum_rotation_angle: f32,
+    pub maximum_rotation_angle: f32,
+    pub recenter_threshold: f32,
+    pub dead_zone_inner_radius: f32,
+    pub dead_zone_outer_radius: f32,
+    pub recenter_delay: f32,
+    pub exit_delay: f32,
+    pub blend_duration: f32,
+    pub lean_left_button: i32,
+    pub lean_right_button: i32,
+    pub lean_up_button: i32,
+    pub lean_down_button: i32,
+}
+
+impl Default for LeaningDecl {
+    fn default() -> Self {
+        Self {
+            lean_speed_gamepad: 3.5,
+            lean_speed_keyboard: 3.5,
+            lean_up_speed_gamepad: 2.5,
+            lean_up_speed_keyboard: 2.5,
+            maximum_linear_speed: 1.5,
+            minimum_rotation_angle: 25.0,
+            maximum_rotation_angle: 60.0,
+            recenter_threshold: 0.1,
+            dead_zone_inner_radius: 0.25,
+            dead_zone_outer_radius: 1.0,
+            recenter_delay: 0.1,
+            exit_delay: 0.1,
+            blend_duration: 0.45,
+            lean_left_button: ACTION_LEAN_LEFT,
+            lean_right_button: ACTION_LEAN_RIGHT,
+            lean_up_button: ACTION_MOVE_FORWARD,
+            lean_down_button: ACTION_MOVE_BACKWARD,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Running,
@@ -205,6 +257,7 @@ pub enum Kind {
     AutoCrouch,
     Jumping(JumpingDecl),
     Falling(FallingDecl),
+    Leaning(LeaningDecl),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -263,6 +316,11 @@ impl StateDecl {
                 flags.locked_body_parts = BODY;
                 navigation.posture = POSTURE_KEEP_PREVIOUS;
                 (StateId::FALLING, 0.1)
+            }
+            Kind::Leaning(_) => {
+                // Not a navigation state: no body parts, allowSelf.
+                flags = StateFlags { primary: false, body_parts: 0, exclusive_body_parts: 0, allow_self: true, ..flags };
+                (StateId::LEANING, 0.0)
             }
         };
         Self { id, flags, navigation, air_friction, kind }
@@ -372,6 +430,11 @@ pub struct Frame<'a> {
     pub attributes: &'a Attributes,
     pub sprint_toggle: bool,
     pub look_stick_sensitivity: [f32; 2],
+    pub lean: &'a mut Lean,
+    pub lean_sensor: &'a mut LeanSensor,
+    pub lean_toggle: bool,
+    /// `!lastInputWasGamepad` (inputMgr+0xa544, FUN_140039d50).
+    pub keyboard: bool,
 }
 
 /// Player attribute base values (`attributes_player.cpntattributesplayer`).
@@ -451,6 +514,51 @@ struct Slide {
     want_jump: bool,
 }
 
+/// arkPlayerStateLeaning +0x34..+0x58 (sounds and the save flag aside).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Leaning {
+    up_enabled: bool,
+    under_control: bool,
+    left_input: f32,
+    up_input: f32,
+    left: f32,
+    up: f32,
+    forward: Vec3,
+    rotation_blend: f32,
+    recenter_timer: f32,
+    exit_timer: f32,
+}
+
+/// FUN_14085d380.
+fn dead_zone(value: f32, decl: &LeaningDecl) -> f32 {
+    let sign = if value > 0.0 { 1.0 } else if value < 0.0 { -1.0 } else { 0.0 };
+    let a = value.abs();
+    let (inner, outer) = (decl.dead_zone_inner_radius, decl.dead_zone_outer_radius);
+    if inner >= outer {
+        sign * a
+    } else if a <= inner {
+        0.0
+    } else if a >= outer {
+        sign
+    } else {
+        sign * (a - inner) / (outer - inner)
+    }
+}
+
+fn horizontal_unit(v: Vec3) -> Vec3 {
+    let h = Vec3::new(v.x, v.y, 0.0);
+    h / h.length_squared().max(f32::MIN_POSITIVE).sqrt()
+}
+
+/// The latch of the strongest input in one direction.
+fn latch(input: f32, target: f32) -> f32 {
+    if input * target > 0.0 {
+        if target < 0.0 { input.min(target) } else { input.max(target) }
+    } else {
+        target
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub decl: StateDecl,
@@ -466,6 +574,7 @@ pub struct State {
     slipping_sneaking: bool,
     first_frame: bool,
     sprinting_button_down: bool,
+    leaning: Leaning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -540,6 +649,7 @@ impl StateMachine {
                 slipping_sneaking: false,
                 first_frame: false,
                 sprinting_button_down: false,
+                leaning: Leaning::default(),
             })
             .collect();
         let mut rules = HashMap::new();
@@ -667,6 +777,8 @@ impl StateMachine {
                     && !slip_moving
             }
             Kind::Falling(_) => true,
+            // FUN_14085d9a0: the base body-part test passes with no parts.
+            Kind::Leaning(_) => physics.near_ground(),
         }
     }
 
@@ -917,6 +1029,25 @@ impl StateMachine {
     fn activate(&mut self, index: usize, slide_speed: Option<f32>, frame: &mut Frame) {
         self.states[index].active = true;
         let decl = self.states[index].decl.clone();
+        if let Kind::Leaning(leaning) = decl.kind {
+            // FUN_14085d170: continue from the body's (possibly fading) lean.
+            let lean = &*frame.lean;
+            let state = Leaning {
+                up_enabled: true,
+                under_control: false,
+                left_input: 0.0,
+                up_input: 0.0,
+                left: lean.left * lean.blend * lean.rotation_blend,
+                up: lean.up * lean.blend,
+                forward: horizontal_unit(frame.axis.x_axis),
+                rotation_blend: 1.0,
+                recenter_timer: leaning.recenter_delay,
+                exit_timer: leaning.exit_delay,
+            };
+            frame.lean.set(state.left, state.up, 1.0, frame.lean_sensor);
+            self.states[index].leaning = state;
+            return;
+        }
         // Navigation Activate FUN_1408686e0.
         frame.physics.ground_query_length = decl.navigation.max_ground_distance;
         // FUN_140869500 (crush test not ported).
@@ -995,6 +1126,8 @@ impl StateMachine {
                 self.activate_in_air(index, frame);
                 self.states[index].fall.last_origin = frame.origin;
             }
+            // Activated above, without the navigation base.
+            Kind::Leaning(_) => {}
         }
     }
 
@@ -1048,6 +1181,11 @@ impl StateMachine {
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
         self.states[index].active = false;
+        if let Kind::Leaning(leaning) = self.states[index].decl.kind {
+            // FUN_14085d490.
+            frame.lean.end(leaning.blend_duration);
+            return;
+        }
         // Navigation Deactivate FUN_140868d70.
         frame.body.max_speeds = [UNSET; 4];
         match self.states[index].decl.kind {
@@ -1146,8 +1284,155 @@ impl StateMachine {
                 self.in_air_update(index, frame);
                 self.falling_update(index, &decl, frame);
             }
+            Kind::Leaning(decl) => self.leaning_update(index, &decl, frame),
         }
     }
+
+    /// Leaning Update FUN_14085dcc0.
+    fn leaning_update(&mut self, index: usize, decl: &LeaningDecl, frame: &mut Frame) {
+        let id = self.states[index].decl.id;
+        let dt = frame.dt;
+        let controller = &*frame.controller;
+        let (mut forward, mut lateral) = (controller.input_move.x, controller.input_move.y);
+        if forward.abs() <= lateral.abs() {
+            forward = 0.0;
+        } else {
+            lateral = 0.0;
+        }
+        let lean_button = controller.lean_action;
+        let (left_down, right_down) = (controller.down(decl.lean_left_button), controller.down(decl.lean_right_button));
+        let lean_down = controller.down(lean_button);
+        let any_held = lean_down || left_down || right_down;
+        let (up_down, down_down) = (controller.down(decl.lean_up_button), controller.down(decl.lean_down_button));
+        let mut st = self.states[index].leaning;
+        let up_allowed0 = st.up_enabled
+            && !frame.physics.ceiling_blocks(frame.lean_sensor.decl.lean_up_amplitude)
+            && !self.is_active(StateId::AUTOCROUCH);
+        let (dz_up, dz_right) = (dead_zone(forward, decl), dead_zone(-lateral, decl));
+        let keyboard = frame.keyboard;
+        let hold_mode = keyboard && !frame.lean_toggle;
+        let (up_allowed, want_left, want_right, want_up, want_down) = if hold_mode {
+            // Holding only LEAN recenters a lateral lean.
+            let recent_left = st.left > 0.0 && !right_down && !left_down;
+            let recent_right = st.left < 0.0 && !right_down && !left_down;
+            (up_allowed0, (any_held && left_down) || recent_left, (any_held && right_down) || recent_right, up_allowed0 && lean_down, up_allowed0 && !lean_down)
+        } else {
+            let up_allowed = any_held && up_allowed0;
+            (up_allowed, any_held && left_down, any_held && right_down, up_allowed && up_down, up_allowed && down_down)
+        };
+        // Exit on speed or on turning away from the activation forward.
+        let c = horizontal_unit(frame.axis.x_axis).dot(st.forward);
+        let angle = if c > -1.0 { if c < 1.0 { c.acos() } else { 0.0 } } else { std::f32::consts::PI } * 57.29578;
+        let leaving = decl.maximum_linear_speed * decl.maximum_linear_speed < frame.velocity.x * frame.velocity.x + frame.velocity.y * frame.velocity.y
+            || decl.maximum_rotation_angle <= angle;
+        let mut check_exit = true;
+        if !hold_mode {
+            if any_held {
+                // The keys or the stick drive the lean, not the legs.
+                frame.requests.push_linear(2, Vec3::ZERO);
+                st.exit_timer = decl.exit_delay;
+                check_exit = false;
+            }
+        } else if !any_held {
+            self.quit(id);
+            self.states[index].leaning = st;
+            return;
+        }
+        if check_exit {
+            if leaving {
+                let t = st.exit_timer;
+                st.exit_timer -= dt;
+                if t < 0.0 {
+                    self.quit(id);
+                    self.states[index].leaning = st;
+                    return;
+                }
+            } else {
+                st.exit_timer = decl.exit_delay;
+            }
+        }
+        let (mut target_left, mut target_up) = if !keyboard {
+            (dz_right, if up_allowed { dz_up } else { 0.0 })
+        } else {
+            let left = if want_left { -1.0 } else { 0.0 } + if want_right { 1.0 } else { 0.0 };
+            let up = if up_allowed { want_up as i32 as f32 - want_down as i32 as f32 } else { 0.0 };
+            (left, up)
+        };
+        let lean = &*frame.lean;
+        let current_left = if st.rotation_blend > 0.0 { lean.blend * lean.left * lean.rotation_blend } else { 0.0 };
+        let current_up = lean.blend * lean.up;
+        // Reversing goes to the full opposite input.
+        if current_left > 0.0 && target_left < 0.0 {
+            target_left = -1.0;
+        } else if current_left < 0.0 && target_left > 0.0 {
+            target_left = 1.0;
+        }
+        if current_up > 0.0 && target_up < 0.0 {
+            target_up = -1.0;
+        }
+        if target_left != 0.0 {
+            st.left_input = latch(st.left_input, target_left);
+        }
+        if target_up != 0.0 {
+            st.up_input = latch(st.up_input, target_up);
+        }
+        let has_input = st.left_input != 0.0 || st.up_input != 0.0;
+        st.under_control |= has_input;
+        let rotation = ((angle - decl.minimum_rotation_angle) / (decl.maximum_rotation_angle - decl.minimum_rotation_angle)).clamp(0.0, 1.0);
+        st.rotation_blend = st.rotation_blend.min(1.0 - rotation);
+        let mut step_left = dt * if keyboard { decl.lean_speed_keyboard } else { decl.lean_speed_gamepad };
+        let mut step_up = dt * if keyboard { decl.lean_up_speed_keyboard } else { decl.lean_up_speed_gamepad };
+        let (mut new_left, new_up);
+        let threshold = decl.recenter_threshold;
+        if !st.under_control || (!has_input && current_up * current_up + current_left * current_left < threshold * threshold) {
+            // Recenter, from 0.1 s after Activate (the timer is never reset).
+            new_left = current_left;
+            let mut up = current_up;
+            if st.recenter_timer <= 0.0 {
+                if st.left_input != 0.0 {
+                    step_left *= st.left_input.abs();
+                }
+                new_left = if current_left > step_left {
+                    current_left - step_left
+                } else if current_left >= -step_left {
+                    st.left_input = 0.0;
+                    0.0
+                } else {
+                    current_left + step_left
+                };
+                if st.up_input != 0.0 {
+                    step_up *= st.up_input.abs();
+                }
+                up = if current_up > step_up {
+                    current_up - step_up
+                } else {
+                    st.up_input = 0.0;
+                    0.0
+                };
+                if new_left == 0.0 && up == 0.0 && !any_held {
+                    self.quit(id);
+                }
+            }
+            new_up = up;
+        } else {
+            new_left = current_left + step_left * st.left_input;
+            if !frame.lean_sensor.clamp(&mut new_left) {
+                st.left_input = 0.0;
+            }
+            new_up = (current_up + step_up * st.up_input).clamp(0.0, 1.0);
+        }
+        // Crossing the centre stops there.
+        if (st.left < 0.0 && new_left > 0.0) || (st.left > 0.0 && new_left < 0.0) {
+            st.left_input = 0.0;
+            new_left = 0.0;
+        }
+        st.recenter_timer -= dt;
+        st.left = new_left;
+        st.up = new_up;
+        frame.lean.set(new_left, new_up, st.rotation_blend, frame.lean_sensor);
+        self.states[index].leaning = st;
+    }
+
 
     /// Sliding Update FUN_14086ef50 (wallcrouch, vault and slow-time are not
     /// ported).
