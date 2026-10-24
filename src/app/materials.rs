@@ -136,14 +136,14 @@ pub(super) struct ProbeExtension {
 pub(super) const DH2_BITANGENT: MeshVertexAttribute =
     MeshVertexAttribute::new("DH2_Bitangent", 0x4448_3200, VertexFormat::Float32x3);
 pub(super) const DH2_NORMAL_W: MeshVertexAttribute =
-    MeshVertexAttribute::new("DH2_NormalW", 0x4448_3201, VertexFormat::Float32);
+    MeshVertexAttribute::new("DH2_NormalW", 0x4448_3205, VertexFormat::Float32);
 /// The render model's modelDepthHack (+0x18b8 / cb_modeldepthhack, published
 /// by FUN_14087e0a0). Every installed vertex program multiplies only clip Z by
 /// it. Bevy's per-instance record has no free slot (its tag is the probe
 /// index), so the model's value travels with its vertices. Only meshes of a
 /// model with a positive hack carry the attribute.
 pub(super) const DH2_MODEL_DEPTH_HACK: MeshVertexAttribute =
-    MeshVertexAttribute::new("DH2_ModelDepthHack", 0x4448_3202, VertexFormat::Float32);
+    MeshVertexAttribute::new("DH2_ModelDepthHack", 0x4448_3206, VertexFormat::Float32);
 
 /// Depth-hacked models scale clip Z in the depth prepass and forward vertex
 /// programs. In the prepass, FUN_1402fcff0's per-model partition
