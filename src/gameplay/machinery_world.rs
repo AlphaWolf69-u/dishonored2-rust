@@ -333,6 +333,11 @@ struct Joint {
     previous_limit_angle: f32,
     previous_friction_value: f32,
 }
+#[derive(Clone, Copy)]
+enum SolveSlot {
+    Atom(usize),
+    Hinge(usize),
+}
 struct JointRows {
     angular: [AngularLockRow; 2],
     motor: Option<AngularMotorRow>,
@@ -362,6 +367,10 @@ pub struct MachineryWorld {
     pub systems: Vec<SystemState>,
     joints: Vec<Joint>,
     atom_joints: Vec<atoms::AtomJoint>,
+    /// Constraints in creation order: 1412a3480 lists the constraint array
+    /// in index order and 1412a5ae0's stable radix sort only groups it by
+    /// island, so coupled constraints solve in the order they were added.
+    solve_order: Vec<SolveSlot>,
     rows: Vec<Option<JointRows>>,
     velocities: Vec<SolverVelocities>,
     /// hknpWorld +0x818 clear: no motion checks, sleep or activation modes.
@@ -455,6 +464,10 @@ impl MachineryWorld {
                     w * bw - ((y * by + x * bx) + z * bz),
                 ];
                 let motion = BodyMotion::from_mass_frame(body.mass, orientation, translation);
+                // 14076b6c0 -> 140c9b620 -> 140c8e930 adds the bodies inactive only
+                // for a paused component (state +0x1c bits 4-5 >= 2, set by the
+                // pause path 1407e75b0); at spawn the entity LOD is 0, so they start
+                // active.
                 let mut created = MachineryBody::new(None, motion, 0.);
                 created.entity_placement = (k == 0).then_some(system.placement);
                 created.group = group;
@@ -466,6 +479,7 @@ impl MachineryWorld {
                 world.bodies.push(created);
             }
             for constraint in &system.system.constraints {
+                world.solve_order.push(SolveSlot::Atom(world.atom_joints.len()));
                 world.atom_joints.push(atoms::AtomJoint::new(
                     members[constraint.body_a],
                     members[constraint.body_b],
@@ -503,6 +517,7 @@ impl MachineryWorld {
                 // resolved body IDs are equal, including two missing owners.
                 if a != b && joint.angular_constraint == "ANGULAR_CONSTRAINT_CONE" {
                     let stack = atoms::cone_stack(joint, &world.bodies[a], &world.bodies[b]);
+                    world.solve_order.push(SolveSlot::Atom(world.atom_joints.len()));
                     world.atom_joints.push(atoms::AtomJoint::new(a, b, stack, true));
                 } else if a != b {
                     world.add_joint(joint.clone(), a, b)?;
@@ -572,6 +587,7 @@ impl MachineryWorld {
         // initialize to the actual relative constraint frame before first step.
         let mut measurement = AngularMotorHistory::default();
         measurement.measure(frame, frame, xyz(local_a[settings.angular_axis]), 1., 1.);
+        self.solve_order.push(SolveSlot::Hinge(self.joints.len()));
         self.joints.push(Joint {
             settings,
             motor_suspended: false,
@@ -1108,54 +1124,15 @@ impl MachineryWorld {
         }
         for substep in 0..step.substeps {
             let phase = step.phase(substep, 0);
-            for joint in &mut self.atom_joints {
-                joint.solve(&mut self.velocities, &step);
-            }
-            for (joint, rows) in self.joints.iter().zip(&mut self.rows) {
-                let Some(rows) = rows else {
-                    continue;
-                };
-                let mut a = self.velocities[joint.a];
-                let mut b = self.velocities[joint.b];
-                let mut angular_a = AngularVelocityAccumulator {
-                    current: xyz(a.angular),
-                    initial: xyz(a.initial_angular),
-                    inverse_inertia: xyz(a.inverse_mass),
-                };
-                let mut angular_b = AngularVelocityAccumulator {
-                    current: xyz(b.angular),
-                    initial: xyz(b.initial_angular),
-                    inverse_inertia: xyz(b.inverse_mass),
-                };
-                if let Some(row) = rows.motor {
-                    rows.motor_scale = row.solve(
-                        &mut angular_a,
-                        &mut angular_b,
-                        step.velocity_scale,
-                        phase.velocity_fraction,
-                    )[1];
+            for slot in &self.solve_order {
+                match *slot {
+                    SolveSlot::Atom(i) => self.atom_joints[i].solve(&mut self.velocities, &step),
+                    SolveSlot::Hinge(i) => {
+                        if let Some(rows) = &mut self.rows[i] {
+                            solve_hinge(&self.joints[i], rows, &mut self.velocities, &step, phase.velocity_fraction);
+                        }
+                    }
                 }
-                if let Some(row) = rows.friction {
-                    rows.friction_scale = row.solve(&mut angular_a, &mut angular_b)[1];
-                }
-                if let Some(row) = rows.limit {
-                    row.solve(
-                        &mut angular_a,
-                        &mut angular_b,
-                        step.velocity_scale,
-                        step.substep_seconds,
-                        &mut rows.limit_impulse,
-                    );
-                }
-                for row in rows.angular {
-                    row.solve(&mut angular_a, &mut angular_b);
-                }
-                a.angular = vector(angular_a.current);
-                b.angular = vector(angular_b.current);
-                rows.pivot
-                    .solve(&mut a, &mut b, step.substep_seconds, step.velocity_scale);
-                self.velocities[joint.a] = a;
-                self.velocities[joint.b] = b;
             }
             if substep + 1 < step.substeps {
                 for (body, velocity) in self.bodies.iter().zip(&mut self.velocities) {
@@ -1273,6 +1250,58 @@ impl MachineryWorld {
         }
     }
 }
+/// One substep of a hinge joint's rows (motor, friction, limit, angular
+/// locks, then the ball socket).
+fn solve_hinge(
+    joint: &Joint,
+    rows: &mut JointRows,
+    velocities: &mut [SolverVelocities],
+    step: &SolverParameters,
+    velocity_fraction: f32,
+) {
+    let mut a = velocities[joint.a];
+    let mut b = velocities[joint.b];
+    let mut angular_a = AngularVelocityAccumulator {
+        current: xyz(a.angular),
+        initial: xyz(a.initial_angular),
+        inverse_inertia: xyz(a.inverse_mass),
+    };
+    let mut angular_b = AngularVelocityAccumulator {
+        current: xyz(b.angular),
+        initial: xyz(b.initial_angular),
+        inverse_inertia: xyz(b.inverse_mass),
+    };
+    if let Some(row) = rows.motor {
+        rows.motor_scale = row.solve(
+            &mut angular_a,
+            &mut angular_b,
+            step.velocity_scale,
+            velocity_fraction,
+        )[1];
+    }
+    if let Some(row) = rows.friction {
+        rows.friction_scale = row.solve(&mut angular_a, &mut angular_b)[1];
+    }
+    if let Some(row) = rows.limit {
+        row.solve(
+            &mut angular_a,
+            &mut angular_b,
+            step.velocity_scale,
+            step.substep_seconds,
+            &mut rows.limit_impulse,
+        );
+    }
+    for row in rows.angular {
+        row.solve(&mut angular_a, &mut angular_b);
+    }
+    a.angular = vector(angular_a.current);
+    b.angular = vector(angular_b.current);
+    rows.pivot
+        .solve(&mut a, &mut b, step.substep_seconds, step.velocity_scale);
+    velocities[joint.a] = a;
+    velocities[joint.b] = b;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
