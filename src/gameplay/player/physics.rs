@@ -147,6 +147,8 @@ pub struct PlayerPhysics {
     pub yaw: f32,
     /// Output velocity of the last step (entity +0x33c).
     pub velocity: Vec3,
+    /// Output yaw rate of the last step (entity +0x350 angular velocity z).
+    pub angular_velocity: f32,
     /// pp+0x110: the body lean's view offset. The step's trigger-only sweep
     /// to it and the post-step SetPosition (FUN_1407ffab0, target untraced)
     /// are not ported; the camera clamp reads it.
@@ -255,6 +257,7 @@ impl PlayerPhysics {
             speed_scale_rate: 0.0,
             yaw: wrap_angle(yaw),
             velocity: Vec3::ZERO,
+            angular_velocity: 0.0,
             lean_offset: Vec3::ZERO,
             proxy,
             disable_gravity_count: 0,
@@ -671,6 +674,7 @@ impl PlayerPhysics {
         }
         self.slip = false;
         self.yaw = wrap_angle(self.yaw + yaw_rate * dt);
+        self.angular_velocity = yaw_rate;
         self.velocity = output_velocity;
     }
 }

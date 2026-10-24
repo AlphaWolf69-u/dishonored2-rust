@@ -85,6 +85,12 @@ fn list_items(fields: &[(String, Value)], name: &str) -> Vec<String> {
     items.into_iter().map(|(_, text)| text).collect()
 }
 
+/// A `kind` decl resolved through its `inherit` chain with the `edit`
+/// overlays (as the player components are).
+pub fn resolved_decl(kind: &str, name: &str, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<(String, Value)>, String> {
+    component_fields(kind, name, 0, &mut HashMap::new(), &mut read)
+}
+
 pub fn player_declarations(
     character: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>,

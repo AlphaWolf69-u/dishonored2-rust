@@ -4,6 +4,7 @@
 //! input dispatch → QUERY_PHYSICS (physics queries) → DEFAULT (physics query
 //! results, controller, state machine, camera) → PRE_PHYSICS (physics step).
 pub mod animation;
+pub mod arms;
 pub mod body;
 pub mod camera;
 pub mod character_proxy;
@@ -199,7 +200,8 @@ impl Player {
         // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.
         if dt != 0.0 {
             let yaw_offset = &mut self.body.follow_slope.yaw_offset;
-            self.camera.update(dt, self.controller.input_look, self.controller.look_is_analog, &mut self.physics, yaw_offset);
+            let yaw_rate = self.physics.angular_velocity;
+            self.camera.update(dt, self.controller.input_look, self.controller.look_is_analog, &mut self.physics, yaw_offset, yaw_rate);
             let speed_state = self.machine.is_active(StateId::SPRINTING)
                 || self.machine.from_sprinting(StateId::JUMPING)
                 || self.machine.from_sprinting(StateId::FALLING);
@@ -278,7 +280,45 @@ impl Player {
             self.pose = pose;
         }
         let allow = self.machine.allow_camera_out_of_shape();
-        self.camera.view(&self.pose, &self.physics, allow, self.body.follow_slope.yaw_offset)
+        let body_yaw = self.body.follow_slope.yaw_offset;
+        self.update_arms(body_yaw);
+        self.camera.view(&self.pose, &self.physics, allow, body_yaw)
+    }
+
+    /// The arm entities' joints: each arm bound to its body tag (spine03 of
+    /// the body pose after the camera's joint controls, FUN_1407506d0), its
+    /// tree pose, then the camera's shoulder controls (FUN_14053bcd0: world
+    /// rotations about the shoulder, children carried).
+    fn update_arms(&mut self, body_yaw: f32) {
+        let body_controls = self.camera.controls(&self.pose, body_yaw);
+        let shoulder_controls = self.camera.arm_controls(body_yaw);
+        let (position, axis) = (self.physics.position(), self.physics.axis());
+        let mut render = Vec::with_capacity(self.body.arms.len());
+        for (side, arm) in self.body.arms.iter().enumerate() {
+            let Ok(joints) = arm.pose() else { continue };
+            let (tag_p, tag_r) = self.pose.joint_with_controls(arm.bind_joint, &body_controls);
+            let frame_p = tag_p + tag_r * arm.bind.0;
+            let frame_r = tag_r * arm.bind.1;
+            let shoulder = arm.skeleton.shoulder;
+            let pivot = frame_p + frame_r * joints[shoulder].0;
+            let rows = joints
+                .iter()
+                .enumerate()
+                .map(|(j, &(p, r))| {
+                    let (mut p, mut r) = (frame_p + frame_r * p, frame_r * r);
+                    if arm.descends_from(j, shoulder) {
+                        for c in &shoulder_controls[side.min(1)] {
+                            p = pivot + *c * (p - pivot);
+                            r = *c * r;
+                        }
+                    }
+                    let (p, r) = (position + axis * p, axis * r);
+                    std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
+                })
+                .collect();
+            render.push(ArmRender { model: arm.model.clone(), joints: rows, visible: arm.visible });
+        }
+        self.arm_render = render;
     }
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {

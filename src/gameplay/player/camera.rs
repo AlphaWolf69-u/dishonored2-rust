@@ -9,7 +9,9 @@
 //! (FUN_1407f5040), CONSTRAINED 3 (FUN_1407f5680), CONSTRAINED_WITH_ARMS 6
 //! (FUN_1407f58f0) and CATFALL 14 (FUN_1407f5190). Arm controls, look-at,
 //! possession and cinematic modes are not.
+use super::body::Smooth8;
 use super::physics::PlayerPhysics;
+
 use super::states::CameraTurn;
 use bevy_math::{Mat3, Quat, Vec3};
 
@@ -33,6 +35,14 @@ pub struct CameraDecl {
     /// Degrees per second.
     pub constraints_blend_speed: f32,
     pub mode_blend_duration: f32,
+    /// m_leftArmControlJointName / m_rightArmControlJointName.
+    pub arm_joints: [String; 2],
+    /// m_armsInertiaMin/MaxAngularSpeed (deg/s), m_armsInertiaMaxAngle (deg).
+    pub arms_inertia_min_angular_speed: f32,
+    pub arms_inertia_max_angular_speed: f32,
+    pub arms_inertia_max_angle: f32,
+    /// m_leftArmPitchShiftRatio / m_rightArmPitchShiftRatio.
+    pub arm_pitch_shift_ratios: [f32; 2],
 }
 
 impl Default for CameraDecl {
@@ -52,6 +62,11 @@ impl Default for CameraDecl {
             speed_fov_max_decrease_speed: 30.0,
             constraints_blend_speed: 200.0,
             mode_blend_duration: 0.25,
+            arm_joints: [String::new(), String::new()],
+            arms_inertia_min_angular_speed: 10.0,
+            arms_inertia_max_angular_speed: 200.0,
+            arms_inertia_max_angle: 5.0,
+            arm_pitch_shift_ratios: [0.95, 0.925],
         }
     }
 }
@@ -162,8 +177,10 @@ pub struct PlayerCamera {
     restore_yaw: bool,
     /// +0x251c0: pitch low/high, yaw high/low (radians).
     pub constraints: [f32; 4],
-    /// The poses of this update: (mode, weight).
-    poses: Vec<(i32, f32)>,
+    /// The poses of this update: (mode, weight, arms lag).
+    poses: Vec<(i32, f32, f32)>,
+    /// +0x252b4 m_yawInertia's smoother.
+    yaw_inertia: Smooth8,
 }
 
 pub struct View {
@@ -194,7 +211,8 @@ impl PlayerCamera {
             yaw_rate: 0.0,
             restore_yaw: false,
             constraints: constraints([30.0, 30.0, 45.0, 45.0]),
-            poses: vec![(MODE_AND_ARMS, 1.0)],
+            poses: vec![(MODE_AND_ARMS, 1.0, 0.0)],
+            yaw_inertia: Smooth8::default(),
         }
     }
 
@@ -239,7 +257,8 @@ impl PlayerCamera {
     /// The DEFAULT stage FUN_1407f6140 up to the FOV: modes, look
     /// integration and this update's poses. `look` is the controller's
     /// m_inputLook (x pitch, y yaw) and `body_yaw` the body's +0xde0.
-    pub fn update(&mut self, dt: f32, look: Vec3, look_is_analog: bool, physics: &mut PlayerPhysics, body_yaw: &mut f32) {
+    /// `yaw_rate` is the entity's angular velocity z (+0x350).
+    pub fn update(&mut self, dt: f32, look: Vec3, look_is_analog: bool, physics: &mut PlayerPhysics, body_yaw: &mut f32, yaw_rate: f32) {
         if dt == 0.0 {
             return;
         }
@@ -273,15 +292,58 @@ impl PlayerCamera {
             self.free(dt, look.x, look_is_analog, physics);
         }
         self.poses.clear();
+        let mut pose = |camera: &mut Self, mode: i32, w: f32| {
+            // Modes 0, 1 and 2 sample the arms lag once each.
+            let lag = if matches!(mode, 0..=2) { camera.arms_lag(yaw_rate, dt) } else { 0.0 };
+            camera.poses.push((mode, w, lag));
+        };
         if current != target && 1.0 - w > 0.0 {
-            self.poses.push((current, 1.0 - w));
+            pose(self, current, 1.0 - w);
         }
         if w > 0.0 {
-            self.poses.push((target, w));
+            pose(self, target, w);
         }
         if current != target {
             self.blend_time += dt;
         }
+    }
+
+    /// FUN_1407f1750 with no vertical term (camera Start passes 0, 0).
+    fn arms_lag(&mut self, yaw_rate: f32, dt: f32) -> f32 {
+        let r = 0.017453292;
+        let (low, high) = (r * self.decl.arms_inertia_min_angular_speed, r * self.decl.arms_inertia_max_angular_speed);
+        let b = ((yaw_rate.abs() - low) / (high - low)).clamp(0.0, 1.0);
+        let sign = if yaw_rate > 0.0 { 1.0 } else if yaw_rate < 0.0 { -1.0 } else { 0.0 };
+        self.yaw_inertia.push(sign * b * r * self.decl.arms_inertia_max_angle, dt)
+    }
+
+    /// The shoulder controls of this update's poses (FUN_1407f4cd0, 5040,
+    /// 5680, 58f0 arm parts; m_rightArmFollow 1), as entity-space rotations
+    /// applied in order about each shoulder. The aiming springs stay at
+    /// rest with empty hands.
+    pub fn arm_controls(&self, body_yaw: f32) -> [Vec<Mat3>; 2] {
+        let ratios = if self.pitch > 0.0 { self.decl.forward_ratios } else { self.decl.backward_ratios };
+        let (head, neck, arms) = (self.pitch * ratios[0], self.pitch * ratios[1], self.pitch * ratios[2]);
+        let axis = Mat3::from_rotation_z(body_yaw) * Vec3::Y;
+        let pitch = |a: f32| Mat3::from_quat(Quat::from_axis_angle(axis, a));
+        let mut controls = [Vec::new(), Vec::new()];
+        for &(mode, w, lag) in &self.poses {
+            // The arms trail a turn: positive yaw rate turns them clockwise.
+            let trail = Mat3::from_rotation_z(-lag * w);
+            for (side, list) in controls.iter_mut().enumerate() {
+                match mode {
+                    MODE_AND_ARMS => {
+                        list.push(pitch((head + neck) * self.decl.arm_pitch_shift_ratios[side] * w));
+                        list.push(trail);
+                    }
+                    MODE_ANIMATED => list.push(trail),
+                    // The arms keep level against the spine03 pitch.
+                    MODE_CONSTRAINED => list.push(pitch(-w * arms)),
+                    _ => {}
+                }
+            }
+        }
+        controls
     }
 
     fn limit_rate(physics: &PlayerPhysics, mut rate: f32, previous: f32, dt: f32) -> f32 {
@@ -383,7 +445,7 @@ impl PlayerCamera {
 
     /// The joint controls of this update's poses (pitch about the body's
     /// left, turned by the body yaw offset; yaw about up).
-    fn controls(&self, pose: &BodyPose, body_yaw: f32) -> Vec<(usize, Mat3)> {
+    pub fn controls(&self, pose: &BodyPose, body_yaw: f32) -> Vec<(usize, Mat3)> {
         let ratios = if self.pitch > 0.0 { self.decl.forward_ratios } else { self.decl.backward_ratios };
         let (head, neck, arms) = (self.pitch * ratios[0], self.pitch * ratios[1], self.pitch * ratios[2]);
         let axis = Mat3::from_rotation_z(body_yaw) * Vec3::Y;
@@ -391,7 +453,7 @@ impl PlayerCamera {
         let yaw = |a: f32| Mat3::from_rotation_z(a);
         let [head_joint, neck_joint, arms_joint] = pose.controls;
         let mut controls = Vec::new();
-        for &(mode, w) in &self.poses {
+        for &(mode, w, _) in &self.poses {
             match mode {
                 MODE_AND_ARMS => {
                     controls.extend([(arms_joint, pitch(w * arms)), (neck_joint, pitch(w * neck)), (head_joint, pitch(w * head))]);

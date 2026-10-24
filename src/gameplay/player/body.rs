@@ -8,6 +8,7 @@
 //! swim branch are not ported.
 use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNode, LocoNode, PlayMode, Pose};
 use super::camera::BodyPose;
+use super::arms::Arm;
 use super::midnight::Midnight;
 use super::sensors::LeanSensor;
 use super::states::LocoStances;
@@ -122,7 +123,7 @@ impl Default for BodySettings {
 /// arkTimeSmoothedValue<8> (FUN_140770040 / FUN_140770680): a moving
 /// average of 1/30 s buckets.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Smooth8 {
+pub struct Smooth8 {
     index: usize,
     ring: [f32; 8],
     remaining: f32,
@@ -139,7 +140,7 @@ impl Default for Smooth8 {
 }
 
 impl Smooth8 {
-    fn push(&mut self, value: f32, dt: f32) -> f32 {
+    pub fn push(&mut self, value: f32, dt: f32) -> f32 {
         self.accum += value;
         self.count += 1;
         self.remaining -= dt;
@@ -166,6 +167,48 @@ impl Smooth8 {
         let k = self.remaining / PERIOD;
         (1.0 - k) * shifted + k * full
     }
+}
+
+/// The animBasic command a tree's IO entry holds after the frame's posts
+/// (FUN_1406e1fe0 overwrites it): FUN_140772f90 / FUN_1407730c0 map a jump
+/// kind to its item (a missing item stops) and FUN_14053eef0 posts only a
+/// weight above 0.
+fn last_command(posted: &[AdditiveCommand], items: &[Option<usize>; 6]) -> Option<AnimBasicCommand> {
+    let mut command = None;
+    for &p in posted {
+        match p {
+            AdditiveCommand::Play { kind, weight } => match items[kind] {
+                Some(idx) if weight > 0.0 => {
+                    let (mode, play_on_end) = match kind % 3 {
+                        0 => (PlayMode::AndStay, false),
+                        1 => (PlayMode::Loop, true),
+                        _ => (PlayMode::Once, false),
+                    };
+                    command = Some(AnimBasicCommand { idx: idx as i32, weight, mode, rate: 1.0, start: 0.0, play_on_end });
+                }
+                Some(_) => {}
+                None => command = Some(AnimBasicCommand::STOP),
+            },
+            AdditiveCommand::Stop => command = Some(AnimBasicCommand::STOP),
+        }
+    }
+    command
+}
+
+/// FUN_140775610: a slave's rate toward the master's phase, when their
+/// dominant clip durations match within 0.001 s.
+pub fn sync_rate(decl: &BodyDecl, master_progress: f32, d: f32, slave_progress: f32, slave: f32) -> f32 {
+    let mut rate = 1.0;
+    if d > 0.0 && (d - slave).abs() < 0.001 {
+        let (pm, ps) = (master_progress, slave_progress);
+        if (pm * d - ps * d).abs() >= 0.001 {
+            let sync = decl.sync_duration;
+            let mut x = (sync + pm * d).rem_euclid(d);
+            x = if x < ps * d { (d - ps * d) + x } else { x - ps * d };
+            rate = (x / sync).clamp(decl.min_sync_playrate, decl.max_sync_playrate);
+        }
+    }
+    rate
 }
 
 /// FUN_1407721f0: angle smoothing on the unwrapped angle.
@@ -315,6 +358,8 @@ pub struct Body {
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
+    /// The arm parts (left, right).
+    pub arms: Vec<Arm>,
     pub midnight: Midnight,
     pub follow_slope: FollowSlope,
     slope_rotation: Mat3,
@@ -345,6 +390,7 @@ impl Body {
             angle: 0.0,
             bob_amount: 1.0,
             jump: JumpAnim::default(),
+            arms: Vec::new(),
             midnight: Midnight::default(),
             follow_slope: FollowSlope::default(),
             slope_rotation: Mat3::IDENTITY,
@@ -439,25 +485,8 @@ impl Body {
         self.jump.tick();
         // The IO entry keeps the last command posted since the tree's last
         // update (FUN_1406e1fe0 overwrites it).
-        let mut command = None;
-        for posted in self.jump.commands.drain(..) {
-            match posted {
-                AdditiveCommand::Play { kind, weight } => match self.jump_items[kind] {
-                    // FUN_140772f90 → FUN_14053eef0 posts only a weight above 0.
-                    Some(idx) if weight > 0.0 => {
-                        let (mode, play_on_end) = match kind % 3 {
-                            0 => (PlayMode::AndStay, false),
-                            1 => (PlayMode::Loop, true),
-                            _ => (PlayMode::Once, false),
-                        };
-                        command = Some(AnimBasicCommand { idx: idx as i32, weight, mode, rate: 1.0, start: 0.0, play_on_end });
-                    }
-                    Some(_) => {}
-                    None => command = Some(AnimBasicCommand::STOP),
-                },
-                AdditiveCommand::Stop => command = Some(AnimBasicCommand::STOP),
-            }
-        }
+        let posted: Vec<AdditiveCommand> = self.jump.commands.drain(..).collect();
+        let command = last_command(&posted, &self.jump_items);
         self.additives.update(dt, command, &self.animations);
         self.follow_slope.update(&self.decl, dt, ground_normal, supported, midnight);
         self.slope_rotation = self.follow_slope.rotation(axis);
@@ -466,6 +495,15 @@ impl Body {
         let bob_stance = stances.bob.clone().unwrap_or_else(|| body_stance.clone());
         self.body_node.update(dt, &body_stance, speed * self.speed_interpolation, angle, &self.animations);
         self.bob_node.update(dt, &bob_stance, speed, angle, &self.animations);
+        // The arm parts (FUN_140777180), phase-synced to the body; their jump
+        // additives come from the same stage (FUN_1407730c0).
+        let body_duration = self.body_node.dominant_duration(&self.animations);
+        let body_progress = self.body_node.progress;
+        for arm in &mut self.arms {
+            let rate = sync_rate(&self.decl, body_progress, body_duration, arm.loco.progress, arm.dominant_duration());
+            let command = last_command(&posted, &arm.jump_items);
+            arm.update(dt, &body_stance, speed, angle, midnight, rate, command);
+        }
         // Clips are sampled once at load, so this cannot fail; a failure
         // would leave the frame without root motion.
         if self.midnight.update(dt, &self.animations, &self.skeleton.rest).is_err() {
@@ -477,17 +515,7 @@ impl Body {
     fn phase_sync(&mut self) {
         let d = self.body_node.dominant_duration(&self.animations);
         let slave = self.bob_node.dominant_duration(&self.animations);
-        let mut rate = 1.0;
-        if d > 0.0 && (d - slave).abs() < 0.001 {
-            let (pm, ps) = (self.body_node.progress, self.bob_node.progress);
-            if (pm * d - ps * d).abs() >= 0.001 {
-                let sync = self.decl.sync_duration;
-                let mut x = (sync + pm * d).rem_euclid(d);
-                x = if x < ps * d { (d - ps * d) + x } else { x - ps * d };
-                rate = (x / sync).clamp(self.decl.min_sync_playrate, self.decl.max_sync_playrate);
-            }
-        }
-        self.bob_node.rate_multiplier = rate;
+        self.bob_node.rate_multiplier = sync_rate(&self.decl, self.body_node.progress, d, self.bob_node.progress, slave);
     }
 
     /// GetAnimModelSpaceJointTransform (FUN_14053e220 → FUN_14024b280): `joint`
