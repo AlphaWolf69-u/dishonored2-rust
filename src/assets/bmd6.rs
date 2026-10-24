@@ -563,4 +563,54 @@ mod tests {
             assert_eq!(model.surfaces[0].matrix_offset, 17);
         }
     }
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_dust_cable_placements_decode() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        for level in ["dust_p_lowchaos", "dust_p_highchaos"] {
+            let resources = crate::assets::level::LevelResources::resolve(&catalog, level).unwrap();
+            let bytes = resources.read_entities(&catalog).unwrap().unwrap();
+            let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+            let mentions = document
+                .definitions
+                .iter()
+                .filter(|d| format!("{:?}", d.fields).contains("cables_speaker"))
+                .count();
+            let placements = crate::entities::render_placements(&document);
+            let cables: Vec<_> =
+                placements.iter().filter(|p| p.resource_path.contains("cables_speaker")).collect();
+            println!("{level}: {mentions} entities mention cables_speaker, {} placements", cables.len());
+            if level == "dust_p_lowchaos" {
+                let decl = super::declaration_path(&cables[0].resource_path).unwrap();
+                let text = catalog.read(&decl).unwrap().map(|b| String::from_utf8_lossy(&b).into_owned());
+                println!("DECL {decl}: {text:?}");
+                let hkx = "generated/physsystem/models/environment/gameplay/speaker_01/cables_speaker/cable_01_rgdl.hkx";
+                let bytes = catalog.read(hkx).unwrap().unwrap();
+                println!("HKX {} bytes, magic {:02x?}", bytes.len(), &bytes[..16]);
+                for parse in [crate::physworld::parse, crate::physworld::parse_hkx, crate::physworld::parse_embedded_havok] {
+                    match parse(&bytes) {
+                        Ok(world) => {
+                            println!("PARSED {:?}", world.item_inventory());
+                            break;
+                        }
+                        Err(error) => println!("PARSE ERROR {error}"),
+                    }
+                }
+            }
+            for placement in cables.iter().take(3) {
+                let mesh = super::resolve_compiled_mesh(&placement.resource_path, |decl| {
+                    catalog.read(decl).ok().flatten().map(|b| String::from_utf8_lossy(&b).into_owned())
+                });
+                println!("  {} {} -> {mesh:?}", placement.id, placement.resource_path);
+                if let Ok(path) = mesh {
+                    let model = super::inspect(&catalog.read(&path).unwrap().unwrap());
+                    println!("    {:?}", model.as_ref().map(|m| (m.has_decoded_geometry, m.has_skeleton, m.surfaces.len())));
+                }
+            }
+        }
+    }
+
 }

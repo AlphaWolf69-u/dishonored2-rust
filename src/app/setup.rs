@@ -807,6 +807,15 @@ pub(super) fn setup(
                             placement.scale,
                         ),
                     });
+                    // arkSkinnedRenderModel shares idRenderModelStatic's
+                    // vtable +0xc0 update (140235680, bounds bit 4), so
+                    // 14031ad30 selects MD6 owners the same way as BML.
+                    if let Some(input) = initial_placed_model_query(placement, model.authored_bounds) {
+                        placed_model_queries.push(PlacedModelQueryGroup {
+                            indices: model_render_start..render_instances.len(),
+                            input,
+                        });
+                    }
                 }
             }
             continue;
@@ -1010,7 +1019,7 @@ pub(super) fn setup(
         }
     }
     println!(
-        "Initial BML query groups: {}; constructor-default range models: {}; blueprint/MD6 and surface bit40 producers remain unsupported",
+        "Initial BML/MD6 query groups: {}; constructor-default range models: {}; blueprint and surface bit40 producers remain unsupported",
         placed_model_queries.len(),
         placed_model_default_ranges
     );
