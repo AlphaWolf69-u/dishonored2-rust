@@ -20,8 +20,8 @@ pub(super) struct SystemSkin {
     rest: Vec<Affine>,
     inverse_bind: Vec<Affine>,
     model: bmd6::ModelInfo,
-    /// Per-placement meshes and palette, made on first use.
-    bound: Option<(Vec<(usize, Handle<Mesh>)>, Handle<ShaderBuffer>)>,
+    /// The placement's skinned instances and palette, bound on first use.
+    bound: Option<(std::ops::Range<usize>, Handle<ShaderBuffer>)>,
 }
 
 fn multiply(a: &Affine, b: &Affine) -> Affine {
@@ -98,6 +98,10 @@ pub(super) fn load_skins(
 }
 
 impl SystemSkin {
+    pub(super) fn placement(&self) -> usize {
+        self.placement
+    }
+
     fn current(&self, world: &MachineryWorld) -> Vec<Affine> {
         let system = &world.systems[self.system];
         let entity = {
@@ -152,7 +156,6 @@ pub(super) fn pose_physics_systems(
     queue: &mut SceneRenderQueue,
     sources: &mut ModelShadowSources,
     placements: &RenderSourcePlacements,
-    mesh_components: &mut Query<&mut Mesh3d>,
 ) {
     for skin in skins {
         let Some(placement) = placements.0.get(skin.placement) else {
@@ -165,26 +168,16 @@ pub(super) fn pose_physics_systems(
         let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.inverse_bind) else {
             continue;
         };
+        // Setup gives deformed placements their own meshes that keep their
+        // main-world data (AmbientMachinery::deformed_placements).
         let (instances, buffer) = skin.bound.get_or_insert_with(|| {
-            let mut own = Vec::new();
-            for index in source.instances.clone() {
-                let instance = &mut queue.instances[index];
-                let Some(mesh) = meshes.get(&instance.mesh).cloned() else { continue };
-                let handle = meshes.add(mesh);
-                instance.mesh = handle.clone();
-                if let Some(entity) = instance.entity {
-                    if let Ok(mut component) = mesh_components.get_mut(entity) {
-                        component.0 = handle.clone();
-                    }
-                }
-                own.push((index, handle));
-            }
             let gpu: Vec<[Vec4; 3]> = palette.iter().map(|m| m.map(Vec4::from_array)).collect();
-            (own, buffers.add(ShaderBuffer::from(gpu)))
+            (source.instances.clone(), buffers.add(ShaderBuffer::from(gpu)))
         });
         let mut points = Vec::new();
-        for (index, handle) in instances.iter() {
-            let instance = &mut queue.instances[*index];
+        for index in instances.clone() {
+            let instance = &mut queue.instances[index];
+            let handle = instance.mesh.clone();
             let Some(RenderModelSurface::Bmd6 { surface, .. }) = instance.source.map(|s| s.surface) else {
                 continue;
             };
@@ -193,7 +186,7 @@ pub(super) fn pose_physics_systems(
                 continue;
             }
             let baked = instance.source.is_some_and(|s| s.world_baked);
-            if let Some(mut mesh) = meshes.get_mut(handle) {
+            if let Some(mut mesh) = meshes.get_mut(&handle) {
                 if apply_rest_pose(&mut mesh, info, &palette, info.skin_influences, placement, baked).is_ok() {
                     if let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
                         let local: Vec<Vec3> = p.iter().map(|v| Vec3::from_array(*v)).collect();

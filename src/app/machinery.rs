@@ -17,6 +17,10 @@ pub(super) struct AmbientMachinery {
     skins: Vec<super::physics_skinning::SystemSkin>,
 }
 impl AmbientMachinery {
+    /// Placements whose MD6 vertices are re-posed from simulated bodies.
+    pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
+        self.skins.iter().map(|s| s.placement()).collect()
+    }
     pub(super) fn load(
         catalog: &Catalog,
         document: Option<&Document>,
@@ -233,7 +237,6 @@ pub(super) fn pose_physics_systems(
     mut queue: ResMut<super::SceneRenderQueue>,
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     placements: Res<super::RenderSourcePlacements>,
-    mut mesh_components: Query<&mut Mesh3d>,
 ) {
     let machinery = &mut *machinery;
     if machinery.skins.is_empty() {
@@ -247,6 +250,5 @@ pub(super) fn pose_physics_systems(
         &mut queue,
         &mut sources,
         &placements,
-        &mut mesh_components,
     );
 }
