@@ -204,13 +204,22 @@ group 0.
   recovery, cast iterations. Steps are climbed by the hull's foot cone; the
   proxy has no step-up code.
 - `shape_cast.rs` answers the hknp castShape/closest-point contract on the
-  level triangles (GJK and conservative advancement); Havok's own kernels,
-  welding and its penetration solver are not ported (an overlapping hull
-  uses `approximate_penetration`).
-- `camera.rs` / `body.rs`: the view is `camera_jnt` of the body pose, pitched
-  through the spine03/neck/head split and kept inside the capsule; the body
-  plays the stance transition clip, then loops the stance's Idle clip
-  (`approximate_stance_pose`), read by `assets/edge_animation.rs`.
+  level triangles: GJK distance, conservative-advancement casts and EPA
+  penetration depth for overlaps. Havok's own kernels and mesh normal
+  welding are not ported.
+- States also cover Sliding (distance-based 7 → 2.5 m/s curve, uphill
+  shortening, side steering, blend-out, resume from short falls), Slipping
+  (controller slope thresholds every frame, slip-fall) and AutoCrouch with
+  its sensor (`sensors.rs`). The WallCrouch sensor starts disabled and no
+  enabling caller was found, so WALLCROUCH stays unreachable as in the game.
+- `camera.rs` / `body.rs` / `animation.rs`: the view is `camera_jnt` of the
+  body pose, pitched through the spine03/neck/head split and kept inside the
+  capsule. The body anim tree subset runs the loco nodes for the body and
+  the camera bob (speed sets, direction pairs, one shared progress, stance
+  manager with transition clips, phase sync, `ark_playerBobAmount`), folded
+  with the Edge lerp/additive blends; inputs come from the body DEFAULT
+  stage (start delay, max-speed clamp, `ark_playerSmoothedLoco` smoothing).
+  Clips are read by `assets/edge_animation.rs`.
 - `assets/entities/player.rs` resolves the character's body def components,
   startup mode, states, locomotion decl and md6 animsets.
 
@@ -219,10 +228,10 @@ run 4.14 m/s unequipped, jump apex 1.500 m with the 5.1 m/s / 0.74 vertical
 move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
 at 11.5° pitch, matching the port within the camera idle bob (a few mm).
 
-Not ported: the speed-driven locomotion blend tree and the camera animset bob
-additive, footsteps, hand equipment (the player moves unequipped), slipping,
-sliding, mantle, vault, autocrouch, wallcrouch, catfall, fall damage, leaning,
-swimming, powers, impulses and moving or dynamic bodies.
+Not ported: the jump/land camera additives (animBasic node), footsteps, hand
+equipment (the player moves unequipped), mantle (retargeting onto the scene
+dummy is not traced), vault, catfall, fall damage, leaning, camera constraint
+modes, swimming, powers, impulses and moving or dynamic bodies.
 
 ## Background materials and fog-volume routing
 

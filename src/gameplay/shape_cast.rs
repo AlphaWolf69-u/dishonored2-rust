@@ -5,9 +5,9 @@
 //! The answers are geometric: closest distance between the hull and a
 //! triangle (GJK), and the first contact fraction of a translated hull
 //! (conservative advancement, exact for convex sets because the distance is a
-//! convex function of the cast fraction). Havok's own time-of-impact and
-//! closest-point kernels, mesh normal welding and its penetration solver are
-//! not ported; an overlapping hull uses `approximate_penetration`.
+//! convex function of the cast fraction); an overlap is measured by EPA on
+//! the hull-triangle Minkowski difference. Havok's own kernels and mesh
+//! normal welding are not ported.
 use bevy_math::Vec3;
 
 /// Closest points between a hull and a triangle. `normal` points from the
@@ -156,24 +156,25 @@ pub fn closest_on_triangle([a, b, c]: [Vec3; 3], p: Vec3) -> (Vec3, [f32; 3]) {
     (a + ab * v + ac * w, [1.0 - v - w, v, w])
 }
 
+fn support_vertex(points: &[Vec3], triangle: &[Vec3; 3], direction: Vec3) -> Vertex {
+    let a = support(points, direction);
+    let b = support(triangle, -direction);
+    Vertex { w: a - b, b }
+}
+
 /// GJK distance between the hull `points` and a triangle. Returns the
 /// separation, the unit direction from the triangle toward the hull and the
-/// closest point on the triangle, or `None` when they overlap.
-fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Option<(f32, Vec3, Vec3)> {
-    let support_vertex = |direction: Vec3| {
-        let a = support(points, direction);
-        let b = support(triangle, -direction);
-        Vertex { w: a - b, b }
-    };
-    let mut simplex = vec![support_vertex(points[0] - triangle[0])];
+/// closest point on the triangle, or the final simplex when they overlap.
+fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Result<(f32, Vec3, Vec3), Vec<Vertex>> {
+    let mut simplex = vec![support_vertex(points, triangle, points[0] - triangle[0])];
     let mut weights = vec![1.0];
     let mut v = simplex[0].w;
     for _ in 0..64 {
         let length2 = v.length_squared();
         if length2 <= 1e-12 {
-            return None;
+            return Err(simplex);
         }
-        let w = support_vertex(-v);
+        let w = support_vertex(points, triangle, -v);
         if length2 - v.dot(w.w) <= 1e-6 * length2.max(1e-6) {
             break;
         }
@@ -185,37 +186,118 @@ fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Option<(f32, Vec3, Vec3)
         v = point;
         weights = kept;
         if simplex.len() == 4 {
-            return None;
+            return Err(simplex);
         }
     }
     let distance = v.length();
     if distance <= 1e-6 {
-        return None;
+        return Err(simplex);
     }
     let on_triangle: Vec3 = simplex.iter().zip(&weights).map(|(s, &k)| s.b * k).sum();
-    Some((distance, v / distance, on_triangle))
+    Ok((distance, v / distance, on_triangle))
 }
 
-/// An overlapping hull and triangle: separation along the triangle's normal,
-/// oriented toward the hull centroid. Stands in for Havok's penetration
-/// solver, which is not ported.
-fn approximate_penetration(points: &[Vec3], [a, b, c]: &[Vec3; 3]) -> Contact {
-    let mut normal = (b - *a).cross(*c - *a).normalize_or_zero();
+/// A touching contact (zero depth) along the triangle normal facing the hull.
+fn touching(points: &[Vec3], [a, b, c]: &[Vec3; 3]) -> Contact {
+    let mut normal = (*b - *a).cross(*c - *a).normalize_or_zero();
     let centroid = points.iter().copied().sum::<Vec3>() / points.len() as f32;
     if normal.dot(centroid - *a) < 0.0 {
         normal = -normal;
     }
-    let deepest = support(points, -normal);
-    let distance = normal.dot(deepest - *a);
-    let (position, _) = closest_on_triangle([*a, *b, *c], deepest);
-    Contact { distance, normal, position }
+    let (position, _) = closest_on_triangle([*a, *b, *c], centroid);
+    Contact { distance: 0.0, normal, position }
+}
+
+/// Grow GJK's final simplex into a tetrahedron around the origin.
+fn tetrahedron(points: &[Vec3], triangle: &[Vec3; 3], mut simplex: Vec<Vertex>) -> Option<Vec<Vertex>> {
+    if simplex.len() == 2 {
+        let axis = (simplex[1].w - simplex[0].w).normalize_or_zero();
+        let side = axis.any_orthonormal_vector();
+        let w = support_vertex(points, triangle, side);
+        let w = if (w.w - simplex[0].w).cross(axis).length_squared() > 1e-12 { w } else { support_vertex(points, triangle, -side) };
+        simplex.push(w);
+    }
+    if simplex.len() == 3 {
+        let n = (simplex[1].w - simplex[0].w).cross(simplex[2].w - simplex[0].w);
+        if n.length_squared() <= 1e-14 {
+            return None;
+        }
+        for direction in [n, -n] {
+            let w = support_vertex(points, triangle, direction);
+            if inside_tetrahedron([simplex[0].w, simplex[1].w, simplex[2].w, w.w]) {
+                simplex.push(w);
+                break;
+            }
+        }
+    }
+    (simplex.len() == 4 && inside_tetrahedron([simplex[0].w, simplex[1].w, simplex[2].w, simplex[3].w])).then_some(simplex)
+}
+
+fn face_plane(vertices: &[Vertex], f: [usize; 3]) -> Option<(Vec3, f32)> {
+    let (a, b, c) = (vertices[f[0]].w, vertices[f[1]].w, vertices[f[2]].w);
+    let n = (b - a).cross(c - a);
+    let length = n.length();
+    (length > 1e-12).then(|| (n / length, (n / length).dot(a)))
+}
+
+/// EPA: the penetration depth and direction of an overlapping hull.
+fn penetration(points: &[Vec3], triangle: &[Vec3; 3], simplex: Vec<Vertex>) -> Contact {
+    let Some(mut vertices) = tetrahedron(points, triangle, simplex) else { return touching(points, triangle) };
+    let mut faces: Vec<[usize; 3]> = Vec::new();
+    for f in [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]] {
+        let Some((n, _)) = face_plane(&vertices, f) else { return touching(points, triangle) };
+        let other = (0..4).find(|i| !f.contains(i)).unwrap();
+        faces.push(if n.dot(vertices[other].w - vertices[f[0]].w) > 0.0 { [f[0], f[2], f[1]] } else { f });
+    }
+    for _ in 0..64 {
+        let mut best: Option<(usize, Vec3, f32)> = None;
+        for (i, &f) in faces.iter().enumerate() {
+            if let Some((n, d)) = face_plane(&vertices, f) {
+                if best.is_none_or(|(_, _, bd)| d < bd) {
+                    best = Some((i, n, d));
+                }
+            }
+        }
+        let Some((index, normal, depth)) = best else { break };
+        let w = support_vertex(points, triangle, normal);
+        if normal.dot(w.w) - depth < 1e-5 || vertices.len() >= 128 {
+            let f = faces[index];
+            let (a, b, c) = (vertices[f[0]], vertices[f[1]], vertices[f[2]]);
+            let (_, bary) = closest_on_triangle([a.w, b.w, c.w], Vec3::ZERO);
+            let position = a.b * bary[0] + b.b * bary[1] + c.b * bary[2];
+            return Contact { distance: -depth, normal: -normal, position };
+        }
+        let new = vertices.len();
+        vertices.push(w);
+        let mut horizon: Vec<[usize; 2]> = Vec::new();
+        let mut kept = Vec::with_capacity(faces.len());
+        for f in faces {
+            let visible = face_plane(&vertices, f).is_some_and(|(n, _)| n.dot(w.w - vertices[f[0]].w) > 0.0);
+            if visible {
+                for edge in [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]] {
+                    if let Some(k) = horizon.iter().position(|e| *e == [edge[1], edge[0]]) {
+                        horizon.swap_remove(k);
+                    } else {
+                        horizon.push(edge);
+                    }
+                }
+            } else {
+                kept.push(f);
+            }
+        }
+        faces = kept;
+        for [a, b] in horizon {
+            faces.push([a, b, new]);
+        }
+    }
+    touching(points, triangle)
 }
 
 /// Closest points between the hull and a triangle.
 pub fn closest(points: &[Vec3], triangle: &[Vec3; 3]) -> Contact {
     match separation(points, triangle) {
-        Some((distance, normal, position)) => Contact { distance, normal, position },
-        None => approximate_penetration(points, triangle),
+        Ok((distance, normal, position)) => Contact { distance, normal, position },
+        Err(simplex) => penetration(points, triangle, simplex),
     }
 }
 
@@ -283,6 +365,16 @@ mod tests {
         let contact = closest(&cube(Vec3::new(0.0, 0.0, 0.3), 0.5), &FLOOR);
         assert!((contact.distance + 0.2).abs() < 1e-5, "{contact:?}");
         assert!(contact.normal.distance(Vec3::Z) < 1e-5);
+    }
+
+    #[test]
+    fn overlap_depth_respects_the_triangle_extent() {
+        // The thin tip of a hull barely crosses a face's top edge: the depth is
+        // millimetres, not the distance to the face's plane.
+        let face = [Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 0.0)];
+        let hull = [Vec3::new(0.0, 0.004, -0.01), Vec3::new(0.0, -0.4, 0.5), Vec3::new(0.0, 0.4, 0.5), Vec3::new(0.3, 0.0, 0.5)];
+        let contact = closest(&hull, &face);
+        assert!(contact.distance < 0.0 && contact.distance > -0.02, "{contact:?}");
     }
 
     #[test]
