@@ -85,6 +85,9 @@ pub struct Display {
     pub projection: Option<[f32; 3]>,
     /// Constructed by the timeline but its class constructor has not run.
     pub constructed: bool,
+    /// Created since the last advance or frame-script pass (DO byte 1 bit 1,
+    /// set with the frame-1 script due by `FUN_1410252c0`).
+    pub fresh: bool,
     /// `IggyFunctions.setHittestProperties` flags (DO byte1 bits 4..6).
     pub hittest: u8,
     /// `IggyFunctions.setDepth` (DO +0x194 when 0xbb&0x80).
@@ -134,6 +137,7 @@ impl Display {
             transform3d: None,
             projection: None,
             constructed: true,
+            fresh: true,
             hittest: 0,
             custom_depth: None,
             antialiasing: true,
@@ -477,8 +481,16 @@ fn display_getters() -> Vec<(&'static str, NativeFn)> {
         ("y", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().matrix.ty.into())),
         // 3D getters: 0 (scaleZ 1) for a 2D object (notes-3d.md section 1).
         ("z", |vm, this, _| Ok(super::three_d::matrix(&this_obj(vm, this)?).map_or(0.0, |m| m[11] as f64).into())),
-        ("scaleX", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().scale.0.into())),
-        ("scaleY", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().scale.1.into())),
+        // `FUN_141010690` / `FUN_141010720`: a 3D object's scale is the length
+        // of its Matrix3D row 0 / row 1.
+        ("scaleX", |vm, this, _| {
+            let o = this_obj(vm, this)?;
+            Ok(super::three_d::matrix(&o).map_or_else(|| display_ref(&o).unwrap().scale.0, |m| super::three_d::row_length(&m, 0) as f64).into())
+        }),
+        ("scaleY", |vm, this, _| {
+            let o = this_obj(vm, this)?;
+            Ok(super::three_d::matrix(&o).map_or_else(|| display_ref(&o).unwrap().scale.1, |m| super::three_d::row_length(&m, 1) as f64).into())
+        }),
         ("scaleZ", |vm, this, _| Ok(super::three_d::matrix(&this_obj(vm, this)?).map_or(1.0, |m| super::three_d::row_length(&m, 2) as f64).into())),
         ("rotation", |vm, this, _| Ok(display_ref(&this_obj(vm, this)?).unwrap().rotation.into())),
         ("rotationX", |vm, this, _| Ok((super::three_d::angles(&this_obj(vm, this)?)[0] as f64).into())),
@@ -1012,7 +1024,7 @@ pub fn debug_tree(o: &Obj, depth: usize, out: &mut String) {
         let class = o.class().map_or("?".to_string(), |c| c.name.qualified());
         let _ = writeln!(
             out,
-            "{}{} name={:?} depth={:?} char={:?} kind={:?} frame={} visible={} alpha={} clip={} mask={}",
+            "{}{} name={:?} depth={:?} char={:?} kind={:?} frame={} visible={} alpha={} clip={} mask={} m=[{:.3} {:.3} {:.3} {:.3} {:.1} {:.1}]{}",
             "  ".repeat(depth),
             class,
             d.name,
@@ -1023,7 +1035,17 @@ pub fn debug_tree(o: &Obj, depth: usize, out: &mut String) {
             d.visible,
             d.colour.mul[3],
             d.clip_depth,
-            d.mask.is_some()
+            d.mask.is_some(),
+            d.matrix.a,
+            d.matrix.b,
+            d.matrix.c,
+            d.matrix.d,
+            d.matrix.tx,
+            d.matrix.ty,
+            super::three_d::matrix(o).map_or(String::new(), |m| {
+                let (t, r, sc) = super::three_d::decompose(&m);
+                format!(" 3d t={t:.1?} r={r:.1?} s={sc:.3?}")
+            })
         );
     }
     for c in children(o) {

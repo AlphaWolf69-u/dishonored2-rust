@@ -41,7 +41,7 @@ fn flash_vertex(v: VertexIn) -> VertexOut {
 }
 
 // Sampling modes: 0 texture coordinates, 1 radial gradient, 2 focal
-// gradient (params.y = focal point); 3 marks a premultiplied ramp texture.
+// gradient (params.y = focal point); 3 texture coordinates into a ramp.
 @fragment
 fn flash_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     var uv = in.uv;
@@ -57,10 +57,11 @@ fn flash_fragment(in: VertexOut) -> @location(0) vec4<f32> {
         let t = (-b + sqrt(max(b * b - 4.0 * a * c, 0.0))) / max(2.0 * a, 1e-9);
         uv = vec2(1.0 / max(t, 1e-9), 0.5);
     }
-    var texel = textureSample(fill_texture, fill_sampler, uv);
-    if mode != 0u && texel.a > 0.0 {
-        // Gradient ramps are premultiplied (FUN_1410947c0).
-        texel = vec4(texel.rgb / texel.a, texel.a);
-    }
-    return clamp(texel * in.mul + in.add, vec4(0.0), vec4(1.0));
+    // Bitmaps, ramps (FUN_1410947c0) and layer targets are premultiplied.
+    // GDraw's textured shader (exe 0x229ce80): the multiplier with its rgb
+    // scaled by its alpha, the offset scaled by the result's alpha, rgb no
+    // more than alpha; blended ONE, INV_SRC_ALPHA.
+    let texel = textureSample(fill_texture, fill_sampler, uv);
+    let r = texel * vec4(in.mul.rgb * in.mul.a, in.mul.a);
+    return vec4(min(vec3(r.a), r.rgb + in.add.rgb * r.a), r.a);
 }

@@ -25,6 +25,11 @@ use std::sync::Arc;
 
 pub const SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash.wgsl");
 pub const FILTER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash_filters.wgsl");
+pub const TRANSFER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash_transfer.wgsl");
+
+/// GDraw's render target and texture format (`FUN_1402e2c00`: 0x1c, BC1 and
+/// BC7 UNORM): the UI is drawn and blended in gamma space.
+const UI_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 /// A decoded RGBA8 bitmap.
 pub struct Image {
@@ -68,6 +73,10 @@ enum TextureKey {
 #[derive(Default, Resource)]
 struct FlashUiGpu {
     programs: Option<Programs>,
+    /// The scene-to-canvas and canvas-to-scene passes, by display format.
+    transfer: Option<TransferPrograms>,
+    /// The gamma-space canvas the UI is drawn on, and its size.
+    canvas: Option<(Texture, TextureView, (u32, u32))>,
     textures: HashMap<TextureKey, (Texture, TextureView)>,
     vertices: Option<(Buffer, u64)>,
     stage: Option<Buffer>,
@@ -141,6 +150,70 @@ impl FilterPrograms {
             ..Default::default()
         });
         FilterPrograms { layout, blur: pipeline("blur_fragment"), matrix: pipeline("matrix_fragment"), sampler }
+    }
+}
+
+/// Moves the display target's colour into the gamma-space canvas and back
+/// (`dh2_flash_transfer.wgsl`).
+struct TransferPrograms {
+    display: TextureFormat,
+    layout: BindGroupLayout,
+    to_canvas: RenderPipeline,
+    to_display: RenderPipeline,
+}
+
+impl TransferPrograms {
+    fn new(device: &RenderDevice, display: TextureFormat) -> Self {
+        let layout = device.create_bind_group_layout(
+            Some("flash transfer"),
+            &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                count: None,
+                ty: BindingType::Texture { sample_type: TextureSampleType::Float { filterable: false }, view_dimension: TextureViewDimension::D2, multisampled: false },
+            }],
+        );
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("flash transfer"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let module = device.create_and_validate_shader_module(ShaderModuleDescriptor { label: Some("flash transfer"), source: ShaderSource::Wgsl(TRANSFER_SHADER_SOURCE.into()) });
+        let pipeline = |entry: &'static str, format: TextureFormat| {
+            device.create_render_pipeline(&RawRenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                vertex: RawVertexState { module: &module, entry_point: Some("transfer_vertex"), compilation_options: Default::default(), buffers: &[] },
+                fragment: Some(RawFragmentState {
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(ColorTargetState { format, blend: None, write_mask: ColorWrites::ALL })],
+                }),
+                primitive: PrimitiveState { cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // An sRGB or floating-point view target holds linear colour that is
+        // sRGB-encoded on output; only a plain UNORM target holds it as shown.
+        let linear = !matches!(display, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm);
+        TransferPrograms {
+            display,
+            to_canvas: pipeline(if linear { "encode_fragment" } else { "copy_fragment" }, UI_FORMAT),
+            to_display: pipeline(if linear { "decode_fragment" } else { "copy_fragment" }, display),
+            layout,
+        }
+    }
+
+    fn run(&self, device: &RenderDevice, encoder: &mut CommandEncoder, pipeline: &RenderPipeline, source: &TextureView, destination: &TextureView) {
+        let group = device.create_bind_group(Some("flash transfer"), &self.layout, &BindGroupEntries::single(source));
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("flash transfer"),
+            color_attachments: &[Some(RenderPassColorAttachment { view: destination, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } })],
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 
@@ -225,16 +298,15 @@ impl Programs {
     fn pipeline(&mut self, device: &RenderDevice, key: PipelineKey) -> &RenderPipeline {
         let (format, layout, module) = (self.format, &self.layout, &self.module);
         self.pipelines.entry(key).or_insert_with(|| {
+            // GDraw's blend states (table at `+0xc30`, FUN_1402e0900): add is
+            // ONE/ONE, normal ONE/INV_SRC_ALPHA, the same for alpha.
             let blend = if key.add {
                 BlendState {
-                    color: BlendComponent { src_factor: BlendFactor::SrcAlpha, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
-                    alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                    color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                    alpha: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
                 }
             } else {
-                BlendState {
-                    color: BlendComponent { src_factor: BlendFactor::SrcAlpha, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add },
-                    alpha: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add },
-                }
+                BlendState::PREMULTIPLIED_ALPHA_BLENDING
             };
             // Mask and clear draws write no colour (the zeroed blend state).
             let write_mask = if key.set != 0 || key.clear != 0 { ColorWrites::empty() } else { ColorWrites::ALL };
@@ -353,9 +425,13 @@ fn render_flash_ui(
         return;
     }
     let target = view.into_inner();
-    let format = target.main_texture_format();
-    if gpu.programs.as_ref().is_none_or(|p| p.format != format) {
+    let format = UI_FORMAT;
+    if gpu.programs.is_none() {
         gpu.programs = Some(Programs::new(&device, format));
+    }
+    let display = target.main_texture_format();
+    if gpu.transfer.as_ref().is_none_or(|t| t.display != display) {
+        gpu.transfer = Some(TransferPrograms::new(&device, display));
     }
     // Textures: library bitmaps per player generation, gradient ramps by content.
     let keys: Vec<TextureKey> = frame
@@ -413,6 +489,20 @@ fn render_flash_ui(
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
         gpu.stencil = Some((texture, view, (size.width, size.height)));
+    }
+    if gpu.canvas.as_ref().is_none_or(|c| c.2 != (size.width, size.height)) {
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("flash canvas"),
+            size: Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: UI_FORMAT,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        gpu.canvas = Some((texture, view, (size.width, size.height)));
     }
     // The layers' render targets and composite quads.
     let target_size = (size.width as i32, size.height as i32);
@@ -481,8 +571,12 @@ fn render_flash_ui(
         format,
     };
     let encoder = context.command_encoder();
-    let main = TargetViews { color: target.main_texture_view(), stencil: &gpu.stencil.as_ref().unwrap().1, stage: &stage_group, clear: false };
+    let transfer = gpu.transfer.as_ref().unwrap();
+    let canvas = &gpu.canvas.as_ref().unwrap().1;
+    transfer.run(&device, encoder, &transfer.to_canvas, target.main_texture_view(), canvas);
+    let main = TargetViews { color: canvas, stencil: &gpu.stencil.as_ref().unwrap().1, stage: &stage_group, clear: false };
     draw.range(encoder, &main, 0, frame.list.batches.len() as u32, None);
+    transfer.run(&device, encoder, &transfer.to_display, canvas, target.main_texture_view());
 }
 
 /// A layer's render target: its rectangle in display-target pixels, the

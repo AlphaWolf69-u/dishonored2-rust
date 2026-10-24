@@ -274,6 +274,7 @@ fn main() -> Result<(), String> {
                             format!("{} {} ({num_args})", op_name(&op), multiname(&abc, index))
                         }
                         Op::PushString { value } => format!("PushString {:?}", string(&abc, value)),
+                        Op::PushDouble { value } => format!("PushDouble {}", abc.constant_pool.doubles.get(value.0 as usize - 1).copied().unwrap_or(f64::NAN)),
                         other => format!("{other:?}"),
                     };
                     println!("{at:6} {text}");

@@ -35,7 +35,22 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
 - Startup and tick order follow `FUN_141028160` and `FUN_141021b40`
   (allocate-then-construct timeline children, post-order constructors,
   deferred gotos with modify placements applied at once, broadcasts in
-  reverse registration order).
+  reverse registration order). An object created since the last advance or
+  frame-script pass (`[DO+1] & 2`, set with its frame-1 script due by
+  `FUN_1410252c0`) is not advanced with its subtree: script-built clips run
+  their frame-1 script (a `stop()` on an invisible first frame) before
+  playing on.
+- A 3D object's `scaleX`/`scaleY` are its Matrix3D row lengths
+  (`FUN_141010690`, `FUN_141010720`); tweens that read them keep `fl.motion`
+  3D poses.
+- Rendering follows GDraw D3D11: textures are premultiplied (no texel has
+  colour above alpha); the textured shader (exe 0x229ce80) is
+  `r = tex * (mul.rgb * mul.a, mul.a)`, `rgb = min(r.a, r.rgb + add.rgb * r.a)`;
+  blend states ONE/INV_SRC_ALPHA and add ONE/ONE (`+0xc30` table,
+  `FUN_1402e0900`). Targets and textures are UNORM (`FUN_1402e2c00`), so the UI
+  is drawn on a gamma-space canvas copied from and back to the sRGB display
+  target (measured: the selected label's text is 25 in the game; sRGB
+  blending gave 94).
 - The text language follows `arkLangSystem`; every installed language loads
   both pause movies (`pause_movies_load_in_every_installed_language`).
 
