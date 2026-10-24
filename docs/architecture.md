@@ -77,6 +77,11 @@ bodies, fixed pivots, hinge alignment, angular limits, friction and motor histor
 deltas before transform propagation, visibility and shadow collection. Meshes
 and per-body solver storage are reused. Missing entity endpoints retain the
 world anchor, following the constraint body's initialization rule.
+`gameplay/deactivation.rs` is the hknp per-motion stillness check; the world
+groups constraint-linked candidates into deactivated islands, honours
+`m_startAsleep`, and wakes bodies through motors and wind. `gameplay/entity_lod.rs`
+computes owner LOD levels from the view and last-frame visibility; at level 6+
+constraints freeze their bodies (activation mode 2) until the level drops.
 
 Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
 scene loops and their startup graph bindings from the installed archives.

@@ -14,6 +14,8 @@ pub struct BodyRecipe {
     pub mass: Option<PrincipalMassProperties>,
     pub angular_damping: f32,
     pub wind: Option<BodyWind>,
+    /// `m_startAsleep` (default true): 809d80 adds the body deactivated.
+    pub start_asleep: bool,
 }
 
 /// A body registered with the wind manager (positive `m_windSpeedFactor`):
@@ -271,6 +273,9 @@ pub fn load(
                         .angular_damping
                         .ok_or_else(|| format!("{id}: invalid angular damping"))?,
                     wind,
+                    start_asleep: body
+                        .start_asleep
+                        .ok_or_else(|| format!("{id}: invalid m_startAsleep"))?,
                 });
             }
             Ok(AssemblyRecipe {
@@ -337,8 +342,9 @@ mod tests {
                     .collect();
                 *kinds
                     .entry(format!(
-                        "{:?} f={:?} {:?}",
+                        "{:?} asleep={:?} f={:?} {:?}",
                         body.physics_behavior,
+                        body.start_asleep,
                         body.wind_speed_factor,
                         linked
                     ))
@@ -435,4 +441,45 @@ mod tests {
         assert!(loaded.assemblies.len() >= 35);
         assert!(loaded.unsupported.is_empty());
     }
+    #[test]
+    #[ignore = "audit; requires installed game archives"]
+    fn installed_machinery_sleep_audit() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+        for path in catalog.paths_with_suffix(".entities") {
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            let Ok(document) = entities::parse(&entities::declaration_text(&bytes)) else { continue };
+            let read = |p: &str| {
+                catalog
+                    .read(p)
+                    .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
+                    .map_err(|e| e.to_string())
+            };
+            let mut placements = entities::render_placements(&document);
+            let Ok(more) = entities::placed_models_with_inheritance(&document, read) else { continue };
+            placements.extend(more);
+            let Ok(recipes) = super::load(&catalog, &document, &placements) else { continue };
+            for assembly in &recipes.assemblies {
+                let motor = assembly.joints.iter().any(|j| j.motor.is_some() && j.started);
+                for body in assembly.bodies.iter().filter(|b| b.mass.is_some()) {
+                    *kinds
+                        .entry(format!(
+                            "{} asleep={} motor={} wind={}",
+                            path.split('/').nth(2).unwrap_or(&path),
+                            body.start_asleep,
+                            motor,
+                            body.wind.is_some()
+                        ))
+                        .or_default() += 1;
+                }
+            }
+        }
+        for (kind, count) in kinds {
+            println!("{count:5} {kind}");
+        }
+    }
+
 }

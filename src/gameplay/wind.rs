@@ -527,13 +527,13 @@ mod tests {
         for _ in 0..600 {
             world_wind.advance(1. / 60.);
             for &i in &shutters {
-                let body = &mut world.bodies[i];
+                let body = &world.bodies[i];
                 let wind = match body.wind.as_ref().unwrap().triggers.first() {
                     Some(&t) => &manager.triggers[t],
                     None => &world_wind,
                 };
                 let velocity = wind.velocity(Vec3::from_array(body.mass_center()));
-                body.apply_wind(velocity.to_array(), 1. / 60.);
+                world.apply_wind(i, velocity.to_array(), 1. / 60.);
             }
             world.step([1. / 60.; 5]);
             for &i in &shutters {
@@ -553,6 +553,26 @@ mod tests {
             shutters.iter().map(|&i| world.bodies[i].wind.as_ref().unwrap().triggers.clone()).collect::<Vec<_>>(),
             world.maximum_anchor_error());
         assert!(world.maximum_anchor_error() < 0.05);
+        let awake = shutters.iter().filter(|&&i| world.bodies[i].active()).count();
+        println!("awake in the wind: {awake}/{}", shutters.len());
+        // Live capture: all ten shutters at entity LOD 7 (view 83 m away,
+        // not drawn) are frozen in activation mode 2 and ignore the wind.
+        for &i in &shutters {
+            world.bodies[i].lod.level = 7;
+            world.entity_level_changed(i, 0, 7);
+        }
+        let poses: Vec<_> = shutters.iter().map(|&i| world.bodies[i].motion.pose).collect();
+        for _ in 0..120 {
+            for &i in &shutters {
+                let velocity = world_wind.velocity(Vec3::from_array(world.bodies[i].mass_center()));
+                world.apply_wind(i, velocity.to_array(), 1. / 60.);
+            }
+            world.step([1. / 60.; 5]);
+        }
+        for (k, &i) in shutters.iter().enumerate() {
+            assert!(!world.bodies[i].active());
+            assert_eq!(world.bodies[i].motion.pose, poses[k]);
+        }
     }
 
 }
