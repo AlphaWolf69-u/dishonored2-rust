@@ -5,6 +5,7 @@ pub use assets::archive;
 pub use assets::bmd6;
 pub use assets::bmodel;
 pub use assets::bprobe;
+pub use assets::edge_animation;
 pub use assets::edge_skeleton;
 pub use assets::entities;
 pub use assets::physworld;

@@ -1,7 +1,7 @@
 //! Diagnostics.
 use super::{
     fs, reference_fov_from_projection, save_to_disk, screen_shadow_pass, shadow_pass, tome,
-    transformed, view_to_game, world_mesh, NavigationState, NavigationWorld, Projection, SceneData,
+    transformed, view_to_game, world_mesh, NavigationWorld, Projection, SceneData,
     SceneRenderQueue, Screenshot, SnapshotPath, StreamingDiagnostics, SystemTime, TomeWorld,
     DEFAULT_FAR, DEFAULT_NEAR, UNIX_EPOCH,
 };
@@ -287,7 +287,7 @@ pub(super) fn collision_report(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     scene: Res<SceneData>,
-    navigation: Res<NavigationState>,
+    player: Res<super::player::PlayerState>,
     collision: Option<Res<NavigationWorld>>,
     tome_world: Option<Res<TomeWorld>>,
     render_queue: Res<SceneRenderQueue>,
@@ -321,10 +321,10 @@ pub(super) fn collision_report(
         ),
         None => format!("BWM surface: none along center ray within {distance_limit} m"),
     };
-    let probe_feet = if navigation.walking {
-        navigation.walker.feet
-    } else {
-        camera.translation - Vec3::Y * 1.7
+    let walker = player.player.as_ref().filter(|_| !player.debug_free_fly);
+    let probe_feet = match walker {
+        Some(walker) => super::game_to_view(walker.feet().to_array()),
+        None => camera.translation - Vec3::Y * 1.7,
     };
     let collision_text = if let Some(world) = collision.as_ref() {
         let details = world.0.first_hit_details(
@@ -391,7 +391,7 @@ pub(super) fn collision_report(
     let report_path = directory.join(format!("{stem}.txt"));
     let screenshot_path = directory.join(format!("{stem}.png"));
     let mut report = format!(
-        "Level: {}\nCamera game_xyz: {:?}\nCamera direction game_xyz: {:?}\nCamera up game_xyz: {:?}\nReference horizontal FOV degrees: {}\nFeet probe game_xyz: {:?}\nMode: {}\nWalker supported: {}\nWalker vertical speed: {:.3} m/s\n{}\n{}\n{}\nScreenshot: {}\nNote: In free-fly, feet probe is 1.7 m below the camera; walker state is inactive. BWM ray tests static world geometry; placed visual models are identified in the screenshot. Collision ray tests the combined loaded collision index. Tome object candidates precede the game's final visibility tests.\n",
+        "Level: {}\nCamera game_xyz: {:?}\nCamera direction game_xyz: {:?}\nCamera up game_xyz: {:?}\nReference horizontal FOV degrees: {}\nFeet probe game_xyz: {:?}\nMode: {}\nPlayer support: {}\nPlayer velocity game_xyz: {:?} m/s\n{}\n{}\n{}\nScreenshot: {}\nNote: In the debug free camera, feet probe is 1.7 m below the camera; player state is inactive. BWM ray tests static world geometry; placed visual models are identified in the screenshot. Collision ray tests the combined loaded collision index. Tome object candidates precede the game's final visibility tests.\n",
         scene.source_path.display(),
         view_to_game(camera.translation),
         view_to_game(direction),
@@ -399,17 +399,9 @@ pub(super) fn collision_report(
         reference_fov_from_projection(projection)
             .expect("F8 perspective camera must have a valid FOV"),
         view_to_game(probe_feet),
-        if navigation.walking {
-            "walk"
-        } else {
-            "free-fly"
-        },
-        navigation.walking && navigation.walker.supported,
-        if navigation.walking {
-            navigation.walker.vertical_speed
-        } else {
-            0.0
-        },
+        if walker.is_some() { "player" } else { "debug free camera" },
+        walker.map_or("inactive".to_owned(), |w| format!("{:?}, active states {:?}", w.physics.ground.state, w.machine.active_states())),
+        walker.map(|w| w.physics.velocity),
         visual_text,
         collision_text,
         tome_text,

@@ -1,5 +1,7 @@
-//! Kinematic first-person collision against triangles decoded from the game's
-//! authored Havok physics world. Coordinates are Bevy Y-up metres.
+//! Triangle index over the level's static collision decoded from the game's
+//! authored Havok physics world, with owner activation for collected pickups.
+//! Coordinates are Bevy Y-up metres; the player queries it through
+//! `player::character_proxy::PlayerWorld`.
 use bevy_math::Vec3;
 use std::collections::{HashMap, HashSet};
 
@@ -21,65 +23,6 @@ pub struct CollisionWorld {
     large: Vec<usize>,
     owner_ids: HashMap<String, Vec<u32>>,
     owner_active: Vec<bool>,
-}
-
-pub struct Walker {
-    pub feet: Vec3,
-    pub vertical_speed: f32,
-    pub supported: bool,
-}
-
-impl Walker {
-    pub fn new(feet: Vec3, world: &CollisionWorld) -> Self {
-        let floor = world.floor_at(feet, 0.5, 2.0);
-        Self {
-            feet: Vec3::new(feet.x, floor.unwrap_or(feet.y), feet.z),
-            vertical_speed: 0.0,
-            supported: floor.is_some(),
-        }
-    }
-
-    pub fn step(
-        &mut self,
-        world: &CollisionWorld,
-        direction: Vec3,
-        speed: f32,
-        dt: f32,
-        jump: bool,
-    ) {
-        let dt = dt.min(0.05);
-        let horizontal = Vec3::new(direction.x, 0.0, direction.z).normalize_or_zero();
-        if jump && self.supported {
-            self.vertical_speed = 7.0;
-            self.supported = false;
-        }
-        self.vertical_speed = (self.vertical_speed - 9.81 * dt).max(-30.0);
-        let (mut feet, contact) = world.move_capsule(
-            self.feet,
-            horizontal * speed * dt + Vec3::Y * self.vertical_speed * dt,
-            0.4,
-            1.8,
-        );
-        let mut supported = contact;
-        if self.vertical_speed <= 0.0 {
-            let step_up = if self.supported && horizontal != Vec3::ZERO {
-                0.5
-            } else {
-                0.08
-            };
-            if let Some(floor) = world.floor_at(feet, step_up, 0.25) {
-                if feet.y >= floor - 0.25 {
-                    feet.y = floor;
-                    supported = true;
-                }
-            }
-        }
-        if supported && self.vertical_speed <= 0.0 {
-            self.vertical_speed = 0.0;
-        }
-        self.feet = feet;
-        self.supported = supported;
-    }
 }
 
 impl CollisionWorld {
@@ -199,6 +142,21 @@ impl CollisionWorld {
             .find_map(|(name, indices)| indices.contains(&owner).then_some(name.as_str()))
     }
 
+    /// Active triangles whose bounds overlap `min..max`: (index, vertices,
+    /// owner), owner `u32::MAX` for level geometry.
+    pub fn triangles_in(&self, min: Vec3, max: Vec3) -> Vec<(u32, [Vec3; 3], u32)> {
+        let mut indices = self.candidates(min, max);
+        // Ascending index keeps query results independent of hash order.
+        indices.sort_unstable();
+        indices
+            .into_iter()
+            .map(|index| {
+                let t = self.triangles[index];
+                (index as u32, [t.a, t.b, t.c], t.owner)
+            })
+            .collect()
+    }
+
     fn candidates(&self, min: Vec3, max: Vec3) -> Vec<usize> {
         let low = cell(min);
         let high = cell(max);
@@ -247,52 +205,6 @@ impl CollisionWorld {
             best = Some(best.map_or(height, |previous| previous.max(height)));
         }
         best
-    }
-
-    /// Returns corrected feet and whether a walkable contact was made.
-    pub fn move_capsule(
-        &self,
-        feet: Vec3,
-        displacement: Vec3,
-        radius: f32,
-        height: f32,
-    ) -> (Vec3, bool) {
-        let steps = (displacement.length() / 0.15).ceil().clamp(1.0, 32.0) as usize;
-        let mut position = feet;
-        let mut grounded = false;
-        for _ in 0..steps {
-            position += displacement / steps as f32;
-            for _ in 0..5 {
-                let min = position + Vec3::new(-radius, 0.0, -radius);
-                let max = position + Vec3::new(radius, height, radius);
-                let mut correction = Vec3::ZERO;
-                for index in self.candidates(min, max) {
-                    let triangle = self.triangles[index];
-                    for center_y in [radius, height * 0.5, height - radius] {
-                        let center = position + Vec3::Y * center_y;
-                        let closest = closest_on_triangle(center, triangle);
-                        let delta = center - closest;
-                        let distance = delta.length();
-                        if distance >= radius || distance < 1e-5 {
-                            continue;
-                        }
-                        let normal = delta / distance;
-                        let push = normal * (radius - distance + 0.001);
-                        if push.length_squared() > correction.length_squared() {
-                            correction = push;
-                        }
-                        if normal.y > 65.0_f32.to_radians().cos() {
-                            grounded = true;
-                        }
-                    }
-                }
-                if correction == Vec3::ZERO {
-                    break;
-                }
-                position += correction;
-            }
-        }
-        (position, grounded)
     }
 }
 
@@ -343,89 +255,9 @@ fn vertical_intersection(x: f32, z: f32, triangle: Triangle) -> Option<f32> {
     Some(triangle.a.y + u * v0.y + v * v1.y)
 }
 
-// Closest point on a triangle, including its edges and vertices.
-fn closest_on_triangle(p: Vec3, t: Triangle) -> Vec3 {
-    let ab = t.b - t.a;
-    let ac = t.c - t.a;
-    let ap = p - t.a;
-    let d1 = ab.dot(ap);
-    let d2 = ac.dot(ap);
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return t.a;
-    }
-    let bp = p - t.b;
-    let d3 = ab.dot(bp);
-    let d4 = ac.dot(bp);
-    if d3 >= 0.0 && d4 <= d3 {
-        return t.b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return t.a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - t.c;
-    let d5 = ab.dot(cp);
-    let d6 = ac.dot(cp);
-    if d6 >= 0.0 && d5 <= d6 {
-        return t.c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return t.a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
-        return t.b + (t.c - t.b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let denom = 1.0 / (va + vb + vc);
-    t.a + ab * (vb * denom) + ac * (vc * denom)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn floor_supports_capsule() {
-        let world = CollisionWorld::new([[
-            Vec3::new(-4.0, 0.0, -4.0),
-            Vec3::new(4.0, 0.0, -4.0),
-            Vec3::new(0.0, 0.0, 4.0),
-        ]]);
-        assert_eq!(
-            world.floor_at(Vec3::new(0.0, 0.2, 0.0), 0.5, 1.0),
-            Some(0.0)
-        );
-        let (feet, grounded) = world.move_capsule(
-            Vec3::new(0.0, 0.5, 0.0),
-            Vec3::new(0.0, -1.0, 0.0),
-            0.4,
-            1.8,
-        );
-        assert!(grounded);
-        assert!((feet.y - 0.0).abs() < 0.05, "{feet:?}");
-    }
-    #[test]
-    fn wall_blocks_horizontal_movement() {
-        let world = CollisionWorld::new([
-            [
-                Vec3::new(0.0, 0.0, -2.0),
-                Vec3::new(0.0, 3.0, -2.0),
-                Vec3::new(0.0, 0.0, 2.0),
-            ],
-            [
-                Vec3::new(0.0, 3.0, -2.0),
-                Vec3::new(0.0, 3.0, 2.0),
-                Vec3::new(0.0, 0.0, 2.0),
-            ],
-        ]);
-        let (feet, _) = world.move_capsule(
-            Vec3::new(-1.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            0.4,
-            1.8,
-        );
-        assert!(feet.x < -0.35, "{feet:?}");
-    }
     #[test]
     fn segment_hit_finds_nearest_wall_from_either_side() {
         let world = CollisionWorld::new([

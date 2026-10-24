@@ -597,75 +597,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 world.floor_at(point - Vec3::Y * 0.4, 0.05, 5.0),
                 world.nearby_triangle_count(point, 2.0)
             );
-            let mut walker = navigation::Walker::new(point, &world);
-            let probe_start = std::time::Instant::now();
-            for _ in 0..180 {
-                walker.step(&world, Vec3::ZERO, 0.0, 1.0 / 60.0, false);
-            }
-            if profile {
-                println!(
-                    "PERF 180 walker steps: {:.3}s",
-                    probe_start.elapsed().as_secs_f64()
-                );
-            }
-            println!(
-                "NAV POINT after 3s: feet={:?}, drop={:.3}m, supported={}",
-                walker.feet,
-                point.y - walker.feet.y,
-                walker.supported
-            );
+            let feet = Vec3::from(coordinates.clone().try_into().unwrap_or([0.0; 3]));
+            super::player::probe_player(catalog.as_ref().unwrap(), &world, feet, 0.0, false)?;
             return Ok(());
         }
         if env::var("DH2_NAV_PROBE").as_deref() == Ok("1") {
             let start = player_start.ok_or("navigation probe needs a player start")?;
-            let reference = game_to_view(start.position);
-            let floor = world.floor_at(reference, 0.5, 2.0);
-            let mut walker = navigation::Walker::new(reference, &world);
-            for _ in 0..180 {
-                walker.step(&world, Vec3::ZERO, 0.0, 1.0 / 60.0, false);
-            }
-            println!(
-                "NAV PROBE spawn feet={reference:?} floor={floor:?} after 3s={:?} supported={}",
-                walker.feet, walker.supported
-            );
-            for (label, direction) in [
-                (
-                    "forward",
-                    game_to_view([start.forward_xy[0], start.forward_xy[1], 0.0]),
-                ),
-                (
-                    "back",
-                    -game_to_view([start.forward_xy[0], start.forward_xy[1], 0.0]),
-                ),
-                (
-                    "right",
-                    Vec3::new(start.forward_xy[1], 0.0, start.forward_xy[0]),
-                ),
-            ] {
-                let mut walker = navigation::Walker::new(reference, &world);
-                for _ in 0..120 {
-                    walker.step(&world, direction, 6.0, 1.0 / 60.0, false);
-                }
-                println!(
-                    "NAV PROBE {label} after 2s: feet={:?}, displacement={:.2}m, supported={}",
-                    walker.feet,
-                    walker.feet.distance(reference),
-                    walker.supported
-                );
-            }
-            let mut jumper = navigation::Walker::new(reference, &world);
-            let initial_height = jumper.feet.y;
-            let mut peak = initial_height;
-            for frame in 0..180 {
-                jumper.step(&world, Vec3::ZERO, 0.0, 1.0 / 60.0, frame == 0);
-                peak = peak.max(jumper.feet.y);
-            }
-            println!(
-                "NAV PROBE jump peak +{:.2}m, after 3s feet={:?}, supported={}",
-                peak - initial_height,
-                jumper.feet,
-                jumper.supported
-            );
+            let yaw = start.forward_xy[1].atan2(start.forward_xy[0]);
+            super::player::probe_player(catalog.as_ref().unwrap(), &world, Vec3::from(start.position), yaw, true)?;
             return Ok(());
         }
         app.insert_resource(NavigationWorld(world));
@@ -941,7 +880,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_systems(
             Update,
             (
+                super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
+                super::player::update_player,
                 super::machinery::update_machinery,
                 super::fog_scene::update_world_wind,
                 update_coordinate_overlay,

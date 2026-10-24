@@ -175,6 +175,55 @@ outputs on the actual Vulkan and DirectX 12 devices; shadow GPU readbacks also
 exercise depth-array layer counts.
 
 
+## Player locomotion
+
+`gameplay/player/` ports the first-person player in the game frame's stage
+order (FUN_1408ad260): input dispatch on simulated frames only, QUERY_PHYSICS
+ground/ceiling queries, DEFAULT controller → state machine → camera pitch and
+speed FOV, PRE_PHYSICS physics step, PRE_RENDER view. The step uses the
+player clock group's delta (whole 1/120 s ticks); mouse look scales by clock
+group 0.
+
+- `controller.rs` (arkCpntPlayerController): bound action events from the
+  IN_GAME binding set become held/pressed/released/toggled masks, the
+  normalised keyboard move and mouse look (`g_mouseClamp`,
+  `g_mouseSensitivity`, `g_fixMouseSensibility`, `g_invertMouseYAxis`), the
+  support-state Falling/landing requests and the decl `m_statesMapping`.
+- `states.rs` (arkCpntPlayerStateMachine): command processing with the
+  body-part rule table and the mode's `m_rules`; Running, Sneaking (crouch
+  toggle), Sprinting (`g_sprintToggle`), Jumping (vertical move to the apex
+  with `m_maximumVelocity`/`m_steepness`) and Falling (InAir steering, air
+  friction, extended ground probe, landing). Velocity requests follow the
+  movement object's one-frame, newest-first lists.
+- `physics.rs` (arkPhysicsPlayer FUN_1401b4760 and arkCpntPlayerPhysics
+  queries): posture shapes, linear and yaw limiters, gravity strength ×
+  (0, 0, −9.81), downhill projection, vertical move, speed scale.
+- `character_proxy.rs` / `simplex_solver.rs` (hknpCharacterProxy integrate
+  FUN_140085a40, checkSupport FUN_140c82a50, hkSimplexSolver FUN_140b82be0):
+  manifold, surface constraints with max-slope walls and penetration
+  recovery, cast iterations. Steps are climbed by the hull's foot cone; the
+  proxy has no step-up code.
+- `shape_cast.rs` answers the hknp castShape/closest-point contract on the
+  level triangles (GJK and conservative advancement); Havok's own kernels,
+  welding and its penetration solver are not ported (an overlapping hull
+  uses `approximate_penetration`).
+- `camera.rs` / `body.rs`: the view is `camera_jnt` of the body pose, pitched
+  through the spine03/neck/head split and kept inside the capsule; the body
+  plays the stance transition clip, then loops the stance's Idle clip
+  (`approximate_stance_pose`), read by `assets/edge_animation.rs`.
+- `assets/entities/player.rs` resolves the character's body def components,
+  startup mode, states, locomotion decl and md6 animsets.
+
+Measured in the running game (sample_player_motion.py, tlf_view capture):
+run 4.14 m/s unequipped, jump apex 1.500 m with the 5.1 m/s / 0.74 vertical
+move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
+at 11.5° pitch, matching the port within the camera idle bob (a few mm).
+
+Not ported: the speed-driven locomotion blend tree and the camera animset bob
+additive, footsteps, hand equipment (the player moves unequipped), slipping,
+sliding, mantle, vault, autocrouch, wallcrouch, catfall, fall damage, leaning,
+swimming, powers, impulses and moving or dynamic bodies.
+
 ## Background materials and fog-volume routing
 
 Ordinary placed props and world surfaces use the installed HDR reflection cubemaps as well as

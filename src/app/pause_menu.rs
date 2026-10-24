@@ -168,10 +168,10 @@ impl Default for PauseMenu {
     }
 }
 
-/// The player character. The rewrite has no player/save state yet, so the
-/// character cannot come from the game; `DH2_DEBUG_CHARACTER=emily` selects
-/// Emily's movie for testing, Corvo otherwise.
-fn debug_character() -> Character {
+/// The player character. The rewrite has no save state yet, so the character
+/// cannot come from the game; `DH2_DEBUG_CHARACTER=emily` selects Emily's
+/// movie and player declarations for testing, Corvo otherwise.
+pub(super) fn debug_character() -> Character {
     match std::env::var("DH2_DEBUG_CHARACTER").as_deref() {
         Ok("emily") => Character::Emily,
         _ => Character::Corvo,
