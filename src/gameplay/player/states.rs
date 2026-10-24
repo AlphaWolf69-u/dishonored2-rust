@@ -1218,6 +1218,8 @@ impl StateMachine {
                 self.deactivate(index, frame);
             }
         }
+        // Every accepted state activates, an already active one (allowSelf)
+        // again (vtbl+0x50 / +0x58 are called unconditionally).
         for (id, speed) in accepted {
             let index = self.index(id).unwrap();
             if !self.states[index].active {
@@ -1226,8 +1228,8 @@ impl StateMachine {
                 } else {
                     self.active.push(id);
                 }
-                self.activate(index, speed, frame);
             }
+            self.activate(index, speed, frame);
         }
         if !self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.primary)) {
             let mut id = self.default_state;
