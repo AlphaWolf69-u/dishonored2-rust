@@ -243,4 +243,33 @@ mod tests {
             assert!(worst < 2e-3, "joints derived from bodies leave the rest pose by {worst}");
         }
     }
+
+    #[test]
+    #[ignore = "requires installed Dust District archives"]
+    fn installed_dust_speakers_follow_their_simulated_turnbuckles() {
+        let catalog = Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let placements =
+            super::super::expanded_model_placements(&crate::entities::render_placements(&document), &catalog);
+        let recipes = crate::entities::machinery::recipes::load(&catalog, &document, &placements).unwrap();
+        let world = MachineryWorld::from_recipes(&recipes).unwrap();
+        let binds = crate::entities::entity_binds(&document);
+        let speakers: Vec<_> = binds.iter().filter(|b| b.parent.starts_with("ld_kar_speaker_turnbuckle")).collect();
+        assert_eq!(speakers.len(), 3);
+        for bind in speakers {
+            let parent = placements.iter().position(|p| p.id == bind.parent).expect("turnbuckle placement");
+            assert!(
+                world.bodies.iter().any(|b| b.placement == Some(parent)),
+                "{} is not a simulated body",
+                bind.parent
+            );
+            let child = placements.iter().position(|p| p.id == bind.entity_id).expect("speaker placement");
+            let mut bound = super::super::model_motion::BoundModels::new(binds.clone());
+            let mut poses = vec![super::super::model_motion::ModelPose { placement: parent, delta: [[1., 0., 0., 0.5], [0., 1., 0., 0.], [0., 0., 1., 0.]] }];
+            bound.propagate(&mut poses, &placements);
+            assert!(poses.iter().any(|p| p.placement == child), "{} does not follow {}", bind.entity_id, bind.parent);
+        }
+    }
 }

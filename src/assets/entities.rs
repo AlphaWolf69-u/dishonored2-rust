@@ -2039,6 +2039,36 @@ pub fn rigid_body_behavior_kind(name: &str) -> Option<u8> {
 
 /// Read every map-local rigid-body binding, including empty declarations.
 /// FUN_140806eb0 defaults behavior to dynamic, shape to convex and materials to null.
+/// `bindInfo`: 140752900 attaches the entity to `bindParent` (or that
+/// parent's `bindToTag` joint) with its spawn transform made parent-local;
+/// 140753c10 -> 1407506d0 then places it from the parent every frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityBind {
+    pub entity_id: String,
+    pub parent: String,
+    pub tag: Option<String>,
+}
+
+pub fn entity_binds(document: &Document) -> Vec<EntityBind> {
+    let text = |fields: &[(String, Value)], key: &str| match field(fields, key) {
+        Some(Value::Atom(value)) => Some(value.trim_matches('"').to_owned()).filter(|v| !v.is_empty()),
+        _ => None,
+    };
+    document
+        .definitions
+        .iter()
+        .filter(|definition| definition.kind == "entity")
+        .filter_map(|definition| {
+            let bind = scope(field(scope(field(&definition.fields, "edit"))?, "bindInfo"))?;
+            Some(EntityBind {
+                entity_id: definition.id.clone(),
+                parent: text(bind, "bindParent")?,
+                tag: text(bind, "bindToTag"),
+            })
+        })
+        .collect()
+}
+
 pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
     let declarations: HashMap<&str, &Definition> = document
         .definitions
@@ -3684,6 +3714,22 @@ entity { entityDef cable { edit = {
 
 #[cfg(test)]
 #[test]
+    fn bind_info_names_the_parent_and_optional_tag() {
+        let document = parse(
+            r#"Version 6
+entity { entityDef speaker { class = "idDynamicEntity"; edit = { bindInfo = { bindParent = "turnbuckle"; } } } }
+entity { entityDef handle { class = "arkUsable"; edit = { bindInfo = { bindParent = "door"; bindToTag = "joint_handle"; } } } }
+entity { entityDef loose { class = "idEntity"; edit = { spawnPosition = { x = 1; } } } }
+"#,
+        )
+        .unwrap();
+        let binds = entity_binds(&document);
+        assert_eq!(binds.len(), 2);
+        assert_eq!((binds[0].entity_id.as_str(), binds[0].parent.as_str(), binds[0].tag.as_deref()), ("speaker", "turnbuckle", None));
+        assert_eq!(binds[1].tag.as_deref(), Some("joint_handle"));
+    }
+
+    #[test]
 fn material_resource_scopes_keep_root_order_and_skip_unrelated_values() {
     let text=r#"{ options { water/skycubemap ignored } other ipr_color(1,2,3)
         water/skycubemap "_defaultCube" parms { water/causticstex rendering/water/caustics3.dds }
