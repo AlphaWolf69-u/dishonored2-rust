@@ -385,9 +385,32 @@ impl Builder<'_> {
     /// (the glyph bitmap cache is not ported).
     fn text(&mut self, o: &Obj, m: &Affine, c: &Colour, blend: u8) {
         let glyphs = super::text::text_object(o).map(|t| t.glyphs()).unwrap_or_default();
+        // `FUN_14102e950`: text filters are emulated by drawing the glyphs
+        // again, before the text. A drop shadow (SWF filter 0) with both blurs
+        // at most 2 (`DAT_141ab3b20`) is one copy in the filter's colour,
+        // moved by (cos, sin)(angle) × distance in stage pixels. Larger blurs
+        // (rings of copies) and script-assigned filters are not ported.
+        let filters = display_ref(o).filter(|d| d.filters.is_empty()).map(|d| d.timeline_filters.clone()).unwrap_or_default();
+        for filter in &filters {
+            if let crate::assets::iggy::timeline::Filter::DropShadow { colour, blur, angle, distance, .. } = filter {
+                if blur[0] <= 2.0 && blur[1] <= 2.0 {
+                    let offset = ((angle.cos() * distance) as f64, (angle.sin() * distance) as f64);
+                    let rgba = colour.map(|v| v as f32 / 255.0);
+                    self.glyphs(&glyphs, m, c, blend, offset, Some(rgba));
+                }
+            }
+        }
+        self.glyphs(&glyphs, m, c, blend, (0.0, 0.0), None);
+    }
+
+    /// `FUN_14102dcd0`: the glyphs in their colours, or all in `colour`
+    /// (a filter pass), moved by `offset` stage pixels.
+    fn glyphs(&mut self, glyphs: &[super::text_engine::PlacedGlyph], m: &Affine, c: &Colour, blend: u8, offset: (f64, f64), colour: Option<[f32; 4]>) {
         for glyph in glyphs {
-            let colour = [((glyph.colour >> 16) & 0xff) as f32 / 255.0, ((glyph.colour >> 8) & 0xff) as f32 / 255.0, (glyph.colour & 0xff) as f32 / 255.0, 1.0];
-            let gm = Affine { a: glyph.size as f64, b: 0.0, c: 0.0, d: glyph.size as f64, tx: glyph.x as f64, ty: glyph.y as f64 }.then(m);
+            let colour = colour.unwrap_or([((glyph.colour >> 16) & 0xff) as f32 / 255.0, ((glyph.colour >> 8) & 0xff) as f32 / 255.0, (glyph.colour & 0xff) as f32 / 255.0, 1.0]);
+            let mut gm = Affine { a: glyph.size as f64, b: 0.0, c: 0.0, d: glyph.size as f64, tx: glyph.x as f64, ty: glyph.y as f64 }.then(m);
+            gm.tx += offset.0;
+            gm.ty += offset.1;
             let scale = ((gm.a * gm.a + gm.b * gm.b).sqrt()) as f32;
             for (li, layer) in glyph.font.glyphs[glyph.glyph].layers.iter().enumerate() {
                 // Glyph paths reference fill 1 and carry no fill list.

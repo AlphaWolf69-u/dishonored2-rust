@@ -49,7 +49,9 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
 2. `m_isLightVM` default: classes gated on `VM+0x6b40` are installed on the
    assumption that the pause decl's unset bit is 0. Next: read the decl
    default in `FUN_1404f2cd0` or the VM flag at runtime.
-3. Rendering not yet ported: filters, blend modes beyond normal/add,
+3. Rendering not yet ported: filters other than the text emulation of
+   `FUN_14102e950` (drop shadows with blurs up to 2: one offset copy in the
+   filter colour; larger blurs, bevels and script filters are not ported), blend modes beyond normal/add,
    cacheAsBitmap, the glyph bitmap cache, the exact curve flattening tolerance
    (`player+0x1e80`), game textures (save screenshots). Masks and clip layers
    follow `FUN_141037100` and GDraw's stencil state (notes-masks.md) except
