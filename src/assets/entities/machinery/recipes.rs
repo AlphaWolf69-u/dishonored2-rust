@@ -50,6 +50,7 @@ pub struct SystemRecipe {
     pub system: physworld::physics_system::PhysicsSystem,
     pub skeleton: String,
     pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+    pub collision_layer: Option<String>,
 }
 
 pub struct MachineryRecipes {
@@ -66,7 +67,7 @@ fn physics_systems(
     placements: &[PlacedModel],
     unsupported: &mut Vec<String>,
 ) -> Vec<SystemRecipe> {
-    let behavior = |declaration: &str| {
+    let edit = |declaration: &str, key: &str| {
         document
             .definitions
             .iter()
@@ -75,7 +76,7 @@ fn physics_systems(
             .and_then(|(_, v)| match v {
                 entities::Value::Scope(fields) => fields
                     .iter()
-                    .find(|(k, _)| k == "m_PhysicsBehavior")
+                    .find(|(k, _)| k == key)
                     .and_then(|(_, v)| match v {
                         entities::Value::Atom(a) => Some(a.trim_matches('"').to_owned()),
                         _ => None,
@@ -95,10 +96,19 @@ fn physics_systems(
         if binding.class != "cpntPhysicsSystem" {
             continue;
         }
-        if behavior(&binding.declaration_id).as_deref() != Some("BEHAVIOR_DYNAMIC") {
+        if edit(&binding.declaration_id, "m_PhysicsBehavior").as_deref() != Some("BEHAVIOR_DYNAMIC") {
             continue;
         }
+        let layer = edit(&binding.declaration_id, "m_layer");
         let id = binding.entity_id.as_str();
+        // 14076abc0 gives every system body the component layer's filter
+        // info (14081a5d0); machinery bodies have no contacts, so only a
+        // layer that collides with nothing (HIDDEN) is simulated faithfully.
+        let index = layer.as_deref().and_then(crate::gameplay::collision_filter::layer_index);
+        if index.is_none_or(crate::gameplay::collision_filter::layer_collides) {
+            unsupported.push(format!("{id}: physics system on layer {layer:?} needs contacts"));
+            continue;
+        }
         let load = || -> Result<Option<SystemRecipe>, String> {
             let Some((index, p)) = placements
                 .iter()
@@ -138,6 +148,7 @@ fn physics_systems(
                 system,
                 skeleton: binding.name,
                 ragdoll,
+                collision_layer: layer.clone(),
             }))
         };
         match load() {
@@ -581,12 +592,24 @@ mod tests {
             placements.extend(more);
             let Ok(recipes) = super::load(&catalog, &document, &placements) else { continue };
             for system in &recipes.systems {
-                *kinds.entry(format!("SYSTEM {} {} bodies", system.system.name, system.system.bodies.len())).or_default() += 1;
+                *kinds
+                    .entry(format!(
+                        "SYSTEM {} {} bodies layer {:?}",
+                        system.system.name,
+                        system.system.bodies.len(),
+                        system.collision_layer
+                    ))
+                    .or_default() += 1;
             }
             for problem in recipes.unsupported.iter().filter(|p| p.contains("physics") || p.contains("ragdoll") || p.contains("MD6") || p.contains("articulated")) {
                 *kinds.entry(format!("UNSUPPORTED {problem}")).or_default() += 1;
             }
             for assembly in &recipes.assemblies {
+                let cone = |j: &&ConstraintSettings| j.angular_constraint == "ANGULAR_CONSTRAINT_CONE";
+                let cones = assembly.joints.iter().filter(cone).count();
+                if cones > 0 && cones < assembly.joints.len() {
+                    *kinds.entry(format!("MIXED cone/hinge assembly in {path}")).or_default() += 1;
+                }
                 let motor = assembly.joints.iter().any(|j| j.motor.is_some() && j.started);
                 for body in assembly.bodies.iter().filter(|b| b.mass.is_some()) {
                     *kinds

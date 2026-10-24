@@ -86,7 +86,13 @@ Physics systems (`assets/physworld/physics_system.rs`) load an MD6's init
 `ragdoll` hknpPhysicsSystemData and its hashed `.ragdoll` body-to-joint map;
 their ragdoll constraints and arkCpntConstraint cones are atom stacks
 (`constraint_solver/atom_stack.rs`, bit-exact to 140c45400) solved with the
-machinery. `app/physics_skinning.rs` poses those MD6 placements from the
+machinery. All constraints solve in creation order (1412a3480 + stable radix
+sort by island), interleaving cones and hinges. System bodies start active
+(the component is unpaused at spawn) and carry their `m_layer` filter info;
+`gameplay/collision_filter.rs` ports the layer masks and arkCollisionFilter
+pair rule, and only systems on a layer that collides with nothing (HIDDEN,
+every placed system in the game) are simulated, since machinery bodies have
+no contacts. `app/physics_skinning.rs` poses those MD6 placements from the
 bodies each frame (per-placement meshes and shadow palettes).
 
 Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
