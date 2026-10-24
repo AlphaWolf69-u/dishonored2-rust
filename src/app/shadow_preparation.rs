@@ -795,6 +795,9 @@ pub(super) struct WorldShadowAdmission<'a> {
     sources: &'a WorldShadowMeshSources,
     materials: &'a ShadowMaterials,
     flags: [std::sync::OnceLock<Result<Vec<u8>, String>>; 2],
+    /// The local-light gathers (2a2490/2a3080/2a4850) write each wind
+    /// instance's 77fbc0 windInfo, unlike the whole-view gather's zeros.
+    winds: Option<&'a super::vegetation_wind::ShadowWinds<'a>>,
 }
 
 impl<'a> WorldShadowAdmission<'a> {
@@ -808,7 +811,13 @@ impl<'a> WorldShadowAdmission<'a> {
             sources,
             materials,
             flags: Default::default(),
+            winds: None,
         }
+    }
+
+    pub(super) fn with_winds(mut self, winds: &'a super::vegetation_wind::ShadowWinds<'a>) -> Self {
+        self.winds = Some(winds);
+        self
     }
 
     fn flags(&self, exclude_lod: bool) -> Result<&[u8], String> {
@@ -963,6 +972,19 @@ pub(super) fn prepare_world_shadow_masks_with_admission(
             return Err(format!(
                 "whole-view mask {mask_index} auxiliary seed differs from the verified zero source"
             ));
+        }
+        if let (true, Some(winds)) = (owner.exclude_lod, admission.winds) {
+            for packet in &gathered.packets {
+                let Some(start) = packet.auxiliary_start else {
+                    continue;
+                };
+                for k in 0..(packet.end - packet.start) as usize {
+                    let matrix = gathered.instance_ids[packet.start as usize + k] as usize;
+                    if let Some(record) = winds.record(matrix) {
+                        gathered.auxiliary[start as usize + k] = record;
+                    }
+                }
+            }
         }
 
         let mut plan = WorldShadowMaskPlan {
