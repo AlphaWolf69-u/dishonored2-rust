@@ -3,9 +3,10 @@
 //! (SetLean FUN_1407747e0, EndLean FUN_140775370, ApplyLean FUN_140776b70)
 //! and the pose the camera reads `camera_jnt` from (`animation.rs`).
 //!
-//! The jump/land camera additives (animBasic node), arms, footsteps, follow
-//! slope and the swim branch are not ported.
-use super::animation::{blend_add, sample, wrap180, LocoNode, Pose};
+//! The jump/land camera additives play through the animBasic node
+//! (`animation.rs`). Arms, footsteps, hit reactions, follow slope and the
+//! swim branch are not ported.
+use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNode, LocoNode, PlayMode, Pose};
 use super::camera::BodyPose;
 use super::sensors::LeanSensor;
 use super::states::LocoStances;
@@ -39,20 +40,23 @@ impl Default for BodyDecl {
     }
 }
 
-/// The cvars the body reads (`ark_playerSmoothedLoco`, the head-bob option
-/// `ark_playerBobAmount`) and the difficulty's lean limits.
+/// The cvars the body and its states read (`ark_playerSmoothedLoco`, the
+/// head-bob option `ark_playerBobAmount`, `ark_playerSmallFallCooldown`) and
+/// the difficulty's lean limits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     pub smoothed_loco: bool,
     pub bob_amount: f32,
+    pub small_fall_cooldown: f32,
     pub lean_limits: [f32; 2],
 }
 
 impl Default for BodySettings {
     fn default() -> Self {
-        Self { smoothed_loco: true, bob_amount: 1.0, lean_limits: [1.0; 2] }
+        Self { smoothed_loco: true, bob_amount: 1.0, small_fall_cooldown: 0.5, lean_limits: [1.0; 2] }
     }
 }
+
 
 /// arkTimeSmoothedValue<8> (FUN_140770040 / FUN_140770680): a moving
 /// average of 1/30 s buckets.
@@ -159,6 +163,82 @@ impl Lean {
     }
 }
 
+/// An additives-node command the jump stage posts (FUN_140772f90's table:
+/// kinds 0..5 are in, loop, out and their sneak variants; FUN_140540a00
+/// stops).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AdditiveCommand {
+    Play { kind: usize, weight: f32 },
+    Stop,
+}
+
+/// The body's jump/land camera stage (+0xdb4 m_jumpStage: 0 none, 1 in
+/// posted, 2 in running, 3 loop, 4 out; +0xdb8 crouch, +0xdbc weight,
+/// +0xdc0 stop at the loop).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JumpAnim {
+    pub stage: u32,
+    crouch: bool,
+    weight: f32,
+    pub stop_at_loop: bool,
+    pub commands: Vec<AdditiveCommand>,
+}
+
+impl JumpAnim {
+    pub fn crouch(&self) -> bool {
+        self.crouch
+    }
+
+    /// FUN_140774f10: `direct` starts at the loop.
+    pub fn start(&mut self, crouch: bool, weight: f32, direct: bool) {
+        if self.stage & !4 != 0 {
+            return;
+        }
+        self.weight = weight;
+        self.crouch = crouch;
+        self.stage = if direct { 3 } else { 1 };
+        let kind = match (direct, crouch) {
+            (false, false) => 0,
+            (false, true) => 3,
+            (true, false) => 1,
+            (true, true) => 4,
+        };
+        self.commands.push(AdditiveCommand::Play { kind, weight });
+    }
+
+    /// FUN_140775270: the landing out clip, or a cancel.
+    pub fn end(&mut self, crouch: bool, cancel: bool) {
+        if !cancel || self.stage == 0 {
+            if self.stage & !4 != 0 {
+                self.crouch = crouch;
+                self.stage = 4;
+                self.commands.push(AdditiveCommand::Play { kind: if crouch { 5 } else { 2 }, weight: self.weight });
+            }
+        } else {
+            self.stage = 0;
+            self.commands.push(AdditiveCommand::Stop);
+        }
+    }
+
+    /// FUN_140776a40 (body update).
+    fn tick(&mut self) {
+        match self.stage {
+            1 => self.stage = 2,
+            2 => {
+                self.commands.push(AdditiveCommand::Play { kind: if self.crouch { 4 } else { 1 }, weight: self.weight });
+                self.stage = 3;
+            }
+            3 if self.stop_at_loop => {
+                self.stage = 0;
+                self.commands.push(AdditiveCommand::Stop);
+                self.stop_at_loop = false;
+            }
+            4 => self.stage = 0,
+            _ => {}
+        }
+    }
+}
+
 pub struct Body {
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
@@ -173,6 +253,11 @@ pub struct Body {
     pub speed: f32,
     pub angle: f32,
     bob_amount: f32,
+    pub jump: JumpAnim,
+    /// The tree's `additives` node and the item index of each jump kind
+    /// (arkAdditivesSettings +4..+9).
+    pub additives: AnimBasicNode,
+    pub jump_items: [Option<usize>; 6],
     pub lean: Lean,
     /// `m_leanLeftAnimAlias` / `m_leanUpAnimAlias` clips (paused leaves of
     /// the tree root) and the frames ApplyLean scrubs them to.
@@ -195,6 +280,9 @@ impl Body {
             speed: 0.0,
             angle: 0.0,
             bob_amount: 1.0,
+            jump: JumpAnim::default(),
+            additives: AnimBasicNode::default(),
+            jump_items: [None; 6],
             lean: Lean { limits: [1.0; 2], ..Lean::default() },
             lean_clips: [None; 2],
             lean_frames: [0.0; 2],
@@ -239,11 +327,10 @@ impl Body {
     }
 
     /// DEFAULT stage FUN_140777280 then the tree's node updates.
-    /// `velocity` is FUN_1407fdb50 (entity velocity minus physics gravity);
-    /// `jumping` is a non-zero jump stage.
-    pub fn update(&mut self, dt: f32, stances: &LocoStances, velocity: Vec3, axis: Mat3, jumping: bool, settings: BodySettings) {
+    /// `velocity` is FUN_1407fdb50 (entity velocity minus physics gravity).
+    pub fn update(&mut self, dt: f32, stances: &LocoStances, velocity: Vec3, axis: Mat3, settings: BodySettings) {
         let mut speed = velocity.length();
-        if jumping {
+        if self.jump.stage != 0 {
             speed = 0.0;
         }
         let mut angle = 0.0;
@@ -278,6 +365,30 @@ impl Body {
         self.lean.limits = settings.lean_limits;
 
         self.phase_sync();
+        self.jump.tick();
+        // The IO entry keeps the last command posted since the tree's last
+        // update (FUN_1406e1fe0 overwrites it).
+        let mut command = None;
+        for posted in self.jump.commands.drain(..) {
+            match posted {
+                AdditiveCommand::Play { kind, weight } => match self.jump_items[kind] {
+                    // FUN_140772f90 → FUN_14053eef0 posts only a weight above 0.
+                    Some(idx) if weight > 0.0 => {
+                        let (mode, play_on_end) = match kind % 3 {
+                            0 => (PlayMode::AndStay, false),
+                            1 => (PlayMode::Loop, true),
+                            _ => (PlayMode::Once, false),
+                        };
+                        command = Some(AnimBasicCommand { idx: idx as i32, weight, mode, rate: 1.0, start: 0.0, play_on_end });
+                    }
+                    Some(_) => {}
+                    None => command = Some(AnimBasicCommand::STOP),
+                },
+                AdditiveCommand::Stop => command = Some(AnimBasicCommand::STOP),
+            }
+        }
+        self.additives.update(dt, command, &self.animations);
+
         let body_stance = stances.current.clone().unwrap_or_default();
         let bob_stance = stances.bob.clone().unwrap_or_else(|| body_stance.clone());
         self.body_node.update(dt, &body_stance, speed * self.speed_interpolation, angle, &self.animations);
@@ -301,7 +412,7 @@ impl Body {
         self.bob_node.rate_multiplier = rate;
     }
 
-    /// The model-space pose: body ⊕ bobAmount·bob.
+    /// The model-space pose: body ⊕ bobAmount·bob ⊕ additives, then the lean layers.
     pub fn pose(&self) -> Result<BodyPose, String> {
         let skeleton = &self.skeleton;
         let mut pose = match self.body_node.evaluate(&self.animations, &skeleton.rest)? {
@@ -313,6 +424,10 @@ impl Body {
                 blend_add(&mut pose, &bob, self.bob_amount);
             }
         }
+        if let Some(additives) = self.additives.evaluate(&self.animations, &skeleton.rest)? {
+            blend_add(&mut pose, &additives, 1.0);
+        }
+
         // The tree root's blendarray adds its first children last: leafLeanUp,
         // then leafLeanLeft, both ADD_RIGHT 1.0 at their scrubbed frame.
         for (clip, frame) in self.lean_clips.into_iter().zip(self.lean_frames).rev() {
@@ -377,6 +492,27 @@ mod tests {
         let offset = body.apply_lean(0.2, &mut sensor, Mat3::IDENTITY);
         assert_eq!(offset, Vec3::ZERO);
         assert!(!sensor.enabled && body.lean.blend == 0.0);
+    }
+
+    #[test]
+    fn jump_stage_posts_in_loop_and_out_and_a_cancel_stops() {
+        use AdditiveCommand::{Play, Stop};
+        let mut jump = JumpAnim::default();
+        jump.start(false, 0.33, false);
+        assert_eq!((jump.stage, jump.commands.clone()), (1, vec![Play { kind: 0, weight: 0.33 }]));
+        jump.tick();
+        jump.tick();
+        assert_eq!(jump.stage, 3);
+        jump.start(true, 1.0, false);
+        assert_eq!(jump.commands.last(), Some(&Play { kind: 1, weight: 0.33 }), "a running stage ignores a start");
+        jump.end(true, false);
+        assert_eq!((jump.stage, jump.commands.last()), (4, Some(&Play { kind: 5, weight: 0.33 })));
+        jump.tick();
+        assert_eq!(jump.stage, 0);
+        jump.start(true, 1.0, true);
+        assert_eq!((jump.stage, jump.commands.last()), (3, Some(&Play { kind: 4, weight: 1.0 })));
+        jump.end(false, true);
+        assert_eq!((jump.stage, jump.commands.last()), (0, Some(&Stop)));
     }
 
     #[test]

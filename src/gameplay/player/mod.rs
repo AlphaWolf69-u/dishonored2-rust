@@ -118,6 +118,8 @@ impl Player {
                     look_stick_sensitivity: settings.look_stick_sensitivity,
                     lean: &mut self.body.lean,
                     lean_sensor: &mut self.lean_sensor,
+                    jump_anim: &mut self.body.jump,
+                    small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
                     // The host reads keyboard and mouse only.
                     keyboard: true,
@@ -127,11 +129,9 @@ impl Player {
         self.machine.controller_support(&mut frame!());
         self.controller.apply_mapping(&mut self.machine);
         self.machine.think(&mut frame!());
-        // The body's jump stage forces its speed to 0 while jumping
-        // (FUN_140774f10 from Jumping Activate; animBasic not ported).
-        let jumping = self.machine.is_active(StateId::JUMPING);
         let input_velocity = self.physics.input_velocity();
-        self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), jumping, self.body_settings);
+        self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings);
+
         self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
 
         if dt != 0.0 {

@@ -376,6 +376,238 @@ impl LocoNode {
     }
 }
 
+/// arkAnimBasicPlayMode_t.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayMode {
+    Once = 0,
+    AndStay = 1,
+    Loop = 2,
+    StayOnFirstFrame = 3,
+    StayOnLastFrame = 4,
+}
+
+/// arkAnimBasicInputData (the posted command; idx -1 is a stop).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimBasicCommand {
+    pub idx: i32,
+    pub weight: f32,
+    pub mode: PlayMode,
+    pub rate: f32,
+    pub start: f32,
+    pub play_on_end: bool,
+}
+
+impl AnimBasicCommand {
+    /// FUN_140540a00.
+    pub const STOP: Self = Self { idx: -1, weight: 0.0, mode: PlayMode::Once, rate: 1.0, start: 0.0, play_on_end: false };
+}
+
+/// One `m_animBasicList` item (arkAnimBasic): its clip and blend times.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimBasicItem {
+    pub alias: String,
+    pub clip: usize,
+    pub blend_in: f32,
+    pub blend_out: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blend {
+    None,
+    In,
+    Out,
+}
+
+/// arkAnimTreeNodeBasicProp: one playing clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BasicClip {
+    item: usize,
+    max_weight: f32,
+    weight: f32,
+    rate: f32,
+    time: f32,
+    blend_duration: f32,
+    mode: PlayMode,
+    blend: Blend,
+    playing: bool,
+}
+
+/// arkAnimTreeNode_AnimBasic (vtable 0x141c4bce8, update FUN_1406e3de0):
+/// up to four clips, newest first, each fading linearly, folded as a
+/// blendarray of pause leaves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnimBasicNode {
+    pub items: Vec<AnimBasicItem>,
+    /// `m_stopBlendOutDuration`.
+    pub stop_blend_out: f32,
+    clips: Vec<BasicClip>,
+    deferred: Option<AnimBasicCommand>,
+}
+
+/// EPS_END (DAT_14231c520).
+const END_MARGIN: f32 = 0.001;
+
+impl AnimBasicNode {
+    /// The playing clips (item, weight, time), newest first.
+    pub fn playing(&self) -> Vec<(usize, f32, f32)> {
+        self.clips.iter().map(|c| (c.item, c.weight, c.time)).collect()
+    }
+
+    /// The first item playing `alias` (the additives settings index).
+    pub fn index_of(&self, alias: &str) -> Option<usize> {
+        self.items.iter().position(|item| item.alias == alias)
+    }
+
+    /// FUN_1406e4af0: `command` is the IO entry's new command of this update
+    /// (the last one posted since the previous update).
+    pub fn update(&mut self, dt: f32, command: Option<AnimBasicCommand>, animations: &[EdgeAnimation]) {
+        let mut run = None;
+        if let Some(command) = command {
+            if command.play_on_end {
+                self.deferred = Some(command);
+            } else {
+                self.deferred = None;
+                run = Some(command);
+            }
+        }
+        if let Some(deferred) = self.deferred {
+            let fire = match self.clips.first() {
+                None => true,
+                Some(c) => {
+                    matches!(c.mode, PlayMode::StayOnFirstFrame | PlayMode::StayOnLastFrame)
+                        || dt * c.rate + c.time >= animations[self.items[c.item].clip].duration() - END_MARGIN
+                }
+            };
+            if fire {
+                run = Some(deferred);
+            }
+        }
+        if let Some(command) = run {
+            self.execute(command, animations);
+            self.deferred = None;
+        }
+        let items = &self.items;
+        self.clips.retain_mut(|c| advance(c, &items[c.item], dt, animations));
+    }
+
+    fn execute(&mut self, command: AnimBasicCommand, animations: &[EdgeAnimation]) {
+        let item = (command.idx >= 0 && command.weight > 0.0).then_some(command.idx as usize).filter(|&i| i < self.items.len());
+        let fade = item.map_or(self.stop_blend_out, |i| self.items[i].blend_in);
+        for c in &mut self.clips {
+            if c.blend == Blend::Out {
+                c.blend_duration = c.blend_duration.min(fade);
+            } else {
+                c.blend_duration = fade;
+                c.blend = Blend::Out;
+            }
+        }
+        if let Some(i) = item {
+            self.clips.truncate(3);
+            let length = animations[self.items[i].clip].duration() - END_MARGIN;
+            self.clips.insert(
+                0,
+                BasicClip {
+                    item: i,
+                    max_weight: command.weight,
+                    weight: 0.0,
+                    rate: command.rate,
+                    time: if command.mode == PlayMode::StayOnLastFrame { length } else { command.start },
+                    blend_duration: self.items[i].blend_in,
+                    mode: command.mode,
+                    blend: Blend::In,
+                    playing: !matches!(command.mode, PlayMode::StayOnFirstFrame | PlayMode::StayOnLastFrame),
+                },
+            );
+        }
+    }
+
+    /// The node pose: FUN_1406e51d0 leaves folded by FUN_1406e7cb0 BLEND
+    /// entries with the executor pruning (FUN_1406e1cc0); None when nothing
+    /// plays.
+    pub fn evaluate(&self, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<Option<Pose>, String> {
+        let mut leaves = Vec::with_capacity(4);
+        for c in &self.clips {
+            let animation = &animations[self.items[c.item].clip];
+            // frame = time * ceil(rate), sampled at frame / rate.
+            let time = c.time * animation.frame_rate.ceil() / animation.frame_rate;
+            leaves.push(if c.weight > 1e-4 { Some((sample(animation, rest, time)?, c.weight, animation.flags & 1 != 0)) } else { None });
+        }
+        leaves.resize_with(4, || None);
+        // Entry k blends child k over the chain of k+1.. (child 3 alone).
+        let mut pose = leaves[3].take().map(|(p, _, _)| p);
+        for k in (0..3).rev() {
+            pose = match (pose, leaves[k].take()) {
+                (None, None) => None,
+                // An additive leaf over nothing blends from the identity
+                // leaf DAT_14398cca0 (every joint identity at weight 255).
+                (None, Some((r, f, true))) if f < 1.0 => {
+                    let identity = JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3], scale: [1.0; 3] };
+                    let mut l = Pose { joints: vec![identity; r.joints.len()], weights: vec![255; r.joints.len()] };
+                    blend_lerp(&mut l, &r, f);
+                    Some(l)
+                }
+                (None, Some((r, _, _))) => Some(r),
+                (Some(l), None) => Some(l),
+                (Some(_), Some((r, f, _))) if f >= 1.0 => Some(r),
+                (Some(mut l), Some((r, f, _))) => {
+                    blend_lerp(&mut l, &r, f);
+                    Some(l)
+                }
+            };
+        }
+        Ok(pose)
+    }
+}
+
+/// FUN_1406e4850; false removes the clip.
+fn advance(c: &mut BasicClip, item: &AnimBasicItem, dt: f32, animations: &[EdgeAnimation]) -> bool {
+    let length = animations[item.clip].duration() - END_MARGIN;
+    let frozen = c.blend == Blend::In && c.weight == 0.0;
+    let mut t = if !c.playing || frozen { c.time } else { c.time + dt * c.rate };
+    if t > length {
+        match c.mode {
+            PlayMode::Once | PlayMode::AndStay => {
+                t = length;
+                c.playing = false;
+            }
+            PlayMode::Loop => t %= length,
+            _ => {}
+        }
+    }
+    let (mut duration, mut blend) = (c.blend_duration, c.blend);
+    // The automatic end fade of a one-shot clip (FLT_EPSILON).
+    if blend != Blend::Out && c.mode == PlayMode::Once && length - item.blend_out < t + 1.1920929e-7 {
+        duration = length - c.time;
+        blend = Blend::Out;
+    }
+    c.time = t;
+    if blend == Blend::None {
+        return true;
+    }
+    let remaining = duration - dt;
+    if blend == Blend::In {
+        if remaining > 0.0 {
+            c.weight = c.max_weight.min(c.weight + (c.max_weight - c.weight) / duration * dt);
+        } else {
+            c.weight = c.max_weight;
+            blend = Blend::None;
+        }
+        c.blend = blend;
+        c.blend_duration = remaining;
+        return true;
+    }
+    if remaining > 0.0 {
+        let w = (c.weight - c.weight / duration * dt).max(0.0);
+        if w != 0.0 {
+            c.weight = w;
+            c.blend = blend;
+            c.blend_duration = remaining;
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

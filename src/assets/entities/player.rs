@@ -22,6 +22,8 @@ pub struct PlayerDeclarations {
     pub states: Vec<(String, Vec<(String, Value)>)>,
     /// The body model's `locomotionDecl`.
     pub locomotion: Vec<(String, Value)>,
+    /// The body model's `animBasicDecl` (the additives node's list).
+    pub additives: Vec<(String, Value)>,
     pub body_model: String,
 }
 
@@ -136,22 +138,27 @@ pub fn player_declarations(
         let Some(kind) = kind_of(&name) else { continue };
         states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
     }
-    let locomotion = match locomotion_decl(&body_model, &mut read)? {
+    let locomotion = match md6_decl(&body_model, "locomotionDecl", &mut read)? {
         Some(name) => component_fields("playerlocomotion", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, body, mode, states, locomotion, body_model })
+    let additives = match md6_decl(&body_model, "animBasicDecl", &mut read)? {
+        Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
+        None => Vec::new(),
+    };
+    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, body, mode, states, locomotion, additives, body_model })
 
 }
 
-/// The md6 declaration's `locomotionDecl` (inherited through `inherit`).
-fn locomotion_decl(model: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<String>, String> {
+/// A decl named by the md6 declaration (`locomotionDecl`, `animBasicDecl`),
+/// inherited through `inherit`.
+fn md6_decl(model: &str, key: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<String>, String> {
     let Some(stem) = model.strip_suffix(".md6") else { return Ok(None) };
     let mut path = format!("generated/decls/md6def/{stem}.md6.decl");
     for _ in 0..16 {
         let Some(source) = read(&path)? else { return Ok(None) };
         let tokens = super::declaration_lexemes(&source)?;
-        if let Some(i) = tokens.iter().position(|t| *t == "locomotionDecl") {
+        if let Some(i) = tokens.iter().position(|t| *t == key) {
             return Ok(tokens.get(i + 1).map(|t| t.trim_matches('"').to_owned()));
         }
         let Some(i) = tokens.iter().position(|t| *t == "inherit") else { return Ok(None) };

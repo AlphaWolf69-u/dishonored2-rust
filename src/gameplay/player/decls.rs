@@ -264,6 +264,8 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
         loco_stance_name: atom(fields, "m_locoStanceName").map(str::to_owned).unwrap_or(d.loco_stance_name.clone()),
         head_bob_stance_name: atom(fields, "m_headBobStanceName").map(str::to_owned).unwrap_or(d.head_bob_stance_name.clone()),
         physics_shape_transition_speed_factor: number(fields, "m_physicsShapeTransitionSpeedFactor", d.physics_shape_transition_speed_factor)?,
+        small_fall_min_height: number(fields, "m_smallFallMinHeight", d.small_fall_min_height)?,
+        small_fall_anim_weight: number(fields, "m_smallFallAnimWeight", d.small_fall_anim_weight)?,
         ..d
     })
 }
@@ -299,6 +301,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                 Kind::Falling(FallingDecl {
                     smooth_gravity_adjustment: number(fields, "m_smoothGravityAdjustment", d.smooth_gravity_adjustment)?,
                     resume_sliding_max_height: number(fields, "m_resumeSlidingMaxHeight", d.resume_sliding_max_height)?,
+                    full_fall_anim_height: number(fields, "m_fullFallAnimHeight", d.full_fall_anim_height)?,
+
                 })
             }
             "playerstatesliding" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sliding(_))) => {
@@ -431,7 +435,44 @@ pub fn lean_sensor(fields: &Fields) -> Result<LeanDecl, String> {
     })
 }
 
+/// arkDeclAnimBasic `m_animBasicList` items as (alias, blend in, blend out)
+/// and the stop blend-out. An item time below 0 (the list default -1) takes
+/// the decl default, clamped at 0 (FUN_140243760 / FUN_140243850; ctor
+/// FUN_1407e5cc0: 0.2 each).
+pub fn anim_basic_list(fields: &Fields) -> Result<(Vec<(String, f32, f32)>, f32), String> {
+    let blend_in = number(fields, "m_defaultBlendInDuration", 0.2)?.max(0.0);
+    let blend_out = number(fields, "m_defaultBlendOutDuration", 0.2)?.max(0.0);
+    let stop = number(fields, "m_stopBlendOutDuration", 0.2)?.max(0.0);
+    let mut list = Vec::new();
+    for item in items(fields, "m_animBasicList") {
+        let item_in = number(item, "m_blendInDuration", -1.0)?;
+        let item_out = number(item, "m_blendOutDuration", -1.0)?;
+        list.push((
+            atom(item, "m_aliasRef").unwrap_or("").to_owned(),
+            if item_in < 0.0 { blend_in } else { item_in },
+            if item_out < 0.0 { blend_out } else { item_out },
+        ));
+    }
+    Ok((list, stop))
+}
+
+/// The body decl's `m_additives` camera jump aliases in FUN_140772f90's kind
+/// order: in, loop, out, sneak in, sneak loop, sneak out.
+pub fn camera_jump_aliases(body: &Fields) -> [Option<String>; 6] {
+    let additives = scope(body, "m_additives").unwrap_or(&[]);
+    [
+        "m_cameraJumpInAnimAlias",
+        "m_cameraJumpLoopAnimAlias",
+        "m_cameraJumpOutAnimAlias",
+        "m_cameraJumpSneakInAnimAlias",
+        "m_cameraJumpSneakLoopAnimAlias",
+        "m_cameraJumpSneakOutAnimAlias",
+    ]
+    .map(|key| atom(additives, key).filter(|a| !a.is_empty()).map(str::to_owned))
+}
+
 /// The body decl's `m_leanLeftAnimAlias` / `m_leanUpAnimAlias`.
+
 pub fn lean_aliases(body: &Fields) -> [Option<String>; 2] {
     ["m_leanLeftAnimAlias", "m_leanUpAnimAlias"].map(|key| atom(body, key).filter(|a| !a.is_empty()).map(str::to_owned))
 }

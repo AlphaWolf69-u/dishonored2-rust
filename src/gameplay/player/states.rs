@@ -10,7 +10,7 @@
 //! from the mode, so requests for them are rejected as the game rejects a
 //! state its mode lacks. Footsteps, fall damage, stats, slide slow-time,
 //! shoves, breakables and camera constraint modes are not ported.
-use super::body::Lean;
+use super::body::{JumpAnim, Lean};
 use super::character_proxy::{PlayerWorld, SupportState};
 use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
@@ -80,6 +80,9 @@ pub struct NavigationDecl {
     pub head_bob_stance_name: String,
     pub next_crushed_state: StateId,
     pub physics_shape_transition_speed_factor: f32,
+    /// +0x148 / +0x14c.
+    pub small_fall_min_height: f32,
+    pub small_fall_anim_weight: f32,
 }
 
 impl Default for NavigationDecl {
@@ -103,6 +106,8 @@ impl Default for NavigationDecl {
             head_bob_stance_name: String::new(),
             next_crushed_state: StateId::SNEAKING,
             physics_shape_transition_speed_factor: 1.0,
+            small_fall_min_height: 0.0,
+            small_fall_anim_weight: 0.33,
         }
     }
 }
@@ -138,11 +143,13 @@ impl Default for JumpingDecl {
 pub struct FallingDecl {
     pub smooth_gravity_adjustment: f32,
     pub resume_sliding_max_height: f32,
+    /// +0x170.
+    pub full_fall_anim_height: f32,
 }
 
 impl Default for FallingDecl {
     fn default() -> Self {
-        Self { smooth_gravity_adjustment: 0.75, resume_sliding_max_height: 4.0 }
+        Self { smooth_gravity_adjustment: 0.75, resume_sliding_max_height: 4.0, full_fall_anim_height: 4.0 }
     }
 }
 
@@ -432,6 +439,9 @@ pub struct Frame<'a> {
     pub look_stick_sensitivity: [f32; 2],
     pub lean: &'a mut Lean,
     pub lean_sensor: &'a mut LeanSensor,
+    pub jump_anim: &'a mut JumpAnim,
+    /// `ark_playerSmallFallCooldown` (cvar 0x143996320, "0.5").
+    pub small_fall_cooldown: f32,
     pub lean_toggle: bool,
     /// `!lastInputWasGamepad` (inputMgr+0xa544, FUN_140039d50).
     pub keyboard: bool,
@@ -462,6 +472,9 @@ struct Navigation {
     agility_run_increase: f32,
     forward_cos_snap: f32,
     strafe_cos_snap: f32,
+    /// +0x4a m_smallFallStarted / +0x4c m_smallFallCooldown.
+    small_fall_started: bool,
+    small_fall_cooldown: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -638,6 +651,8 @@ impl StateMachine {
                     agility_run_increase: 0.0,
                     forward_cos_snap: cos_snap(decl.navigation.forward_angle_snap),
                     strafe_cos_snap: cos_snap(decl.navigation.strafe_angle_snap),
+                    small_fall_started: false,
+                    small_fall_cooldown: 0.0,
                 },
                 decl,
                 active: false,
@@ -1050,6 +1065,9 @@ impl StateMachine {
         }
         // Navigation Activate FUN_1408686e0.
         frame.physics.ground_query_length = decl.navigation.max_ground_distance;
+        let navigation = &mut self.states[index].navigation;
+        navigation.small_fall_started = false;
+        navigation.small_fall_cooldown = frame.small_fall_cooldown;
         // FUN_140869500 (crush test not ported).
         let duration = frame.body.enter(&decl.navigation.loco_stance_name) * decl.navigation.physics_shape_transition_speed_factor;
         frame.physics.set_posture(decl.navigation.posture, duration);
@@ -1121,10 +1139,23 @@ impl StateMachine {
                     leaving_to_falling: false,
                 };
                 Self::do_jump(jump, frame.physics);
+                // 0x140867d03.
+                frame.jump_anim.start(in_air.from_sneaking, 1.0, false);
             }
-            Kind::Falling(_) => {
+            Kind::Falling(falling) => {
                 self.activate_in_air(index, frame);
                 self.states[index].fall.last_origin = frame.origin;
+                // FUN_140865310: a walk-off fall weighs the camera additive by
+                // its depth below the feet.
+                let in_air = self.states[index].in_air;
+                if !in_air.from_jumping {
+                    if !frame.controller.is_slip_falling {
+                        let weight = (frame.physics.ground_ray_distance_max / falling.full_fall_anim_height).min(1.0);
+                        frame.jump_anim.start(in_air.from_sneaking, weight, false);
+                    }
+                } else {
+                    frame.jump_anim.stop_at_loop = false;
+                }
             }
             // Activated above, without the navigation base.
             Kind::Leaning(_) => {}
@@ -1188,16 +1219,29 @@ impl StateMachine {
         }
         // Navigation Deactivate FUN_140868d70.
         frame.body.max_speeds = [UNSET; 4];
+        if self.states[index].navigation.small_fall_started {
+            frame.jump_anim.end(false, true);
+        }
         match self.states[index].decl.kind {
             Kind::Jumping(_) => {
                 // FUN_140867ef0.
                 if frame.physics.vertical_active() {
                     frame.physics.stop_vertical();
                 }
+                if !self.states[index].jump.leaving_to_falling {
+                    let crouch = frame.jump_anim.crouch();
+                    frame.jump_anim.end(crouch, false);
+                } else {
+                    frame.jump_anim.stop_at_loop = true;
+                }
                 self.states[index].in_air = InAir::default();
             }
             Kind::Falling(_) => {
                 // FUN_140865630.
+                if frame.jump_anim.stage & !4 != 0 {
+                    let crouch = frame.jump_anim.crouch();
+                    frame.jump_anim.end(crouch, false);
+                }
                 frame.physics.ground_query_length = self.states[index].decl.navigation.max_ground_distance;
                 self.states[index].in_air = InAir::default();
             }
@@ -1643,10 +1687,30 @@ impl StateMachine {
         frame.camera.turn_speed_joystick = joystick * frame.camera.pitch_speed_ratio;
         frame.requests.push_linear(0, velocity);
         frame.requests.push_angular(0, Vec3::new(0.0, 0.0, yaw_rate));
+        let id = self.states[index].decl.id;
         let navigation = &mut self.states[index].navigation;
+        // The small-fall camera additive (0x140869b9c / 0x140869bbe).
+        if decl.small_fall_min_height > 0.0 && navigation.small_fall_cooldown <= 0.0 {
+            let crouch = matches!(id, StateId::SNEAKING | StateId::AUTOCROUCH | StateId::WALLCROUCH);
+            if !navigation.small_fall_started {
+                if decl.small_fall_min_height <= frame.physics.ground_distance
+                    && frame.physics.gravity_velocity.z < -1.0
+                    && frame.jump_anim.stage == 0
+                {
+                    frame.jump_anim.start(crouch, decl.small_fall_anim_weight, false);
+                    navigation.small_fall_started = true;
+                }
+            } else if frame.jump_anim.stage == 3 {
+                frame.jump_anim.end(crouch, false);
+                navigation.small_fall_started = false;
+                navigation.small_fall_cooldown = frame.small_fall_cooldown;
+            }
+        }
+        navigation.small_fall_cooldown -= frame.dt;
         navigation.speed_multiplier = 1.0;
         navigation.agility_run_increase = 0.0;
     }
+
 
     /// InAir Update FUN_14083ebc0.
     fn in_air_update(&mut self, index: usize, frame: &mut Frame) {
@@ -1761,6 +1825,9 @@ impl StateMachine {
         } else {
             self.request(StateId::RUNNING);
         }
+        // The landing camera additive.
+        let crouch = frame.controller.toggled(crouch_action);
+        frame.jump_anim.end(crouch, false);
     }
 }
 

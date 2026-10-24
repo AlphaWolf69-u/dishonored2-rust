@@ -228,6 +228,13 @@ group 0.
   capsule clamp base (pp+0x110), and the lean sensor's two head-box casts
   from the gameplay eye limit the lateral lean. The very-hard
   `m_limitedLean` halves both ranges.
+- The body's jump stage (FUN_140774f10 / FUN_140775270 / FUN_140776a40)
+  plays `ply_camera_generic_jump_in` / `_loop` / `_out` through the animBasic
+  node (up to four linearly fading clips, play-once/stay/loop modes, queued
+  play-on-end, the identity leaf under a partial weight) for jumps, walk-off
+  falls (`min(groundRayDistanceMax / m_fullFallAnimHeight, 1)`) and small
+  falls (`m_smallFallAnimWeight`, `ark_playerSmallFallCooldown`, armed on
+  every navigation activate). It also zeroes the body speed while non-zero.
 - `assets/entities/player.rs` resolves the character's body def components,
   startup mode, states, locomotion decl and md6 animsets.
 
@@ -237,7 +244,7 @@ move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
 at 11.5° pitch, matching the port within the camera idle bob (a few mm).
 A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
 
-Not ported: the jump/land camera additives (animBasic node), footsteps, hand
+Not ported: hit-reaction camera additives, footsteps, hand
 equipment (the player moves unequipped), mantle (retargeting onto the scene
 dummy is not traced), vault, catfall, fall damage, lean sounds and HUD labels, camera
 constraint modes, swimming, powers, impulses and moving or dynamic bodies.
@@ -255,11 +262,9 @@ research notes):
    needs the same midnight playback, and the strong roll's 2.0 m root motion
    reaches the entity by an untraced path. Next: trace arkCpntMidnightProxy
    root extraction or measure ent.origin and the view during a 6+ m fall.
-3. Jump/land camera additives: the body fall-anim state machine
-   (FUN_140774f10 / FUN_140775270 / FUN_140776a40) feeds the animBasic node
-   through FUN_14053eef0, whose reference pose and weighting are untraced,
-   and the small-fall cooldown DAT_14399634c is BSS. Next: decompile
-   FUN_14053eef0 and read the cooldown at runtime during a 0.3-1 m drop.
+3. The animBasic commands are taken to reach the tree update of the same
+   frame (the body DEFAULT stage before FUN_140540f20). Next: breakpoints on
+   FUN_14053eef0 and FUN_1406e3de0 during a jump.
 4. Lean: the post-step `SetPosition(owner + pp+0x110)` (FUN_1407ffab0 →
    FUN_1401b30c0 → FUN_140085160 command 6) moves either the hitbox or the
    proxy. Next: check the body id it uses (pp+0x210 or the proxy body).

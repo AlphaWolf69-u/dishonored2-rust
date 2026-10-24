@@ -96,6 +96,7 @@ fn load_body(
     camera: &CameraDecl,
     locomotion: &[(String, crate::entities::Value)],
     body_decl: &[(String, crate::entities::Value)],
+    additives: &[(String, crate::entities::Value)],
 ) -> Result<Body, String> {
     let stem = body_model.strip_suffix(".md6").ok_or("player body model is not an md6")?;
     let text = |path: &str| -> Result<Option<String>, String> {
@@ -183,10 +184,20 @@ fn load_body(
             *slot = Some(clip(&alias)?);
         }
     }
+    use crate::gameplay::player::animation::{AnimBasicItem, AnimBasicNode};
+    let (list, stop_blend_out) = decls::anim_basic_list(additives)?;
+    let mut node = AnimBasicNode::default();
+    node.stop_blend_out = stop_blend_out;
+    for (alias, blend_in, blend_out) in list {
+        node.items.push(AnimBasicItem { clip: clip(&alias)?, alias, blend_in, blend_out });
+    }
+    let jump_items = decls::camera_jump_aliases(body_decl).map(|alias| alias.and_then(|a| node.index_of(&a)));
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
     body.lean_clips = lean_clips;
+    body.additives = node;
+    body.jump_items = jump_items;
     Ok(body)
 }
 
@@ -195,7 +206,7 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
         Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
     })?;
     let camera = decls::camera(&declarations.camera)?;
-    let body = load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body)?;
+    let body = load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives)?;
     Ok(PlayerSetup {
         physics: decls::physics(&declarations.physics)?,
         camera,
@@ -288,6 +299,7 @@ pub(super) fn body_settings(difficulty: Option<&DifficultyManager>) -> crate::ga
     crate::gameplay::player::body::BodySettings {
         smoothed_loco: console.cvars.int("ark_playerSmoothedLoco").is_none_or(|v| v != 0),
         bob_amount: console.cvars.float("ark_playerBobAmount").unwrap_or(1.0),
+        small_fall_cooldown: console.cvars.float("ark_playerSmallFallCooldown").unwrap_or(0.5),
         lean_limits: difficulty.map_or([1.0; 2], |manager| manager.lean_limits(current)),
     }
 }
@@ -601,8 +613,21 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     run(&mut player, 1, vec![key(ACTION_MOVE_FORWARD, false)]);
     run(&mut player, 240, Vec::new());
     let ground = player.feet().z;
+    let standing = player.view().origin.z - player.feet().z;
     run(&mut player, 1, vec![key(ACTION_JUMP, true)]);
-    let peak = run(&mut player, 360, vec![key(ACTION_JUMP, false)]);
+    run(&mut player, 1, vec![key(ACTION_JUMP, false)]);
+    // The jump/land camera additive: eye above the feet every 0.05 s.
+    let mut peak = player.feet().z;
+    let mut trace = Vec::new();
+    for frame in 0..240 {
+        run(&mut player, 1, Vec::new());
+        peak = peak.max(player.feet().z);
+        if frame % 6 == 5 {
+            let eye = player.view().origin.z - player.feet().z - standing;
+            trace.push(format!("{:.2}s {:?} {:?} {:+.4}", (frame + 1) as f32 / 120.0, player.machine.active_states(), player.body.additives.playing(), eye));
+        }
+    }
+    println!("NAV PROBE jump eye offset from standing {standing:.4}: {}", trace.join(", "));
     println!("NAV PROBE jump: peak +{:.3}m above {ground:.3}, then feet={:?} states={:?}", peak - ground, player.feet(), player.machine.active_states());
     Ok(())
 }
