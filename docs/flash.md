@@ -50,8 +50,9 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    assumption that the pause decl's unset bit is 0. Next: read the decl
    default in `FUN_1404f2cd0` or the VM flag at runtime.
 3. Rendering not yet ported: filters other than the text emulation of
-   `FUN_14102e950` (drop shadows with blurs up to 2: one offset copy in the
-   filter colour; larger blurs, bevels and script filters are not ported), blend modes beyond normal/add,
+   `FUN_14102e950` (drop shadows: one offset copy for blurs up to 2, else
+   three rings of copies; bevels and script filters such as the message
+   box blur and colour matrix are not ported), blend modes beyond normal/add,
    cacheAsBitmap, the glyph bitmap cache, the exact curve flattening tolerance
    (`player+0x1e80`), game textures (save screenshots). Masks and clip layers
    follow `FUN_141037100` and GDraw's stencil state (notes-masks.md) except
@@ -115,6 +116,8 @@ The movie runs on its own thread; each frame sends its input and tick and
 waits for that tick's draw list (the game ticks Iggy within the frame).
 Queued input is merged so it never waits behind a backlog of frames. The
 catalog, decoded bitmaps, movie bytes and string tables are kept between
-opens; every open still builds a new player. `DH2_DEBUG_PAUSE_TIMING=1` logs
+opens, and while the menu is closed the next player is built ahead
+(movie, libraries, screen size, bitmaps); an open then only reads the current
+state (options, saves) and shows the menu. Every open uses a new player. `DH2_DEBUG_PAUSE_TIMING=1` logs
 the open phases and, each second, the queue wait and the per-frame work
 (input, tick, options, draw list).

@@ -26,6 +26,8 @@ use std::sync::Arc;
 const PAUSE_ACTION: i32 = 43;
 
 enum Command {
+    /// While closed: build the next open's player ahead of time.
+    Prepare { screen: (i32, i32) },
     /// OnEnter: load the movie (the decl does not cache it) and show it.
     Open { screen: (i32, i32) },
     /// An engine key code, down or up.
@@ -139,6 +141,8 @@ pub struct PauseMenu {
     commands: Sender<Command>,
     events: Receiver<Event>,
     open: bool,
+    /// The screen size the next player was last prepared for.
+    prepared_for: Option<(i32, i32)>,
     /// The movie has produced a frame since it was opened: each frame then
     /// waits for its own tick's draw list.
     ready: bool,
@@ -157,7 +161,7 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        Self { commands, events, open: false, ready: false }
+        Self { commands, events, open: false, ready: false, prepared_for: None }
     }
 }
 
@@ -171,17 +175,40 @@ fn debug_character() -> Character {
     }
 }
 
-fn load(screen: (i32, i32)) -> Result<Loaded, String> {
+/// A player built before the open that uses it: the movie and its libraries
+/// loaded at the screen size, and its bitmaps decoded. Nothing in it has
+/// reached the game yet; its clock restarts when it is taken.
+struct Prepared {
+    screen: (i32, i32),
+    player: Player,
+    images: HashMap<CharRef, Arc<Image>>,
+}
+
+fn prepare(screen: (i32, i32)) -> Result<Prepared, String> {
+    let base = installation::game_base().map_err(|e| e.to_string())?;
+    let catalog = installed_catalog()?;
+    let language = lang::read_text_language(&base)?;
+    let movie = pause_state::movie(debug_character());
+    let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
+    pause_state::file_ready(&mut player, screen)?;
+    let images = decode(&catalog, &player, &resources)?;
+    Ok(Prepared { screen, player, images })
+}
+
+fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String> {
     let started = std::time::Instant::now();
     let mut phases: Vec<(&str, std::time::Instant)> = vec![("start", started)];
     let base = installation::game_base().map_err(|e| e.to_string())?;
     let catalog = installed_catalog()?;
-    phases.push(("catalog", std::time::Instant::now()));
     let language = lang::read_text_language(&base)?;
     let movie = pause_state::movie(debug_character());
-    let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
-    phases.push(("movie and libraries", std::time::Instant::now()));
-    pause_state::file_ready(&mut player, screen)?;
+    let Prepared { mut player, images: pause_images, .. } = match prepared.filter(|p| p.screen == screen) {
+        Some(p) => p,
+        None => prepare(screen)?,
+    };
+    // `getTimer` counts from the open, as for a player created now.
+    player.vm.started = std::time::Instant::now();
+    phases.push(("movie, libraries and images", std::time::Instant::now()));
     let state = pause_state::current_state(&player, &language, &catalog);
     let config = game_settings::configuration_path().ok();
     // A message box loads its own `global.iggy` (`FUN_1404627e0`).
@@ -191,14 +218,11 @@ fn load(screen: (i32, i32)) -> Result<Loaded, String> {
         pause_state::file_ready(&mut g, screen)?;
         Ok((g, resources))
     });
-    phases.push(("file ready", std::time::Instant::now()));
     let mut pause = pause_state::Pause::new(&mut player, &catalog, &base, state, config, load_global)?;
     phases.push(("pause state", std::time::Instant::now()));
     pause.on_flash_loaded(&mut player)?;
     pause.show(&mut player)?;
     phases.push(("loaded and shown", std::time::Instant::now()));
-    let pause_images = decode(&catalog, &player, &resources)?;
-    phases.push(("images", std::time::Instant::now()));
     if std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_some_and(|v| v == "1") {
         let parts: Vec<String> = phases.windows(2).map(|w| format!("{} {:.0} ms", w[1].0, (w[1].1 - w[0].1).as_secs_f64() * 1000.0)).collect();
         info!("Pause open timing: {}", parts.join(", "));
@@ -260,13 +284,22 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut generation = 0u64;
     let mut unhandled = Vec::new();
     let mut timing = debug_timing::Timing::default();
+    let mut prepared: Option<Prepared> = None;
     while let Some(commands) = batch(&inbox) {
       let batch_started = std::time::Instant::now();
       for command in commands {
         match command {
+            Command::Prepare { screen } => {
+                if loaded.is_none() && prepared.as_ref().is_none_or(|p| p.screen != screen) {
+                    match prepare(screen) {
+                        Ok(p) => prepared = Some(p),
+                        Err(e) => warn!("Pause movie: {e}"),
+                    }
+                }
+            }
             Command::Open { screen } => {
                 generation += 1;
-                match load(screen) {
+                match load(screen, prepared.take()) {
                     Ok(l) => loaded = Some(l),
                     Err(e) => {
                         let _ = outbox.send(Event::Failed(e));
@@ -443,6 +476,8 @@ pub fn update_pause_menu(
             let _ = menu.commands.send(Command::Open { screen });
             menu.open = true;
             menu.ready = false;
+            // The prepared player is used up; prepare again after closing.
+            menu.prepared_for = None;
         }
     }
     if menu.open {
@@ -519,6 +554,15 @@ pub fn update_pause_menu(
     }
     if !menu.open {
         frame.0 = None;
+        // Build the next open's player while the menu is closed.
+        if let Some(w) = windows.iter().next() {
+            let size = (w.physical_width(), w.physical_height());
+            let screen = pause_state::screen_size(size, size);
+            if menu.prepared_for != Some(screen) {
+                let _ = menu.commands.send(Command::Prepare { screen });
+                menu.prepared_for = Some(screen);
+            }
+        }
     }
     // The movie draws its own cursor; the OS cursor is released and hidden
     // while the pause state is open (whether the game hides it is not traced).

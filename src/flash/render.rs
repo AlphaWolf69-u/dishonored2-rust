@@ -386,17 +386,15 @@ impl Builder<'_> {
     fn text(&mut self, o: &Obj, m: &Affine, c: &Colour, blend: u8) {
         let glyphs = super::text::text_object(o).map(|t| t.glyphs()).unwrap_or_default();
         // `FUN_14102e950`: text filters are emulated by drawing the glyphs
-        // again, before the text. A drop shadow (SWF filter 0) with both blurs
-        // at most 2 (`DAT_141ab3b20`) is one copy in the filter's colour,
-        // moved by (cos, sin)(angle) × distance in stage pixels. Larger blurs
-        // (rings of copies) and script-assigned filters are not ported.
+        // again, before the text, around the drop shadow's offset
+        // ((cos, sin)(angle) × distance in stage pixels).
         let filters = display_ref(o).filter(|d| d.filters.is_empty()).map(|d| d.timeline_filters.clone()).unwrap_or_default();
         for filter in &filters {
-            if let crate::assets::iggy::timeline::Filter::DropShadow { colour, blur, angle, distance, .. } = filter {
-                if blur[0] <= 2.0 && blur[1] <= 2.0 {
-                    let offset = ((angle.cos() * distance) as f64, (angle.sin() * distance) as f64);
-                    let rgba = colour.map(|v| v as f32 / 255.0);
-                    self.glyphs(&glyphs, m, c, blend, offset, Some(rgba));
+            if let crate::assets::iggy::timeline::Filter::DropShadow { colour, blur, angle, distance, strength, .. } = filter {
+                let base = ((angle.cos() * distance) as f64, (angle.sin() * distance) as f64);
+                for (offset, alpha) in shadow_copies(*blur, *strength, colour[3]) {
+                    let rgba = [colour[0] as f32 / 255.0, colour[1] as f32 / 255.0, colour[2] as f32 / 255.0, alpha as f32 / 255.0];
+                    self.glyphs(&glyphs, m, c, blend, (base.0 + offset.0 as f64, base.1 + offset.1 as f64), Some(rgba));
                 }
             }
         }
@@ -553,6 +551,39 @@ impl Builder<'_> {
     }
 }
 
+/// The copies `FUN_14102e950` draws for a drop shadow: (offset from the
+/// shadow position, alpha byte). Both blurs at most 2 (`DAT_141ab3b20`): one
+/// copy in the filter's alpha. Otherwise three rings around the shadow
+/// position, b = max(blurX, blurY): counts (1.5b, b, 0.5b) capped at 30, 20
+/// and 10; radii r = 0.5b + strength, r - r/3, r - 2r/3; copy j of a ring
+/// of n at angle j·2π/n, offset (sin, cos) × radius; each copy's alpha
+/// A / (n · k · {3.5, 2.5, 1.3}) with k = min(1/strength, 1), truncated to a
+/// byte.
+pub fn shadow_copies(blur: [f32; 2], strength: f32, alpha: u8) -> Vec<((f32, f32), u8)> {
+    if blur[0] <= 2.0 && blur[1] <= 2.0 {
+        return vec![((0.0, 0.0), alpha)];
+    }
+    let b = blur[0].max(blur[1]);
+    let counts = [((b * 1.5) as i64 as u8).min(30), (b as i64 as u8).min(20), ((b * 0.5) as i64 as u8).min(10)];
+    let k = (1.0 / strength).clamp(0.0, 1.0);
+    let r = b * 0.5 + strength;
+    let radii = [r, r - r * (1.0 / 3.0), r - r * 2.0 * (1.0 / 3.0)];
+    let divisors = [3.5f32, 2.5, 1.3];
+    let mut out = Vec::new();
+    for ((&n, &radius), &divisor) in counts.iter().zip(&radii).zip(&divisors) {
+        if n == 0 {
+            continue;
+        }
+        let a = (alpha as f32 / (n as f32 * k * divisor)) as i64 as u8;
+        let step = std::f32::consts::TAU / n as f32;
+        for j in 0..n {
+            let angle = j as f32 * step;
+            out.push(((angle.sin() * radius, angle.cos() * radius), a));
+        }
+    }
+    out
+}
+
 /// A full-target stencil clear of `bits` (GDraw `+0x28` / the render start's
 /// `ClearDepthStencilView`): a quad over the stage, drawn with no colour.
 fn push_clear(out: &mut DrawList, bits: u8) {
@@ -652,4 +683,18 @@ pub fn stack(base: &mut DrawList, mut top: DrawList) {
     base.vertices.append(&mut top.vertices);
     base.batches.append(&mut top.batches);
     base.ramps.append(&mut top.ramps);
+}
+
+#[cfg(test)]
+mod shadow_tests {
+    #[test]
+    fn small_blurs_are_one_copy_and_large_ones_rings() {
+        assert_eq!(super::shadow_copies([0.0, 0.0], 1.0, 255), vec![((0.0, 0.0), 255)]);
+        let copies = super::shadow_copies([4.0, 2.0], 1.0, 255);
+        // b = 4: 6 + 4 + 2 copies; ring alphas 255/21, 255/10, 255/2.6.
+        assert_eq!(copies.len(), 12);
+        assert_eq!((copies[0].1, copies[6].1, copies[10].1), (12, 25, 98));
+        // r = 3: the first copy of the first ring is straight down (sin 0, cos 0).
+        assert_eq!(copies[0].0, (0.0, 3.0));
+    }
 }
