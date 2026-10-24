@@ -111,6 +111,9 @@ fn main() -> Result<(), String> {
                 for c in commands.iter() {
                     if let Command::Place(p) = c {
                         *blends.entry(p.blend).or_default() += 1;
+                        if !p.filters.is_empty() {
+                            println!("filters: depth {} character {:?} name {:?} {:?}", p.depth, p.character, p.name, p.filters);
+                        }
                         for f in &p.filters {
                             let name = format!("{f:?}");
                             *filters.entry(name.split([' ', '{']).next().unwrap_or_default().to_string()).or_default() += 1;
