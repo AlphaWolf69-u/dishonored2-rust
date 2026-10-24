@@ -45,6 +45,8 @@ pub struct FlashFrame {
     pub list: Arc<DrawList>,
     pub images: Arc<HashMap<CharRef, Arc<Image>>>,
     pub generation: u64,
+    /// Distinct for every built list (the vertices are uploaded once).
+    pub serial: u64,
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]
@@ -68,13 +70,27 @@ enum TextureKey {
     White,
     Bitmap(u64, CharRef),
     Ramp(Vec<u8>),
+    /// A glyph cache page by (id, version).
+    Glyphs(u64, u64),
 }
+
+/// Layer and filter render targets kept between frames, by size and format.
+#[derive(Default)]
+struct TargetPool {
+    free: HashMap<(i32, i32, TextureFormat), Vec<(Texture, TextureView)>>,
+}
+
+/// Targets kept unused at most (sizes change as layers animate).
+const POOL_LIMIT: usize = 32;
 
 #[derive(Default, Resource)]
 struct FlashUiGpu {
+    targets: std::sync::Mutex<TargetPool>,
     programs: Option<Programs>,
     /// The scene-to-canvas and canvas-to-scene passes, by display format.
     transfer: Option<TransferPrograms>,
+    /// The draw list whose vertices are in `vertices` (its serial).
+    uploaded: Option<u64>,
     /// The gamma-space canvas the UI is drawn on, and its size.
     canvas: Option<(Texture, TextureView, (u32, u32))>,
     textures: HashMap<TextureKey, (Texture, TextureView)>,
@@ -358,15 +374,10 @@ fn upload(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, r
     (texture, view)
 }
 
-fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(vertices.len() * std::mem::size_of::<Vertex>());
-    for v in vertices {
-        for f in v.position.iter().chain(&v.uv).chain(&v.mul).chain(&v.add).chain(&v.params).chain(std::iter::once(&v.w)) {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
-    }
-    debug_assert_eq!(out.len(), vertices.len() * std::mem::size_of::<Vertex>());
-    out
+fn vertex_bytes(vertices: &[Vertex]) -> &[u8] {
+    // SAFETY: `Vertex` is `repr(C)` and holds only `f32` arrays (no padding,
+    // every bit pattern valid); the host and the GPU are little-endian.
+    unsafe { std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), std::mem::size_of_val(vertices)) }
 }
 
 #[cfg(test)]
@@ -424,6 +435,7 @@ fn render_flash_ui(
     if frame.list.batches.is_empty() {
         return;
     }
+    let _timing = debug_timing::Scope::new(frame.list.batches.len(), frame.list.layers.len());
     let target = view.into_inner();
     let format = UI_FORMAT;
     if gpu.programs.is_none() {
@@ -442,9 +454,15 @@ fn render_flash_ui(
             FillTexture::White => TextureKey::White,
             FillTexture::Bitmap(c) => TextureKey::Bitmap(frame.generation, *c),
             FillTexture::Ramp(i) => TextureKey::Ramp(frame.list.ramps[*i].to_vec()),
+            FillTexture::Glyphs(i) => TextureKey::Glyphs(frame.list.glyph_pages[*i].id, frame.list.glyph_pages[*i].version),
         })
         .collect();
     gpu.textures.retain(|k, _| !matches!(k, TextureKey::Bitmap(g, _) if *g != frame.generation));
+    // Only the current version of each glyph page stays uploaded.
+    gpu.textures.retain(|k, _| match k {
+        TextureKey::Glyphs(id, version) => frame.list.glyph_pages.iter().all(|p| p.id != *id || p.version == *version),
+        _ => true,
+    });
     for key in &keys {
         if gpu.textures.contains_key(key) {
             continue;
@@ -456,17 +474,13 @@ fn render_flash_ui(
                 Some(image) => upload(&device, &queue, image.width, image.height, &image.rgba),
                 None => continue,
             },
+            TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
+                Some(page) => upload(&device, &queue, page.width, page.height, &page.rgba),
+                None => continue,
+            },
         };
         gpu.textures.insert(key.clone(), uploaded);
     }
-    let bytes = vertex_bytes(&frame.list.vertices);
-    let needed = bytes.len() as u64;
-    if gpu.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
-        let size = needed.next_power_of_two().max(4096);
-        let buffer = device.create_buffer(&BufferDescriptor { label: Some("flash vertices"), size, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
-        gpu.vertices = Some((buffer, size));
-    }
-    queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, 0, &bytes);
     if gpu.stage.is_none() {
         gpu.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
     }
@@ -508,25 +522,33 @@ fn render_flash_ui(
     let target_size = (size.width as i32, size.height as i32);
     let main_affine = [2.0 / frame.list.stage.0, -2.0 / frame.list.stage.1, -1.0, 1.0];
     let plans: Vec<LayerPlan> = frame.list.layers.iter().map(|l| plan_layer(l, main_affine, target_size)).collect();
-    let mut all_vertices = frame.list.vertices.clone();
+    // The list's vertices, then the composite quads. An unchanged list (the
+    // same frame shown again) keeps the uploaded vertices.
+    let mut quads = Vec::new();
     let composite_first: Vec<u32> = plans
         .iter()
         .zip(&frame.list.layers)
         .map(|(plan, layer)| {
-            let first = all_vertices.len() as u32;
-            all_vertices.extend(composite_quad(plan.rect, main_affine, target_size, layer));
+            let first = (frame.list.vertices.len() + quads.len()) as u32;
+            quads.extend(composite_quad(plan.rect, main_affine, target_size, layer));
             first
         })
         .collect();
-    if !frame.list.layers.is_empty() {
-        let bytes = vertex_bytes(&all_vertices);
-        let needed = bytes.len() as u64;
-        if gpu.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
-            let size = needed.next_power_of_two().max(4096);
-            let buffer = device.create_buffer(&BufferDescriptor { label: Some("flash vertices"), size, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
-            gpu.vertices = Some((buffer, size));
-        }
-        queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, 0, &bytes);
+    let list_bytes = vertex_bytes(&frame.list.vertices);
+    let needed = (list_bytes.len() + std::mem::size_of_val(quads.as_slice())) as u64;
+    let identity = frame.serial;
+    if gpu.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
+        let size = needed.next_power_of_two().max(4096);
+        let buffer = device.create_buffer(&BufferDescriptor { label: Some("flash vertices"), size, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
+        gpu.vertices = Some((buffer, size));
+        gpu.uploaded = None;
+    }
+    if gpu.uploaded != Some(identity) && !list_bytes.is_empty() {
+        queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, 0, list_bytes);
+        gpu.uploaded = Some(identity);
+    }
+    if !quads.is_empty() {
+        queue.write_buffer(&gpu.vertices.as_ref().unwrap().0, list_bytes.len() as u64, vertex_bytes(&quads));
     }
     let mut keys_by_batch: Vec<PipelineKey> = frame
         .list
@@ -569,6 +591,7 @@ fn render_flash_ui(
         composite_first: &composite_first,
         composite_keys: &composite_keys,
         format,
+        targets: &gpu.targets,
     };
     let encoder = context.command_encoder();
     let transfer = gpu.transfer.as_ref().unwrap();
@@ -692,10 +715,16 @@ struct Draw<'a> {
     composite_first: &'a [u32],
     composite_keys: &'a [PipelineKey],
     format: TextureFormat,
+    targets: &'a std::sync::Mutex<TargetPool>,
 }
 
 impl Draw<'_> {
+    /// A target from the pool, else a new one; [`Draw::release`] returns it.
     fn render_target(&self, size: (i32, i32), format: TextureFormat, label: &'static str) -> (Texture, TextureView) {
+        if let Some(target) = self.targets.lock().unwrap().free.get_mut(&(size.0, size.1, format)).and_then(Vec::pop) {
+            return target;
+        }
+        let usage = if format == STENCIL_FORMAT { TextureUsages::RENDER_ATTACHMENT } else { TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING };
         let texture = self.device.create_texture(&TextureDescriptor {
             label: Some(label),
             size: Extent3d { width: size.0.max(1) as u32, height: size.1.max(1) as u32, depth_or_array_layers: 1 },
@@ -703,11 +732,21 @@ impl Draw<'_> {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            usage,
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
         (texture, view)
+    }
+
+    /// Return a target to the pool once the recorded passes no longer write
+    /// it (later passes are recorded after the reads of earlier ones).
+    fn release(&self, size: (i32, i32), format: TextureFormat, target: (Texture, TextureView)) {
+        let mut pool = self.targets.lock().unwrap();
+        if pool.free.values().map(Vec::len).sum::<usize>() >= POOL_LIMIT {
+            pool.free.clear();
+        }
+        pool.free.entry((size.0, size.1, format)).or_default().push(target);
     }
 
     /// Draw batches `first..end` into `target`, layers included; `inside` is
@@ -768,17 +807,18 @@ impl Draw<'_> {
         if size.0 <= 0 || size.1 <= 0 {
             return;
         }
-        let (_colour_texture, colour) = self.render_target(size, self.format, "flash layer");
-        let (_stencil_texture, stencil) = self.render_target_stencil(size);
+        let (colour_texture, colour) = self.render_target(size, self.format, "flash layer");
+        let (stencil_texture, stencil) = self.render_target(size, STENCIL_FORMAT, "flash layer stencil");
         let stage_buffer = self.device.create_buffer_with_data(&BufferInitDescriptor { label: Some("flash layer stage"), contents: &plan.affine.map(f32::to_le_bytes).concat(), usage: BufferUsages::UNIFORM });
         let stage = self.device.create_bind_group(Some("flash layer stage"), &self.programs.stage_layout, &BindGroupEntries::single(stage_buffer.as_entire_binding()));
         self.range(encoder, &TargetViews { color: &colour, stencil: &stencil, stage: &stage, clear: true }, layer.first, layer.end, Some(index));
-        // The filter passes, each into a fresh target.
-        let mut source = (_colour_texture, colour);
+        self.release(size, STENCIL_FORMAT, (stencil_texture, stencil));
+        // The filter passes, each into another target.
+        let mut source = (colour_texture, colour);
         for pass in &plan.passes {
             let destination = self.render_target(size, self.format, "flash filter");
             self.filter_pass(encoder, pass, &source.1, &destination.1, size);
-            source = destination;
+            self.release(size, self.format, std::mem::replace(&mut source, destination));
         }
         // Draw the result back.
         let group = self.device.create_bind_group(Some("flash layer composite"), &self.programs.texture_layout, &BindGroupEntries::sequential((&source.1, &self.programs.samplers[1])));
@@ -797,22 +837,10 @@ impl Draw<'_> {
         pass.set_bind_group(1, &group, &[]);
         let first = self.composite_first[index];
         pass.draw(first..first + 6, 0..1);
+        drop(pass);
+        self.release(size, self.format, source);
     }
 
-    fn render_target_stencil(&self, size: (i32, i32)) -> (Texture, TextureView) {
-        let texture = self.device.create_texture(&TextureDescriptor {
-            label: Some("flash layer stencil"),
-            size: Extent3d { width: size.0.max(1) as u32, height: size.1.max(1) as u32, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: STENCIL_FORMAT,
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&TextureViewDescriptor::default());
-        (texture, view)
-    }
 
     fn filter_pass(&self, encoder: &mut CommandEncoder, pass: &FilterPass, source: &TextureView, destination: &TextureView, size: (i32, i32)) {
         let ndc = |r: [i32; 4]| [r[0] as f32 / size.0 as f32 * 2.0 - 1.0, 1.0 - r[1] as f32 / size.1 as f32 * 2.0, r[2] as f32 / size.0 as f32 * 2.0 - 1.0, 1.0 - r[3] as f32 / size.1 as f32 * 2.0];
@@ -862,5 +890,38 @@ impl Draw<'_> {
         render.set_pipeline(pipeline);
         render.set_bind_group(0, &group, &[]);
         render.draw(0..6, 0..1);
+    }
+}
+
+/// Diagnostic: `DH2_DEBUG_PAUSE_TIMING=1` logs the UI pass's CPU time once a
+/// second.
+mod debug_timing {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static TOTALS: Mutex<(u32, Duration, Option<Instant>, usize, usize)> = Mutex::new((0, Duration::ZERO, None, 0, 0));
+
+    pub struct Scope(Option<(Instant, usize, usize)>);
+
+    impl Scope {
+        pub fn new(batches: usize, layers: usize) -> Self {
+            Scope(std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_some_and(|v| v == "1").then(|| (Instant::now(), batches, layers)))
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let Some((started, batches, layers)) = self.0 else { return };
+            let mut t = TOTALS.lock().unwrap();
+            t.0 += 1;
+            t.1 += started.elapsed();
+            t.3 = batches;
+            t.4 = layers;
+            let since = *t.2.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(1) {
+                bevy::log::info!("Flash UI pass: {} frames, CPU avg {:.2} ms, {} batches, {} layers", t.0, t.1.as_secs_f64() * 1000.0 / t.0 as f64, t.3, t.4);
+                *t = (0, Duration::ZERO, None, 0, 0);
+            }
+        }
     }
 }

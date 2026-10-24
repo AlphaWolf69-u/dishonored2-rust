@@ -90,6 +90,7 @@ pub fn rasterize(list: &DrawList, images: &Images, width: u32, height: u32, back
             Texture::White => None,
             Texture::Bitmap(c) => images.images.get(c).cloned(),
             Texture::Ramp(i) => Some((64, 1, list.ramps[*i].to_vec())),
+            Texture::Glyphs(i) => list.glyph_pages.get(*i).map(|p| (p.width, p.height, p.rgba.clone())),
         };
         let verts = &list.vertices[batch.first as usize..(batch.first + batch.count) as usize];
         for tri in verts.chunks_exact(3) {

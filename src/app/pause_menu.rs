@@ -71,6 +71,8 @@ struct Loaded {
     /// Draw-list reuse for the pause movie and the message box movie.
     draw_cache: render::Cache,
     global_cache: render::Cache,
+    /// The UI screen size (the display the glyph cache pages are sized for).
+    screen: (i32, i32),
 }
 
 thread_local! {
@@ -146,6 +148,10 @@ pub struct PauseMenu {
     prepared_for: Option<(i32, i32)>,
     /// `DH2_DEBUG_OPEN_PAUSE_AFTER` has opened the pause state.
     debug_opened: bool,
+    /// `DH2_DEBUG_PAUSE_CLICK` has clicked.
+    debug_clicked: bool,
+    /// Diagnostic frame-time accumulation (`DH2_DEBUG_PAUSE_TIMING`).
+    debug_frames: (u32, f64, Option<std::time::Instant>),
     /// The movie has produced a frame since it was opened: each frame then
     /// waits for its own tick's draw list.
     ready: bool,
@@ -164,7 +170,7 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false }
+        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false, debug_clicked: false, debug_frames: (0, 0.0, None) }
     }
 }
 
@@ -246,8 +252,13 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
         focus: Vec::new(),
         pending: 0.0,
         frame_interval,
-        draw_cache: render::Cache::default(),
+        draw_cache: {
+            let mut cache = render::Cache::default();
+            cache.set_font_caching(pause_state::font_caching(&catalog, movie, (screen.0 as u32, screen.1 as u32)));
+            cache
+        },
         global_cache: render::Cache::default(),
+        screen,
     })
 }
 
@@ -289,11 +300,16 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut loaded: Option<Loaded> = None;
     let keyboard = Keyboard::default();
     let mut generation = 0u64;
+    let mut serial = 0u64;
     let mut unhandled = Vec::new();
     let mut timing = debug_timing::Timing::default();
     let mut prepared: Option<Prepared> = None;
+    // The last frame sent; it is sent again while nothing changed the movie
+    // (no tick, input, notification or request), and keeps its uploaded vertices.
+    let mut last_frame: Option<FlashFrame> = None;
     while let Some(commands) = batch(&inbox) {
       let batch_started = std::time::Instant::now();
+      let mut changed = false;
       for command in commands {
         match command {
             Command::Prepare { screen } => {
@@ -306,6 +322,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             }
             Command::Open { screen } => {
                 generation += 1;
+                last_frame = None;
                 match load(screen, prepared.take()) {
                     Ok(l) => loaded = Some(l),
                     Err(e) => {
@@ -321,6 +338,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 // `FUN_140033740`: engine keys as virtual keys (`FUN_140032f20`), keyLocation 0.
                 let vk = keyboard.virtual_key(key).unwrap_or(key);
+                changed = true;
                 let target = l.target();
                 if let Err(e) = target.key_event(down, vk, 0) {
                     warn!("Pause movie key: {}", target.describe(&e));
@@ -333,6 +351,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 // the Iggy move event.
                 if (l.cursor.0 - x).abs() > 0.1 || (l.cursor.1 - y).abs() > 0.1 {
                     l.cursor = (x, y);
+                    changed = true;
                     let target = l.target();
                     let moved = target
                         .set_value("mouseCursor.x", x.into())
@@ -349,6 +368,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if down && l.pressed.is_none() {
                     l.pressed = Some(code);
                 }
+                changed = true;
                 // The Iggy button event first (left/right/middle), then
                 // `IG_OnMouseEvent(code, state)` for every button.
                 let target = l.target();
@@ -367,6 +387,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             }
             Command::Wheel(delta) => {
                 let Some(l) = loaded.as_mut() else { continue };
+                changed = true;
                 let target = l.target();
                 if let Err(e) = target.mouse_wheel(delta) {
                     warn!("Pause movie wheel: {}", target.describe(&e));
@@ -381,6 +402,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 // `IggyPlayerReadyToTick`/`FUN_141021b40`: one tick per frame interval.
                 l.pending += dt;
                 if l.pending >= l.frame_interval {
+                    changed = true;
                     let step = l.pending.min(l.frame_interval);
                     l.pending = (l.pending - l.frame_interval).max(0.0);
                     if let Err(e) = l.player.tick(step) {
@@ -396,6 +418,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
                 phases[1] = tick_started.elapsed();
                 let pressed = l.pressed.take();
+                changed |= pressed.is_some();
                 if let Err(e) = l.pause.update(&mut l.player, pressed) {
                     warn!("Pause options: {e}");
                 }
@@ -405,6 +428,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 });
                 match handled {
                     Ok(requests) => {
+                        changed |= !requests.is_empty();
                         for request in requests {
                             match request {
                                 Request::Resume => {
@@ -424,6 +448,10 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::GlobalChanged => {
                                     generation += 1;
                                     l.global_cache = render::Cache::default();
+                                    if let Ok(catalog) = installed_catalog() {
+                                        let display = (l.screen.0 as u32, l.screen.1 as u32);
+                                        l.global_cache.set_font_caching(pause_state::font_caching(&catalog, crate::gameplay::message_box::MOVIE, display));
+                                    }
                                     if let Err(e) = l.rebuild_images() {
                                         warn!("Message box movie: {e}");
                                     }
@@ -433,18 +461,28 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     }
                     Err(e) => warn!("Pause movie: {e}"),
                 }
+                changed |= !unhandled.is_empty();
                 for name in unhandled.drain(..) {
                     debug!("Pause movie notification not handled yet: {name}");
                 }
                 phases[2] = tick_started.elapsed() - phases[1];
                 // Diagnostic: DH2_DEBUG_FLASH_ALL=1 also draws hidden objects.
-                let debug_all = std::env::var_os("DH2_DEBUG_FLASH_ALL").is_some_and(|v| v == "1");
-                let mut list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list_cached(&l.player.vm, &mut l.draw_cache) };
-                if let Some(g) = l.pause.boxes.global() {
-                    // The message box player is replaced on GlobalChanged.
-                    render::stack(&mut list, render::draw_list_cached(&g.vm, &mut l.global_cache));
-                }
-                let _ = outbox.send(Event::Frame(FlashFrame { list: Arc::new(list), images: l.images.clone(), generation }));
+                let frame = match last_frame.as_ref().filter(|f| !changed && f.generation == generation) {
+                    Some(f) => f.clone(),
+                    None => {
+                        let debug_all = std::env::var_os("DH2_DEBUG_FLASH_ALL").is_some_and(|v| v == "1");
+                        let mut list = if debug_all { render::debug_draw_all(&l.player.vm) } else { render::draw_list_cached(&l.player.vm, &mut l.draw_cache) };
+                        if let Some(g) = l.pause.boxes.global() {
+                            // The message box player is replaced on GlobalChanged.
+                            render::stack(&mut list, render::draw_list_cached(&g.vm, &mut l.global_cache));
+                        }
+                        serial += 1;
+                        FlashFrame { list: Arc::new(list), images: l.images.clone(), generation, serial }
+                    }
+                };
+                last_frame = Some(frame.clone());
+                changed = false;
+                let _ = outbox.send(Event::Frame(frame));
                 phases[3] = tick_started.elapsed() - phases[1] - phases[2];
                 timing.record(batch_started.duration_since(sent), batch_started.elapsed(), phases);
             }
@@ -482,6 +520,31 @@ pub fn update_pause_menu(
         menu.open = true;
         menu.ready = false;
         menu.prepared_for = None;
+    }
+    // Diagnostic: DH2_DEBUG_PAUSE_CLICK=X,Y@SECONDS clicks movie pixel (X, Y)
+    // once, that long after start (with the menu open).
+    if menu.open && !menu.debug_clicked {
+        let click = std::env::var("DH2_DEBUG_PAUSE_CLICK").ok().and_then(|v| {
+            let (xy, at) = v.split_once('@')?;
+            let (x, y) = xy.split_once(',')?;
+            Some((x.parse::<f64>().ok()?, y.parse::<f64>().ok()?, at.parse::<f64>().ok()?))
+        });
+        if let Some((x, y, _)) = click.filter(|c| time.elapsed_secs_f64() >= c.2) {
+            menu.debug_clicked = true;
+            let _ = menu.commands.send(Command::Cursor { x, y });
+            let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: true });
+            let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: false });
+        }
+    }
+    if std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_some_and(|v| v == "1") {
+        let (frames, total, since) = &mut menu.debug_frames;
+        *frames += 1;
+        *total += time.delta_secs_f64();
+        let since = *since.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed().as_secs_f64() >= 1.0 {
+            info!("Frame timing (pause open: {}): {} frames, avg {:.1} ms", menu.open, *frames, *total * 1000.0 / *frames as f64);
+            menu.debug_frames = (0, 0.0, None);
+        }
     }
     for input in keys.read() {
         // Engine keyboard events do not repeat.

@@ -51,6 +51,15 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
   is drawn on a gamma-space canvas copied from and back to the sRGB display
   target (measured: the selected label's text is 25 in the game; sRGB
   blending gave 94).
+- Glyphs within a movie's `m_vectorFontBuffer` limits (its `iggyfile` decl;
+  `FUN_14002c440`: pause movies 64×64 px, page 1024², doubled above 1080p)
+  are drawn from Iggy's glyph bitmap cache (`flash::glyph_cache`): stb
+  truetype's flattening and version-2 rasteriser as embedded at tolerance
+  0.25, raster at 2× with a 2×2 box blur and a 2-pixel border, ±10% scale
+  reuse, page UVs and quads per `FUN_14107b2d0`. Larger glyphs are vectors.
+  Not ported: eviction of entries unused this frame when the page is full
+  (the page starts over) and the second texture (`t7`) GDraw's glyph
+  shaders multiply by.
 - The text language follows `arkLangSystem`; every installed language loads
   both pause movies (`pause_movies_load_in_every_installed_language`).
 

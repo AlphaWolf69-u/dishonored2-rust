@@ -7,6 +7,7 @@ pub mod events;
 pub mod filters;
 pub mod filter_passes;
 pub mod geom;
+pub mod glyph_cache;
 pub mod graphics;
 pub mod hit;
 pub mod iggy_functions;
