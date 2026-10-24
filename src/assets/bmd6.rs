@@ -99,6 +99,8 @@ pub fn declaration_path(compiled_guess: &str) -> Option<String> {
 pub struct SkeletonBinding {
     pub name: String,
     pub offset: Option<[f32; 3]>,
+    /// init `ragdoll`: the physics-system resource (arkPhysicsSystemResource).
+    pub ragdoll: Option<String>,
 }
 
 /// Resolve independently inherited MD6 init skeleton/offset. A child can
@@ -111,6 +113,7 @@ pub fn resolve_skeleton_binding(
     let mut visited = std::collections::HashSet::new();
     let mut skeleton = None;
     let mut offset = None;
+    let mut ragdoll = None;
     for _ in 0..16 {
         if !visited.insert(path.clone()) {
             return Err("MD6 inheritance cycle".into());
@@ -151,6 +154,9 @@ pub fn resolve_skeleton_binding(
                         .to_string(),
                 );
             }
+            if token == "ragdoll" && ragdoll.is_none() {
+                ragdoll = tokens.get(i + 1).map(|name| name.to_string());
+            }
             if token == "offset" && offset.is_none() {
                 let mut values = Vec::new();
                 let mut closed = false;
@@ -176,7 +182,7 @@ pub fn resolve_skeleton_binding(
         if depth != 0 {
             return Err("unbalanced MD6 declaration".into());
         }
-        if skeleton.is_some() && offset.is_some() {
+        if skeleton.is_some() && offset.is_some() && ragdoll.is_some() {
             break;
         }
         let Some(parent) = parent else {
@@ -187,7 +193,7 @@ pub fn resolve_skeleton_binding(
             .ok_or("invalid MD6 inherit path")?;
         path = format!("generated/decls/md6def/{stem}.md6.decl");
     }
-    Ok(skeleton.map(|name| SkeletonBinding { name, offset }))
+    Ok(skeleton.map(|name| SkeletonBinding { name, offset, ragdoll }))
 }
 
 impl Reader<'_> {
@@ -460,7 +466,8 @@ mod tests {
             binding,
             SkeletonBinding {
                 name: "models/body.md6skl".into(),
-                offset: Some([1.0, -2.0, 3.0])
+                offset: Some([1.0, -2.0, 3.0]),
+                ragdoll: None,
             }
         );
         assert!(
@@ -584,6 +591,20 @@ mod tests {
                 placements.iter().filter(|p| p.resource_path.contains("cables_speaker")).collect();
             println!("{level}: {mentions} entities mention cables_speaker, {} placements", cables.len());
             if level == "dust_p_lowchaos" {
+                for d in document.definitions.iter().filter(|d| d.id == "map_cpntphysicssystem_decl_6" || d.id == "map_cpntrigidbody_decl_62") {
+                    println!("MAPDECL {} {:?}", d.id, d.fields);
+                }
+                for name in [] as [&str; 0] {
+                    if let Some(d) = document.definitions.iter().find(|d| d.id == name) {
+                        println!("ENTITY {name} class={} {:?}", d.class, d.fields);
+                    }
+                }
+                for decl in catalog.paths_with_suffix(".decl") {
+                    if decl.contains("physicssystem_dynamic") || decl.ends_with("/physicssystem.cpntphysicssystem.decl") || decl.contains("cpntphysicssystem/default") {
+                        let text = catalog.read(&decl).unwrap().map(|b| String::from_utf8_lossy(&b).into_owned());
+                        println!("DECLFILE {decl}: {}", text.unwrap_or_default().replace(char::is_whitespace, " "));
+                    }
+                }
                 let decl = super::declaration_path(&cables[0].resource_path).unwrap();
                 let text = catalog.read(&decl).unwrap().map(|b| String::from_utf8_lossy(&b).into_owned());
                 println!("DECL {decl}: {text:?}");

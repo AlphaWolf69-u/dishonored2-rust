@@ -82,6 +82,12 @@ groups constraint-linked candidates into deactivated islands, honours
 `m_startAsleep`, and wakes bodies through motors and wind. `gameplay/entity_lod.rs`
 computes owner LOD levels from the view and last-frame visibility; at level 6+
 constraints freeze their bodies (activation mode 2) until the level drops.
+Physics systems (`assets/physworld/physics_system.rs`) load an MD6's init
+`ragdoll` hknpPhysicsSystemData and its hashed `.ragdoll` body-to-joint map;
+their ragdoll constraints and arkCpntConstraint cones are atom stacks
+(`constraint_solver/atom_stack.rs`, bit-exact to 140c45400) solved with the
+machinery. `app/physics_skinning.rs` poses those MD6 placements from the
+bodies each frame (per-placement meshes and shadow palettes).
 
 Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
 scene loops and their startup graph bindings from the installed archives.

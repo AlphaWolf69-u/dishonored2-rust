@@ -38,10 +38,115 @@ pub struct AssemblyRecipe {
     pub bodies: Vec<BodyRecipe>,
     pub joints: Vec<ConstraintSettings>,
 }
+
+/// A dynamic arkCpntPhysicsSystem: the MD6's init `ragdoll` physics system,
+/// its skeleton and the arkRagdollResource body-to-joint map (14076abc0).
+pub struct SystemRecipe {
+    pub entity_id: String,
+    pub placement: usize,
+    /// Entity spawn transform; 14008e560 places each body cinfo pose by it.
+    pub position: [f32; 3],
+    pub orientation: [f32; 4],
+    pub system: physworld::physics_system::PhysicsSystem,
+    pub skeleton: String,
+    pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+}
+
 pub struct MachineryRecipes {
     pub windmills: Vec<super::WindmillSettings>,
     pub assemblies: Vec<AssemblyRecipe>,
+    pub systems: Vec<SystemRecipe>,
     pub unsupported: Vec<String>,
+}
+
+/// Dynamic physics systems of render-placed MD6 entities.
+fn physics_systems(
+    catalog: &Catalog,
+    document: &Document,
+    placements: &[PlacedModel],
+    unsupported: &mut Vec<String>,
+) -> Vec<SystemRecipe> {
+    let behavior = |declaration: &str| {
+        document
+            .definitions
+            .iter()
+            .find(|d| d.kind == "component" && d.id == declaration)
+            .and_then(|d| d.fields.iter().find(|(k, _)| k == "edit"))
+            .and_then(|(_, v)| match v {
+                entities::Value::Scope(fields) => fields
+                    .iter()
+                    .find(|(k, _)| k == "m_PhysicsBehavior")
+                    .and_then(|(_, v)| match v {
+                        entities::Value::Atom(a) => Some(a.trim_matches('"').to_owned()),
+                        _ => None,
+                    }),
+                _ => None,
+            })
+    };
+    let read = |path: &str| {
+        catalog
+            .read(path)
+            .ok()
+            .flatten()
+            .map(|bytes| entities::declaration_text(&bytes).into_owned())
+    };
+    let mut systems = Vec::new();
+    for binding in entities::component_bindings(document) {
+        if binding.class != "cpntPhysicsSystem" {
+            continue;
+        }
+        if behavior(&binding.declaration_id).as_deref() != Some("BEHAVIOR_DYNAMIC") {
+            continue;
+        }
+        let id = binding.entity_id.as_str();
+        let load = || -> Result<Option<SystemRecipe>, String> {
+            let Some((index, p)) = placements
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.id == id && p.resource_path.ends_with(".bmd6model"))
+            else {
+                return Ok(None);
+            };
+            let Some(binding) = crate::bmd6::resolve_skeleton_binding(&p.resource_path, read)? else {
+                return Err(format!("{id}: MD6 has no skeleton"));
+            };
+            let ragdoll = binding.ragdoll.ok_or_else(|| format!("{id}: MD6 init has no ragdoll"))?;
+            let stem = ragdoll
+                .strip_suffix(".hkt")
+                .ok_or_else(|| format!("{id}: unsupported ragdoll {ragdoll}"))?;
+            let path = format!("generated/physsystem/{stem}.hkx");
+            let bytes = catalog
+                .read(&path)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{id}: missing {path}"))?;
+            let system = physworld::physics_system::parse(&bytes).map_err(|e| format!("{id}: {e}"))?;
+            let map = physworld::physics_system::ragdoll_path(&binding.name, &ragdoll);
+            let bytes = catalog
+                .read(&map)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("{id}: missing {map}"))?;
+            let ragdoll = physworld::physics_system::parse_ragdoll(&bytes)?;
+            if ragdoll.len() != system.bodies.len() {
+                return Err(format!("{id}: ragdoll map does not cover every body"));
+            }
+            let basis = physworld::rigid_body_basis(p.rotation.map(|v| [v[0], v[1], v[2], 0.]));
+            Ok(Some(SystemRecipe {
+                entity_id: id.to_owned(),
+                placement: index,
+                position: p.position,
+                orientation: physworld::rotation_quaternion(basis),
+                system,
+                skeleton: binding.name,
+                ragdoll,
+            }))
+        };
+        match load() {
+            Ok(Some(system)) => systems.push(system),
+            Ok(None) => {}
+            Err(error) => unsupported.push(error),
+        }
+    }
+    systems
 }
 
 pub fn load(
@@ -87,23 +192,31 @@ pub fn load(
             .is_some_and(|b| b.physics_behavior.as_deref() == Some("BEHAVIOR_DYNAMIC"))
     };
     let mut visited = HashSet::new();
+    let mut unsupported = Vec::new();
+    let systems = physics_systems(catalog, document, placements, &mut unsupported);
+    let system_ids: HashSet<String> = systems.iter().map(|s| s.entity_id.clone()).collect();
+    let is_system = |id: &str| system_ids.contains(id);
+    let dynamic = |id: &str| dynamic(id) || is_system(id);
     let mut result = MachineryRecipes {
         windmills: super::windmills(document, read)?,
         assemblies: Vec::new(),
-        unsupported: Vec::new(),
+        systems: Vec::new(),
+        unsupported,
     };
     // Assemblies a force drives: motors, or a dynamic body that the wind
     // manager pushes (809d80 registers positive m_windSpeedFactor).
     let windy = |id: &str| {
         dynamic(id) && bodies.get(id).is_some_and(|b| b.wind_speed_factor.unwrap_or(0.) > 0.)
     };
+    // Physics systems simulate from spawn (live Dust cables settle under
+    // gravity before their LOD freezes them), so their joints seed too.
     for (seed, joint) in constraints.iter().enumerate().filter(|(_, j)| {
         j.started
             && (j.motor.is_some()
                 || [j.entity_a.as_deref(), j.entity_b.as_deref()]
                     .into_iter()
                     .flatten()
-                    .any(windy))
+                    .any(|id| windy(id) || is_system(id)))
     }) {
         if visited.contains(&seed) {
             continue;
@@ -140,16 +253,20 @@ pub fn load(
             let mut joints = Vec::new();
             for index in &selected {
                 let j = &constraints[*index];
-                if j.joint_a.is_some() || j.joint_b.is_some() {
-                    return Err(format!(
-                        "{}: articulated joint endpoints are not supported",
-                        j.constraint_id
-                    ));
+                for (entity, joint) in [(&j.entity_a, &j.joint_a), (&j.entity_b, &j.joint_b)] {
+                    if joint.is_some() && !entity.as_deref().is_some_and(is_system) {
+                        return Err(format!(
+                            "{}: articulated joint endpoints are not supported",
+                            j.constraint_id
+                        ));
+                    }
                 }
                 if j.linear_constraint != "LINEAR_CONSTRAINT_FIXED"
                     || !matches!(
                         j.angular_constraint.as_str(),
-                        "ANGULAR_CONSTRAINT_HINGE" | "ANGULAR_CONSTRAINT_LIMITED_HINGE"
+                        "ANGULAR_CONSTRAINT_HINGE"
+                            | "ANGULAR_CONSTRAINT_LIMITED_HINGE"
+                            | "ANGULAR_CONSTRAINT_CONE"
                     )
                 {
                     return Err(format!(
@@ -162,7 +279,7 @@ pub fn load(
             let mut ids: Vec<_> = ids.iter().copied().collect();
             ids.sort_unstable();
             let mut recipes = Vec::new();
-            for id in ids {
+            for id in ids.into_iter().filter(|id| !is_system(id)) {
                 let body = bodies
                     .get(id)
                     .ok_or_else(|| format!("{id}: missing body declaration"))?;
@@ -288,6 +405,7 @@ pub fn load(
             Err(error) => result.unsupported.push(error),
         }
     }
+    result.systems = systems;
     Ok(result)
 }
 #[cfg(test)]
@@ -462,6 +580,12 @@ mod tests {
             let Ok(more) = entities::placed_models_with_inheritance(&document, read) else { continue };
             placements.extend(more);
             let Ok(recipes) = super::load(&catalog, &document, &placements) else { continue };
+            for system in &recipes.systems {
+                *kinds.entry(format!("SYSTEM {} {} bodies", system.system.name, system.system.bodies.len())).or_default() += 1;
+            }
+            for problem in recipes.unsupported.iter().filter(|p| p.contains("physics") || p.contains("ragdoll") || p.contains("MD6") || p.contains("articulated")) {
+                *kinds.entry(format!("UNSUPPORTED {problem}")).or_default() += 1;
+            }
             for assembly in &recipes.assemblies {
                 let motor = assembly.joints.iter().any(|j| j.motor.is_some() && j.started);
                 for body in assembly.bodies.iter().filter(|b| b.mass.is_some()) {

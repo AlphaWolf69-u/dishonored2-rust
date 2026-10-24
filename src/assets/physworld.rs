@@ -3,6 +3,7 @@
 //! were cross-checked against MIT-licensed TagTools by Skyth.
 use std::collections::BTreeMap;
 pub mod mass;
+pub mod physics_system;
 pub mod polytope;
 
 #[derive(Debug)]
@@ -2200,6 +2201,26 @@ mod tests {
                 }).collect();
                 let floats: Vec<String> = data[row..end].chunks_exact(4).map(|c| format!("{:.4}", f32::from_le_bytes(c.try_into().unwrap()))).collect();
                 println!("    +{row:04x} {}  {}", words.join(" "), floats.join(" "));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_cable_ragdoll_resource_layout() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        for path in catalog.paths_with_suffix(".ragdoll") {
+            if !path.contains("cables_speaker") {
+                continue;
+            }
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            println!("RAGDOLL {path} {} bytes head {:02x?}", bytes.len(), &bytes[..bytes.len().min(64)]);
+            match parse_embedded_havok(&bytes) {
+                Ok(world) => println!("  inventory {:?}", world.item_inventory()),
+                Err(e) => println!("  not tagged: {e}"),
             }
         }
     }

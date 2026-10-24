@@ -14,6 +14,7 @@ pub(super) struct AmbientMachinery {
     sources: Option<Vec<Option<usize>>>,
     /// Render +0x1c31 keeps the main view's visibility for two frame parities.
     visible_previous: Vec<bool>,
+    skins: Vec<super::physics_skinning::SystemSkin>,
 }
 impl AmbientMachinery {
     pub(super) fn load(
@@ -53,11 +54,14 @@ impl AmbientMachinery {
             scenes.playing_count()
         );
         let visible_previous = vec![false; world.bodies.len()];
+        let skins = super::physics_skinning::load_skins(catalog, &world, &placements);
+        info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
             scenes,
             sources: None,
             visible_previous,
+            skins,
         })
     }
 }
@@ -218,5 +222,31 @@ pub(super) fn update_machinery(
     machinery.scenes.step(
         clock.delta(3).expect("five clock groups"),
         |placement, delta| pending.0.push(ModelPose { placement, delta }),
+    );
+}
+
+/// After update_machinery: skin simulated physics-system placements.
+pub(super) fn pose_physics_systems(
+    mut machinery: ResMut<AmbientMachinery>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut buffers: ResMut<Assets<super::ShaderBuffer>>,
+    mut queue: ResMut<super::SceneRenderQueue>,
+    mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
+    placements: Res<super::RenderSourcePlacements>,
+    mut mesh_components: Query<&mut Mesh3d>,
+) {
+    let machinery = &mut *machinery;
+    if machinery.skins.is_empty() {
+        return;
+    }
+    super::physics_skinning::pose_physics_systems(
+        &mut machinery.skins,
+        &machinery.physics,
+        &mut meshes,
+        &mut buffers,
+        &mut queue,
+        &mut sources,
+        &placements,
+        &mut mesh_components,
     );
 }

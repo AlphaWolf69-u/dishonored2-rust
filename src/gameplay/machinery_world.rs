@@ -22,6 +22,7 @@ use super::{
     rigid_body::{BodyMotion, BodyPose},
 };
 use crate::{entities::machinery::ConstraintSettings, physworld};
+mod atoms;
 
 fn vector(v: [f32; 3]) -> [f32; 4] {
     [v[0], v[1], v[2], 0.]
@@ -57,8 +58,14 @@ pub struct MachineryBody {
     angular: [f32; 3],
     integrated_linear: [f32; 3],
     pub wind: Option<BodyWindState>,
-    /// Owner entity placement: its LOD level, static owners included.
+    /// Owner entity placement: its LOD level, static owners included. Only
+    /// the first body of an entity group carries it.
     pub entity_placement: Option<usize>,
+    /// The first body of this body's owner entity (a physics system owns
+    /// several); freezing and LOD levels act on the whole group.
+    pub group: usize,
+    /// Body-space mass frame (orientation, center): motion = body * frame.
+    mass_frame: ([f32; 4], [f32; 4]),
     pub lod: EntityLod,
     deactivation: MotionDeactivation,
     profile: DeactivationProfile,
@@ -94,6 +101,8 @@ impl MachineryBody {
             integrated_linear: [0.; 3],
             wind: None,
             entity_placement: placement,
+            group: 0,
+            mass_frame: ([0., 0., 0., 1.], [0.; 4]),
             lod: EntityLod::spawned(0),
             deactivation: MotionDeactivation::new(0, MODE_DEACTIVATE),
             profile: DeactivationProfile::default(),
@@ -131,6 +140,34 @@ impl MachineryBody {
     }
     pub fn active(&self) -> bool {
         self.active
+    }
+    /// The hknpBody transform (columns and translation): the motion frame
+    /// composed with the inverse body-space mass frame.
+    pub fn body_transform(&self) -> [[f32; 4]; 4] {
+        let [x, y, z, w] = self.motion.pose.orientation;
+        let ([fx, fy, fz, fw], c) = self.mass_frame;
+        let [qx, qy, qz] = [-fx, -fy, -fz];
+        let body = [
+            ((qz * y - z * qy) + w * qx) + x * fw,
+            ((qx * z - x * qz) + w * qy) + y * fw,
+            ((qy * x - y * qx) + w * qz) + z * fw,
+            fw * w - ((y * qy + x * qx) + z * qz),
+        ];
+        let basis = physworld::quaternion_basis(body);
+        let center = self.motion.pose.center;
+        let origin: [f32; 4] = std::array::from_fn(|i| {
+            if i == 3 {
+                1.
+            } else {
+                center[i] - ((c[1] * basis[1][i] + c[0] * basis[0][i]) + c[2] * basis[2][i])
+            }
+        });
+        [basis[0], basis[1], basis[2], origin].map(|mut v| {
+            if v[3] != 1. {
+                v[3] = 0.;
+            }
+            v
+        })
     }
     fn constraint_body(&self) -> ConstraintBody {
         let mass = self.motion.inverse_mass_values();
@@ -306,11 +343,25 @@ struct JointRows {
     friction_scale: f32,
     limit_impulse: f32,
 }
+/// A simulated physics system and its body-to-joint map for skinning.
+pub struct SystemState {
+    pub placement: usize,
+    pub skeleton: String,
+    /// Machinery body index per physics-system body, in cinfo order.
+    pub bodies: Vec<usize>,
+    pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+    /// Entity spawn transform (position, orientation).
+    pub position: [f32; 3],
+    pub orientation: [f32; 4],
+}
+
 #[derive(Default)]
 pub struct MachineryWorld {
     windmills: std::collections::HashMap<String, WindmillMotor>,
     pub bodies: Vec<MachineryBody>,
+    pub systems: Vec<SystemState>,
     joints: Vec<Joint>,
+    atom_joints: Vec<atoms::AtomJoint>,
     rows: Vec<Option<JointRows>>,
     velocities: Vec<SolverVelocities>,
     /// hknpWorld +0x818 clear: no motion checks, sleep or activation modes.
@@ -352,6 +403,10 @@ impl MachineryWorld {
                     body.angular_damping,
                 );
                 created.entity_placement = Some(body.placement);
+                created.group = world.bodies.len();
+                if let Some(mass) = body.mass {
+                    created.mass_frame = (mass.orientation, mass.center);
+                }
                 // 140c908f0 -> 140ce90e0. Motion ids follow creation order
                 // here; they only phase the check frames (id & 3).
                 created.deactivation =
@@ -372,22 +427,84 @@ impl MachineryWorld {
                 world.bodies.push(created);
             }
         }
+        // 14076abc0 -> 14008e560: physics-system bodies at the entity transform
+        // applied to each body cinfo pose, added awake; its constraints are
+        // the ragdoll atom stacks between body frames.
+        let mut system_keys = std::collections::HashMap::<String, usize>::new();
+        for system in &recipes.systems {
+            let group = world.bodies.len();
+            let mut members = Vec::new();
+            let q = system.orientation;
+            for (k, body) in system.system.bodies.iter().enumerate() {
+                let p = crate::gameplay::constraint_solver::ball_socket::rotate_direction(
+                    q,
+                    [body.position[0], body.position[1], body.position[2]],
+                );
+                let translation = [
+                    p[0] + system.position[0],
+                    p[1] + system.position[1],
+                    p[2] + system.position[2],
+                    0.,
+                ];
+                let [x, y, z, w] = q;
+                let [bx, by, bz, bw] = body.orientation;
+                let orientation = [
+                    ((y * bz - z * by) + w * bx) + x * bw,
+                    ((z * bx - x * bz) + w * by) + y * bw,
+                    ((x * by - y * bx) + w * bz) + z * bw,
+                    w * bw - ((y * by + x * bx) + z * bz),
+                ];
+                let motion = BodyMotion::from_mass_frame(body.mass, orientation, translation);
+                let mut created = MachineryBody::new(None, motion, 0.);
+                created.entity_placement = (k == 0).then_some(system.placement);
+                created.group = group;
+                created.mass_frame = (body.mass.orientation, body.mass.center);
+                created.deactivation =
+                    MotionDeactivation::new(world.bodies.len() as u32, MODE_DEACTIVATE);
+                system_keys.insert(format!("{}#{}", system.entity_id, body.name), world.bodies.len());
+                members.push(world.bodies.len());
+                world.bodies.push(created);
+            }
+            for constraint in &system.system.constraints {
+                world.atom_joints.push(atoms::AtomJoint::new(
+                    members[constraint.body_a],
+                    members[constraint.body_b],
+                    constraint.atoms,
+                    false,
+                ));
+            }
+            world.systems.push(SystemState {
+                placement: system.placement,
+                skeleton: system.skeleton.clone(),
+                bodies: members,
+                ragdoll: system.ragdoll.clone(),
+                position: system.position,
+                orientation: system.orientation,
+            });
+        }
         for assembly in &recipes.assemblies {
             for joint in &assembly.joints {
-                let endpoint = |id: &Option<String>| -> Result<usize, String> {
-                    match id {
-                        None => Ok(0),
-                        Some(id) => indices
+                let endpoint = |id: &Option<String>, bone: &Option<String>| -> Result<usize, String> {
+                    match (id, bone) {
+                        (None, _) => Ok(0),
+                        (Some(id), Some(bone)) => system_keys
+                            .get(&format!("{id}#{bone}"))
+                            .copied()
+                            .ok_or_else(|| format!("unresolved physics-system endpoint {id}#{bone}")),
+                        (Some(id), None) => indices
                             .get(id.as_str())
                             .copied()
                             .ok_or_else(|| format!("unresolved machinery endpoint {id}")),
                     }
                 };
-                let a = endpoint(&joint.entity_a)?;
-                let b = endpoint(&joint.entity_b)?;
+                let a = endpoint(&joint.entity_a, &joint.joint_a)?;
+                let b = endpoint(&joint.entity_b, &joint.joint_b)?;
                 // 140712da0 returns without creating a constraint when both
                 // resolved body IDs are equal, including two missing owners.
-                if a != b {
+                if a != b && joint.angular_constraint == "ANGULAR_CONSTRAINT_CONE" {
+                    let stack = atoms::cone_stack(joint, &world.bodies[a], &world.bodies[b]);
+                    world.atom_joints.push(atoms::AtomJoint::new(a, b, stack, true));
+                } else if a != b {
                     world.add_joint(joint.clone(), a, b)?;
                     // 140714cd0 -> 140c91140 -> 140c92dd0: an enabled motor
                     // adds the constraint with activation; others keep sleep.
@@ -626,42 +743,71 @@ impl MachineryWorld {
         }
         self.bodies[index].deactivation.set_mode(mode);
     }
-    /// arkCpntRigidBody 808220 (vtable +0x138).
-    fn freeze(&mut self, index: usize) {
-        let body = &self.bodies[index];
-        if body.frozen != 0 || !body.dynamic() {
-            return;
-        }
-        self.bodies[index].frozen = if body.active { 1 } else { 2 };
-        self.set_activation_mode(index, MODE_KEEP_DEACTIVATED);
+    fn members(&self, index: usize) -> Vec<usize> {
+        let group = self.bodies[index].group;
+        (0..self.bodies.len()).filter(|&i| i == index || (group != 0 && self.bodies[i].group == group)).collect()
     }
-    /// arkCpntRigidBody 808010 (vtable +0x140) -> 807890 for a body that
-    /// was active when frozen.
+    /// arkCpntRigidBody 808220 / arkCpntPhysicsSystem 140769d90 (vtable
+    /// +0x138): every body of the owner.
+    fn freeze(&mut self, index: usize) {
+        for index in self.members(index) {
+            let body = &self.bodies[index];
+            if body.frozen != 0 || !body.dynamic() {
+                continue;
+            }
+            self.bodies[index].frozen = if body.active { 1 } else { 2 };
+            self.set_activation_mode(index, MODE_KEEP_DEACTIVATED);
+        }
+    }
+    /// arkCpntRigidBody 808010 / arkCpntPhysicsSystem 140769a40 (vtable
+    /// +0x140) -> 807890 for a body that was active when frozen.
     fn thaw(&mut self, index: usize) {
-        let frozen = self.bodies[index].frozen;
-        if frozen == 0 {
-            return;
+        for index in self.members(index) {
+            let frozen = self.bodies[index].frozen;
+            if frozen == 0 {
+                continue;
+            }
+            self.set_activation_mode(index, MODE_DEACTIVATE);
+            if frozen == 1 {
+                self.activate(index);
+            }
+            self.bodies[index].frozen = 0;
         }
-        self.set_activation_mode(index, MODE_DEACTIVATE);
-        if frozen == 1 {
-            self.activate(index);
-        }
-        self.bodies[index].frozen = 0;
+    }
+    /// Component constraint endpoints: hinge joints, then component atom joints.
+    fn component_endpoints(&self) -> Vec<(usize, usize)> {
+        self.joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().filter(|j| j.component).map(|j| (j.a, j.b)))
+            .collect()
     }
     /// 14087bb70 -> arkCpntRigidBody 140727390: an owner level change reaches
     /// each attached constraint when it crosses the frozen state, which needs
     /// every attached owner (the world counts as frozen) at level 6+.
     pub fn entity_level_changed(&mut self, body: usize, old: i32, new: i32) {
-        for joint in 0..self.joints.len() {
-            let (a, b) = (self.joints[joint].a, self.joints[joint].b);
-            if a != body && b != body {
-                continue;
-            }
-            let other = if a == body { b } else { a };
-            let other_frozen = other == 0 || self.bodies[other].lod.level > 5;
+        let group = self.bodies[body].group;
+        let owned = |i: usize, bodies: &[MachineryBody]| i == body || (group != 0 && bodies[i].group == group);
+        for (joint, (a, b)) in self.component_endpoints().into_iter().enumerate() {
+            let (mine, other) = match (owned(a, &self.bodies), owned(b, &self.bodies)) {
+                (true, false) => (a, b),
+                (false, true) => (b, a),
+                _ => continue,
+            };
+            let _ = mine;
+            let leader = self.bodies[other].group;
+            let other_frozen = other == 0 || self.bodies[leader].lod.level > 5;
             let call = if new > 5 && other_frozen { old <= 5 } else { old > 5 };
             if call {
-                self.constraint_level_changed(joint, old, new);
+                if joint < self.joints.len() {
+                    self.constraint_level_changed(joint, old, new);
+                } else if new < 6 {
+                    self.thaw(a);
+                    self.thaw(b);
+                } else {
+                    self.freeze(a);
+                    self.freeze(b);
+                }
             }
         }
     }
@@ -721,9 +867,15 @@ impl MachineryWorld {
             i
         }
         let member = |b: &MachineryBody| b.dynamic() && b.active;
-        for joint in &self.joints {
-            if member(&self.bodies[joint.a]) && member(&self.bodies[joint.b]) {
-                let (x, y) = (root(&mut parent, joint.a), root(&mut parent, joint.b));
+        let links: Vec<(usize, usize)> = self
+            .joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().map(|j| (j.a, j.b)))
+            .collect();
+        for &(a, b) in &links {
+            if member(&self.bodies[a]) && member(&self.bodies[b]) {
+                let (x, y) = (root(&mut parent, a), root(&mut parent, b));
                 parent[x.max(y)] = x.min(y);
             }
         }
@@ -744,10 +896,38 @@ impl MachineryWorld {
             }
         }
     }
+    /// 140cdd770: an active constrained body activates its linked group
+    /// members that are not kept deactivated.
+    fn activate_linked(&mut self) {
+        if self.deactivation_disabled {
+            return;
+        }
+        let links: Vec<(usize, usize)> = self
+            .joints
+            .iter()
+            .map(|j| (j.a, j.b))
+            .chain(self.atom_joints.iter().map(|j| (j.a, j.b)))
+            .collect();
+        loop {
+            let mut changed = false;
+            for &(a, b) in &links {
+                for (from, to) in [(a, b), (b, a)] {
+                    let (f, t) = (&self.bodies[from], &self.bodies[to]);
+                    if f.dynamic() && f.active && t.dynamic() && !t.active && self.activate(to) {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
     pub fn step(&mut self, deltas: [f32; 5]) {
         let Some(step) = SolverParameters::from_game_deltas(&deltas, [0., 0., -9.81, 0.]) else {
             return;
         };
+        self.activate_linked();
         self.velocities.clear();
         self.velocities.extend(self.bodies.iter().map(|body| {
             let mut properties = body.properties;
@@ -770,6 +950,19 @@ impl MachineryWorld {
         // full step. Stabilized constraint tau/damping are separate from
         // the velocity solver's .6/1 coefficients.
         let query = ConstraintParameters::from_step(&step);
+        // Physics-system constraints precede the constraint components in
+        // the solver (14076abc0 adds the system before components start).
+        let atom_step = atoms::atom_step(&step, &query);
+        for joint in &mut self.atom_joints {
+            let inactive = [joint.a, joint.b]
+                .iter()
+                .any(|&i| self.bodies[i].dynamic() && !self.bodies[i].active);
+            if inactive {
+                joint.skip();
+            } else {
+                joint.build(&self.bodies, &atom_step);
+            }
+        }
         let constraint_tau = query.stabilized_tau;
         let constraint_damping = query.stabilized_damping;
         let inverse_step_tau = query.inverse_step_tau;
@@ -915,6 +1108,9 @@ impl MachineryWorld {
         }
         for substep in 0..step.substeps {
             let phase = step.phase(substep, 0);
+            for joint in &mut self.atom_joints {
+                joint.solve(&mut self.velocities, &step);
+            }
             for (joint, rows) in self.joints.iter().zip(&mut self.rows) {
                 let Some(rows) = rows else {
                     continue;
@@ -1013,6 +1209,9 @@ impl MachineryWorld {
         }
         if !self.deactivation_disabled {
             self.deactivate_islands();
+        }
+        for joint in &mut self.atom_joints {
+            joint.export(&self.velocities, &step);
         }
         // Exported solver motor history (14129c3f0 schema15), not accumulated
         // impulse or the transient saturation float from the iteration loop.
@@ -1114,6 +1313,7 @@ mod tests {
                     target_position: 0.,
                     linear_constraint: "LINEAR_CONSTRAINT_FIXED".into(),
                     angular_friction: -1.,
+                    angular_limits_tau_factor: 1.,
                     motor: Some(crate::entities::machinery::AngularMotorSettings {
                         mode: crate::entities::machinery::MotorMode::Velocity,
                         target_velocity: 3.,
@@ -1174,6 +1374,60 @@ mod tests {
         world.step([1. / 60.; 5]);
         assert_ne!(world.bodies[1].motion.pose, pose);
     }
+    #[test]
+    #[ignore = "requires installed Dust District archives"]
+    fn installed_dust_speaker_cables_settle_like_the_live_game() {
+        let catalog =
+            crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| {
+            catalog
+                .read(p)
+                .map(|b| b.map(|b| crate::entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        let mut placements = crate::entities::render_placements(&document);
+        placements.extend(crate::entities::placed_models_with_inheritance(&document, read).unwrap());
+        let recipes = crate::entities::machinery::recipes::load(&catalog, &document, &placements).unwrap();
+        for problem in &recipes.unsupported {
+            if problem.contains("cable") || problem.contains("turnbuckle") {
+                panic!("{problem}");
+            }
+        }
+        assert_eq!(recipes.systems.len(), 3, "speaker cable systems");
+        let mut world = MachineryWorld::from_recipes(&recipes).unwrap();
+        let cable = recipes.systems.iter().position(|s| s.entity_id == "ld_cable_01_1").unwrap();
+        let middle = world.systems[cable].bodies[6];
+        let start = world.bodies[middle].body_transform()[3];
+        for frame in 0..900 {
+            world.step([1. / 60.; 5]);
+            if frame % 150 == 0 {
+                let t = world.bodies[middle].body_transform()[3];
+                println!("frame {frame}: joint6 {:?} active {}", &t[..3], world.bodies[middle].active());
+            }
+        }
+        let end = world.bodies[middle].body_transform()[3];
+        println!("ld_cable_01_1 joint6 start {:?} end {:?}; live -17.994 -57.672 -16.101", &start[..3], &end[..3]);
+        for system in &world.systems {
+            for &i in &system.bodies {
+                let pose = world.bodies[i].motion.pose;
+                assert!(pose.center.iter().chain(&pose.orientation).all(|v| v.is_finite()));
+            }
+        }
+        assert!(end[2] < start[2], "the cable sags under gravity");
+        // Live capture: the cable entity at LOD 6/7 holds all twelve bodies in
+        // activation mode 2 through its arkCpntConstraint endpoints.
+        let leader = world.systems[cable].bodies[0];
+        world.bodies[leader].lod.level = 7;
+        world.entity_level_changed(leader, 0, 7);
+        for &i in &world.systems[cable].bodies {
+            assert!(!world.bodies[i].active());
+            assert_eq!(world.bodies[i].deactivation.mode(), MODE_KEEP_DEACTIVATED);
+        }
+    }
+
     #[test]
     #[ignore = "requires installed game archives"]
     fn installed_dust_machinery_stays_constrained() {
