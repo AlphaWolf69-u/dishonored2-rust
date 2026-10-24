@@ -332,7 +332,7 @@ pub(super) fn collision_report(
             camera.translation + direction * distance_limit,
         );
         let hit = details.map(|hit| hit.0);
-        let provenance = details.map(|(_, owner, vertices)| {
+        let provenance = details.map(|(_, _, owner, vertices)| {
             (
                 world.0.owner_name(owner).unwrap_or("level bphysworld"),
                 vertices.map(view_to_game),

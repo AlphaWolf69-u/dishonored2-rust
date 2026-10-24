@@ -62,7 +62,76 @@ pub struct CompressedCollider {
 pub struct MeshTriangle {
     pub vertices: [[f32; 3]; 3],
     pub source_shape_item: usize,
+    /// Shape tags along the triangle's shape-key path, as FUN_1400922d0
+    /// hands them to the world's shape-tag codec: compound levels outermost
+    /// first, then the leaf primitive's tag. Unused entries are NO_SHAPE_TAG,
+    /// which the codec skips.
+    pub shape_tags: ShapeTagPath,
+    /// Index into `PhysWorld::materials` of the physics material the game
+    /// resolves for this triangle's shape key (see `shape_tag_material`).
+    /// `None` for standalone shapes and for codec paths whose result is a
+    /// runtime material-library id rather than a world-table entry.
+    pub material: Option<u32>,
 }
+
+/// The hknpMaterialId FUN_1400922d0 threads through the shape-tag codec:
+/// it starts as the body's id and each decoded tag replaces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodecMaterial {
+    /// A raw id: the body's own, or `tag & 0x7fff` of an absolute tag. A
+    /// following relative tag uses it as the base of its table index; as a
+    /// final result it names a runtime hknpMaterialLibrary entry, which is
+    /// not statically known.
+    Raw(u16),
+    /// An entry of the world table that FUN_140852100 fills with the
+    /// library id of `materials[material_map[index]]`.
+    Map(u32),
+}
+
+/// arkShapeTagCodecLocal::decode (FUN_140853b80, vtable 0x141c80060 slot 4)
+/// for one tag: 0xffff leaves the id; bit 15 sets the id to `tag & 0x7fff`;
+/// otherwise the id becomes the world table entry `(tag & 0x7fff) + id`.
+/// A relative tag after a table hit would add a runtime library id, which is
+/// not statically known. Level worlds use absolute compound-instance tags
+/// as the base of their leaf tags.
+pub fn decode_shape_tag(material: Option<CodecMaterial>, tag: u16) -> Option<CodecMaterial> {
+    match (material?, tag) {
+        (current, NO_SHAPE_TAG) => Some(current),
+        (_, tag) if tag & 0x8000 != 0 => Some(CodecMaterial::Raw(tag & 0x7fff)),
+        (CodecMaterial::Raw(id), tag) => {
+            Some(CodecMaterial::Map((tag & 0x7fff) as u32 + id as u32))
+        }
+        (CodecMaterial::Map(_), _) => None,
+    }
+}
+
+/// FUN_1400922d0: decode a body's hknpMaterialId through every tag on the
+/// shape-key path, outermost first, and resolve a world-table result to its
+/// index in `materials` (FUN_140852100 builds entry `i` from
+/// `materials[material_map[i]]`).
+pub fn shape_tag_material(
+    body_material: u16,
+    shape_tags: &ShapeTagPath,
+    material_map: &[u32],
+) -> Option<u32> {
+    let decoded = shape_tags
+        .iter()
+        .fold(Some(CodecMaterial::Raw(body_material)), |material, &tag| {
+            decode_shape_tag(material, tag)
+        })?;
+    match decoded {
+        CodecMaterial::Map(index) => material_map.get(index as usize).copied(),
+        CodecMaterial::Raw(_) => None,
+    }
+}
+
+/// hknpShapeTag "invalid": FUN_140853b80 leaves the material unchanged.
+pub const NO_SHAPE_TAG: u16 = 0xffff;
+/// The shape-key collector in FUN_1400922d0 holds eight parent levels plus
+/// the leaf tags (collector +0xc14).
+pub const SHAPE_TAG_LEVELS: usize = 9;
+pub type ShapeTagPath = [u16; SHAPE_TAG_LEVELS];
+pub const NO_SHAPE_TAGS: ShapeTagPath = [NO_SHAPE_TAG; SHAPE_TAG_LEVELS];
 
 #[derive(Default, Debug)]
 pub struct CollisionExtraction {
@@ -757,7 +826,14 @@ impl PhysWorld {
             return Err(format!("standalone HKX root is {name}, not a shape"));
         }
         let mut output = CollisionExtraction::default();
-        self.visit_shape(bytes, 1, Affine::translated([0.0; 3]), 0, &mut output)?;
+        self.visit_shape(
+            bytes,
+            1,
+            Affine::translated([0.0; 3]),
+            0,
+            NO_SHAPE_TAGS,
+            &mut output,
+        )?;
         Ok(output)
     }
     /// Count primitive records that can form a nondegenerate triangle before
@@ -867,6 +943,15 @@ impl PhysWorld {
         let root = self.item_at(bytes, 1, 0)?;
         let bodies = le32(root, 0x38)? as usize;
         let body_item = self.items.get(bodies).ok_or("missing body item")?;
+        // hknpPhysicsSystemData::materials (+0x18). Level worlds carry none,
+        // so a body's serialized materialId is the id the codec starts from;
+        // with system materials the id would be remapped at insertion.
+        let system_materials = le32(root, 0x18)? as usize;
+        let body_ids_are_raw = system_materials == 0
+            || self
+                .items
+                .get(system_materials)
+                .is_none_or(|item| item.count == 0);
         let mut output = CollisionExtraction::default();
         for body in 0..body_item.count {
             let info = self.item_at(bytes, bodies, body)?;
@@ -878,8 +963,30 @@ impl PhysWorld {
             // per-body translation for other worlds. Quaternion support is
             // deferred until a rotated body appears in a tested resource.
             let position = [float(info, 0x30)?, float(info, 0x34)?, float(info, 0x38)?];
+            let body_material = u16::from_le_bytes(
+                slice(
+                    info,
+                    self.field_offset(body_item.type_index, "materialId")?,
+                    2,
+                )?
+                .try_into()
+                .unwrap(),
+            );
             let first = output.triangles.len();
-            self.visit_shape(bytes, shape, Affine::translated(position), 0, &mut output)?;
+            self.visit_shape(
+                bytes,
+                shape,
+                Affine::translated(position),
+                0,
+                NO_SHAPE_TAGS,
+                &mut output,
+            )?;
+            if body_ids_are_raw {
+                for triangle in &mut output.triangles[first..] {
+                    triangle.material =
+                        shape_tag_material(body_material, &triangle.shape_tags, &self.material_map);
+                }
+            }
             for triangle in &output.triangles[first..] {
                 let bodies = output
                     .shape_bodies
@@ -893,16 +1000,23 @@ impl PhysWorld {
         Ok(output)
     }
 
+    /// `depth` counts the compound levels above `index`, whose instance tags
+    /// fill `shape_tags[..depth]`; a leaf writes its tag at `shape_tags[depth]`.
+    #[allow(clippy::too_many_arguments)]
     fn visit_shape(
         &self,
         bytes: &[u8],
         index: usize,
         transform: Affine,
         depth: usize,
+        shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
     ) -> Result<(), String> {
-        if depth > 32 {
-            return Err("nested collision shape depth exceeds 32".into());
+        if depth >= SHAPE_TAG_LEVELS {
+            return Err(format!(
+                "nested collision shape depth exceeds {}",
+                SHAPE_TAG_LEVELS - 1
+            ));
         }
         let item = self
             .items
@@ -941,6 +1055,8 @@ impl PhysWorld {
                         output.triangles.push(MeshTriangle {
                             vertices: corners.map(|corner| vertices[corner]),
                             source_shape_item: index,
+                            shape_tags,
+                            material: None,
                         });
                     }
                     output.convex.push(ConvexCollider {
@@ -976,7 +1092,18 @@ impl PhysWorld {
                         continue;
                     }
                     let local = Affine::from_havok_instance(instance)?;
-                    self.visit_shape(bytes, child, transform.compose(local), depth + 1, output)?;
+                    // hknpShapeInstance::shapeTag (+0x58) is this level's tag.
+                    let mut child_tags = shape_tags;
+                    child_tags[depth] =
+                        u16::from_le_bytes(slice(instance, 0x58, 2)?.try_into().unwrap());
+                    self.visit_shape(
+                        bytes,
+                        child,
+                        transform.compose(local),
+                        depth + 1,
+                        child_tags,
+                        output,
+                    )?;
                 }
             }
             "hknpConvexPolytopeShape" | "hknpBoxShape" => {
@@ -1031,6 +1158,8 @@ impl PhysWorld {
                         output.triangles.push(MeshTriangle {
                             vertices: [corners[0], corners[triangle], corners[triangle + 1]],
                             source_shape_item: index,
+                            shape_tags,
+                            material: None,
                         });
                     }
                 }
@@ -1067,9 +1196,9 @@ impl PhysWorld {
                 });
                 let previous_triangles = output.triangles.len();
                 let previous_convex = output.convex.len();
-                if let Err(error) =
-                    self.decode_compressed_mesh(bytes, tree, tree_type, index, transform, output)
-                {
+                if let Err(error) = self.decode_compressed_mesh(
+                    bytes, tree, tree_type, index, transform, depth, shape_tags, output,
+                ) {
                     output.triangles.truncate(previous_triangles);
                     output.convex.truncate(previous_convex);
                     output.compressed_decode_failures.push(error);
@@ -1080,6 +1209,7 @@ impl PhysWorld {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn decode_compressed_mesh(
         &self,
         bytes: &[u8],
@@ -1087,6 +1217,8 @@ impl PhysWorld {
         tree_type: usize,
         shape_index: usize,
         transform: Affine,
+        depth: usize,
+        shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
     ) -> Result<(), String> {
         let references: Vec<usize> = [
@@ -1101,6 +1233,15 @@ impl PhysWorld {
         .collect::<Result<_, _>>()?;
         let [sections_ref, primitives_ref, shared_index_ref, packed_ref, shared_ref] =
             references.try_into().unwrap();
+        let data_runs_ref =
+            le32(tree, self.field_offset(tree_type, "primitiveDataRuns")?)? as usize;
+        let data_runs: Vec<[u8; 4]> =
+            (0..self.items.get(data_runs_ref).map_or(0, |item| item.count))
+                .map(|run| {
+                    self.item_at(bytes, data_runs_ref, run)
+                        .map(|data| data[..4].try_into().unwrap())
+                })
+                .collect::<Result<_, _>>()?;
         let section_count = self
             .items
             .get(sections_ref)
@@ -1147,6 +1288,19 @@ impl PhysWorld {
             let first_shared = shared_header >> 8;
             let first_primitive = primitive_header >> 8;
             let num_primitives = primitive_header & 0xff;
+            let runs_header = le32(section, 0x54)? as usize;
+            let runs = data_runs
+                .get(runs_header >> 8..(runs_header >> 8) + (runs_header & 0xff))
+                .ok_or_else(|| {
+                    format!("compressed shape {shape_index} section {section_number}: data runs out of range")
+                })?;
+            let primitive_tags = |local: usize| -> Result<ShapeTagPath, String> {
+                let mut tags = shape_tags;
+                tags[depth] = section_primitive_tag(runs, local).ok_or_else(|| {
+                    format!("compressed shape {shape_index} section {section_number}: primitive {local} has no data run")
+                })?;
+                Ok(tags)
+            };
             if first_packed + num_packed > packed_count
                 || first_shared + num_shared > shared_index_count
                 || first_primitive + num_primitives > primitives_count
@@ -1290,7 +1444,12 @@ impl PhysWorld {
                             std::array::from_fn(|axis| quantized[axis] * scale[axis] + low[axis]);
                         hull.push(transform.apply(local));
                     }
-                    triangulate_convex_vertices(&hull, shape_index, &mut output.triangles)?;
+                    triangulate_convex_vertices(
+                        &hull,
+                        shape_index,
+                        primitive_tags(number - first_primitive)?,
+                        &mut output.triangles,
+                    )?;
                     output.convex.push(ConvexCollider {
                         vertices: hull,
                         source_shape_item: shape_index,
@@ -1343,11 +1502,14 @@ impl PhysWorld {
                     continue;
                 }
                 let corner = |at: usize| corner(primitive[at]);
+                let leaf_tags = primitive_tags(number)?;
                 if distinct3(primitive[0], primitive[1], primitive[2]) {
                     let [a, b, c] = [corner(0)?, corner(1)?, corner(2)?];
                     output.triangles.push(MeshTriangle {
                         vertices: [transform.apply(a), transform.apply(b), transform.apply(c)],
                         source_shape_item: shape_index,
+                        shape_tags: leaf_tags,
+                        material: None,
                     });
                 }
                 if distinct3(primitive[0], primitive[2], primitive[3]) {
@@ -1355,12 +1517,25 @@ impl PhysWorld {
                     output.triangles.push(MeshTriangle {
                         vertices: [transform.apply(a), transform.apply(c), transform.apply(d)],
                         source_shape_item: shape_index,
+                        shape_tags: leaf_tags,
+                        material: None,
                     });
                 }
             }
         }
         Ok(())
     }
+}
+
+/// FUN_14124e030: a compressed-mesh primitive's shape tag is the `value` of
+/// the section data run (hkcdStaticMeshTreeBase::PrimitiveDataRunBase:
+/// value u16, index u8, count u8) whose `[index, index + count)` holds the
+/// primitive's section-local index. The game searches the section's runs
+/// (binary above four, then linearly) and takes the first match.
+fn section_primitive_tag(runs: &[[u8; 4]], local: usize) -> Option<u16> {
+    runs.iter()
+        .find(|run| (run[2] as usize..run[2] as usize + run[3] as usize).contains(&local))
+        .map(|run| u16::from_le_bytes([run[0], run[1]]))
 }
 
 fn distinct3(a: u8, b: u8, c: u8) -> bool {
@@ -1446,6 +1621,7 @@ fn compressed_tree_node_bounds(
 fn triangulate_convex_vertices(
     vertices: &[[f32; 3]],
     source_shape_item: usize,
+    shape_tags: ShapeTagPath,
     triangles: &mut Vec<MeshTriangle>,
 ) -> Result<(), String> {
     let sub = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| a[i] - b[i]) };
@@ -1522,6 +1698,8 @@ fn triangulate_convex_vertices(
                     vertices[ordered[i + 1]],
                 ],
                 source_shape_item,
+                shape_tags,
+                material: None,
             });
         }
         return Ok(());
@@ -1581,6 +1759,8 @@ fn triangulate_convex_vertices(
         triangles.push(MeshTriangle {
             vertices: face.map(|i| vertices[i]),
             source_shape_item,
+            shape_tags,
+            material: None,
         });
     }
     Ok(())
@@ -1689,11 +1869,7 @@ impl Affine {
 
 /// FUN_140cc3ba0 writes the original per-body byte classifier output.
 /// The byte codes remain raw: their higher-level meaning is not established.
-pub fn classify_body_rows(
-    body_ids: &[u32],
-    rows: &[u8],
-    output: &mut [u8],
-) -> Result<(), String> {
+pub fn classify_body_rows(body_ids: &[u32], rows: &[u8], output: &mut [u8]) -> Result<(), String> {
     const ROW_STRIDE: usize = 0xb0;
     if output.len() < body_ids.len() {
         return Err("body-row output is shorter than the input ID list".into());
@@ -1733,6 +1909,47 @@ pub fn classify_body_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shape_tag_codec_follows_arkshapetagcodeclocal_decode() {
+        let path = |tags: &[u16]| {
+            let mut path = NO_SHAPE_TAGS;
+            path[..tags.len()].copy_from_slice(tags);
+            path
+        };
+        let map: Vec<u32> = (0..16).map(|index| 100 + index).collect();
+        // A relative leaf tag indexes the world table from the body id.
+        assert_eq!(shape_tag_material(0, &path(&[0x5]), &map), Some(105));
+        assert_eq!(shape_tag_material(2, &path(&[0x5]), &map), Some(107));
+        // An absolute instance tag sets the base for its relative leaf tags.
+        assert_eq!(
+            shape_tag_material(0, &path(&[0x8007, 0x1]), &map),
+            Some(108)
+        );
+        // Invalid tags are skipped anywhere on the path.
+        assert_eq!(
+            shape_tag_material(0, &path(&[NO_SHAPE_TAG, 0x3]), &map),
+            Some(103)
+        );
+        // A raw id result names a runtime library entry; a relative tag after a
+        // table hit adds a runtime library id. Neither is statically known.
+        assert_eq!(shape_tag_material(0, &NO_SHAPE_TAGS, &map), None);
+        assert_eq!(shape_tag_material(0, &path(&[0x8003]), &map), None);
+        assert_eq!(shape_tag_material(0, &path(&[0x1, 0x1]), &map), None);
+        // Out-of-table indices stay unresolved.
+        assert_eq!(shape_tag_material(0, &path(&[0x20]), &map), None);
+    }
+
+    #[test]
+    fn compressed_primitive_tag_comes_from_its_section_data_run() {
+        // value u16, first primitive, count.
+        let runs = [[0x07, 0x00, 0, 3], [0x2f, 0x00, 3, 2], [0x01, 0x80, 5, 1]];
+        assert_eq!(section_primitive_tag(&runs, 0), Some(7));
+        assert_eq!(section_primitive_tag(&runs, 2), Some(7));
+        assert_eq!(section_primitive_tag(&runs, 4), Some(0x2f));
+        assert_eq!(section_primitive_tag(&runs, 5), Some(0x8001));
+        assert_eq!(section_primitive_tag(&runs, 6), None);
+    }
+
     #[test]
     fn body_row_classifier_preserves_branch_order_and_id_mask() {
         const STRIDE: usize = 0xb0;

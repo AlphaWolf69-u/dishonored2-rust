@@ -515,14 +515,60 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 model_start.elapsed().as_secs_f64()
             );
         }
+        // FUN_1406798b0 loads each listed arkPhysicsMaterial declaration.
+        let mut missing_materials = Vec::new();
+        let materials: Vec<_> = physics
+            .materials
+            .iter()
+            .map(|name| {
+                let read = |path: &str| {
+                    catalog
+                        .as_ref()
+                        .unwrap()
+                        .read(path)
+                        .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
+                        .map_err(|e| e.to_string())
+                };
+                entities::physics_material::physics_material(name, read).map_err(|error| {
+                    missing_materials.push(error);
+                })
+            })
+            .collect();
+        if !missing_materials.is_empty() {
+            println!("Physics materials unresolved: {missing_materials:?}");
+        }
+        let resolved: Vec<_> = materials.iter().flatten().cloned().collect();
+        let slot: Vec<u32> = materials
+            .iter()
+            .scan(0u32, |next, material| {
+                Some(match material {
+                    Ok(_) => {
+                        *next += 1;
+                        *next - 1
+                    }
+                    Err(()) => navigation::NO_MATERIAL,
+                })
+            })
+            .collect();
         let index_start = std::time::Instant::now();
-        let world = navigation::CollisionWorld::with_owned(
+        let world = navigation::CollisionWorld::with_materials(
             geometry
                 .triangles
                 .iter()
-                .map(|triangle| (triangle.vertices.map(game_to_view), u32::MAX))
-                .chain(model_collision),
+                .map(|triangle| {
+                    let material = triangle
+                        .material
+                        .and_then(|index| slot.get(index as usize).copied())
+                        .unwrap_or(navigation::NO_MATERIAL);
+                    (triangle.vertices.map(game_to_view), u32::MAX, material)
+                })
+                .chain(
+                    model_collision
+                        .into_iter()
+                        .map(|(triangle, owner)| (triangle, owner, navigation::NO_MATERIAL)),
+                ),
             collider_owners,
+            resolved,
         );
         if profile {
             println!(
@@ -554,13 +600,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             let hit = world.first_hit_details(start, start + direction * 40.0);
             println!(
                 "NAV RAY hit={:?}",
-                hit.map(|(distance, owner, vertices)| (
+                hit.map(|(distance, index, owner, vertices)| (
                     distance,
+                    world.physics_material(index).map(|material| material.name.as_str()),
                     world.owner_name(owner),
                     vertices.map(view_to_game)
                 ))
             );
-            if let Some(owner) = hit.and_then(|(_, owner, _)| world.owner_name(owner)) {
+            if let Some(owner) = hit.and_then(|(_, _, owner, _)| world.owner_name(owner)) {
                 if let Some(catalog) = &catalog {
                     for placement in expanded_model_placements(&placed_models, catalog)
                         .iter()
@@ -599,6 +646,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             let feet = Vec3::from(coordinates.clone().try_into().unwrap_or([0.0; 3]));
             super::player::probe_player(catalog.as_ref().unwrap(), &world, feet, 0.0, false)?;
+            return Ok(());
+        }
+        if env::var("DH2_ANIM_PROBE").as_deref() == Ok("1") {
+            super::player::probe_animation(catalog.as_ref().unwrap())?;
             return Ok(());
         }
         if env::var("DH2_NAV_PROBE").as_deref() == Ok("1") {

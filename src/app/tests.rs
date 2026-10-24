@@ -9004,7 +9004,7 @@ fn blueprint_root_collision_uses_component_not_render_children() {
     let world = navigation::CollisionWorld::with_owned(triangles, owners);
     let eye = game_to_view([-33.679825, 83.83279, 18.319]);
     let direction = game_to_view([0.5484812, 0.29665253, -0.78177094]).normalize();
-    let (distance, owner, _) = world
+    let (distance, _, owner, _) = world
         .first_hit_details(eye, eye + direction * 40.0)
         .unwrap();
     assert_eq!(world.owner_name(owner), Some("env_bp_fence_metal_200cm_02"));

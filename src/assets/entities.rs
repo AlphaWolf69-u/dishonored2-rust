@@ -4,6 +4,8 @@ use crate::render_light::ScatteringParameters;
 mod components;
 pub mod wind;
 pub mod machinery;
+pub mod physics_material;
+pub mod midnight;
 pub mod scene_motion;
 pub mod player;
 

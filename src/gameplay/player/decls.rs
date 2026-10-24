@@ -6,11 +6,12 @@ use super::controller::{ButtonUsage, StateMapping};
 use super::physics::{PhysicsDecl, PhysicsSettings};
 use super::shape::{self, ShapeSettings};
 use super::controller::SlippingThresholds;
-use super::sensors::{AutoCrouchDecl, LeanDecl};
+use super::sensors::{AutoCrouchDecl, LeanDecl, MantleDecl, VaultLimits};
 use super::states::{
-    Attributes, FallingDecl, JumpingDecl, Kind, LeaningDecl, NavigationDecl, RuleDecl, SlidingDecl, SlippingDecl,
-    SprintingDecl, StateDecl, StateId,
+    Attributes, CatFallDecl, FallingDecl, JumpingDecl, Kind, LeaningDecl, MantleStateDecl, NavigationDecl, RuleDecl, SlidingDecl,
+    SlippingDecl, SprintingDecl, StateDecl, StateId, VaultDecl,
 };
+
 use crate::entities::player::PlayerDeclarations;
 use crate::entities::Value;
 use bevy_math::Vec3;
@@ -74,6 +75,65 @@ fn items<'a>(fields: &'a Fields, key: &str) -> Vec<&'a Fields> {
     entries.into_iter().map(|(_, f)| f).collect()
 }
 
+/// A bodyParts_t scope: m_body 1, m_left_arm 2, m_right_arm 4, m_third_arm 8,
+/// m_legs 0x10 (reflection order); unset fields keep the class bits.
+fn body_parts(fields: &Fields, key: &str, mut bits: u8) -> Result<u8, String> {
+    let Some(parts) = scope(fields, key) else { return Ok(bits) };
+    for (name, value) in parts {
+        let bit = match name.as_str() {
+            "m_body" => 1,
+            "m_left_arm" => 2,
+            "m_right_arm" => 4,
+            "m_third_arm" => 8,
+            "m_legs" => 0x10,
+            other => return Err(format!("unknown body part {other}")),
+        };
+        match value {
+            Value::Atom(v) if v == "true" => bits |= bit,
+            Value::Atom(_) => bits &= !bit,
+            Value::Scope(_) => return Err(format!("invalid body part {name}")),
+        }
+    }
+    Ok(bits)
+}
+
+/// The atoms of an `item[n]` list, in order.
+fn items_atoms(list: &Fields) -> Vec<String> {
+    let mut entries: Vec<(usize, String)> = list
+        .iter()
+        .filter_map(|(k, v)| match v {
+            Value::Atom(text) => Some((k.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?, text.trim_matches('"').to_owned())),
+            Value::Scope(_) => None,
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().map(|(_, v)| v).collect()
+}
+
+/// The health component's m_health (installed for the player).
+pub fn health(fields: &Fields) -> Result<f32, String> {
+    number(fields, "m_health", f32::NAN).and_then(|h| if h.is_nan() { Err("player health decl has no m_health".into()) } else { Ok(h) })
+}
+
+/// arkDeclCpntPlayerSensorMantle (ctor FUN_1403baf00).
+pub fn mantle_sensor(fields: &Fields) -> Result<MantleDecl, String> {
+    let d = MantleDecl::default();
+    Ok(MantleDecl {
+        max_distance_from_wall: number(fields, "m_maxDistanceFromWall", d.max_distance_from_wall)?,
+        forward_cast_height_min: number(fields, "m_forwardCastHeightMin", d.forward_cast_height_min)?,
+        forward_cast_height_max: number(fields, "m_forwardCastHeightMax", d.forward_cast_height_max)?,
+        mid_mantle_height: number(fields, "m_midMantleHeight", d.mid_mantle_height)?,
+        high_mantle_height: number(fields, "m_highMantleHeight", d.high_mantle_height)?,
+        max_player_angle: number(fields, "m_maxPlayerAngle", d.max_player_angle)?,
+        destination_depth: number(fields, "m_destinationDepth", d.destination_depth)?,
+        wall_angle_max: number(fields, "m_wallAngleMax", d.wall_angle_max)?,
+        hand_box_size: vector(fields, "m_handBoxSize", d.hand_box_size)?,
+        left_hand_offset: vector(fields, "m_leftHandOffset", d.left_hand_offset)?,
+        right_hand_offset: vector(fields, "m_rightHandOffset", d.right_hand_offset)?,
+        use_player_direction: boolean(fields, "m_usePlayerDirecton", d.use_player_direction)?,
+    })
+}
+
 /// An eActions_t field (`ACTION_` names, binding_tables.rs `ACTIONS`).
 fn action(fields: &Fields, key: &str, default: i32) -> Result<i32, String> {
     match atom(fields, key).and_then(|a| a.strip_prefix("ACTION_")) {
@@ -95,6 +155,29 @@ fn seconds(fields: &Fields, key: &str, default: f32) -> Result<f32, String> {
 fn vector(fields: &Fields, key: &str, default: Vec3) -> Result<Vec3, String> {
     let Some(v) = scope(fields, key) else { return Ok(default) };
     Ok(Vec3::new(number(v, "x", default.x)?, number(v, "y", default.y)?, number(v, "z", default.z)?))
+}
+
+/// arkCpntPlayerCamera::mode_t names (table 0x14239dad0; KEEP_PREVIOUS
+/// follows MAX).
+pub fn camera_mode(name: &str) -> Option<i32> {
+    const MODES: [&str; 19] = [
+        "AND_ARMS", "WITHOUT_ARMS", "ANIMATED", "CONSTRAINED", "LOOKAT", "NO_CONTROL", "CONSTRAINED_WITH_ARMS", "SHADOW_WALK",
+        "SHADOW_GRAPPLE", "CINEMATIC_WITH_ARMS", "CINEMATIC_WITHOUT_ARMS", "CINEMATIC_ANIMATED", "ENTER_POSSESSED_HOST", "CORPSE",
+        "CATFALL", "DROWNING", "BLACKMARKET", "MAX", "KEEP_PREVIOUS",
+    ];
+    let name = name.strip_prefix("MODE_CAMERA_")?;
+    MODES.iter().position(|m| *m == name).map(|i| i as i32)
+}
+
+/// A constraintParams_t field in degrees: pitch up, down, yaw left, right.
+pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Result<[f32; 4], String> {
+    let Some(c) = scope(fields, key) else { return Ok(default) };
+    Ok([
+        number(c, "m_maxPitchUp", default[0])?,
+        number(c, "m_maxPitchDown", default[1])?,
+        number(c, "m_maxYawLeft", default[2])?,
+        number(c, "m_maxYawRight", default[3])?,
+    ])
 }
 
 /// arkPlayerStateId_t names the port resolves (enum table 0x142391a90).
@@ -194,6 +277,8 @@ pub fn camera(fields: &Fields) -> Result<CameraDecl, String> {
         speed_fov_additional_value: number(fields, "m_speedFovAdditionalValue", d.speed_fov_additional_value)?,
         speed_fov_max_increase_speed: number(fields, "m_speedFovMaxIncreaseSpeed", d.speed_fov_max_increase_speed)?,
         speed_fov_max_decrease_speed: number(fields, "m_speedFovMaxDecreaseSpeed", d.speed_fov_max_decrease_speed)?,
+        constraints_blend_speed: number(fields, "m_constraintsBlendSpeed", d.constraints_blend_speed)?,
+        mode_blend_duration: seconds(fields, "m_modeBlendDuration", d.mode_blend_duration)?,
     })
 }
 
@@ -266,6 +351,11 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
         physics_shape_transition_speed_factor: number(fields, "m_physicsShapeTransitionSpeedFactor", d.physics_shape_transition_speed_factor)?,
         small_fall_min_height: number(fields, "m_smallFallMinHeight", d.small_fall_min_height)?,
         small_fall_anim_weight: number(fields, "m_smallFallAnimWeight", d.small_fall_anim_weight)?,
+        camera_mode: match atom(fields, "m_cameraMode") {
+            Some(name) => camera_mode(name).ok_or_else(|| format!("unknown camera mode {name}"))?,
+            None => d.camera_mode,
+        },
+        camera_mode_blend_duration: seconds(fields, "m_cameraModeBlendDuration", d.camera_mode_blend_duration)?,
         ..d
     })
 }
@@ -302,6 +392,10 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     smooth_gravity_adjustment: number(fields, "m_smoothGravityAdjustment", d.smooth_gravity_adjustment)?,
                     resume_sliding_max_height: number(fields, "m_resumeSlidingMaxHeight", d.resume_sliding_max_height)?,
                     full_fall_anim_height: number(fields, "m_fullFallAnimHeight", d.full_fall_anim_height)?,
+                    cat_fall_height: number(fields, "m_catFallHeight", d.cat_fall_height)?,
+                    damage_height: number(fields, "m_damageHeight", d.damage_height)?,
+                    death_height: number(fields, "m_deathHeight", d.death_height)?,
+                    fall_damage: atom(fields, "m_fallDamageDecl").is_some_and(|v| !v.is_empty()),
 
                 })
             }
@@ -316,6 +410,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     min_slope_angle: number(fields, "m_minSlopeAngle", d.min_slope_angle)?,
                     max_slope_angle: number(fields, "m_maxSlopeAngle", d.max_slope_angle)?,
                     slope_influence: number(fields, "m_slopeInfluence", d.slope_influence)?,
+                    constraint_params: constraint_params(fields, "m_constraintParams", d.constraint_params)?,
+
                 })
             }
             "playerstateslipping" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slipping(_))) => {
@@ -323,6 +419,57 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                 Kind::Slipping(SlippingDecl { gravity_strength: number(fields, "m_gravityStrength", d.gravity_strength)? })
             }
             "playerstateautocrouch" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::AutoCrouch)) => Kind::AutoCrouch,
+            "playerstatecatfall" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CatFall(_))) => {
+                let d = CatFallDecl::default();
+                Kind::CatFall(CatFallDecl {
+                    low_damage_midnight: atom(fields, "m_lowDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
+                    high_damage_midnight: atom(fields, "m_highDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
+                    damage_threshold: number(fields, "m_damageThreshold", d.damage_threshold)?,
+                    look_at_params: constraint_params(fields, "m_lookAtParams", d.look_at_params)?,
+                })
+            }
+            "playerstatemantle" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Mantle(_))) => {
+                let d = MantleStateDecl::default();
+                let three = |key: &str| -> [Option<String>; 3] {
+                    let list = scope(fields, key).and_then(|s| scope(s, "m_elems")).unwrap_or(&[]);
+                    std::array::from_fn(|i| atom(list, &format!("m_elems[{i}]")).filter(|v| !v.is_empty()).map(str::to_owned))
+                };
+                Kind::Mantle(MantleStateDecl {
+                    low_midnights: three("m_lowMantleMidnights"),
+                    mid_midnights: three("m_midMantleMidnights"),
+                    high_midnights: three("m_highMantleMidnights"),
+                    constraint_params: constraint_params(fields, "m_constraintParams", d.constraint_params)?,
+                    low_mantle_duration: number(fields, "m_lowMantleDuration", d.low_mantle_duration)?,
+                })
+            }
+            "playerstatevault" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Vault(_))) => {
+                let d = VaultDecl::default();
+                let l = d.limits;
+                let list = |key: &str| -> Vec<String> {
+                    scope(fields, key).map(|s| items_atoms(s)).unwrap_or_default()
+                };
+                Kind::Vault(VaultDecl {
+                    min_speed: number(fields, "m_minSpeed", d.min_speed)?,
+                    limits: VaultLimits {
+                        max_distance: number(fields, "m_obstacleMaxDistance", l.max_distance)?,
+                        min_distance: number(fields, "m_obstacleMinDistance", l.min_distance)?,
+                        min_height: number(fields, "m_obstacleMinHeight", l.min_height)?,
+                        max_height: number(fields, "m_obstacleMaxHeight", l.max_height)?,
+                        max_depth: number(fields, "m_obstacleMaxDepth", l.max_depth)?,
+                        clear_above: number(fields, "m_clearDistanceAbove", l.clear_above)?,
+                        clear_behind: number(fields, "m_clearDistanceBehind", l.clear_behind)?,
+                        clear_left: number(fields, "m_clearDistanceLeft", l.clear_left)?,
+                        clear_right: number(fields, "m_clearDistanceRight", l.clear_right)?,
+                    },
+                    small_midnights: list("m_smallVaultMidnights"),
+                    small_distance: number(fields, "m_smallVaultDistance", d.small_distance)?,
+                    high_threshold: number(fields, "m_highVaultThreshold", d.high_threshold)?,
+                    high_midnights: list("m_highVaultMidnights"),
+                    high_distance: number(fields, "m_highVaultDistance", d.high_distance)?,
+                    exit_offset: d.exit_offset,
+                    constraint_params: constraint_params(fields, "m_constraintParams", d.constraint_params)?,
+                })
+            }
             "playerstateleaning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Leaning(_))) => {
                 let d = LeaningDecl::default();
                 Kind::Leaning(LeaningDecl {
@@ -347,15 +494,14 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
             }
             _ => continue,
         };
-        for key in ["m_bodyParts", "m_lockedBodyParts", "m_exclusiveBodyParts", "m_primary"] {
-            if get(fields, key).is_some() && key != "m_primary" {
-                return Err(format!("state decl sets {key}; authored body flags are not ported"));
-            }
-        }
         let mut decl = StateDecl::class_default(kind);
         if let Some(primary) = atom(fields, "m_primary") {
             decl.flags.primary = primary == "true";
         }
+        decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
+        decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
+        decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+        decl.flags.allow_camera_out_of_shape = boolean(fields, "m_allowCameraOutOfShape", decl.flags.allow_camera_out_of_shape)?;
         decl.navigation = navigation(fields, decl.navigation.clone())?;
         decl.air_friction = number(fields, "m_airFriction", decl.air_friction)?;
         result.push(decl);

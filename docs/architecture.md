@@ -244,33 +244,53 @@ move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
 at 11.5° pitch, matching the port within the camera idle bob (a few mm).
 A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
 
+- `midnight.rs` plays midnight scenes on the player body: integer-ms scene
+  time with a carry, the CONDMD6 choice by body md6, the clip schedule and
+  Bezier weight curves, BREAK_PLAYER_STATE events flushed before the
+  states, the clips folded over the loco pose (BLEND, or ADD for additive
+  clips) with the interrupt snapshot fade, and the origin delta pushed as
+  priority-1 root-motion velocity (`assets/entities/midnight.rs` parses the
+  decls). Only the PlayerBody/PlayerCamera groups play: arms, weapons and
+  the mantle dummy have no trees.
+- Catfall (falls above `m_catFallHeight`, light or strong by fall damage
+  against the full player health), Mantle (`MantleSensor`'s ledge search,
+  the scene, and the dummy's arkCpntRetargeting as priority-3 velocities that
+  warp the clip's anchor_jnt onto the ledge) and Vault (`VaultSensor`'s
+  slope-aligned obstacle casts, a constant run-up velocity over the raised
+  VAULTING hull, the scene for the view) are states with their camera
+  modes.
+- `camera.rs` runs the deferred target modes, the cosine mode blend, the
+  free and constrained look integrators and the joint controls of AND_ARMS,
+  ANIMATED, CONSTRAINED, CONSTRAINED_WITH_ARMS and CATFALL; leaving a
+  yaw-offset mode hands the yaw to the body. The body's FollowSlope turns
+  the skeleton to the ground normal while sliding or catfalling.
+
 Not ported: hit-reaction camera additives, footsteps, hand
-equipment (the player moves unequipped), mantle (retargeting onto the scene
-dummy is not traced), vault, catfall, fall damage, lean sounds and HUD labels, camera
-constraint modes, swimming, powers, impulses and moving or dynamic bodies.
+equipment (the player moves unequipped), health, damage and death (falls
+never kill), arm and weapon midnight groups, breakable and NPC vault damage,
+window vaults, blink/grapple mantles, moving platforms, lean sounds and HUD
+labels, swimming, powers, impulses and moving or dynamic bodies.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):
 
-1. Mantle and vault move the player by a midnight scene and
-   arkCpntRetargeting toward the scene dummy. Next: decompile the
-   retargeting update FUN_1407583e0 and the group root-motion playback
-   (FUN_1407d6040 / FUN_1407d9270), then log the entity origin per frame
-   during a high mantle onto a 1.0 m ledge in the running game.
-2. Catfall (falls above `m_catFallHeight` 6 m) plays `cat_fall_light` /
-   `cat_fall_strong` with posture LEAN_FORWARD and MODE_CAMERA_CATFALL; it
-   needs the same midnight playback, and the strong roll's 2.0 m root motion
-   reaches the entity by an untraced path. Next: trace arkCpntMidnightProxy
-   root extraction or measure ent.origin and the view during a 6+ m fall.
-3. The animBasic commands are taken to reach the tree update of the same
+1. Midnight root motion and retargeting are traced statically. Next: log the
+   entity origin per frame during `cat_fall_strong` (2.0 m roll) and a high
+   mantle in the running game and compare with the probe (`DH2_ANIM_PROBE`).
+   During a high mantle the sneaking hull pins against the wall face until
+   it clears the edge; whether the original shows the same lag is open.
+2. The player's non-midnight velocity term `(1 - w) * loco` in
+   arkCpntAnimEvolved (FUN_14054f500) is taken as absent for the player.
+3. The vault scene choice uses the game's LCG (gameLocal+0x600f8) whose seed
+   is not traced; the port starts it at 0.
+4. The animBasic commands are taken to reach the tree update of the same
    frame (the body DEFAULT stage before FUN_140540f20). Next: breakpoints on
    FUN_14053eef0 and FUN_1406e3de0 during a jump.
-4. Lean: the post-step `SetPosition(owner + pp+0x110)` (FUN_1407ffab0 →
+5. Lean: the post-step `SetPosition(owner + pp+0x110)` (FUN_1407ffab0 →
    FUN_1401b30c0 → FUN_140085160 command 6) moves either the hitbox or the
    proxy. Next: check the body id it uses (pp+0x210 or the proxy body).
-5. The stage of the body update FUN_140777280 (ApplyLean, fall anims)
-   relative to the state machine think is taken as right after it. Next:
-   find the arkCpntPlayerBody factory slot that calls it (FUN_140946640).
+6. CONDMD6's base-compatibility fallback (FUN_1401c8cc0) and midnight
+   markers are not decoded; no installed player scene needs them.
 
 ## Background materials and fog-volume routing
 

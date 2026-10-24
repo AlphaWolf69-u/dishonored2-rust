@@ -146,6 +146,8 @@ pub struct Controller {
     pub sprinting_action: i32,
     /// FUN_1407f8870(ctrl, LEANING): the first LEANING mapping's action.
     pub lean_action: i32,
+    /// FUN_1407f8870(ctrl, SLIDING).
+    pub slide_action: i32,
     sprinting_stopped: bool,
     sprinting_button_down_before_stop: bool,
     /// +0x170.
@@ -166,6 +168,7 @@ impl Controller {
         let sneak_action = action_of(StateId::SNEAKING);
         let sprinting_action = action_of(StateId::SPRINTING);
         let lean_action = action_of(StateId::LEANING);
+        let slide_action = action_of(StateId::SLIDING);
         Self {
             mapping,
             allowed: !0,
@@ -185,6 +188,7 @@ impl Controller {
             sneak_action,
             sprinting_action,
             lean_action,
+            slide_action,
             sprinting_stopped: false,
             sprinting_button_down_before_stop: false,
             must_sprint: false,
