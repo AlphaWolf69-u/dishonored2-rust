@@ -24,11 +24,11 @@ struct VegetationShadowCB {
 fn vegetation_shadow_position(p: VegetationShadowCB, position: vec3<f32>,
     normal_xy: vec2<f32>, color: vec3<f32>) -> vec3<f32>
 {
-    let parameters = ShadowWindParameters(p.main_bending_variance,
+    let parameters = VegetationAnimation(p.main_bending_variance,
         p.main_bending_frequency, p.main_bending_amplitude, p.leaf_min_wind_strength,
         p.leaf_frequency, p.leaf_amplitude, p.branch_amplitude);
     // This rigid ABI's actual VS has fixed local wind, unlike world instances.
-    return shadow_wind_position(parameters, p.local_time_depth_hack.x,
+    return animate_vegetation(parameters, p.local_time_depth_hack.x,
         vec2<f32>(0.0, 0.01), max(p.leaf_min_wind_strength.x, 0.0),
         position, normal_xy, color);
 }

@@ -170,6 +170,8 @@ pub mod shadow_pipeline;
 pub mod shadow_sampling;
 #[cfg(feature = "game")]
 pub mod sky_mask;
+#[cfg(feature = "game")]
+pub mod vegetation_wind;
 #[cfg(all(test, feature = "game"))]
 mod sky_mask_tests;
 #[cfg(feature = "game")]

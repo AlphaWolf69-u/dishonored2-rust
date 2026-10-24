@@ -900,7 +900,7 @@ impl ShadowDepthPipeline {
         let world_wind_helpers = concat!(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/assets/shaders/dh2_shadow_wind.wgsl"
+                "/assets/shaders/dh2_animate_vegetation.wgsl"
             )),
             "\n",
             include_str!(concat!(
@@ -919,7 +919,7 @@ impl ShadowDepthPipeline {
             )),
             ShadowDepthProgram::Vegetation => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/assets/shaders/dh2_shadow_wind.wgsl"
+                "/assets/shaders/dh2_animate_vegetation.wgsl"
             )),
             _ => "",
         };

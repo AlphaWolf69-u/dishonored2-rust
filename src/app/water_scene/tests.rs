@@ -42,6 +42,7 @@ fn installed_water_view_inputs_prepare_for_every_level() {
         probes: None,
         cache: default(),
         shadow_materials: default(),
+        vegetation: default(),
         water_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: default(),

@@ -124,6 +124,10 @@ pub(super) struct ProbeExtension {
     pub(super) cloud_density: Option<Handle<Image>>,
     #[texture(153)]
     pub(super) cloud_back_density: Option<Handle<Image>>,
+    #[storage(168, read_only)]
+    pub(super) vegetation_slots: Handle<ShaderBuffer>,
+    #[storage(169, read_only)]
+    pub(super) vegetation_instances: Handle<ShaderBuffer>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -303,7 +307,12 @@ impl MaterialExtension for ProbeExtension {
         }
         specialize_vertex_lighting(descriptor, layout, key.bind_group_data);
         specialize_surface(descriptor, key.bind_group_data);
-        authored_basis_pipeline(descriptor, layout)
+        authored_basis_pipeline(descriptor, layout)?;
+        crate::rendering::bevy_backend::vegetation_wind::specialize(
+            descriptor,
+            layout,
+            key.bind_group_data.0[6],
+        )
     }
 
     fn enable_prepass() -> bool {

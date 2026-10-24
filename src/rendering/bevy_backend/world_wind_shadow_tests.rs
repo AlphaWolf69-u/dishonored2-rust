@@ -143,7 +143,7 @@ fn run_world_wind_fixture(fixture: &str, fixed: bool) {
         "{}\n{}\n{}\n{}",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/assets/shaders/dh2_shadow_wind.wgsl"
+            "/assets/shaders/dh2_animate_vegetation.wgsl"
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

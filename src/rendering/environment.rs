@@ -1,7 +1,6 @@
 //! Camera-area render parameter selection (14088d060) and float blending
-//! (14088e220). Trigger shapes come from installed CVD/Havok resources,
-//! as loaded by 140779530; render-model bounds do not define containment.
-use crate::{archive, entities, physworld};
+//! (14088e220). Area containment is the shared trigger shape test.
+use crate::{archive, entities, gameplay::trigger_volume::TriggerVolume};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvironmentSource {
@@ -14,8 +13,7 @@ pub struct AreaEnvironment {
     pub id: String,
     pub parameters: entities::EnvironmentRenderParameters,
     pub blend_duration: f32,
-    bounds: [[f32; 3]; 2],
-    hulls: Vec<Vec<[f32; 4]>>,
+    volume: TriggerVolume,
 }
 
 #[cfg(test)]
@@ -38,15 +36,17 @@ mod tests {
             id: "test".into(),
             parameters: parameters(90.0),
             blend_duration: 1.0,
-            bounds: [[-1.0; 3], [1.0; 3]],
-            hulls: vec![vec![
-                [1.0, 0.0, 0.0, -1.0],
-                [-1.0, 0.0, 0.0, -1.0],
-                [0.0, 1.0, 0.0, -1.0],
-                [0.0, -1.0, 0.0, -1.0],
-                [0.0, 0.0, 1.0, -1.0],
-                [0.0, 0.0, -1.0, -1.0],
-            ]],
+            volume: TriggerVolume {
+                bounds: [[-1.0; 3], [1.0; 3]],
+                hulls: vec![vec![
+                    [1.0, 0.0, 0.0, -1.0],
+                    [-1.0, 0.0, 0.0, -1.0],
+                    [0.0, 1.0, 0.0, -1.0],
+                    [0.0, -1.0, 0.0, -1.0],
+                    [0.0, 0.0, 1.0, -1.0],
+                    [0.0, 0.0, -1.0, -1.0],
+                ]],
+            },
         };
         let mut track = EnvironmentScalar::new(70.0);
         let areas = [area];
@@ -121,18 +121,7 @@ mod tests {
 
 impl AreaEnvironment {
     pub fn contains(&self, point: [f32; 3]) -> bool {
-        (0..3)
-            .all(|axis| point[axis] >= self.bounds[0][axis] && point[axis] <= self.bounds[1][axis])
-            && self.hulls.iter().any(|planes| {
-                planes
-                    .iter()
-                    .all(|p| ((p[0] * point[0] + p[1] * point[1]) + p[2] * point[2]) + p[3] <= 0.0)
-            })
-    }
-
-    fn size_squared(&self) -> f32 {
-        let d: [f32; 3] = std::array::from_fn(|i| self.bounds[1][i] - self.bounds[0][i]);
-        d[2] * d[2] + d[1] * d[1] + d[0] * d[0]
+        self.volume.contains(point)
     }
 }
 
@@ -164,89 +153,17 @@ pub fn load_area_environments(
             .model
             .as_deref()
             .ok_or_else(|| format!("{}: area trigger has no model", volume.id))?;
-        let key = physworld::physics_shape_key(model, 4, [1.0; 3], 0.0, false)
-            .ok_or("invalid area trigger shape key")?;
-        let path = physworld::physics_shape_asset_path(&key);
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{}: missing trigger {path}", volume.id))?;
-        let physics = physworld::parse_hkx(&bytes)?;
-        let geometry = physics.standalone_shapes(&bytes)?;
-        if !geometry.unknown_shapes.is_empty()
-            || !geometry.compressed_decode_failures.is_empty()
-            || geometry.convex.is_empty()
-        {
-            return Err(format!(
-                "{}: unsupported area trigger geometry: {:?} {:?}",
-                volume.id, geometry.unknown_shapes, geometry.compressed_decode_failures
-            ));
-        }
-        let placed = |v: [f32; 3]| -> [f32; 3] {
-            std::array::from_fn(|row| {
-                volume.position[row]
-                    + (0..3)
-                        .map(|axis| volume.rotation[axis][row] * v[axis])
-                        .sum::<f32>()
-            })
-        };
-        let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
-        let mut hulls = Vec::new();
-        for hull in &geometry.convex {
-            let vertices: Vec<_> = hull.vertices.iter().copied().map(placed).collect();
-            let center: [f32; 3] = std::array::from_fn(|i| {
-                vertices.iter().map(|v| v[i]).sum::<f32>() / vertices.len() as f32
-            });
-            for v in &vertices {
-                for i in 0..3 {
-                    bounds[0][i] = bounds[0][i].min(v[i]);
-                    bounds[1][i] = bounds[1][i].max(v[i]);
-                }
-            }
-            let mut planes = Vec::new();
-            for triangle in geometry
-                .triangles
-                .iter()
-                .filter(|t| t.source_shape_item == hull.source_shape_item)
-            {
-                let [a, b, c] = triangle.vertices.map(placed);
-                let u: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
-                let v: [f32; 3] = std::array::from_fn(|i| c[i] - a[i]);
-                let n = [
-                    u[1] * v[2] - u[2] * v[1],
-                    u[2] * v[0] - u[0] * v[2],
-                    u[0] * v[1] - u[1] * v[0],
-                ];
-                if n.iter().all(|v| *v == 0.0) {
-                    continue;
-                }
-                let mut plane = [
-                    n[0],
-                    n[1],
-                    n[2],
-                    -((n[0] * a[0] + n[1] * a[1]) + n[2] * a[2]),
-                ];
-                if ((n[0] * center[0] + n[1] * center[1]) + n[2] * center[2]) + plane[3] > 0.0 {
-                    plane = plane.map(|v| -v);
-                }
-                planes.push(plane);
-            }
-            if planes.len() < 4 {
-                return Err(format!("{}: area trigger hull is not closed", volume.id));
-            }
-            hulls.push(planes);
-        }
+        let shape = TriggerVolume::load(catalog, &volume.id, model, volume.position, volume.rotation)?;
         result.push(AreaEnvironment {
             id: volume.id,
             parameters,
             blend_duration: entities::environment_blend_duration(&volume.environment_decl)?,
-            bounds,
-            hulls,
+            volume: shape,
         });
     }
     // 88d060 inserts larger physics AABB diagonals first. Later parameter
     // assignments win in 88e220, so smaller containing volumes take priority.
-    result.sort_by(|a, b| b.size_squared().total_cmp(&a.size_squared()));
+    result.sort_by(|a, b| b.volume.size_squared().total_cmp(&a.volume.size_squared()));
     Ok(result)
 }
 

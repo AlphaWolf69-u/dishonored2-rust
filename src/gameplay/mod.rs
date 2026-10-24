@@ -22,5 +22,6 @@ pub mod collision_dispatch;
 pub mod convex_support;
 pub mod polytope_query;
 pub mod runtime;
+pub mod trigger_volume;
 
 pub mod wind;

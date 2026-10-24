@@ -26,6 +26,12 @@ struct Vertex {
 #ifdef DH2_AUTHORED_BASIS
     @location(8) bitangent: vec3<f32>,
 #endif
+#ifdef DH2_VEGETATION_WIND
+    // Original local POSITION, NORMAL.xy and COLOR.xyz for AnimateVegetation.
+    @location(10) vegetation_position: vec3<f32>,
+    @location(11) vegetation_normal: vec2<f32>,
+    @location(12) vegetation_color: vec3<f32>,
+#endif
 #ifdef SKINNED
     @location(6) joint_indices: vec4<u32>,
     @location(7) joint_weights: vec4<f32>,

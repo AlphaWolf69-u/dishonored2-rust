@@ -32,6 +32,13 @@ struct Vertex {
     @location(7) color: vec4<f32>,
 #endif
 
+#ifdef DH2_VEGETATION_WIND
+    // Original local POSITION, NORMAL.xy and COLOR.xyz for AnimateVegetation.
+    @location(10) vegetation_position: vec3<f32>,
+    @location(11) vegetation_normal: vec2<f32>,
+    @location(12) vegetation_color: vec3<f32>,
+#endif
+
 #ifdef MORPH_TARGETS
     @builtin(vertex_index) index: u32,
 #endif // MORPH_TARGETS

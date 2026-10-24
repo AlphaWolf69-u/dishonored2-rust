@@ -192,6 +192,7 @@ fn installed_atmosphere_materials_retain_geometry_and_images() {
         probes: None,
         cache: default(),
         shadow_materials: default(),
+        vegetation: default(),
         water_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: default(),
