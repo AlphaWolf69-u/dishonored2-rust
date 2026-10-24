@@ -21,15 +21,16 @@ pub struct BodyRecipe {
 pub struct BodyWind {
     pub speed_factor: f32,
     pub faces: Vec<crate::gameplay::aerodynamics::AeroFace>,
-    /// Body-space convex hulls, for trigger-wind overlap.
+    /// Body-space convex hulls, for trigger-wind distance.
     pub hulls: Vec<BodyHull>,
+    /// The cooked shape convex radius (the shape key radius, 0.01).
+    pub convex_radius: f32,
 }
 
+/// Body-space hull vertices of the cooked shape (convex radius in the key).
 #[derive(Clone)]
 pub struct BodyHull {
     pub vertices: Vec<[f32; 3]>,
-    pub normals: Vec<[f32; 3]>,
-    pub edges: Vec<[f32; 3]>,
 }
 pub struct AssemblyRecipe {
     pub bodies: Vec<BodyRecipe>,
@@ -242,40 +243,18 @@ pub fn load(
                             let faces = crate::gameplay::aerodynamics::aero_faces(
                                 geometry.triangles.iter().map(|t| t.vertices),
                             );
-                            let sub = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
-                                std::array::from_fn(|i| b[i] - a[i])
-                            };
                             let hulls = geometry
                                 .convex
                                 .iter()
-                                .map(|hull| {
-                                    let triangles: Vec<_> = geometry
-                                        .triangles
-                                        .iter()
-                                        .filter(|t| t.source_shape_item == hull.source_shape_item)
-                                        .map(|t| t.vertices)
-                                        .collect();
-                                    BodyHull {
-                                        vertices: hull.vertices.clone(),
-                                        normals: crate::gameplay::aerodynamics::aero_faces(
-                                            triangles.iter().copied(),
-                                        )
-                                        .iter()
-                                        .map(|f| [f.normal[0], f.normal[1], f.normal[2]])
-                                        .collect(),
-                                        edges: triangles
-                                            .iter()
-                                            .flat_map(|[a, b, c]| {
-                                                [sub(*a, *b), sub(*a, *c), sub(*b, *c)]
-                                            })
-                                            .collect(),
-                                    }
+                                .map(|hull| BodyHull {
+                                    vertices: hull.vertices.clone(),
                                 })
                                 .collect();
                             wind = Some(BodyWind {
                                 speed_factor,
                                 faces,
                                 hulls,
+                                convex_radius: 0.01,
                             });
                         }
                         Some(mass)

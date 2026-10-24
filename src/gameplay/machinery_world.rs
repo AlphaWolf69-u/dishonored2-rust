@@ -60,6 +60,7 @@ pub struct BodyWindState {
     pub speed_factor: f32,
     pub faces: Vec<super::aerodynamics::AeroFace>,
     hulls: Vec<crate::entities::machinery::recipes::BodyHull>,
+    convex_radius: f32,
     frame_orientation: [f32; 4],
     frame_center: [f32; 4],
     /// Overlapped trigger winds, highest 1405ff500 priority first. Enter
@@ -155,40 +156,32 @@ impl MachineryBody {
         };
         let offset = rotate([columns[0][3], columns[1][3], columns[2][3]]);
         let origin: [f32; 3] = std::array::from_fn(|i| self.motion.pose.center[i] - offset[i]);
-        let hulls: Vec<_> = state
+        let hulls: Vec<Vec<[f32; 3]>> = state
             .hulls
             .iter()
             .map(|hull| {
-                let vertices: Vec<[f32; 3]> = hull
-                    .vertices
+                hull.vertices
                     .iter()
                     .map(|v| {
                         let r = rotate(*v);
                         std::array::from_fn(|i| r[i] + origin[i])
                     })
-                    .collect();
-                let normals: Vec<_> = hull.normals.iter().map(|v| rotate(*v)).collect();
-                let edges: Vec<_> = hull.edges.iter().map(|v| rotate(*v)).collect();
-                (vertices, normals, edges)
+                    .collect()
             })
             .collect();
+        let radius = state.convex_radius;
         let inside: Vec<usize> = shapes
             .iter()
             .enumerate()
-            .filter(|(_, (_, _, shape))| {
-                hulls.iter().any(|(vertices, normals, edges)| {
-                    shape.overlaps(&super::trigger_volume::ConvexHull {
-                        vertices,
-                        normals,
-                        edges,
-                    })
-                })
-            })
+            .filter(|(_, (_, _, shape))| shape.touches(&hulls, radius))
             .map(|(index, _)| index)
             .collect();
         let state = self.wind.as_mut().unwrap();
         state.triggers.retain(|index| inside.contains(index));
-        for index in inside {
+        // Same-step enter events arrive in reverse trigger order: the live
+        // Dust capture keeps vistatun, fosterbldg_shutter, vista (file order)
+        // front to back with equal priorities and insert-before-equal.
+        for index in inside.into_iter().rev() {
             if state.triggers.contains(&index) {
                 continue;
             }
@@ -333,6 +326,7 @@ impl MachineryWorld {
                         speed_factor: wind.speed_factor,
                         faces: wind.faces.clone(),
                         hulls: wind.hulls.clone(),
+                        convex_radius: wind.convex_radius,
                         frame_orientation: mass.orientation,
                         frame_center: mass.center,
                         triggers: Vec::new(),
