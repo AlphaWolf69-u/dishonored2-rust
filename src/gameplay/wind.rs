@@ -102,6 +102,9 @@ pub enum WindOwner {
 /// each shared wind center (FUN_140295e40's list, world+0x240/+0x248).
 pub struct WindManager {
     pub triggers: Vec<Wind>,
+    /// Each trigger wind's 1405ff500 priority, start state and shape, for
+    /// rigid bodies that track the triggers they overlap.
+    pub trigger_shapes: Vec<(i32, bool, super::trigger_volume::TriggerVolume)>,
     /// Per center; None where no world wind is registered (a null pointer).
     assignments: Vec<Option<WindOwner>>,
     /// Centers whose top-priority triggers differ only by physics query order.
@@ -188,11 +191,13 @@ impl WindManager {
                     .or(world_registered.then_some(WindOwner::World))
             })
             .collect();
+        let (triggers, trigger_shapes) = triggers
+            .into_iter()
+            .map(|t| (Wind::new(t.settings), (t.priority, t.started, t.volume)))
+            .unzip();
         Self {
-            triggers: triggers
-                .into_iter()
-                .map(|trigger| Wind::new(trigger.settings))
-                .collect(),
+            triggers,
+            trigger_shapes,
             assignments,
             ambiguous_centers,
         }
@@ -353,6 +358,8 @@ mod tests {
                     plane
                 })
                 .collect()],
+            hull_vertices: vec![Vec::new()],
+            hull_edges: vec![Vec::new()],
         };
         let settings = |main_speed| WindSettings {
             main_speed,
@@ -467,4 +474,68 @@ mod tests {
             live_to_ours.len()
         );
     }
+
+    #[test]
+    #[ignore = "requires installed Dust District archives"]
+    fn installed_dust_shutters_swing_in_the_world_wind() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| {
+            catalog
+                .read(p)
+                .map(|b| b.map(|b| crate::entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        let world_wind = Wind::new(crate::entities::wind::world_wind(&document, read).unwrap().unwrap());
+        let triggers = trigger_wind_sources(&catalog, &document).unwrap();
+        let manager = WindManager::post_load_map(true, triggers, &[]);
+        let mut placements = crate::entities::render_placements(&document);
+        placements.extend(crate::entities::placed_models_with_inheritance(&document, read).unwrap());
+        let recipes =
+            crate::entities::machinery::recipes::load(&catalog, &document, &placements).unwrap();
+        let mut world =
+            crate::gameplay::machinery_world::MachineryWorld::from_recipes(&recipes).unwrap();
+        let shutters: Vec<usize> = (0..world.bodies.len())
+            .filter(|&i| world.bodies[i].wind.is_some())
+            .collect();
+        assert_eq!(shutters.len(), 10);
+        let start: Vec<_> = shutters.iter().map(|&i| world.bodies[i].motion.pose.orientation).collect();
+        let mut world_wind = world_wind;
+        let mut swing = vec![0f32; shutters.len()];
+        for _ in 0..600 {
+            world_wind.advance(1. / 60.);
+            for &i in &shutters {
+                let body = &mut world.bodies[i];
+                let wind = match body.wind.as_ref().unwrap().triggers.first() {
+                    Some(&t) => &manager.triggers[t],
+                    None => &world_wind,
+                };
+                let velocity = wind.velocity(Vec3::from_array(body.mass_center()));
+                body.apply_wind(velocity.to_array(), 1. / 60.);
+            }
+            world.step([1. / 60.; 5]);
+            for &i in &shutters {
+                world.bodies[i].update_wind_triggers(&manager.trigger_shapes);
+            }
+            for (k, &i) in shutters.iter().enumerate() {
+                let q = world.bodies[i].motion.pose.orientation;
+                let d = (0..4).map(|j| q[j] * start[k][j]).sum::<f32>().abs().min(1.);
+                swing[k] = swing[k].max(2. * d.acos().to_degrees());
+            }
+        }
+        for &i in &shutters {
+            let body = &world.bodies[i];
+            assert!(body.motion.pose.center.iter().chain(&body.motion.pose.orientation).all(|v| v.is_finite()));
+        }
+        println!("max swing degrees {swing:?}; triggers {:?}; anchor error {}",
+            shutters.iter().map(|&i| world.bodies[i].wind.as_ref().unwrap().triggers.clone()).collect::<Vec<_>>(),
+            world.maximum_anchor_error());
+        assert!(world.maximum_anchor_error() < 0.05);
+    }
+
 }

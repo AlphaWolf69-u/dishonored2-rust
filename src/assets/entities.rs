@@ -153,6 +153,9 @@ pub struct RigidBodySettings {
     pub density_override: Option<f32>,
     pub start_asleep: Option<bool>,
     pub angular_damping: Option<f32>,
+    /// `m_windSpeedFactor` (decl +0x6c, zero in 806eb0): positive values
+    /// register the body with the wind manager (809d80 -> 64ecd0).
+    pub wind_speed_factor: Option<f32>,
     pub damage: Option<String>,
     pub velocity_damage_threshold: Option<f32>,
     pub velocity_damage_threshold_when_dropped: Option<f32>,
@@ -2077,6 +2080,7 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                     None => Some(true),
                 },
                 angular_damping: number("m_angularDamping", 0.0),
+                wind_speed_factor: number("m_windSpeedFactor", 0.0),
                 damage: atom("m_damage"),
                 velocity_damage_threshold: number("m_velocityDamageThreshold", 0.1),
                 velocity_damage_threshold_when_dropped: number(

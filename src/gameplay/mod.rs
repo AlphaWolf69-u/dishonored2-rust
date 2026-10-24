@@ -16,6 +16,7 @@ pub mod motion_curve;
 pub mod scene_motion;
 pub mod constraint_solver;
 pub mod rigid_body;
+pub mod aerodynamics;
 pub mod point_query;
 pub mod collision_queries;
 pub mod compound_query;

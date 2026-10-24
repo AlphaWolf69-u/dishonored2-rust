@@ -73,6 +73,8 @@ struct InstanceSource {
 pub(super) struct VegetationWind {
     manager: WindManager,
     centers: Vec<[f32; 3]>,
+    /// Runtime visibility +0x1c: each world matrix's wind center, or -1.
+    center_indices: Vec<i16>,
     sources: Vec<InstanceSource>,
     instances: Handle<ShaderBuffer>,
     uploaded: bool,
@@ -217,14 +219,54 @@ pub(super) fn initialize_vegetation_wind(
     commands.insert_resource(VegetationWind {
         manager,
         centers,
+        center_indices,
         sources,
         instances: materials.instances.clone(),
         uploaded: false,
     });
 }
 
-/// Advances the trigger winds with the world wind's actor clock group and
-/// rewrites every instance record. The record count never changes, so the
+/// The current windInfo of world matrices, for shadow gathers that sample it.
+pub(super) struct ShadowWinds<'a> {
+    pub(super) wind: &'a VegetationWind,
+    pub(super) world: Option<&'a crate::gameplay::wind::Wind>,
+}
+
+impl ShadowWinds<'_> {
+    /// 77fbc0's `[previousWind, wind]` for a needsWind world matrix.
+    pub(super) fn record(&self, matrix: usize) -> Option<[u32; 8]> {
+        let center = usize::try_from(*self.wind.center_indices.get(matrix)?).ok()?;
+        let [previous, current] =
+            self.wind
+                .manager
+                .center_wind(self.world, center, self.wind.centers[center])?;
+        let mut words = [0; 8];
+        for (word, value) in words.iter_mut().zip(previous.into_iter().chain(current)) {
+            *word = value.to_bits();
+        }
+        Some(words)
+    }
+}
+
+/// 7800b0 for every trigger wind, beside the world wind and before the wind
+/// manager update (8af460 runs component think before 7b8340).
+pub(super) fn advance_trigger_winds(
+    clock: Res<ClockRuntime>,
+    wind: Option<ResMut<VegetationWind>>,
+) {
+    if let (true, Ok(clock), Some(mut wind)) = (clock.advanced(), clock.clock(), wind) {
+        // Default entity timespace 0 -> clock group3 (877eb0), as WorldWind.
+        wind.manager.advance(clock.delta(3).expect("five clock groups"));
+    }
+}
+
+impl VegetationWind {
+    pub(super) fn manager(&self) -> &WindManager {
+        &self.manager
+    }
+}
+
+/// Rewrites every instance record. The record count never changes, so the
 /// GPU buffer and material bindings stay in place.
 pub(super) fn update_vegetation_wind(
     clock: Res<ClockRuntime>,
@@ -238,12 +280,6 @@ pub(super) fn update_vegetation_wind(
         return;
     };
     let advanced = clock.advanced();
-    if advanced {
-        if let Ok(clock) = clock.clock() {
-            // Default entity timespace 0 -> clock group3 (877eb0), as WorldWind.
-            wind.manager.advance(clock.delta(3).expect("five clock groups"));
-        }
-    }
     if wind.uploaded && !advanced {
         return;
     }

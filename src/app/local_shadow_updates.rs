@@ -222,11 +222,15 @@ pub(super) fn publish_local_shadow_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<LocalShadowDraws>,
     mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
-    (completion, profile, mut commands, mut matrix_bank): (
+    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind)): (
         Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
         ResMut<super::world_instances::WorldMatrices>,
+        (
+            Option<Res<super::vegetation_wind::VegetationWind>>,
+            Option<Res<super::fog_scene::WorldWind>>,
+        ),
     ),
 ) {
     let _span = profile.as_deref().map(|p| p.measure(25));
@@ -299,11 +303,18 @@ pub(super) fn publish_local_shadow_draws(
         let matrices = draws.matrices.clone();
         let mut layers = Vec::new();
         let mut regions = Vec::new();
-        let admission = super::shadow_preparation::WorldShadowAdmission::new(
+        let winds = vegetation_wind.as_deref().map(|wind| super::vegetation_wind::ShadowWinds {
+            wind,
+            world: world_wind.as_deref().and_then(|world| world.0.as_ref()),
+        });
+        let mut admission = super::shadow_preparation::WorldShadowAdmission::new(
             &scene.world,
             &sources,
             &materials,
         );
+        if let Some(winds) = &winds {
+            admission = admission.with_winds(winds);
+        }
         for light in lights {
             let bias = if light.request.candidate.kind == 2 {
                 owner.hardware_bias_spot

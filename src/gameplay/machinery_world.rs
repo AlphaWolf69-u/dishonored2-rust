@@ -51,6 +51,21 @@ pub struct MachineryBody {
     linear: [f32; 3],
     angular: [f32; 3],
     integrated_linear: [f32; 3],
+    pub wind: Option<BodyWindState>,
+}
+
+/// A wind-manager rigid body: its `m_windSpeedFactor`, aero faces and the
+/// shape mass frame that relates the motion to the hknpBody transform.
+pub struct BodyWindState {
+    pub speed_factor: f32,
+    pub faces: Vec<super::aerodynamics::AeroFace>,
+    hulls: Vec<crate::entities::machinery::recipes::BodyHull>,
+    frame_orientation: [f32; 4],
+    frame_center: [f32; 4],
+    /// Overlapped trigger winds, highest 1405ff500 priority first. Enter
+    /// events insert before the first entry of lower-or-equal priority
+    /// (80bc60 -> 7b7b10); exits remove the entry.
+    pub triggers: Vec<usize>,
 }
 impl MachineryBody {
     pub fn new(placement: Option<usize>, motion: BodyMotion, angular_damping: f32) -> Self {
@@ -61,6 +76,7 @@ impl MachineryBody {
             linear: [0.; 3],
             angular: [0.; 3],
             integrated_linear: [0.; 3],
+            wind: None,
             // Motion profile 1, c9f050; observed default machinery profile.
             properties: MotionProperties {
                 gravity_factor: 1.,
@@ -104,6 +120,127 @@ impl MachineryBody {
             inverse_mass: self.motion.inverse_mass_values(),
         }
     }
+    /// hknpBody transform columns: the motion frame composed with the
+    /// inverse shape mass frame, carrying the body-space mass center in w.
+    fn body_columns(&self, wind: &BodyWindState) -> super::aerodynamics::BodyColumns {
+        let [x, y, z, w] = self.motion.pose.orientation;
+        let [fx, fy, fz, fw] = wind.frame_orientation;
+        let [qx, qy, qz] = [-fx, -fy, -fz];
+        let body = [
+            ((qz * y - z * qy) + w * qx) + x * fw,
+            ((qx * z - x * qz) + w * qy) + y * fw,
+            ((qy * x - y * qx) + w * qz) + z * fw,
+            fw * w - ((y * qy + x * qx) + z * qz),
+        ];
+        let basis = physworld::quaternion_basis(body);
+        std::array::from_fn(|c| {
+            [basis[c][0], basis[c][1], basis[c][2], wind.frame_center[c]]
+        })
+    }
+
+    /// Trigger enter/exit after a physics step. `shapes` are the wind
+    /// manager records (priority, started, shape) in trigger order.
+    pub fn update_wind_triggers(
+        &mut self,
+        shapes: &[(i32, bool, super::trigger_volume::TriggerVolume)],
+    ) {
+        let Some(state) = &self.wind else {
+            return;
+        };
+        let columns = self.body_columns(state);
+        let rotate = |v: [f32; 3]| -> [f32; 3] {
+            std::array::from_fn(|i| {
+                (v[1] * columns[1][i] + v[0] * columns[0][i]) + v[2] * columns[2][i]
+            })
+        };
+        let offset = rotate([columns[0][3], columns[1][3], columns[2][3]]);
+        let origin: [f32; 3] = std::array::from_fn(|i| self.motion.pose.center[i] - offset[i]);
+        let hulls: Vec<_> = state
+            .hulls
+            .iter()
+            .map(|hull| {
+                let vertices: Vec<[f32; 3]> = hull
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        let r = rotate(*v);
+                        std::array::from_fn(|i| r[i] + origin[i])
+                    })
+                    .collect();
+                let normals: Vec<_> = hull.normals.iter().map(|v| rotate(*v)).collect();
+                let edges: Vec<_> = hull.edges.iter().map(|v| rotate(*v)).collect();
+                (vertices, normals, edges)
+            })
+            .collect();
+        let inside: Vec<usize> = shapes
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, shape))| {
+                hulls.iter().any(|(vertices, normals, edges)| {
+                    shape.overlaps(&super::trigger_volume::ConvexHull {
+                        vertices,
+                        normals,
+                        edges,
+                    })
+                })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let state = self.wind.as_mut().unwrap();
+        state.triggers.retain(|index| inside.contains(index));
+        for index in inside {
+            if state.triggers.contains(&index) {
+                continue;
+            }
+            let priority = shapes[index].0;
+            let at = state
+                .triggers
+                .iter()
+                .position(|existing| shapes[*existing].0 <= priority)
+                .unwrap_or(state.triggers.len());
+            state.triggers.insert(at, index);
+        }
+    }
+
+    /// The body motion center (77edf0 sample point).
+    pub fn mass_center(&self) -> [f32; 3] {
+        xyz(self.motion.pose.center)
+    }
+
+    /// 14077f050: add the wind drag velocity change for `seconds` of the
+    /// body's actor clock. `wind` is 77edf0's velocity at the mass center.
+    pub fn apply_wind(&mut self, wind: [f32; 3], seconds: f32) {
+        let Some(state) = &self.wind else {
+            return;
+        };
+        let columns = self.body_columns(state);
+        let motion = super::aerodynamics::MotionMass {
+            center: self.motion.pose.center,
+            orientation: self.motion.pose.orientation,
+            inverse_mass: self.motion.inverse_mass,
+        };
+        // Machinery bodies stay active (hknpBody IS_ACTIVE, flag 8).
+        let Some((linear, angular)) = super::aerodynamics::wind_velocity_change(
+            &columns,
+            &state.faces,
+            &motion,
+            vector(self.linear),
+            wind,
+            state.speed_factor,
+            seconds,
+            true,
+        ) else {
+            return;
+        };
+        let orientation = self.motion.pose.orientation;
+        let world = super::aerodynamics::rotate(orientation, self.angular);
+        self.linear = std::array::from_fn(|i| self.linear[i] + linear[i]);
+        self.angular = super::aerodynamics::rotate_inverse(
+            orientation,
+            std::array::from_fn(|i| world[i] + angular[i]),
+        );
+    }
+
     /// Rigid delta from initial mass pose, independent of the render model's
     /// scale, shear and visual-origin offset.
     pub fn delta(&self) -> [[f32; 4]; 3] {
@@ -186,11 +323,22 @@ impl MachineryWorld {
                     },
                 };
                 indices.insert(body.entity_id.as_str(), world.bodies.len());
-                world.bodies.push(MachineryBody::new(
+                let mut created = MachineryBody::new(
                     body.mass.map(|_| body.placement),
                     motion,
                     body.angular_damping,
-                ));
+                );
+                if let (Some(wind), Some(mass)) = (&body.wind, body.mass) {
+                    created.wind = Some(BodyWindState {
+                        speed_factor: wind.speed_factor,
+                        faces: wind.faces.clone(),
+                        hulls: wind.hulls.clone(),
+                        frame_orientation: mass.orientation,
+                        frame_center: mass.center,
+                        triggers: Vec::new(),
+                    });
+                }
+                world.bodies.push(created);
             }
         }
         for assembly in &recipes.assemblies {
