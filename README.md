@@ -123,8 +123,15 @@ shadow cost. A value of `0` also selects the authored ranges.
   under the rewrite folder's `logs/`, even if the console closes.
 - Click the window to capture the mouse. Esc (the game's pause binding) opens the
   pause menu: Options, help and Quit.
-- WASD moves, Shift moves faster, Space jumps. G toggles walking/free-fly;
-  Q/E move vertically in free-fly.
+- The player uses the key bindings of `config/dishonored2Config.cfg` (the
+  game's IN_GAME binding set; defaults from the installed `default.cfg`):
+  move, jump, sprint (toggle or hold per `g_sprintToggle`), crouch toggle,
+  mouse look with `g_mouseSensitivity`, `g_invertMouseYAxis` and
+  `g_mouseSmooth`, and interact. Movement, jumping, falling, sneaking and
+  sprinting follow the game's player decls and physics.
+- Debug views: G toggles a debug free camera (bound move actions, MOVE_UP /
+  MOVE_DOWN vertically, SPRINT for speed); Home/End/PageUp/PageDown cycle
+  focus targets, returning the player to the start where it has one.
 - F8 saves a screenshot and collision/render diagnostics under ignored
   `artifacts/`. Use matching captures when reporting a rendering defect.
 - `DH2_GAME_BASE` selects the installed asset directory.

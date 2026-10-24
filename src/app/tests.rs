@@ -9014,7 +9014,7 @@ fn pickup_selection_rejects_wall_occlusion() {
 }
 
 #[test]
-fn mouse_capture_look_and_mode_toggle_reach_camera_system() {
+fn mouse_capture_and_debug_free_camera_look_reach_camera_system() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     app.insert_resource(ButtonInput::<KeyCode>::default());
@@ -9031,17 +9031,8 @@ fn mouse_capture_look_and_mode_toggle_reach_camera_system() {
         }],
         active: 0,
     });
-    app.insert_resource(NavigationState {
-        walking: false,
-        walker: navigation::Walker {
-            feet: Vec3::ZERO,
-            vertical_speed: 0.0,
-            supported: false,
-        },
-    });
-    app.insert_resource(NavigationWorld(navigation::CollisionWorld::new(
-        std::iter::empty(),
-    )));
+    app.insert_resource(super::player::PlayerState { player: None, debug_free_fly: true });
+    app.insert_resource(super::player::PlayerInput::default());
     let cursor = app.world_mut().spawn(CursorOptions::default()).id();
     let camera = app
         .world_mut()
@@ -9051,27 +9042,16 @@ fn mouse_capture_look_and_mode_toggle_reach_camera_system() {
     app.world_mut()
         .resource_mut::<ButtonInput<MouseButton>>()
         .press(MouseButton::Left);
-    app.world_mut()
-        .resource_mut::<ButtonInput<KeyCode>>()
-        .press(KeyCode::KeyG);
+    app.update();
     app.update();
     let camera = app.world().entity(camera).get::<Transform>().unwrap();
     assert!(
         camera.forward().x > 0.1,
         "mouse delta did not rotate camera: {camera:?}"
     );
-    assert!(app.world().resource::<NavigationState>().walking);
     let cursor = app.world().entity(cursor).get::<CursorOptions>().unwrap();
     assert_eq!(cursor.grab_mode, CursorGrabMode::Locked);
     assert!(!cursor.visible);
-    {
-        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-        keys.release(KeyCode::KeyG);
-        keys.clear();
-        keys.press(KeyCode::KeyG);
-    }
-    app.update();
-    assert!(!app.world().resource::<NavigationState>().walking);
 }
 
 fn vista_lighting_matches_reference(app: &mut App) {

@@ -1,9 +1,11 @@
 //! Controls.
+use super::player::{PlayerInput, PlayerState};
 use super::{
     navigation, runtime, view_of, view_to_game, AccumulatedMouseMotion, BenchmarkSeconds,
-    CoordinateOverlay, CursorGrabMode, CursorOptions, FocusTargets, NavigationState,
-    NavigationWorld, PickupState, PickupVisual, SceneRenderQueue,
+    CoordinateOverlay, CursorGrabMode, CursorOptions, FocusTargets, NavigationWorld,
+    PickupState, PickupVisual, SceneRenderQueue,
 };
+use crate::gameplay::player::controller;
 use bevy::prelude::*;
 
 /// Host benchmark motion only; ordinary player controls never use this state.
@@ -30,6 +32,17 @@ impl Default for BenchmarkCameraSweep {
     }
 }
 
+/// Debug free-camera speeds (m/s); the player's own movement comes from its
+/// state decls.
+const DEBUG_FREE_FLY_SPEED: f32 = 6.0;
+const DEBUG_FREE_FLY_FAST_SPEED: f32 = 30.0;
+/// Debug free-camera mouse look, radians per count.
+const DEBUG_FREE_FLY_LOOK: f32 = 0.0025;
+
+/// Host camera handling: mouse capture, the benchmark sweep, and the debug
+/// views (Home/End/PageUp/PageDown focus targets, G free camera). The free
+/// camera moves with the bound move actions (MOVE_* and MOVE_UP/MOVE_DOWN,
+/// SPRINT for speed); the player drives the camera otherwise.
 pub(super) fn camera_controls(
     time: Res<Time>,
     benchmark: Option<Res<BenchmarkSeconds>>,
@@ -40,8 +53,8 @@ pub(super) fn camera_controls(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     mut cursor: Single<&mut CursorOptions>,
-    mut navigation: ResMut<NavigationState>,
-    collision: Option<Res<NavigationWorld>>,
+    mut player: ResMut<PlayerState>,
+    input: Res<PlayerInput>,
 ) {
     if benchmark.is_some() {
         if let Some(degrees) = sweep.degrees {
@@ -87,98 +100,63 @@ pub(super) fn camera_controls(
         KeyCode::PageDown,
         KeyCode::PageUp,
     ]) {
-        let target = &focuses.targets[focuses.active];
-        *camera = view_of(target);
-        navigation.walker = collision
-            .as_ref()
-            .map(|world| navigation::Walker::new(camera.translation - Vec3::Y * 1.7, &world.0))
-            .unwrap_or(navigation::Walker {
-                feet: camera.translation - Vec3::Y * 1.7,
-                vertical_speed: 0.0,
-                supported: false,
-            });
-        if target.spawn.is_none() {
-            navigation.walking = false;
+        let target = focuses.targets[focuses.active].clone();
+        *camera = view_of(&target);
+        match (target.spawn, player.player.as_mut()) {
+            (Some(start), Some(walker)) => {
+                walker.teleport(Vec3::from(start.position), start.forward_xy[1].atan2(start.forward_xy[0]));
+                player.debug_free_fly = false;
+            }
+            _ => player.debug_free_fly = true,
         }
         println!("Viewing {} at {:?}", target.label, target.center);
     }
-    if keys.just_pressed(KeyCode::KeyG) && collision.is_some() {
-        navigation.walking = !navigation.walking;
-        navigation.walker = navigation::Walker::new(
-            camera.translation - Vec3::Y * 1.7,
-            &collision.as_ref().unwrap().0,
-        );
+    if keys.just_pressed(KeyCode::KeyG) && player.player.is_some() {
+        player.debug_free_fly = !player.debug_free_fly;
+        if !player.debug_free_fly {
+            // Place the feet so the rest-pose eye is at the free camera.
+            let walker = player.player.as_mut().unwrap();
+            let eye = walker.pose.positions[walker.pose.camera];
+            let (yaw, _, _) = camera.rotation.to_euler(EulerRot::YXZ);
+            let feet = Vec3::from(view_to_game(camera.translation)) - Vec3::Z * eye.z;
+            // Bevy yaw 0 looks along -Z (game +Y); game yaw 0 looks along +X.
+            walker.teleport(feet, yaw + std::f32::consts::FRAC_PI_2);
+        }
         println!(
-            "Navigation mode: {}",
-            if navigation.walking {
-                "grounded walk"
-            } else {
-                "free-fly"
-            }
+            "Camera mode: {}",
+            if player.debug_free_fly { "debug free camera" } else { "player" }
         );
     }
+    if !player.debug_free_fly {
+        return;
+    }
     let dt = time.delta_secs();
-    let speed = if keys.pressed(KeyCode::ShiftLeft) {
-        if navigation.walking {
-            10.0
-        } else {
-            30.0
-        }
-    } else {
-        6.0
-    };
+    let held = |action: i32| input.held.contains(&action);
+    let speed = if held(controller::ACTION_SPRINT) { DEBUG_FREE_FLY_FAST_SPEED } else { DEBUG_FREE_FLY_SPEED };
     let forward = camera.forward().as_vec3();
     let right = camera.right().as_vec3();
     let mut movement = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyW) {
+    if held(controller::ACTION_MOVE_FORWARD) {
         movement += forward;
     }
-    if keys.pressed(KeyCode::KeyS) {
+    if held(controller::ACTION_MOVE_BACKWARD) {
         movement -= forward;
     }
-    if keys.pressed(KeyCode::KeyD) {
+    if held(controller::ACTION_MOVE_RIGHT) {
         movement += right;
     }
-    if keys.pressed(KeyCode::KeyA) {
+    if held(controller::ACTION_MOVE_LEFT) {
         movement -= right;
     }
-    if keys.pressed(KeyCode::KeyE) {
+    if held(ACTION_MOVE_UP) {
         movement += Vec3::Y;
     }
-    if keys.pressed(KeyCode::KeyQ) {
+    if held(ACTION_MOVE_DOWN) {
         movement -= Vec3::Y;
     }
-    if navigation.walking {
-        if let Some(world) = collision.as_ref() {
-            navigation.walker.step(
-                &world.0,
-                movement,
-                speed,
-                dt,
-                keys.just_pressed(KeyCode::Space),
-            );
-            camera.translation = navigation.walker.feet + Vec3::Y * 1.7;
-        }
-    } else {
-        camera.translation += movement.normalize_or_zero() * speed * dt;
-    }
-    let mut look = Vec2::ZERO;
-    if cursor.grab_mode == CursorGrabMode::Locked {
-        look += motion.delta * 0.0025;
-    }
-    if keys.pressed(KeyCode::ArrowLeft) {
-        look.x -= 0.9 * dt;
-    }
-    if keys.pressed(KeyCode::ArrowRight) {
-        look.x += 0.9 * dt;
-    }
-    if keys.pressed(KeyCode::ArrowUp) {
-        look.y -= 0.9 * dt;
-    }
-    if keys.pressed(KeyCode::ArrowDown) {
-        look.y += 0.9 * dt;
-    }
-    if look != Vec2::ZERO {
+    camera.translation += movement.normalize_or_zero() * speed * dt;
+    if cursor.grab_mode == CursorGrabMode::Locked && motion.delta != Vec2::ZERO {
+        let look = motion.delta * DEBUG_FREE_FLY_LOOK;
         let (yaw, pitch, _) = camera.rotation.to_euler(EulerRot::YXZ);
         camera.rotation = Quat::from_euler(
             EulerRot::YXZ,
@@ -189,22 +167,30 @@ pub(super) fn camera_controls(
     }
 }
 
+/// eActions_t MOVE_UP / MOVE_DOWN / INTERACT (binding_tables.rs).
+const ACTION_MOVE_UP: i32 = 17;
+const ACTION_MOVE_DOWN: i32 = 18;
+const ACTION_INTERACT: i32 = 22;
+
 pub(super) fn update_coordinate_overlay(
     cameras: Query<&Transform, With<Camera3d>>,
-    navigation: Res<NavigationState>,
+    player: Res<PlayerState>,
     mut overlays: Query<&mut Text, With<CoordinateOverlay>>,
 ) {
     let (Ok(camera), Ok(mut overlay)) = (cameras.single(), overlays.single_mut()) else {
         return;
     };
     let [x, y, z] = view_to_game(camera.translation);
-    let [fx, fy, fz] = view_to_game(navigation.walker.feet);
-    **overlay = if navigation.walking {
-        format!(
-            "Game XYZ eye: {x:.2}, {y:.2}, {z:.2} | feet: {fx:.2}, {fy:.2}, {fz:.2} | walking | F8 report"
-        )
-    } else {
-        format!("Game XYZ camera: {x:.2}, {y:.2}, {z:.2} | free-fly | F8 report")
+    **overlay = match player.player.as_ref().filter(|_| !player.debug_free_fly) {
+        Some(walker) => {
+            let feet = walker.feet();
+            let states: Vec<i32> = walker.machine.active_states().iter().map(|s| s.0).collect();
+            format!(
+                "Game XYZ eye: {x:.2}, {y:.2}, {z:.2} | feet: {:.2}, {:.2}, {:.2} | {:?} states {states:?} | F8 report",
+                feet.x, feet.y, feet.z, walker.physics.ground.state
+            )
+        }
+        None => format!("Game XYZ camera: {x:.2}, {y:.2}, {z:.2} | debug free camera | F8 report"),
     };
 }
 
@@ -248,7 +234,16 @@ pub(super) fn interact_pickup(
     visuals: Query<(Entity, &PickupVisual)>,
     mut windows: Query<&mut Window>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyF) {
+    let interact = {
+        let console = crate::platform::console::shared().read();
+        let bindings = &console.bindings.sets[crate::platform::bindings::IN_GAME];
+        keys.get_just_pressed().any(|&key| {
+            super::engine_keys::engine_key(key)
+                .and_then(|code| bindings.get(code as usize))
+                .is_some_and(|binding| binding.action == ACTION_INTERACT)
+        })
+    };
+    if !interact {
         return;
     }
     let Ok(camera) = cameras.single() else {

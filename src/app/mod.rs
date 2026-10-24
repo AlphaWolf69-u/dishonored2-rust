@@ -59,7 +59,7 @@ mod state;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
     FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, ShadowCasterWorld,
-    ViewSettings, NavigationState, NavigationWorld, LocalLightCull,
+    ViewSettings, NavigationWorld, LocalLightCull,
     LocalLightCullEnabled, LocalLightCullStats, PickupInstance, PickupState,
     PickupVisual, ProbeMaterial, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, ResolvedMaterial, SceneData, SnapshotPath, StreamingDiagnostics,
@@ -135,6 +135,7 @@ mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};
 mod launch;
 mod engine_keys;
+mod player;
 mod pause_menu;
 mod display_settings;
 

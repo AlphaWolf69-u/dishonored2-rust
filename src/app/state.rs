@@ -74,12 +74,6 @@ pub(super) struct ShadowCasterWorld(pub(super) tome::shadow_caster::ShadowCaster
 #[derive(Resource)]
 pub(super) struct ViewSettings(pub(super) Result<game_settings::ViewSettings, String>);
 
-#[derive(Resource)]
-pub(super) struct NavigationState {
-    pub(super) walking: bool,
-    pub(super) walker: navigation::Walker,
-}
-
 #[derive(Component)]
 pub(super) struct CoordinateOverlay;
 

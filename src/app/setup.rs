@@ -5,7 +5,7 @@ use super::{
     env, environment_sun_ray, expanded_model_placements, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
     light_distance, light_preset, light_projection_bounds, light_proximity_from_cached_bounds,
-    local_light_clip_to_world, local_shadow_updates, material, mean_game_position, navigation,
+    local_light_clip_to_world, local_shadow_updates, material, mean_game_position,
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, probe_lighting, render_bounds, render_light, render_model,
     rest_skinning, retain_model_shadow_position, retain_skin_inputs, runtime, shadow_pipeline,
@@ -13,7 +13,7 @@ use super::{
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
     CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass, DiffuseMipState,
     FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet, LocalLightCull,
-    MaterialResolver, NavigationState, NavigationWorld, PathBuf, PickupInstance, PickupState,
+    MaterialResolver, NavigationWorld, PathBuf, PickupInstance, PickupState,
     PlacedModelQueries, PlacedModelQueryGroup, ProbeMaterial, ProgramCacheSource, Projection,
     RectLight, RenderDevice, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, RenderSuppressionGroup, SceneData, SceneRenderQueue, ShaderBuffer,
@@ -1104,21 +1104,23 @@ pub(super) fn setup(
     }
     // Replayed F8 poses are benchmark inputs, not spawn points. Gravity must
     // not move the saved camera while comparing rendering at that same pose.
-    let walking = navigation.is_some()
-        && scene.player_start.is_some()
-        && env::var_os("DH2_REPLAY_F8").is_none();
-    let feet = camera.translation - Vec3::Y * 1.7;
-    let walker = navigation
-        .as_ref()
-        .map(|world| navigation::Walker::new(feet, &world.0))
-        .unwrap_or(navigation::Walker {
-            feet,
-            vertical_speed: 0.0,
-            supported: false,
-        });
-    if walking {
-        camera.translation = walker.feet + Vec3::Y * 1.7;
-    }
+    let player = match (navigation.as_ref(), scene.player_start, catalog) {
+        (Some(_), Some(start), Some(catalog)) if env::var_os("DH2_REPLAY_F8").is_none() => {
+            match super::player::load_player_setup(catalog, super::pause_menu::debug_character()) {
+                Ok(setup) => {
+                    let yaw = start.forward_xy[1].atan2(start.forward_xy[0]);
+                    crate::gameplay::player::Player::new(setup, Vec3::from(start.position), yaw, reference_horizontal_fov)
+                        .map_err(|error| eprintln!("Player unavailable, debug free camera only: {error}"))
+                        .ok()
+                }
+                Err(error) => {
+                    eprintln!("Player unavailable, debug free camera only: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     if let Some(probes) = &scene.environment_probes {
         let camera_game = view_to_game(camera.translation);
         if let Some(interpolated) = probes.interpolate_static_sh(camera_game) {
@@ -1231,7 +1233,8 @@ pub(super) fn setup(
             camera_entity.insert((exposure, auto_exposure::MaterialExposure(material_exposure)));
         }
     }
-    commands.insert_resource(NavigationState { walking, walker });
+    commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player });
+    commands.insert_resource(super::player::PlayerInput::default());
     commands.insert_resource(PickupState {
         items: scene
             .pickups
