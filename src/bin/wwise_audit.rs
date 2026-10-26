@@ -28,6 +28,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            let mut parameters = mix.parameters.iter().collect::<Vec<_>>();
+            parameters.sort_by_key(|(id, _)| **id);
+            for (id, value) in parameters { println!("parameter={id:#010x} default={value}"); }
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
