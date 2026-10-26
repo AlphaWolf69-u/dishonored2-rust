@@ -2,6 +2,7 @@
 //! 21a000's defaults, including individual entries in existing curve arrays.
 use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
+pub mod particle_system;
 pub mod particles;
 pub mod screen_quad;
 

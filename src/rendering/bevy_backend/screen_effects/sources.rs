@@ -18,6 +18,10 @@ pub struct QuadDefinition {
 pub struct GroupDefinition {
     pub timing: EffectTimingRanges,
     pub quads: Vec<QuadDefinition>,
+    /// Particle readiness is independent of screen-distortion readiness.
+    /// Retain descriptor errors for the particle owner without disabling quads.
+    pub particles:
+        Vec<Result<Arc<crate::assets::fx::particle_system::ParticleSystemAsset>, String>>,
 }
 pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
@@ -104,6 +108,23 @@ impl ScreenEffectSources {
                 groups.push(GroupDefinition {
                     timing: common.timings,
                     quads,
+                    particles: scope(fields, "m_particleSystems")
+                        .into_iter()
+                        .flat_map(list_items)
+                        .filter(|value| match value {
+                            crate::entities::Value::Scope(fields) => {
+                                atom(fields, "m_enabled") != Some("false")
+                            }
+                            _ => true,
+                        })
+                        .map(|value| match value {
+                            crate::entities::Value::Scope(fields) => {
+                                crate::assets::fx::particle_system::particle_system(fields)
+                                    .map(Arc::new)
+                            }
+                            _ => Err("particle FX descriptor requires a scope".into()),
+                        })
+                        .collect(),
                 });
             }
             Ok(EffectDefinition { groups })
@@ -126,7 +147,9 @@ impl ScreenEffectSources {
         // 326930's full-screen overwrite, distinct from the material's blend.
         resolve_state[0] = (resolve_state[0] & 0xffe0_0803) | 0x802;
         Ok(Self {
-            swimming:crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
+            swimming: crate::gameplay::player::swimming::SwimmingSettings::read(
+                &declarations.controller,
+            )?,
             underwater,
             leave_water,
             materials,

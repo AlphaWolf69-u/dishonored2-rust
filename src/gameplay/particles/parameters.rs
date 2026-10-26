@@ -2,10 +2,7 @@
 //! range arithmetic and RNG ordering differ from cached screen-FX parameters.
 use crate::{
     float::{add, multiply, subtract},
-    gameplay::effects::{
-        curve::{EffectFloatCurve, EffectFloatCurvePair},
-        vector_curve::{EffectVectorCurve, EffectVectorCurvePair},
-    },
+    gameplay::effects::{curve::EffectFloatCurvePair, vector_curve::EffectVectorCurvePair},
     random::lcg_unit,
 };
 
@@ -43,13 +40,7 @@ impl ScalarParameter {
     pub fn constant(value: f32) -> Self {
         Self {
             range: [value; 2],
-            curve: EffectFloatCurvePair {
-                maximum: EffectFloatCurve {
-                    times: vec![0.],
-                    values: vec![0., 1., 0.],
-                },
-                minimum: EffectFloatCurve::default(),
-            },
+            curve: EffectFloatCurvePair::constant(1.),
         }
     }
 
@@ -79,13 +70,7 @@ impl<const N: usize> VectorParameter<N> {
         Self {
             range: [value; 2],
             uniform: false,
-            curve: EffectVectorCurvePair {
-                maximum: EffectVectorCurve {
-                    times: vec![0.],
-                    values: vec![[0.; N], [1.; N], [0.; N]],
-                },
-                minimum: EffectVectorCurve::default(),
-            },
+            curve: EffectVectorCurvePair::constant([1.; N]),
         }
     }
 

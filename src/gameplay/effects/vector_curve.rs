@@ -121,6 +121,17 @@ impl<const N: usize> EffectVectorCurve<N> {
     }
 }
 impl<const N: usize> EffectVectorCurvePair<N> {
+    /// Mode4 single-key initialization shared by vector FX parameters.
+    pub fn constant(value: [f32; N]) -> Self {
+        Self {
+            maximum: EffectVectorCurve {
+                times: vec![0.],
+                values: vec![[0.; N], value, [0.; N]],
+            },
+            minimum: EffectVectorCurve::default(),
+        }
+    }
+
     pub fn sample(&self, time: f32, mix: [f32; N]) -> Result<[f32; N], String> {
         if N != 2 && N != 3 {
             return Err("FX vector curve requires two or three channels".into());
@@ -136,5 +147,31 @@ impl<const N: usize> EffectVectorCurvePair<N> {
                 minimum[i],
             )
         }))
+    }
+}
+
+impl EffectVectorCurve<3> {
+    /// 2267a0 retains the first stored vector as its reference, then checks
+    /// incoming/outgoing tangents separately when the curve uses triples.
+    pub fn is_constant(&self) -> Result<bool, String> {
+        let count = self.times.len();
+        if count <= 1 {
+            return Ok(true);
+        }
+        let tripled = self.values.len() == count * 3;
+        let reference = self.value(0)?;
+        for i in 1..count {
+            if reference != self.value(if tripled { i * 3 + 1 } else { i })? {
+                return Ok(false);
+            }
+        }
+        if tripled {
+            for i in 0..count {
+                if self.value(i * 3)? != [0.; 3] || self.value(i * 3 + 2)? != [0.; 3] {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 }

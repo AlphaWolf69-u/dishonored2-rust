@@ -6,7 +6,7 @@ use crate::gameplay::{
     particles::{parameters::*, MotionParameters},
 };
 
-fn vector<const N: usize>(value: &mut [f32; N], fields: &Fields) -> Result<(), String> {
+pub(super) fn vector<const N: usize>(value: &mut [f32; N], fields: &Fields) -> Result<(), String> {
     for (name, field) in fields {
         let index = match name.as_str() {
             "x" => 0,
@@ -22,7 +22,7 @@ fn vector<const N: usize>(value: &mut [f32; N], fields: &Fields) -> Result<(), S
     Ok(())
 }
 
-fn vector_curve<const N: usize>(
+pub(super) fn vector_curve<const N: usize>(
     curve: &mut EffectVectorCurve<N>,
     fields: &Fields,
 ) -> Result<(), String> {

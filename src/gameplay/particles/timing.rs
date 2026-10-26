@@ -1,12 +1,12 @@
 //! 1d9b70/1d9c20's particle emitter cycle counter. This is independent of the
 //! parent FX group's delay/fade timings and the lifetime of emitted particles.
 use crate::{
-    float::{add, divide, multiply, subtract},
-    random::lcg_unit,
+    float::{add, divide, subtract},
+    gameplay::effects::timing::sample_range,
 };
 
 /// The values stored at simulator+284 through +294. The emitter's start/reset
-/// owner supplies the initial cycle; this type does not invent a start policy.
+/// owner resets the counter before resetting its cycle seed and vector fields.
 pub struct CycleClock {
     pub cycle: u32,
     pub elapsed: f32,
@@ -16,6 +16,17 @@ pub struct CycleClock {
 }
 
 impl CycleClock {
+    /// 1d9b90 samples duration once, before 1f3bf0's cycle seed/vector-field
+    /// reset. Initialization does not consume a delay or warmup sample.
+    pub fn new(duration: [f32; 2], seed: &mut u32) -> Self {
+        Self {
+            cycle: 0,
+            elapsed: 0.,
+            fraction: 0.,
+            duration: sample_range(duration, seed),
+            restarted: true,
+        }
+    }
     pub fn can_emit(&self, cycles: u32) -> bool {
         super::can_emit(cycles, self.cycle, self.elapsed, self.duration)
     }
@@ -35,12 +46,8 @@ impl CycleClock {
             if self.restarted {
                 loop {
                     self.elapsed = subtract(self.elapsed, self.duration);
-                    let mix = lcg_unit(seed);
-                    let minimum = crate::gameplay::effects::normalize_small(range[1]);
-                    let maximum = crate::gameplay::effects::normalize_small(range[0]);
                     self.cycle = self.cycle.wrapping_add(1);
-                    self.duration =
-                        add(multiply(subtract(1., mix), minimum), multiply(maximum, mix));
+                    self.duration = sample_range(range, seed);
                     if !(self.duration <= self.elapsed && self.can_emit(cycles)) {
                         break;
                     }
@@ -61,5 +68,33 @@ impl CycleClock {
             divide(self.elapsed, self.duration)
         };
         Ok(())
+    }
+}
+
+pub struct StartDelay {
+    remaining: f32,
+}
+impl StartDelay {
+    /// 1f3c30 samples the descriptor delay independently of its cycle duration.
+    pub fn new(range: [f32; 2], seed: &mut u32) -> Self {
+        Self {
+            remaining: sample_range(range, seed),
+        }
+    }
+
+    /// 1f2240 removes only the part of this frame still covered by the delay.
+    /// Its separate comparisons preserve the source's unordered-input branch.
+    pub fn consume(&mut self, delta: f32) -> f32 {
+        let consumed = if delta <= self.remaining {
+            delta
+        } else {
+            self.remaining
+        };
+        self.remaining = subtract(self.remaining, consumed);
+        subtract(delta, consumed)
+    }
+
+    pub fn remaining(&self) -> f32 {
+        self.remaining
     }
 }

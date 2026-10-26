@@ -3,8 +3,10 @@
 pub mod curve;
 pub mod decal;
 pub mod environment;
+pub mod envelope;
 pub mod groups;
 pub mod parameters;
+pub mod particle;
 pub mod pool;
 pub mod timing;
 pub mod vector_curve;

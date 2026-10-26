@@ -41,6 +41,30 @@ pub fn curve_key_times(times: &[f32], index: i32) -> [f32; 2] {
     }
 }
 impl EffectFloatCurve {
+    /// 2266c0's FX constant-curve classification. Its reference is the first
+    /// stored float, including the incoming tangent in a tripled curve.
+    pub fn is_constant(&self) -> Result<bool, String> {
+        let count = self.times.len();
+        if count <= 1 {
+            return Ok(true);
+        }
+        let tripled = self.values.len() == count * 3;
+        let reference = self.value(0)?;
+        for i in 1..count {
+            if reference != self.value(if tripled { i * 3 + 1 } else { i })? {
+                return Ok(false);
+            }
+        }
+        if tripled {
+            for i in 0..count {
+                if self.value(i * 3)? != 0. || self.value(i * 3 + 2)? != 0. {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn value(&self, index: usize) -> Result<f32, String> {
         self.values.get(index).copied().ok_or_else(|| {
             format!(
@@ -97,6 +121,17 @@ impl EffectFloatCurve {
     }
 }
 impl EffectFloatCurvePair {
+    /// Mode4 single-key initialization used by scalar FX parameters.
+    pub fn constant(value: f32) -> Self {
+        Self {
+            maximum: EffectFloatCurve {
+                times: vec![0.],
+                values: vec![0., value, 0.],
+            },
+            minimum: EffectFloatCurve::default(),
+        }
+    }
+
     pub fn sample(&self, time: f32, mix: f32) -> Result<f32, String> {
         let maximum = self.maximum.sample(time)?;
         if self.minimum.times.is_empty() {
