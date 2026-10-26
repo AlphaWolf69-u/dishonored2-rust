@@ -380,9 +380,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event") {
+    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node") {
         let playback = first.to_string_lossy() == "--playback-event";
-        let id = arguments.next().ok_or("missing event ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+        let actor = first.to_string_lossy() == "--playback-node";
+        let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
         let id = u32::from_str_radix(&id, 16)?;
         let directory = match arguments.next() {
             Some(path) => PathBuf::from(path),
@@ -419,12 +420,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
         println!("Loaded reference ownership: {:?}", library.references()?);
-        if library.event_ids().binary_search(&id).is_err() {
+        if !actor && library.event_ids().binary_search(&id).is_err() {
             println!("event {id:#010x} is not present in the selected installed banks");
             return Ok(());
         }
         let mut files = std::collections::HashMap::<usize, File>::new();
-        let actions = library.event_playback(id, |owner, media_id| {
+        let media = |owner: usize, media_id| {
             let (path, package, entry) = &owners[owner];
             let Some(media) = package.media_file(u64::from(media_id), entry.language_id) else { return Ok(None); };
             let file = match files.entry(owner) {
@@ -433,7 +434,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             println!("media {media_id:#010x}: {} bank={:#010x}", path.display(), entry.id);
             package.read_entry(file, media).map(Some)
-        })?;
+        };
+        if actor {
+            if let Some(node) = library.actor_playback(id, media)? {
+                print_playback(&node, 0, &mixer, None)?;
+            } else { println!("actor {id:#010x} is not available for playback"); }
+            return Ok(());
+        }
+        let actions = library.event_playback(id, media)?;
         let Some(actions) = actions else {
             println!("event {id:#010x} has no supported Wwise actions");
             return Ok(());
@@ -537,6 +545,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;

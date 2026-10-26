@@ -465,6 +465,7 @@ pub fn event_commands_with(
 pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
+            PlaybackNode::Missing { .. } => Err(invalid("unresolved Wwise playlist entries require scheduled playback")),
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
                 node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
                 reset_each_play: true, restart_backward: false, variants: vec![variant],
@@ -526,6 +527,9 @@ pub enum PlaybackCommand {
 
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
+    /// Keep the authored slot and weight when the global actor lookup fails
+    /// (141119b70). Removing it would change random and sequence selection.
+    Missing { node: u32 },
     Sound { node: u32, variant: MediaVariant },
     Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),

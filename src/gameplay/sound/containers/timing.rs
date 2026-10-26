@@ -50,3 +50,15 @@ pub fn after_source_end(frame: u64, mode: TransitionMode, delay_samples: u32) ->
     let tick = frame / quantum * quantum;
     tick + u64::from(delay_samples) + if delay_samples < QUANTUM { quantum } else { 0 }
 }
+
+/// No PBI was created: 1410ddd30 selects from the enclosing continuation
+/// immediately, then queues that actor through 1410dae80 / 1410e5600. Only
+/// Delay and TriggerRate use their authored interval; all modes wait at least
+/// ten quanta. This path does not carry the failed PBI's sample offset.
+pub fn after_failed_start(frame: u64, mode: TransitionMode, milliseconds: f32, rate: u32) -> u64 {
+    let minimum = QUANTUM * 10;
+    let delay = if matches!(mode, TransitionMode::Delay | TransitionMode::TriggerRate) {
+        (samples_from_ms(f64::from(milliseconds), rate) as i32).max(minimum as i32) as u32
+    } else { minimum };
+    frame / u64::from(QUANTUM) * u64::from(QUANTUM) + u64::from(delay)
+}
