@@ -54,6 +54,29 @@ pub enum Program {
     Clouds = 8,
     SimpleSprite = 9,
     BoatVolume = 10,
+    /// arkSSSRender: BRDF_skin lighting whose diffuse irradiance is blurred
+    /// by the material's sssProgram (arkSSSBlur) before taking the albedo.
+    Skin = 11,
+}
+
+/// arkSSSRender / BRDF_skin inputs beyond the arkDefault layer fields.
+/// Defaults are the installed renderParm declarations.
+#[derive(Debug, Clone)]
+pub struct SkinInputs {
+    /// wardRoughness2 / wardRoughness3 .xy: HQ_FetchGloss2's second and
+    /// third gloss ranges, mapped from the same layer-0 gloss sample.
+    pub ward2: [f32; 2],
+    pub ward3: [f32; 2],
+    /// SSS/tweakSpecularIntensity: three Ward lobes, then IBL.
+    pub tweak_specular: [f32; 4],
+    /// SSS/Scale.x: the arkSSSBlur kernel width in world units.
+    pub scale: f32,
+    /// fuzz/intensity, fuzz/fresnel.
+    pub fuzz: [f32; 2],
+    pub sss_mask: Option<String>,
+    pub skin_fresnel_lookup: Option<String>,
+    pub diffuse_lookup: Option<String>,
+    pub fuzz_mask: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +137,7 @@ pub struct Surface {
     pub emissive_color: [f32; 3],
     pub emissive_intensity: f32,
     pub emissive_clip: [f32; 2],
+    pub skin: SkinInputs,
 }
 
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
@@ -192,6 +216,7 @@ impl Surface {
             Some("arkclouds") => Program::Clouds,
             Some("arksimplesprite") => Program::SimpleSprite,
             Some("arkboatvolume") => Program::BoatVolume,
+            Some("arksssrender") => Program::Skin,
             Some("atm/worlddistancefog/arkinteriorvolume") => Program::InteriorVolume,
             _ => Program::Unsupported,
         }
@@ -315,6 +340,24 @@ impl Surface {
             emissive_color: vector(&v, "emissivecolorconstant", [0.; 3]),
             emissive_intensity: vector(&v, "emissiveintensity", [0.])[0],
             emissive_clip: vector(&v, "emissiveclipparms", [0., 0.001]),
+            skin: SkinInputs {
+                ward2: vector(&v, "wardroughness2", [0.0, 0.5]),
+                ward3: vector(&v, "wardroughness3", [0.0, 0.5]),
+                tweak_specular: vector(&v, "sss/tweakspecularintensity", [0.6, 0.4, 1.0, 0.2]),
+                scale: vector(&v, "sss/scale", [0.001])[0],
+                fuzz: [vector(&v, "fuzz/intensity", [0.25])[0], vector(&v, "fuzz/fresnel", [5.0])[0]],
+                // Option-gated images; an enabled option without an authored
+                // image reads the registered `_default`.
+                sss_mask: (number(&v, "sss/hasmask", 0) != 0)
+                    .then(|| image(&v, "sss/mask").unwrap_or_else(|| "_default".into())),
+                skin_fresnel_lookup: (number(&v, "sss/hasskinfresnellookup", 0) != 0).then(|| {
+                    image(&v, "sss/skinfresnellookup").unwrap_or_else(|| "_default".into())
+                }),
+                diffuse_lookup: (number(&v, "hasdiffuselookup", 0) != 0)
+                    .then(|| image(&v, "diffuselookup").unwrap_or_else(|| "_default".into())),
+                fuzz_mask: (number(&v, "fuzz/enable", 0) != 0 && number(&v, "fuzz/hasmask", 0) != 0)
+                    .then(|| image(&v, "fuzz/mask").unwrap_or_else(|| "_default".into())),
+            },
         }
     }
 
@@ -418,6 +461,18 @@ impl Surface {
             }
             if !is_decal && self.has_emissive_mask {
                 bindings.push((21, &self.emissive_mask));
+            }
+        }
+        if self.program() == Program::Skin {
+            for (role, name) in [
+                (34, &self.skin.skin_fresnel_lookup),
+                (35, &self.skin.diffuse_lookup),
+                (36, &self.skin.sss_mask),
+                (37, &self.skin.fuzz_mask),
+            ] {
+                if let Some(name) = name {
+                    bindings.push((role, name.as_str()));
+                }
             }
         }
         bindings
