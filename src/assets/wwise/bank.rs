@@ -111,7 +111,8 @@ pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     };
     reader.u8()?;
     let target = reader.u32()?;
-    if reader.u8()? != 0 { return Err(invalid("Wwise bus Stop actions are unsupported")); }
+    let bus = reader.u8()? != 0;
+    if bus && !all { return Err(invalid("Wwise bus-targeted Stop actions require bus dispatch")); }
     let properties = reader.properties()?;
     let milliseconds = properties.iter().find(|(id, _)| *id == 0xf).map_or(0, |(_, value)| *value as i32);
     if properties.iter().any(|(id, value)| *id == 0xe && *value != 0) {
