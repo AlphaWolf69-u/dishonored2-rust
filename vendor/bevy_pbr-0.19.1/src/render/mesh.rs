@@ -3609,6 +3609,27 @@ impl SpecializedMeshPipeline for MeshPipeline {
             ));
         }
 
+        let mut targets = vec![Some(ColorTargetState {
+            format,
+            blend,
+            write_mask: ColorWrites::ALL,
+        })];
+        // DH2: the single-sample main opaque pass also binds sssBuffer (the
+        // other HDR main texture) and the sssSurface target. Programs that
+        // do not write them keep both masked, as D3D leaves unwritten RTs.
+        if is_opaque && key.msaa_samples() == 1 {
+            targets.push(Some(ColorTargetState {
+                format,
+                blend: None,
+                write_mask: ColorWrites::empty(),
+            }));
+            targets.push(Some(ColorTargetState {
+                format: bevy_core_pipeline::core_3d::SSS_SURFACE_FORMAT,
+                blend: None,
+                write_mask: ColorWrites::empty(),
+            }));
+        }
+
         Ok(RenderPipelineDescriptor {
             vertex: VertexState {
                 shader: self.shader.clone(),
@@ -3619,11 +3640,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs,
-                targets: vec![Some(ColorTargetState {
-                    format,
-                    blend,
-                    write_mask: ColorWrites::ALL,
-                })],
+                targets,
                 ..default()
             }),
             layout: bind_group_layout,

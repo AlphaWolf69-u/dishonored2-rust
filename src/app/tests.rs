@@ -1761,6 +1761,11 @@ fn authored_surface_gpu_pipelines_compile() {
                 linear_clamp_image: None,
                 vegetation_slots: vegetation_buffers.slots.clone(),
                 vegetation_instances: vegetation_buffers.instances.clone(),
+                skin_fresnel_lookup: None,
+                diffuse_lookup: None,
+                sss_mask: None,
+                fuzz_mask: None,
+                translucency_mask: None,
             },
         });
     // Establish the target, then add a material without a binding while the
@@ -7479,6 +7484,11 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             linear_clamp_image: None,
             vegetation_slots: default(),
             vegetation_instances: default(),
+            skin_fresnel_lookup: None,
+            diffuse_lookup: None,
+            sss_mask: None,
+            fuzz_mask: None,
+            translucency_mask: None,
         },
     });
     app.insert_resource(materials);

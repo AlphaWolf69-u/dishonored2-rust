@@ -3,6 +3,17 @@ mod main_transparent_pass_3d_node;
 
 // PERF: vulkan docs recommend using 24 bit depth for better performance
 pub const CORE_3D_DEPTH_FORMAT: TextureFormat = TextureFormat::Depth24PlusStencil8;
+/// DH2: per-pixel arkSSSBlur inputs written by skin programs in the main
+/// opaque pass (albedo rgb, kernel width; alpha clears to -1 = not skin).
+pub const SSS_SURFACE_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+
+/// DH2: the main opaque pass's third colour target (see `SSS_SURFACE_FORMAT`).
+/// Single-sample views only; the second target is the other main texture
+/// (the game's sssBuffer is its HDRBuffer2 ping-pong partner).
+#[derive(Component)]
+pub struct ViewSssSurfaceTexture {
+    pub texture: CachedTexture,
+}
 
 /// True if multisampled depth textures are supported on this platform.
 ///
@@ -138,6 +149,7 @@ impl Plugin for Core3dPlugin {
                         .in_set(RenderSystems::PrepareViews)
                         .ambiguous_with(RenderSystems::PrepareViews),
                     prepare_core_3d_depth_textures.in_set(RenderSystems::PrepareResources),
+                    prepare_core_3d_sss_surface_textures.in_set(RenderSystems::PrepareResources),
                     prepare_prepass_textures.in_set(RenderSystems::PrepareResources),
                 ),
             )
@@ -721,6 +733,37 @@ pub fn prepare_core_3d_depth_textures(
                 Camera3dDepthLoadOp::Load => None,
             },
         ));
+    }
+}
+
+pub fn prepare_core_3d_sss_surface_textures(
+    mut commands: Commands,
+    mut texture_cache: ResMut<TextureCache>,
+    render_device: Res<RenderDevice>,
+    views_3d: Query<(Entity, &ExtractedCamera, &Msaa), With<Camera3d>>,
+) {
+    for (entity, camera, msaa) in &views_3d {
+        let Some(physical_target_size) = camera.physical_target_size else {
+            continue;
+        };
+        if msaa.samples() != 1 {
+            commands.entity(entity).remove::<ViewSssSurfaceTexture>();
+            continue;
+        }
+        let texture = texture_cache.get(
+            &render_device,
+            TextureDescriptor {
+                label: Some("view_sss_surface_texture"),
+                size: physical_target_size.to_extents(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: SSS_SURFACE_FORMAT,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+        );
+        commands.entity(entity).insert(ViewSssSurfaceTexture { texture });
     }
 }
 

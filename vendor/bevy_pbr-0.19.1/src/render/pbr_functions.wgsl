@@ -2,6 +2,9 @@
 #ifdef DH2_LOCAL_SHADOWS
 #import dh2_local_receiver::local_visibility
 #endif
+#ifdef DH2_SKIN
+#import dh2_direct::{skin_light_diffuse,skin_direct_diffuse}
+#endif
 
 #import bevy_pbr::{
     pbr_types,
@@ -529,17 +532,27 @@ fn apply_pbr_lighting_with_shadows(
 #endif
 #endif
 
+#ifdef DH2_SKIN
+        skin_light_diffuse = vec3<f32>(0.0);
+#endif
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
 #ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
         // The existing light functions return zero before BRDF evaluation
         // when radial/hemisphere/cone attenuation is absent. Dead direct
         // lobes need no map query either; avoid 0*undefined PCF coordinates.
-        if any(light_contrib!=vec3<f32>(0.0)) {
+        var lobes_alive = any(light_contrib!=vec3<f32>(0.0));
+#ifdef DH2_SKIN
+        lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
+#endif
+        if lobes_alive {
             shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SKIN
+        skin_direct_diffuse += skin_light_diffuse * shadow;
+#endif
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
         // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
@@ -608,17 +621,27 @@ fn apply_pbr_lighting_with_shadows(
 #endif
 #endif
 
+#ifdef DH2_SKIN
+        skin_light_diffuse = vec3<f32>(0.0);
+#endif
         let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
 #ifdef DH2_LOCAL_SHADOWS
         // lightcontext queries its shadow only for contributing attenuation.
         // The existing light functions return zero before BRDF evaluation
         // when radial/hemisphere/cone attenuation is absent. Dead direct
         // lobes need no map query either; avoid 0*undefined PCF coordinates.
-        if any(light_contrib!=vec3<f32>(0.0)) {
+        var lobes_alive = any(light_contrib!=vec3<f32>(0.0));
+#ifdef DH2_SKIN
+        lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
+#endif
+        if lobes_alive {
             shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SKIN
+        skin_direct_diffuse += skin_light_diffuse * shadow;
+#endif
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
         // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
@@ -693,12 +716,18 @@ fn apply_pbr_lighting_with_shadows(
 #endif
 #endif
 
+#ifdef DH2_SKIN
+        skin_light_diffuse = vec3<f32>(0.0);
+#endif
         var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
 
 #ifdef DIRECTIONAL_LIGHT_SHADOW_MAP_DEBUG_CASCADES
         light_contrib = shadows::cascade_debug_visualization(light_contrib, i, view_z);
 #endif
         direct_light += light_contrib * shadow;
+#ifdef DH2_SKIN
+        skin_direct_diffuse += skin_light_diffuse * shadow;
+#endif
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
         // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
@@ -828,7 +857,12 @@ fn apply_pbr_lighting_with_shadows(
 #else   // LIGHTMAP
     let enable_ambient = true;
 #endif  // LIGHTMAP
+#ifdef DH2_SKIN
+    // BRDF_skin's only ambient is its SH term, which the caller routes to sssBuffer.
+    if (false) {
+#else
     if (enable_ambient) {
+#endif
         indirect_light += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, diffuse_occlusion);
     }
 

@@ -363,3 +363,28 @@ fn debug_pause_draw_list_cost() {
         println!("batch {i}: {n} vertices texture {:?}", list.batches[*i].texture);
     }
 }
+
+/// `DropDownBox.onAddedToStage` removes its timeline `menu`; the selected
+/// animation then jumps back to "up" (frame 31 to 1). Iggy's reset placement
+/// (`FUN_141023360`, param_4 == 1) only modifies an object at the depth, so
+/// the removed list frame is not created again under the closed box.
+#[test]
+#[ignore = "requires installed game archives"]
+fn backward_goto_keeps_a_script_removed_child_removed() {
+    use avm2::name::Name;
+    use avm2::value::Value;
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/corvo_pause_menu.iggy").unwrap();
+    let class = player.vm.class_by_name("w_dropDownBox").unwrap().expect("w_dropDownBox is defined");
+    let boxed = player.vm.construct(&class, &[]).unwrap();
+    let stage = Value::Object(player.state.borrow().stage.clone().unwrap());
+    player.vm.call_property(&stage, &Name::public("addChild"), &[boxed.clone()]).unwrap();
+    let o = boxed.as_object().unwrap().clone();
+    let has_menu = |o: &Obj| display::children(o).iter().any(|c| display::display_ref(c).is_some_and(|d| &*d.name == "menu"));
+    assert!(!has_menu(&o), "onAddedToStage removes the menu");
+    timeline::goto(&mut player.vm, &o, 30).unwrap();
+    timeline::goto(&mut player.vm, &o, 0).unwrap();
+    assert!(!has_menu(&o), "the backward goto does not recreate the menu");
+}

@@ -42,6 +42,9 @@ enum Command {
     Tick(f64, std::time::Instant),
     /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
     Close,
+    /// Diagnostic (F11, like the F8 capture): write the display trees and the
+    /// draw list to `artifacts/flash-dumps/`, with the window size.
+    DebugDump { window: (u32, u32) },
 }
 
 enum Event {
@@ -148,8 +151,8 @@ pub struct PauseMenu {
     prepared_for: Option<(i32, i32)>,
     /// `DH2_DEBUG_OPEN_PAUSE_AFTER` has opened the pause state.
     debug_opened: bool,
-    /// `DH2_DEBUG_PAUSE_CLICK` has clicked.
-    debug_clicked: bool,
+    /// The next `DH2_DEBUG_PAUSE_INPUT` action.
+    debug_step: usize,
     /// Diagnostic frame-time accumulation (`DH2_DEBUG_PAUSE_TIMING`).
     debug_frames: (u32, f64, Option<std::time::Instant>),
     /// The movie has produced a frame since it was opened: each frame then
@@ -170,7 +173,7 @@ impl Default for PauseMenu {
             .stack_size(256 << 20)
             .spawn(move || run(inbox, outbox))
             .expect("pause movie thread");
-        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false, debug_clicked: false, debug_frames: (0, 0.0, None) }
+        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None) }
     }
 }
 
@@ -331,6 +334,42 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 }
             }
             Command::Close => loaded = None,
+            Command::DebugDump { window } => {
+                let Some(l) = loaded.as_mut() else { continue };
+                let mut out = format!("window {window:?}\n== pause movie\n");
+                if let Some(stage) = l.player.state.borrow().stage.clone() {
+                    crate::flash::display::debug_tree(&stage, 0, &mut out);
+                }
+                if let Some(g) = l.pause.boxes.global() {
+                    out.push_str("== message box movie\n");
+                    if let Some(stage) = g.state.borrow().stage.clone() {
+                        crate::flash::display::debug_tree(&stage, 0, &mut out);
+                    }
+                }
+                if let Some(frame) = &last_frame {
+                    out.push_str(&format!("== draw list: {} batches, {} vertices, {} layers\n", frame.list.batches.len(), frame.list.vertices.len(), frame.list.layers.len()));
+                    for (i, b) in frame.list.batches.iter().enumerate() {
+                        let verts = &frame.list.vertices[b.first as usize..(b.first + b.count) as usize];
+                        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                        for v in verts {
+                            x0 = x0.min(v.position[0]);
+                            y0 = y0.min(v.position[1]);
+                            x1 = x1.max(v.position[0]);
+                            y1 = y1.max(v.position[1]);
+                        }
+                        out.push_str(&format!("batch {i}: {:?} blend {} count {} stencil test {} set {} clear {} bounds [{x0:.1} {y0:.1} {x1:.1} {y1:.1}] mul {:?}\n", b.texture, b.blend, b.count, b.stencil_test, b.stencil_set, b.stencil_clear, verts.first().map(|v| v.mul)));
+                    }
+                    for l in &frame.list.layers {
+                        out.push_str(&format!("layer {}..{} bounds {:?} filters {:?}\n", l.first, l.end, l.bounds, l.filters));
+                    }
+                }
+                let directory = super::state::diagnostic_directory("flash-dumps");
+                let path = directory.join(format!("flash-{}x{}-{}.txt", window.0, window.1, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())));
+                match std::fs::create_dir_all(&directory).and_then(|_| std::fs::write(&path, out)) {
+                    Ok(()) => info!("Flash dump written to {}", path.display()),
+                    Err(e) => warn!("Flash dump {}: {e}", path.display()),
+                }
+            }
             Command::Key { down, key } => {
                 let Some(l) = loaded.as_mut() else { continue };
                 if down && !l.pressed.is_some_and(|k| k < 0xe0) {
@@ -521,19 +560,27 @@ pub fn update_pause_menu(
         menu.ready = false;
         menu.prepared_for = None;
     }
-    // Diagnostic: DH2_DEBUG_PAUSE_CLICK=X,Y@SECONDS clicks movie pixel (X, Y)
-    // once, that long after start (with the menu open).
-    if menu.open && !menu.debug_clicked {
-        let click = std::env::var("DH2_DEBUG_PAUSE_CLICK").ok().and_then(|v| {
-            let (xy, at) = v.split_once('@')?;
-            let (x, y) = xy.split_once(',')?;
-            Some((x.parse::<f64>().ok()?, y.parse::<f64>().ok()?, at.parse::<f64>().ok()?))
-        });
-        if let Some((x, y, _)) = click.filter(|c| time.elapsed_secs_f64() >= c.2) {
-            menu.debug_clicked = true;
+    // Diagnostic: DH2_DEBUG_PAUSE_INPUT="click:X,Y@SECONDS;move:X,Y@SECONDS"
+    // moves to movie pixel (X, Y) and clicks, or only moves, that long after
+    // start (with the menu open), in order.
+    if menu.open {
+        let actions: Vec<(bool, f64, f64, f64)> = std::env::var("DH2_DEBUG_PAUSE_INPUT")
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|a| {
+                let (kind, rest) = a.trim().split_once(':')?;
+                let (xy, at) = rest.split_once('@')?;
+                let (x, y) = xy.split_once(',')?;
+                Some((kind == "click", x.parse().ok()?, y.parse().ok()?, at.parse().ok()?))
+            })
+            .collect();
+        while let Some(&(click, x, y, _)) = actions.get(menu.debug_step).filter(|a| time.elapsed_secs_f64() >= a.3) {
+            menu.debug_step += 1;
             let _ = menu.commands.send(Command::Cursor { x, y });
-            let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: true });
-            let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: false });
+            if click {
+                let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: true });
+                let _ = menu.commands.send(Command::MouseButton { code: 0xe0, down: false });
+            }
         }
     }
     if std::env::var_os("DH2_DEBUG_PAUSE_TIMING").is_some_and(|v| v == "1") {
@@ -550,6 +597,11 @@ pub fn update_pause_menu(
         // Engine keyboard events do not repeat.
         if input.repeat {
             continue;
+        }
+        // Diagnostic: F11 dumps the open menu; the key still reaches the movie.
+        if menu.open && input.key_code == KeyCode::F11 && input.state == ButtonState::Pressed {
+            let window = windows.iter().next().map_or((0, 0), |w| (w.physical_width(), w.physical_height()));
+            let _ = menu.commands.send(Command::DebugDump { window });
         }
         let Some(key) = super::engine_keys::engine_key(input.key_code) else { continue };
         let down = input.state == ButtonState::Pressed;

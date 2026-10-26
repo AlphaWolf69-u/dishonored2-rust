@@ -43,6 +43,13 @@ pub struct SurfaceUniform {
     pub direct: Vec4,
     /// Refraction IOR, uint blur size converted to float, normal mask, padding.
     pub glass: Vec4,
+    /// arkSSSRender (program 11): wardRoughness2.xy/wardRoughness3.xy,
+    /// SSS/tweakSpecularIntensity, then fuzz/intensity, fuzz/fresnel, SSS/Scale.x.
+    pub skin: [Vec4; 3],
+    /// Resolved arkSSSRender options: SSS/useSecondarySpecular, fuzz/enable,
+    /// hasDiffuseLookup, then bit 0 SSS/hasSkinFresnelLookup, bit 1
+    /// SSS/hasMask, bit 2 fuzz/hasMask.
+    pub skin_flags: UVec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -200,6 +207,19 @@ impl From<&Surface> for SurfaceUniform {
             sky: [Vec4::ZERO; 7],
             direct: Vec4::new(s.sheen[0],s.sheen[1],0.0,0.0),
             glass: Vec4::ZERO,
+            skin: [
+                Vec4::new(s.skin.ward2[0], s.skin.ward2[1], s.skin.ward3[0], s.skin.ward3[1]),
+                Vec4::from_array(s.skin.tweak_specular),
+                Vec4::new(s.skin.fuzz[0], s.skin.fuzz[1], s.skin.scale, 0.0),
+            ],
+            skin_flags: UVec4::new(
+                0,
+                0,
+                u32::from(s.skin.diffuse_lookup.is_some()),
+                u32::from(s.skin.skin_fresnel_lookup.is_some())
+                    | (u32::from(s.skin.sss_mask.is_some()) << 1)
+                    | (u32::from(s.skin.fuzz_mask.is_some()) << 2),
+            ),
         }
     }
 }

@@ -383,6 +383,79 @@ struct WindmillMotor {
     enabled: bool,
 }
 impl MachineryWorld {
+    /// 14080ac90: a bound dynamic rigid body joins its parent's motion
+    /// (14080af20 -> 140c8fc00 attachBodies), then c90a90 rebuilds that
+    /// motion from every attached body's mass (c2bd80 combine). The parent
+    /// keeps its body transform, motion properties and activation; the
+    /// combined frame becomes its mass frame (and wind w lanes).
+    fn attach_bound_bodies<'a>(
+        &mut self,
+        bodies: &'a [crate::entities::machinery::recipes::BodyRecipe],
+        indices: &mut std::collections::HashMap<&'a str, usize>,
+    ) -> Result<(), String> {
+        use crate::physworld::mass::{combine_mass, MassElement, MassProperties};
+        let root = |mut i: usize| {
+            while let Some(parent) = bodies[i].attached_to {
+                i = parent;
+            }
+            i
+        };
+        let mut rings = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        for (i, body) in bodies.iter().enumerate().filter(|(_, b)| b.attached_to.is_some()) {
+            let r = root(i);
+            let parent = *indices
+                .get(bodies[r].entity_id.as_str())
+                .ok_or_else(|| format!("{}: bound to an unsimulated body", body.entity_id))?;
+            indices.insert(body.entity_id.as_str(), parent);
+            rings.entry(r).or_insert_with(|| vec![r]).push(i);
+        }
+        for (r, ring) in rings {
+            let index = indices[bodies[r].entity_id.as_str()];
+            let element = |b: &crate::entities::machinery::recipes::BodyRecipe| -> Result<MassElement, String> {
+                let mass = b.mass.ok_or_else(|| format!("{}: attached body has no mass", b.entity_id))?;
+                let basis = physworld::quaternion_basis(b.orientation);
+                Ok(MassElement {
+                    properties: mass.to_tensor(),
+                    transform: [basis[0], basis[1], basis[2], [b.position[0], b.position[1], b.position[2], 1.]],
+                })
+            };
+            let elements = ring.iter().map(|&i| element(&bodies[i])).collect::<Result<Vec<_>, _>>()?;
+            let mut combined = MassProperties { volume: 0., mass: 0., center: [0.; 4], inertia: [[0.; 4]; 3] };
+            let _ = combine_mass(&elements, &mut combined);
+            let motion = BodyMotion::from_mass_frame(combined.to_principal(), [0., 0., 0., 1.], [0.; 4]);
+            let body = &mut self.bodies[index];
+            let transform = body.body_transform();
+            // Mass frame = body^-1 * motion, so body_transform() is unchanged.
+            let q = physworld::rotation_quaternion([transform[0], transform[1], transform[2]]);
+            let [bx, by, bz, bw] = [-q[0], -q[1], -q[2], q[3]];
+            let [x, y, z, w] = motion.pose.orientation;
+            let frame = [
+                ((by * z - bz * y) + bw * x) + bx * w,
+                ((bz * x - bx * z) + bw * y) + by * w,
+                ((bx * y - by * x) + bw * z) + bz * w,
+                bw * w - ((by * y + bx * x) + bz * z),
+            ];
+            let d: [f32; 3] = std::array::from_fn(|i| motion.pose.center[i] - transform[3][i]);
+            let center: [f32; 4] = std::array::from_fn(|c| {
+                if c == 3 {
+                    0.
+                } else {
+                    (transform[c][1] * d[1] + transform[c][0] * d[0]) + transform[c][2] * d[2]
+                }
+            });
+            // delta() is relative to the spawn motion pose: re-base it so the
+            // body still renders at its authored placement.
+            body.initial = motion.pose;
+            body.motion = motion;
+            body.mass_frame = (frame, center);
+            if let Some(wind) = &mut body.wind {
+                wind.frame_orientation = frame;
+                wind.frame_center = center;
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_recipes(
         recipes: &crate::entities::machinery::recipes::MachineryRecipes,
     ) -> Result<Self, String> {
@@ -391,7 +464,7 @@ impl MachineryWorld {
         let mut indices = std::collections::HashMap::<&str, usize>::new();
         for assembly in &recipes.assemblies {
             for body in &assembly.bodies {
-                if indices.contains_key(body.entity_id.as_str()) {
+                if indices.contains_key(body.entity_id.as_str()) || body.attached_to.is_some() {
                     continue;
                 }
                 let translation = vector(body.position);
@@ -435,6 +508,7 @@ impl MachineryWorld {
                 }
                 world.bodies.push(created);
             }
+            world.attach_bound_bodies(&assembly.bodies, &mut indices)?;
         }
         // 14076abc0 -> 14008e560: physics-system bodies at the entity transform
         // applied to each body cinfo pose, added awake; its constraints are
@@ -1459,6 +1533,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires installed Dust District archives"]
+    fn installed_dust_speakers_weigh_on_their_turnbuckles_like_the_live_game() {
+        let catalog =
+            crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| {
+            catalog
+                .read(p)
+                .map(|b| b.map(|b| crate::entities::declaration_text(&b).into_owned()))
+                .map_err(|e| e.to_string())
+        };
+        let mut placements = crate::entities::render_placements(&document);
+        placements.extend(crate::entities::placed_models_with_inheritance(&document, read).unwrap());
+        let recipes = crate::entities::machinery::recipes::load(&catalog, &document, &placements).unwrap();
+        let world = MachineryWorld::from_recipes(&recipes).unwrap();
+        let half = |v: u16| half::f16::from_bits(v).to_f32();
+        let mut checked = 0;
+        for name in ["ld_kar_speaker_turnbuckle_01_3", "ld_kar_speaker_turnbuckle_01_4", "ld_kar_speaker_turnbuckle_01_5"] {
+            let recipe = recipes.assemblies.iter().flat_map(|a| &a.bodies).find(|b| b.entity_id == name).unwrap();
+            let body = world.bodies.iter().find(|b| b.placement == Some(recipe.placement)).unwrap();
+            // Live Kirin District motions of the same prefab (5 kg turnbuckle
+            // + bound 10 kg speaker): halfs [1.282 1.293 1.667 1.384], centre
+            // 2.230 m below the turnbuckle body.
+            let mut lanes = body.motion.inverse_mass.map(half);
+            lanes[..2].sort_by(f32::total_cmp);
+            assert_eq!(lanes, [1.2822266, 1.2929688, 1.6669922, 1.3837891], "{name}");
+            let offset: f32 = (0..3).map(|i| (body.motion.pose.center[i] - recipe.position[i]).powi(2)).sum::<f32>().sqrt();
+            assert!((offset - 2.230).abs() < 2e-3, "{name}: centre offset {offset}");
+            let delta = body.delta();
+            for r in 0..3 {
+                for c in 0..4 {
+                    let identity = if r == c { 1. } else { 0. };
+                    assert!((delta[r][c] - identity).abs() < 1e-4, "{name}: spawn render delta {delta:?}");
+                }
+            }
+            let transform = body.body_transform();
+            let basis = physworld::quaternion_basis(recipe.orientation);
+            for c in 0..3 {
+                for r in 0..3 {
+                    assert!((transform[c][r] - basis[c][r]).abs() < 1e-5, "{name}: body axes moved");
+                }
+                assert!((transform[3][c] - recipe.position[c]).abs() < 1e-4, "{name}: body origin moved");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+    }
+
+    #[test]
     #[ignore = "requires installed game archives"]
     fn installed_dust_machinery_stays_constrained() {
         let catalog =
@@ -1486,16 +1611,20 @@ mod tests {
         let started = std::time::Instant::now();
         let mut maximum = 0f32;
         let mut limit_violation = 0f32;
-        for _ in 0..600 {
+        // Cables spawn straight and sag under their attached speakers, so the
+        // limits are judged once settled (the last 10 of 40 seconds).
+        for frame in 0..2400 {
             world.step([1. / 60.; 2]);
             maximum = maximum.max(world.maximum_anchor_error());
             for joint in &world.joints {
                 if joint.settings.angular_constraint == "ANGULAR_CONSTRAINT_LIMITED_HINGE" {
                     let angle = joint.previous_limit_angle;
-                    limit_violation = limit_violation.max(
-                        (joint.settings.angular_minimum - angle)
-                            .max(angle - joint.settings.angular_maximum),
-                    );
+                    if frame >= 1800 {
+                        limit_violation = limit_violation.max(
+                            (joint.settings.angular_minimum - angle)
+                                .max(angle - joint.settings.angular_maximum),
+                        );
+                    }
                 }
             }
             assert!(world.bodies.iter().all(|body| body

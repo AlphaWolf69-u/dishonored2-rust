@@ -34,6 +34,17 @@ fn run() -> Result<(), String> {
     let (mut player, resources) = Player::load_installed(&catalog, &language, &movie_path)?;
     let frame_rate = player.state.borrow().frame_rate;
     let size = player.state.borrow().stage_size;
+    // `--debug-set-cvar NAME=VALUE` sets a cvar of the shared console first
+    // (the client's come from the user's config).
+    for w in args.windows(2).filter(|w| w[0] == "--debug-set-cvar") {
+        if let Some((name, value)) = w[1].split_once('=') {
+            dishonored2_rust::platform::console::shared().write(|c| {
+                if let Some(i) = c.cvars.find(name) {
+                    c.cvars.set(i, Some(value), true);
+                }
+            });
+        }
+    }
     let mut pause = None;
     if args.iter().any(|a| a == "--pause-state") {
         // The preview renders at stage size, so the RGB and viewport sizes match.
@@ -72,6 +83,8 @@ fn run() -> Result<(), String> {
             .collect()
     };
     let clicks = at("--debug-click");
+    // `--debug-move X,Y@FRAME` moves the mouse without clicking.
+    let moves = at("--debug-move");
     let notifies = at("--debug-notify");
     let keys = at("--debug-key");
     // `--debug-set PATH=NUMBER@FRAME` sets a movie value (as a user edit would).
@@ -89,6 +102,15 @@ fn run() -> Result<(), String> {
             target.mouse_move(x, y).map_err(|e| target.describe(&e))?;
             target.mouse_button(0, true).map_err(|e| target.describe(&e))?;
             target.mouse_button(0, false).map_err(|e| target.describe(&e))?;
+        }
+        for (_, xy) in moves.iter().filter(|c| c.0 == frame) {
+            let (x, y) = xy.split_once(',').ok_or("--debug-move X,Y@FRAME")?;
+            let (x, y): (f64, f64) = (x.parse().map_err(|_| "move x")?, y.parse().map_err(|_| "move y")?);
+            let target = match pause.as_mut().and_then(|p| p.boxes.global()) {
+                Some(g) => g,
+                None => &mut player,
+            };
+            target.mouse_move(x, y).map_err(|e| target.describe(&e))?;
         }
         for (_, n) in notifies.iter().filter(|c| c.0 == frame) {
             let (name, arg) = n.split_once('=').unwrap_or((n.as_str(), ""));
@@ -187,6 +209,9 @@ fn run() -> Result<(), String> {
         render::stack(&mut list, render::draw_list(&g.vm));
     }
     eprintln!("{} batches, {} vertices", list.batches.len(), list.vertices.len());
+    for l in &list.layers {
+        eprintln!("layer batches {}..{} bounds {:?} filters {:?}", l.first, l.end, l.bounds, l.filters);
+    }
     let (w, h) = (size.0 as u32, size.1 as u32);
     let rgba = raster::rasterize(&list, &images, w, h, [0, 0, 0, 255]);
     let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
