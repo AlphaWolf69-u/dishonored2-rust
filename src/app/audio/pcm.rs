@@ -5,9 +5,9 @@ use std::{io, sync::Arc, time::Duration};
 
 #[derive(Asset, TypePath, Clone)]
 pub(super) struct PcmAudio {
-    samples: Arc<[f32]>,
-    channels: ChannelCount,
-    sample_rate: SampleRate,
+    pub(super) samples: Arc<[f32]>,
+    pub(super) channels: ChannelCount,
+    pub(super) sample_rate: SampleRate,
 }
 
 impl PcmAudio {

@@ -311,8 +311,8 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let audio = decode_wem_pcm(&variant.media)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
         },
-        PlaybackNode::Layer(children) => {
-            println!("{indent}Layer");
+        PlaybackNode::Layer { node, children } => {
+            println!("{indent}Layer {node:#010x}");
             for child in children { print_playback(child, depth + 1)?; }
         },
         PlaybackNode::Container(container) => {

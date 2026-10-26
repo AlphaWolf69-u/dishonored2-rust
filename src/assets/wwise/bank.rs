@@ -54,7 +54,7 @@ pub(super) struct Playlist {
 }
 
 /// Random/sequence playback fields loaded by `FUN_14111aed0`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ContainerPlayback {
     /// Zero loops forever. A zero count also discards the loop modifiers.
     pub loop_count: u16,
@@ -65,6 +65,15 @@ pub struct ContainerPlayback {
     pub transition: TransitionMode,
     pub continuous: bool,
     pub restart_backward: bool,
+}
+
+impl Default for ContainerPlayback {
+    fn default() -> Self {
+        // FUN_141118c30 starts a container with one traversal.
+        Self { loop_count: 1, loop_modifiers: [0; 2], transition_ms: 0.0,
+            transition_modifiers_ms: [0.0; 2], transition: TransitionMode::Disabled,
+            continuous: false, restart_backward: false }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
