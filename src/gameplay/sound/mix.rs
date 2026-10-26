@@ -35,7 +35,7 @@ fn scale(value: f32, scaling: u8) -> f32 {
 
 /// AkInterpolation::InterpolateNoCheck, 1410cd3b0. Constant segments are
 /// handled by the conversion table without calling the interpolation helper.
-fn interpolate(mut t: f32, a: f32, b: f32, mode: u32) -> f32 {
+pub(crate) fn interpolate(mut t: f32, a: f32, b: f32, mode: u32) -> f32 {
     match mode {
         0 => { t = 1.0 - t; t * t * t * (a - b) + b }
         1 => {

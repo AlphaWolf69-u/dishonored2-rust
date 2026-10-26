@@ -123,7 +123,7 @@ impl Definition {
     }
 }
 
-struct Control { gains: Vec<AtomicU32>, stops: Mutex<Vec<u32>> }
+struct Control { gains: Vec<AtomicU32>, stops: Mutex<Vec<(u32, i32, u8)>> }
 
 #[derive(Component, Clone)]
 pub(super) struct Playing {
@@ -132,8 +132,12 @@ pub(super) struct Playing {
     parameter: Option<(u32, f32)>,
 }
 impl Playing {
-    pub fn stop(&self, target: u32) {
-        self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push(target);
+    pub fn stop(&self, target: u32, milliseconds: i32, curve: u8) {
+        // An action can target a parent outside this Play action's subtree.
+        let target = if self.definition.root_properties().nodes.iter().any(|node| node.id == target) {
+            self.definition.nodes[self.definition.root].id
+        } else { target };
+        self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((target, milliseconds, curve));
     }
     pub fn update(&self, mixer: &Mixer) -> Result<(), String> {
         for (sound, gain) in self.definition.sounds.iter().zip(&self.control.gains) {
@@ -157,7 +161,7 @@ enum State {
     Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
     Done,
 }
-struct Runtime { node: usize, state: State }
+struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope> }
 
 impl Runtime {
     fn new(node: usize, now: u64, definition: &Definition) -> Self {
@@ -167,20 +171,48 @@ impl Runtime {
             Kind::Container(container) => State::Container { active: Vec::new(), selection: Selection::default(),
                 loops: Loops::new(&container.playback, random15), next: Some(now), initialized: false, exhausted: false },
         };
-        Self { node, state }
+        Self { node, state, fade: None }
     }
 
-    fn stop(&mut self, target: u32, definition: &Definition) {
-        if definition.nodes[self.node].id == target { self.state = State::Done; return; }
+    fn halt_new(&mut self) {
+        match &mut self.state {
+            State::Container { active, next, exhausted, .. } => {
+                *next = None;
+                *exhausted = true;
+                for child in active { child.halt_new(); }
+            },
+            State::Layer(children) => for child in children { child.halt_new(); },
+            _ => {},
+        }
+    }
+
+    fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, definition: &Definition) {
+        if definition.nodes[self.node].id == target {
+            if milliseconds <= 0 { self.state = State::Done; }
+            else {
+                let gain = self.fade.map_or(1.0, |fade| fade.value(now).unwrap_or(0.0));
+                self.fade = Some(super::fade::Envelope::new(now, super::fade::frames(milliseconds, definition.rate.get()), gain, curve));
+                self.halt_new();
+            }
+            return;
+        }
         match &mut self.state {
             State::Layer(children) | State::Container { active: children, .. } => {
-                for child in children { child.stop(target, definition); }
+                for child in children { child.stop(target, milliseconds, curve, now, definition); }
             },
             _ => {},
         }
     }
 
     fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32]) -> bool {
+        let gain = match self.fade { Some(fade) => match fade.value(now) { Some(gain) => gain, None => return false }, None => 1.0 };
+        let mut local = [0.0; 8];
+        let alive = self.frame_inner(now, audio, &mut local[..output.len()]);
+        for (out, sample) in output.iter_mut().zip(local) { *out += sample * gain; }
+        alive
+    }
+
+    fn frame_inner(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32]) -> bool {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
@@ -262,8 +294,8 @@ impl Iterator for Decoder {
         if self.channel == channels {
             if !self.alive { return None; }
             self.output.fill(0.0);
-            for target in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
-                self.root.stop(target, &self.audio.definition);
+            for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
+                self.root.stop(target, milliseconds, curve, self.frame, &self.audio.definition);
             }
             self.alive = self.root.frame(self.frame, &self.audio, &mut self.output[..channels]);
             self.frame += 1;

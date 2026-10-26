@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
-pub use bank::{ContainerPlayback, CurvePoint, NodeProperties, PropertyRange, RtpcCurve, TransitionMode};
+pub use bank::{ActionTransition, ContainerPlayback, CurvePoint, NodeProperties, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -16,6 +16,38 @@ pub fn declared_event_id(source: &str) -> io::Result<u32> {
 
 pub fn declared_rtpc_id(source: &str) -> io::Result<u32> {
     declared_engine_id(source, "m_engineID")
+}
+
+/// arkDeclSoundRTPC's constructor (1400b4510) initializes all three values
+/// to zero. The declaration supplies partial edits over those defaults.
+#[derive(Clone, Copy, Debug)]
+pub struct RtpcDeclaration {
+    pub id: u32,
+    pub default_value: f32,
+    pub min: f32,
+    pub max: f32,
+}
+
+impl RtpcDeclaration {
+    pub fn parse(source: &str) -> io::Result<Self> {
+        use crate::entities::scene_motion::{atom, child};
+        let fields = crate::entities::parse_declaration(source).map_err(invalid_owned)?;
+        let edit = child(&fields, "edit");
+        let number = |key: &str| -> io::Result<f32> {
+            let value = atom(edit, key).map(|value| value.parse::<f32>()).transpose()
+                .map_err(|error| invalid_owned(format!("invalid sound RTPC {key}: {error}")))?.unwrap_or(0.0);
+            if value.is_finite() { Ok(value) } else { Err(invalid("non-finite sound RTPC value")) }
+        };
+        let declaration = Self { id: declared_rtpc_id(source)?, default_value: number("m_defaultValue")?,
+            min: number("m_minValue")?, max: number("m_maxValue")? };
+        if declaration.min > declaration.max { return Err(invalid("reversed sound RTPC limits")); }
+        Ok(declaration)
+    }
+
+    /// 1400b45c0's ordered comparisons also send NaN inputs to the maximum.
+    pub fn clamp(self, value: f32) -> f32 {
+        if value < self.min { self.min } else if value <= self.max { value } else { self.max }
+    }
 }
 
 fn declared_engine_id(source: &str, member: &str) -> io::Result<u32> {
@@ -345,7 +377,7 @@ pub fn event_media_with(
     package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<MediaGroup>>> {
     Ok(event_commands_with(bank, event, package_media)?.and_then(|commands| commands.into_iter().find_map(|command| {
-        match command { EventCommand::Play { groups, .. } => Some(groups), EventCommand::Stop { .. } => None }
+        match command { EventCommand::Play { groups, .. } => Some(groups), EventCommand::Stop(_) => None }
     })))
 }
 
@@ -393,7 +425,7 @@ pub fn event_commands_with(
         }
     }
     event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
-        PlaybackCommand::Stop { target } => Ok(EventCommand::Stop { target }),
+        PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
         PlaybackCommand::Play { target, node } => Ok(EventCommand::Play { target, groups: flatten(node)? }),
     }).collect()).transpose()
 }
@@ -461,7 +493,7 @@ pub fn event_playback_with(
         if action.len() < 10 { continue; }
         let target = read_u32_slice(action, 6)?;
         if action[5] == 0x01 { // Wwise action type 0x01 is Stop.
-            commands.push(PlaybackCommand::Stop { target });
+            commands.push(PlaybackCommand::Stop(bank::stop_action(action)?));
             continue;
         }
         if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
@@ -475,7 +507,7 @@ pub fn event_playback_with(
 
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
-    Stop { target: u32 },
+    Stop(StopAction),
     Play { target: u32, node: PlaybackNode },
 }
 
@@ -499,7 +531,7 @@ pub struct PlaybackContainer {
 
 #[derive(Clone, Debug)]
 pub enum EventCommand {
-    Stop { target: u32 },
+    Stop(StopAction),
     Play { target: u32, groups: Vec<MediaGroup> },
 }
 
