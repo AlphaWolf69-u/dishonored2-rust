@@ -443,7 +443,7 @@ impl PhysicsScene {
                     }).ok_or("audio entity class name absent")?;
                     let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
                     let index = scene.entities.len();
-                    scene.entities.push(PhysicsEntity { components: EntityComponents::new(index), class,
+                    scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), components: EntityComponents::new(index), class,
                         environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0, priority: 0, pose: binding.frame });
                     entity_indices.insert(binding.entity_id.clone(), index);
                     index
