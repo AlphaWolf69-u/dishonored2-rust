@@ -84,6 +84,7 @@ impl Activity {
 impl Registration {
     pub fn start(&self) -> Token {
         let mut edges = self.owner.edges.lock().unwrap_or_else(|error| error.into_inner());
+        let begin = edges.len();
         let mut current = self.first;
         while let Some(index) = current {
             let bus = &self.owner.buses[index];
@@ -91,12 +92,16 @@ impl Registration {
             if bus.ducker && previous == 0 { edges.push((bus.id, true)); }
             current = bus.parent;
         }
+        // 14111efc0 updates the local count, recurses into the parent, then
+        // changes its own ducking state. Callbacks therefore run root first.
+        edges[begin..].reverse();
         Token { registration: self.clone() }
     }
 }
 impl Drop for Token {
     fn drop(&mut self) {
         let mut edges = self.registration.owner.edges.lock().unwrap_or_else(|error| error.into_inner());
+        let begin = edges.len();
         let mut current = self.registration.first;
         while let Some(index) = current {
             let bus = &self.registration.owner.buses[index];
@@ -104,5 +109,6 @@ impl Drop for Token {
             if bus.ducker && previous == 1 { edges.push((bus.id, false)); }
             current = bus.parent;
         }
+        edges[begin..].reverse(); // 14111d960 uses the same callback order.
     }
 }

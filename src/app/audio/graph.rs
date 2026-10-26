@@ -44,7 +44,7 @@ impl Definition {
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
-            PlaybackNode::Sound { variant, .. } => mixer.source_ducks(&variant.properties),
+            PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
             PlaybackNode::Layer { children, .. } => {
                 for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
                 Ok(false)
@@ -99,6 +99,11 @@ impl Definition {
                 PlaybackNode::Container(container) => {
                     if container.playback.continuous {
                         if matches!(container.playback.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                            // 1411287f0 -> 141104670 -> 141104ba0 -> 14112f640:
+                            // pitch-adjusted source duration schedules the next
+                            // leaf through 14112f0a0's continuation stack. This
+                            // requires leaf-duration callbacks, not end-of-tree
+                            // fades; 14111c850 starts both transition envelopes.
                             return Err(invalid("continuous Wwise crossfades require voice envelopes"));
                         }
                     }
