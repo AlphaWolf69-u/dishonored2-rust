@@ -157,27 +157,7 @@ impl ScreenDistortionMaterial {
         let images = IMAGES
             .map(|name| -> Result<_, String> {
                 let source = scopes.image_source(name)?;
-                let path = crate::material::image_load_resource(catalog, &source)
-                    .ok_or_else(|| format!("screen effect image unresolved: {source}"))?;
-                if let Some(payload) = crate::material::intrinsic_image_pixels(&path) {
-                    let mut packed_format = 0x54a;
-                    crate::texture::normalize_image_format(&mut packed_format)?;
-                    return Ok(Arc::new(crate::texture::InlineCompressedChain {
-                        info: crate::texture::BimageInfo {
-                            width: 16,
-                            height: 16,
-                            mip_count: 1,
-                            packed_format,
-                            format: crate::texture::ImageFormat::Rgba8,
-                        },
-                        payload,
-                    }));
-                }
-                let bytes = catalog
-                    .read(&path)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("screen effect image absent: {path}"))?;
-                Ok(Arc::new(crate::texture::compressed_inline_chain(&bytes)?))
+                crate::material::load_2d_image(catalog, &source).map(Arc::new)
             })
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?

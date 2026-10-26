@@ -177,6 +177,33 @@ fn unpack_bc5_normal_map(xy: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(xy, 1.001 - clamp(dot(xy, xy), 0.0, 1.0)));
 }
 
+// LQ_FetchMasks layer zero. Decals use this before their alpha-depth return,
+// without the HQ normal/gloss fetches or gloss-in-alpha conversion.
+fn decal_diffuse(uv0:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> {
+    let uv=scaled_uv(select(uv0,uv1,surface.uv_sets[0].x!=0u),surface.uv[0]);
+    var colour=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv));
+    if (compiled_misc.w&1u)!=0u && colour.a<0.5 {discard;}
+    let info=surface.mask_settings[0];
+    if info.z!=0u {
+        var mask=vertex_color[info.y];
+        if (compiled_misc.w&1024u)!=0u && info.x!=1u {
+            mask=1.0;
+        } else if info.x!=0u {
+            let mask_uv=scaled_uv(select(uv0,uv1,surface.uv_sets[0].y!=0u),surface.mask_uv[0]);
+            let raw=textureSampleGrad(mask0,surface_sampler,mask_uv,dpdx(mask_uv),dpdy(mask_uv)).r;
+            mask=raw;
+            if info.x!=1u {
+                mask=clamp((raw*vertex_color[info.y]-surface.mask_range[0].x)
+                    /(surface.mask_range[0].y-surface.mask_range[0].x),0.0,1.0);
+            }
+        }
+        if info.w!=0u {mask=1.0-mask;}
+        colour*=mix(vec4(1.0),surface.colors[0],mask);
+    }
+    if compiled_misc.y!=0u {colour*=vertex_color;}
+    return colour;
+}
+
 fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> SurfaceResult {
     let dx0 = dpdx(uv0);
     let dy0 = dpdy(uv0);
@@ -201,7 +228,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         let mask_uv = select(uv0, uv1, surface.uv_sets[i].y != 0u);
         let mask_dx = select(dx0, dx1, surface.uv_sets[i].y != 0u);
         let mask_dy = select(dy0, dy1, surface.uv_sets[i].y != 0u);
-        if i != 0u || info.z != 0u {
+        if !is_decal && (i != 0u || info.z != 0u) {
             let channel = vertex_color[info.y];
             if info.x == 0u {
                 masks[i] = channel;
@@ -224,7 +251,8 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         let ux = dx * surface.uv[i].xy;
         let uy = dy * surface.uv[i].xy;
         let reuse = surface.reuse[i];
-        if i != 0u && reuse.x != 0u { diffuse[i] = diffuse[reuse.x - 1u]; }
+        if is_decal { diffuse[i] = decal_diffuse(uv0,uv1,vertex_color); }
+        else if i != 0u && reuse.x != 0u { diffuse[i] = diffuse[reuse.x - 1u]; }
         else { diffuse[i] = sample_role(i, u, ux, uy); }
         // Native forward clipping happens at diffuse0, before normal/gloss
         // fetches and additional-layer composition.
@@ -264,7 +292,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     var out: SurfaceResult;
     out.albedo = diffuse[0];
     // arkVegetation samples diffuse0 directly; vertex RGB belongs to wind.
-    if !is_vegetation && surface.mask_settings[0].z != 0u {
+    if !is_decal && !is_vegetation && surface.mask_settings[0].z != 0u {
         out.albedo *= mix(vec4<f32>(1.0), surface.colors[0], masks[0]);
     }
     var g = gloss[0];
@@ -279,7 +307,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         // Layer1 bump reuse likewise skips interpolation of identical input.
         if i != 1u || surface.reuse[i].y == 0u { out.normal_xy = mix(out.normal_xy, bump[i], masks[i]); }
     }
-    if !is_vegetation && compiled_misc.y != 0u { out.albedo *= vertex_color; }
+    if !is_decal && !is_vegetation && compiled_misc.y != 0u { out.albedo *= vertex_color; }
     let base_uv=select(uv0,uv1,surface.uv_sets[0].x!=0u);
     let base_dx=select(dx0,dx1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;
     let base_dy=select(dy0,dy1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;

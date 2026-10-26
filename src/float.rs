@@ -2,6 +2,22 @@
 // ADDSS preserves its first operand's NaN payload. Rust may commute ordinary
 // addition, so retain stored NaN words explicitly instead of doing arithmetic
 // on them (which can also canonicalize the sign of a single NaN).
+/// Truncated half conversion shared by 2fa690's spectrum upload and 1ee880's
+/// particle instance data. Tiny values become positive zero; overflow saturates
+/// to the signed largest finite half instead of producing an IEEE infinity.
+pub(crate) fn pack_half_truncated(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 255) as i32 - 112;
+    if exponent <= 0 {
+        0
+    } else if exponent > 30 {
+        sign | 0x7bff
+    } else {
+        sign | ((exponent as u16) << 10) | ((bits & 0x7fffff) >> 13) as u16
+    }
+}
+
 /// CVTTSS2SI's signed conversion, including integer-indefinite on invalid input.
 pub(crate) fn truncate_i32(value: f32) -> i32 {
     if value >= -2147483648.0 && value < 2147483648.0 {

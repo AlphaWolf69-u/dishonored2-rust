@@ -15,7 +15,7 @@ pub struct TriggerShapeAsset {
     pub header: physworld::shape::ShapeHeader,
     pub bounds: [[f32; 4]; 2],
     pub is_mutable: bool,
-    pub query_shapes: physworld::query_geometry::QueryShapes,
+    pub query_shapes: std::sync::Arc<physworld::query_geometry::QueryShapes>,
     pub(crate) signals: crate::gameplay::shape_registry::ShapeSignals,
 }
 
@@ -159,7 +159,7 @@ impl TriggerAssets {
                         header,
                         bounds,
                         is_mutable,
-                        query_shapes,
+                        query_shapes: std::sync::Arc::new(query_shapes),
                         signals: Default::default(),
                     });
                     indices.insert(path, index);

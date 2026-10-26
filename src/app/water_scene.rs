@@ -268,15 +268,19 @@ pub(super) fn publish_water_frame(
     mut last_error: Local<Option<String>>,
     player:Res<super::player::PlayerState>,
     screen_effects:Res<crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials>,
+    mut queries: ResMut<crate::rendering::bevy_backend::physics_queries::PhysicsQueryFrame>,
+    mut query_error: Local<Option<String>>,
 ) {
     let Some(water) = water.as_mut() else {
         output.0 = None;
+        queries.0 = None;
         return;
     };
     if !clock.advanced() {
         return;
     }
     output.0 = None;
+    queries.0 = None;
     selection.0=None;
     let result = (|| -> Result<WaterFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
@@ -367,6 +371,24 @@ pub(super) fn publish_water_frame(
     })();
     match result {
         Ok(frame) => {
+            if let Some(physics) = physics.as_ref() {
+                match physics.query_snapshot() {
+                    Ok(world) => {
+                        queries.0 = Some(Arc::new(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
+                            camera: frame.camera,
+                            frame: frame.matrices.frame,
+                            world,
+                        }));
+                        *query_error = None;
+                    }
+                    Err(error) => {
+                        if query_error.as_ref() != Some(&error) {
+                            warn!("Physics query publication pending: {error}");
+                            *query_error = Some(error);
+                        }
+                    }
+                }
+            }
             output.0 = Some(frame);
             *last_error = None;
         }

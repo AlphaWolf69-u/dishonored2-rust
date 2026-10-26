@@ -1,5 +1,6 @@
 pub mod game_clock;
 pub mod effects;
+pub mod particles;
 pub mod sound;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
@@ -19,6 +20,7 @@ pub mod constraint_solver;
 pub mod rigid_body;
 pub mod aerodynamics;
 pub mod point_query;
+pub mod ray_query;
 pub mod broadphase;
 pub mod bit_field;
 pub mod collision_queries;
@@ -55,7 +57,9 @@ pub mod collision_settings;
 pub mod space_cells;
 pub mod closest_point_query;
 pub mod shape_point_query;
+pub mod shape_ray_query;
 pub mod world_point_query;
+pub mod world_ray_query;
 pub mod constraint_links;
 pub mod trigger_body;
 pub mod water_component;

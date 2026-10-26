@@ -18,6 +18,16 @@ pub struct QuadDefinition {
 pub struct GroupDefinition {
     pub timing: EffectTimingRanges,
     pub quads: Vec<QuadDefinition>,
+    /// Particle readiness is independent of screen-distortion readiness.
+    /// Retain descriptor errors for the particle owner without disabling quads.
+    pub particles: Vec<Result<ParticleDefinition, String>>,
+}
+#[derive(Clone)]
+pub struct ParticleDefinition {
+    pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
+    pub declarations:
+        Vec<Option<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>>,
+    pub materials: HashMap<String, Arc<crate::rendering::particles::material::ParticleMaterial>>,
 }
 pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
@@ -28,6 +38,7 @@ pub struct ScreenEffectSources {
     pub leave_water: EffectDefinition,
     pub materials: Vec<ScreenDistortionMaterial>,
     pub resolve_state: crate::render_state::RenderState,
+    pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
 }
 impl ScreenEffectSources {
     pub fn load(
@@ -47,6 +58,7 @@ impl ScreenEffectSources {
         let leave_water = atom(swimming, "m_leaveWaterFX").ok_or("player leave-water FX absent")?;
         let mut materials = Vec::new();
         let mut indices = HashMap::<String, usize>::new();
+        let mut particle_materials = HashMap::new();
         let mut load = |effect: &str| -> Result<EffectDefinition, String> {
             let mut read = |p: &str| catalog.read(p).ok().flatten();
             let fields = read_edit(&mut read, "fx", effect)?;
@@ -104,6 +116,56 @@ impl ScreenEffectSources {
                 groups.push(GroupDefinition {
                     timing: common.timings,
                     quads,
+                    particles: scope(fields, "m_particleSystems")
+                        .into_iter()
+                        .flat_map(list_items)
+                        .filter(|value| match value {
+                            crate::entities::Value::Scope(fields) => {
+                                atom(fields, "m_enabled") != Some("false")
+                            }
+                            _ => true,
+                        })
+                        .map(|value| match value {
+                            crate::entities::Value::Scope(fields) => {
+                                let owner =
+                                    crate::assets::fx::particle_system::particle_system(fields)?;
+                                let declarations = owner
+                                    .declarations
+                                    .iter()
+                                    .map(|path| {
+                                        let Some(path) = path else { return Ok(None) };
+                                        let mut read = |p: &str| catalog.read(p).ok().flatten();
+                                        let fields = read_edit(&mut read, "particledt", path)?;
+                                        crate::assets::fx::particle_declaration::declaration(
+                                            &fields,
+                                        )
+                                        .map(|declaration| Some(Arc::new(declaration)))
+                                        .map_err(|error| format!("{path}: {error}"))
+                                    })
+                                    .collect::<Result<Vec<_>, String>>()?;
+                                let mut materials = HashMap::new();
+                                for declaration in declarations.iter().flatten() {
+                                    for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                                        for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
+                                            let Some(name) = &sprite.material else { continue };
+                                            if !particle_materials.contains_key(name) {
+                                                particle_materials.insert(name.clone(), Arc::new(
+                                                    crate::rendering::particles::material::ParticleMaterial::load(
+                                                        catalog, library, name)?));
+                                            }
+                                            materials.insert(name.clone(), particle_materials[name].clone());
+                                        }
+                                    }
+                                }
+                                Ok(ParticleDefinition {
+                                    owner: Arc::new(owner),
+                                    declarations,
+                                    materials,
+                                })
+                            }
+                            _ => Err("particle FX descriptor requires a scope".into()),
+                        })
+                        .collect(),
                 });
             }
             Ok(EffectDefinition { groups })
@@ -125,12 +187,22 @@ impl ScreenEffectSources {
         )?;
         // 326930's full-screen overwrite, distinct from the material's blend.
         resolve_state[0] = (resolve_state[0] & 0xffe0_0803) | 0x802;
+        let transparency_resolve_state = library
+            .definition(b"PostFX_CompositeWeightedBlendedOIT")
+            .and_then(|definition| {
+                definition
+                    .map(|d| d.render_state())
+                    .ok_or_else(|| "weighted transparency resolve definition absent".into())
+            });
         Ok(Self {
-            swimming:crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
+            swimming: crate::gameplay::player::swimming::SwimmingSettings::read(
+                &declarations.controller,
+            )?,
             underwater,
             leave_water,
             materials,
             resolve_state,
+            transparency_resolve_state,
         })
     }
 }

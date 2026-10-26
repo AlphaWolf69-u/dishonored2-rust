@@ -27,6 +27,16 @@ pub struct ReferenceFrame {
     pub basis: [[f32; 3]; 3],
 }
 
+///10e9e0 selects the installed normal-axis row bases; other enum values use
+///the Z/identity basis. These are exact permutations, not trigonometric turns.
+pub const fn normal_axis_basis(axis: i32) -> [[f32; 3]; 3] {
+    match axis {
+        0 => [[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]],
+        1 => [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]],
+        _ => [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+    }
+}
+
 /// The 21 published words shared by an entity and its reference-frame actor.
 /// Prediction caches and completion markers stay with the actor alone.
 #[derive(Clone, Copy, Debug)]
@@ -257,6 +267,66 @@ pub fn quaternion_basis(q: [f32; 4]) -> [[f32; 3]; 3] {
             add(wx, multiply(y, z2)),
             subtract(1., add(multiply(y, y2), xx)),
         ],
+    ]
+}
+
+/// 10e5e0 forms a binding quaternion from the supplied axis and half-angle,
+/// then uses 111410. The axis is already prepared by its owner; it is not
+/// normalized here. This is separate from Havok's SIMD rotation approximation.
+pub fn axis_angle_basis(axis: [f32; 3], angle: f32) -> [[f32; 3]; 3] {
+    let half = multiply(angle, 0.5);
+    let sine = (half as f64).sin() as f32;
+    let cosine = (half as f64).cos() as f32;
+    quaternion_basis([
+        multiply(sine, axis[0]),
+        multiply(sine, axis[1]),
+        multiply(sine, axis[2]),
+        cosine,
+    ])
+}
+
+/// 110c70 uses shortest-arc normalized linear interpolation. Its endpoint
+/// branches copy stored quaternions directly, without normalizing them.
+pub fn interpolate_quaternion(first: [f32; 4], second: [f32; 4], mut fraction: f32) -> [f32; 4] {
+    if fraction <= 0. {
+        return first;
+    }
+    if !(fraction < 1.) || first == second {
+        return second;
+    }
+    let inverse = subtract(1., fraction);
+    let dot = add(
+        add(
+            add(multiply(second[0], first[0]), multiply(second[1], first[1])),
+            multiply(first[2], second[2]),
+        ),
+        multiply(first[3], second[3]),
+    );
+    if dot < 0. {
+        fraction = f32::from_bits(fraction.to_bits() ^ 0x8000_0000);
+    }
+    let value = [
+        add(multiply(second[0], fraction), multiply(first[0], inverse)),
+        add(multiply(fraction, second[1]), multiply(inverse, first[1])),
+        add(multiply(fraction, second[2]), multiply(inverse, first[2])),
+        add(multiply(inverse, first[3]), multiply(fraction, second[3])),
+    ];
+    let mut squared = add(
+        add(
+            add(multiply(value[0], value[0]), multiply(value[1], value[1])),
+            multiply(value[2], value[2]),
+        ),
+        multiply(value[3], value[3]),
+    );
+    if squared <= f32::MIN_POSITIVE {
+        squared = f32::MIN_POSITIVE;
+    }
+    let scale = divide(1., squared.sqrt());
+    [
+        multiply(value[0], scale),
+        multiply(value[1], scale),
+        multiply(value[2], scale),
+        multiply(scale, value[3]),
     ]
 }
 
