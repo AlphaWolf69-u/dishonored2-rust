@@ -121,6 +121,7 @@ pub struct ParticleDraw {
     pub material: Arc<ParticleMaterial>,
     /// The selected colour-pass state, after the owning cache's overrides.
     pub state: crate::render_state::RenderState,
+    pub stencil_reference: u32,
     pub grid_level: u32,
     pub instances: Vec<SpriteInstance>,
     pub clip_plane: Vec4,
@@ -491,6 +492,13 @@ impl ParticlePass {
         );
         let blend = crate::render_state::blend_state(&state).targets[0]
             .ok_or("particle colour target absent")?;
+        let depth = crate::render_state::depth_stencil_state(&state);
+        if depth.depth_write {
+            return Err("particle alpha colour state must disable depth writes".into());
+        }
+        if depth.stencil_enabled && !self.depth_format.has_stencil_aspect() {
+            return Err("particle alpha colour state requires the gameplay stencil attachment".into());
+        }
         let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("particle sprite colour"),
@@ -720,11 +728,11 @@ impl ParticlePass {
             })],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: input.depth,
-                depth_ops: Some(Operations {
+                depth_ops: None,
+                stencil_ops: self.depth_format.has_stencil_aspect().then_some(Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
                 }),
-                stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -736,6 +744,7 @@ impl ParticlePass {
             let level = draw.grid_level.min(5) as usize;
             let material = &self.materials[&(draw.material.name.clone(), draw.state)];
             pass.set_pipeline(&material.pipeline);
+            pass.set_stencil_reference(draw.stencil_reference);
             pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[level], &[]);
             pass.set_bind_group(1, &material.binding, &[]);
             pass.set_index_buffer(*self.grids[level].indices.slice(..), IndexFormat::Uint16);

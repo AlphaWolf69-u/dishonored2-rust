@@ -3998,6 +3998,33 @@ pub fn clear_flags(flags: &mut u32, mask: u32) {
     }
 }
 
+/// 1fddc0 selects particle water predicates from the declaration and current
+/// view. Reuse the ordinary model flag helpers, including their dirty bit.
+pub fn update_particle_water_flags(
+    flags: &mut u32,
+    underwater: bool,
+    handle_seen_from_underwater: bool,
+    view_underwater: bool,
+) {
+    if underwater {
+        request_flags(flags, 2);
+    } else {
+        clear_flags(flags, 2);
+        if handle_seen_from_underwater {
+            request_flags(flags, 4);
+            clear_flags(flags, 8);
+            return;
+        }
+        if view_underwater {
+            clear_flags(flags, 4);
+            request_flags(flags, 8);
+            return;
+        }
+    }
+    clear_flags(flags, 4);
+    clear_flags(flags, 8);
+}
+
 /// FUN_14031d0f0: preserve the native multiplication order and NaN propagation.
 pub fn distance_fade(start: f32, end: f32, value: f32) -> f32 {
     let t = ((value - start) / (end - start)).clamp(0.0, 1.0);

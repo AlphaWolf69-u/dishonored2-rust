@@ -29,6 +29,7 @@ pub(super) struct PlayingParticle {
     /// 1fa780 initializes system+1d50 to zero. Player FX publication changes
     /// rate/colour/pose, but supplies no external source-velocity producer.
     pub source_velocity: [f32; 3],
+    pub water_flags: u32,
     simulated_frame: Option<u32>,
 }
 impl PlayingParticle {
@@ -93,6 +94,7 @@ impl PlayingParticle {
             publication: None,
             clipping: None,
             source_velocity: [0.; 3],
+            water_flags: 0,
             simulated_frame: None,
         }))
     }
@@ -117,6 +119,7 @@ impl PlayingParticle {
         camera: ReferenceFrame,
         screen_offset: f32,
         delta: f32,
+        view_underwater: bool,
         seed: &mut u32,
     ) -> Result<(), String> {
         self.publication = self.effect.update(
@@ -133,6 +136,14 @@ impl PlayingParticle {
             self.finished(),
             seed,
         )?;
+        if let Some(stage) = self.stages.first() {
+            crate::render_model::update_particle_water_flags(
+                &mut self.water_flags,
+                stage.declaration.underwater,
+                stage.declaration.handle_seen_from_underwater,
+                view_underwater,
+            );
+        }
         Ok(())
     }
 

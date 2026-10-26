@@ -165,7 +165,7 @@ impl ScreenEffectState {
                     .float("pm_screenParticleOffset")
                     .ok_or("pm_screenParticleOffset is not registered")?;
                 for particle in &mut self.particles {
-                    particle.update(self.age, camera, offset, delta, &mut self.seed)?;
+                    particle.update(self.age, camera, offset, delta, underwater, &mut self.seed)?;
                 }
             }
             self.frame = Some(frame);
