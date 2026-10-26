@@ -22,6 +22,7 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub view: &'a crate::rendering::particles::SpriteView,
     pub camera: crate::rendering::particles::view::ParticleCamera,
     pub view_z: [f32; 4],
+    pub probes: Option<&'a crate::probe_lighting::ProbeLightingSet>,
     pub query_visibility: f32,
     pub alpha_scale: f32,
     pub cvars: &'a crate::platform::cvars::CVars,
@@ -47,6 +48,7 @@ pub(crate) struct ParticleSystem {
     visibility: crate::rendering::particles::visibility::ParticleVisibilityState,
     force_simulate: bool,
     force_visible: bool,
+    probe_query: crate::probe_lighting::ProbeQuery,
 }
 impl ParticleSystem {
     pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
@@ -61,7 +63,7 @@ impl ParticleSystem {
     }
 
     pub fn publish_draws(
-        &self,
+        &mut self,
         frame: u32,
         context: ParticleDrawContext<'_>,
         output: &mut Vec<super::particle_pass::ParticleDraw>,
@@ -122,6 +124,27 @@ impl ParticleSystem {
             )
         })
         .unwrap_or_default();
+        // Particle root+1c40 defaults to zero in1fcaa0. Its virtual+88
+        // (1fc4c0) then samples the emitter origin, not the live bounds centre.
+        // 2b3dc0 ->385f20 ->385da0 uses the shared cached Voronoi query.
+        let needs_lighting = self
+            .materials
+            .values()
+            .try_fold(false, |needed, material| {
+                Ok::<_, String>(needed || material.option("fx/opt/use_lighting")? != 0)
+            })?;
+        let lighting = if needs_lighting {
+            Some(
+                context
+                    .probes
+                    .ok_or("particle probe network is unavailable")?
+                    .interpolate_query_sh(publication.pose.position, &mut self.probe_query)
+                    .ok_or("particle origin has no authored probe tetrahedron")?
+                    .object_shader_record(),
+            )
+        } else {
+            None
+        };
         let view = crate::rendering::particles::SpriteView {
             camera_position: context.camera.position,
             camera_axes: context.camera.axes,
@@ -178,6 +201,7 @@ impl ParticleSystem {
                 );
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
+                    lighting,
                     transparency,
                     state,
                     stencil_reference,
@@ -261,6 +285,7 @@ impl ParticleSystem {
             visibility: Default::default(),
             force_simulate,
             force_visible,
+            probe_query: Default::default(),
         })
     }
 

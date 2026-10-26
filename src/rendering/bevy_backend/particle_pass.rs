@@ -173,6 +173,8 @@ impl MaterialParameters {
 
 pub struct ParticleDraw {
     pub material: Arc<ParticleMaterial>,
+    /// Shared per-object SH/IBL record selected at the particle root's origin.
+    pub lighting: Option<[[f32; 4]; 9]>,
     /// The selected colour-pass state, after the owning cache's overrides.
     pub state: crate::render_state::RenderState,
     pub stencil_reference: u32,

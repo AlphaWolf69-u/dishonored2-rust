@@ -115,6 +115,7 @@ pub(super) fn register(app: &mut App) {
 /// Submit the shared FX controller's live sprites into the gameplay HDR target,
 /// after atmosphere/depth preparation and before ordinary transparency.
 fn render_particles(
+    queries: Res<super::particle_systems::ParticleQueryFrame>,
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
@@ -199,6 +200,10 @@ fn render_particles(
             .publish_draws(water.matrices.frame, |pose| {
                 Ok(super::screen_effects::ParticleDrawContext {
                     view: &sprite_view,
+                    probes: queries.0.as_ref()
+                        .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
+                        .ok_or("particle lighting awaits the current scene publication")?
+                        .probes.as_deref(),
                     // This backend publishes a single logical gameplay origin.
                     // Both view origins coincide for this supported view path.
                     camera: crate::rendering::particles::view::ParticleCamera::select(

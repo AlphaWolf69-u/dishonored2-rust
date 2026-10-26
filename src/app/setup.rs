@@ -210,7 +210,7 @@ pub(super) fn setup(
     // are appended after them. World geometry uses its PNW instance offset.
     let mut records = scene
         .environment_probes
-        .as_ref()
+        .as_deref()
         .map(|set| {
             set.probes
                 .iter()
@@ -231,7 +231,7 @@ pub(super) fn setup(
     }
     let words = scene
         .environment_probes
-        .as_ref()
+        .as_deref()
         .map(probe_lighting::ProbeLightingSet::vertex_shader_words)
         .unwrap_or_else(|| vec![0u32; 8]);
     let bytes = words.len() as u64 * 4;
@@ -301,13 +301,13 @@ pub(super) fn setup(
     let loaded_reflections =
         super::environment_reflection::load(
             catalog,
-            scene.environment_probes.as_ref(),
+            scene.environment_probes.as_deref(),
             &mut images,
             &mut probe_sh_buffers,
         )
         .expect("installed environment reflections");
     let water_probes = loaded_reflections.water_probes(
-        scene.environment_probes.as_ref(),
+        scene.environment_probes.as_deref(),
         vertex_probe_buffer.clone(),
         &mut probe_sh_buffers,
     );
@@ -339,7 +339,7 @@ pub(super) fn setup(
         local_shadow_buffer,
         shadow_map,
         probe_sh_records: records,
-        probes: scene.environment_probes.as_ref(),
+        probes: scene.environment_probes.as_deref(),
         cache: default(),
         shadow_materials: ShadowMaterials::default(),
         vegetation,

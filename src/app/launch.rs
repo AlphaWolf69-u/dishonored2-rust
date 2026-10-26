@@ -801,7 +801,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             area_environments,
             area_fog,
             rewrite_shadow_settings,
-            environment_probes,
+            environment_probes: environment_probes.map(std::sync::Arc::new),
             shadow_quality_preset,
             shadow_quality,
             shadow_target_dimensions,

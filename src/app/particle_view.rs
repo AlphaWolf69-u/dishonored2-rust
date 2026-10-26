@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 pub(super) fn publish(
     scene: Res<super::SceneRenderQueue>,
+    data: Res<super::SceneData>,
     water: Res<WaterSceneFrame>,
     mut output: ResMut<ParticleQueryFrame>,
     world_wind: Res<super::fog_scene::WorldWind>,
@@ -36,6 +37,7 @@ pub(super) fn publish(
                 camera: water.camera,
                 frame: water.matrices.frame,
                 wind: snapshot,
+                probes: data.environment_probes.clone(),
                 state: scene
                     .shadow_ordinary_query
                     .as_ref()

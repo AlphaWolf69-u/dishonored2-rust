@@ -15,6 +15,7 @@ pub(crate) struct ParticleQueryPublication {
     pub frame: u32,
     pub state: Option<crate::tome::RenderQueryState>,
     pub wind: crate::gameplay::wind::WindSnapshot,
+    pub probes: Option<Arc<crate::probe_lighting::ProbeLightingSet>>,
 }
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub(crate) struct ParticleQueryFrame(pub Option<Arc<ParticleQueryPublication>>);
@@ -126,12 +127,12 @@ impl ParticleSystems {
         (instances, draws)
     }
     pub fn publish_draws<'a>(
-        &self,
+        &mut self,
         frame: u32,
         mut context: impl FnMut(ReferenceFrame) -> Result<ParticleDrawContext<'a>, String>,
     ) -> Result<Vec<ParticleDraw>, String> {
         let mut draws = Vec::new();
-        for system in self.slots.iter().flatten() {
+        for system in self.slots.iter_mut().flatten() {
             if let Some(pose) = system.draw_pose(frame) {
                 system.publish_draws(frame, context(pose)?, &mut draws)?;
             }
