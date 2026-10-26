@@ -1,7 +1,8 @@
 #define_import_path bevy_pbr::lighting
 
 #ifdef DH2_SURFACE_ENABLED
-#import dh2_direct::{WardSurface,WardLight,ward_direct,skin_direct,skin_light_diffuse}
+#import dh2_ward::{WardSurface,WardLight,ward_direct}
+#import dh2_direct::{skin_direct,skin_light_diffuse}
 #endif
 
 #import bevy_pbr::{

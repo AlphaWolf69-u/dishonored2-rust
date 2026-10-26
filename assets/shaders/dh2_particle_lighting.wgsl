@@ -20,6 +20,7 @@ fn particle_lq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec
 @group(3) @binding(130) var<storage,read> particle_light_pool:array<u32>;
 @group(3) @binding(131) var<storage,read> particle_light_heads:array<u32>;
 @group(3) @binding(132) var<storage,read> particle_light_shadows:array<ShadowInfo>;
+@group(3) @binding(133) var particle_area_pool:texture_2d_array<f32>;
 
 fn particle_hl2_basis(tangent:vec3<f32>,bitangent:vec3<f32>,normal:vec3<f32>)->mat3x3<f32> {
     return mat3x3(sqrt(2.0/3.0)*tangent+sqrt(1.0/3.0)*normal,
@@ -37,7 +38,7 @@ fn particle_parallel_shadow(position:vec3<f32>)->f32 {
         i32(slice),shadow_depth_reference(coordinates.z));
 }
 fn particle_local_shadow(record:TiledLightRecord,kind:u32,position:vec3<f32>,normal:vec3<f32>,
-    to_light:vec3<f32>,attenuation:f32)->f32 {
+    to_light:vec3<f32>,attenuation:f32,quality:i32)->f32 {
     if record.shadow_setup==0xffffffffu {return 1.0;}
     if attenuation<=0.0 && record.scatter_value<=0.0 {return 0.0;}
     var side=0u;
@@ -53,7 +54,7 @@ fn particle_local_shadow(record:TiledLightRecord,kind:u32,position:vec3<f32>,nor
     let coordinates=shadow_offset(shadow.world_to_shadow,position,normal,light_direction,false,
         (flags&1u)!=0u,(flags&2u)!=0u,(flags&4u)!=0u,(flags&8u)!=0u,bias.y,bias.x,bias.z);
     return sample_local_shadow(local_depth,local_comparison,coordinates,shadow_slice(shadow.info),
-        local_vector(4u).xy,0,i32(particle_material.shadow_options.y)-1);
+        local_vector(4u).xy,quality,i32(particle_material.shadow_options.y)-1);
 }
 fn particle_vertex_lights(position:vec3<f32>,normal:vec3<f32>,basis:mat3x3<f32>,clip:vec4<f32>)->mat3x3<f32> {
     let sunlight=particle_view.sun_colour.rgb*particle_parallel_shadow(position);
@@ -81,11 +82,78 @@ fn particle_vertex_lights(position:vec3<f32>,normal:vec3<f32>,basis:mat3x3<f32>,
                 if angle<=0.0 {attenuation=0.0;}
                 else {attenuation*=1.0-shadow_saturate(angle*record.spot.x+record.spot.y);}
             }
-            let visibility=particle_local_shadow(record,kind,position,normal,to_light,attenuation);
+            let visibility=particle_local_shadow(record,kind,position,normal,to_light,attenuation,0);
             let colour=record.color*visibility*attenuation;
             let w=particle_basis_weights(basis,to_light);
             colours+=mat3x3(colour*w.x,colour*w.y,colour*w.z);
         }
     }
     return colours;
+}
+
+fn particle_hq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec3<f32>,
+    roughness:f32,f0:vec3<f32>,cube:f32,gain:f32)->vec3<f32> {
+    let light=normalize(mix(reflect(-view_direction,normal),normal,roughness));
+    let aperture=0.0003474660443456835+roughness*(1.3331290497744692-roughness*0.5040552688878546);
+    let mip=6.0*sqrt(aperture/0.834);
+    let count=reflection_planes[0];
+    let index=select(count-1u,u32(max(0.0,cube)),cube>=0.0 && cube<f32(count));
+    let brdf=integrated_ward(shadow_saturate(dot(view_direction,normal)),roughness);
+    let bounce=mix(gain,1.0,dot(vec3(0.2126,0.7152,0.0722),f0));
+    return reflection_radiance(position,light,index,mip)*bounce*(f0*brdf.x+brdf.y*(1.0-roughness*roughness));
+}
+fn particle_pixel_ward(surface:WardSurface,light:WardLight)->DirectLighting {
+    if particle_material.pixel_options.x!=0u {
+        let lookup=textureSampleLevel(particle_diffuse_lookup,linear_clamp,
+            vec2(shadow_saturate(dot(light.direction,surface.normal)),0.0),0.0).rgb;
+        return ward_direct_lookup(surface,light,lookup);
+    }
+    return ward_direct(surface,light);
+}
+fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal:vec3<f32>,pixel:vec4<f32>)->DirectLighting {
+    // Reconstruct wsPositionHacked from the actual projected fragment, as
+    // particles::Lighting does before IntegrateLighting(HIGH_QUALITY).
+    let ndc=vec2(2.0*pixel.x/particle_view.exposure_extent.z-1.0,
+        1.0-2.0*pixel.y/particle_view.exposure_extent.w);
+    let homogeneous=particle_view.game_world_from_clip*vec4(ndc,pixel.z,1.0);
+    let hacked=homogeneous.xyz/homogeneous.w;
+    let host_hacked=vec3(hacked.x,hacked.z,-hacked.y);
+    let host_normal=vec3(geometric_normal.x,geometric_normal.z,-geometric_normal.y);
+    let route=vec4(particle_material.shadow_options.z,particle_material.shadow_options.x,
+        particle_material.shadow_options.y,2u);
+    let directional=parallel_depth_visibility(host_hacked,host_normal,pixel.xy,route);
+    var result=particle_pixel_ward(surface,WardLight(particle_view.sun_direction.xyz,1.0,
+        particle_view.sun_colour.rgb,directional,1.0));
+    let kinds=array(1u,0u,2u,3u);
+    for(var type_index=0u;type_index<4u;type_index++) {
+        let kind=kinds[type_index];
+        let head=light_head_coordinate(vec2<u32>(pixel.xy),kind,particle_view.scene_grid.x,particle_view.scene_grid.y);
+        var list=begin_light_list(particle_light_heads[head.y*(particle_view.scene_grid.y*4u)+head.x]);
+        while has_light(list,32u) {
+            let index=advance_light(&list,particle_light_pool[list.head]);
+            let record=particle_lights[index];
+            if kind==3u {
+                // The world-view collector331cc0 excludes area shadow sides.
+                // Its prepared packets carry the unshadowed FFFFFFFF setup.
+                let area=area_ward(surface,position,record,1.0,particle_area_pool,particle_trilinear);
+                result.diffuse+=area.diffuse;result.specular+=area.specular;
+            } else {
+                let delta=record.position-position;
+                let distance=length(delta);
+                let to_light=delta/distance;
+                let decay=mix(1.0,1.0/distance,record.decay);
+                var attenuation=decay*decay*smoothstep(record.cutoff,record.falloff,distance);
+                if kind==2u {attenuation*=1.0-shadow_saturate(dot(to_light,record.direction)*record.spot.x+record.spot.y);}
+                else if kind==1u {
+                    let angle=dot(to_light,-record.direction);
+                    if angle<=0.0 {attenuation=0.0;}
+                    else {attenuation*=1.0-shadow_saturate(angle*record.spot.x+record.spot.y);}
+                }
+                let visibility=particle_local_shadow(record,kind,hacked,surface.normal,to_light,attenuation,2);
+                let lighting=particle_pixel_ward(surface,WardLight(to_light,attenuation,record.color,visibility,record.specular));
+                result.diffuse+=lighting.diffuse;result.specular+=lighting.specular;
+            }
+        }
+    }
+    return result;
 }

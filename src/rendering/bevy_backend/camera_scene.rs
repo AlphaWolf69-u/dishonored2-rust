@@ -118,6 +118,7 @@ pub(super) fn register(app: &mut App) {
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    screen: Option<Res<'w, super::screen_shadow_pass::ScreenShadowFrame>>,
     sampler: Option<Res<'w,super::particle_pass::ParticleMaterialSampler>>,
     queries: Res<'w,super::particle_systems::ParticleQueryFrame>,
     probes: Res<'w,super::water_scene::WaterLighting>,
@@ -294,7 +295,7 @@ fn render_particles(
             super::particle_pass::ParticleViewInputs {
                 surface_sampler: lighting_scene.sampler.as_ref().and_then(|sampler|
                     images.get(&sampler.0)).map(|image| &image.sampler),
-                direct: if draws.iter().any(|d| d.material.option("fx/opt/use_lighting").is_ok_and(|v| v>=3)) {
+                direct: if draws.iter().any(|d| d.material.option("fx/opt/use_lighting").is_ok_and(|v| v==1 || v>=3)) {
                     let tiled=fog.tiled_lighting(water.camera,water.matrices.frame)
                         .ok_or("particle tiled lighting awaits the current view")?;
                     let sampling=lighting_scene.parallel.as_ref().ok_or("particle directional sampling owner unavailable")?;
@@ -323,6 +324,18 @@ fn render_particles(
                             &images.get(&owner.atlas).ok_or("particle local atlas unavailable")?.texture_view))
                     } else {None};
                     Some(super::particle_pass::ParticleDirectLightingInputs {
+                        pixel: if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some())) {
+                            let screen = lighting_scene.screen.as_ref().ok_or("particle cloud owner unavailable")?;
+                            let cloud = images.get(&screen.cloud).ok_or("particle cloud image awaits GPU preparation")?;
+                            if lighting_scene.lights.area_images.iter().any(Option::is_some) && tiled.area_pool.is_none() {
+                                return Err("particle area-light images await the shared pool".into());
+                            }
+                            Some(super::particle_pass::ParticlePixelLightingInputs {
+                                screen: &images.get(&screen.output).ok_or("particle screen binding awaits GPU preparation")?.texture_view,
+                                cloud: &cloud.texture_view, cloud_sampler: &cloud.sampler,
+                                area: tiled.area_pool.as_ref().map(|pool| &pool.view),
+                            })
+                        } else { None },
                         lights:&tiled.lights,pool:&tiled.buffers.pool,heads:&tiled.normal_heads,shadows:&tiled.shadows,
                         parallel:&buffers.get(&sampling.buffer).ok_or("particle parallel sampling buffer unavailable")?.buffer,
                         parallel_depth:&images.get(directional_image).ok_or("particle directional atlas unavailable")?.texture_view,

@@ -91,7 +91,9 @@ fn ycocg_to_rgb(value: vec3<f32>) -> vec3<f32> {
 // PackIrradianceYCgCo is also present in cached native vertex DXBC:
 // native-vertex-shaders/00037-00121d00.asm exports CoCg to o1/o2 and L to o7.z.
 fn pack_vertex_irradiance(sh: array<vec3<f32>, 9>, tangent: vec3<f32>, bitangent: vec3<f32>, normal: vec3<f32>, two_sided: bool) -> PackedIrradiance {
-    let t = game_vector(tangent); let b = game_vector(bitangent); let n = game_vector(normal);
+    return pack_vertex_irradiance_game(sh,game_vector(tangent),game_vector(bitangent),game_vector(normal),two_sided);
+}
+fn pack_vertex_irradiance_game(sh:array<vec3<f32>,9>,t:vec3<f32>,b:vec3<f32>,n:vec3<f32>,two_sided:bool)->PackedIrradiance {
     var values: array<vec3<f32>, 4>;
     values[0] = rgb_to_ycocg(irradiance(0.7071*t + 0.7071*n, sh));
     values[1] = rgb_to_ycocg(irradiance(-0.35355*t - 0.61237*b + 0.7071*n, sh));

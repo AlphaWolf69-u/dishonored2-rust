@@ -29,6 +29,7 @@ struct TransparencyParameters {
 #[derive(Clone, Copy, ShaderType)]
 struct ViewParameters {
     clip_from_game_world: Mat4,
+    game_world_from_clip: Mat4,
     camera_time: Vec4,
     inverse_z: Vec4,
     exposure_extent: Vec4,
@@ -70,11 +71,15 @@ struct MaterialParameters {
     normal_options: UVec4,
     detail_normal: Vec4,
     alpha_test: f32,
+    pixel_options: UVec4,
+    pixel_parameters: Vec4,
+    emissive: Vec4,
+    emissive_clip: Vec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
         let lighting_mode = source.option("fx/opt/use_lighting")?;
-        if lighting_mode < 0 || lighting_mode == 1 {
+        if lighting_mode < 0 {
             return Err(format!(
                 "particle lighting mode {lighting_mode} is not connected"
             ));
@@ -121,7 +126,12 @@ impl MaterialParameters {
             [0.; 4]
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
+        let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
         Ok(Self {
+            pixel_options: pixel.map_or(UVec4::ZERO, |p| UVec4::from_array(p.maps.map(u32::from))),
+            pixel_parameters: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.sheen[0], p.sheen[1], 0., 0.)),
+            emissive: pixel.map_or(Vec4::ZERO, |p| Vec4::from_array(p.emissive)),
+            emissive_clip: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.emissive_clip[0], p.emissive_clip[1], u32::from(p.exposure_emissive) as f32, 0.)),
             alpha_test: scalar("particleAlphaTest")?,
             normal_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
                 UVec4::new(u32::from(light.bump), u32::from(light.detail_bump.is_some()), 0, 0)
@@ -145,7 +155,9 @@ impl MaterialParameters {
                 .as_ref()
                 .map_or(Vec4::ZERO, |light| Vec4::from_array(light.uv)),
             shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
-                UVec4::new(light.shadow_flags, light.shadow_filtering as u32, 0, 0)
+                // Supported pixel particles are isAlpha, hence direct parallel
+                // receiving and neutral AO (2d5210 / lightContext).
+                UVec4::new(light.shadow_flags | 16, light.shadow_filtering as u32, 1, 0)
             }),
             lighting_parameters: source.lighting.as_ref().map_or(Vec4::ZERO, |light| {
                 Vec4::new(
@@ -259,6 +271,7 @@ pub struct ParticleLightingInputs<'a> {
     pub planes: &'a Buffer,
 }
 pub struct ParticleDirectLightingInputs<'a> {
+    pub pixel: Option<ParticlePixelLightingInputs<'a>>,
     pub lights: &'a Buffer,
     pub pool: &'a Buffer,
     pub heads: &'a Buffer,
@@ -268,6 +281,12 @@ pub struct ParticleDirectLightingInputs<'a> {
     pub local: Option<(&'a Buffer, &'a TextureView)>,
     pub grid: crate::tiled_lighting::TileGrid,
     pub sun: Option<([f32; 3], [f32; 3])>,
+}
+pub struct ParticlePixelLightingInputs<'a> {
+    pub screen: &'a TextureView,
+    pub cloud: &'a TextureView,
+    pub cloud_sampler: &'a Sampler,
+    pub area: Option<&'a TextureView>,
 }
 pub struct ParticleViewInputs<'a> {
     pub surface_sampler: Option<&'a Sampler>,
@@ -333,7 +352,7 @@ pub struct ParticlePass {
     material_sampler: Option<SamplerId>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
-    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 3], SamplerId), BindGroup)>,
+    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 6], [SamplerId; 2]), BindGroup)>,
     colour_format: TextureFormat,
     depth_format: TextureFormat,
     instance_bytes: Vec<u8>,
@@ -414,6 +433,7 @@ impl ParticlePass {
                         .chain(10..=13)
                         .chain(15..=17)
                         .chain(19..=20)
+                        .chain(21..=24)
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
                 .chain((6..=8).chain([14, 18]).map(sampler_entry))
@@ -446,6 +466,10 @@ impl ParticlePass {
                 sampler_entry(157),
                 buffer_entry(120, false),
                 texture_entry(121, TextureViewDimension::D2Array, true),
+                texture_entry(123, TextureViewDimension::D2, false),
+                texture_entry(124, TextureViewDimension::D2, false),
+                sampler_entry(125),
+                texture_entry(133, TextureViewDimension::D2Array, false),
                 BindGroupLayoutEntry {
                     binding: 122,
                     visibility: ShaderStages::VERTEX_FRAGMENT,
@@ -499,6 +523,8 @@ impl ParticlePass {
             shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
             shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
             shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
+            include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
             shared_source(include_str!(
                 "../../../assets/shaders/dh2_parallel_receiver.wgsl"
             )),
@@ -584,6 +610,7 @@ impl ParticlePass {
         };
         let mut view = UniformBuffer::from(ViewParameters {
             clip_from_game_world: Mat4::IDENTITY,
+            game_world_from_clip: Mat4::IDENTITY,
             camera_time: Vec4::ZERO,
             inverse_z: Vec4::ZERO,
             exposure_extent: Vec4::ONE,
@@ -853,6 +880,10 @@ impl ParticlePass {
                     binding: 20,
                     resource: BindingResource::TextureView(views.get("detailbumpmap").unwrap_or(opacity)),
                 },
+                BindGroupEntry { binding: 21, resource: BindingResource::TextureView(views.get("diffuselookup").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 22, resource: BindingResource::TextureView(views.get("sheenmap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 23, resource: BindingResource::TextureView(views.get("emissivemap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 24, resource: BindingResource::TextureView(views.get("emissivemaskmap").unwrap_or(opacity)) },
                 BindGroupEntry {
                     binding: 14,
                     resource: BindingResource::Sampler(&self.bilinear),
@@ -918,13 +949,14 @@ impl ParticlePass {
             );
         }
         let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
+        let constants = [("particle_lighting_mode", f64::from(source.option("fx/opt/use_lighting")?))];
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("particle sprite colour"),
             layout: Some(&self.pipeline_layout),
             vertex: RawVertexState {
                 module: &self.shader,
                 entry_point: Some("particle_vertex"),
-                compilation_options: default(),
+                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                 buffers: &[],
             },
             fragment: Some(RawFragmentState {
@@ -934,7 +966,7 @@ impl ParticlePass {
                 } else {
                     "particle_fragment"
                 }),
-                compilation_options: default(),
+                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                 targets: &targets,
             }),
             primitive: PrimitiveState {
@@ -1002,7 +1034,8 @@ impl ParticlePass {
                 draw.material
                     .lighting
                     .as_ref()
-                    .is_some_and(|light| light.maps[1] || light.maps[2])
+                    .is_some_and(|light| light.bump || light.maps[1] || light.maps[2]
+                        || light.pixel.as_ref().is_some_and(|p| p.maps[2] || p.maps[3]))
             })
         {
             return Err("particle surface maps await the canonical anisotropic sampler".into());
@@ -1034,7 +1067,13 @@ impl ParticlePass {
             .as_ref()
             .and_then(|v| v.sun)
             .unwrap_or(([0.; 3], [0.; 3]));
+        let mut inverse_game = Mat4::IDENTITY.to_cols_array_2d();
+        if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
+            && !crate::render_shadow::invert_rows(&input.matrices.view_projection, &mut inverse_game) {
+            return Err("particle pixel lighting requires an invertible view projection".into());
+        }
         self.view.set(ViewParameters {
+            game_world_from_clip: Mat4::from_cols_array_2d(&inverse_game).transpose(),
             scene_grid: input.direct.as_ref().map_or(UVec4::ZERO, |v| {
                 UVec4::new(
                     v.grid.lighting_shift,
@@ -1145,7 +1184,7 @@ impl ParticlePass {
         if draws.iter().any(|d| {
             d.material
                 .option("fx/opt/use_lighting")
-                .is_ok_and(|v| v >= 3)
+                .is_ok_and(|v| v == 1 || v >= 3)
         }) && direct.is_none()
         {
             return Err("particle local-light inputs unavailable".into());
@@ -1162,6 +1201,17 @@ impl ParticlePass {
         let pool = direct.map_or(&self.instances, |d| d.pool);
         let heads = direct.map_or(&self.instances, |d| d.heads);
         let shadows = direct.map_or(&self.instances, |d| d.shadows);
+        let pixel = direct.and_then(|d| d.pixel.as_ref());
+        if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
+            && pixel.is_none() {
+            return Err("particle pixel-lighting scene inputs unavailable".into());
+        }
+        let screen = pixel.map_or(input.fog.world, |p| p.screen);
+        let cloud = pixel.map_or(input.fog.world, |p| p.cloud);
+        let cloud_sampler = pixel.map_or(&self.clamp, |p| p.cloud_sampler);
+        // A frame with no textured area lights uses the shader's slice255
+        // branch. The fixed layout's array binding is then never sampled.
+        let area = pixel.and_then(|p| p.area).unwrap_or(input.fog.curve);
         let lighting_key = (
             [
                 probes.id(),
@@ -1174,8 +1224,8 @@ impl ParticlePass {
                 heads.id(),
                 shadows.id(),
             ],
-            [cubes.id(), directional_depth.id(), local_depth.id()],
-            reflection_sampler.id(),
+            [cubes.id(), directional_depth.id(), local_depth.id(), screen.id(), cloud.id(), area.id()],
+            [reflection_sampler.id(), cloud_sampler.id()],
         );
         if self
             .lighting_binding
@@ -1216,6 +1266,10 @@ impl ParticlePass {
                             binding: 122,
                             resource: BindingResource::Sampler(&self.comparison),
                         },
+                        BindGroupEntry { binding: 123, resource: BindingResource::TextureView(screen) },
+                        BindGroupEntry { binding: 124, resource: BindingResource::TextureView(cloud) },
+                        BindGroupEntry { binding: 125, resource: BindingResource::Sampler(cloud_sampler) },
+                        BindGroupEntry { binding: 133, resource: BindingResource::TextureView(area) },
                         BindGroupEntry {
                             binding: 126,
                             resource: local.as_entire_binding(),

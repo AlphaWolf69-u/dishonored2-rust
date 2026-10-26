@@ -1,7 +1,10 @@
+// Installed fx/opt/use_lighting is a material specialization, not a per-pixel branch.
+override particle_lighting_mode:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
     clip_from_game_world:mat4x4<f32>,
+    game_world_from_clip:mat4x4<f32>,
     camera_time:vec4<f32>,
     inverse_z:vec4<f32>,
     exposure_extent:vec4<f32>,
@@ -52,6 +55,10 @@ struct ParticleMaterialParameters {
     normal_options:vec4<u32>,
     detail_normal:vec4<f32>,
     alpha_test:f32,
+    pixel_options:vec4<u32>,
+    pixel_parameters:vec4<f32>,
+    emissive:vec4<f32>,
+    emissive_clip:vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -73,6 +80,10 @@ struct ParticleMaterialParameters {
 @group(1) @binding(17) var particle_specular:texture_2d<f32>;
 @group(1) @binding(19) var particle_bump:texture_2d<f32>;
 @group(1) @binding(20) var particle_detail_bump:texture_2d<f32>;
+@group(1) @binding(21) var particle_diffuse_lookup:texture_2d<f32>;
+@group(1) @binding(22) var particle_sheen:texture_2d<f32>;
+@group(1) @binding(23) var particle_emissive:texture_2d<f32>;
+@group(1) @binding(24) var particle_emissive_mask:texture_2d<f32>;
 @group(1) @binding(18) var particle_surface_anisotropic:sampler;
 
 struct ParticleFragment {
@@ -117,14 +128,27 @@ struct ParticleFragment {
     // applies the instance matrix and normalizes both independently.
     output.world_normal=normalize(vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w));
     output.world_tangent=normalize(instance.axis_y.xyz);
-    if particle_material.animation_options.w>=2u {
+    if particle_lighting_mode==1u {
+        let root=particle_root_lighting[instance.parameters.w];
+        var sh:array<vec3<f32>,9>;
+        for(var coefficient=0u;coefficient<9u;coefficient++) {sh[coefficient]=root[coefficient].rgb;}
+        // Dynamic particle roots use one object tetrahedron/barycentric sample
+        // in WriteIndirectLightingVertexOutput, unlike mode2's position query.
+        let packed=pack_vertex_irradiance_game(sh,output.world_tangent,
+            normalize(instance.axis_z.xyz),output.world_normal,false);
+        output.light_basis_x=packed.chroma_a.xyz;
+        output.light_basis_y=vec3(packed.chroma_a.w,packed.chroma_b.xy);
+        output.light_basis_z=vec3(packed.chroma_b.zw,packed.luminance);
+        output.reflection_gain=root[1].w;
+    }
+    if particle_lighting_mode>=2u {
         let root=particle_root_lighting[instance.parameters.w];
         let lighting=tetrahedron_lighting_game(u32(root[6].w),position);
         let direction=normalize(particle_view.camera_time.xyz-position);
         output.indirect_irradiance=irradiance(normalize(output.world_normal+direction),lighting.sh);
         output.reflection_gain=lighting.reflection_gain;
     }
-    if particle_material.animation_options.w>=3u {
+    if particle_lighting_mode>=3u {
         let basis=particle_hl2_basis(output.world_tangent,normalize(instance.axis_z.xyz),output.world_normal);
         let colours=particle_vertex_lights(position,output.world_normal,basis,clip);
         output.light_basis_x=colours[0];output.light_basis_y=colours[1];output.light_basis_z=colours[2];
@@ -276,7 +300,7 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
     }
     var lit_colour=colour.rgb;
     var albedo=colour.rgb;
-    if material.animation_options.w>=2u {
+    if particle_lighting_mode!=0u {
         // add_default calls particles::ClipAlpha after all opacity fades,
         // in addition to TextureColor's earlier texture-only alpha clip.
         if colour.a<max(material.alpha_test,0.0001) {discard;}
@@ -302,15 +326,44 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let mapped=material_lighting_values(colour.rgb,roughness,metallic,
             specular,material.surface_map_options.z==0u,material.lighting_dielectric.rgb,material.lighting_metal_diffuse.rgb);
         let root=particle_root_lighting[input.lighting_record];
-        let reflection=particle_lq_reflection(input.world_position,lighting_normal,view_direction,
-            roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);
-        albedo*=1.0/3.14159265358979323846;
-        lit_colour=albedo*input.indirect_irradiance+min(vec3(250.0),reflection);
-        if material.animation_options.w>=3u {
+        if particle_lighting_mode==1u {
             let tangent=normalize(input.world_tangent);
-            let basis=particle_hl2_basis(tangent,cross(normal,tangent),normal);
-            let weights=particle_basis_weights(basis,mix(lighting_normal,normal,0.5));
-            lit_colour+=albedo*(input.light_basis_x*weights.x+input.light_basis_y*weights.y+input.light_basis_z*weights.z);
+            let packed=PackedIrradiance(input.light_basis_z.z,
+                vec4(input.light_basis_x,input.light_basis_y.x),vec4(input.light_basis_y.yz,input.light_basis_z.xy));
+            let ambient=unpack_diffuse(packed,lighting_normal,tangent,cross(normal,tangent),normal,1.0,false);
+            var sheen=material.pixel_parameters.x;
+            if material.pixel_options.y!=0u {sheen=textureSample(particle_sheen,particle_trilinear,lighting_uv).x*2.0-1.0;}
+            let surface=ward_surface(lighting_normal,view_direction,roughness,mapped.diffuse,
+                mapped.ior,sheen,material.pixel_parameters.y,mapped.fresnel_strength);
+            let lighting=particle_pixel_lights(surface,input.world_position,normal,input.position);
+            var specular_colour=lighting.specular+particle_hq_reflection(input.world_position,lighting_normal,
+                view_direction,roughness*roughness,mapped.reflectance,root[0].w,input.reflection_gain);
+            if colour.a>0.01569 {specular_colour/=colour.a;}
+            var emissive=material.emissive.rgb;
+            if material.pixel_options.z!=0u {emissive=textureSample(particle_emissive,particle_surface_anisotropic,lighting_uv).rgb;}
+            if material.pixel_options.w!=0u {
+                let mask=textureSample(particle_emissive_mask,particle_surface_anisotropic,lighting_uv).x;
+                emissive*=smoothstep(mask+material.emissive_clip.y,mask-material.emissive_clip.y,material.emissive_clip.x);
+            }
+            emissive*=material.emissive.w;
+            // Both IntegrateLighting and particles::Lighting call Finalize.
+            if material.emissive_clip.z!=0.0 {
+                emissive/=particle_adaptation[0].x;
+                emissive/=particle_adaptation[0].x;
+            }
+            lit_colour=min(vec3(65000.0),lighting.diffuse+min(vec3(250.0),specular_colour)+
+                evaluate_mapped_diffuse_response(mapped,roughness)*ambient+emissive);
+        } else {
+            let reflection=particle_lq_reflection(input.world_position,lighting_normal,view_direction,
+                roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);
+            albedo*=1.0/3.14159265358979323846;
+            lit_colour=albedo*input.indirect_irradiance+min(vec3(250.0),reflection);
+            if particle_lighting_mode>=3u {
+                let tangent=normalize(input.world_tangent);
+                let basis=particle_hl2_basis(tangent,cross(normal,tangent),normal);
+                let weights=particle_basis_weights(basis,mix(lighting_normal,normal,0.5));
+                lit_colour+=albedo*(input.light_basis_x*weights.x+input.light_basis_y*weights.y+input.light_basis_z*weights.z);
+            }
         }
     } else {
         let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);

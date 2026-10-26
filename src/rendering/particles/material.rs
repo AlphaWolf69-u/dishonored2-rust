@@ -59,6 +59,7 @@ const UNIFORMS: &[&str] = &[
 ];
 
 pub struct ParticleLightingMaterial {
+    pub pixel: Option<ParticlePixelMaterial>,
     pub gloss: [f32; 2],
     pub metallic: [f32; 2],
     /// Active gloss, metallic and specular texture reads, in that order.
@@ -72,6 +73,15 @@ pub struct ParticleLightingMaterial {
     pub metal_diffuse: [f32; 4],
     pub shadow_flags: u32,
     pub shadow_filtering: i32,
+}
+
+pub struct ParticlePixelMaterial {
+    pub sheen: [f32; 2],
+    /// Diffuse lookup, sheen, emissive and emissive-mask texture reads.
+    pub maps: [bool; 4],
+    pub emissive: [f32; 4],
+    pub emissive_clip: [f32; 2],
+    pub exposure_emissive: bool,
 }
 
 pub struct ParticleMaterial {
@@ -253,6 +263,72 @@ impl ParticleMaterial {
                 }
             }
             let gloss = scopes.vector("wardRoughness")?;
+            let pixel = if options["fx/opt/use_lighting"] == 1 {
+                if !crate::material::shadow_is_alpha(
+                    state[0],
+                    read_option("isDecal")? != 0,
+                    read_option("decalType")? as u32,
+                    read_option("skyType")? as u32,
+                ) {
+                    return Err("opaque particle pixel-lighting inputs are not connected".into());
+                }
+                for name in [
+                    "fuzz/enable",
+                    "translucency/enable",
+                    "translucency_hq/enable",
+                    "useSelfShadowedBumpMap",
+                ] {
+                    if read_option(name)? != 0 {
+                        return Err(format!(
+                            "particle pixel-lighting input {name} is not connected"
+                        ));
+                    }
+                }
+                let maps = [
+                    read_option("hasDiffuseLookup")? != 0,
+                    read_option("hasSheenMap")? != 0,
+                    read_option("hasEmissiveMap")? != 0,
+                    read_option("hasEmissiveMaskMap")? != 0,
+                ];
+                for (image, enabled) in [
+                    "diffuseLookup",
+                    "sheenMap",
+                    "emissiveMap",
+                    "emissiveMaskMap",
+                ]
+                .into_iter()
+                .zip(maps)
+                {
+                    if enabled {
+                        images.insert(
+                            image.to_ascii_lowercase(),
+                            Arc::new(crate::material::load_2d_image(
+                                catalog,
+                                &scopes.image_source(image)?,
+                            )?),
+                        );
+                    }
+                }
+                let colour = scopes.vector("emissiveColorConstant")?;
+                let clip = scopes.vector("emissiveClipParms")?;
+                Some(ParticlePixelMaterial {
+                    sheen: [
+                        scopes.vector("sheen")?[0],
+                        scopes.vector("sheenImportance")?[0],
+                    ],
+                    maps,
+                    emissive: [
+                        colour[0],
+                        colour[1],
+                        colour[2],
+                        scopes.vector("emissiveIntensity")?[0],
+                    ],
+                    emissive_clip: [clip[0], clip[1]],
+                    exposure_emissive: read_option("whaleOilEmissivePATCH")? != 0,
+                })
+            } else {
+                None
+            };
             let metallic = scopes.vector("metallicMinMax")?;
             let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
             let bump = read_option("hasBumpMap")? != 0;
@@ -294,11 +370,13 @@ impl ParticleMaterial {
                     );
                 }
             }
+            let needs_uv = bump || pixel.is_some() || maps.into_iter().any(|enabled| enabled);
             Some(ParticleLightingMaterial {
+                pixel,
                 maps,
                 bump,
                 detail_bump,
-                uv: if bump || maps.into_iter().any(|enabled| enabled) {
+                uv: if needs_uv {
                     scopes.vector("Layer0_ScaleBias")?
                 } else {
                     [0.; 4]
