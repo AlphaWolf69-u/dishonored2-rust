@@ -46,10 +46,12 @@ impl Parameters {
                 _ => return Err("matrix reverb delay mode leaves native delay slots uninitialized".into()),
             };
             if !time.is_finite() || time < 0.0 { return Err("invalid matrix reverb delay time".into()); }
-            lengths.push(super::room_reverb::odd_length(time, rate, None));
+            let length = super::room_reverb::odd_length(time, rate, None);
+            if length > i32::MAX as u32 { return Err("matrix reverb delay length overflows signed native storage".into()); }
+            lengths.push(length);
         }
         // 1411891f0 subtracts its two u32 operands and returns a signed int.
-        lengths.sort_by(|left, right| ((*left).wrapping_sub(*right) as i32).cmp(&0));
+        lengths.sort_unstable();
         Ok(lengths)
     }
 
