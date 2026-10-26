@@ -58,6 +58,14 @@ const UNIFORMS: &[&str] = &[
     "particleAlphaTest",
 ];
 
+pub struct ParticleLightingMaterial {
+    pub gloss: [f32; 2],
+    pub metallic: f32,
+    pub gloss_in_alpha: bool,
+    pub dielectric: [f32; 4],
+    pub metal_diffuse: [f32; 4],
+}
+
 pub struct ParticleMaterial {
     pub name: String,
     pub state: crate::render_state::RenderState,
@@ -67,6 +75,7 @@ pub struct ParticleMaterial {
     pub uniforms: BTreeMap<String, [f32; 4]>,
     pub images: BTreeMap<String, Arc<crate::texture::InlineCompressedChain>>,
     pub volume: Option<Arc<crate::texture::InlineVolumeChain>>,
+    pub lighting: Option<ParticleLightingMaterial>,
 }
 impl ParticleMaterial {
     pub fn option(&self, name: &str) -> Result<i32, String> {
@@ -216,6 +225,41 @@ impl ParticleMaterial {
                 Arc::new(crate::material::load_2d_image(catalog, &source)?),
             );
         }
+        let lighting = if options["fx/opt/use_lighting"] != 0 {
+            let mut read_option =
+                |name: &str| library.option_value(program.as_bytes(), &overrides, name.as_bytes());
+            // These owners still need the shared surface-map evaluator. Never
+            // admit them as untextured lighting or silently drop a map/layer.
+            for name in [
+                "hasBumpMap",
+                "hasGlossMap",
+                "hasSpecularMap",
+                "hasMetallicMap",
+                "extraLayer",
+                "useParallaxMapping",
+                "hasDetailBumpMap",
+                "twoSidedLighting",
+                "staticDecalCount",
+                "hasAnimatedEmissive",
+                "hasDynamicDecals",
+            ] {
+                if read_option(name)? != 0 {
+                    return Err(format!(
+                        "particle lighting surface input {name} is not connected"
+                    ));
+                }
+            }
+            let gloss = scopes.vector("wardRoughness")?;
+            Some(ParticleLightingMaterial {
+                gloss: [gloss[0], gloss[1]],
+                metallic: scopes.vector("metallicMinMax")?[1],
+                gloss_in_alpha: read_option("glossInDiffuseAlpha")? != 0,
+                dielectric: scopes.vector("specularTintDielectric")?,
+                metal_diffuse: scopes.vector("diffuseAlbedoMetallic")?,
+            })
+        } else {
+            None
+        };
         let volume = if options["fx/opt/use_flipbook"] != 0 {
             Some(Arc::new(crate::material::load_3d_image(
                 catalog,
@@ -232,6 +276,7 @@ impl ParticleMaterial {
             uniforms,
             images,
             volume,
+            lighting,
         })
     }
 }

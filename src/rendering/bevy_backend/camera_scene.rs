@@ -115,7 +115,8 @@ pub(super) fn register(app: &mut App) {
 /// Submit the shared FX controller's live sprites into the gameplay HDR target,
 /// after atmosphere/depth preparation and before ordinary transparency.
 fn render_particles(
-    queries: Res<super::particle_systems::ParticleQueryFrame>,
+    lighting_scene: (Res<super::particle_systems::ParticleQueryFrame>,
+        Res<super::water_scene::WaterLighting>,Res<super::water_scene::WaterModelLighting>),
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
@@ -138,6 +139,7 @@ fn render_particles(
     mut last_error: Local<Option<String>>,
     mut reported: Local<bool>,
 ) {
+    let queries=&lighting_scene.0;
     let Some(water) = water.0.as_ref() else {
         gpu.particles = None;
         return;
@@ -220,9 +222,6 @@ fn render_particles(
                 })
             })?;
         drop(console);
-        if draws.is_empty() {
-            return Ok(());
-        }
         let lens = display
             .0
             .as_ref()
@@ -253,6 +252,11 @@ fn render_particles(
                 source: sources.clone(),
             });
         }
+        // Prepare the shared particle pipeline once the live pool exists,
+        // independently of whether this frame sees any of its sprites.
+        if draws.is_empty() {
+            return Ok(());
+        }
         let adaptation = buffers
             .get(&exposure.0)
             .ok_or("particle adaptation awaits preparation")?;
@@ -271,6 +275,23 @@ fn render_particles(
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {
+                lighting: if draws.iter().any(|d| d.lighting.is_some()) {
+                    let resources=lighting_scene.1.0.as_ref().map_err(Clone::clone)?
+                        .as_ref().ok_or("particle shared probe resources absent")?;
+                    if resources.cube_count==0 { return Err("particle reflection cube array is empty".into()); }
+                    Some(super::particle_pass::ParticleLightingInputs {
+                        probes:&buffers.get(&lighting_scene.2.records)
+                            .ok_or("particle primary SH buffer unavailable")?.buffer,
+                        words:&buffers.get(&resources.vertex_references)
+                            .ok_or("particle tetrahedron buffer unavailable")?.buffer,
+                        planes:&buffers.get(&resources.planes)
+                            .ok_or("particle reflection planes unavailable")?.buffer,
+                        cubes:&images.get(&resources.cubes)
+                            .ok_or("particle reflection cube array unavailable")?.texture_view,
+                        sampler:&images.get(&resources.cubes)
+                            .ok_or("particle reflection sampler unavailable")?.sampler,
+                    })
+                } else {None},
                 compressed_hdr: lens.settings.hdr_buffer_format != 1,
                 white_level: lens.white_level,
                 resolve_state: *sources

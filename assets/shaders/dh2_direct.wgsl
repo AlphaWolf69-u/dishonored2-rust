@@ -1,4 +1,5 @@
 #define_import_path dh2_direct
+#import dh2_fresnel::ward_fresnel
 #ifdef DH2_SKIN
 #import dh2_material_samplers::linear_clamp
 @group(#{MATERIAL_BIND_GROUP}) @binding(171) var skin_diffuse_lookup:texture_2d<f32>;
@@ -48,13 +49,7 @@ fn ward_distribution(s:WardSurface,l:vec3<f32>)->f32 {
     let hh=dot(h,h);let exponent=s.inverse_roughness_squared*(1.0-inverse_n2*hh);
     return (1.0/3.14159265358979323846)*s.inverse_roughness_squared*exp(exponent)*hh*inverse_n4;
 }
-fn ward_fresnel(ior:vec3<f32>,cosine:f32,strength:f32)->vec3<f32> {
-    let c=mix(1.0,cosine,strength);
-    let g=sqrt(max(vec3(0.0001),ior*ior-vec3(1.0)+vec3(c*c)));
-    let ratio=(g-vec3(c))/(g+vec3(c));let a=ratio*ratio;
-    let b=(c*(g+vec3(c))-vec3(1.0))/(c*(g-vec3(c))+vec3(1.0));
-    return 0.5*a*(vec3(1.0)+b*b);
-}
+
 fn ward_direct_term(s:WardSurface,l:WardLight,diffuse_term:vec3<f32>)->DirectLighting {
     var result=DirectLighting(vec3(0.0),vec3(0.0));
     if l.attenuation<=0.0 || l.shadow<=0.0 {return result;}

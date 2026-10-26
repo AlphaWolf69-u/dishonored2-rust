@@ -128,10 +128,19 @@ impl ParticleSystem {
         // (1fc4c0) then samples the emitter origin, not the live bounds centre.
         // 2b3dc0 ->385f20 ->385da0 uses the shared cached Voronoi query.
         let needs_lighting = self
-            .materials
-            .values()
-            .try_fold(false, |needed, material| {
-                Ok::<_, String>(needed || material.option("fx/opt/use_lighting")? != 0)
+            .stages
+            .iter()
+            .flat_map(|stage| stage.declaration.stages[stage.index].sprites.iter())
+            .filter(|sprite| sprite.enabled)
+            .try_fold(false, |needed, sprite| {
+                let Some(name) = sprite.material.as_ref() else {
+                    return Ok::<_, String>(needed);
+                };
+                let material = self
+                    .materials
+                    .get(name)
+                    .ok_or_else(|| format!("particle draw material absent: {name}"))?;
+                Ok(needed || material.option("fx/opt/use_lighting")? != 0)
             })?;
         let lighting = if needs_lighting {
             Some(
@@ -201,7 +210,11 @@ impl ParticleSystem {
                 );
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
-                    lighting,
+                    lighting: if material.option("fx/opt/use_lighting")? != 0 {
+                        lighting
+                    } else {
+                        None
+                    },
                     transparency,
                     state,
                     stencil_reference,

@@ -28,6 +28,11 @@ fn vertex_lighting(tag: u32, vertex_index: u32, position: vec3<f32>) -> VertexLi
     let instance = tag & 0x7fffffffu;
     let reference = probe_words[probe_words[0] + instance] + vertex_index;
     let tetra = probe_words[probe_words[1] + reference];
+    return tetrahedron_lighting_game(tetra,game_vector(position));
+}
+
+fn tetrahedron_lighting_game(tetra:u32,position:vec3<f32>)->VertexLighting {
+    var sh: array<vec3<f32>, 9>;
     let base = probe_words[2] + 6u * tetra;
     var positions: array<vec3<f32>, 4>;
     var weights: array<vec4<f32>, 4>;
@@ -37,7 +42,7 @@ fn vertex_lighting(tag: u32, vertex_index: u32, position: vec3<f32>) -> VertexLi
         let packed = probe_words[v+3u];
         weights[i] = vec4<f32>(vec4<u32>(packed & 255u, (packed >> 8u) & 255u, (packed >> 16u) & 255u, packed >> 24u)) * (1.0 / 255.0);
     }
-    let w = tetrahedron_probe_weights(game_vector(position),positions,weights);
+    let w = tetrahedron_probe_weights(position,positions,weights);
     let packed0 = probe_words[base+4u];
     let packed1 = probe_words[base+5u];
     let probes = vec4(packed0 & 65535u, packed0 >> 16u, packed1 & 65535u, packed1 >> 16u);
