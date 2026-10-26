@@ -1,5 +1,6 @@
-//! World particle FX graph execution. Queued actions preserve authored link
-//! order; the world owner supplies real effect allocation and entity clocks.
+//! World particle FX graph execution. Links append in authored order and
+//! ordinary actions pop newest-first (7beee0/7c10b0). The world owner supplies
+//! real effect allocation, entity clocks and inter-graph queue phases.
 use super::world_node::{CreatedEffect, FxNode, FxNodeWorld};
 use crate::{
     assets::entities::{
@@ -12,7 +13,7 @@ use crate::{
         event_graph::GraphInputs,
     },
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 pub trait FxGraphWorld {
     fn effect_ready(&self, effect: &str) -> Result<bool, String>;
@@ -36,7 +37,7 @@ pub enum GraphStep {
 pub struct FxGraphRuntime {
     graph: FxGraph,
     relevant: HashSet<u32>,
-    pending: VecDeque<(u32, u32)>,
+    pending: Vec<(u32, u32)>,
     random: HashMap<u32, f32>,
     named: HashMap<String, f32>,
     gates: HashMap<u32, GateState>,
@@ -96,7 +97,7 @@ impl FxGraphRuntime {
             relevant,
             random,
             named: HashMap::new(),
-            pending: VecDeque::new(),
+            pending: Vec::new(),
             gates: HashMap::new(),
             effects: HashMap::new(),
         }
@@ -121,7 +122,7 @@ impl FxGraphRuntime {
                     .iter()
                     .any(|p| p.id == port && p.kind.starts_with("Input"))
             }) {
-                self.pending.push_back((target, port));
+                self.pending.push((target, port));
             }
         }
         Ok(())
@@ -141,13 +142,13 @@ impl FxGraphRuntime {
     }
     pub fn notify(&mut self, node: u32, port: u32) {
         if self.relevant.contains(&node) {
-            self.pending.push_back((node, port));
+            self.pending.push((node, port));
         }
     }
     /// One queued action, without an invented per-frame event-count limit.
     /// The manager retains ownership of its queue phases and work budget.
     pub fn step(&mut self, world: &mut impl FxGraphWorld) -> Result<GraphStep, String> {
-        let Some((id, port)) = self.pending.pop_front() else {
+        let Some((id, port)) = self.pending.pop() else {
             return Ok(GraphStep::Idle);
         };
         let node = self.node(id)?.clone();
