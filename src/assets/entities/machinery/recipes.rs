@@ -16,6 +16,8 @@ pub struct BodyRecipe {
     pub wind: Option<BodyWind>,
     /// `m_startAsleep` (default true): 809d80 adds the body deactivated.
     pub start_asleep: bool,
+    /// Bound to this assembly body (`bindInfo`): shares its motion.
+    pub attached_to: Option<usize>,
 }
 
 /// A body registered with the wind manager (positive `m_windSpeedFactor`):
@@ -172,6 +174,7 @@ pub fn load(
             .map_err(|e| e.to_string())
     };
     let mut constraints = constraints(document, read)?;
+    let binds = entities::entity_binds(document);
     let entity_ids: HashSet<_> = document
         .definitions
         .iter()
@@ -290,7 +293,7 @@ pub fn load(
             let mut ids: Vec<_> = ids.iter().copied().collect();
             ids.sort_unstable();
             let mut recipes = Vec::new();
-            for id in ids.into_iter().filter(|id| !is_system(id)) {
+            let make = |id: &str| -> Result<BodyRecipe, String> {
                 let body = bodies
                     .get(id)
                     .ok_or_else(|| format!("{id}: missing body declaration"))?;
@@ -391,7 +394,7 @@ pub fn load(
                     }
                     other => return Err(format!("{id}: unsupported behavior {other:?}")),
                 };
-                recipes.push(BodyRecipe {
+                Ok(BodyRecipe {
                     entity_id: id.to_owned(),
                     placement: index,
                     position: p.position,
@@ -404,7 +407,31 @@ pub fn load(
                     start_asleep: body
                         .start_asleep
                         .ok_or_else(|| format!("{id}: invalid m_startAsleep"))?,
-                });
+                    attached_to: None,
+                })
+            };
+            for id in ids.into_iter().filter(|id| !is_system(id)) {
+                recipes.push(make(id)?);
+            }
+            // 14080af20 -> 140c8fc00: a dynamic rigid body bound to an assembly
+            // body joins that body's motion (attachBodies), so its mass hangs
+            // on the parent; children of attached bodies attach transitively.
+            let mut pending: Vec<usize> = (0..recipes.len()).collect();
+            while let Some(parent) = pending.pop() {
+                let parent_id = recipes[parent].entity_id.clone();
+                for bind in binds.iter().filter(|b| b.parent == parent_id) {
+                    let child = bind.entity_id.as_str();
+                    let dynamic = bodies
+                        .get(child)
+                        .is_some_and(|b| b.physics_behavior.as_deref() == Some("BEHAVIOR_DYNAMIC"));
+                    if !dynamic || is_system(child) || recipes.iter().any(|r| r.entity_id == child) {
+                        continue;
+                    }
+                    let mut recipe = make(child)?;
+                    recipe.attached_to = Some(parent);
+                    recipes.push(recipe);
+                    pending.push(recipes.len() - 1);
+                }
             }
             Ok(AssemblyRecipe {
                 bodies: recipes,
@@ -610,6 +637,9 @@ mod tests {
                 if cones > 0 && cones < assembly.joints.len() {
                     *kinds.entry(format!("MIXED cone/hinge assembly in {path}")).or_default() += 1;
                 }
+                for body in assembly.bodies.iter().filter(|b| b.attached_to.is_some()) {
+                    *kinds.entry(format!("ATTACHED wind={}", body.wind.is_some())).or_default() += 1;
+                }
                 let motor = assembly.joints.iter().any(|j| j.motor.is_some() && j.started);
                 for body in assembly.bodies.iter().filter(|b| b.mass.is_some()) {
                     *kinds
@@ -740,6 +770,43 @@ mod tests {
         }
         for (kind, count) in kinds {
             println!("{count:6} {kind}");
+        }
+    }
+
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_dust_speaker_attached_mass_audit() {
+        use crate::assets::physworld::{mass::{combine_mass, MassElement, MassProperties}, quaternion_basis};
+        let catalog = crate::archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let read = |p: &str| catalog.read(p).map(|b| b.map(|b| entities::declaration_text(&b).into_owned())).map_err(|e| e.to_string());
+        let mut placements = entities::render_placements(&document);
+        placements.extend(entities::placed_models_with_inheritance(&document, read).unwrap());
+        let recipes = super::load(&catalog, &document, &placements).unwrap();
+        let half = |v: u16| half::f16::from_bits(v).to_f32();
+        for assembly in &recipes.assemblies {
+            for child in assembly.bodies.iter().filter(|b| b.attached_to.is_some()) {
+                let parent = &assembly.bodies[child.attached_to.unwrap()];
+                let element = |b: &BodyRecipe| {
+                    let basis = quaternion_basis(b.orientation);
+                    MassElement {
+                        properties: b.mass.unwrap().to_tensor(),
+                        transform: [basis[0], basis[1], basis[2], [b.position[0], b.position[1], b.position[2], 1.]],
+                    }
+                };
+                let alone = crate::gameplay::rigid_body::BodyMotion::from_mass_frame(parent.mass.unwrap(), parent.orientation, [parent.position[0], parent.position[1], parent.position[2], 0.]);
+                let mut combined = MassProperties { volume: 0., mass: 0., center: [0.; 4], inertia: [[0.; 4]; 3] };
+                let _ = combine_mass(&[element(parent), element(child)], &mut combined);
+                let motion = crate::gameplay::rigid_body::BodyMotion::from_mass_frame(combined.to_principal(), [0., 0., 0., 1.], [0.; 4]);
+                let offset: f32 = (0..3).map(|i| (motion.pose.center[i] - parent.position[i]).powi(2)).sum::<f32>().sqrt();
+                println!(
+                    "{} on {}: masses {} + {}; alone halfs {:?}; combined halfs {:?} com offset {offset}",
+                    child.entity_id, parent.entity_id, parent.mass.unwrap().mass, child.mass.unwrap().mass,
+                    alone.inverse_mass.map(half), motion.inverse_mass.map(half)
+                );
+            }
         }
     }
 }

@@ -98,7 +98,9 @@ bodies each frame (per-placement meshes and shadow palettes).
 Entities with `bindInfo` follow their bind parent (140752900 attach,
 1407506d0 per frame): `app/model_motion.rs` gives bound children, transitively,
 the world delta of their nearest moved ancestor (machinery bodies, scene
-motion). Unrendered children (FX, sounds) have no consumer yet.
+motion). Unrendered children (FX, sounds) have no consumer yet. A bound dynamic rigid body
+also joins its parent's machinery motion (14080ac90 -> attachBodies, then the
+c90a90 mass rebuild), so e.g. a speaker's 10 kg hangs on its turnbuckle.
 
 Scripted machinery uses `assets/entities/scene_motion.rs` to read motion-only
 scene loops and their startup graph bindings from the installed archives.
