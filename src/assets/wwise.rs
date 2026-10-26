@@ -10,7 +10,7 @@ mod bank;
 mod declaration;
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -664,7 +664,7 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     let mut buses = Vec::new();
     let mut effects = Vec::new();
     for ((kind, _), object) in objects {
-        if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback)?); }
+        if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback, kind == 20)?); }
         if matches!(kind, 18 | 19) { effects.push(bank::effect_definition(object, kind == 18)?); }
     }
     // 1410f85a0 disables all six environment tables before ENVS is loaded.

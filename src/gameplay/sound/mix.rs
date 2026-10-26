@@ -107,6 +107,16 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    /// 14111f200. Auxiliary buses have native type 0x0c (141131fe0,
+    /// 140075bb0) and always mix. Ordinary buses may only group routing.
+    pub fn bus_mixes(&self, id: u32) -> Result<bool, String> {
+        let bus = self.buses.get(&id).ok_or_else(|| format!("missing Wwise bus {id:#010x}"))?;
+        let settings = bus.bus_settings.as_ref().ok_or("Wwise bus has no bus settings")?;
+        Ok(settings.auxiliary || bus.effects.slots.iter().any(|effect| effect.id != 0)
+            || settings.channel_config & 0xff != 0 || settings.flags & 1 != 0
+            || settings.hdr_flags & 1 != 0 || bus.parent == 0 || settings.mixer_id != 0)
+    }
+
     /// Bank mask plus live bypass subscriptions (1410dcc40/1410dcd70).
     /// Slot bypass is RTPC 0x18..0x1b; bypass-all is 0x1c. A subscribed
     /// value replaces its corresponding static bit, using float != 0.

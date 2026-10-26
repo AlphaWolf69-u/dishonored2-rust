@@ -99,6 +99,33 @@ pub struct NodeProperties {
     /// 1410deb00: game override, game enable, user override, serialized IDs.
     pub auxiliary_flags: u8,
     pub auxiliary_buses: [u32; 4],
+    pub bus_settings: Option<BusSettings>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BusSettings {
+    pub auxiliary: bool,
+    pub flags: u8,
+    pub limit_flags: u8,
+    pub max_instances: u16,
+    pub channel_config: u32,
+    pub hdr_flags: u8,
+    pub recovery_ms: u32,
+    pub max_duck_volume: f32,
+    pub ducks: Vec<BusDuck>,
+    pub mixer_id: u32,
+    pub mixer_shared: bool,
+    pub attachment_override: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BusDuck {
+    pub bus: u32,
+    pub volume: f32,
+    pub fade_out_ms: u32,
+    pub fade_in_ms: u32,
+    pub curve: u8,
+    pub property: u8,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -434,15 +461,33 @@ pub(super) fn node_properties(object: &[u8], kind: u8, feedback: bool) -> io::Re
     Ok(node)
 }
 
-pub(super) fn bus_properties(object: &[u8], feedback: bool) -> io::Result<NodeProperties> {
+pub(super) fn bus_properties(object: &[u8], feedback: bool, auxiliary: bool) -> io::Result<NodeProperties> {
     let mut reader = Reader { bytes: object, offset: 0 };
     let mut node = NodeProperties { id: reader.u32()?, parent: reader.u32()?, ..Default::default() };
     node.values = reader.properties()?;
-    reader.take(17)?; // Bus flags/limits/channel configuration, HDR and duck limits.
+    // 1411205f0 follows the property bundle with flags, limits, channel
+    // configuration and HDR; 141120750 then reads recovery/duck settings.
+    let flags = reader.u8()?;
+    let limit_flags = reader.u8()?;
+    let max_instances = reader.u16()? & 0x3ff;
+    let mut channel_config = reader.u32()?;
+    if channel_config & 0xf00 == 0x100 {
+        let mask = (channel_config >> 12) & 0x3ff3f;
+        channel_config = (mask << 12) | 0x100 | mask.count_ones();
+    }
+    let hdr_flags = reader.u8()?;
+    let recovery_ms = reader.u32()?;
+    let max_duck_volume = reader.f32()?;
     let ducks = reader.u32()? as usize;
-    reader.records(ducks, 18)?;
+    let mut duck_settings = Vec::new();
+    for _ in 0..ducks {
+        duck_settings.push(BusDuck { bus: reader.u32()?, volume: reader.f32()?,
+            fade_out_ms: reader.u32()?, fade_in_ms: reader.u32()?, curve: reader.u8()?, property: reader.u8()? });
+    }
     node.effects = reader.effects(true)?;
-    reader.take(6)?; // Mixer share set and attachment override.
+    node.bus_settings = Some(BusSettings { auxiliary, flags, limit_flags, max_instances,
+        channel_config, hdr_flags, recovery_ms, max_duck_volume, ducks: duck_settings,
+        mixer_id: reader.u32()?, mixer_shared: reader.u8()? != 0, attachment_override: reader.u8()? & 1 != 0 });
     node.curves = reader.rtpcs()?;
     reader.states()?;
     if feedback { reader.u32()?; }

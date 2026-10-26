@@ -195,6 +195,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                println!("  settings: {:?}", bus.bus_settings);
                 if !bus.effects.slots.is_empty() { println!("  effects: {:?}", bus.effects); }
                 for curve in &bus.curves {
                     println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
