@@ -4,6 +4,32 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--level-acoustics" {
+        use dishonored2_rust::assets::{archive::Catalog, installation, level::{LevelResources, DEFAULT_LEVEL}, sound_propagation::Propagation};
+        let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
+        let catalog = Catalog::open(&installation::game_base()?)?;
+        let level = LevelResources::resolve(&catalog, &requested)?;
+        let path = format!("{}.soundpropa", level.entities.trim_end_matches(".entities"));
+        let bytes = catalog.read(&path)?.ok_or_else(|| format!("missing installed resource {path}"))?;
+        let propagation = Propagation::parse(&bytes)?;
+        println!("{path}: {} zones, {} portals, route dimension {}", propagation.zones.len(), propagation.portals.len(), propagation.routes.zone_count);
+        let mut route_count = 0usize;
+        let mut connected_pairs = 0usize;
+        for (index, zone) in propagation.zones.iter().enumerate() {
+            println!("zone={index} id={} portal_capacity={} auxiliary_bus={:?} properties={:?} shapes={}",
+                zone.id, zone.portal_capacity, zone.auxiliary_bus, zone.properties, zone.geometry.iter().count());
+            for other in &propagation.zones[index + 1..] {
+                let routes = propagation.routes.between(zone.id, other.id)?;
+                connected_pairs += usize::from(!routes.is_empty());
+                route_count += routes.len();
+                if routes.iter().flat_map(|route| &route.portals).any(|&portal| usize::from(portal) >= propagation.portals.len()) {
+                    return Err(format!("route {} to {} references missing portal", zone.id, other.id).into());
+                }
+            }
+        }
+        println!("{connected_pairs} connected zone pairs, {route_count} authored paths");
+        return Ok(());
+    }
     if first.to_string_lossy() == "--level-audio" {
         use dishonored2_rust::{archive::Catalog, assets::{installation, level::{LevelResources, DEFAULT_LEVEL}}, entities};
         let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
