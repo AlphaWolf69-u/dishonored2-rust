@@ -9,6 +9,7 @@ use super::{
 };
 use bevy::{
     core_pipeline::{Core3d, Core3dSystems},
+    ecs::system::SystemParam,
     prelude::*,
     render::{
         camera::ExtractedCamera,
@@ -112,11 +113,23 @@ pub(super) fn register(app: &mut App) {
     }
 }
 
-/// Submit the shared FX controller's live sprites into the gameplay HDR target,
-/// after atmosphere/depth preparation and before ordinary transparency.
+/// Canonical lighting owners borrowed by the shared particle colour pass.
+#[derive(SystemParam)]
+struct ParticleLightingScene<'w> {
+    queries: Res<'w,super::particle_systems::ParticleQueryFrame>,
+    probes: Res<'w,super::water_scene::WaterLighting>,
+    models: Res<'w,super::water_scene::WaterModelLighting>,
+    parallel: Option<Res<'w,super::shadow_sampling::ParallelSamplingBuffer>>,
+    local: Option<Res<'w,super::shadow_sampling::LocalSamplingBuffer>>,
+    directional_frame: Res<'w,super::shadow_pass::ShadowSceneFrame>,
+    directional_gpu: Res<'w,super::shadow_pass::ShadowSceneGpu>,
+    local_frame: Option<Res<'w,super::shadow_pass::LocalShadowSceneFrame>>,
+    local_completion: Option<Res<'w,super::shadow_pass::LocalShadowCompletion>>,
+    lights: Res<'w,super::fog_light_scattering::LocalFogFrame>,
+}
+/// Submit live sprites after atmosphere/depth and before ordinary transparency.
 fn render_particles(
-    lighting_scene: (Res<super::particle_systems::ParticleQueryFrame>,
-        Res<super::water_scene::WaterLighting>,Res<super::water_scene::WaterModelLighting>),
+    lighting_scene: ParticleLightingScene,
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
@@ -139,7 +152,7 @@ fn render_particles(
     mut last_error: Local<Option<String>>,
     mut reported: Local<bool>,
 ) {
-    let queries=&lighting_scene.0;
+    let queries=&lighting_scene.queries;
     let Some(water) = water.0.as_ref() else {
         gpu.particles = None;
         return;
@@ -276,12 +289,47 @@ fn render_particles(
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {
+                direct: if draws.iter().any(|d| d.material.option("fx/opt/use_lighting").is_ok_and(|v| v>=3)) {
+                    let tiled=fog.tiled_lighting(water.camera,water.matrices.frame)
+                        .ok_or("particle tiled lighting awaits the current view")?;
+                    let sampling=lighting_scene.parallel.as_ref().ok_or("particle directional sampling owner unavailable")?;
+                    let directional_image=match &lighting_scene.directional_frame.state {
+                        super::shadow_pass::ShadowSceneState::Ready {target_image,..} => {
+                            if !lighting_scene.directional_gpu.completed_revision(lighting_scene.directional_frame.revision) {
+                                return Err("particle directional shadows await current atlas submission".into());
+                            }
+                            target_image
+                        },
+                        super::shadow_pass::ShadowSceneState::Disabled => &sampling.unavailable_depth,
+                        _ => return Err("particle directional atlas owner is not ready".into()),
+                    };
+                    let local=if lighting_scene.lights.lights.iter().any(|l| l[24]!=u32::MAX) {
+                        let owner=lighting_scene.local_frame.as_ref().and_then(|v| v.0.as_ref())
+                            .ok_or("particle local shadow owner unavailable")?;
+                        if lighting_scene.lights.shadow_revision!=Some(owner.revision) {
+                            return Err("particle local shadows belong to another frame".into());
+                        }
+                        let ready=lighting_scene.local_completion.as_ref().and_then(|v| v.0.lock().ok()).is_some_and(|v|
+                            v.as_ref().is_some_and(|(revision,atlas,cache,_)|
+                                *revision==owner.revision && *atlas==owner.atlas.id() && *cache==owner.cache.id()));
+                        if !ready {return Err("particle local shadows await atlas submission".into());}
+                        let sampling=lighting_scene.local.as_ref().ok_or("particle local sampling owner unavailable")?;
+                        Some((&buffers.get(&sampling.buffer).ok_or("particle local sampling buffer unavailable")?.buffer,
+                            &images.get(&owner.atlas).ok_or("particle local atlas unavailable")?.texture_view))
+                    } else {None};
+                    Some(super::particle_pass::ParticleDirectLightingInputs {
+                        lights:&tiled.lights,pool:&tiled.buffers.pool,heads:&tiled.normal_heads,shadows:&tiled.shadows,
+                        parallel:&buffers.get(&sampling.buffer).ok_or("particle parallel sampling buffer unavailable")?.buffer,
+                        parallel_depth:&images.get(directional_image).ok_or("particle directional atlas unavailable")?.texture_view,
+                        local,grid:tiled.grid(),sun:water.parallel,
+                    })
+                } else {None},
                 lighting: if draws.iter().any(|d| d.lighting.is_some()) {
-                    let resources=lighting_scene.1.0.as_ref().map_err(Clone::clone)?
+                    let resources=lighting_scene.probes.0.as_ref().map_err(Clone::clone)?
                         .as_ref().ok_or("particle shared probe resources absent")?;
                     if resources.cube_count==0 { return Err("particle reflection cube array is empty".into()); }
                     Some(super::particle_pass::ParticleLightingInputs {
-                        probes:&buffers.get(&lighting_scene.2.records)
+                        probes:&buffers.get(&lighting_scene.models.records)
                             .ok_or("particle primary SH buffer unavailable")?.buffer,
                         words:&buffers.get(&resources.vertex_references)
                             .ok_or("particle tetrahedron buffer unavailable")?.buffer,

@@ -5,6 +5,9 @@ struct ParticleViewParameters {
     camera_time:vec4<f32>,
     inverse_z:vec4<f32>,
     exposure_extent:vec4<f32>,
+    scene_grid:vec4<u32>,
+    sun_direction:vec4<f32>,
+    sun_colour:vec4<f32>,
 }
 struct ParticleFogView {world_position:vec3<f32>,exposure:f32,}
 struct ParticleInstance {
@@ -42,6 +45,7 @@ struct ParticleMaterialParameters {
     lighting_parameters:vec4<f32>,
     lighting_dielectric:vec4<f32>,
     lighting_metal_diffuse:vec4<f32>,
+    shadow_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -75,6 +79,9 @@ struct ParticleFragment {
     @location(11) indirect_irradiance:vec3<f32>,
     @location(12) reflection_gain:f32,
     @location(13) @interpolate(flat) lighting_record:u32,
+    @location(14) light_basis_x:vec3<f32>,
+    @location(15) light_basis_y:vec3<f32>,
+    @location(16) light_basis_z:vec3<f32>,
 }
 @vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
     @builtin(instance_index) instance_index:u32)->ParticleFragment {
@@ -102,6 +109,11 @@ struct ParticleFragment {
         let direction=normalize(particle_view.camera_time.xyz-position);
         output.indirect_irradiance=irradiance(normalize(output.world_normal+direction),lighting.sh);
         output.reflection_gain=lighting.reflection_gain;
+    }
+    if particle_material.animation_options.w>=3u {
+        let basis=particle_hl2_basis(output.world_tangent,normalize(instance.axis_z.xyz),output.world_normal);
+        let colours=particle_vertex_lights(position,output.world_normal,basis,clip);
+        output.light_basis_x=colours[0];output.light_basis_y=colours[1];output.light_basis_z=colours[2];
     }
     output.fog=material_fog_vertex(clip,vec3(position.x,position.z,-position.y),false,instance.parameters.w);
     output.clip_plane=instance.clip_plane;
@@ -224,7 +236,7 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
     }
     var lit_colour=colour.rgb;
     var albedo=colour.rgb;
-    if material.animation_options.w==2u {
+    if material.animation_options.w>=2u {
         let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
         let gloss=mix(material.lighting_parameters.y,
             mix(material.lighting_parameters.x,material.lighting_parameters.y,colour.a),
@@ -237,6 +249,12 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
             roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);
         albedo*=1.0/3.14159265358979323846;
         lit_colour=albedo*input.indirect_irradiance+min(vec3(250.0),reflection);
+        if material.animation_options.w>=3u {
+            let tangent=normalize(input.world_tangent);
+            let basis=particle_hl2_basis(tangent,cross(normal,tangent),normal);
+            let weights=particle_basis_weights(basis,normal);
+            lit_colour+=albedo*(input.light_basis_x*weights.x+input.light_basis_y*weights.y+input.light_basis_z*weights.z);
+        }
     } else {
         let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
         lit_colour*=exposure;

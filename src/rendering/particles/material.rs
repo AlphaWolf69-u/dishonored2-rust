@@ -64,6 +64,8 @@ pub struct ParticleLightingMaterial {
     pub gloss_in_alpha: bool,
     pub dielectric: [f32; 4],
     pub metal_diffuse: [f32; 4],
+    pub shadow_flags: u32,
+    pub shadow_filtering: i32,
 }
 
 pub struct ParticleMaterial {
@@ -256,6 +258,11 @@ impl ParticleMaterial {
                 gloss_in_alpha: read_option("glossInDiffuseAlpha")? != 0,
                 dielectric: scopes.vector("specularTintDielectric")?,
                 metal_diffuse: scopes.vector("diffuseAlbedoMetallic")?,
+                shadow_flags: u32::from(read_option("shadow/useNormalOffset")? != 0)
+                    | (u32::from(read_option("shadow/useSlopeScale")? != 0) << 1)
+                    | (u32::from(read_option("shadow/useSlopeScaleBias")? != 0) << 2)
+                    | (u32::from(read_option("shadow/slopeScaleIsPostProjection")? != 0) << 3),
+                shadow_filtering: read_option("shadowFilteringQuality")?,
             })
         } else {
             None

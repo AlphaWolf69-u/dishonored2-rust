@@ -28,6 +28,9 @@ struct ViewParameters {
     camera_time: Vec4,
     inverse_z: Vec4,
     exposure_extent: Vec4,
+    scene_grid: UVec4,
+    sun_direction: Vec4,
+    sun_colour: Vec4,
 }
 #[derive(Clone, Copy, ShaderType)]
 struct FogViewParameters {
@@ -56,11 +59,12 @@ struct MaterialParameters {
     lighting_parameters: Vec4,
     lighting_dielectric: Vec4,
     lighting_metal_diffuse: Vec4,
+    shadow_options: UVec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
         let lighting_mode = source.option("fx/opt/use_lighting")?;
-        if lighting_mode != 0 && lighting_mode != 2 {
+        if lighting_mode < 0 || lighting_mode == 1 {
             return Err(format!(
                 "particle lighting mode {lighting_mode} is not connected"
             ));
@@ -108,6 +112,9 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         Ok(Self {
+            shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                UVec4::new(light.shadow_flags, light.shadow_filtering as u32, 0, 0)
+            }),
             lighting_parameters: source.lighting.as_ref().map_or(Vec4::ZERO, |light| {
                 Vec4::new(
                     light.gloss[0],
@@ -219,7 +226,19 @@ pub struct ParticleLightingInputs<'a> {
     pub sampler: &'a Sampler,
     pub planes: &'a Buffer,
 }
+pub struct ParticleDirectLightingInputs<'a> {
+    pub lights: &'a Buffer,
+    pub pool: &'a Buffer,
+    pub heads: &'a Buffer,
+    pub shadows: &'a Buffer,
+    pub parallel: &'a Buffer,
+    pub parallel_depth: &'a TextureView,
+    pub local: Option<(&'a Buffer, &'a TextureView)>,
+    pub grid: crate::tiled_lighting::TileGrid,
+    pub sun: Option<([f32; 3], [f32; 3])>,
+}
 pub struct ParticleViewInputs<'a> {
+    pub direct: Option<ParticleDirectLightingInputs<'a>>,
     pub lighting: Option<ParticleLightingInputs<'a>>,
     pub matrices: &'a crate::rendering::view_history::ViewMatrices,
     pub local_time: f32,
@@ -272,12 +291,15 @@ pub struct ParticlePass {
     bilinear: Sampler,
     _unused_volume: Texture,
     unused_volume_view: TextureView,
+    _unused_shadow: Texture,
+    unused_shadow_view: TextureView,
+    comparison: Sampler,
     _unused_cube: Texture,
     unused_cube_view: TextureView,
     materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
-    lighting_binding: Option<(([BufferId; 3], TextureViewId, SamplerId), BindGroup)>,
+    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 3], SamplerId), BindGroup)>,
     colour_format: TextureFormat,
     depth_format: TextureFormat,
     instance_bytes: Vec<u8>,
@@ -386,6 +408,26 @@ impl ParticlePass {
                 buffer_entry(158, false),
                 texture_entry(156, TextureViewDimension::CubeArray, false),
                 sampler_entry(157),
+                buffer_entry(120, false),
+                texture_entry(121, TextureViewDimension::D2Array, true),
+                BindGroupLayoutEntry {
+                    binding: 122,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                    count: None,
+                },
+                buffer_entry(126, false),
+                texture_entry(127, TextureViewDimension::D2Array, true),
+                BindGroupLayoutEntry {
+                    binding: 128,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                    count: None,
+                },
+                buffer_entry(129, false),
+                buffer_entry(130, false),
+                buffer_entry(131, false),
+                buffer_entry(132, false),
             ],
         );
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
@@ -411,14 +453,25 @@ impl ParticlePass {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let lighting_source = format!(
-            "{}\n{}\n{}\n{}\n{}",
-            super::probe_weights::SHADER_SOURCE,
+        let lighting_source = [
+            super::probe_weights::SHADER_SOURCE.to_owned(),
+            shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_light_scattering.wgsl"
+            )),
             shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
             shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
             shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
-            include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl")
-        )
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_parallel_receiver.wgsl"
+            )),
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_local_receiver.wgsl"
+            )),
+            include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
+        ]
+        .join("\n")
         .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
         let source = format!(
             "{lighting_source}\n{}\n{}\n{}\n{fog}",
@@ -498,6 +551,9 @@ impl ParticlePass {
             camera_time: Vec4::ZERO,
             inverse_z: Vec4::ZERO,
             exposure_extent: Vec4::ONE,
+            scene_grid: UVec4::ZERO,
+            sun_direction: Vec4::ZERO,
+            sun_colour: Vec4::ZERO,
         });
         view.write_buffer(device, queue);
         let mut fog_view = UniformBuffer::from(FogViewParameters {
@@ -551,6 +607,24 @@ impl ParticlePass {
             dimension: Some(TextureViewDimension::CubeArray),
             ..default()
         });
+        let unused_shadow = device.create_texture(&TextureDescriptor {
+            label: Some("unused particle shadow binding"),
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let unused_shadow_view = unused_shadow.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            ..default()
+        });
         let root_lighting = storage("particle root probe records", (max_draws * 9 * 16) as u64);
         Ok(Self {
             view,
@@ -575,6 +649,9 @@ impl ParticlePass {
             bilinear: sampler(AddressMode::Repeat, MipmapFilterMode::Nearest),
             _unused_volume: unused_volume,
             unused_volume_view,
+            _unused_shadow: unused_shadow,
+            unused_shadow_view,
+            comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             _unused_cube: unused_cube,
             unused_cube_view,
             materials: HashMap::new(),
@@ -868,7 +945,22 @@ impl ParticlePass {
             }
         }
         let position = input.matrices.position;
+        let sun = input
+            .direct
+            .as_ref()
+            .and_then(|v| v.sun)
+            .unwrap_or(([0.; 3], [0.; 3]));
         self.view.set(ViewParameters {
+            scene_grid: input.direct.as_ref().map_or(UVec4::ZERO, |v| {
+                UVec4::new(
+                    v.grid.lighting_shift,
+                    v.grid.dimensions[0],
+                    v.grid.dimensions[1],
+                    0,
+                )
+            }),
+            sun_direction: Vec3::from_array(sun.0).extend(0.),
+            sun_colour: Vec3::from_array(sun.1).extend(0.),
             clip_from_game_world: Mat4::from_cols_array_2d(&input.matrices.view_projection)
                 .transpose(),
             camera_time: Vec3::from_array(position).extend(input.local_time),
@@ -965,9 +1057,40 @@ impl ParticlePass {
         let planes = lighting.map_or(&self.instances, |v| v.planes);
         let cubes = lighting.map_or(&self.unused_cube_view, |v| v.cubes);
         let reflection_sampler = lighting.map_or(&self.wrap, |v| v.sampler);
+        let direct = input.direct.as_ref();
+        if draws.iter().any(|d| {
+            d.material
+                .option("fx/opt/use_lighting")
+                .is_ok_and(|v| v >= 3)
+        }) && direct.is_none()
+        {
+            return Err("particle local-light inputs unavailable".into());
+        }
+        let directional = direct.map_or(&self.instances, |d| d.parallel);
+        let directional_depth = direct.map_or(&self.unused_shadow_view, |d| d.parallel_depth);
+        let local = direct
+            .and_then(|d| d.local)
+            .map_or(&self.instances, |d| d.0);
+        let local_depth = direct
+            .and_then(|d| d.local)
+            .map_or(&self.unused_shadow_view, |d| d.1);
+        let lights = direct.map_or(&self.instances, |d| d.lights);
+        let pool = direct.map_or(&self.instances, |d| d.pool);
+        let heads = direct.map_or(&self.instances, |d| d.heads);
+        let shadows = direct.map_or(&self.instances, |d| d.shadows);
         let lighting_key = (
-            [probes.id(), words.id(), planes.id()],
-            cubes.id(),
+            [
+                probes.id(),
+                words.id(),
+                planes.id(),
+                directional.id(),
+                local.id(),
+                lights.id(),
+                pool.id(),
+                heads.id(),
+                shadows.id(),
+            ],
+            [cubes.id(), directional_depth.id(), local_depth.id()],
             reflection_sampler.id(),
         );
         if self
@@ -996,6 +1119,46 @@ impl ParticlePass {
                         BindGroupEntry {
                             binding: 156,
                             resource: BindingResource::TextureView(cubes),
+                        },
+                        BindGroupEntry {
+                            binding: 120,
+                            resource: directional.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 121,
+                            resource: BindingResource::TextureView(directional_depth),
+                        },
+                        BindGroupEntry {
+                            binding: 122,
+                            resource: BindingResource::Sampler(&self.comparison),
+                        },
+                        BindGroupEntry {
+                            binding: 126,
+                            resource: local.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 127,
+                            resource: BindingResource::TextureView(local_depth),
+                        },
+                        BindGroupEntry {
+                            binding: 128,
+                            resource: BindingResource::Sampler(&self.comparison),
+                        },
+                        BindGroupEntry {
+                            binding: 129,
+                            resource: lights.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 130,
+                            resource: pool.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 131,
+                            resource: heads.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 132,
+                            resource: shadows.as_entire_binding(),
                         },
                         BindGroupEntry {
                             binding: 157,
