@@ -155,6 +155,7 @@ pub(super) fn publish_model_poses(
         frames.clock = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| {
             Some(crate::rendering::bevy_backend::world_effects::WorldFxClock {
                 time: clock.time(3)?, delta: clock.delta(2)?, scale: clock.rates(3)?[1],
+                entity_delta: clock.delta(3)?,
             })
         });
     }

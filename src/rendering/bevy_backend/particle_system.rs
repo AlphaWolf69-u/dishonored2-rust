@@ -37,9 +37,11 @@ pub(crate) struct ParticleSystem {
     pub first_simulation: bool,
     pub publication: Option<ParticlePublication>,
     pub clipping: Option<ParticleClipPlanes>,
-    /// 1fa780 initializes system+1d50 to zero. Player FX publication changes
-    /// rate/colour/pose, but supplies no external source-velocity producer.
+    /// 1fa780 initializes system+1d50 to zero; world FX then publishes the
+    /// owning entity's linear velocity through 227b90's ordinary packet.
     pub source_velocity: [f32; 3],
+    /// Actual owning-entity motion from the FX manager's publication packet.
+    pub source_motion: Option<crate::gameplay::particles::spawn::SpawnVelocity>,
     /// 201400 refreshes system+1d00 before the queued simulation task.
     wind: [f32; 3],
     pub water_flags: u32,
@@ -291,6 +293,7 @@ impl ParticleSystem {
             publication: None,
             clipping: None,
             source_velocity: [0.; 3],
+            source_motion: None,
             wind: [0.; 3],
             water_flags: 0,
             simulated_frame: None,
@@ -512,7 +515,7 @@ impl ParticleSystem {
                 .clipping
                 .as_ref()
                 .map(|p| if worldspace { p.world } else { p.local });
-            stage.advance_frame_with_wind(
+            stage.advance_frame_with_sources(
                 delta,
                 &StageFrame {
                     pose: publication.pose,
@@ -523,6 +526,7 @@ impl ParticleSystem {
                     lod: 0,
                 },
                 self.wind,
+                self.source_motion.as_ref(),
             )?;
         }
         self.first_simulation = false;

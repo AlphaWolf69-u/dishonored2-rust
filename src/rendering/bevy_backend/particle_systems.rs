@@ -96,12 +96,25 @@ impl ParticleSystems {
         frame: &ParticleEffectFrame,
         underwater: bool,
     ) -> Result<u32, String> {
+        self.update_with_motion(head, now, frame, underwater, None)
+    }
+
+    pub fn update_with_motion(
+        &mut self,
+        head: &mut u16,
+        now: f32,
+        frame: &ParticleEffectFrame,
+        underwater: bool,
+        motion: Option<&crate::gameplay::particles::spawn::SpawnVelocity>,
+    ) -> Result<u32, String> {
         let slots = &mut self.slots;
         let seed = &mut self.seed;
         self.links.update_chain(head, |index| {
             let slot = &mut slots[usize::from(index)];
             let system = slot.as_mut().ok_or("particle pool slot absent")?;
             if system.effect.active {
+                system.source_motion = motion.copied();
+                system.source_velocity = motion.map_or([0.; 3], |motion| motion.linear);
                 system.update(now, frame, underwater, seed)?;
                 Ok(true)
             } else {

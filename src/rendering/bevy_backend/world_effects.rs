@@ -40,6 +40,8 @@ pub struct WorldFxClock {
     pub time: f64,
     pub delta: f32,
     pub scale: f32,
+    /// Reference actors use the entity's clock, independently of FX group2.
+    pub entity_delta: f32,
 }
 
 impl WorldEffectFrames {

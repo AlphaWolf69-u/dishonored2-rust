@@ -26,6 +26,8 @@ struct FxEntity {
     parameters: FxNodeParameters,
     component: WorldFxComponent,
     suspended: bool,
+    pose: ReferenceFrame,
+    motion: crate::gameplay::particles::spawn::SpawnVelocity,
 }
 struct Instance {
     id: u32,
@@ -33,6 +35,7 @@ struct Instance {
     definition: Arc<WorldEffectDefinition>,
     parameters: FxNodeParameters,
     pose: ReferenceFrame,
+    motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
 }
@@ -247,17 +250,34 @@ impl WorldParticleState {
                 continue;
             }
             let mut component = std::mem::take(&mut entity.component);
-            let result = component.tick(
-                entity.parameters.stop_on_target_removal,
-                &mut ComponentHost {
-                    state: self,
-                    systems,
-                    frames,
-                    sources,
-                    entity: &entity,
-                    id,
-                },
-            );
+            let result = (|| {
+                // 79e6a0 ->875e80 creates a separate FX entity bound to its
+                // location. Its embedded reference actor derives motion through
+                // 7506d0, even when the FX's updatePosition flag is disabled.
+                // Attachment has already published its initial bound pose. With
+                // a stopped entity clock there is no new reference-actor update.
+                if let Some(location) = entity.parameters.location.as_deref().filter(|_| clock.entity_delta > 0.) {
+                    if let Some(pose) = frames.frame(location)? {
+                        let velocities = crate::gameplay::reference_frame::velocities(entity.pose, pose, clock.entity_delta);
+                        entity.pose = pose;
+                        entity.motion = crate::gameplay::particles::spawn::SpawnVelocity {
+                            linear: velocities[0], center: pose.position, angular: velocities[1],
+                            angular_enabled: velocities[1].iter().any(|v| v.to_bits() & 0x7fff_ffff != 0),
+                        };
+                    }
+                }
+                component.tick(
+                    entity.parameters.stop_on_target_removal,
+                    &mut ComponentHost {
+                        state: self,
+                        systems,
+                        frames,
+                        sources,
+                        entity: &entity,
+                        id,
+                    },
+                )
+            })();
             entity.component = component;
             if let Err(error) = result {
                 self.report(error);
@@ -336,10 +356,12 @@ impl WorldParticleState {
                             instance.pose = pose;
                         }
                     }
+                    instance.motion = self.entities.get(&instance.entity)
+                        .ok_or("world particle FX owning entity was removed")?.motion;
                 }
                 let delta = crate::float::multiply(clock.delta, clock.scale);
                 instance.age = crate::float::add(instance.age, delta);
-                let updated = systems.update(
+                let updated = systems.update_with_motion(
                     &mut instance.head,
                     instance.age,
                     &crate::gameplay::effects::particle::ParticleEffectFrame {
@@ -352,6 +374,7 @@ impl WorldParticleState {
                         delta,
                     },
                     underwater,
+                    Some(&instance.motion),
                 )?;
                 Ok(updated != 0)
             })();
@@ -429,6 +452,8 @@ impl FxGraphWorld for GraphHost<'_> {
         if parameters.dont_spawn_if_culled {
             return Err("world FX spawn culling awaits its actual view query".into());
         }
+        let location = parameters.location.as_deref().ok_or("FX location absent")?;
+        let Some(pose) = self.frames.frame(location)? else { return Ok(None) };
         let id = self.state.next_entity;
         self.state.next_entity = id.wrapping_add(1);
         self.state.entities.insert(
@@ -439,6 +464,10 @@ impl FxGraphWorld for GraphHost<'_> {
                 parameters: parameters.clone(),
                 component: Default::default(),
                 suspended: false,
+                pose,
+                motion: crate::gameplay::particles::spawn::SpawnVelocity {
+                    center: pose.position, ..Default::default()
+                },
             },
         );
         self.state.entity_order.push(id);
@@ -516,15 +545,6 @@ impl WorldFxComponentHost for ComponentHost<'_> {
                         "{name}: particle parameter block binding is not connected"
                     ));
                 }
-                if particle.declarations.iter().flatten().any(|decl| {
-                    decl.velocity_inheritance.enabled && decl.stages
-                        .iter()
-                        .any(|stage| stage.enabled && stage.enable_velocity_inheritance)
-                }) {
-                    return Err(format!(
-                        "{name}: particle velocity inheritance awaits the owning entity's published motion"
-                    ));
-                }
             }
         }
         let pose = self
@@ -543,6 +563,7 @@ impl WorldFxComponentHost for ComponentHost<'_> {
             definition,
             parameters: parameters.clone(),
             pose,
+            motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,
         });
