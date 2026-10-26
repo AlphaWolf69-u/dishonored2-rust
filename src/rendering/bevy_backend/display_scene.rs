@@ -115,7 +115,7 @@ fn render_display(
     queue: Res<RenderQueue>,
     images: Res<RenderAssets<GpuImage>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
-    camera_outputs: (Res<super::camera_scene::CameraGpu>, Res<super::alpha_depth_scene::AlphaGpu>),
+    camera_outputs: (Res<super::camera_scene::CameraGpu>, Res<super::alpha_depth_scene::AlphaGpu>, Res<super::fog_scene::FogGpu>),
     water_frame: Res<super::water_scene::WaterSceneFrame>,
     mut gpu: ResMut<DisplayGpu>,
     mut pyramids: ResMut<LuminanceViews>,
@@ -135,7 +135,7 @@ fn render_display(
     capture_request: Res<super::display_capture::DisplayCaptureRequest>,
     mut capture: ResMut<super::display_capture::DisplayCaptureGpu>,
 ) {
-    let (camera_gpu, alpha_gpu) = camera_outputs;
+    let (camera_gpu, alpha_gpu, fog_gpu) = camera_outputs;
     let Some(frame) = &frame.0 else {
         return;
     };
@@ -341,6 +341,9 @@ fn render_display(
                     let mut planes = vec![("hdr", source), ("display", post.destination_texture)];
                     if let Some(water) = &water_frame.0 {
                         planes.extend(camera_gpu.capture_planes(frame.camera, water.matrices.frame));
+                        if let Some(ocean) = fog_gpu.ocean_capture(frame.camera, water.matrices.frame) {
+                            planes.extend(ocean.capture_planes());
+                        }
                         if let Some(opacity) = alpha_gpu.opacity_texture(frame.camera, water.matrices.frame) {
                             planes.push(("dof_opacity", opacity));
                         }
@@ -355,7 +358,10 @@ fn render_display(
                     {
                         planes.push(("bloom", bloom));
                     }
-                    let details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
+                    let mut details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
+                    if let Some(water) = &water_frame.0 {
+                        details.push_str(&format!("ocean_settings={:?}\nwater_delta={} water_local_time={:?}\n", water.ocean_environment, water.delta_seconds, water.local_time));
+                    }
                     if let Err(error) = capture.record(
                         &capture_request,
                         &device,

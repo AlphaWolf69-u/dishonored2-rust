@@ -199,7 +199,7 @@ fn copy_sources(
         let bytes = match texture.format() {
             TextureFormat::Rgba16Float => 8,
             TextureFormat::Rgba32Float => 16,
-            TextureFormat::Rg11b10Ufloat => 4,
+            TextureFormat::Rg11b10Ufloat | TextureFormat::R32Float => 4,
             TextureFormat::Rg32Float => 8,
             TextureFormat::Rg16Float => 4,
             TextureFormat::R16Float | TextureFormat::Rg8Unorm => 2,

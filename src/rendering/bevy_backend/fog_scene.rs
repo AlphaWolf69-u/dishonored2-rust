@@ -89,6 +89,10 @@ pub(super) struct FogGpu {
     prepared_revision: Option<(Entity, u64)>,
 }
 impl FogGpu {
+    pub(super) fn ocean_capture(&self, camera: Entity, frame: u32) -> Option<&super::ocean_scene::OceanScene> {
+        if self.completed != Some((camera, frame)) { return None; }
+        self.current.as_ref()?.ocean.as_ref()
+    }
     pub(super) fn alpha_depth(&self, camera: Entity, frame:u32) -> Option<&super::water_depth_scene::WaterDepthScene> {
         if self.depth_completed!=Some((camera,frame)) {return None;}
         self.current.as_ref()?.water_depth.as_ref()
