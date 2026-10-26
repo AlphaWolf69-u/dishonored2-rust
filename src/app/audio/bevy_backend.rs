@@ -5,10 +5,12 @@ use super::graph;
 use buses::{Buses, FRAMES};
 use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
 use std::{sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use crate::gameplay::sound::{activity::Activity, ducking::Ducking};
 
 #[derive(Resource, Default)]
 pub(super) struct Engine {
     shared: Option<Arc<Mutex<Shared>>>,
+    activity: Option<Arc<Activity>>,
 }
 
 struct Control { paused: AtomicBool, stopped: AtomicBool, finished: AtomicBool }
@@ -27,6 +29,9 @@ impl Drop for VoiceHandle {
 struct Voice { audio: graph::Routed, control: Arc<Control> }
 struct Shared {
     buses: Buses,
+    activity: Arc<Activity>,
+    ducking: Ducking,
+    tick: u64,
     voices: Vec<Voice>,
     failed: bool,
     error: Option<String>,
@@ -35,12 +40,18 @@ struct Shared {
 impl Engine {
     pub fn new(mixer: &crate::gameplay::sound::mix::Mixer) -> Result<(Self, OutputAudio), String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
-        let buses = Buses::new(mixer, &base)?;
-        let shared = Arc::new(Mutex::new(Shared { buses, voices: Vec::new(), failed: false, error: None }));
+        let activity = Arc::new(Activity::new(mixer)?);
+        let ducking = Ducking::new(mixer)?;
+        ducking.publish(&activity);
+        let buses = Buses::new(mixer, &base, activity.clone())?;
+        let shared = Arc::new(Mutex::new(Shared { buses, activity: activity.clone(), ducking, tick: 0,
+            voices: Vec::new(), failed: false, error: None }));
         let output = OutputAudio { shared: shared.clone(), channels: ChannelCount::new(2).ok_or("invalid host stereo format")?,
             rate: SampleRate::new(48000).ok_or("invalid host processing rate")? };
-        Ok((Self { shared: Some(shared) }, output))
+        Ok((Self { shared: Some(shared), activity: Some(activity) }, output))
     }
+
+    pub fn activity(&self) -> Option<Arc<Activity>> { self.activity.clone() }
 
     pub fn submit(&self, audio: graph::ScheduledAudio) -> Result<VoiceHandle, String> {
         let shared = self.shared.as_ref().ok_or("shared audio output is unavailable")?;
@@ -66,6 +77,10 @@ impl Shared {
             if voice.control.stopped.load(Ordering::Relaxed) { voice.control.finished.store(true, Ordering::Relaxed); }
             else { voice.audio.begin(); }
         }
+        self.voices.retain(|voice| !voice.control.finished.load(Ordering::Relaxed));
+        self.ducking.synchronize(&self.activity, self.tick);
+        self.ducking.advance(self.tick);
+        self.ducking.publish(&self.activity);
         for frame in 0..FRAMES {
             for voice in &mut self.voices {
                 if voice.control.finished.load(Ordering::Relaxed) || voice.control.paused.load(Ordering::Relaxed) { continue; }
@@ -73,7 +88,11 @@ impl Shared {
             }
         }
         self.voices.retain(|voice| !voice.control.finished.load(Ordering::Relaxed));
-        Ok(*self.buses.finish()?)
+        self.ducking.synchronize(&self.activity, self.tick);
+        self.ducking.publish(&self.activity);
+        let output = *self.buses.finish()?;
+        self.tick = self.tick.wrapping_add(1);
+        Ok(output)
     }
 }
 

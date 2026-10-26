@@ -41,6 +41,19 @@ fn random15() -> u16 { rand::random_range(0..=32767) }
 
 impl Definition {
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
+    pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
+        match node {
+            PlaybackNode::Sound { variant, .. } => mixer.source_ducks(&variant.properties),
+            PlaybackNode::Layer { children, .. } => {
+                for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
+                Ok(false)
+            },
+            PlaybackNode::Container(container) => {
+                for (child, _) in &container.children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
+                Ok(false)
+            },
+        }
+    }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
@@ -68,10 +81,6 @@ impl Definition {
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
                 PlaybackNode::Sound { node, variant } => {
-                    if variant.properties.nodes.iter().any(|node| node.ranges.iter().any(|range|
-                        matches!(range.property, 5 | 0x17) && (range.min != 0.0 || range.max != 0.0))) {
-                        return Err(invalid("scheduled Wwise voices require randomized output-bus gain lifetimes"));
-                    }
                     let pcm = PcmAudio::from_wem(&variant.media)?;
                     if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
@@ -145,7 +154,9 @@ impl Definition {
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
-            routes: Mutex::new(Arc::new(Vec::new())) });
+            routes: Mutex::new(Arc::new(Vec::new())), activity: mixer.activity.clone(),
+            registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
+                .map(|activity| activity.registration(sound.properties.bus)).transpose()).collect::<Result<Vec<_>, String>>()? });
         let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position, emitter };
         playing.update(mixer, scene)?;
         Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter }, playing))
@@ -153,7 +164,9 @@ impl Definition {
 }
 
 struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
-    threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>> }
+    threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
+    activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
+    registrations: Vec<Option<crate::gameplay::sound::activity::Registration>> }
 
 struct VoiceRoute {
     routing: crate::gameplay::sound::mix::VoiceRouting,
@@ -189,7 +202,7 @@ impl Playing {
         let routes = if self.definition.can_route() {
             let game_sends = scene.propagated(self.emitter).map_or(&[][..], |propagated| propagated.auxiliary.as_slice());
             Some(Arc::new(self.definition.sounds.iter().map(|sound| Ok(VoiceRoute {
-                routing: mixer.voice_routing(&sound.properties, &parameters)?,
+                routing: mixer.voice_routing_base(&sound.properties, &parameters)?,
                 sends: mixer.auxiliary_controls(&sound.properties, game_sends, &parameters)?,
                 auxiliary_enabled: crate::gameplay::sound::auxiliary::enabled(&sound.properties),
             })).collect::<Result<Vec<_>, String>>()?))
@@ -261,7 +274,8 @@ impl ScheduledAudio {
 enum State {
     Sound { frame: u64, random: RandomProperties, looping: crate::gameplay::sound::looping::SourceLoop,
         resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
-        routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool },
+        routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
+        _activity: Option<crate::gameplay::sound::activity::Token> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
     Done,
@@ -269,7 +283,8 @@ enum State {
 struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope> }
 
 impl Runtime {
-    fn new(node: usize, now: u64, definition: &Definition) -> Self {
+    fn new(node: usize, now: u64, definition: &Definition,
+        registrations: &[Option<crate::gameplay::sound::activity::Registration>]) -> Self {
         let state = match &definition.nodes[node].kind {
             // Random modifiers belong to each newly started source voice,
             // including when the same leaf overlaps itself in a sequence.
@@ -279,6 +294,7 @@ impl Runtime {
                 resampler: None,
                 gain: GainRamp::default(),
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false,
+                _activity: registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
@@ -287,7 +303,7 @@ impl Runtime {
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
                 ]).collect() },
-            Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition)).collect()),
+            Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition, registrations)).collect()),
             Kind::Container(container) => State::Container { active: Vec::new(), selection: Selection::default(),
                 loops: Loops::new(&container.playback, random15), next: Some(now), initialized: false, exhausted: false },
         };
@@ -343,7 +359,7 @@ impl Runtime {
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
             (State::Sound { frame, random, looping, resampler, gain: ramp, filters, output_filters,
-                routes, auxiliary, auxiliary_initialized }, Kind::Sound(index)) => {
+                routes, auxiliary, auxiliary_initialized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
@@ -368,10 +384,12 @@ impl Runtime {
                 }
                 let route = if routing.is_some() { routes.as_ref().and_then(|routes| routes.get(*index)) } else { None };
                 let gain = if volume <= threshold { 0.0 } else {
-                    power10(route.map_or(volume, |route| route.routing.volume_db + random.volume_db) * 0.05)
+                    power10(route.map_or(volume, |route| route.routing.volume_db + random.volume_db
+                        + audio.control.activity.as_ref().map_or(0.0, |activity| activity.voice_ducking(sound.properties.bus))) * 0.05)
                 };
                 if *frame % 1024 == 0 {
-                    let dry = gain * route.map_or(1.0, |route| power10(route.routing.dry_db * 0.05));
+                    let dry = gain * route.map_or(1.0, |route| power10((route.routing.dry_db
+                        + audio.control.activity.as_ref().map_or(0.0, |activity| activity.output_ducking(sound.properties.bus, true))) * 0.05));
                     let mut target = [dry; 8];
                     if sound.spatial.is_some() || route.is_some() {
                         for (channel, target) in target[..channels * output.len()].iter_mut().enumerate() {
@@ -496,7 +514,7 @@ impl Runtime {
                     *initialized = true;
                     *next = None;
                     if let Some(index) = selected {
-                        active.push(Self::new(container.children[index], now, definition));
+                        active.push(Self::new(container.children[index], now, definition, &audio.control.registrations));
                         if !container.playback.continuous { *exhausted = true; }
                         else if container.playback.transition == TransitionMode::TriggerRate {
                             let milliseconds = transition_ms(&container.playback, 0.0, random15);
@@ -553,7 +571,7 @@ impl Routed {
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
-        let root = Runtime::new(audio.definition.root, 0, &audio.definition);
+        let root = Runtime::new(audio.definition.root, 0, &audio.definition, &audio.control.registrations);
         Ok(Self { audio, root, frame: 0 })
     }
 
@@ -614,7 +632,7 @@ impl Source for Decoder {
 impl Decodable for ScheduledAudio {
     type Decoder = Decoder;
     fn decoder(&self) -> Decoder {
-        Decoder { audio: self.clone(), root: Runtime::new(self.definition.root, 0, &self.definition), frame: 0,
+        Decoder { audio: self.clone(), root: Runtime::new(self.definition.root, 0, &self.definition, &self.control.registrations), frame: 0,
             output: [0.0; 8], channel: usize::from(self.definition.channels.get()), alive: true }
     }
 }

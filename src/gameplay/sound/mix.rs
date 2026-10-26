@@ -1,9 +1,10 @@
 //! Wwise version-113 property curves and the authored output-bus hierarchy.
 use crate::assets::wwise::{BankMix, MediaProperties, NodeProperties, RtpcCurve};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The logarithm approximation in conversion-table scaling (1410cb000).
-fn ln(value: f32) -> f32 {
+pub(super) fn ln(value: f32) -> f32 {
     let bits = value.to_bits();
     let mantissa = f32::from_bits((bits & 0x7fffff) + 0x3f800000);
     let t = (mantissa - 1.0) / (mantissa + 1.0);
@@ -98,6 +99,7 @@ pub struct Mixer {
     pub environment: crate::assets::wwise::EnvironmentSettings,
     pub primary_bus: Option<u32>,
     pub bus_order: Vec<u32>,
+    pub activity: Option<Arc<super::activity::Activity>>,
 }
 
 /// Voice properties before a mixing bus (141104c30/1410dbb30). Makeup
@@ -116,7 +118,7 @@ impl From<BankMix> for Mixer {
         let bus_order = bank.buses.iter().map(|bus| bus.id).collect();
         Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
             effects: bank.effects.into_iter().map(|effect| ((effect.shared, effect.id), effect)).collect(),
-            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order }
+            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order, activity: None }
     }
 }
 
@@ -157,11 +159,20 @@ impl Mixer {
     /// 14111e660, param2=0: stop before a parent that mixes. The machine
     /// code at 14111e82d passes the parent to 14111f200 for this decision.
     pub fn bus_output_db(&self, id: u32) -> Result<f32, String> {
+        self.bus_output_db_inner(id, true)
+    }
+
+    pub fn bus_output_base_db(&self, id: u32) -> Result<f32, String> { self.bus_output_db_inner(id, false) }
+
+    fn bus_output_db_inner(&self, id: u32, ducking: bool) -> Result<f32, String> {
         let mut result = 0.0;
         for (index, bus) in self.bus_chain(id)?.into_iter().enumerate() {
             if index != 0 && self.bus_mixes(bus.id)? { break; }
             result += bus.float(5);
             result += self.rtpc_contribution(bus, 5, &[])?;
+            if ducking {
+                if let Some(activity) = &self.activity { result += activity.own_ducking(bus.id, 5)?; }
+            }
         }
         Ok(result)
     }
@@ -174,6 +185,18 @@ impl Mixer {
     }
 
     pub fn voice_routing(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<VoiceRouting, String> {
+        self.voice_routing_inner(source, parameters, true)
+    }
+
+    pub fn voice_routing_base(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<VoiceRouting, String> {
+        self.voice_routing_inner(source, parameters, false)
+    }
+
+    pub fn source_ducks(&self, source: &MediaProperties) -> Result<bool, String> {
+        Ok(self.bus_chain(source.bus)?.iter().any(|bus| bus.bus_settings.as_ref().is_some_and(|settings| !settings.ducks.is_empty())))
+    }
+
+    fn voice_routing_inner(&self, source: &MediaProperties, parameters: &[(u32, f32)], ducking: bool) -> Result<VoiceRouting, String> {
         let mut volume_db = 0.0;
         let mut makeup_db = 0.0;
         for node in &source.nodes {
@@ -187,6 +210,9 @@ impl Mixer {
         for bus in self.bus_chain(source.bus)? {
             volume_db += bus.float(0);
             volume_db = self.rtpc_contribution(bus, 0, &[])? + volume_db;
+            if ducking {
+                if let Some(activity) = &self.activity { volume_db = activity.own_ducking(bus.id, 0)? + volume_db; }
+            }
         }
         let mut dry_db = 0.0;
         let mut output_filters = [0.0; 2];
@@ -197,7 +223,7 @@ impl Mixer {
                 node.float(0x18) + self.rtpc_contribution(node, 0x3d, parameters)?];
         }
         if source.bus != 0 && !self.bus_mixes(source.bus)? {
-            dry_db = self.bus_output_db(source.bus)? + dry_db; // 141104e38
+            dry_db = self.bus_output_db_inner(source.bus, ducking)? + dry_db; // 141104e38
         }
         Ok(VoiceRouting { volume_db, makeup_db, dry_db, output_filters, bus: self.mixing_bus(source.bus)? })
     }

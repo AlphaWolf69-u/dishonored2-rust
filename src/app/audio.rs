@@ -191,6 +191,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
             if let Some(mixer) = &mix.mixer {
                 match bevy_backend::Engine::new(mixer) {
                     Ok((initialized, output)) => {
+                        if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
                         commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE));
                         info!("Shared stereo audio output initialized with installed bus effects");
@@ -251,7 +252,14 @@ fn play_events(
                     })?;
                     if let Some(graph_actions) = graph_actions {
                         use crate::assets::wwise::PlaybackCommand;
-                        if graph_actions.iter().any(|action| matches!(action, PlaybackCommand::Play { node, .. } if graph::Definition::required(node))) {
+                        let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
+                            match action {
+                                PlaybackCommand::Play { node, .. } => Ok(required || graph::Definition::required(node)
+                                    || graph::Definition::requires_buses(node, mixer)?),
+                                _ => Ok(required),
+                            }
+                        })?;
+                        if scheduled {
                             return graph_actions.into_iter().map(|action| match action {
                                 PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
                                 PlaybackCommand::Play { target, node } => Ok(SourceAction::Scheduled {
@@ -343,7 +351,7 @@ fn play_events(
                             let Some(selected) = selected else { continue };
                             let variant = &group.variants[selected];
                             let random_db = variant.properties.nodes.iter().map(|node| *random_values.entry(node.id).or_insert_with(|| {
-                                node.ranges.iter().filter(|range| matches!(range.property, 0 | 5 | 0x21 | 0x17)).map(|range| {
+                                node.ranges.iter().filter(|range| matches!(range.property, 0 | 0x21)).map(|range| {
                                     if range.min == range.max { range.min } else { rand::random_range(range.min..=range.max) }
                                 }).sum::<f32>()
                             })).sum::<f32>();
