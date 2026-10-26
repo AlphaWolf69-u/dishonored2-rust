@@ -413,8 +413,8 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     match node {
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
-            let loops = dishonored2_rust::gameplay::sound::looping::source_count(&variant.properties)?;
-            println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops}, loop_points={:?}",
+            let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
+            println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
             for properties in &variant.properties.nodes {
                 for curve in &properties.curves {

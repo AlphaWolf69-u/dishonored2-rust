@@ -5,22 +5,48 @@ use crate::assets::wwise::MediaProperties;
 /// unlike pitch/gain properties. Zero is infinite and one is a single pass.
 /// Bank enum: https://github.com/bnnm/wwiser/blob/master/wwiser/parser/wdefs.py
 /// Source decoder count/interval: 1411425c0, 141142d50 and 1411606d0.
-pub fn source_count(properties: &MediaProperties) -> Result<u16, String> {
-    let source = properties
-        .nodes
-        .first()
-        .ok_or("sound source has no property node")?;
-    if source.ranges.iter().any(|range| {
-        range.property == 0x3a && (range.min.to_bits() != 0 || range.max.to_bits() != 0)
-    }) {
-        return Err("randomized source loop counts require integer property sampling".into());
+#[derive(Clone, Copy, Debug)]
+pub struct LoopCount {
+    pub count: u32,
+    pub modifiers: Option<[i32; 2]>,
+}
+impl LoopCount {
+    pub fn read(properties: &MediaProperties) -> Result<Self, String> {
+        let source = properties
+            .nodes
+            .first()
+            .ok_or("sound source has no property node")?;
+        let value = source
+            .values
+            .iter()
+            .find(|(property, _)| *property == 0x3a)
+            .map_or(1, |(_, value)| *value);
+        let modifiers = source
+            .ranges
+            .iter()
+            .find(|range| range.property == 0x3a)
+            .map(|range| [range.min.to_bits() as i32, range.max.to_bits() as i32]);
+        Ok(Self {
+            count: value,
+            modifiers,
+        })
     }
-    let value = source
-        .values
-        .iter()
-        .find(|(property, _)| *property == 0x3a)
-        .map_or(1, |(_, value)| *value);
-    u16::try_from(value).map_err(|_| "source loop count exceeds the decoder's 16-bit count".into())
+
+    /// 141122630 adds the signed integer modifier before the caller narrows
+    /// to its 16-bit decoder counter. This also applies when the base is zero.
+    pub fn sample(self, mut random15: impl FnMut() -> u16) -> u16 {
+        let Some([minimum, maximum]) = self.modifiers else {
+            return self.count as u16;
+        };
+        let difference = maximum.wrapping_sub(minimum);
+        let offset = if difference == 0 {
+            0
+        } else {
+            (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference)
+                + 0.5) as i32
+        };
+        self.count.wrapping_add(minimum.wrapping_add(offset) as u32) as u16
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -31,11 +57,16 @@ pub struct SourceLoop {
     count: u16,
 }
 impl SourceLoop {
+    pub fn with_count(mut self, count: u16) -> Self {
+        self.count = count;
+        self
+    }
     /// 1411425c0/141142d50: inclusive file endpoints become exclusive buffer
     /// bounds; absent loop points use the entire media. Finite playback keeps
     /// the intro once, repeats the loop region, and plays the final tail once.
     pub fn new(points: Option<[u32; 2]>, frames: usize, count: u16) -> Result<Self, String> {
-        u32::try_from(frames).map_err(|_| "source frame count exceeds the decoder's 32-bit range")?;
+        u32::try_from(frames)
+            .map_err(|_| "source frame count exceeds the decoder's 32-bit range")?;
         let [start, end] = points
             .map(|[start, end]| [u64::from(start), u64::from(end)])
             .unwrap_or([0, frames as u64]);

@@ -13,7 +13,8 @@ struct Sound {
     pcm: PcmAudio,
     properties: Arc<MediaProperties>,
     spatial: Option<super::spatial::Voice>,
-    looping: Option<crate::gameplay::sound::looping::SourceLoop>,
+    looping: crate::gameplay::sound::looping::SourceLoop,
+    loop_count: crate::gameplay::sound::looping::LoopCount,
 }
 struct Container {
     children: Vec<usize>,
@@ -71,10 +72,10 @@ impl Definition {
                     if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
                     let spatial = super::spatial::Voice::read(&variant.properties, attenuations).map_err(invalid)?;
-                    let count = crate::gameplay::sound::looping::source_count(&variant.properties).map_err(invalid)?;
-                    let looping = if count == 1 { None } else { Some(crate::gameplay::sound::looping::SourceLoop::new(
-                        pcm.loop_points, pcm.samples.len() / usize::from(pcm.channels.get()), count).map_err(invalid)?) };
-                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial, looping });
+                    let loop_count = crate::gameplay::sound::looping::LoopCount::read(&variant.properties).map_err(invalid)?;
+                    let looping = crate::gameplay::sound::looping::SourceLoop::new(
+                        pcm.loop_points, pcm.samples.len() / usize::from(pcm.channels.get()), 1).map_err(invalid)?;
+                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial, looping, loop_count });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children } => {
@@ -211,7 +212,8 @@ pub(super) struct ScheduledAudio {
 }
 
 enum State {
-    Sound { frame: u64, random: RandomProperties, resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]> },
+    Sound { frame: u64, random: RandomProperties, looping: crate::gameplay::sound::looping::SourceLoop,
+        resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
     Done,
@@ -225,6 +227,7 @@ impl Runtime {
             // including when the same leaf overlaps itself in a sequence.
             Kind::Sound(index) => State::Sound { frame: 0,
                 random: RandomProperties::sample(&definition.sounds[*index].properties, random15),
+                looping: definition.sounds[*index].looping.with_count(definition.sounds[*index].loop_count.sample(random15)),
                 resampler: None,
                 gain: GainRamp::default(),
                 filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
@@ -280,7 +283,7 @@ impl Runtime {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, resampler, gain: ramp, filters }, Kind::Sound(index)) => {
+            (State::Sound { frame, random, looping, resampler, gain: ramp, filters }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
@@ -294,7 +297,7 @@ impl Runtime {
                 let channels = usize::from(sound.pcm.channels.get());
                 let mut samples = [0.0; 8];
                 for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = resampler.sample_looped(&sound.pcm.samples, channels, channel, sound.looping) else { return false };
+                    let Some(value) = resampler.sample_looped(&sound.pcm.samples, channels, channel, Some(*looping)) else { return false };
                     *sample = value;
                 }
                 let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
@@ -335,7 +338,7 @@ impl Runtime {
                 }
                 resampler.advance();
                 *frame += 1;
-                resampler.sample_looped(&sound.pcm.samples, channels, 0, sound.looping).is_some()
+                resampler.sample_looped(&sound.pcm.samples, channels, 0, Some(*looping)).is_some()
             },
             (State::Layer(children), _) => {
                 children.retain_mut(|child| child.frame(now, audio, output));
