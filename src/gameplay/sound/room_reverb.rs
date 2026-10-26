@@ -2,6 +2,8 @@
 //! Bank reader/defaults: 141168570/141168310; live controls: 141168850.
 
 pub const PLUGIN: u32 = 0x00760003;
+mod early;
+pub use early::EarlyReflections;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FilterBand {
@@ -99,6 +101,14 @@ impl Default for Parameters {
 }
 
 impl Parameters {
+    pub fn early_reflection_unit(&self, patterns: &crate::assets::sound_effects::ReflectionPatterns,
+        sample_rate: u32, speaker_mask: u32) -> Result<Option<EarlyReflections>, String>
+    {
+        // 141168ff0 disables ER for an LFE-only format even if authored on.
+        if !self.early_reflections || speaker_mask == 8 { return Ok(None); }
+        EarlyReflections::new(patterns.get(self.early_pattern)?, self.early_room_size, sample_rate).map(Some)
+    }
+
     pub fn input_mix(&self, mask: u32) -> InputMix { InputMix::new(mask, self.input_levels[0], self.input_levels[1]) }
 
     /// 14116f660 bypasses a zero-frame pre-delay; a nonzero request uses

@@ -149,6 +149,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            let mut reflection_indices = std::collections::BTreeSet::new();
+            for effect in &mix.effects {
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    if parameters.early_reflections { reflection_indices.insert(parameters.early_pattern); }
+                }
+            }
+            let reflection_patterns = if reflection_indices.is_empty() { None } else {
+                Some(dishonored2_rust::assets::sound_effects::ReflectionPatterns::load(
+                    &dishonored2_rust::assets::installation::game_base()?, reflection_indices)?)
+            };
             mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
             for effect in &mix.effects {
                 println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
@@ -156,6 +167,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
                     let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
                     println!("  room reverb: {parameters:?}");
+                    if parameters.early_reflections {
+                        let pattern = reflection_patterns.as_ref().ok_or("room reflection patterns were not loaded")?.get(parameters.early_pattern)?;
+                        println!("  early pattern={} left_taps={} right_taps={} first_ms={:?}",
+                            parameters.early_pattern, pattern.left.len(), pattern.right.len(),
+                            [pattern.left[0].milliseconds, pattern.right[0].milliseconds]);
+                    }
                 }
             }
             for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
