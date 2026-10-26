@@ -13,6 +13,7 @@ struct Sound {
     pcm: PcmAudio,
     properties: Arc<MediaProperties>,
     spatial: Option<super::spatial::Voice>,
+    looping: Option<crate::gameplay::sound::looping::SourceLoop>,
 }
 struct Container {
     children: Vec<usize>,
@@ -40,7 +41,10 @@ fn random15() -> u16 { rand::random_range(0..=32767) }
 impl Definition {
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
-            PlaybackNode::Sound { variant, .. } => variant.properties.nodes.iter()
+            PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
+                node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
+                    || node.ranges.iter().any(|range| range.property == 0x3a))
+                || variant.properties.nodes.iter()
                 .find(|node| node.positioning_flags & 1 != 0).is_some_and(|node| node.positioning_3d.is_some())
                 || variant.properties.nodes.iter().any(|node| {
                     [2, 3, 4].iter().any(|property| node.float(*property) != 0.0)
@@ -67,7 +71,10 @@ impl Definition {
                     if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
                     let spatial = super::spatial::Voice::read(&variant.properties, attenuations).map_err(invalid)?;
-                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial });
+                    let count = crate::gameplay::sound::looping::source_count(&variant.properties).map_err(invalid)?;
+                    let looping = if count == 1 { None } else { Some(crate::gameplay::sound::looping::SourceLoop::new(
+                        pcm.loop_points, pcm.samples.len() / usize::from(pcm.channels.get()), count).map_err(invalid)?) };
+                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial, looping });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children } => {
@@ -105,7 +112,7 @@ impl Definition {
         // The original engine's DSP/output clock is 48 kHz (142427c24).
         // Each source's fixed-point resampler converts its own media rate.
         let rate = SampleRate::new(48000).ok_or_else(|| invalid("invalid output sample rate"))?;
-        if sounds.iter().any(|sound| if sound.spatial.is_some() { sound.pcm.channels.get() != 1 } else { sound.pcm.channels != channels }) {
+        if sounds.iter().any(|sound| if sound.spatial.is_some() { sound.pcm.channels.get() > 2 } else { sound.pcm.channels != channels }) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
         for entry in &nodes {
@@ -129,7 +136,7 @@ impl Definition {
         parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>) -> Result<(ScheduledAudio, Playing), String>
     {
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
-            spatial: (0..self.sounds.len()).map(|_| [AtomicU32::new(1.0f32.to_bits()), AtomicU32::new(1.0f32.to_bits()), AtomicU32::new(0), AtomicU32::new(0)]).collect(),
+            spatial: (0..self.sounds.len()).map(|_| std::array::from_fn(|index| AtomicU32::new(if index < 4 { 1.0f32.to_bits() } else { 0 }))).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()) });
@@ -139,7 +146,7 @@ impl Definition {
     }
 }
 
-struct Control { spatial: Vec<[AtomicU32; 4]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { spatial: Vec<[AtomicU32; 6]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>> }
 
 #[derive(Component, Clone)]
@@ -162,8 +169,8 @@ impl Playing {
         let parameters = scene.parameters(self.emitter, self.parameter);
         for (sound, targets) in self.definition.sounds.iter().zip(&self.control.spatial) {
             if let Some(spatial) = &sound.spatial {
-                let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)))?;
-                for (target, value) in targets.iter().zip([gains[0], gains[1], filters[0], filters[1]]) {
+                let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?;
+                for (target, value) in targets.iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
                     target.store(value.to_bits(), Ordering::Relaxed);
                 }
             }
@@ -287,7 +294,7 @@ impl Runtime {
                 let channels = usize::from(sound.pcm.channels.get());
                 let mut samples = [0.0; 8];
                 for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = resampler.sample(&sound.pcm.samples, channels, channel) else { return false };
+                    let Some(value) = resampler.sample_looped(&sound.pcm.samples, channels, channel, sound.looping) else { return false };
                     *sample = value;
                 }
                 let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
@@ -297,7 +304,7 @@ impl Runtime {
                 if *frame % 1024 == 0 {
                     let mut target = [gain; 8];
                     if sound.spatial.is_some() {
-                        for (channel, target) in target[..output.len()].iter_mut().enumerate() {
+                        for (channel, target) in target[..channels * output.len()].iter_mut().enumerate() {
                             *target *= f32::from_bits(audio.control.spatial[*index][channel].load(Ordering::Relaxed));
                         }
                     }
@@ -306,8 +313,8 @@ impl Runtime {
                 let gains = ramp.next_frame();
                 let low_pass = f32::from_bits(audio.control.filters[*index][0].load(Ordering::Relaxed)) + random.low_pass;
                 let high_pass = f32::from_bits(audio.control.filters[*index][1].load(Ordering::Relaxed)) + random.high_pass;
-                let distance_low = f32::from_bits(audio.control.spatial[*index][2].load(Ordering::Relaxed));
-                let distance_high = f32::from_bits(audio.control.spatial[*index][3].load(Ordering::Relaxed));
+                let distance_low = f32::from_bits(audio.control.spatial[*index][4].load(Ordering::Relaxed));
+                let distance_high = f32::from_bits(audio.control.spatial[*index][5].load(Ordering::Relaxed));
                 for (sample, filters) in samples[..channels].iter_mut().zip(filters) {
                     if *frame % 1024 == 0 {
                         filters[0].set_target(low_pass.max(distance_low));
@@ -317,15 +324,18 @@ impl Runtime {
                     *sample = filters[1].process(*sample);
                 }
                 if sound.spatial.is_some() {
+                    let output_channels = output.len();
                     for (channel, out) in output.iter_mut().enumerate() {
-                        *out += samples[0] * gains[channel];
+                        for (input, sample) in samples[..channels].iter().enumerate() {
+                            *out += sample * gains[input * output_channels + channel];
+                        }
                     }
                 } else {
                     for ((out, sample), gain) in output.iter_mut().zip(samples).zip(gains) { *out += sample * gain; }
                 }
                 resampler.advance();
                 *frame += 1;
-                resampler.sample(&sound.pcm.samples, channels, 0).is_some()
+                resampler.sample_looped(&sound.pcm.samples, channels, 0, sound.looping).is_some()
             },
             (State::Layer(children), _) => {
                 children.retain_mut(|child| child.frame(now, audio, output));

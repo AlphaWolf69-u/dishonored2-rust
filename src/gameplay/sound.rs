@@ -12,6 +12,7 @@ pub mod admission;
 pub mod propagation;
 pub mod acoustic_world;
 pub mod paths;
+pub mod looping;
 
 /// The material pair and physical inputs submitted to the contact FX manager
 /// (14060a480). Sound selection is owned by the installed contact database.

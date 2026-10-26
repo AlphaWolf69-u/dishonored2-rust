@@ -1,4 +1,4 @@
-//! Mono-to-stereo speaker panning and spread (1410ff970 / 1410fedb0 /
+//! Mono/stereo source panning to stereo output (1410ff970 / 1410fedb0 /
 //! 141100b30). The table stores power; output gains are its square roots.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,19 +123,37 @@ impl Stereo {
     /// 141100b30 for a mono input. Spread and focus are authored percentages;
     /// azimuth is the listener-relative right-positive angle in radians.
     pub fn gains(&self, azimuth: f32, spread: f32, focus: f32, rule: Rule) -> [f32; 2] {
-        let half_span = spread * f32::from_bits(0x4023d70a);
-        let mut center = -azimuth * f32::from_bits(0x3e22f983) * 512.0;
+        self.matrix(azimuth, spread, focus, rule, 1)[0]
+    }
+
+    /// 141100b30 also distributes stereo inputs across the authored spread.
+    /// The installed row-order table at142427a80 maps stereo rows to0,1.
+    pub fn stereo_gains(&self, azimuth: f32, spread: f32, focus: f32, rule: Rule) -> [[f32; 2]; 2] {
+        self.matrix(azimuth, spread, focus, rule, 2)
+    }
+
+    fn matrix(&self, azimuth: f32, spread: f32, focus: f32, rule: Rule, channels: u32) -> [[f32; 2]; 2] {
+        let channel_inverse = 1.0 / channels as f32;
+        let half_span = channel_inverse * spread * f32::from_bits(0x4023d70a);
+        let mut center = (1.0 - channel_inverse) * spread * f32::from_bits(0x4023d70a)
+            - azimuth * f32::from_bits(0x3e22f983) * 512.0;
         let count = (half_span * self.density + 1.0) as u32 + 1;
-        let inverse = 1.0 / count as f32;
+        let inverse = 1.0 / (count * channels) as f32;
         let half_step = (1.0 - focus * 0.01) * (half_span / count as f32);
         if count & 1 == 0 { center -= half_step; }
         let step = half_step * 2.0;
-        let mut angle = (count >> 1) as f32 * step + 512.0 + center;
-        let mut power = [0.0; 2];
-        for _ in 0..count {
-            self.add((angle + 0.5) as i64 as u32, rule, &mut power);
-            angle -= step;
+        let initial = (count >> 1) as f32 * step + 512.0;
+        let mut matrix = [[0.0; 2]; 2];
+        for row in matrix.iter_mut().take(channels as usize) {
+            let mut angle = initial + center;
+            let mut power = [0.0; 2];
+            for _ in 0..count {
+                self.add((angle + 0.5) as i64 as u32, rule, &mut power);
+                angle -= step;
+            }
+            *row = [(inverse * power[0]).sqrt(), (inverse * power[1]).sqrt()];
+            center -= half_span * 2.0;
         }
-        [(inverse * power[0]).sqrt(), (inverse * power[1]).sqrt()]
+        matrix
     }
 }
