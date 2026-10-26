@@ -143,7 +143,7 @@ impl ParticleEmitter {
 
     /// 1f6160 updates cycle state/fields before the animated spawn shape. Pose
     /// history is advanced afterward by the calling emission path.
-    fn advance_clock(
+    pub(crate) fn advance_clock(
         &mut self,
         delta: f32,
         bindings: &mut impl EmitterBindings,

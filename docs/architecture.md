@@ -731,6 +731,16 @@ and normal velocity. Geometry selection consumes the spawn generator while
 scale/rotation/normal-velocity parameters use a copy of the retained cycle seed.
 These samples join ordinary location/velocity before initial orientation and
 spray; player and world particles share this same simulation path.
+`app::particle_view` publishes the current ordinary Tome descriptor after world
+visibility and water-view publication. Extraction shares that immutable frame;
+the renderer builds its AABB query and angular-size threshold once per view.
+`particles::visibility` schedules draws, full simulation, clock-only updates and
+flush-on-occlusion from authored visibility flags and distance curves. Finite
+non-looping stages and dark-vision materials derive the declaration overrides;
+completed fade-out forces simulation until the owner can retire. Culled systems
+discard unused delta, and admitted updates retain the game's 125 ms clamp.
+Clock-only updates still commit the emitter pose. Flushing returns live slots in
+ascending order to the existing free list without resetting its history.
 The connected world path currently admits particle-only groups without an
 unavailable target/tag, spawn-occlusion or physics-velocity dependency. Other
 enabled FX families, parameter blocks, animated/lit particle material inputs and

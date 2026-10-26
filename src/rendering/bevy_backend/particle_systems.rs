@@ -4,6 +4,19 @@ use super::{
     particle_pass::ParticleDraw,
     particle_system::{ParticleDrawContext, ParticleSystem},
 };
+use bevy::{
+    prelude::{Entity, Resource},
+    render::extract_resource::ExtractResource,
+};
+use std::sync::Arc;
+
+pub(crate) struct ParticleQueryPublication {
+    pub camera: Entity,
+    pub frame: u32,
+    pub state: Option<crate::tome::RenderQueryState>,
+}
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub(crate) struct ParticleQueryFrame(pub Option<Arc<ParticleQueryPublication>>);
 use crate::{
     gameplay::{
         effects::{particle::ParticleEffectFrame, pool::EffectPoolLinks},
@@ -129,6 +142,8 @@ impl ParticleSystems {
         frame: u32,
         world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
         ocean_height: Option<f32>,
+        view: &crate::rendering::view_history::ViewMatrices,
+        visibility: Option<&crate::tome::RenderQueryState>,
     ) -> Result<(), String> {
         if self.links.allocated_count == 0 {
             return Ok(());
@@ -139,11 +154,25 @@ impl ParticleSystems {
             )?);
         }
         let query = self.query.as_mut().unwrap();
+        let visibility = visibility
+            .map(crate::tome::RenderAabbQuery::from_state)
+            .transpose()?;
+        // 239fa0 prepares this per-view value once before iterating systems.
+        let minimum_angular_size = crate::rendering::particles::visibility::minimum_angular_size(
+            2. * (1. / view.projection[1][1]).atan(),
+        );
         let mut error = None;
         for system in self.slots.iter_mut().flatten() {
-            if let Err(failure) =
-                system.simulate_in_world(frame, world, query, &mut self.ray, ocean_height)
-            {
+            if let Err(failure) = system.simulate_in_world(
+                frame,
+                world,
+                query,
+                &mut self.ray,
+                ocean_height,
+                view,
+                visibility.as_ref(),
+                minimum_angular_size,
+            ) {
                 error.get_or_insert(failure);
             }
         }

@@ -41,10 +41,14 @@ pub(crate) struct ParticleSystem {
     pub source_velocity: [f32; 3],
     pub water_flags: u32,
     simulated_frame: Option<u32>,
+    visible_frame: Option<u32>,
+    visibility: crate::rendering::particles::visibility::ParticleVisibilityState,
+    force_simulate: bool,
+    force_visible: bool,
 }
 impl ParticleSystem {
     pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
-        (self.simulated_frame == Some(frame))
+        (self.visible_frame == Some(frame))
             .then(|| {
                 self.publication
                     .as_ref()
@@ -60,7 +64,7 @@ impl ParticleSystem {
         context: ParticleDrawContext<'_>,
         output: &mut Vec<super::particle_pass::ParticleDraw>,
     ) -> Result<(), String> {
-        if self.simulated_frame != Some(frame) {
+        if self.visible_frame != Some(frame) {
             return Ok(());
         }
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
@@ -202,17 +206,24 @@ impl ParticleSystem {
         seed: &mut u32,
     ) -> Result<Self, String> {
         let declaration = definition.declarations[index].as_ref().unwrap();
-        let visibility = &declaration.visibility;
-        if visibility.always_visible
-            || visibility.always_simulate
-            || visibility.always_update_cycles
-            || visibility.alpha_culling
-            || visibility.flush_on_occlusion
-        {
-            return Err(
-                "particle visibility scheduling requires its world culling producer".into(),
-            );
-        }
+        // 1c4b50 derives decl+618 bit1 from finite, non-looping lifetime
+        // stages without an external burst-event producer. 1c4460 derives
+        // bit4 from enabled sprite materials with a dark-vision layer.
+        let force_simulate = declaration.stages.iter().any(|stage| {
+            stage.enabled
+                && stage.emitter.cycles != 0
+                && !stage.infinite_life
+                && !(stage.burst && !stage.burst_event.is_empty())
+        });
+        let force_visible = declaration
+            .stages
+            .iter()
+            .filter(|stage| stage.enabled)
+            .flat_map(|stage| &stage.sprites)
+            .filter(|sprite| sprite.enabled)
+            .filter_map(|sprite| sprite.material.as_ref())
+            .filter_map(|name| definition.materials.get(name))
+            .any(|material| material.darkvision_layer != 0);
         let (effect, (stages, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
@@ -263,6 +274,10 @@ impl ParticleSystem {
             source_velocity: [0.; 3],
             water_flags: 0,
             simulated_frame: None,
+            visible_frame: None,
+            visibility: Default::default(),
+            force_simulate,
+            force_visible,
         })
     }
 
@@ -309,14 +324,96 @@ impl ParticleSystem {
         point_query: &mut crate::gameplay::world_point_query::WorldPointQuery,
         ray_query: &mut crate::gameplay::world_ray_query::WorldRayQuery,
         ocean_height: Option<f32>,
+        view: &crate::rendering::view_history::ViewMatrices,
+        visibility: Option<&crate::tome::RenderAabbQuery<'_>>,
+        minimum_angular_size: f32,
     ) -> Result<(), String> {
+        if self.simulated_frame == Some(frame) {
+            return Ok(());
+        }
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
             return Ok(());
         };
         let Some(stage) = self.stages.first() else {
             return Ok(());
         };
-        let settings = &stage.declaration.clipping;
+        let declaration = &stage.declaration;
+        let delta = publication.simulation_delta;
+        let camera = crate::rendering::particles::view::ParticleCamera::select(
+            publication.pose.position,
+            view.position,
+            view.position,
+            [
+                std::array::from_fn(|i| -view.view[2][i]),
+                std::array::from_fn(|i| -view.view[0][i]),
+                std::array::from_fn(|i| view.view[1][i]),
+            ],
+        );
+        let size = declaration
+            .distance
+            .size
+            .sample_visibility(camera.emitter_distance)?;
+        let alpha = declaration
+            .distance
+            .alpha
+            .sample_visibility(camera.emitter_distance)?;
+        let bounds = crate::rendering::particles::bounds::system_bounds(
+            &self.stages,
+            &declaration.visibility,
+            publication.pose,
+            size,
+        )?;
+        let frustum_visible = || {
+            !crate::render_model::transformed_aabb_clip_cull(
+                &std::array::from_fn(|i| view.view_projection[i / 4][i % 4]),
+                bounds[0],
+                bounds[1],
+            )
+            .culled
+        };
+        let root_visible = if declaration.visibility.always_visible || self.force_visible {
+            frustum_visible()
+        } else {
+            match visibility {
+                Some(query) => query.visible(bounds)?,
+                None => frustum_visible(),
+            }
+        };
+        let schedule = self.visibility.prepare(
+            &declaration.visibility,
+            crate::rendering::particles::visibility::ParticleAdmission {
+                bounds,
+                camera: camera.position,
+                emitter_distance: camera.emitter_distance,
+                minimum_angular_size,
+                root_visible,
+                distance_alpha: alpha,
+                distance_size: size,
+            },
+            delta,
+            self.first_simulation,
+            self.force_simulate || publication.stop,
+        );
+        if schedule.flush {
+            for stage in &mut self.stages {
+                stage.flush();
+            }
+        }
+        if !schedule.update_cycles {
+            self.visible_frame = None;
+            self.simulated_frame = Some(frame);
+            return Ok(());
+        }
+        // Cycle-only updates require no water clipping query or integration.
+        if !schedule.simulate {
+            for stage in &mut self.stages {
+                stage.advance_cycles(schedule.delta, publication.pose)?;
+            }
+            self.visible_frame = None;
+            self.simulated_frame = Some(frame);
+            return Ok(());
+        }
+        let settings = &self.stages[0].declaration.clipping;
         let surface = if settings.use_ocean_plane {
             match world.particle_water_height(
                 point_query,
@@ -330,7 +427,10 @@ impl ParticleSystem {
         } else {
             None
         };
-        self.simulate(frame, surface, self.source_velocity)
+        self.simulate(frame, surface, self.source_velocity, schedule.delta)?;
+        self.visibility.simulated();
+        self.visible_frame = schedule.draw.then_some(frame);
+        Ok(())
     }
 
     pub fn simulate(
@@ -338,6 +438,7 @@ impl ParticleSystem {
         frame: u32,
         surface: Option<ParticleWaterSurface>,
         source_velocity: [f32; 3],
+        delta: f32,
     ) -> Result<(), String> {
         if self.simulated_frame == Some(frame) {
             return Ok(());
@@ -355,7 +456,7 @@ impl ParticleSystem {
         for stage in &mut self.stages {
             let definition = &stage.declaration.stages[stage.index];
             let worldspace = definition.worldspace;
-            let mut delta = publication.simulation_delta;
+            let mut delta = delta;
             if self.first_simulation {
                 stage.emitter.pose = EmitterPose::new(if worldspace {
                     publication.pose

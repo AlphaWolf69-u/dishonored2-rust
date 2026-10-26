@@ -1125,6 +1125,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, stream_visible_textures)
+        .add_systems(PostUpdate, super::particle_view::publish
+            .after(super::water_scene::publish_water_frame)
+            .after(super::visibility_queries::stream_visible_models))
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
         .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls))
         .add_systems(

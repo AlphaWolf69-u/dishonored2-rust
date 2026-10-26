@@ -42,6 +42,16 @@ impl ParticleStage {
         self.free.is_empty()
     }
 
+    /// 1f3350 returns live slots in ascending order to the existing free list.
+    /// Keep its history; rebuilding a descending list changes subsequent slots.
+    pub fn flush(&mut self) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.take().is_some() {
+                self.free.push(index);
+            }
+        }
+    }
+
     /// Slot allocation happens only after the emitter has accepted its sampled
     /// lifetime, spawn geometry and clipping inputs (1f4e00).
     pub fn insert(&mut self, particle: Particle) -> Option<usize> {

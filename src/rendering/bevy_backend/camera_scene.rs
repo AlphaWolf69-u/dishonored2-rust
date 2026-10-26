@@ -69,6 +69,10 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
+    app.init_resource::<super::particle_systems::ParticleQueryFrame>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::particle_systems::ParticleQueryFrame,
+    >::default());
     app.init_resource::<super::physics_queries::PhysicsQueryFrame>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::physics_queries::PhysicsQueryFrame,
@@ -318,6 +322,7 @@ fn prepare_screen_effects(
     water: Res<WaterSceneFrame>,
     fog: Res<FogGpu>,
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
+    particle_view: Res<super::particle_systems::ParticleQueryFrame>,
     mut gpu: ResMut<CameraGpu>,
     view: ViewQuery<&MainEntity>,
     mut last_error: Local<Option<String>>,
@@ -416,12 +421,15 @@ fn prepare_screen_effects(
                         water.matrices.frame,
                         &q.world,
                         ocean_height,
+                        &water.matrices.current,
+                        particle_view.0.as_ref().filter(|query| query.camera == water.camera && query.frame == water.matrices.frame)
+                            .ok_or("particle visibility awaits the current camera frame")?.state.as_ref(),
                     )
                 });
             match simulation {
                 Ok(()) => *particle_error = None,
                 Err(error) if particle_error.as_ref() != Some(&error) => {
-                    warn!("Player particle simulation pending: {error}");
+                    warn!("Particle simulation pending: {error}");
                     *particle_error = Some(error);
                 }
                 Err(_) => {}

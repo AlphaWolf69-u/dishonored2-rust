@@ -49,6 +49,7 @@ mod local_shadow_updates;
 mod fog_lights;
 mod environment_reflection;
 mod model_motion;
+mod particle_view;
 mod machinery;
 mod physics_skinning;
 mod shadow_updates;

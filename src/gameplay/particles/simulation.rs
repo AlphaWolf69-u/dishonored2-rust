@@ -181,6 +181,32 @@ impl EmitterBindings for Bindings<'_> {
 }
 
 impl StageSimulation {
+    pub fn flush(&mut self) {
+        self.particles.flush();
+        for sprites in &mut self.sprites {
+            for sprite in sprites {
+                *sprite = None;
+            }
+        }
+    }
+
+    /// 1ffff0's clock-only branch passes the whole post-delay interval to
+    /// 1f6160, without integrating particles or sampling spawn parameters.
+    pub fn advance_cycles(&mut self, delta: f32, pose: ReferenceFrame) -> Result<(), String> {
+        let delta = self.emitter.consume_delay(delta);
+        self.prepare_pose(delta, pose);
+        let mut bindings = Bindings {
+            definition: &self.declaration.stages[self.index],
+            particles: &mut self.particles,
+            sprites: &mut self.sprites,
+            owner_basis: pose.basis,
+            lod: 0,
+            mesh_cursor: &mut self.mesh_cursor,
+        };
+        self.emitter.advance_clock(delta, &mut bindings)?;
+        self.commit_pose(pose);
+        Ok(())
+    }
     pub fn new(
         declaration: Arc<ParticleDeclaration>,
         index: usize,
@@ -245,20 +271,8 @@ impl StageSimulation {
     /// Emission advances the interpolation fraction across all those slices.
     pub fn advance_frame(&mut self, delta: f32, frame: &StageFrame<'_>) -> Result<(), String> {
         use crate::float::subtract;
-        let worldspace = self.declaration.stages[self.index].worldspace;
         let delta = self.emitter.consume_delay(delta);
-        self.emitter.pose.set_basis(if worldspace {
-            frame.pose.basis
-        } else {
-            ReferenceFrame::default().basis
-        });
-        self.emitter.pose.reset_fraction();
-        self.emitter.pose.target_position(if worldspace {
-            frame.pose.position
-        } else {
-            [0.; 3]
-        });
-        self.emitter.pose.set_duration(delta);
+        self.prepare_pose(delta, frame.pose);
         let source_velocity = self.source_velocity(frame)?;
         let mut remaining = delta;
         while remaining > 0. {
@@ -276,13 +290,33 @@ impl StageSimulation {
             self.advance_chunk(step, frame, source_velocity)?;
             remaining = subtract(remaining, step);
         }
-        self.emitter.pose.set_position(if worldspace {
-            frame.pose.position
-        } else {
-            [0.; 3]
-        });
-        self.emitter.pose.commit_orientation();
+        self.commit_pose(frame.pose);
         Ok(())
+    }
+
+    fn prepare_pose(&mut self, delta: f32, pose: ReferenceFrame) {
+        let worldspace = self.declaration.stages[self.index].worldspace;
+        self.emitter.pose.set_basis(if worldspace {
+            pose.basis
+        } else {
+            ReferenceFrame::default().basis
+        });
+        self.emitter.pose.reset_fraction();
+        self.emitter
+            .pose
+            .target_position(if worldspace { pose.position } else { [0.; 3] });
+        self.emitter.pose.set_duration(delta);
+    }
+
+    fn commit_pose(&mut self, pose: ReferenceFrame) {
+        self.emitter
+            .pose
+            .set_position(if self.declaration.stages[self.index].worldspace {
+                pose.position
+            } else {
+                [0.; 3]
+            });
+        self.emitter.pose.commit_orientation();
     }
 
     /// 1f62a0 samples source-over-cycle once before all outer frame slices.

@@ -59,6 +59,8 @@ const UNIFORMS: &[&str] = &[
 pub struct ParticleMaterial {
     pub name: String,
     pub state: crate::render_state::RenderState,
+    /// Material+4a high three bits, consumed by declaration analysis1c4460.
+    pub darkvision_layer: u8,
     pub options: BTreeMap<String, i32>,
     pub uniforms: BTreeMap<String, [f32; 4]>,
     pub images: BTreeMap<String, Arc<crate::texture::InlineCompressedChain>>,
@@ -147,6 +149,8 @@ impl ParticleMaterial {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let empty = EnvironmentRenderParameters::default();
+        let darkvision_layer =
+            library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8 & 7;
         let reader = ParameterReader {
             catalog,
             parameters: &empty,
@@ -183,6 +187,7 @@ impl ParticleMaterial {
         Ok(Self {
             name: name.to_owned(),
             state,
+            darkvision_layer,
             options,
             uniforms,
             images,
