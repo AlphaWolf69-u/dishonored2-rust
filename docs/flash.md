@@ -134,8 +134,15 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
    OnExit restores it (`FUN_1404f3240`). Open: `r_skipDOF` has no consumer in the renderer (`FUN_140374e40` sets view
    flag `+0x3a37` bit 0; `0x140315634` then branches to `0x14031573b`, not yet
    traced, instead of camera-combine).
-8. Sound: `PostSoundEvent` and UI sound IDs (`_soundHandler.soundsList`)
-   are not connected to audio.
+8. Sound: pause-movie `PostSoundEvent` IDs and the player's configured jump
+   cue are routed to Bevy audio. Language-neutral SFX banks resolve through
+   play actions, layer children, weighted random and sequence containers,
+   and embedded or package media. Wwise Vorbis decodes to Ogg and Wwise IMA
+   ADPCM decodes to PCM WAV at runtime. Player lean motion posts the authored
+   start and stop cues. Wwise Stop actions stop active playback by HIRC target;
+   Midnight SFX tracks post their authored keys on the cast player body/arms
+   and stop flagged events on interruption. Transition/fade properties,
+   Midnight barks and timed-event tracks are not yet integrated.
 9. Tab focus traversal on keyDown (`FUN_141027340`) and SimpleButton states
    (`FUN_1410279b0`) are not ported.
 10. PerspectiveProjection follows the natives (own or linked values,

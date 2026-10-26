@@ -85,6 +85,8 @@ pub enum Request {
     /// `EnableUIPostFX` (`FUN_140790ef0`) / `DisableUIPostFX`
     /// (`FUN_140791370`): start or remove the screen FX.
     ScreenFx(bool),
+    /// A Flash `PostSoundEvent` callback resolved by the game's Wwise handler.
+    SoundEvent(u32),
 }
 
 /// The movies of the pause state.
@@ -205,6 +207,12 @@ impl Pause {
         let mut requests = Vec::new();
         for (name, args) in player.take_notifications() {
             match name.as_str() {
+                "PostSoundEvent" => match args.first() {
+                    // FUN_14002ca20 converts this numeric callback argument
+                    // to uint32 before posting it to Wwise.
+                    Some(Value::Number(id)) => requests.push(Request::SoundEvent(*id as i32 as u32)),
+                    _ => unhandled.push(name.clone()),
+                },
                 // Global `SetFlashFocus` -> `FUN_140035020`.
                 "SetFlashFocus" => {
                     player

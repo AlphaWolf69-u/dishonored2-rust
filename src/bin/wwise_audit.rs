@@ -1,0 +1,376 @@
+use dishonored2_rust::assets::wwise::Package;
+use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut arguments = env::args_os().skip(1);
+    let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--mix" {
+        let path = match arguments.next() {
+            Some(path) => PathBuf::from(path),
+            None => dishonored2_rust::assets::installation::game_base()?.join("pck/main-init.pck"),
+        };
+        let package = Package::open(&path)?;
+        let mut file = File::open(&path)?;
+        for entry in &package.banks {
+            let bytes = package.read_entry(&mut file, *entry)?;
+            let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
+            println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            mix.buses.sort_by_key(|bus| bus.id);
+            for bus in &mix.buses {
+                println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                for curve in &bus.curves {
+                    println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
+                        curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
+                }
+            }
+        }
+        return Ok(());
+    }
+    if matches!(first.to_string_lossy().as_ref(), "--asset" | "--find-assets") {
+        let query = arguments.next().ok_or("missing resource path or substring")?.to_string_lossy().into_owned();
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let catalog = dishonored2_rust::archive::Catalog::open(&base)?;
+        if first.to_string_lossy() == "--find-assets" {
+            for path in catalog.paths_containing(&query) { println!("{path}"); }
+        } else {
+            let bytes = catalog.read(&query)?.ok_or_else(|| format!("missing installed resource: {query}"))?;
+            println!("{}", String::from_utf8_lossy(&bytes));
+        }
+        return Ok(());
+    }
+    if first.to_string_lossy() == "--player-events" {
+        let character = arguments.next().ok_or("missing player character name")?.to_string_lossy().into_owned();
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let catalog = dishonored2_rust::archive::Catalog::open(&base)?;
+        let player = dishonored2_rust::entities::player::player_declarations(&character, |path| {
+            catalog.read(path).map(|bytes| bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| error.to_string())
+        })?;
+        for (state, fields) in player.states {
+            for (key, value) in fields {
+                if !key.contains("SoundEvent") { continue; }
+                if let dishonored2_rust::entities::Value::Atom(path) = value {
+                    let path = path.trim_matches('"');
+                    if path.is_empty() { continue; }
+                    let name = path.rsplit('/').next().unwrap_or(&path);
+                    println!("{state} {key} {path} id={:#010x}", dishonored2_rust::assets::wwise::event_id(name));
+                }
+            }
+        }
+        return Ok(());
+    }
+    if first.to_string_lossy() == "--midnight-events" {
+        let character = arguments.next().ok_or("missing player character name")?.to_string_lossy().into_owned();
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let catalog = dishonored2_rust::archive::Catalog::open(&base)?;
+        let player = dishonored2_rust::entities::player::player_declarations(&character, |path| {
+            catalog.read(path).map(|bytes| bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())).map_err(|error| error.to_string())
+        })?;
+        use dishonored2_rust::gameplay::{player::{decls, states, midnight::prepare_sounds}, sound::Emitter};
+        use dishonored2_rust::entities::scene_motion::{atom, child};
+        let read = |path: &str| catalog.read(path)
+            .map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned()))
+            .map_err(|error| error.to_string());
+        let mut casting = vec![
+            ("PlayerBody", player.body_model.clone(), Emitter::PlayerBody),
+            ("PlayerCamera", player.body_model.clone(), Emitter::PlayerBody),
+        ];
+        for ((entity, _, _), (name, emitter)) in decls::arm_parts(&player.body)?.into_iter().zip([
+            ("PlayerLeftArm", Emitter::PlayerLeftArm), ("PlayerRightArm", Emitter::PlayerRightArm),
+        ]) {
+            let entity = entity.ok_or("player arm has no entity")?;
+            let fields = dishonored2_rust::entities::player::resolved_decl("entitydef", &entity, read)?;
+            let model = atom(child(&fields, "renderModelInfo"), "model").ok_or("player arm has no model")?;
+            casting.push((name, model.to_owned(), emitter));
+        }
+        let casting = casting.iter().map(|(name, model, emitter)| (*name, model.as_str(), *emitter)).collect::<Vec<_>>();
+        let paths = states::scene_paths(&decls::states(&player)?);
+        let paths = paths.into_iter().map(|path| format!("generated/decls/midnightscene/{path}.decl"))
+            .collect::<std::collections::BTreeSet<_>>();
+        println!("{} referenced player Midnight declarations", paths.len());
+        let mut track_types = BTreeMap::<String, usize>::new();
+        for path in paths {
+            let bytes = catalog.read(&path)?.ok_or_else(|| format!("missing installed Midnight resource: {path}"))?;
+            let text = String::from_utf8_lossy(&bytes);
+            for (offset, _) in text.match_indices("m_trackType") {
+                let tail = &text[offset..(offset + 128).min(text.len())];
+                if let Some((_, value)) = tail.split_once('=') {
+                    if let Some(start) = value.find('"') {
+                        if let Some(end) = value[start + 1..].find('"') {
+                            *track_types.entry(value[start + 1..start + 1 + end].to_owned()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            let scene = dishonored2_rust::entities::midnight::parse(&text).map_err(|error| format!("{path}: {error}"))?;
+            for (index, sounds) in prepare_sounds(&scene, &casting, read)?.iter().enumerate() {
+                for sound in sounds {
+                    println!("{path} scene={} emitter={:?} time={} stop_on_interruption={} event={} id={:#010x}",
+                        scene.scenes[index].uid, sound.emitter, sound.key.time_ms, sound.key.stop_on_interruption, sound.key.event, sound.event);
+                }
+            }
+            for (group, name) in &scene.groups {
+                for event in scene.scenes.iter().flat_map(|scene| scene.groups.iter())
+                    .filter(|entry| entry.group == *group).flat_map(|entry| &entry.events)
+                {
+                    println!("{path} group={name} time={} message={:?}", event.time_ms, event.event);
+                }
+            }
+        }
+        for (track, count) in track_types { println!("track {track}: {count}"); }
+        return Ok(());
+    }
+    if matches!(first.to_string_lossy().as_ref(), "--find-audio-decls" | "--find-decl-field") {
+        let needle = if first.to_string_lossy() == "--find-decl-field" {
+            arguments.next().ok_or("missing declaration field")?.to_string_lossy().to_ascii_lowercase()
+        } else { "cpntaudio".to_owned() };
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let catalog = dishonored2_rust::archive::Catalog::open(&base)?;
+        let mut paths = std::collections::BTreeSet::new();
+        for suffix in [".def", ".decl", ".entities", ".world"] {
+            paths.extend(catalog.paths_with_suffix(suffix));
+        }
+        let mut matches = 0usize;
+        for path in paths {
+            let Some(bytes) = catalog.read(&path)? else { continue };
+            let text = String::from_utf8_lossy(&bytes);
+            if !text.to_ascii_lowercase().contains(&needle) { continue; }
+            matches += 1;
+            println!("{path}");
+            for line in text.lines().filter(|line| line.to_ascii_lowercase().contains(&needle)) {
+                println!("  {}", line.trim());
+            }
+        }
+        println!("{matches} installed declarations contain {needle}");
+        return Ok(());
+    }
+    if first.to_string_lossy() == "--find-media" {
+        let id = arguments.next().ok_or("missing media ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+        let id = u32::from_str_radix(&id, 16)? as u64;
+        let directory = PathBuf::from(arguments.next().ok_or("missing PCK directory")?);
+        for item in std::fs::read_dir(directory)? {
+            let path = item?.path();
+            if path.extension().is_none_or(|extension| extension != "pck") { continue; }
+            let Ok(package) = Package::open(&path) else { continue };
+            for entry in package.media.iter().chain(&package.external_media).filter(|entry| entry.id == id) {
+                println!("{} id={:#x} lang={} size={}", path.display(), entry.id, entry.language_id, entry.size);
+            }
+        }
+        return Ok(());
+    }
+    if first.to_string_lossy() == "--resolve-event" {
+        let id = arguments.next().ok_or("missing event ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+        let id = u32::from_str_radix(&id, 16)?;
+        let directory = match arguments.next() {
+            Some(path) => PathBuf::from(path),
+            None => dishonored2_rust::assets::installation::game_base()?.join("pck"),
+        };
+        let initialization = directory.join("main-init.pck");
+        let package = Package::open(&initialization)?;
+        let mut file = File::open(initialization)?;
+        let mut mixer = None;
+        for entry in &package.banks {
+            if let Some(mix) = dishonored2_rust::assets::wwise::bank_mix(&package.read_entry(&mut file, *entry)?)? {
+                mixer = Some(dishonored2_rust::gameplay::sound::mix::Mixer::from(mix));
+            }
+        }
+        let mixer = mixer.ok_or("installed initialization bank has no mix")?;
+        let mut paths = std::fs::read_dir(directory)?.filter_map(|entry| entry.ok()).map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut found = false;
+        for path in paths {
+            let Ok(package) = Package::open(&path) else { continue };
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
+                let mut file = File::open(&path)?;
+                let bank = package.read_entry(&mut file, entry)?;
+                if !dishonored2_rust::assets::wwise::bank_event_ids(&bank)?.contains(&id) { continue; }
+                found = true;
+                let actions = dishonored2_rust::assets::wwise::event_commands_with(&bank, id, |media_id| {
+                    let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
+                    package.read_entry(&mut file, media).map(Some)
+                })?;
+                println!("{} bank={:#x}", path.display(), entry.id);
+                match actions {
+                    Some(actions) => for action in actions {
+                        match action {
+                            dishonored2_rust::assets::wwise::EventCommand::Stop { target } => println!("  Stop target={target:#010x}"),
+                            dishonored2_rust::assets::wwise::EventCommand::Play { target, groups } => {
+                                println!("  Play target={target:#010x}");
+                                for (group_index, group) in groups.iter().enumerate() {
+                                    for (variant_index, variant) in group.variants.iter().enumerate() {
+                                        println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
+                                            variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
+                                        match dishonored2_rust::assets::wwise::decode_wem(&variant.media) {
+                                            Ok(audio) => println!("      decoded {} bytes {}", audio.len(), String::from_utf8_lossy(&audio[..audio.len().min(4)])),
+                                            Err(error) => println!("      decoding error: {error}"),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    None => println!("  event has no supported Wwise actions"),
+                }
+            }
+        }
+        if !found { println!("event {id:#010x} is not present in installed language-neutral banks"); }
+        return Ok(());
+    }
+    let (summary_only, object_filter, resolve_events, path) = match first.to_string_lossy().as_ref() {
+        "--summary" => (true, None, false, arguments.next().map(PathBuf::from).ok_or("missing package path")?),
+        "--object" => {
+            let id = arguments.next().ok_or("missing object ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+            let id = u32::from_str_radix(&id, 16)?;
+            (false, Some(id), false, arguments.next().map(PathBuf::from).ok_or("missing package path")?)
+        }
+        "--resolve-events" => (false, None, true, arguments.next().map(PathBuf::from).ok_or("missing package path")?),
+        _ => (false, None, false, PathBuf::from(first)),
+    };
+    let package = Package::open(&path)?;
+    println!("{}", path.display());
+    println!("{} bytes, data starts at {:#x}", package.file_size(), package.data_offset);
+    println!("Languages:");
+    for language in &package.languages {
+        println!("  {} = {}", language.id, language.name);
+    }
+    println!("{} banks, {} media items, {} external media items", package.banks.len(), package.media.len(), package.external_media.len());
+    for entry in &package.banks {
+        println!("  bank id={:#x} lang={} offset={:#x} size={}", entry.id, entry.language_id, entry.offset, entry.size);
+    }
+    if summary_only {
+        return Ok(());
+    }
+    for entry in package.media.iter().chain(&package.external_media) {
+        println!("  id={:#x} lang={} offset={:#x} size={}", entry.id, entry.language_id, entry.offset, entry.size);
+    }
+    let mut file = File::open(path)?;
+    let mut package_media = std::collections::HashMap::new();
+    if resolve_events {
+        let language_id = package.banks.first().map_or(0, |bank| bank.language_id);
+        for item in package.media.iter().chain(&package.external_media)
+            .filter(|item| item.language_id == language_id)
+        {
+            package_media.insert(item.id as u32, package.read_entry(&mut file, *item)?);
+        }
+    }
+    for entry in &package.banks {
+        let bank = package.read_entry(&mut file, *entry)?;
+        if resolve_events {
+            for id in event_ids(&bank)? {
+                match dishonored2_rust::assets::wwise::event_media(&bank, id, &package_media) {
+                    Err(error) => println!("  event {id:#010x} -> error: {error}"),
+                    Ok(Some(groups)) => {
+                        for (group_index, group) in groups.iter().enumerate() {
+                            for (variant_index, variant) in group.variants.iter().enumerate() {
+                                let audio = dishonored2_rust::assets::wwise::decode_wem(&variant.media)?;
+                                println!("  event {id:#010x} group {group_index} {:?} variant {variant_index} weight {} -> decoded {} bytes {}", group.mode, variant.weight, audio.len(), String::from_utf8_lossy(&audio[..audio.len().min(4)]));
+                            }
+                        }
+                    }
+                    Ok(None) => println!("  event {id:#010x} -> unresolved"),
+                }
+            }
+            continue;
+        }
+        inspect_bank(&bank, object_filter)?;
+    }
+    Ok(())
+}
+
+fn event_ids(bank: &[u8]) -> Result<Vec<u32>, Box<dyn Error>> {
+    let mut offset = 0usize;
+    while offset + 8 <= bank.len() {
+        let size = u32::from_le_bytes(bank[offset + 4..offset + 8].try_into()?) as usize;
+        let start = offset + 8;
+        let end = start.checked_add(size).ok_or("chunk size overflow")?;
+        let chunk = bank.get(start..end).ok_or("chunk outside bank")?;
+        if &bank[offset..offset + 4] == b"HIRC" {
+            let count = read_u32(chunk, 0)? as usize;
+            let mut cursor = 4usize;
+            let mut ids = Vec::new();
+            for _ in 0..count {
+                let kind = *chunk.get(cursor).ok_or("truncated HIRC")?;
+                let object_size = read_u32(chunk, cursor + 1)? as usize;
+                let object = chunk.get(cursor + 5..cursor + 5 + object_size).ok_or("HIRC object outside chunk")?;
+                if kind == 4 { ids.push(read_u32(object, 0)?); }
+                cursor += 5 + object_size;
+            }
+            return Ok(ids);
+        }
+        offset = end;
+    }
+    Ok(Vec::new())
+}
+
+fn inspect_bank(bank: &[u8], object_filter: Option<u32>) -> Result<(), Box<dyn Error>> {
+    let mut offset = 0usize;
+    while offset.checked_add(8).is_some_and(|end| end <= bank.len()) {
+        let tag = &bank[offset..offset + 4];
+        let size = u32::from_le_bytes(bank[offset + 4..offset + 8].try_into()?) as usize;
+        let start = offset + 8;
+        let end = start.checked_add(size).ok_or("Wwise bank chunk size overflow")?;
+        if end > bank.len() {
+            return Err("Wwise bank chunk extends beyond its package entry".into());
+        }
+        println!("  chunk {}: {} bytes", String::from_utf8_lossy(tag), size);
+        if tag == b"DIDX" && size % 12 == 0 {
+            for record in bank[start..end].chunks_exact(12) {
+                println!("    embedded media id={:#x} offset={:#x} size={}", read_u32(record, 0)?, read_u32(record, 4)?, read_u32(record, 8)?);
+            }
+        } else if tag == b"BKHD" && size >= 8 {
+            let version = u32::from_le_bytes(bank[start..start + 4].try_into()?);
+            let bank_id = u32::from_le_bytes(bank[start + 4..start + 8].try_into()?);
+            println!("    version={version} bank_id={bank_id:#x}");
+        } else if tag == b"HIRC" {
+            inspect_hierarchy(&bank[start..end], object_filter)?;
+        }
+        offset = end;
+    }
+    if offset != bank.len() {
+        return Err("trailing bytes after Wwise bank chunks".into());
+    }
+    Ok(())
+}
+
+fn inspect_hierarchy(hierarchy: &[u8], object_filter: Option<u32>) -> Result<(), Box<dyn Error>> {
+    let count = read_u32(hierarchy, 0)? as usize;
+    let mut offset = 4usize;
+    let mut kinds = BTreeMap::<u8, usize>::new();
+    for _ in 0..count {
+        let kind = *hierarchy.get(offset).ok_or("truncated Wwise hierarchy")?;
+        let size = read_u32(hierarchy, offset + 1)? as usize;
+        let start = offset + 5;
+        let end = start.checked_add(size).ok_or("Wwise hierarchy object size overflow")?;
+        let object = hierarchy.get(start..end).ok_or("Wwise hierarchy object outside chunk")?;
+        *kinds.entry(kind).or_default() += 1;
+        if object_filter.is_some_and(|id| size >= 4 && read_u32(object, 0).ok() == Some(id)) {
+            println!("    object type={kind} id={:#x} raw={:02x?}", read_u32(object, 0)?, &object[..object.len().min(128)]);
+        } else if object_filter.is_none() && matches!(kind, 5 | 9) && size >= 4 {
+            println!("    object type={kind} id={:#x} raw={:02x?}", read_u32(object, 0)?, &object[..object.len().min(96)]);
+        } else if object_filter.is_none() && kind == 2 && size >= 4 {
+            println!("    sound {} raw={:02x?}", read_u32(object, 0)?, &object[..object.len().min(40)]);
+        } else if object_filter.is_none() && kind == 4 && size >= 5 {
+            let id = read_u32(object, 0)?;
+            let action_count = object[4] as usize;
+            println!("    event {id:#x} raw={:02x?}", &object[..object.len().min(24)]);
+            if size >= 8 + action_count * 4 {
+                let actions = (0..action_count).map(|index| read_u32(object, 8 + index * 4))
+                    .collect::<Result<Vec<_>, _>>()?;
+                println!("    event {id:#x} actions={actions:#x?}");
+            }
+        } else if object_filter.is_none() && kind == 3 && size >= 5 {
+            println!("    action {} payload={:02x?}", read_u32(object, 0)?, &object[4..object.len().min(20)]);
+        }
+        offset = end;
+    }
+    if offset != hierarchy.len() {
+        return Err("Wwise hierarchy object count did not consume its chunk".into());
+    }
+    println!("    HIRC objects: {kinds:?}");
+    Ok(())
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Box<dyn Error>> {
+    Ok(u32::from_le_bytes(bytes.get(offset..offset + 4).ok_or("truncated Wwise bank field")?.try_into()?))
+}

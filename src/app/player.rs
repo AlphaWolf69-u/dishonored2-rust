@@ -14,8 +14,8 @@ use crate::gameplay::player::body::{Body, BodySkeleton};
 use crate::gameplay::player::camera::CameraDecl;
 use crate::gameplay::player::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::player::controller::{ActionEvent, LookSettings, MOUSE_MOVE_KEY};
-use crate::gameplay::player::midnight::{Midnight, PreparedScene};
-use crate::gameplay::player::states::{Kind, Scenes};
+use crate::gameplay::player::midnight::{prepare_sounds, Midnight, PreparedScene};
+use crate::gameplay::player::states::{scene_paths, Scenes};
 use crate::gameplay::player::{decls, Player, PlayerSetup};
 use crate::gameplay::shape_cast;
 use crate::platform::{bindings, console};
@@ -317,6 +317,18 @@ fn load_body(
     let node = anim_basic(&mut clips, additives)?;
     let mut clip = |alias: &str| clips.clip(alias);
     let jump_items = decls::camera_jump_aliases(body_decl).map(|alias| alias.and_then(|a| node.index_of(&a)));
+    let parts = decls::arm_parts(body_decl)?;
+    let mut arms = Vec::new();
+    for (side, part) in parts.iter().enumerate() {
+        arms.push(load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?);
+    }
+    use crate::gameplay::sound::Emitter;
+    let casting = [
+        ("PlayerBody", body_model, Emitter::PlayerBody),
+        ("PlayerCamera", body_model, Emitter::PlayerBody),
+        ("PlayerLeftArm", arms[0].model.as_str(), Emitter::PlayerLeftArm),
+        ("PlayerRightArm", arms[1].model.as_str(), Emitter::PlayerRightArm),
+    ];
     // The states' midnight scenes: the player group's clips of every scene
     // the graph reaches for this body md6.
     let mut scenes = Scenes::new();
@@ -324,7 +336,8 @@ fn load_body(
         let resource = format!("generated/decls/midnightscene/{path}.decl");
         let source = text(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
         let decl = crate::entities::midnight::parse(&source).map_err(|e| format!("{resource}: {e}"))?;
-        let mut prepared = PreparedScene { clips: vec![Vec::new(); decl.scenes.len()], decl };
+        let sounds = prepare_sounds(&decl, &casting, |path| text_of(catalog, path))?;
+        let mut prepared = PreparedScene { clips: vec![Vec::new(); decl.scenes.len()], decl, sounds };
         let mut next = Some(prepared.decl.first);
         for _ in 0..16 {
             let Some(element) = next.take() else { break };
@@ -338,11 +351,6 @@ fn load_body(
         scenes.insert(path.clone(), std::sync::Arc::new(prepared));
     }
     let animations = clips.animations;
-    let parts = decls::arm_parts(body_decl)?;
-    let mut arms = Vec::new();
-    for (side, part) in parts.iter().enumerate() {
-        arms.push(load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?);
-    }
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
@@ -360,20 +368,7 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
     })?;
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
-    let mut scene_paths: Vec<String> = Vec::new();
-    for state in &states {
-        let paths: Vec<&String> = match &state.kind {
-            Kind::CatFall(d) => d.low_damage_midnight.iter().chain(d.high_damage_midnight.iter()).collect(),
-            Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
-            Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
-            _ => Vec::new(),
-        };
-        for path in paths {
-            if !scene_paths.contains(path) {
-                scene_paths.push(path.clone());
-            }
-        }
-    }
+    let scene_paths = scene_paths(&states);
     let (body, scenes) =
         load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths)?;
     let attributes = decls::attributes(&declarations.attributes)?;
@@ -572,6 +567,7 @@ pub(super) fn update_player(
     mut state: ResMut<PlayerState>,
     mut input: ResMut<PlayerInput>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
+    mut sound_events: MessageWriter<super::audio::SoundEvent>,
 ) {
     if benchmark.is_some() || state.debug_free_fly {
         input.events.clear();
@@ -601,6 +597,14 @@ pub(super) fn update_player(
 
             player.frame(&world, &events, &look_settings(), dt, frame_delta, base);
         }
+    }
+    for event in player.machine.take_sound_events() {
+        sound_events.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+            event, emitter: crate::gameplay::sound::Emitter::PlayerBody,
+        }));
+    }
+    for request in player.body.midnight.take_sound_requests() {
+        sound_events.write(super::audio::SoundEvent(request));
     }
     let view = player.view();
     let Ok((mut transform, mut projection)) = cameras.single_mut() else { return };

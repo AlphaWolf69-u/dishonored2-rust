@@ -424,6 +424,9 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     maximum_velocity: number(fields, "m_maximumVelocity", d.maximum_velocity)?,
                     steepness: number(fields, "m_steepness", d.steepness)?,
                     ceil_collision_factor: number(fields, "m_ceilCollisionFactor", d.ceil_collision_factor)?,
+                    jump_sound_event: sound_event_id(fields, "m_jumpSoundEvent"),
+                    double_jump_sound_event: sound_event_id(fields, "m_doubleJumpSoundEvent"),
+                    super_jump_sound_event: sound_event_id(fields, "m_superJumpSoundEvent"),
                 })
             }
             "playerstatefalling" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Falling(_))) => {
@@ -530,6 +533,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     lean_right_button: action(fields, "m_leanRightButton", d.lean_right_button)?,
                     lean_up_button: action(fields, "m_leanUpButton", d.lean_up_button)?,
                     lean_down_button: action(fields, "m_leanDownButton", d.lean_down_button)?,
+                    start_sound_event: sound_event_id(fields, "m_startSoundEvent"),
+                    stop_sound_event: sound_event_id(fields, "m_stopSoundEvent"),
                 })
             }
             _ => continue,
@@ -547,6 +552,13 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
         result.push(decl);
     }
     Ok(result)
+}
+
+fn sound_event_id(fields: &Fields, key: &str) -> Option<u32> {
+    atom(fields, key)
+        .filter(|path| !path.is_empty())
+        .and_then(|path| path.rsplit('/').next())
+        .map(crate::assets::wwise::event_id)
 }
 
 pub fn attributes(fields: &Fields) -> Result<Attributes, String> {

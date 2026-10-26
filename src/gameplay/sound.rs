@@ -1,0 +1,28 @@
+//! Event controls issued to an audio component (PostEvent / StopEvent).
+pub mod mix;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Emitter {
+    Menu,
+    PlayerBody,
+    PlayerLeftArm,
+    PlayerRightArm,
+}
+
+impl Emitter {
+    /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
+    pub fn player_part(self) -> u8 {
+        match self {
+            Self::Menu => 0,
+            Self::PlayerBody => 1,
+            Self::PlayerLeftArm => 2,
+            Self::PlayerRightArm => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    Post { event: u32, emitter: Emitter },
+    Stop { event: u32, emitter: Emitter },
+}

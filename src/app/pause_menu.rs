@@ -49,6 +49,7 @@ enum Command {
 
 enum Event {
     Frame(FlashFrame),
+    Sound(u32),
     Resume,
     Quit,
     ScreenFx(bool),
@@ -479,6 +480,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::ScreenFx(on) => {
                                     let _ = outbox.send(Event::ScreenFx(on));
                                 }
+                                Request::SoundEvent(id) => {
+                                    let _ = outbox.send(Event::Sound(id));
+                                }
                                 // The window follows the cvars (`display_settings`).
                                 Request::DisplayChanged => {}
                                 // `FUN_140033b50` / `FUN_140034360`.
@@ -546,6 +550,7 @@ pub fn update_pause_menu(
     mut frame: ResMut<FlashUiFrame>,
     mut exit: MessageWriter<AppExit>,
     mut screen_fx: Option<ResMut<super::pause_fx::PauseScreenFx>>,
+    mut sound_events: MessageWriter<super::audio::SoundEvent>,
 ) {
     let menu = &mut *menu;
     // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
@@ -688,6 +693,11 @@ pub fn update_pause_menu(
                 if let Some(fx) = screen_fx.as_mut() {
                     fx.requested = Some(on);
                 }
+            }
+            Event::Sound(id) => {
+                sound_events.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+                    event: id, emitter: crate::gameplay::sound::Emitter::Menu,
+                }));
             }
             Event::Failed(e) => {
                 error!("Pause menu unavailable: {e}");
