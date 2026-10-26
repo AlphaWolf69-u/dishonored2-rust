@@ -1,5 +1,6 @@
 //! Event controls issued to an audio component (PostEvent / StopEvent).
 pub mod mix;
+pub mod containers;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Emitter {
@@ -21,8 +22,9 @@ impl Emitter {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Request {
     Post { event: u32, emitter: Emitter },
+    PostWithParameter { event: u32, emitter: Emitter, parameter: u32, value: f32 },
     Stop { event: u32, emitter: Emitter },
 }

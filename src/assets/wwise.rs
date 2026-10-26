@@ -360,9 +360,9 @@ pub fn event_commands_with(
         match node {
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
                 node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
-                reset_each_play: true, variants: vec![variant],
+                reset_each_play: true, restart_backward: false, variants: vec![variant],
             }]),
-            PlaybackNode::Layer(children) => {
+            PlaybackNode::Layer { children, .. } => {
                 let mut groups = Vec::new();
                 for child in children { groups.extend(flatten(child)?); }
                 Ok(groups)
@@ -370,9 +370,6 @@ pub fn event_commands_with(
             PlaybackNode::Container(container) => {
                 if container.playback.continuous {
                     return Err(invalid_owned(format!("continuous Wwise container {:#010x} requires scheduled playback: {:?}", container.node, container.playback)));
-                }
-                if container.mode == SelectionMode::Sequence && container.playback.restart_backward {
-                    return Err(invalid("reverse Wwise playlists require scheduled playback"));
                 }
                 let mut variants = Vec::new();
                 for (child, weight) in container.children {
@@ -389,7 +386,8 @@ pub fn event_commands_with(
                 }
                 Ok(if variants.is_empty() { Vec::new() } else { vec![MediaGroup {
                     node: container.node, global: container.global, avoid_repeat: container.avoid_repeat,
-                    mode: container.mode, reset_each_play: container.reset_each_play, variants,
+                    mode: container.mode, reset_each_play: container.reset_each_play,
+                    restart_backward: container.playback.restart_backward, variants,
                 }] })
             },
         }
@@ -451,7 +449,7 @@ pub fn event_playback_with(
             for child in children {
                 if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? { layers.push(node); }
             }
-            PlaybackNode::Layer(layers)
+            PlaybackNode::Layer { node: id, children: layers }
         };
         visited.remove(&id);
         Ok(Some(node))
@@ -484,7 +482,7 @@ pub enum PlaybackCommand {
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
     Sound { node: u32, variant: MediaVariant },
-    Layer(Vec<PlaybackNode>),
+    Layer { node: u32, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
 }
 
@@ -515,6 +513,7 @@ pub struct MediaGroup {
     pub avoid_repeat: u16,
     pub mode: SelectionMode,
     pub reset_each_play: bool,
+    pub restart_backward: bool,
     pub variants: Vec<MediaVariant>,
 }
 

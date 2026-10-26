@@ -95,15 +95,17 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
-    fn node_volume(&self, node: &NodeProperties) -> Result<f32, String> {
+    fn node_volume(&self, node: &NodeProperties, parameter: Option<(u32, f32)>) -> Result<f32, String> {
         // RTPC parameter IDs differ from static property IDs for makeup gain
         // and output-bus volume in bank version 113.
         let mut values = [node.float(0), node.float(5), node.float(0x21), node.float(0x17)];
         for curve in &node.curves {
             let slot = match curve.property { 0 => 0, 5 => 1, 0x24 => 2, 0x3c => 3, _ => continue };
             if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter volume curve", node.id)); }
-            let input = self.parameters.get(&curve.parameter).ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
-            let value = curve_value(curve, *input).ok_or("empty Wwise volume curve")?;
+            let input = parameter.filter(|(id, _)| *id == curve.parameter).map(|(_, value)| value)
+                .or_else(|| self.parameters.get(&curve.parameter).copied())
+                .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
+            let value = curve_value(curve, input).ok_or("empty Wwise volume curve")?;
             match curve.accumulation {
                 0 => values[slot] = value,
                 1 => values[slot] += value,
@@ -115,21 +117,29 @@ impl Mixer {
     }
 
     pub fn volume_db(&self, source: &MediaProperties) -> Result<f32, String> {
+        self.volume_db_with_parameter(source, None)
+    }
+
+    pub fn volume_db_with_parameter(&self, source: &MediaProperties, parameter: Option<(u32, f32)>) -> Result<f32, String> {
         let mut volume = 0.0;
-        for node in &source.nodes { volume += self.node_volume(node)?; }
+        for node in &source.nodes { volume += self.node_volume(node, parameter)?; }
         let mut bus = source.bus;
         let mut visited = HashSet::new();
         while bus != 0 {
             if !visited.insert(bus) { return Err("cyclic Wwise bus hierarchy".into()); }
             let node = self.buses.get(&bus).ok_or_else(|| format!("missing Wwise output bus {bus:#010x}"))?;
-            volume += self.node_volume(node)?;
+            volume += self.node_volume(node, parameter)?;
             bus = node.parent;
         }
         Ok(volume)
     }
 
     pub fn gain(&self, source: &MediaProperties, random_db: f32) -> Result<f32, String> {
-        let volume = self.volume_db(source)? + random_db;
+        self.gain_with_parameter(source, random_db, None)
+    }
+
+    pub fn gain_with_parameter(&self, source: &MediaProperties, random_db: f32, parameter: Option<(u32, f32)>) -> Result<f32, String> {
+        let volume = self.volume_db_with_parameter(source, parameter)? + random_db;
         Ok(if volume <= self.volume_threshold_db { 0.0 } else { power10(volume * 0.05) })
     }
 }
