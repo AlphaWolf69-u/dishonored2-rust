@@ -98,6 +98,7 @@ pub(super) fn register(app: &mut App) {
 /// after atmosphere/depth preparation and before ordinary transparency.
 fn render_particles(
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
     fog_frame: Res<FogSceneFrame>,
     fog: Res<FogGpu>,
@@ -173,6 +174,7 @@ fn render_particles(
             owner_colour: [1.; 4],
             owner_scale: 1.,
         };
+        let console = crate::platform::console::shared().read();
         let draws = gpu
             .screen_state
             .publish_particle_draws(water.matrices.frame, |pose| {
@@ -189,13 +191,20 @@ fn render_particles(
                     view_z: std::array::from_fn(|i| -matrices.view[2][i]),
                     query_visibility: 1.,
                     alpha_scale: 1.,
-                    accumulation_targets: false,
+                    cvars: &console.cvars,
                     areas: &frame.areas,
                 })
             })?;
+        drop(console);
         if draws.is_empty() {
             return Ok(());
         }
+        let lens = display
+            .0
+            .as_ref()
+            .filter(|f| f.camera == water.camera)
+            .and_then(|f| f.lens.as_ref())
+            .ok_or("particle HDR settings await the current view")?;
         let colour_format = target.main_texture_format();
         let depth_format = depth.alpha.full.format();
         if gpu.particles.as_ref().is_none_or(|p| {
@@ -238,6 +247,12 @@ fn render_particles(
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {
+                compressed_hdr: lens.settings.hdr_buffer_format != 1,
+                white_level: lens.white_level,
+                resolve_state: *sources
+                    .transparency_resolve_state
+                    .as_ref()
+                    .map_err(Clone::clone)?,
                 matrices,
                 local_time: water.local_time[0],
                 camera_exposure: camera.exposure,

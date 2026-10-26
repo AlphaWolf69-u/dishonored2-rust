@@ -24,7 +24,7 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub view_z: [f32; 4],
     pub query_visibility: f32,
     pub alpha_scale: f32,
-    pub accumulation_targets: bool,
+    pub cvars: &'a crate::platform::cvars::CVars,
     pub areas: &'a [super::super::fog::AreaFogFrame],
 }
 
@@ -137,13 +137,20 @@ impl PlayingParticle {
                 if bounds.is_none() {
                     continue;
                 }
+                let transparency =
+                    crate::rendering::particles::transparency::TransparencyParameters::read(
+                        context.cvars,
+                        material.state,
+                        true,
+                    )?;
                 let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
                     material.state,
-                    context.accumulation_targets,
+                    transparency.mode != 0,
                     self.water_flags & 8 != 0,
                 );
                 output.push(super::super::particle_pass::ParticleDraw {
                     material: material.clone(),
+                    transparency,
                     state,
                     stencil_reference,
                     grid_level:

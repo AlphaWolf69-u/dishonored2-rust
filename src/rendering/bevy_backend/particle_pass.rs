@@ -13,6 +13,14 @@ use bevy::{
     },
 };
 use std::{collections::HashMap, sync::Arc};
+mod transparency;
+
+#[derive(Clone, Copy, ShaderType)]
+struct TransparencyParameters {
+    weights: Vec4,
+    parameters: Vec4,
+    mode: UVec4,
+}
 
 #[derive(Clone, Copy, ShaderType)]
 struct ViewParameters {
@@ -127,6 +135,7 @@ pub struct ParticleDraw {
     pub clip_plane: Vec4,
     pub clip_fade_distance: f32,
     pub fog: FogObjectParameters,
+    pub transparency: crate::rendering::particles::transparency::TransparencyParameters,
 }
 pub struct ParticleFogInputs<'a> {
     pub parameters: &'a Buffer,
@@ -145,6 +154,9 @@ pub struct ParticleViewInputs<'a> {
     pub colour: &'a TextureView,
     pub depth: &'a TextureView,
     pub fog: ParticleFogInputs<'a>,
+    pub compressed_hdr: bool,
+    pub white_level: f32,
+    pub resolve_state: crate::render_state::RenderState,
 }
 struct GridGpu {
     vertices: Buffer,
@@ -166,6 +178,8 @@ pub struct ParticlePass {
     fog_view: UniformBuffer<FogViewParameters>,
     instances: Buffer,
     objects: Buffer,
+    transparency_parameters: Buffer,
+    transparency: Option<transparency::TransparencyPass>,
     max_instances: usize,
     max_draws: usize,
     grids: Vec<GridGpu>,
@@ -249,6 +263,7 @@ impl ParticlePass {
                 buffer_entry(2, false),
                 buffer_entry(3, false),
                 buffer_entry(4, true),
+                buffer_entry(5, false),
             ],
         );
         let material_layout = device.create_bind_group_layout(
@@ -308,6 +323,8 @@ impl ParticlePass {
             "particle volume fog",
             (max_draws * FogObjectParameters::SIZE) as u64,
         );
+        let transparency_parameters =
+            storage("particle transparency parameters", (max_draws * 48) as u64);
         let mut grids = Vec::new();
         for level in 0..6 {
             let grid = SpriteGrid::new(level);
@@ -373,6 +390,8 @@ impl ParticlePass {
             fog_view,
             instances,
             objects,
+            transparency_parameters,
+            transparency: None,
             max_instances,
             max_draws,
             grids,
@@ -400,6 +419,7 @@ impl ParticlePass {
         queue: &RenderQueue,
         source: Arc<ParticleMaterial>,
         state: crate::render_state::RenderState,
+        accumulation: bool,
     ) -> Result<MaterialGpu, String> {
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
@@ -490,14 +510,33 @@ impl ParticlePass {
                 },
             ],
         );
-        let blend = crate::render_state::blend_state(&state).targets[0]
-            .ok_or("particle colour target absent")?;
+        let blends = crate::render_state::blend_state(&state);
+        let formats = [
+            if accumulation {
+                TextureFormat::Rgba16Float
+            } else {
+                self.colour_format
+            },
+            TextureFormat::Rg16Float,
+        ];
+        let targets = (0..if accumulation { 2 } else { 1 })
+            .map(|index| {
+                let blend = blends.targets[index].ok_or("particle colour target absent")?;
+                Ok(Some(ColorTargetState {
+                    format: formats[index],
+                    blend: super::pipeline_state::blend_target(blend)?,
+                    write_mask: ColorWrites::from_bits_truncate(blend.write_mask as u32),
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let depth = crate::render_state::depth_stencil_state(&state);
         if depth.depth_write {
             return Err("particle alpha colour state must disable depth writes".into());
         }
         if depth.stencil_enabled && !self.depth_format.has_stencil_aspect() {
-            return Err("particle alpha colour state requires the gameplay stencil attachment".into());
+            return Err(
+                "particle alpha colour state requires the gameplay stencil attachment".into(),
+            );
         }
         let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
@@ -511,13 +550,13 @@ impl ParticlePass {
             },
             fragment: Some(RawFragmentState {
                 module: &self.shader,
-                entry_point: Some("particle_fragment"),
+                entry_point: Some(if accumulation {
+                    "particle_accumulation_fragment"
+                } else {
+                    "particle_fragment"
+                }),
                 compilation_options: default(),
-                targets: &[Some(ColorTargetState {
-                    format: self.colour_format,
-                    blend: super::pipeline_state::blend_target(blend)?,
-                    write_mask: ColorWrites::from_bits_truncate(blend.write_mask as u32),
-                })],
+                targets: &targets,
             }),
             primitive: PrimitiveState {
                 front_face,
@@ -552,6 +591,29 @@ impl ParticlePass {
         if draws.is_empty() {
             return Ok(());
         }
+        let accumulation = draws[0].transparency.mode != 0;
+        if draws
+            .iter()
+            .any(|draw| (draw.transparency.mode != 0) != accumulation)
+        {
+            return Err("particle transparency mode changed within a frame".into());
+        }
+        if accumulation
+            && self
+                .transparency
+                .as_ref()
+                .is_none_or(|p| !p.matches(input.extent, input.compressed_hdr, input.resolve_state))
+        {
+            self.transparency = Some(transparency::TransparencyPass::new(
+                device,
+                queue,
+                input.extent,
+                input.compressed_hdr,
+                self.colour_format,
+                self.depth_format,
+                input.resolve_state,
+            )?);
+        }
         let count = draws.iter().map(|d| d.instances.len()).sum::<usize>();
         if count > self.max_instances || draws.len() > self.max_draws {
             return Err("particle draw exceeds admitted declaration capacity".into());
@@ -561,7 +623,13 @@ impl ParticlePass {
             if !self.materials.contains_key(&key) {
                 self.materials.insert(
                     key,
-                    self.material(device, queue, draw.material.clone(), draw.state)?,
+                    self.material(
+                        device,
+                        queue,
+                        draw.material.clone(),
+                        draw.state,
+                        accumulation,
+                    )?,
                 );
             }
         }
@@ -622,6 +690,24 @@ impl ParticlePass {
             return Ok(());
         }
         queue.write_buffer(&self.instances, 0, &self.instance_bytes);
+        let transparency = ShaderBuffer::from(
+            draws
+                .iter()
+                .map(|draw| TransparencyParameters {
+                    weights: Vec4::from_array(draw.transparency.weights),
+                    parameters: Vec4::from_array(draw.transparency.parameters),
+                    mode: UVec4::new(draw.transparency.mode as u32, 0, 0, 0),
+                })
+                .collect::<Vec<_>>(),
+        );
+        queue.write_buffer(
+            &self.transparency_parameters,
+            0,
+            transparency
+                .data
+                .as_ref()
+                .ok_or("particle transparency records absent")?,
+        );
         let objects = ShaderBuffer::from(draws.iter().map(|d| d.fog).collect::<Vec<_>>());
         queue.write_buffer(
             &self.objects,
@@ -660,6 +746,10 @@ impl ParticlePass {
                             BindGroupEntry {
                                 binding: 4,
                                 resource: self.fog_view.binding().unwrap(),
+                            },
+                            BindGroupEntry {
+                                binding: 5,
+                                resource: self.transparency_parameters.as_entire_binding(),
                             },
                         ],
                     )
@@ -715,9 +805,30 @@ impl ParticlePass {
                 ),
             ));
         }
-        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("particle colour"),
-            color_attachments: &[Some(RenderPassColorAttachment {
+        let colour_attachments = if accumulation {
+            let targets = self.transparency.as_ref().unwrap();
+            vec![
+                Some(RenderPassColorAttachment {
+                    view: &targets.accumulation_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Default::default()),
+                        store: StoreOp::Store,
+                    },
+                }),
+                Some(RenderPassColorAttachment {
+                    view: &targets.opacity_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(bevy::color::LinearRgba::new(1., 0., 0., 1.).into()),
+                        store: StoreOp::Store,
+                    },
+                }),
+            ]
+        } else {
+            vec![Some(RenderPassColorAttachment {
                 view: input.colour,
                 depth_slice: None,
                 resolve_target: None,
@@ -725,14 +836,21 @@ impl ParticlePass {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
                 },
-            })],
+            })]
+        };
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("particle colour"),
+            color_attachments: &colour_attachments,
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: input.depth,
                 depth_ops: None,
-                stencil_ops: self.depth_format.has_stencil_aspect().then_some(Operations {
-                    load: LoadOp::Load,
-                    store: StoreOp::Store,
-                }),
+                stencil_ops: self
+                    .depth_format
+                    .has_stencil_aspect()
+                    .then_some(Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -751,6 +869,13 @@ impl ParticlePass {
             let count = draw.instances.len() as u32;
             pass.draw_indexed(0..self.grids[level].count, 0, first..first + count);
             first += count;
+        }
+        drop(pass);
+        if accumulation {
+            self.transparency
+                .as_mut()
+                .unwrap()
+                .record_resolve(device, queue, encoder, &input)?;
         }
         Ok(())
     }

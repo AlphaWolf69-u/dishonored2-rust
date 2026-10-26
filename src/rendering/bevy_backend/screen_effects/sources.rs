@@ -25,7 +25,8 @@ pub struct GroupDefinition {
 #[derive(Clone)]
 pub struct ParticleDefinition {
     pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
-    pub declarations: Vec<Option<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>>,
+    pub declarations:
+        Vec<Option<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>>,
     pub materials: HashMap<String, Arc<crate::rendering::particles::material::ParticleMaterial>>,
 }
 pub struct EffectDefinition {
@@ -37,6 +38,7 @@ pub struct ScreenEffectSources {
     pub leave_water: EffectDefinition,
     pub materials: Vec<ScreenDistortionMaterial>,
     pub resolve_state: crate::render_state::RenderState,
+    pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
 }
 impl ScreenEffectSources {
     pub fn load(
@@ -185,6 +187,13 @@ impl ScreenEffectSources {
         )?;
         // 326930's full-screen overwrite, distinct from the material's blend.
         resolve_state[0] = (resolve_state[0] & 0xffe0_0803) | 0x802;
+        let transparency_resolve_state = library
+            .definition(b"PostFX_CompositeWeightedBlendedOIT")
+            .and_then(|definition| {
+                definition
+                    .map(|d| d.render_state())
+                    .ok_or_else(|| "weighted transparency resolve definition absent".into())
+            });
         Ok(Self {
             swimming: crate::gameplay::player::swimming::SwimmingSettings::read(
                 &declarations.controller,
@@ -193,6 +202,7 @@ impl ScreenEffectSources {
             leave_water,
             materials,
             resolve_state,
+            transparency_resolve_state,
         })
     }
 }

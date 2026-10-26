@@ -6,6 +6,7 @@ pub mod clipping;
 pub mod geometry;
 pub mod material;
 pub mod publication;
+pub mod transparency;
 pub mod view;
 
 /// 1ee880's twelve-byte instance record, consumed by particles_instancing.
