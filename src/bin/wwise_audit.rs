@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut deferred = 0usize;
                 let mut admitted = 0usize;
                 let mut active = 0usize;
+                let mut projected = 0usize;
                 for binding in bindings {
                     let startup = binding.startup();
                     if !startup.deferred { continue; }
@@ -63,8 +64,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     active += usize::from(result.closest.is_some());
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
                         binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
+                    let closest = result.closest.and_then(|index| result.paths.get(index));
+                    match dishonored2_rust::gameplay::sound::positions::project(
+                        &[&result], closest, query.range, binding.frame.basis[0].into(),
+                    ) {
+                        Ok(positions) => {
+                            projected += 1;
+                            println!("  playback positions: {positions:?}");
+                        }
+                        Err(error) => println!("  playback position projection unresolved: {error}"),
+                    }
                 }
                 println!("{deferred} declared deferred loops, {admitted} admitted origins, {active} audible active results at player start");
+                println!("{projected} emitter position lists resolved from authored acoustic paths");
             }
             world.release()?;
         }
