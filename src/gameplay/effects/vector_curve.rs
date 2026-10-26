@@ -14,6 +14,19 @@ pub struct EffectVectorCurvePair<const N: usize> {
     pub minimum: EffectVectorCurve<N>,
 }
 impl<const N: usize> EffectVectorCurve<N> {
+    ///00d550/00d760 append logical key/value data. Mode4 constructors use
+    ///cubic triples; an existing tripled curve retains that representation.
+    ///Allocation and inline-storage flags remain with Rust's Vec owner.
+    pub fn append_key(&mut self, time: f32, value: [f32; N], interpolation_mode: i32) {
+        let tripled = !self.times.is_empty() && self.values.len() == self.times.len() * 3;
+        self.times.push(time);
+        if !tripled && interpolation_mode < 4 {
+            self.values.push(value);
+        } else {
+            self.values.extend([[0.; N], value, [0.; N]]);
+        }
+    }
+
     fn value(&self, index: usize) -> Result<[f32; N], String> {
         self.values.get(index).copied().ok_or_else(|| {
             format!(

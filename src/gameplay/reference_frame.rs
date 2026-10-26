@@ -9,6 +9,16 @@ pub struct ReferenceFrame {
     pub basis: [[f32; 3]; 3],
 }
 
+///10e9e0 selects the installed normal-axis row bases; other enum values use
+///the Z/identity basis. These are exact permutations, not trigonometric turns.
+pub const fn normal_axis_basis(axis: i32) -> [[f32; 3]; 3] {
+    match axis {
+        0 => [[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]],
+        1 => [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]],
+        _ => [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+    }
+}
+
 /// The 21 published words shared by an entity and its reference-frame actor.
 /// Prediction caches and completion markers stay with the actor alone.
 #[derive(Clone, Copy, Debug)]

@@ -3,11 +3,100 @@ use super::{DecalDescription, DecalPool};
 use crate::{
     float::{add, multiply, subtract},
     gameplay::{
-        effects::decal::DecalPhaseSample,
-        reference_frame::{basis_product, ReferenceFrame},
+        effects::{
+            decal::{DecalAnimation, DecalAnimationDefinition, DecalPhaseSample},
+            parameters::position_range,
+        },
+        reference_frame::{basis_product, normal_axis_basis, ReferenceFrame},
     },
 };
 use std::num::NonZeroU64;
+use std::sync::Arc;
+
+pub struct DecalAttachmentDefinition {
+    pub projection_axis: i32,
+    pub initial_rotation: [f32; 2],
+    pub initial_position: [[f32; 3]; 2],
+    pub centering: [f32; 3],
+    pub follow_position: bool,
+    pub follow_orientation: bool,
+}
+impl Default for DecalAttachmentDefinition {
+    ///217d50 resets following, Z projection, centred XY/front-face Z and zero
+    ///local rotation/translation. It does not guess a world placement.
+    fn default() -> Self {
+        Self {
+            projection_axis: 2,
+            initial_rotation: [0.; 2],
+            initial_position: [[0.; 3]; 2],
+            centering: [0.5, 0.5, 1.],
+            follow_position: true,
+            follow_orientation: true,
+        }
+    }
+}
+impl DecalAttachmentDefinition {
+    ///The attachment portion of218e80 consumes rotation, then X/Y/Z position.
+    pub fn sample(&self, seed: &mut u32) -> DecalAttachment {
+        let t = crate::random::lcg_unit(seed);
+        let angle = multiply(
+            add(
+                multiply(
+                    subtract(1., t),
+                    crate::gameplay::effects::normalize_small(self.initial_rotation[1]),
+                ),
+                multiply(
+                    t,
+                    crate::gameplay::effects::normalize_small(self.initial_rotation[0]),
+                ),
+            ),
+            f32::from_bits(0x3c8e_fa35),
+        );
+        let rotation = super::super::render_shadow::axis_rotation(2, angle).unwrap();
+        let basis = basis_product(rotation, normal_axis_basis(self.projection_axis));
+        let mix = std::array::from_fn(|_| crate::random::lcg_unit(seed));
+        DecalAttachment {
+            local: ReferenceFrame {
+                basis,
+                position: position_range(self.initial_position, mix),
+            },
+            pivot: self.centering,
+            follow_position: self.follow_position,
+            follow_orientation: self.follow_orientation,
+        }
+    }
+}
+
+///Retained FX state. Definition data is shared; only sampled parameters,
+///attachment and manager binding belong to each running instance.
+pub struct DecalEffect {
+    pub animation: DecalAnimation,
+    pub attachment: DecalAttachment,
+    pub binding: DecalEffectBinding,
+}
+impl DecalEffect {
+    ///218e80 resolves no material or GPU object here. Those are created lazily
+    ///by218620 on the first active phase update.
+    pub fn new(
+        definition: Arc<DecalAnimationDefinition>,
+        attachment: &DecalAttachmentDefinition,
+        offsets: [f32; 4],
+        seed: &mut u32,
+    ) -> Result<Self, String> {
+        let (animation, attachment) =
+            DecalAnimation::new(
+                definition,
+                offsets,
+                seed,
+                |seed| Ok(attachment.sample(seed)),
+            )?;
+        Ok(Self {
+            animation,
+            attachment,
+            binding: DecalEffectBinding::new(true),
+        })
+    }
+}
 
 /// The FX owner supplies its sampled local frame, authored pivot and follow
 /// switches. Parent frame selection and curve sampling remain with that owner.
@@ -60,6 +149,36 @@ impl DecalEffectBinding {
     pub fn retire(&mut self) {
         self.active = false;
         self.slot = None;
+    }
+
+    ///2191f0 updates only active FX; a pooled-but-retired entry cannot consume
+    ///loop RNG or modify its retained animation state before group removal.
+    pub fn update(
+        &self,
+        animation: &mut DecalAnimation,
+        now: f32,
+        seed: &mut u32,
+    ) -> Result<Option<DecalPhaseSample>, String> {
+        if self.active {
+            animation.update(now, seed)
+        } else {
+            Ok(None)
+        }
+    }
+
+    ///218980 removes the cached record during group retirement. Unlike an
+    ///eviction notification, this leaves the retired FX's cached fields intact
+    ///until initialization reuses it. Stale bindings cannot remove a new owner.
+    pub fn detach<M, R>(
+        &self,
+        owner: NonZeroU64,
+        pool: &mut DecalPool<DecalDescription<M>, R>,
+        unregister: impl FnMut(&mut R),
+    ) -> Result<bool, String> {
+        match self.slot {
+            Some(index) => pool.remove(index, owner, unregister),
+            None => Ok(false),
+        }
     }
 
     ///218620 resolves the material once when creating a record. Following

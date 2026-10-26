@@ -11,7 +11,7 @@ pub mod vector_curve;
 
 use crate::float::add;
 
-fn normalize_small(value: f32) -> f32 {
+pub(crate) fn normalize_small(value: f32) -> f32 {
     if f32::from_bits(value.to_bits() & 0x7fff_ffff) <= f32::from_bits(0x2193_92ef) {
         0.
     } else {

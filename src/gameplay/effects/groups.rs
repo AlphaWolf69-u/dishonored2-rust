@@ -29,37 +29,17 @@ pub fn update_environment_chain(
     seed: &mut u32,
     mut retire: impl FnMut(u16, &EnvironmentBlendEffect) -> Result<(), String>,
 ) -> Result<u32, String> {
-    let mut current = *head;
-    let mut previous: Option<u16> = None;
-    let mut updated = 0;
-    let mut visited = 0;
-    while current != u16::MAX {
-        visited += 1;
-        if visited > pool.next.len() {
-            return Err("FX environment chain contains a cycle".into());
-        }
+    pool.update_chain(head, |current| {
         let effect = effects
             .get_mut(usize::from(current))
             .and_then(Option::as_mut)
             .ok_or_else(|| format!("FX environment slot {current} is not initialized"))?;
-        let next = *pool
-            .next
-            .get(usize::from(current))
-            .ok_or_else(|| format!("FX environment link {current} exceeds pool capacity"))?;
         if effect.active {
             effect.update(now, view_mask, seed)?;
-            updated += 1;
-            previous = Some(current);
+            Ok(true)
         } else {
             retire(current, effect)?;
-            if let Some(previous) = previous {
-                pool.release(current)?;
-                pool.next[usize::from(previous)] = next;
-            } else {
-                pool.release_head(head)?;
-            }
+            Ok(false)
         }
-        current = next;
-    }
-    Ok(updated)
+    })
 }

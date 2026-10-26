@@ -2486,8 +2486,8 @@ resolves the declaration only when creating a record, follows position and
 orientation independently, and updates scale/colour every tick. The attachment
 computes the source's asymmetric-box pivot offset in its local and parent frames;
 orientation reuses the shared reference-frame basis product. Eviction retires
-the old FX binding without removing the new pool owner. Scheduler activation,
-curve sampling and parent selection remain with the gameplay FX owner.
+the old FX binding without removing the new pool owner. Descriptor loading,
+scheduler activation and parent selection remain with the gameplay FX owner.
 
 Decal phase sampling now lives in `gameplay::effects::decal`, sharing declaration
 curves through an `Arc`. Its timing update preserves delay, single loop restart,
@@ -2495,5 +2495,23 @@ independent phase bases and retained fade-out values. The scalar depth/opacity
 curves reuse the existing sampler; size/colour use `effects::vector_curve`'s
 distinct two/three-channel cubic rules and per-channel minimum/maximum mixing.
 The render binding consumes the resulting sample, including expiry before pool
-updates. Asset defaults and scheduler activation still require the FX owner;
-these helpers do not spawn an effect merely because its declaration exists.
+updates. These helpers do not spawn an effect merely because its declaration exists.
+
+`DecalEffect::new` connects source initialization to animation, attachment and
+pool binding. Timing, size, depth, rotation, position, colour and opacity consume
+the shared RNG in source order. Shared vector randomness consumes two draws;
+independent randomness consumes all range draws followed by all curve-mix draws.
+Attachment orientation reuses the shared basis product and axis rotation, with
+exact normal-axis permutations and the source's degree conversion constant.
+Descriptor defaults come from its constructor/reset chain: independent size and
+colour randomness, unit ranges, size fade-in/out ramps and constant unit colour,
+depth and opacity curves. Following is enabled; the attachment defaults to Z
+projection, centred XY, front-face Z and zero local rotation/translation.
+
+FX group traversal now reuses `EffectPoolLinks::update_chain` for the shared
+decal/environment lifetime rule. Inactive entries detach before being returned
+to the free list; effects expiring during the current update remain linked until
+the next tick. `DecalEffectBinding::detach` checks cached slot and owner without
+resetting the retired record's fields; eviction notification remains a separate
+operation. Installed FX descriptor decoding, gameplay activation and projected
+GPU submission are still required for visible dynamic decals.
