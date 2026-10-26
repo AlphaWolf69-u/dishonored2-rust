@@ -3,6 +3,8 @@ use crate::assets::wwise::MediaProperties;
 
 /// Version-113 AkPropID_Loop is 0x3a. It is an integer union member,
 /// unlike pitch/gain properties. Zero is infinite and one is a single pass.
+/// Bank enum: https://github.com/bnnm/wwiser/blob/master/wwiser/parser/wdefs.py
+/// Source decoder count/interval: 1411425c0, 141142d50 and 1411606d0.
 pub fn source_count(properties: &MediaProperties) -> Result<u16, String> {
     let source = properties
         .nodes
