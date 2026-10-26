@@ -297,6 +297,12 @@ impl Pause {
         let notifications = global.take_notifications();
         for (name, args) in notifications {
             match name.as_str() {
+                // 14002c220 registers the sound handler for every movie,
+                // including the global movie loaded by 140462210.
+                "PostSoundEvent" => match args.first() {
+                    Some(Value::Number(id)) => requests.push(Request::SoundEvent(crate::flash::avm2::value::to_uint32(*id))),
+                    _ => unhandled.push(name.clone()),
+                },
                 "SetFlashFocus" => {
                     if let Some(g) = self.boxes.global() {
                         g.call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[(controller_type() as f64).into()])
