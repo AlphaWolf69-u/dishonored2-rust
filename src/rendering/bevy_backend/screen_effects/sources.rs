@@ -22,13 +22,7 @@ pub struct GroupDefinition {
     /// Retain descriptor errors for the particle owner without disabling quads.
     pub particles: Vec<Result<ParticleDefinition, String>>,
 }
-#[derive(Clone)]
-pub struct ParticleDefinition {
-    pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
-    pub declarations:
-        Vec<Option<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>>,
-    pub materials: HashMap<String, Arc<crate::rendering::particles::material::ParticleMaterial>>,
-}
+pub use crate::rendering::particles::definition::ParticleDefinition;
 pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
 }
@@ -126,43 +120,12 @@ impl ScreenEffectSources {
                             _ => true,
                         })
                         .map(|value| match value {
-                            crate::entities::Value::Scope(fields) => {
-                                let owner =
-                                    crate::assets::fx::particle_system::particle_system(fields)?;
-                                let declarations = owner
-                                    .declarations
-                                    .iter()
-                                    .map(|path| {
-                                        let Some(path) = path else { return Ok(None) };
-                                        let mut read = |p: &str| catalog.read(p).ok().flatten();
-                                        let fields = read_edit(&mut read, "particledt", path)?;
-                                        crate::assets::fx::particle_declaration::declaration(
-                                            &fields,
-                                        )
-                                        .map(|declaration| Some(Arc::new(declaration)))
-                                        .map_err(|error| format!("{path}: {error}"))
-                                    })
-                                    .collect::<Result<Vec<_>, String>>()?;
-                                let mut materials = HashMap::new();
-                                for declaration in declarations.iter().flatten() {
-                                    for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
-                                        for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
-                                            let Some(name) = &sprite.material else { continue };
-                                            if !particle_materials.contains_key(name) {
-                                                particle_materials.insert(name.clone(), Arc::new(
-                                                    crate::rendering::particles::material::ParticleMaterial::load(
-                                                        catalog, library, name)?));
-                                            }
-                                            materials.insert(name.clone(), particle_materials[name].clone());
-                                        }
-                                    }
-                                }
-                                Ok(ParticleDefinition {
-                                    owner: Arc::new(owner),
-                                    declarations,
-                                    materials,
-                                })
-                            }
+                            crate::entities::Value::Scope(fields) => ParticleDefinition::load(
+                                fields,
+                                catalog,
+                                library,
+                                &mut particle_materials,
+                            ),
                             _ => Err("particle FX descriptor requires a scope".into()),
                         })
                         .collect(),

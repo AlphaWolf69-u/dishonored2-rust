@@ -3,6 +3,7 @@
 use bevy_math::{Vec2, Vec4};
 pub mod bounds;
 pub mod clipping;
+pub mod definition;
 pub mod geometry;
 pub mod material;
 pub mod publication;
