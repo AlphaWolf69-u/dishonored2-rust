@@ -99,7 +99,7 @@ impl PlayerWorld for GameCollision<'_> {
     }
 }
 
-fn character_name(character: Character) -> &'static str {
+pub(super) fn character_name(character: Character) -> &'static str {
     match character {
         Character::Corvo => "corvo",
         Character::Emily => "emily",

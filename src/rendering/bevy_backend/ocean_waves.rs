@@ -347,6 +347,10 @@ impl OceanWaves {
     pub fn displacement_view(&self) -> &TextureView {
         self.surfaces.displacement_view(self.current_index)
     }
+    pub(super) fn query_displacement_views(&self)->[&TextureView;2] {
+        [self.surfaces.displacement_view(0),self.surfaces.displacement_view(1)]
+    }
+    pub(super) fn current_slot(&self)->usize {self.current_index}
     /// The other ping-pong slot. The admitted world-frame clear resets both
     /// slots; it is not necessarily a completed previous world-frame image.
     pub fn previous_displacement(&self) -> &Texture {

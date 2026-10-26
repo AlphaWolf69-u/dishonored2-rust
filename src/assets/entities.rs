@@ -1453,8 +1453,8 @@ pub fn material_float_parameters(
 }
 
 /// Material-root named resource overrides. Legacy parms shares the root scope;
-/// options and unrelated nested blocks do not. Inline image expressions require
-/// the image-program compiler and are reported rather than guessed here.
+/// options and unrelated nested blocks do not. Inline image expressions retain
+/// their complete source spelling so the archive can resolve compiled images.
 pub fn material_resource_parameters(
     text: &str,
     mut is_parameter: impl FnMut(&str) -> bool,
@@ -1473,11 +1473,22 @@ pub fn material_resource_parameters(
             parser.expect(Token::Open)?;in_parms=true;continue;
         }
         if is_parameter(&name) {
-            let value=parser.atom()?.trim_matches('"');
-            if value.contains(['(',')']) || matches!(parser.ahead,Some(Token::Atom(v)) if v.starts_with('(')) {
-                return Err(format!("material image program requires compilation: {name}"));
+            let first=parser.atom()?;
+            let parentheses=|token:&str| -> i32 {
+                if token.starts_with('"') {return 0;}
+                token.bytes().map(|b|match b {b'('=>1,b')'=>-1,_=>0}).sum()
+            };
+            let mut last=first;
+            let mut depth=parentheses(first);
+            if depth==0 && matches!(parser.ahead,Some(Token::Atom(v)) if v.starts_with('(')) {
+                last=parser.atom()?;
+                depth+=parentheses(last);
             }
-            values.push((name,value.to_owned()));
+            while depth>0 {last=parser.atom()?;depth+=parentheses(last);}
+            if depth<0 {return Err(format!("unbalanced material image program: {name}"));}
+            let start=first.as_ptr() as usize-text.as_ptr() as usize;
+            let end=last.as_ptr() as usize-text.as_ptr() as usize+last.len();
+            values.push((name,text[start..end].trim_matches('"').to_owned()));
         } else {skip_material_value(&mut parser)?;}
     }
     parser.expect(Token::Close)?;

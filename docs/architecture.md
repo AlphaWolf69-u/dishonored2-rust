@@ -2078,6 +2078,23 @@ the depth prepass, so backend shader optimization must preserve their shared
 displacement and projection arithmetic. Otherwise the colour pass can reject
 water pixels and expose the pre-water scene through waves.
 
+`assets/fx/screen_quad.rs` reads authored fullscreen-quad timing and stage
+descriptors. `rendering/screen_distortion.rs` resolves the selected materials,
+registered defaults and shipped compiled noise images. The gameplay camera's
+`bevy_backend/screen_effects` owner runs these after camera effects and before
+exposure/bloom, independently of the camera motion-blur setting. It reuses the
+scalar FX envelope and the HDR storage bridge, with separate immutable uniforms
+for the two distortion resolves. No distortion passes run without active quads.
+The configured character supplies submerged and leave-water FX declarations.
+Water contact is queried at the player's body independently of the render-view
+query. The debug camera reuses its established feet probe. Ocean contacts admit
+the swimming controller's five-point wave query, using the real displacement,
+collision-height, foam and authored masks. Four persistent readback slots map
+after queue submission; the controller consumes its retained handles in order.
+The head sample controls submersion; the five-point maximum is a distinct body
+surface value. `ark_player_follow_waves` gates submission. F8 includes both
+surfaces, the five samples and the actual distortion vector field.
+
 F8 numerical display captures include same-frame ocean displacement, gradients,
 persistent foam, shoreline foam depth, immutable refraction source and water
 colour, together with the resolved ocean environment and clocks. These copies

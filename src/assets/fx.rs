@@ -2,6 +2,7 @@
 //! fields are partial edits of their class constructor defaults.
 use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
+pub mod screen_quad;
 
 pub struct EnvironmentEffectAsset {
     pub name: String,

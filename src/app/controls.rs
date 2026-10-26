@@ -32,6 +32,9 @@ impl Default for BenchmarkCameraSweep {
     }
 }
 
+/// Host free-camera feet probe, shared with water contact admission.
+pub(super) const DEBUG_CAMERA_EYE_HEIGHT:f32=1.7;
+
 /// Debug free-camera speeds (m/s); the player's own movement comes from its
 /// state decls.
 const DEBUG_FREE_FLY_SPEED: f32 = 6.0;

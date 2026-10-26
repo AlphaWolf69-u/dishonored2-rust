@@ -169,6 +169,12 @@ pub struct WaterImageSources {
 #[derive(Clone)]
 pub struct WaterFrame {
     pub camera: Entity,
+    /// Camera/head contact with started water triggers; not fog's expanded
+    /// wave-amplitude admission region. Swimming controller 88a8c0 compares
+    /// the head against this surface, optionally replaced by completed waves.
+    pub head_water_surface: Option<f32>,
+    /// 88b360 submits waves only for contact with an authored ocean component.
+    pub head_wave_points: Option<[[f32;2];5]>,
     pub delta_seconds: f32,
     pub near_far: [f32; 2],
     /// Same prepared environment sun used by the view and atmosphere owners.

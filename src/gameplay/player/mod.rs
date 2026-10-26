@@ -13,6 +13,7 @@ pub mod decls;
 pub mod footsteps;
 pub mod midnight;
 pub mod physics;
+pub mod swimming;
 pub mod sensors;
 pub mod shape;
 pub mod simplex_solver;

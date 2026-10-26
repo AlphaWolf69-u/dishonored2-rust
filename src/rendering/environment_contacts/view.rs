@@ -13,12 +13,18 @@ use std::sync::Arc;
 pub struct EnvironmentViewContacts {
     pub query: EnvironmentViewQuery,
     pub selection: EnvironmentContactSelection,
+    /// Started water components at the camera/head query, independently of
+    /// render environment volumes. 707c50 selects the highest water plane.
+    pub head_water_surface: Option<f32>,
+    pub head_water_is_ocean: bool,
 }
 impl EnvironmentViewContacts {
     pub fn new(retained_water_height: f32) -> Self {
         Self {
             query: EnvironmentViewQuery::default(),
             selection: EnvironmentContactSelection::new(retained_water_height),
+            head_water_surface: None,
+            head_water_is_ocean: false,
         }
     }
 

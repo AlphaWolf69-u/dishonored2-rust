@@ -1710,6 +1710,11 @@ pub(super) fn setup(
             .unwrap_or_else(|error|panic!("ocean program library: {error}"));
         commands.insert_resource(crate::rendering::bevy_backend::ocean_scene::OceanSources::load(catalog,programs)
             .unwrap_or_else(|error|panic!("ocean programs: {error}")));
+        commands.insert_resource(crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials(Some(Arc::new(
+            crate::rendering::bevy_backend::screen_effects::ScreenEffectSources::load(catalog,programs,
+                super::player::character_name(super::pause_menu::debug_character()))
+                .unwrap_or_else(|error|panic!("player screen effects: {error}"))
+        ))));
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));
