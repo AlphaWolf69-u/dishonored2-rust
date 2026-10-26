@@ -28,6 +28,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         println!("{connected_pairs} connected zone pairs, {route_count} authored paths");
+        if arguments.any(|argument| argument == "--player") {
+            let bytes = level.read_entities(&catalog)?.ok_or("level has no entities")?;
+            let document = dishonored2_rust::entities::parse(&String::from_utf8_lossy(&bytes))?;
+            let player = dishonored2_rust::entities::player_start(&document).ok_or("level has no player start")?;
+            let mut world = dishonored2_rust::gameplay::sound::acoustic_world::AcousticWorld::new(propagation, &installation::game_base()?)?;
+            println!("authored player start {:?}: acoustic zone {:?}", player.position, world.zone_at(player.position)?);
+            world.release()?;
+        }
         return Ok(());
     }
     if first.to_string_lossy() == "--level-audio" {
