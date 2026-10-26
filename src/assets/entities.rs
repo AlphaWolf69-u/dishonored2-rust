@@ -14,6 +14,9 @@ pub mod effects;
 pub mod player;
 pub mod triggers;
 pub mod water;
+pub mod audio;
+mod pose;
+pub use pose::spawn_frame;
 pub mod physics;
 
 /// FUN_140135f70 uses SIGNED byte comparisons for unquoted whitespace

@@ -128,8 +128,8 @@ fn run() -> Result<(), String> {
             if let Some(g) = p.boxes.global() {
                 g.tick(1.0 / frame_rate).map_err(|e| format!("global frame {frame}: {}", g.describe(&e)))?;
             }
-            p.update(&mut player, pressed)?;
-            let mut requests = p.handle_notifications(&mut player, &mut unhandled)?;
+            let mut requests = p.update(&mut player, pressed)?;
+            requests.extend(p.handle_notifications(&mut player, &mut unhandled)?);
             requests.extend(p.handle_global_notifications(&mut player, &mut unhandled)?);
             for r in requests {
                 eprintln!("frame {frame}: request {r:?}");

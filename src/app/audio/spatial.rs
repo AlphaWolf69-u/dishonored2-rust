@@ -85,7 +85,7 @@ impl Voice {
         Ok(Some(Self { attenuation }))
     }
 
-    pub fn targets(&self, scene: &Scene, position: Option<Position>) -> Result<([f32; 2], [f32; 2]), String> {
+    pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
         let position = position.ok_or("spatial Wwise event has no emitter position")?;
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
@@ -93,9 +93,16 @@ impl Voice {
         if cone.is_some() && position.front.is_none() { return Err("coned Wwise event has no emitter orientation".into()); }
         let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
         let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
-        let pan = scene.panner.gains(ray.azimuth, spatial::spread(attenuation, ray), spatial::focus(attenuation, ray), scene.rule);
+        let spread = spatial::spread(attenuation, ray);
+        let focus = spatial::focus(attenuation, ray);
+        let pan = match channels {
+            1 => [scene.panner.gains(ray.azimuth, spread, focus, scene.rule), [0.0; 2]],
+            2 => scene.panner.stereo_gains(ray.azimuth, spread, focus, scene.rule),
+            _ => return Err("spatial audio above stereo requires its input speaker layout".into()),
+        };
         let filters = spatial::filters(attenuation, ray, gains.cone_ratio,
             cone.map_or([0.0; 2], |cone| [cone.low_pass, cone.high_pass]), [0.0; 2]);
-        Ok(([pan[0] * gains.dry, pan[1] * gains.dry], filters))
+        Ok(([pan[0][0] * gains.dry, pan[0][1] * gains.dry,
+            pan[1][0] * gains.dry, pan[1][1] * gains.dry], filters))
     }
 }

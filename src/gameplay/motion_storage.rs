@@ -49,8 +49,9 @@ impl MotionStorage {
     }
 
     /// cd6ce0/cd6e20's defined initial storage state. Slot zero is never reserved.
+    /// 1400b7960 requests capacity one for its static-only acoustic world.
     pub fn new(capacity: usize) -> Result<Self, String> {
-        if !(2..0x7fff_ffff).contains(&capacity) {
+        if !(1..0x7fff_ffff).contains(&capacity) {
             return Err("motion capacity must include its static anchor and fit valid IDs".into());
         }
         let mut motions = vec![
@@ -78,7 +79,7 @@ impl MotionStorage {
                 })
                 .collect(),
             initialized,
-            free_head: Some(1),
+            free_head: (capacity > 1).then_some(1),
             active_count: 1,
             maximum_index: 0,
             cell_lists: std::array::from_fn(|_| vec![0]),

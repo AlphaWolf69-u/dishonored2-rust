@@ -100,9 +100,11 @@ Research notes live in `artifacts/ui-pause/notes-*.md` (local only).
      `FUN_14050b760`, the known-GPU table); AUTO rows are not applied.
    - The renderer does not observe cvars live: changed visual, audio and
      control cvars reach the rewrite through `dishonored2Config.cfg` on the
-     next start. The display mode switch (`renderer +0x200`), the
-     keep-changes box and its timeout answer, exclusive-fullscreen refresh
-     (`FUN_14036aa40`) and the texture streamer calls are not ported.
+     next start. The visuals Update (`FUN_140511410`) and the keep-changes
+     box (`FUN_140510d70`, 13 s, answered by `FUN_14050eaf0`) are ported; the
+     host window follows the cvars instead of `renderer +0x200`. Not ported:
+     the exclusive-fullscreen refresh (`FUN_14036aa40`), the window focus
+     gate and external fullscreen toggle, and the texture streamer calls.
    - The adapter list (+0x1a0) needs the D3D11 init acceptance test; it is
      empty (VIDEOCARD is main-menu only).
    - The gamma FX entity and the pause FX toggle around the gamma screen.

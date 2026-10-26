@@ -56,6 +56,8 @@ fn installed_ocean_submits_depth_and_colour() {
     );
     let frame = WaterFrame {
         camera: Entity::from_raw_u32(1).unwrap(),
+        head_water_surface: None,
+        head_wave_points: None,
         delta_seconds: 1. / 60.,
         near_far: [projection.near, projection.far],
         parallel: Some(([0., 0., -1.], [1.; 3])),

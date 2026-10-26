@@ -17,6 +17,7 @@ pub mod level;
 pub mod physworld;
 pub mod pnetwork;
 pub mod shader_cache;
+pub mod sound_propagation;
 pub mod texture;
 pub mod wwise;
 pub mod world_mesh;
