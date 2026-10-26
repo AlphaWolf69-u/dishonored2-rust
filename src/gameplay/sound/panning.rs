@@ -4,6 +4,30 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule { Speakers, Headphones }
 
+/// 1410cba40/1410fff10: normalized 2D positioning controls. Front/rear and
+/// center controls are retained even though front stereo has neither rear
+/// nor center speakers.
+#[derive(Clone, Copy, Debug)]
+pub struct Panner2d {
+    pub left_right: f32,
+    pub front_rear: f32,
+    pub center: f32,
+    pub enabled: bool,
+}
+impl Panner2d {
+    pub fn stereo_matrix(self, channels: u16) -> Result<[f32; 4], String> {
+        match (channels, self.enabled) {
+            // The disabled mono mapping in 141100a30 uses this constant;
+            // enabled panning instead computes the square roots at runtime.
+            (1, false) => Ok([f32::from_bits(0x3f3504f3), f32::from_bits(0x3f3504f3), 0.0, 0.0]),
+            (2, false) => Ok([1.0, 0.0, 0.0, 1.0]), // 1410ff040 / 141f2aa60
+            (1, true) => Ok([(1.0 - self.left_right).sqrt(), self.left_right.sqrt(), 0.0, 0.0]),
+            (2, true) => Ok([(1.0 - self.left_right).sqrt(), 0.0, 0.0, self.left_right.sqrt()]),
+            _ => Err("2D panning requires its multichannel input conversion path".into()),
+        }
+    }
+}
+
 /// 1410cbbb0/141104200: mode 2 combines each ray's already attenuated
 /// matrix by per-coefficient maximum. Mode 1 instead sums sources within a
 /// listener before taking the output maximum and must use a different path.
