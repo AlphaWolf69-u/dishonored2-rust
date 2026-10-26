@@ -7,7 +7,8 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
-pub use bank::{ActionTransition, ContainerPlayback, CurvePoint, NodeProperties, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
+    CurvePoint, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -583,6 +584,18 @@ pub struct BankMix {
     pub buses: Vec<NodeProperties>,
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
+}
+
+pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
+    let chunks = bank_chunks(bytes)?;
+    bank_feedback(&chunks)?; // Validate the serialized bank version.
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()) };
+    let mut attenuations = Vec::new();
+    for ((kind, _), object) in bank_objects(hierarchy)? {
+        if kind == 14 { attenuations.push(bank::attenuation(object)?); }
+    }
+    attenuations.sort_by_key(|attenuation| attenuation.id);
+    Ok(attenuations)
 }
 
 /// The initialization bank's authored buses and global game-parameter defaults.

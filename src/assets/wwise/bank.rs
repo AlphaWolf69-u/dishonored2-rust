@@ -93,6 +93,81 @@ pub struct NodeProperties {
     pub values: Vec<(u8, u32)>,
     pub ranges: Vec<PropertyRange>,
     pub curves: Vec<RtpcCurve>,
+    pub positioning_flags: u8,
+    pub positioning_3d: Option<Positioning3d>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Positioning3d {
+    pub flags: u8,
+    pub attenuation: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct AttenuationCurve {
+    pub scaling: u8,
+    pub points: Vec<CurvePoint>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AttenuationCone {
+    pub inside_half_angle: f32,
+    pub outside_half_angle: f32,
+    pub outside_volume_db: f32,
+    pub low_pass: f32,
+    pub high_pass: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Attenuation {
+    pub id: u32,
+    pub cone: Option<AttenuationCone>,
+    pub curve_indices: [i8; 7],
+    pub curves: Vec<AttenuationCurve>,
+    pub rtpcs: Vec<RtpcCurve>,
+}
+
+// FUN_1410e26c0, including its integer subtraction, as confirmed in the
+// instructions. Retain the operation order of the installed executable.
+fn cone_half_angle(degrees: f32) -> f32 {
+    (degrees - (degrees * f32::from_bits(0x3b360b61)) as i32 as f32) * f32::from_bits(0x3c8efa35) * 0.5
+}
+
+/// CAkAttenuation::SetInitialValues (141131380), version 113.
+pub(super) fn attenuation(bytes: &[u8]) -> io::Result<Attenuation> {
+    let mut reader = Reader { bytes, offset: 0 };
+    let id = reader.u32()?;
+    let cone = if reader.u8()? != 0 {
+        Some(AttenuationCone { inside_half_angle: cone_half_angle(reader.f32()?),
+            outside_half_angle: cone_half_angle(reader.f32()?), outside_volume_db: reader.f32()?,
+            low_pass: reader.f32()?, high_pass: reader.f32()? })
+    } else { None };
+    let mut curve_indices = [0; 7];
+    for index in &mut curve_indices { *index = reader.u8()? as i8; }
+    let count = reader.u8()? as usize;
+    if count == 0 || count > 7 { return Err(invalid("invalid Wwise attenuation curve count")); }
+    let mut curves = Vec::new();
+    for index in 0..count {
+        let mut scaling = reader.u8()?;
+        let size = reader.u16()? as usize;
+        let mut points = reader.points(size)?;
+        // The first three mappings are volume curves. The loader converts
+        // their authored domain into the linear gain domain at load time.
+        if curve_indices[..3].contains(&(index as i8)) {
+            match scaling {
+                0 => scaling = 4,
+                2 => { for point in &mut points { point.output += 1.0; } scaling = 0; },
+                _ => {},
+            }
+        }
+        curves.push(AttenuationCurve { scaling, points });
+    }
+    if curve_indices.iter().any(|index| *index < -1 || *index >= count as i8) {
+        return Err(invalid("Wwise attenuation mapping references a missing curve"));
+    }
+    let rtpcs = reader.rtpcs()?;
+    if reader.offset != bytes.len() { return Err(invalid("Wwise attenuation fields did not consume its object")); }
+    Ok(Attenuation { id, cone, curve_indices, curves, rtpcs })
 }
 
 impl NodeProperties {
@@ -232,9 +307,10 @@ impl<'a> Reader<'a> {
         }
 
         let positioning = self.u8()?;
+        node.positioning_flags = positioning;
         if positioning & 1 != 0 && positioning & 8 != 0 {
             let flags = self.u8()?;
-            self.u32()?; // Attenuation ID.
+            node.positioning_3d = Some(Positioning3d { flags, attenuation: self.u32()? });
             if flags & 3 != 1 {
                 self.take(5)?; // Automation path mode and transition time.
                 let vertices = self.u32()? as usize;
