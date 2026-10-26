@@ -49,6 +49,7 @@ pub struct TiledLightingPass {
     prepared: bool,
 }
 impl TiledLightingPass {
+    pub fn grid(&self) -> TileGrid { self.grid }
     fn upload<const N: usize>(queue: &RenderQueue, buffer: &Buffer, records: &[[u32; N]]) {
         if !records.is_empty() {
             let bytes: Vec<u8> = records

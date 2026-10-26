@@ -251,6 +251,7 @@ fn render_particles(
                 depth_format,
                 source: sources.clone(),
             });
+            info!(instances, draws=draw_capacity, "Particle colour resources prepared");
         }
         // Prepare the shared particle pipeline once the live pool exists,
         // independently of whether this frame sees any of its sprites.

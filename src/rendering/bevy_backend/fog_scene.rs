@@ -103,6 +103,11 @@ impl FogGpu {
     }
     /// Borrow the completed same-frame depth producers. The post-process owner
     /// cannot retain an old view after atmosphere preparation fails or resizes.
+    /// Borrow the single completed scene-light list for this gameplay view.
+    pub(super) fn tiled_lighting(&self, camera: Entity, frame: u32) -> Option<&super::tiled_lighting_pass::TiledLightingPass> {
+        if self.completed != Some((camera, frame)) { return None; }
+        self.current.as_ref()?.tiled.as_ref()
+    }
     pub(super) fn camera_depth(&self, camera: Entity, frame: u32) -> Option<(&super::water_depth_scene::WaterDepthScene, &FogAttachment)> {
         if self.completed != Some((camera, frame)) { return None; }
         let view = self.current.as_ref()?;
@@ -687,6 +692,42 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
             depth_prepared=true;
             return Ok(());
         }
+        // Surface lighting shares this TLF allocation with haze. Its normal
+        // lists must exist independently of skip_light_scattering/world fog.
+        {
+            if resources.local_fog.camera != Some(frame.camera) {
+                return Err("scene lights belong to another camera".into());
+            }
+            let water_frame=resources.water_frame.as_ref().and_then(|f| f.0.as_ref())
+                .filter(|f| f.camera==frame.camera)
+                .ok_or("scene light view matrices unavailable")?;
+            let water=current.water_depth.as_ref().ok_or("scene light alpha depth unavailable")?;
+            let programs=resources.depth_programs.as_ref().ok_or("scene light culling programs unavailable")?;
+            let local=resources.local_shadows.as_ref().and_then(|s| s.0.as_ref());
+            let needs_shadow_records=resources.local_fog.lights.iter().any(|light| light[24]!=u32::MAX);
+            if needs_shadow_records {
+                let local=local.ok_or("scene light shadow records unavailable")?;
+                if resources.local_fog.shadow_revision!=Some(local.revision) {
+                    return Err("scene light shadow indices belong to another frame".into());
+                }
+            }
+            let receiver=if needs_shadow_records {
+                Some(local.ok_or("scene light shadow records unavailable")?.receiver.as_ref().map_err(Clone::clone)?)
+            } else {None};
+            let grid=crate::tiled_lighting::TileGrid::new(full.x,full.y,frame.settings.tiled_light_dimension)?;
+            let tiled=current.tiled.get_or_insert_with(||
+                super::tiled_lighting_pass::TiledLightingPass::new(&resources.device,programs,grid));
+            tiled.resize(&resources.device,programs,grid);
+            let matrices=water_frame.matrices.current;
+            tiled.prepare(&resources.device,&resources.queue,programs,
+                super::tiled_lighting_pass::TiledLightView {
+                    uv_to_ray:Vec4::new(0.,0.,fog_view.ray_scale.x,fog_view.ray_scale.y),
+                    view:matrices.view.map(Vec4::from_array),
+                    projection:matrices.projection.map(Vec4::from_array),..default()
+                },&current.depth_view,&water.alpha.full_sample,&resources.local_fog.lights,
+                receiver.map_or(&[],|r| r.shadows.as_slice()))?;
+            tiled.record(context.command_encoder(),programs)?;
+        }
         if no_atmosphere {
             let source=current.water_depth.as_ref().map_or(&current.depth_view,|owner|&owner.water.sample);
             current.fog.record_linear_depth(&resources.device,context.command_encoder(),source);
@@ -759,14 +800,6 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                 .as_ref()
                 .and_then(|f| f.0.as_ref())
                 .ok_or("local fog view matrices unavailable")?;
-            let water = current
-                .water_depth
-                .as_ref()
-                .ok_or("local fog alpha depth unavailable")?;
-            let programs = resources
-                .depth_programs
-                .as_ref()
-                .ok_or("local fog culling programs unavailable")?;
             let local = resources.local_shadows.as_ref().and_then(|s| s.0.as_ref());
             let shadowed = resources
                 .local_fog
@@ -793,10 +826,6 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                     return Err("local fog shadows await atlas submission".into());
                 }
             }
-            let receiver = local
-                .map(|s| s.receiver.as_ref())
-                .transpose()
-                .map_err(Clone::clone)?;
             let local_atlas = if shadowed {
                 &resources
                     .images
@@ -806,36 +835,9 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
             } else {
                 &atlas.texture_view
             };
-            let grid = crate::tiled_lighting::TileGrid::new(
-                full.x,
-                full.y,
-                frame.settings.tiled_light_dimension,
-            )?;
-            let tiled = current.tiled.get_or_insert_with(|| {
-                super::tiled_lighting_pass::TiledLightingPass::new(
-                    &resources.device,
-                    programs,
-                    grid,
-                )
-            });
-            tiled.resize(&resources.device, programs, grid);
-            let matrices = water_frame.matrices.current;
-            tiled.prepare(
-                &resources.device,
-                &resources.queue,
-                programs,
-                super::tiled_lighting_pass::TiledLightView {
-                    uv_to_ray: Vec4::new(0., 0., fog_view.ray_scale.x, fog_view.ray_scale.y),
-                    view: matrices.view.map(Vec4::from_array),
-                    projection: matrices.projection.map(Vec4::from_array),
-                    ..default()
-                },
-                &current.depth_view,
-                &water.alpha.full_sample,
-                &resources.local_fog.lights,
-                receiver.map_or(&[], |r| r.shadows.as_slice()),
-            )?;
-            tiled.record(context.command_encoder(), programs)?;
+            let tiled=current.tiled.as_ref().ok_or("scene light lists are unavailable")?;
+            let grid=tiled.grid();
+            let matrices=water_frame.matrices.current;
             let scattering_view = LightScatterView {
                 world_from_clip: Mat4::from_cols_array_2d(&matrices.view_projection)
                     .transpose()
