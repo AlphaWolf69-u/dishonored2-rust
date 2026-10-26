@@ -4,6 +4,10 @@
 pub const PLUGIN: u32 = 0x00760003;
 mod early;
 pub use early::EarlyReflections;
+mod feedback;
+pub use feedback::FeedbackNetwork;
+mod late;
+pub use late::LateReverb;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FilterBand {
@@ -132,14 +136,22 @@ impl Parameters {
         if times.iter().any(|time| !time.is_finite()) { return Err("non-finite reverb diffusion delay distribution".into()); }
         times.sort_by(|a, b| if a < b { std::cmp::Ordering::Less } else if b < a { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal });
         let lengths = odd_lengths(&times, sample_rate);
-        let maximum = f32::from_bits(0x3f1e3737);
         let mut stages = Vec::new();
-        for (index, length) in lengths.into_iter().enumerate() {
-            let coefficient = self.diffusion * 0.01 * maximum * 4.0 - (3 - index) as f32 * maximum;
-            let coefficient = if coefficient <= 0.0 { 0.0 } else if maximum <= coefficient { maximum } else { coefficient };
+        for (length, coefficient) in lengths.into_iter().zip(self.diffusion_coefficients(false)) {
             stages.push(super::delay::AllPass::new(length, coefficient)?);
         }
         stages.try_into().map_err(|_| "reverb input diffusion stage count differs from four".into())
+    }
+
+    fn diffusion_coefficients(&self, updating: bool) -> [f32; 4] {
+        let maximum = f32::from_bits(0x3f1e3737);
+        std::array::from_fn(|index| {
+            let value = self.diffusion * 0.01 * maximum * 4.0 - (3 - index) as f32 * maximum;
+            // 14116e0d0's final stage takes JBE on unordered values; its
+            // constructor (14116ef80) uses the ordinary <= branch instead.
+            if (updating && index == 3 && !(0.0 < value)) || value <= 0.0 { 0.0 }
+            else if maximum <= value { maximum } else { value }
+        })
     }
 
     pub fn read(bytes: &[u8]) -> Result<Self, String> {

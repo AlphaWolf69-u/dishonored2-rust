@@ -38,6 +38,9 @@ impl AllPass {
     }
 }
 impl Delay {
+    pub(super) fn current(&self) -> f32 { self.samples[self.cursor] }
+    pub(super) fn contiguous(&self) -> usize { self.length - self.cursor }
+
     /// Combine allocation/cursor initialization with the effect's initial
     /// reset. Storage rounds to four samples; wrap uses the authored length.
     pub fn new(length: u32) -> Result<Self, String> {
