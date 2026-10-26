@@ -29,29 +29,39 @@ impl SpawnOrientation {
     ) -> Result<[[f32; 3]; 3], String> {
         let angles = self.angles.sample(age, seed)?;
         let basis = space.basis(self.worldspace);
-        // The source stores the six overlapping triples in a thirteen-int table.
-        let order = [
-            [0, 1, 2],
-            [2, 0, 1],
-            [1, 2, 0],
-            [0, 2, 1],
-            [1, 0, 2],
-            [2, 1, 0],
-        ]
-        .get(self.order)
-        .copied()
-        .ok_or("particle rotation order exceeds six modes")?;
-        let rotation = |axis: usize| {
-            axis_angle_basis(
-                basis[axis],
-                multiply(angles[axis], f32::from_bits(0xbc8e_fa35)),
-            )
-        };
-        Ok(basis_product(
-            basis_product(rotation(order[0]), rotation(order[1])),
-            rotation(order[2]),
-        ))
+        rotation_basis(angles, self.order, basis)
     }
+}
+
+/// Shared six-order Euler composition used by initial velocity and PMODEL
+/// emission. Callers supply their own axes before this common rotation step.
+pub fn rotation_basis(
+    angles: [f32; 3],
+    order: usize,
+    basis: [[f32; 3]; 3],
+) -> Result<[[f32; 3]; 3], String> {
+    // The source stores the six overlapping triples in a thirteen-int table.
+    let order = [
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+    ]
+    .get(order)
+    .copied()
+    .ok_or("particle rotation order exceeds six modes")?;
+    let rotation = |axis: usize| {
+        axis_angle_basis(
+            basis[axis],
+            multiply(angles[axis], f32::from_bits(0xbc8e_fa35)),
+        )
+    };
+    Ok(basis_product(
+        basis_product(rotation(order[0]), rotation(order[1])),
+        rotation(order[2]),
+    ))
 }
 
 fn cross(first: [f32; 3], second: [f32; 3]) -> [f32; 3] {

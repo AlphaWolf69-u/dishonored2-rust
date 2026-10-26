@@ -26,6 +26,7 @@ impl ParticleDefinition {
         material_cache: &mut HashMap<String, Arc<ParticleMaterial>>,
     ) -> Result<Self, String> {
         let owner = particle_system::particle_system(fields)?;
+        let mut models = HashMap::new();
         let declarations = owner
             .declarations
             .iter()
@@ -33,9 +34,30 @@ impl ParticleDefinition {
                 let Some(path) = path else { return Ok(None) };
                 let mut read = |p: &str| catalog.read(p).ok().flatten();
                 let fields = read_edit(&mut read, "particledt", path)?;
-                particle_declaration::declaration(&fields)
-                    .map(|declaration| Some(Arc::new(declaration)))
-                    .map_err(|error| format!("{path}: {error}"))
+                let mut declaration = particle_declaration::declaration(&fields)
+                    .map_err(|error| format!("{path}: {error}"))?;
+                // Emission meshes are dedicated PMODEL archive resources,
+                // independent of the ordinary rendered-prop mesh loader.
+                for stage in &mut declaration.stages {
+                    let mesh = &mut stage.spawn_mesh;
+                    let Some(source) = &mesh.source else { continue };
+                    let resource = crate::assets::particle_model::resource_path(source)?;
+                    if !models.contains_key(&resource) {
+                        let bytes = catalog
+                            .read(&resource)
+                            .map_err(|error| format!("{resource}: {error}"))?
+                            .ok_or_else(|| format!("missing particle emission mesh {resource}"))?;
+                        models.insert(
+                            resource.clone(),
+                            Arc::new(
+                                crate::assets::particle_model::parse(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?,
+                            ),
+                        );
+                    }
+                    mesh.model = Some(models[&resource].clone());
+                }
+                Ok(Some(Arc::new(declaration)))
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mut materials = HashMap::new();

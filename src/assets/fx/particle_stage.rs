@@ -50,6 +50,7 @@ pub struct ParticleStageAsset {
     pub event_normal: ScalarParameter,
     pub location: SpawnVector,
     pub velocity: SpawnVector,
+    pub spawn_mesh: crate::gameplay::particles::mesh::SpawnMesh,
     pub velocity_orientation: crate::gameplay::particles::spawn::SpawnOrientation,
     pub velocity_spray: ScalarParameter,
     pub motion: MotionParameters,
@@ -91,6 +92,7 @@ impl Default for ParticleStageAsset {
             event_normal: ScalarParameter::constant(0.),
             location: SpawnVector::new([0.; 3]),
             velocity: SpawnVector::new([0., 0., 1.]),
+            spawn_mesh: Default::default(),
             velocity_orientation: Default::default(),
             velocity_spray: ScalarParameter::constant(0.),
             motion: MotionParameters::default(),
@@ -174,6 +176,7 @@ impl ParticleStageAsset {
                 "m_duration" => bounds(&mut self.emitter.duration, scope(value)?)?,
                 "m_initialLocation" => self.location.edit(scope(value)?)?,
                 "m_initialVelocity" => self.velocity.edit(scope(value)?)?,
+                "m_spawnMesh" => particle_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
                 "m_velocitySprayCone" => {
                     particles::scalar_parameter(&mut self.velocity_spray, scope(value)?)?
                 }

@@ -1,5 +1,5 @@
 //! Connect ordinary stage emission, stable particles and per-sprite slot state.
-//! Physics/mesh/field producers must be supplied before their descriptors can
+//! Physics/field producers must be supplied before their descriptors can
 //! be admitted; this owner never invents replacement spawn geometry.
 use super::{
     emitter::{EmissionContext, EmitterBindings, ParticleEmitter},
@@ -34,6 +34,7 @@ pub struct StageSimulation {
     /// Outer index is the descriptor's sprite index; inner indices remain
     /// stable when particles die or the free list reuses a previous slot.
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
+    mesh_cursor: usize,
 }
 
 struct Bindings<'a> {
@@ -42,6 +43,7 @@ struct Bindings<'a> {
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
     owner_basis: [[f32; 3]; 3],
     lod: usize,
+    mesh_cursor: &'a mut usize,
 }
 
 impl EmitterBindings for Bindings<'_> {
@@ -58,7 +60,8 @@ impl EmitterBindings for Bindings<'_> {
         _seed: &mut u32,
     ) -> Result<(), String> {
         // Default periodic orientation has zero frequency and is disabled by
-        // 1f9390. Authored periodic/mesh/physics shape descriptors reject.
+        // 1f9390. Authored periodic/physics shape descriptors reject. The
+        // PMODEL cursor advances only when an accepted particle is spawned.
         Ok(())
     }
     fn spawn(&mut self, context: EmissionContext, seed: &mut u32) -> Result<usize, String> {
@@ -73,7 +76,7 @@ impl EmitterBindings for Bindings<'_> {
             self.owner_basis
         };
         let space = ParticleSpace::new(basis, definition.worldspace);
-        let position = space.transform(
+        let mut position = space.transform(
             definition
                 .location
                 .value
@@ -87,6 +90,19 @@ impl EmitterBindings for Bindings<'_> {
                 .sample(context.cycle_fraction, seed)?,
             definition.velocity.worldspace,
         );
+        let mut mesh_colour = [1.; 4];
+        if let Some(sample) = definition.spawn_mesh.sample(
+            self.mesh_cursor,
+            context.cycle_seed,
+            seed,
+            context.cycle_fraction,
+        )? {
+            let mesh_position = space.transform(sample.position, definition.spawn_mesh.worldspace);
+            let mesh_velocity = space.transform(sample.velocity, definition.spawn_mesh.worldspace);
+            position = std::array::from_fn(|i| add(mesh_position[i], position[i]));
+            velocity = std::array::from_fn(|i| add(mesh_velocity[i], velocity[i]));
+            mesh_colour = sample.colour;
+        }
         let orientation =
             definition
                 .velocity_orientation
@@ -146,7 +162,7 @@ impl EmitterBindings for Bindings<'_> {
                 &definition.spawn,
                 context.cycle_fraction,
                 self.lod,
-                [1.; 4],
+                mesh_colour,
                 definition.flipbook.flips,
                 None,
                 &mut sprite_seed,
@@ -195,12 +211,14 @@ impl StageSimulation {
         // its mutable spawn seed. Field/shape defaults consume neither.
         let _cycle_seed = crate::random::lcg_step(system_seed);
         let spawn_seed = crate::random::lcg_step(system_seed);
+        let mut mesh_cursor = 0;
         let mut bindings = Bindings {
             definition,
             particles: &mut particles,
             sprites: &mut sprites,
             owner_basis: pose.basis,
             lod: 0,
+            mesh_cursor: &mut mesh_cursor,
         };
         let emitter = ParticleEmitter::new(
             Arc::new(definition.emitter.clone()),
@@ -218,6 +236,7 @@ impl StageSimulation {
             emitter,
             particles,
             sprites,
+            mesh_cursor,
         })
     }
 
@@ -336,16 +355,19 @@ impl StageSimulation {
             sprites: &mut self.sprites,
             owner_basis: frame.pose.basis,
             lod: frame.lod,
+            mesh_cursor: &mut self.mesh_cursor,
         };
         let free = bindings.particles.capacity() - bindings.particles.len();
-        if !definition.spawn_only_from_stage {
-            if definition.burst {
-                self.emitter
-                    .burst(delta, free, frame.lod, frame.rate, &mut bindings)?;
-            } else {
-                self.emitter
-                    .continuous(delta, free, frame.lod, frame.rate, &mut bindings)?;
-            }
+        // 1ffff0 calls ordinary emission after integration. The parent's
+        // spawnOnlyFromStage flag is not a blanket disable for this path:
+        // it only participates in linked parent-stage setup. Such links are
+        // still rejected by the reader until their producer is connected.
+        if definition.burst {
+            self.emitter
+                .burst(delta, free, frame.lod, frame.rate, &mut bindings)?;
+        } else {
+            self.emitter
+                .continuous(delta, free, frame.lod, frame.rate, &mut bindings)?;
         }
         Ok(())
     }

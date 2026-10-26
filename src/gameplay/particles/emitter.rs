@@ -60,6 +60,7 @@ pub struct EmissionContext {
     /// immediate integration of the newly accepted particle.
     pub remaining_delta: f32,
     pub cycle_fraction: f32,
+    pub cycle_seed: u32,
     pub elapsed: f32,
 }
 
@@ -187,6 +188,7 @@ impl ParticleEmitter {
                     pose: self.pose.sample(),
                     remaining_delta: delta,
                     cycle_fraction: self.cycle.fraction,
+                    cycle_seed: self.cycle_seed,
                     elapsed: self.elapsed,
                 };
                 free_slots = bindings.spawn(context, &mut self.seed)?;
@@ -237,6 +239,7 @@ impl ParticleEmitter {
                                 pose,
                                 remaining_delta: delta,
                                 cycle_fraction: self.cycle.fraction,
+                                cycle_seed: self.cycle_seed,
                                 elapsed: self.elapsed,
                             },
                             &mut self.seed,

@@ -724,6 +724,13 @@ active chains update newest-first. Inactive systems retire before their next
 update. Both domains submit through the same `ParticlePass` and transparency
 targets. Prepared level graphs and authored entity frames share immutable
 storage across extraction; only actual moved-frame overrides are copied.
+Emission meshes resolve directly from installed `staticparticlemodel` PMODEL
+resources, retaining their ordered 32-byte vertices. `particles::mesh` implements
+the seven authored sampling modes, per-emitter sequential cursors, vertex colour
+and normal velocity. Geometry selection consumes the spawn generator while
+scale/rotation/normal-velocity parameters use a copy of the retained cycle seed.
+These samples join ordinary location/velocity before initial orientation and
+spray; player and world particles share this same simulation path.
 The connected world path currently admits particle-only groups without an
 unavailable target/tag, spawn-occlusion or physics-velocity dependency. Other
 enabled FX families, parameter blocks, animated/lit particle material inputs and
