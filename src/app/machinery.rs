@@ -207,8 +207,10 @@ pub(super) fn update_machinery(
             }
         }
     }
+    // 8af460 fills exactly two entries from1422952d8: clock groups3/4.
+    // Raw wall/view clocks are not physics timespaces.
     machinery.physics.step(std::array::from_fn(|i| {
-        clock.delta(i).expect("five clock groups")
+        clock.entity_delta(i as u32).expect("two physics timespaces")
     }));
     if let Some(manager) = manager {
         for body in &mut machinery.physics.bodies {
@@ -251,4 +253,41 @@ pub(super) fn pose_physics_systems(
         &mut sources,
         &placements,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires installed Edge of the World archives"]
+    fn installed_edge_machinery_keeps_finite_render_poses() {
+        let catalog = Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+        let level = crate::assets::level::LevelResources::resolve(&catalog, "eotw_p_lowchaos").unwrap();
+        let bytes = level.read_entities(&catalog).unwrap().unwrap();
+        let document = crate::entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+        let placements = crate::entities::render_placements(&document);
+        for seconds in [1. / 60., 0.1] {
+            let mut machinery = AmbientMachinery::load(&catalog, Some(&document), &placements).unwrap();
+            let mut wind = super::super::fog_scene::WorldWind::load(&catalog, Some(&document)).unwrap();
+            for frame in 0..1200 {
+                machinery.scenes.advance_motors(seconds, &mut machinery.physics);
+                if let Some(wind) = wind.0.as_mut() {
+                    wind.advance(seconds);
+                    for index in 0..machinery.physics.bodies.len() {
+                        let velocity = wind.velocity(Vec3::from_array(machinery.physics.bodies[index].mass_center()));
+                        machinery.physics.apply_wind(index, velocity.to_array(), seconds);
+                    }
+                }
+                machinery.physics.step([seconds; 2]);
+                for (index, body) in machinery.physics.bodies.iter().enumerate() {
+                    assert!(body.delta().iter().flatten().all(|v| v.is_finite()),
+                        "dt {seconds} frame {frame} body {index} placement {:?} pose {:?}", body.placement, body.motion.pose);
+                }
+                machinery.scenes.step(seconds, |placement, delta| {
+                    assert!(delta.iter().flatten().all(|v| v.is_finite()), "frame {frame} scene placement {placement}");
+                });
+            }
+        }
+    }
 }

@@ -37,10 +37,7 @@ fn dof_offset(index:u32)->vec2<f32> {
     return kernel.points[index].xy;
 }
 fn dof_radius(depth:f32)->f32 {return (depth*dof.fringe_bokeh.w)*kernel.coefficients.x;}
-fn dof_glass(packed:f32)->vec2<f32> {
-    let bits=pack2x16float(vec2(packed,0.0))&65535u;
-    return vec2(f32(bits&4095u)*bitcast<f32>(0x3ac91c6eu),f32((bits>>12u)&15u));
-}
+
 fn dof_fringe(image:texture_2d<f32>,uv:vec2<f32>,texel:vec2<f32>,fuzz:f32,purple:bool)->vec3<f32> {
     let factor=(texel*dof.fringe_bokeh.x)*fuzz;
     let left=textureSampleLevel(image,linear_mirror,fma(factor,vec2(-0.866,-0.5),uv),0.0);

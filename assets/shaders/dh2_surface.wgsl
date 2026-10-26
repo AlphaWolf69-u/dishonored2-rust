@@ -29,6 +29,7 @@ struct SurfaceUniform {
     filling_flags:vec4<u32>,
     sky:array<vec4<f32>,7>,
     direct:vec4<f32>,
+    glass:vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 

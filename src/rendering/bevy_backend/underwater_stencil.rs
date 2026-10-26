@@ -1,4 +1,4 @@
-//! 2fdea0's full/reduced underwater marking over completed depthAlpha targets.
+//! 2fdea0's underwater marking in main and reduced alpha-depth stencil.
 //! Admission, wave-height mask and waterMatrix come from the water owner.
 use bevy::{
     prelude::*,
@@ -27,7 +27,7 @@ pub enum UnderwaterStencilSource<'a> {
 }
 
 pub struct UnderwaterStencilPass {
-    pipelines: [RenderPipeline; 2],
+    pipelines: [[RenderPipeline; 2]; 2],
     uniforms: [UniformBuffer<UnderwaterStencilParameters>; 2],
     bindings: [Option<((bool, Option<TextureViewId>), BindGroup)>; 2],
     sampler: Sampler,
@@ -38,11 +38,17 @@ impl UnderwaterStencilPass {
         format: TextureFormat,
         state: crate::render_state::RenderState,
     ) -> Result<Self, String> {
-        if !format.has_depth_aspect() || !format.has_stencil_aspect() {
+        Self::with_target_formats(device,[format;2],state)
+    }
+    pub fn with_target_formats(
+        device: &RenderDevice,
+        formats: [TextureFormat;2],
+        state: crate::render_state::RenderState,
+    ) -> Result<Self,String> {
+        if formats.iter().any(|format|!format.has_depth_aspect() || !format.has_stencil_aspect()) {
             return Err("underwater marking requires the shared depth/stencil attachment".into());
         }
         let prepared = crate::render_state::underwater_stencil_state(state);
-        let depth = super::pipeline_state::depth_stencil_gpu(&prepared, format)?;
         let (front_face, cull_mode) = super::pipeline_state::mesh_raster(&prepared, false);
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("underwater stencil"),
@@ -50,7 +56,9 @@ impl UnderwaterStencilPass {
                 include_str!("../../../assets/shaders/dh2_underwater_stencil.wgsl").into(),
             ),
         });
-        let pipelines = std::array::from_fn(|index| {
+        let make = |format| -> Result<[RenderPipeline;2],String> {
+            let depth=super::pipeline_state::depth_stencil_gpu(&prepared,format)?;
+            Ok(std::array::from_fn(|index| {
             device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some("underwater stencil"),
                 layout: None,
@@ -95,7 +103,11 @@ impl UnderwaterStencilPass {
                 multiview_mask: None,
                 cache: None,
             })
-        });
+            }))
+        };
+        let first=make(formats[0])?;
+        let second=if formats[0]==formats[1] {first.clone()} else {make(formats[1])?};
+        let pipelines=[first,second];
         Ok(Self {
             pipelines,
             uniforms: std::array::from_fn(|_| default()),
@@ -137,8 +149,8 @@ impl UnderwaterStencilPass {
             UnderwaterStencilSource::Ocean(view) => Some(view),
             UnderwaterStencilSource::Volume => None,
         };
-        let pipeline = &self.pipelines[usize::from(volume)];
         for (index, target) in targets.into_iter().enumerate() {
+            let pipeline = &self.pipelines[index][usize::from(volume)];
             self.uniforms[index].set(target.parameters);
             self.uniforms[index].write_buffer(device, queue);
             let key = (volume, mask.map(TextureView::id));

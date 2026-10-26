@@ -53,6 +53,8 @@ pub struct DisplaySceneFrame(pub Option<DisplayFrame>);
 pub struct DisplayPlugin;
 impl Plugin for DisplayPlugin {
     fn build(&self, app: &mut App) {
+        super::camera_scene::register(app);
+        super::alpha_depth_scene::register(app);
         super::display_capture::register(app);
         app.init_resource::<DisplaySceneFrame>()
             .add_plugins(ExtractResourcePlugin::<DisplaySceneFrame>::default());
@@ -113,6 +115,8 @@ fn render_display(
     queue: Res<RenderQueue>,
     images: Res<RenderAssets<GpuImage>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    camera_outputs: (Res<super::camera_scene::CameraGpu>, Res<super::alpha_depth_scene::AlphaGpu>),
+    water_frame: Res<super::water_scene::WaterSceneFrame>,
     mut gpu: ResMut<DisplayGpu>,
     mut pyramids: ResMut<LuminanceViews>,
     pyramid_programs: Res<LuminancePipelines>,
@@ -123,6 +127,7 @@ fn render_display(
         &ViewTarget,
         &ExtractedCamera,
         &MaterialExposure,
+        Option<&super::auto_exposure::ExposureParameters>,
         &mut Tonemapping,
     )>,
     mut last_error: Local<Option<String>>,
@@ -130,10 +135,11 @@ fn render_display(
     capture_request: Res<super::display_capture::DisplayCaptureRequest>,
     mut capture: ResMut<super::display_capture::DisplayCaptureGpu>,
 ) {
+    let (camera_gpu, alpha_gpu) = camera_outputs;
     let Some(frame) = &frame.0 else {
         return;
     };
-    let (entity, main, target, camera, exposure, mut tonemapping_mode) = view.into_inner();
+    let (entity, main, target, camera, exposure, exposure_parameters, mut tonemapping_mode) = view.into_inner();
     if main.id() != frame.camera {
         return;
     }
@@ -239,7 +245,9 @@ fn render_display(
                 if !(139.26 * camera.exposure).is_finite() {
                     return Err("lens host radiance multiplier is invalid".into());
                 }
-                let inputs = LensImages::resolve(lens, &images)?;
+                let pre_dof = water_frame.0.as_ref().and_then(|water|
+                    camera_gpu.half_colour(frame.camera, water.matrices.frame));
+                let inputs = LensImages::resolve(lens, &images)?.with_pre_dof(pre_dof);
                 let pyramid = pyramids.prepare(
                     &device,
                     &queue,
@@ -284,6 +292,7 @@ fn render_display(
                 &pyramid_programs,
                 full,
                 camera.exposure,
+                exposure_parameters.ok_or("lens adaptation parameters unavailable")?.range.y,
                 &parameters,
                 post.source,
                 current.cubes.view(),
@@ -330,6 +339,12 @@ fn render_display(
                 }
                 if capture_request.is_pending() {
                     let mut planes = vec![("hdr", source), ("display", post.destination_texture)];
+                    if let Some(water) = &water_frame.0 {
+                        planes.extend(camera_gpu.capture_planes(frame.camera, water.matrices.frame));
+                        if let Some(opacity) = alpha_gpu.opacity_texture(frame.camera, water.matrices.frame) {
+                            planes.push(("dof_opacity", opacity));
+                        }
+                    }
                     if let Some(pyramid) = pyramids.get_mut(entity) {
                         planes.push(("luminance", pyramid.texture()));
                     }

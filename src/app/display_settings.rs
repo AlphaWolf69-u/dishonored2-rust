@@ -6,7 +6,10 @@
 use crate::platform::console;
 use crate::platform::display_modes::{self, Monitors};
 use bevy::prelude::*;
-use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, VideoMode, VideoModeSelection, WindowMode, WindowPosition};
+use bevy::window::{
+    MonitorSelection, PresentMode, PrimaryWindow, VideoMode, VideoModeSelection, WindowMode,
+    WindowPosition,
+};
 use std::time::{Duration, Instant};
 
 #[derive(Resource, Default)]
@@ -21,11 +24,21 @@ pub struct DisplaySettings {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shown {
     /// `r_fullscreen 1`: exclusive fullscreen at r_mode's size.
-    Fullscreen { monitor: usize, size: (u32, u32), refresh_hz: u32 },
+    Fullscreen {
+        monitor: usize,
+        size: (u32, u32),
+        refresh_hz: u32,
+    },
     /// `r_fullscreen 2`: borderless at r_mode's size, at the monitor's corner.
-    Borderless { origin: (i32, i32), size: (u32, u32) },
+    Borderless {
+        origin: (i32, i32),
+        size: (u32, u32),
+    },
     /// `r_fullscreen 0`.
-    Windowed { position: (i32, i32), size: (u32, u32) },
+    Windowed {
+        position: (i32, i32),
+        size: (u32, u32),
+    },
 }
 
 fn int(c: &console::Console, name: &str) -> i32 {
@@ -59,12 +72,23 @@ pub fn shown(table: &Monitors) -> Option<Shown> {
     let size = (w as u32, h as u32);
     Some(match int(&c, "r_fullscreen") {
         1 => {
-            let index = monitor.modes.iter().position(|&p| p == ((w as u32) << 16 | h as u32)).unwrap_or(0);
-            Shown::Fullscreen { monitor: mon as usize, size, refresh_hz: monitor.max_refresh.get(index).copied().unwrap_or(0) }
+            let index = monitor
+                .modes
+                .iter()
+                .position(|&p| p == ((w as u32) << 16 | h as u32))
+                .unwrap_or(0);
+            Shown::Fullscreen {
+                monitor: mon as usize,
+                size,
+                refresh_hz: monitor.max_refresh.get(index).copied().unwrap_or(0),
+            }
         }
         // The window is placed at the monitor's corner; ShowGameWindow's
         // placement on a non-primary monitor is not traced.
-        2 => Shown::Borderless { origin: monitor.origin, size },
+        2 => Shown::Borderless {
+            origin: monitor.origin,
+            size,
+        },
         _ => {
             let (ww, wh) = (int(&c, "r_windowWidth"), int(&c, "r_windowHeight"));
             let size = if ww > 0 && wh > 0 {
@@ -74,7 +98,10 @@ pub fn shown(table: &Monitors) -> Option<Shown> {
             } else {
                 (960, 540)
             };
-            Shown::Windowed { position: (int(&c, "r_windowPosX"), int(&c, "r_windowPosY")), size }
+            Shown::Windowed {
+                position: (int(&c, "r_windowPosX"), int(&c, "r_windowPosY")),
+                size,
+            }
         }
     })
 }
@@ -85,7 +112,11 @@ pub fn shown(table: &Monitors) -> Option<Shown> {
 /// (approximation, reported once).
 fn present_mode(interval: i32) -> PresentMode {
     match interval {
-        0 if cfg!(target_os = "windows") && std::env::var("DH2_DEBUG_DIRECT_PRESENT").as_deref() != Ok("1") => PresentMode::Mailbox,
+        0 if cfg!(target_os = "windows")
+            && std::env::var("DH2_DEBUG_DIRECT_PRESENT").as_deref() != Ok("1") =>
+        {
+            PresentMode::Mailbox
+        }
         0 => PresentMode::AutoNoVsync,
         _ => PresentMode::Fifo,
     }
@@ -94,31 +125,65 @@ fn present_mode(interval: i32) -> PresentMode {
 /// Put the shown window on `window`. Leaving a fullscreen mode for a
 /// window first changes only the mode (winit restores the old windowed size
 /// on that change); returns false then, and the rest follows next frame.
-fn configure(window: &mut Window, chosen: &Shown, table: &Monitors) -> bool {
-    let windowed = |window: &mut Window, decorations: bool, position: (i32, i32), size: (u32, u32)| {
-        if window.mode != WindowMode::Windowed {
-            window.mode = WindowMode::Windowed;
-            return false;
-        }
-        window.decorations = decorations;
-        window.position = WindowPosition::At(IVec2::new(position.0, position.1));
-        window.resolution.set_physical_resolution(size.0, size.1);
-        true
-    };
+fn configure(
+    window: &mut Window,
+    chosen: &Shown,
+    table: &Monitors,
+    registered: &[(Entity, IVec2)],
+) -> bool {
+    let windowed =
+        |window: &mut Window, decorations: bool, position: (i32, i32), size: (u32, u32)| {
+            if window.mode != WindowMode::Windowed {
+                window.mode = WindowMode::Windowed;
+                return false;
+            }
+            window.decorations = decorations;
+            window.position = WindowPosition::At(IVec2::new(position.0, position.1));
+            window.resolution.set_physical_resolution(size.0, size.1);
+            true
+        };
     match *chosen {
-        Shown::Fullscreen { monitor, size, refresh_hz } => {
+        Shown::Fullscreen {
+            monitor,
+            size,
+            refresh_hz,
+        } => {
+            let Some(native) = table.monitors.get(monitor) else {
+                return false;
+            };
+            let Some(&(entity, _)) = registered
+                .iter()
+                .find(|(_, position)| *position == IVec2::new(native.origin.0, native.origin.1))
+            else {
+                return false;
+            };
             window.mode = WindowMode::Fullscreen(
-                MonitorSelection::Index(monitor),
-                VideoModeSelection::Specific(VideoMode { physical_size: UVec2::new(size.0, size.1), bit_depth: 32, refresh_rate_millihertz: refresh_hz * 1000 }),
+                MonitorSelection::Entity(entity),
+                VideoModeSelection::Specific(VideoMode {
+                    physical_size: UVec2::new(size.0, size.1),
+                    bit_depth: 32,
+                    refresh_rate_millihertz: refresh_hz * 1000,
+                }),
             );
             true
         }
         Shown::Borderless { origin, size } => {
             // A borderless window covering its monitor is the windowing
             // system's borderless fullscreen on that monitor.
-            match table.monitors.iter().position(|m| m.origin == origin && m.size == (size.0 as i32, size.1 as i32)) {
+            match table
+                .monitors
+                .iter()
+                .position(|m| m.origin == origin && m.size == (size.0 as i32, size.1 as i32))
+            {
                 Some(index) => {
-                    window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Index(index));
+                    let native = &table.monitors[index];
+                    let Some(&(entity, _)) = registered.iter().find(|(_, position)| {
+                        *position == IVec2::new(native.origin.0, native.origin.1)
+                    }) else {
+                        return false;
+                    };
+                    window.mode =
+                        WindowMode::BorderlessFullscreen(MonitorSelection::Entity(entity));
                     true
                 }
                 None => windowed(window, false, origin, size),
@@ -126,6 +191,26 @@ fn configure(window: &mut Window, chosen: &Shown, table: &Monitors) -> bool {
         }
         Shown::Windowed { position, size } => windowed(window, true, position, size),
     }
+}
+
+/// Winit's monitor entity table does not exist when the initial window is
+/// created. Place that window on the requested display first; apply the actual
+/// fullscreen mode as soon as its monitor is registered, without changing cvars.
+fn initial_placement(window: &mut Window, chosen: &Shown, table: &Monitors) {
+    let (position, size, decorations) = match *chosen {
+        Shown::Fullscreen { monitor, size, .. } => {
+            let Some(monitor) = table.monitors.get(monitor) else {
+                return;
+            };
+            (monitor.origin, size, false)
+        }
+        Shown::Borderless { origin, size } => (origin, size, false),
+        Shown::Windowed { position, size } => (position, size, true),
+    };
+    window.mode = WindowMode::Windowed;
+    window.position = WindowPosition::At(IVec2::new(position.0, position.1));
+    window.resolution.set_physical_resolution(size.0, size.1);
+    window.decorations = decorations;
 }
 
 /// The diagnostic overrides `DH2_BENCHMARK_SIZE` and `DH2_BORDERLESS` keep
@@ -148,7 +233,8 @@ fn present(window: &mut Window, warned: &mut bool) {
     }
     if std::env::var_os("DH2_FRAME_LATENCY").is_none() {
         // 368b80: 1 + r_swapChainTripleBufferEnable frames of latency.
-        window.desired_maximum_frame_latency = std::num::NonZeroU32::new(1 + (int(&c, "r_swapChainTripleBufferEnable") != 0) as u32);
+        window.desired_maximum_frame_latency =
+            std::num::NonZeroU32::new(1 + (int(&c, "r_swapChainTripleBufferEnable") != 0) as u32);
     }
 }
 
@@ -159,27 +245,38 @@ pub fn initial_window(mut window: Window) -> (Window, DisplaySettings) {
         let table = display_modes::monitors();
         if let Some(chosen) = shown(&table) {
             info!("Window settings: {chosen:?}");
-            configure(&mut window, &chosen, &table);
+            initial_placement(&mut window, &chosen, &table);
         }
     }
     present(&mut window, &mut state.warned_interval);
-    state.generation = Some(console::shared().generation());
+    // Ordinary startup must apply the requested mode after monitor creation.
+    state.generation = window_overridden().then(|| console::shared().generation());
     (window, state)
 }
 
 /// Apply the window and presentation cvars when the settings changed.
-pub fn apply_display_settings(mut state: ResMut<DisplaySettings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+pub fn apply_display_settings(
+    mut state: ResMut<DisplaySettings>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    monitors: Query<(Entity, &bevy::window::Monitor)>,
+) {
     let shared = console::shared();
     if state.generation == Some(shared.generation()) {
         return;
     }
-    let Ok(mut window) = windows.single_mut() else { return };
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
     if !window_overridden() {
         let table = display_modes::monitors();
         match shown(&table) {
             Some(chosen) => {
                 info!("Window settings: {chosen:?}");
-                if !configure(&mut window, &chosen, &table) {
+                let registered = monitors
+                    .iter()
+                    .map(|(entity, monitor)| (entity, monitor.physical_position))
+                    .collect::<Vec<_>>();
+                if !configure(&mut window, &chosen, &table, &registered) {
                     return;
                 }
             }
@@ -200,7 +297,10 @@ pub fn apply_display_settings(mut state: ResMut<DisplaySettings>, mut windows: Q
 pub fn limit_frame_rate(mut state: ResMut<DisplaySettings>) {
     let (spin, scaler) = {
         let c = console::shared().read();
-        (int(&c, "com_disableFrameSpinning") == 0 && int(&c, "r_swapInterval") == 0, c.cvars.float("com_timeScaler").unwrap_or(2.0))
+        (
+            int(&c, "com_disableFrameSpinning") == 0 && int(&c, "r_swapInterval") == 0,
+            c.cvars.float("com_timeScaler").unwrap_or(2.0),
+        )
     };
     if !spin {
         state.last_frame = None;
@@ -220,9 +320,28 @@ pub fn limit_frame_rate(mut state: ResMut<DisplaySettings>) {
 /// `state` comes from [`initial_window`].
 pub struct DisplaySettingsPlugin(pub std::sync::Mutex<Option<DisplaySettings>>);
 
+/// Host integration: winit's exclusive window is topmost. Yield it when the
+/// user activates another application, without changing the selected video mode.
+fn yield_fullscreen_on_focus_loss(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    for event in focus.read() {
+        if !event.focused {
+            if let Ok(mut window) = windows.get_mut(event.window) {
+                if matches!(window.mode, WindowMode::Fullscreen(..)) {
+                    window.set_minimized(true);
+                }
+            }
+        }
+    }
+}
+
 impl Plugin for DisplaySettingsPlugin {
     fn build(&self, app: &mut App) {
         let state = self.0.lock().unwrap().take().unwrap_or_default();
-        app.insert_resource(state).add_systems(First, apply_display_settings).add_systems(Last, limit_frame_rate);
+        app.insert_resource(state)
+            .add_systems(First, (apply_display_settings, yield_fullscreen_on_focus_loss).chain())
+            .add_systems(Last, limit_frame_rate);
     }
 }

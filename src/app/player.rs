@@ -6,6 +6,7 @@
 use super::{game_to_view, view_to_game, BenchmarkSeconds, CursorGrabMode, CursorOptions, NavigationWorld, Projection};
 use crate::archive::Catalog;
 use crate::gameplay::game_clock_runtime::{ClockRuntime, GamePaused};
+use crate::gameplay::collision_filter::QueryFilter;
 use crate::gameplay::navigation::CollisionWorld;
 use crate::gameplay::options::DifficultyManager;
 use crate::gameplay::pause_state::Character;
@@ -49,8 +50,7 @@ impl PlayerWorld for GameCollision<'_> {
         }
     }
 
-    fn cast_shape(
-        &self,
+    fn cast_shape(&self, filter: QueryFilter,
         shape: &[Vec3],
         rotation: Mat3,
         from: Vec3,
@@ -68,7 +68,7 @@ impl PlayerWorld for GameCollision<'_> {
         }
         let margin = Vec3::splat(tolerance.max(0.0) + 0.01);
         let mut start = start;
-        for (key, triangle, owner) in self.0.triangles_in(min - margin, max + margin) {
+        for (key, triangle, owner) in self.0.triangles_in(min - margin, max + margin, filter) {
             let body = if owner == u32::MAX { 0 } else { owner + 1 };
             if let Some((fraction, contact)) = shape_cast::cast(&points, motion, &triangle, 0.001) {
                 cast.push(WorldHit { position: to_game(contact.position), normal: to_game(contact.normal), value: fraction, body, key });
@@ -82,10 +82,10 @@ impl PlayerWorld for GameCollision<'_> {
         }
     }
 
-    fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
         let start = to_view(from);
         let end = to_view(from + direction * length);
-        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details(start, end)?;
+        let (distance, key, owner, [a, b, c]) = self.0.first_hit_details(start, end, filter)?;
         let mut normal = to_game((b - a).cross(c - a).normalize_or_zero());
         if normal.dot(direction) > 0.0 {
             normal = -normal;
@@ -689,7 +689,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
                 }
             }
             let feet = player.feet();
-            for (key, triangle, owner) in world.0.triangles_in(to_view(feet) - Vec3::splat(0.7), to_view(feet) + Vec3::splat(0.7)) {
+            for (key, triangle, owner) in world.0.triangles_in(to_view(feet) - Vec3::splat(0.7), to_view(feet) + Vec3::splat(0.7), QueryFilter::ALL) {
                 println!("    nearby tri {key} owner {owner}: {:?}", triangle.map(to_game));
             }
         }
@@ -772,7 +772,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         let direction = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
         [0.5f32, 1.7]
             .iter()
-            .map(|h| world.cast_ray(feet + Vec3::Z * *h, direction, 40.0).map_or(40.0, |hit| hit.distance))
+            .map(|h| world.cast_ray(QueryFilter::ALL, feet + Vec3::Z * *h, direction, 40.0).map_or(40.0, |hit| hit.distance))
             .fold(40.0f32, f32::min)
     };
     let yaw = (0..16).map(|k| k as f32 * std::f32::consts::TAU / 16.0).max_by(|a, b| clear(*a).total_cmp(&clear(*b))).unwrap();

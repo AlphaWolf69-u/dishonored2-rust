@@ -62,6 +62,11 @@ impl MaterialCache {
             .values()
             .flat_map(|entry| entry.iter().filter_map(Option::as_ref))
     }
+    pub(in crate::app) fn named_values(&self) -> impl Iterator<Item = (&str, &CachedMaterial)> {
+        self.entries.iter().flat_map(|(name, entries)| entries.iter()
+            .filter_map(Option::as_ref).filter_map(Option::as_ref)
+            .map(move |material| (name.as_str(), material)))
+    }
 }
 
 #[cfg(test)]

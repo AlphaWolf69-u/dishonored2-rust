@@ -45,6 +45,30 @@ impl WaterMaterialSource {
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterMaterials(pub Arc<HashMap<Arc<str>, Result<Arc<WaterMaterialSource>, String>>>);
 
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct WaterStencilMaterials(pub Arc<HashMap<Arc<str>, [
+    Result<Option<Arc<crate::shader_cache::CachedWaterDepthSource>>,String>; 2
+]>>);
+
+/// Bank0 colour selections, independently admitted from world bank2.
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct WaterModelColours(
+    pub  Arc<
+        HashMap<
+            Arc<str>,
+            Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String>,
+        >,
+    >,
+);
+
+/// The same per-object probe records updated by the model motion owner.
+/// Indices follow scene draw order, independently of shared material handles.
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct WaterModelLighting {
+    pub records: Handle<bevy::render::storage::ShaderBuffer>,
+    pub indices: Arc<[u32]>,
+}
+
 /// Shared level lighting allocations. Current draw geometry and view constants
 /// are separate; retaining these handles does not make a water draw ready.
 #[derive(Clone)]
@@ -74,6 +98,7 @@ pub enum WaterGeometry {
         matrix: usize,
     },
     Model,
+    SkinnedModel,
 }
 
 /// Raw world meshes retain local game coordinates even where the forward host
@@ -139,10 +164,13 @@ impl bevy::render::extract_component::ExtractComponent for WaterMesh {
 pub struct WaterImageSources {
     pub skies: Arc<HashMap<String, Arc<crate::texture::InlineCubeChain>>>,
     pub caustics: Arc<HashMap<String, Arc<crate::texture::InlineArrayChain>>>,
+    pub ocean: Arc<HashMap<String, Arc<crate::texture::InlineCompressedChain>>>,
 }
 #[derive(Clone)]
 pub struct WaterFrame {
     pub camera: Entity,
+    pub delta_seconds: f32,
+    pub near_far: [f32; 2],
     /// Same prepared environment sun used by the view and atmosphere owners.
     pub parallel: Option<([f32; 3], [f32; 3])>,
     pub ocean_render_settings: crate::platform::game_settings::OceanRenderSettings,
@@ -158,24 +186,50 @@ pub struct WaterFrame {
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterSceneFrame(pub Option<WaterFrame>);
 
+/// Selected by the view's completed environment contact query. Absence is a
+/// pending/invalid query, rather than a fabricated completed empty hit list.
+#[derive(Resource,Clone,Default,bevy::render::extract_resource::ExtractResource)]
+pub struct WaterViewSelection(pub Option<crate::rendering::environment_contacts::WaterViewPublication>);
+
 pub struct WaterPlugin;
 impl Plugin for WaterPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterMaterials>();
+        app.init_resource::<WaterStencilMaterials>();
+        app.init_resource::<WaterModelColours>();
+        app.init_resource::<WaterModelLighting>();
         app.init_resource::<WaterLighting>();
         app.init_resource::<WaterWorldMeshes>();
         app.init_resource::<WaterImageSources>();
         app.init_resource::<WaterSceneFrame>();
+        app.init_resource::<WaterViewSelection>();
+        app.init_resource::<super::ocean_scene::OceanSources>();
         app.init_resource::<super::boat_scene::BoatMaterials>();
-        app.add_plugins((
-            bevy::render::extract_component::ExtractComponentPlugin::<super::boat_scene::BoatMesh>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<super::boat_scene::BoatMaterials>::default(),
-            bevy::render::extract_component::ExtractComponentPlugin::<WaterMesh>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<WaterMaterials>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<WaterLighting>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<WaterWorldMeshes>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<WaterImageSources>::default(),
-            bevy::render::extract_resource::ExtractResourcePlugin::<WaterSceneFrame>::default(),
-        ));
+        app.add_plugins(
+            (
+                bevy::render::extract_component::ExtractComponentPlugin::<
+                    super::boat_scene::BoatMesh,
+                >::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<
+                    super::boat_scene::BoatMaterials,
+                >::default(),
+                bevy::render::extract_component::ExtractComponentPlugin::<WaterMesh>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterMaterials>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterStencilMaterials>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterModelLighting>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterModelColours>::default(
+                ),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterLighting>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterWorldMeshes>::default(
+                ),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterImageSources>::default(
+                ),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterSceneFrame>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<WaterViewSelection>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<
+                    super::ocean_scene::OceanSources,
+                >::default(),
+            ),
+        );
     }
 }

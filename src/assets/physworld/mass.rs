@@ -2,6 +2,17 @@
 use super::{
     float, le32, normalize_body_quaternion, parse_embedded_havok, quaternion_basis, slice,
 };
+mod bounds;
+pub use bounds::{bounds_mass_properties, box_mass_properties, BoxMassProperties};
+#[path = "mass/tensor.rs"]
+mod tensor;
+pub use tensor::{add_parallel_axis, rotate_inertia, subtract_parallel_axis};
+#[path = "mass/combine.rs"]
+mod combine;
+pub use combine::{combine_mass, MassElement};
+#[path = "mass/principal_axes.rs"]
+mod principal_axes;
+pub use principal_axes::{diagonalize_inertia, principal_inertia_axes};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MassProperties {
@@ -22,11 +33,47 @@ pub struct PrincipalMassProperties {
     pub orientation: [f32; 4],
 }
 
+impl MassProperties {
+    /// c28d50: diagonalize the tensor and retain the source's volume in the
+    /// fourth principal-inertia lane before converting the axes to a quaternion.
+    pub fn to_principal(self) -> PrincipalMassProperties {
+        let mut tensor = self.inertia;
+        let axes = principal_inertia_axes(&mut tensor);
+        PrincipalMassProperties {
+            volume: self.volume,
+            mass: self.mass,
+            center: self.center,
+            inertia: [tensor[0][0], tensor[1][1], tensor[2][2], self.volume],
+            orientation: super::rotation_quaternion(axes),
+        }
+    }
+}
+
 impl PrincipalMassProperties {
+    /// c28e20 rotates principal inertia into the full tensor. This is the
+    /// column product with a transposed basis used by ae1ba0, including W.
+    pub fn to_tensor(self) -> MassProperties {
+        let basis = quaternion_basis(self.orientation);
+        let scaled: [[f32; 4]; 3] = std::array::from_fn(|i| basis[i].map(|v| self.inertia[i] * v));
+        let inertia = std::array::from_fn(|column| {
+            std::array::from_fn(|row| {
+                (basis[1][column] * scaled[1][row] + basis[0][column] * scaled[0][row])
+                    + basis[2][column] * scaled[2][row]
+            })
+        });
+        MassProperties {
+            volume: self.volume,
+            mass: self.mass,
+            center: self.center,
+            inertia,
+        }
+    }
+
     /// 140caf5c0's explicit nonnegative mass override. A negative value leaves
-    /// the shape's mass unchanged; zero preserves the existing inertia tensor.
+    /// the shape's mass unchanged, as does an unordered override; zero preserves
+    /// the existing inertia tensor. COMISS/JC supplies the unordered branch.
     pub fn set_mass(&mut self, mass: f32) {
-        if mass < 0. {
+        if mass.is_nan() || mass < 0. {
             return;
         }
         if mass != 0. {
@@ -34,6 +81,55 @@ impl PrincipalMassProperties {
             self.inertia = self.inertia.map(|v| scale * v);
         }
         self.mass = mass;
+    }
+}
+
+#[cfg(test)]
+#[path = "mass/tensor_tests.rs"]
+mod tensor_tests;
+
+/// caf5c0 selects cached/shape-calculated mass or an authored distribution,
+/// then applies the explicit override. The caller must supply the real shape
+/// calculation for an uncached shape; absence never fabricates unit inertia.
+/// The three callback words preserve the source's mass-calculation config.
+pub fn creation_mass_properties(
+    cached: Option<PrincipalMassProperties>,
+    distribution: Option<super::body::MassDistribution>,
+    mass_override: f32,
+    calculate: impl FnOnce([u32; 3]) -> Result<PrincipalMassProperties, String>,
+) -> Result<PrincipalMassProperties, String> {
+    if let Some(distribution) = distribution {
+        let mut properties = PrincipalMassProperties {
+            volume: distribution.center_of_mass_and_volume[3],
+            mass: 1.,
+            center: [
+                distribution.center_of_mass_and_volume[0],
+                distribution.center_of_mass_and_volume[1],
+                distribution.center_of_mass_and_volume[2],
+                0.,
+            ],
+            inertia: [
+                distribution.inertia_tensor[0],
+                distribution.inertia_tensor[1],
+                distribution.inertia_tensor[2],
+                0.,
+            ],
+            orientation: distribution.major_axis_space,
+        };
+        let requested = if mass_override.is_nan() || mass_override < 0. {
+            cached.map_or(1., |properties| properties.mass)
+        } else {
+            mass_override
+        };
+        properties.set_mass(requested);
+        Ok(properties)
+    } else {
+        let mut properties = match cached {
+            Some(properties) => properties,
+            None => calculate([0, 0x3fc0_0000, 0xc47a_0000])?,
+        };
+        properties.set_mass(mass_override);
+        Ok(properties)
     }
 }
 
@@ -111,6 +207,14 @@ fn compressed_payload(bytes: &[u8]) -> Result<&[u8], String> {
     let root = tagged.item_at(bytes, 1, 0)?;
     slice(root, offset, 32)
 }
+
+#[cfg(test)]
+#[path = "mass/bounds_tests.rs"]
+mod bounds_tests;
+
+#[cfg(test)]
+#[path = "mass/creation_tests.rs"]
+mod creation_tests;
 
 #[cfg(test)]
 mod tests {

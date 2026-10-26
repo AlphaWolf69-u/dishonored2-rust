@@ -601,7 +601,7 @@ mod tests {
                 }
                 for _ in 0..(seconds * 60.) as usize {
                     scripts.advance_motors(1. / 60., &mut world);
-                    world.step([1. / 60.; 5]);
+                    world.step([1. / 60.; 2]);
                 }
                 let (enabled, _, velocity, _) = world.motor_parameters(id).unwrap();
                 assert!(enabled);

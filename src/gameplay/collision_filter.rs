@@ -1,6 +1,68 @@
-//! arkCollisionQueryFilter's body/shape-pair mask predicate (0996a0/0996d0).
+//! arkCollisionFilterInfo words and the two pair rules that read them.
+//!
+//! A filter word is `layer | collidesWith << 5`: the low five bits name the
+//! arkCollisionLayer_t of the body or query, the rest is the set of layers it
+//! collides with. Level bodies carry authored words (hknpBodyCinfo
+//! collisionFilterInfo); runtime bodies build theirs from a layer
+//! (`filter_info`) and their collision settings (`shape_tags::material_filter`).
 
-#[derive(Clone, Copy, Debug)]
+/// arkCollisionLayer_t (enum registration order 0..26).
+pub mod layer {
+    pub const WORLD_LOW: u32 = 0;
+    pub const WORLD_LOW_HIGH: u32 = 1;
+    pub const WORLD_HIGH: u32 = 2;
+    pub const RIGID_BODY: u32 = 3;
+    pub const DEBRIS: u32 = 4;
+    pub const MOVER: u32 = 5;
+    pub const PLAYER: u32 = 6;
+    pub const PLAYER_HITBOX: u32 = 7;
+    pub const PLAYER_DEAD: u32 = 8;
+    pub const NPC: u32 = 9;
+    pub const NPC_BODY_ANIMATED: u32 = 10;
+    pub const PROJECTILE: u32 = 11;
+    pub const INTERACTABLE: u32 = 15;
+    pub const TRIGGER: u32 = 16;
+}
+
+/// An arkCollisionLayerMask_t/Bits_t decl member (`m_NPC`, `m_WORLD_LOW`).
+pub fn layer_member(member: &str) -> Option<u32> {
+    let name = member.strip_prefix("m_")?;
+    COLLISION_LAYERS
+        .iter()
+        .position(|n| n.strip_prefix("COLLISION_LAYER_") == Some(name))
+        .map(|i| i as u32)
+}
+
+/// The filter a world query runs with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryFilter {
+    /// The world's arkCollisionFilter with the query body's word (the
+    /// character proxy's own casts).
+    World(u32),
+    /// An arkCollisionQueryFilter (arkPhysicsWorld's async and synchronous
+    /// queries).
+    Layers(CollisionQueryFilter),
+}
+
+impl QueryFilter {
+    /// Every target (FUN_140099610's zero-word shortcut); the rewrite's
+    /// diagnostics query with it.
+    pub const ALL: Self = Self::World(0);
+
+    pub fn layers(layers: u32, required_flags: u32) -> Self {
+        Self::Layers(CollisionQueryFilter { layers, required_flags })
+    }
+
+    pub fn accepts(self, target: u32) -> bool {
+        match self {
+            Self::World(query) => pair_collides(query, target),
+            Self::Layers(filter) => filter.accepts(target),
+        }
+    }
+}
+
+/// arkCollisionQueryFilter's body/shape-pair mask predicate (0996a0/0996d0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CollisionQueryFilter {
     pub layers: u32,
     pub required_flags: u32,

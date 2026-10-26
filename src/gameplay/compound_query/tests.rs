@@ -2,7 +2,26 @@ use super::*;
 
 #[test]
 fn compound_traversal_matches_executed_float_tree() {
-    let nodes: Vec<_> = include_str!("../../../tests/fixtures/compound_query_tree.txt")
+    compare_traversal(
+        include_str!("../../../tests/fixtures/compound_query_tree.txt"),
+        include_str!("../../../tests/fixtures/compound_query.txt"),
+        false,
+        640,
+    );
+}
+
+#[test]
+fn masked_compound_traversal_matches_executed_float_tree() {
+    compare_traversal(
+        include_str!("../../../tests/fixtures/compound_masked_query_tree.txt"),
+        include_str!("../../../tests/fixtures/compound_masked_query.txt"),
+        true,
+        2560,
+    );
+}
+
+fn compare_traversal(tree: &str, cases: &str, masked: bool, expected_count: usize) {
+    let nodes: Vec<_> = tree
         .lines()
         .map(|line| {
             let w: Vec<_> = line
@@ -49,14 +68,16 @@ fn compound_traversal_matches_executed_float_tree() {
     }
     let mut traversal = CompoundQuery::default();
     let mut count = 0;
-    for (case, line) in include_str!("../../../tests/fixtures/compound_query.txt")
-        .lines()
-        .enumerate()
-    {
-        let w: Vec<_> = line
+    for (case, line) in cases.lines().enumerate() {
+        let words: Vec<_> = line
             .split_whitespace()
             .map(|v| u32::from_str_radix(v, 16).unwrap())
             .collect();
+        let (node_mask, w) = if masked {
+            ((words[0] != 0).then_some(&words[1..5]), &words[5..])
+        } else {
+            (None, &words[..])
+        };
         let distance = f32::from_bits(w[7]);
         let clipped = if 0. > distance { 0. } else { distance };
         let mut squared = clipped * clipped;
@@ -66,7 +87,7 @@ fn compound_traversal_matches_executed_float_tree() {
             visited: Vec::new(),
         };
         traversal
-            .visit(
+            .visit_masked(
                 CompoundTree {
                     nodes: &nodes,
                     root: w[0] as u16,
@@ -76,6 +97,7 @@ fn compound_traversal_matches_executed_float_tree() {
                     half_extent: [w[4], w[5], w[6]].map(f32::from_bits),
                 },
                 &mut squared,
+                node_mask,
                 &mut visitor,
             )
             .unwrap();
@@ -96,5 +118,5 @@ fn compound_traversal_matches_executed_float_tree() {
         );
         count += 1;
     }
-    assert_eq!(count, 640);
+    assert_eq!(count, expected_count);
 }

@@ -241,6 +241,15 @@ impl InterpolatedProbeLighting {
             self.reflection_probe as f32
         };
         record[1][3] = self.reflection_luminance;
+        // Rigid water's vertex program selects a reflection from the dynamic
+        // tetrahedron using these per-object inputs (VS14483/14488). Keep them
+        // in the existing record's unused lanes so moving models publish one
+        // coherent lighting update for both opaque and water surfaces.
+        for i in 0..4 {
+            record[2 + i][3] = self.barycentrics[i];
+        }
+        record[6][3] = self.tetrahedron_index as f32;
+        record[7][3] = 1.0;
         record
     }
 }

@@ -42,11 +42,31 @@ impl FogRayPipelines {
         scattering_state: crate::render_state::RenderState,
         depth_format: TextureFormat,
     ) -> Result<Self, String> {
+        Self::create(device, scattering_state, Some(depth_format), [1., 1.])
+    }
+    pub fn with_sampled_stencil(
+        device: &RenderDevice,
+        state: crate::render_state::RenderState,
+        depth_scale: [f32; 2],
+    ) -> Result<Self, String> {
+        Self::create(device, state, None, depth_scale)
+    }
+    fn create(
+        device: &RenderDevice,
+        scattering_state: crate::render_state::RenderState,
+        depth_format: Option<TextureFormat>,
+        depth_scale: [f32; 2],
+    ) -> Result<Self, String> {
         let source = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             include_str!("../../../assets/shaders/dh2_shadow.wgsl"),
             include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
-            include_str!("../../../assets/shaders/dh2_fog_rays.wgsl")
+            include_str!("../../../assets/shaders/dh2_fog_rays.wgsl"),
+            if depth_format.is_none() {
+                include_str!("../../../assets/shaders/dh2_fog_rays_stencil.wgsl")
+            } else {
+                ""
+            }
         );
         let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("radial sun rays"),
@@ -82,6 +102,18 @@ impl FogRayPipelines {
             ty: BindingType::Sampler(SamplerBindingType::Filtering),
             count: None,
         });
+        if depth_format.is_none() {
+            entries.push(BindGroupLayoutEntry {
+                binding: 7,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Uint,
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
         let layout = device.create_bind_group_layout(Some("radial ray inputs"), &entries);
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("radial ray program"),
@@ -92,9 +124,15 @@ impl FogRayPipelines {
         let target = crate::render_state::blend_state(&prepared).targets[0]
             .ok_or("radial rays have no colour target")?;
         let blend = super::pipeline_state::blend_target(target)?;
-        let depth = super::shadow_pipeline::depth_stencil_gpu(&prepared, depth_format)?;
+        let depth = depth_format
+            .map(|format| super::shadow_pipeline::depth_stencil_gpu(&prepared, format))
+            .transpose()?;
         let make = |visibility: bool, turbulence: bool| {
-            let constants = [("RAY_TURBULENCE", f64::from(u32::from(turbulence)))];
+            let constants = [
+                ("RAY_TURBULENCE", f64::from(u32::from(turbulence))),
+                ("RAY_DEPTH_SCALE_X", f64::from(depth_scale[0])),
+                ("RAY_DEPTH_SCALE_Y", f64::from(depth_scale[1])),
+            ];
             device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some(if visibility {
                     "radial ray blur visibility"
@@ -113,7 +151,11 @@ impl FogRayPipelines {
                     entry_point: Some(if visibility {
                         "fog_ray_visibility_fragment"
                     } else {
-                        "fog_ray_scatter_fragment"
+                        if depth_format.is_some() {
+                            "fog_ray_scatter_fragment"
+                        } else {
+                            "fog_ray_scatter_stencil"
+                        }
                     }),
                     compilation_options: PipelineCompilationOptions {
                         constants: &constants,
@@ -134,11 +176,7 @@ impl FogRayPipelines {
                     })],
                 }),
                 primitive: default(),
-                depth_stencil: if visibility {
-                    None
-                } else {
-                    Some(depth.clone())
-                },
+                depth_stencil: if visibility { None } else { depth.clone() },
                 multisample: default(),
                 multiview_mask: None,
                 cache: None,

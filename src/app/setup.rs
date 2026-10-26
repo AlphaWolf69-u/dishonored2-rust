@@ -80,6 +80,7 @@ pub(super) fn setup(
     view_settings: Res<ViewSettings>,
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
+    environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -342,6 +343,8 @@ pub(super) fn setup(
         shadow_materials: ShadowMaterials::default(),
         vegetation,
         water_materials: default(),
+        water_model_colours: default(),
+        water_stencil_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: HashMap::new(),
         diffuse_image_paths: Vec::new(),
@@ -361,6 +364,20 @@ pub(super) fn setup(
     let mut baked_shear_instances = 0usize;
     let mut authored_lod_instances = BTreeMap::<usize, usize>::new();
     let mut render_instances = Vec::new();
+    // 88e220 can select a volume's surface material even when no placed mesh
+    // names it. Load it through the same resolver before preparing water's
+    // immutable program/image registries; ordinary area blending excludes these
+    // profiles and therefore cannot discover these dependencies itself.
+    if let Some(volumes)=environment_volumes.as_ref() {
+        for volume in volumes.0.iter().filter(|v|v.is_water_volume) {
+            if let Some(material)=volume.surface_material.as_deref() {
+                let resolved=resolver.get(material,0,volume.placement.position);
+                if !resolved.is_some_and(|m|matches!(m.handle,super::MaterialHandle::Water(_))) {
+                    warn!("Water volume {} surface material is not ready for water rendering: {material}",volume.placement.id);
+                }
+            }
+        }
+    }
     let mut bwm_visibility_render_instances = vec![Vec::new(); scene.world.visibility.len()];
     for (object_number, object) in scene.world.objects.iter().enumerate() {
         *authored_lod_instances.entry(object.lod).or_default() +=
@@ -1066,6 +1083,10 @@ pub(super) fn setup(
         }
     }
     let probe_sh_record_count = resolver.probe_sh_records.len().saturating_sub(1);
+    commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterModelLighting {
+        records: resolver.probe_sh_buffer.clone(),
+        indices: render_instances.iter().map(|instance| instance.probe_index).collect(),
+    });
     commands.insert_resource(super::model_motion::ModelProbeLighting(
         resolver.probe_sh_buffer.clone(),
     ));
@@ -1663,6 +1684,7 @@ pub(super) fn setup(
         }
     }
     let diffuse_image_count = resolver.diffuse_image_paths.len();
+    commands.insert_resource(resolver.alpha_depth_materials());
     tome_render_instances.bind_texture_demands(&render_instances, &material_images);
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
@@ -1680,12 +1702,18 @@ pub(super) fn setup(
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
-        let (water,sources)=super::water_scene::WaterScene::load(catalog,parameters,&scene.area_environments,&resolver.water_materials)
+        let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
         commands.insert_resource(water);
         commands.insert_resource(sources);
+        let programs=resolver.programs.as_deref_mut().expect("ocean program library").as_mut()
+            .unwrap_or_else(|error|panic!("ocean program library: {error}"));
+        commands.insert_resource(crate::rendering::bevy_backend::ocean_scene::OceanSources::load(catalog,programs)
+            .unwrap_or_else(|error|panic!("ocean programs: {error}")));
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));
+    commands.insert_resource(std::mem::take(&mut resolver.water_stencil_materials));
     commands.insert_resource(std::mem::take(&mut resolver.boat_materials));
     let vegetation_vertices: usize = vegetation_meshes
         .0

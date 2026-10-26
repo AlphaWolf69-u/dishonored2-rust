@@ -7,6 +7,14 @@ pub mod autofocus;
 #[cfg(feature = "game")]
 pub mod camera_effects;
 #[cfg(feature = "game")]
+pub mod camera_alpha_composite;
+#[cfg(feature = "game")]
+pub mod camera_view;
+#[cfg(feature = "game")]
+pub mod camera_scene;
+#[cfg(feature = "game")]
+pub mod camera_alpha_colours;
+#[cfg(feature = "game")]
 pub mod camera_fuzziness;
 #[cfg(feature = "game")]
 pub mod camera_mask_blur;
@@ -24,6 +32,8 @@ pub mod alpha_depth;
 pub mod water_depth;
 #[cfg(feature = "game")]
 pub mod underwater_stencil;
+#[cfg(feature = "game")]
+pub mod underwater_scattering;
 #[cfg(feature = "game")]
 pub mod ocean_water_line;
 #[cfg(feature = "game")]
@@ -62,6 +72,8 @@ pub mod ocean_vertex;
 pub mod ocean_depth;
 #[cfg(feature = "game")]
 pub mod ocean_mesh;
+#[cfg(feature = "game")]
+pub mod ocean_scene;
 #[cfg(feature = "game")]
 pub mod ocean_colour;
 #[cfg(feature = "game")]
@@ -136,10 +148,12 @@ mod fog_pass_tests;
 pub mod fog_pipeline;
 #[cfg(feature = "game")]
 pub mod fog_rays;
+#[cfg(feature = "game")]
+pub mod sun_rays;
 #[cfg(all(test, feature = "game"))]
 mod fog_rays_tests;
 #[cfg(feature = "game")]
-mod fog_scene;
+pub(crate) mod fog_scene;
 #[cfg(all(test, feature = "game"))]
 mod fog_scene_tests;
 #[cfg(feature = "game")]
@@ -219,3 +233,6 @@ pub mod lens_scene;
 
 #[cfg(all(test,feature="game"))]
 mod direct_lighting_tests;
+
+#[cfg(feature = "game")]
+pub mod alpha_depth_scene;

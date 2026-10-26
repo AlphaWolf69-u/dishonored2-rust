@@ -81,6 +81,14 @@ pub struct CameraCombinePass {
 }
 impl CameraCombinePass {
     pub fn new(device: &RenderDevice, format: TextureFormat) -> Self {
+        Self::with_depth_source(device, format, false)
+    }
+    /// Sample the host's actual depth aspect directly, preserving the game's
+    /// point fetch without allocating a float copy of the depth image.
+    pub fn with_hardware_depth(device: &RenderDevice, format: TextureFormat) -> Self {
+        Self::with_depth_source(device, format, true)
+    }
+    fn with_depth_source(device: &RenderDevice, format: TextureFormat, hardware: bool) -> Self {
         use binding_types::*;
         let mut entries = vec![BindGroupLayoutEntry {
             binding: 0,
@@ -97,8 +105,12 @@ impl CameraCombinePass {
                 binding: i,
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Texture {
-                    sample_type: TextureSampleType::Float {
-                        filterable: i != 2 && i != 7,
+                    sample_type: if hardware && i == 2 {
+                        TextureSampleType::Depth
+                    } else {
+                        TextureSampleType::Float {
+                            filterable: i != 2 && i != 7,
+                        }
                     },
                     view_dimension: TextureViewDimension::D2,
                     multisampled: false,
@@ -118,9 +130,22 @@ impl CameraCombinePass {
             .to_vec(),
         );
         let layout = device.create_bind_group_layout(Some("camera combine inputs"), &entries);
+        let source = if hardware {
+            SHADER_SOURCE
+                .replace(
+                    "var camera_depth:texture_2d<f32>;",
+                    "var camera_depth:texture_depth_2d;",
+                )
+                .replace(
+                    "point_clamp_sample(camera_depth,uv).x",
+                    "point_clamp_depth(camera_depth,uv)",
+                )
+        } else {
+            SHADER_SOURCE.to_owned()
+        };
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("camera combine"),
-            source: ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: ShaderSource::Wgsl(source.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("camera combine"),

@@ -10,6 +10,7 @@ use bevy::{
 
 pub struct SunSpritePass {
     pub state: crate::render_state::RenderState,
+    pub depth_format: TextureFormat,
     pipelines: [RenderPipeline; 2],
     layout: BindGroupLayout,
     uniform: UniformBuffer<FogSunMaskUniform>,
@@ -99,6 +100,7 @@ impl SunSpritePass {
         };
         Ok(Self {
             state,
+            depth_format: depth,
             pipelines: [make(false)?, make(true)?],
             layout,
             uniform: UniformBuffer::from(initial),

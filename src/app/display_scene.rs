@@ -199,6 +199,7 @@ impl DisplayScene {
                 .advance_with(source, (target, 1.), duration, delta, |_, target, t| {
                     (target.0.clone(), t)
                 });
+        self.lens.refresh_settings()?;
         let post_process = self.lens.settings();
         let hdr_white_level = post_process.hdr_white_level(values[2].x);
         // Live cvars: r_gamma, r_brightness, r_skipPostProcess.

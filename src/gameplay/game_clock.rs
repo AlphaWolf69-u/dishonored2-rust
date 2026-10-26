@@ -11,6 +11,27 @@ pub const GROUP_STRIDE: usize = 0x50;
 pub const STATE_SIZE: usize = 0x1b0;
 /// Native constructor step and read-only DAT_1422813c8 fixed step.
 pub const DEFAULT_STEP: f32 = f32::from_bits(0x3d08_8889);
+
+#[cfg(test)]
+mod entity_delta_tests {
+    use super::*;
+    #[test]
+    fn entity_delta_matches_executed_timespace_and_clock_getters() {
+        let mut cases = 0;
+        for line in include_str!("../../tests/fixtures/entity_clock_delta.txt").lines() {
+            let words: Vec<_> = line.split_whitespace().map(|v| u32::from_str_radix(v, 16).unwrap()).collect();
+            let mut bytes = [0; STATE_SIZE];
+            for group in 0..GROUP_COUNT {
+                let at = group * GROUP_STRIDE + 0x28;
+                bytes[at..at+4].copy_from_slice(&words[group+1].to_le_bytes());
+            }
+            let clock = GameClock::from_bytes(bytes);
+            assert_eq!(clock.entity_delta(words[0]).unwrap().to_bits(), words[6]);
+            cases += 1;
+        }
+        assert_eq!(cases, 512);
+    }
+}
 const QUANTUM: f32 = f32::from_bits(0x3c08_8889);
 
 /// Values read at the native update's platform/engine/CVar call boundaries.
@@ -222,6 +243,14 @@ impl GameClock {
     /// FUN_140059680.
     pub fn delta(&self, group: usize) -> Option<f32> {
         (group < GROUP_COUNT).then(|| self.f32(group * GROUP_STRIDE + 0x28))
+    }
+
+    /// 877eb0 selects the entity's timespace through DAT_1422952d8 before
+    /// calling the same 059680 delta getter. Entity timespace is not a raw
+    /// clock-group index; the four entries are [3,4,2,0].
+    pub fn entity_delta(&self, timespace: u32) -> Option<f32> {
+        const GROUPS: [usize; 4] = [3, 4, 2, 0];
+        self.delta(*GROUPS.get(timespace as usize)?)
     }
 
     /// FUN_1400596e0.

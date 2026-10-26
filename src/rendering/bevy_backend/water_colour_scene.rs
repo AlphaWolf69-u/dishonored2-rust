@@ -22,6 +22,7 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Clone, Copy)]
 pub struct WaterColourResources<'a> {
     pub device: &'a RenderDevice,
     pub queue: &'a RenderQueue,
@@ -35,6 +36,7 @@ pub struct WaterColourResources<'a> {
     pub allocator: &'a MeshAllocator,
     pub depth_programs: &'a super::tiled_lighting_gpu::TlfPipelines,
 }
+#[derive(Clone, Copy)]
 pub struct WaterColourView<'a> {
     pub frame: &'a WaterFrame,
     pub white_level: f32,
@@ -55,12 +57,14 @@ struct Key {
     state: crate::render_state::RenderState,
     reversed: bool,
     class: crate::rendering::water::program::WorldWaterColourClass,
+    model: bool,
 }
 struct Program {
     colour: WorldProbeColourProgram,
     parameters: Option<([BufferId; 2], BindGroup, BindGroup)>,
-    inputs: Option<([BufferId; 5], BindGroup)>,
+    inputs: Option<([BufferId; 6], BindGroup)>,
     probes: bool,
+    model: bool,
 }
 struct Draw {
     program: usize,
@@ -91,6 +95,7 @@ pub struct WaterColourScene {
     vertex: Option<Buffer>,
     fragment: Option<Buffer>,
     remap: Option<Buffer>,
+    model_matrices: Option<Buffer>,
     skies: HashMap<
         usize,
         (
@@ -147,6 +152,7 @@ impl WaterColourScene {
             vertex: None,
             fragment: None,
             remap: None,
+            model_matrices: None,
             skies: default(),
             caustics: default(),
             bindings: default(),
@@ -183,6 +189,18 @@ impl WaterColourScene {
         instances: impl IntoIterator<Item = &'a WaterInstance>,
         encoder: &mut CommandEncoder,
     ) -> Result<BTreeSet<String>, String> {
+        self.record_with_models(r, view, instances, encoder, &WaterModelColours::default(), None)
+    }
+
+    pub fn record_with_models<'a>(
+        &mut self,
+        r: WaterColourResources<'_>,
+        view: WaterColourView<'_>,
+        instances: impl IntoIterator<Item = &'a WaterInstance>,
+        encoder: &mut CommandEncoder,
+        model_colours: &WaterModelColours,
+        model_lighting: Option<&WaterModelLighting>,
+    ) -> Result<BTreeSet<String>, String> {
         self.draws.clear();
         let mut pending = BTreeSet::new();
         let mut needs_reflections = false;
@@ -192,13 +210,15 @@ impl WaterColourScene {
         let mut vertex_bytes = Vec::new();
         let mut fragment_bytes = Vec::new();
         let mut remap = Vec::new();
+        let mut model_matrices = Vec::new();
         let mut ordered: Vec<_> = instances.into_iter().collect();
         ordered.sort_by_key(|i| i.order);
         for instance in ordered {
-            let Some(WaterGeometry::World { object, matrix }) = instance.geometry else {
-                pending.insert("model water colour ABI is not submitted".into());
+            if matches!(instance.geometry, Some(WaterGeometry::SkinnedModel)) {
+                pending.insert("skinned water colour ABI is not submitted".into());
                 continue;
-            };
+            }
+            let model = matches!(instance.geometry, Some(WaterGeometry::Model));
             let material = r
                 .materials
                 .0
@@ -206,7 +226,22 @@ impl WaterColourScene {
                 .ok_or("water colour material unavailable")?
                 .as_ref()
                 .map_err(Clone::clone)?;
-            let Some(source) = material.world_colour.as_ref().map_err(Clone::clone)? else {
+            let selection = if model {
+                model_colours
+                    .0
+                    .get(&instance.material)
+                    .ok_or("model water colour selection unavailable")?
+            } else {
+                &material.world_colour
+            };
+            let selection = match selection {
+                Ok(source) => source,
+                Err(error) => {
+                    pending.insert(format!("{}: {error}", instance.material));
+                    continue;
+                }
+            };
+            let Some(source) = selection else {
                 continue;
             };
             let class = match &source.class {
@@ -222,14 +257,38 @@ impl WaterColourScene {
             let settings = source.settings(&view.frame.values)?;
             needs_reflections |=
                 source.colour_options.reflections && view.frame.ocean_environment.view.enable_ssr;
-            let world = r
-                .world
-                .objects
-                .get(&object)
-                .ok_or("water colour raw world mesh unavailable")?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            let mesh_id = world.mesh.id();
+            let (mesh_id, matrix, surface_flags, indices_reversed) = match instance.geometry {
+                Some(WaterGeometry::World { object, matrix }) => {
+                    let world = r
+                        .world
+                        .objects
+                        .get(&object)
+                        .ok_or("water colour raw world mesh unavailable")?
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    (
+                        world.mesh.id(),
+                        matrix,
+                        world.surface_flags,
+                        world.indices_reversed,
+                    )
+                }
+                Some(WaterGeometry::Model) => {
+                    // Use the current host-space mesh, including baked shear
+                    // and CPU deformation, then transform into game space.
+                    // Model and world matrix allocations remain independent.
+                    let game_from_view = Mat4::from_cols(Vec4::X, Vec4::Z, -Vec4::Y, Vec4::W);
+                    let matrix = game_from_view * instance.world_from_local;
+                    let rows = matrix.transpose().to_cols_array_2d();
+                    let index = model_matrices.len() / 48;
+                    model_matrices.extend(rows[..3].iter().flatten().flat_map(|v| v.to_le_bytes()));
+                    (instance.mesh, index, 0, false)
+                }
+                None => return Err("water colour geometry association unavailable".into()),
+                Some(WaterGeometry::SkinnedModel) => {
+                    unreachable!("skinned water admission occurs before material lookup")
+                }
+            };
             let mesh = r
                 .meshes
                 .get(mesh_id)
@@ -238,30 +297,42 @@ impl WaterColourScene {
                 .allocator
                 .mesh_vertex_slice(&mesh_id)
                 .ok_or("water colour vertex allocation unavailable")?;
-            let state =
-                crate::render_state::prepared_surface_state(material.state, world.surface_flags);
+            let state = crate::render_state::prepared_surface_state(material.state, surface_flags);
             let key = Key {
                 layout: mesh.layout.clone(),
                 state,
-                reversed: world.indices_reversed,
+                reversed: indices_reversed,
                 class,
+                model,
             };
             let program = if let Some(&i) = self.keys.get(&key) {
                 i
             } else {
-                let colour = WorldProbeColourProgram::new_for_world_surface(
-                    r.device,
-                    &mesh.layout,
-                    self.depth_format,
-                    if self.compressed {
-                        TextureFormat::Rg11b10Ufloat
-                    } else {
-                        TextureFormat::Rgba16Float
-                    },
-                    state,
-                    world.indices_reversed,
-                    class,
-                )?;
+                let colour_format = if self.compressed {
+                    TextureFormat::Rg11b10Ufloat
+                } else {
+                    TextureFormat::Rgba16Float
+                };
+                let colour = if model {
+                    WorldProbeColourProgram::new_for_model_surface(
+                        r.device,
+                        &mesh.layout,
+                        self.depth_format,
+                        colour_format,
+                        state,
+                        class,
+                    )?
+                } else {
+                    WorldProbeColourProgram::new_for_world_surface(
+                        r.device,
+                        &mesh.layout,
+                        self.depth_format,
+                        colour_format,
+                        state,
+                        indices_reversed,
+                        class,
+                    )?
+                };
                 let i = self.programs.len();
                 self.programs.push(Program {
                     colour,
@@ -269,6 +340,7 @@ impl WaterColourScene {
                     inputs: None,
                     probes: class
                         == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
+                    model,
                 });
                 self.keys.insert(key, i);
                 i
@@ -286,7 +358,10 @@ impl WaterColourScene {
                 first_vertex: vertex.range.start,
                 first_instance: 0,
             }
-            .uniform_bytes();
+            .uniform_bytes_with_probe_record(if model && self.programs[program].probes {
+                *model_lighting.ok_or("model water probe records unavailable")?
+                    .indices.get(instance.order).ok_or("model water probe index unavailable")?
+            } else { 0 });
             let parameters = parameters(
                 &view,
                 &settings,
@@ -295,7 +370,7 @@ impl WaterColourScene {
                 self.compressed,
                 class == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
             )?;
-            let fragment_parameters = parameters.uniform_bytes()?;
+            let fragment_parameters = parameters.uniform_bytes_for_geometry(model)?;
             let sky = r
                 .images
                 .skies
@@ -383,12 +458,31 @@ impl WaterColourScene {
                 .map(|b| &b.buffer)
                 .ok_or("water colour buffer awaits GPU preparation")
         };
-        let matrices = buffer(
-            r.world
-                .matrices
-                .as_ref()
-                .ok_or("water colour world matrices unavailable")?,
-        )?;
+        let world_matrices = if self
+            .draws
+            .iter()
+            .any(|draw| !self.programs[draw.program].model)
+        {
+            Some(buffer(
+                r.world
+                    .matrices
+                    .as_ref()
+                    .ok_or("water colour world matrices unavailable")?,
+            )?)
+        } else {
+            None
+        };
+        let model_matrices = if model_matrices.is_empty() {
+            None
+        } else {
+            Some(upload(
+                r.device,
+                r.queue,
+                &mut self.model_matrices,
+                &model_matrices,
+                BufferUsages::STORAGE,
+            ))
+        };
         let probe_buffers = probes
             .map(|p| {
                 Ok::<_, &str>((
@@ -423,6 +517,12 @@ impl WaterColourScene {
             if !self.draws.iter().any(|draw| draw.program == index) {
                 continue;
             }
+            let matrices = if p.model {
+                model_matrices
+            } else {
+                world_matrices
+            }
+            .ok_or("water colour affine matrices unavailable")?;
             let ids = [vertices.id(), fragments.id()];
             if p.parameters.as_ref().is_none_or(|v| v.0 != ids) {
                 p.parameters = Some((
@@ -436,12 +536,16 @@ impl WaterColourScene {
             } else {
                 (matrices, matrices, matrices)
             };
+            let records = if p.model && p.probes {
+                buffer(&model_lighting.ok_or("model water probe records unavailable")?.records)?
+            } else { matrices };
             let ids = [
                 instances.id(),
                 matrices.id(),
                 references.id(),
                 info.id(),
                 cubes.id(),
+                records.id(),
             ];
             if p.inputs.as_ref().is_none_or(|v| v.0 != ids) {
                 p.inputs = Some((
@@ -451,16 +555,11 @@ impl WaterColourScene {
                             .vertex
                             .bind_world_inputs(r.device, instances, matrices)
                     } else {
-                        p.colour.vertex.bind_inputs(
-                            r.device,
-                            WorldProbeVertexBuffers {
-                                instances,
-                                matrices,
-                                references,
-                                probe_info: info,
-                                cube_indices: cubes,
-                            },
-                        )
+                        let inputs=WorldProbeVertexBuffers {
+                            instances, matrices, references, probe_info: info, cube_indices: cubes,
+                        };
+                        if p.model {p.colour.vertex.bind_model_inputs(r.device, inputs, records)}
+                        else {p.colour.vertex.bind_inputs(r.device, inputs)}
                     },
                 ));
             }
@@ -666,7 +765,7 @@ fn upload<'a>(
     target
 }
 
-fn parameters(
+pub(super) fn parameters(
     view: &WaterColourView<'_>,
     settings: &crate::rendering::water::WaterSettings,
     options: crate::rendering::water::program::WaterColourOptions,

@@ -1550,7 +1550,8 @@ fn authored_surface_gpu_pipelines_compile() {
             .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
     )
     .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-    .add_plugins(MaterialPlugin::<DecalMaterial>::default());
+    .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+    .add_plugins(super::decal_pass::DecalPassPlugin);
     super::sky_sprite::register_renderer(&mut app);
     bevy::asset::load_internal_asset!(
         app,
@@ -3357,6 +3358,7 @@ fn authored_surface_gpu_pipelines_compile() {
         ..default()
     };
     overlay.extension.surface.misc.z = 0;
+    overlay.extension.surface.misc.w |= 1 << 9;
     let overlay = app
         .world_mut()
         .resource_mut::<Assets<DecalMaterial>>()
@@ -9010,7 +9012,7 @@ fn blueprint_root_collision_uses_component_not_render_children() {
     assert_eq!(owners, ["env_bp_fence_metal_200cm_02"]);
     assert!(triangles
         .iter()
-        .all(|(vertices, owner)| *owner == 0 && vertices.iter().all(|point| point.is_finite())));
+        .all(|(vertices, owner, _)| *owner == 0 && vertices.iter().all(|point| point.is_finite())));
     assert_eq!(
         static_model_collision(&catalog, &placements, &[]).0.len(),
         0
@@ -9025,11 +9027,15 @@ fn blueprint_root_collision_uses_component_not_render_children() {
             .len(),
         0
     );
-    let world = navigation::CollisionWorld::with_owned(triangles, owners);
+    let world = navigation::CollisionWorld::with_materials(
+        triangles.into_iter().map(|(t, owner, filter)| (t, owner, navigation::NO_MATERIAL, filter)),
+        owners,
+        Vec::new(),
+    );
     let eye = game_to_view([-33.679825, 83.83279, 18.319]);
     let direction = game_to_view([0.5484812, 0.29665253, -0.78177094]).normalize();
     let (distance, _, owner, _) = world
-        .first_hit_details(eye, eye + direction * 40.0)
+        .first_hit_details(eye, eye + direction * 40.0, crate::gameplay::collision_filter::QueryFilter::ALL)
         .unwrap();
     assert_eq!(world.owner_name(owner), Some("env_bp_fence_metal_200cm_02"));
     assert!((distance - 0.28008184).abs() < 0.00001);

@@ -122,6 +122,8 @@ impl Plugin for FogPlugin {
     fn build(&self, app: &mut App) {
         super::fog_material::register_shaders(app);
         app.init_resource::<FogSceneFrame>();
+        app.init_resource::<super::sun_rays::SunRaySources>();
+        app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::sun_rays::SunRaySources>::default());
         app.init_resource::<super::fog_light_scattering::LocalFogFrame>();
         app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::fog_light_scattering::LocalFogFrame>::default());
         app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<

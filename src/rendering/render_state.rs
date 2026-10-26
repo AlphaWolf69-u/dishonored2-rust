@@ -264,11 +264,7 @@ pub fn prepared_surface_state(mut state: RenderState, surface_flags: u8) -> Rend
 
 /// Original CVTTSS2SI result, including INT_MIN on NaN/out-of-range.
 pub(crate) fn cvtt_f32(value: f32) -> u32 {
-    if value >= -2147483648.0 && value < 2147483648.0 {
-        value as i32 as u32
-    } else {
-        0x8000_0000
-    }
+    crate::float::truncate_i32(value) as u32
 }
 
 /// FUN_140293470, used by FUN_1402996f0 when requested shadow bias/clip
@@ -333,6 +329,41 @@ pub fn fog_interval_draw_state(mut state: RenderState) -> RenderState {
     state[5] = (state[5] & 0xffff_ffee) | 0xe;
     state[0] = (state[0] & 0xffe0_8c23) | 0x8c23;
     state
+}
+
+/// 317890's alpha blur keeps the selected material's other render state.
+pub fn camera_alpha_blur_state(mut state: RenderState, stencil: bool, special_alpha: bool) -> (RenderState, u32) {
+    if !stencil { return (state, 0); }
+    state[0] = (state[0] & 0xffff_fea9) | 0xa9;
+    state[4] = (state[4] & 0xff) | 0x4004_0000;
+    let reference = if special_alpha {
+        state[5] = (state[5] & 0xff02_02ef) | 0x0002_022f;
+        2
+    } else {
+        state[5] = (state[5] & 0xff0a_0aef) | 0x000a_0a2f;
+        10
+    };
+    (state, reference)
+}
+
+/// 313730's full alpha-composite overrides. The view's +0x9b flag
+/// selects which alpha surfaces pass the existing stencil mask.
+pub fn camera_alpha_composite_state(stencil: bool, special_alpha: bool) -> (RenderState, u32) {
+    let mut state = [0; 9];
+    reset_render_state(&mut state);
+    state[0] = (state[0] & 0xffff_f8a9) | 0xa9;
+    state[5] = (state[5] & 0xfcff_ffef) | 0xf;
+    let reference = if stencil {
+        state[4] = (state[4] & 0xff) | 0x4004_0000;
+        if special_alpha {
+            state[5] = (state[5] & 0xfc02_02ef) | 0x0002_022f;
+            2
+        } else {
+            state[5] = (state[5] & 0xfc0a_0aef) | 0x000a_0a2f;
+            10
+        }
+    } else { 0 };
+    (state, reference)
 }
 
 /// 30a800 selects RGB blending while preserving the sun program's alpha state.

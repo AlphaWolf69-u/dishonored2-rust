@@ -6,6 +6,7 @@
 //! (priority 2, zero velocity); dynamic-body pushes (FUN_140c847a0) and
 //! trigger bookkeeping have nothing to act on and are not ported.
 use super::simplex_solver::{self, SolverInput, SurfaceConstraint};
+use crate::gameplay::collision_filter::QueryFilter;
 use bevy_math::{Mat3, Vec3};
 
 pub const INVALID_BODY: u32 = 0x00ff_ffff;
@@ -39,8 +40,7 @@ pub trait PlayerWorld {
     /// `rotation`, placed at `from`) along `displacement`, with first-contact
     /// fractions in [0, 1]; when `tolerance > 0`, also the closest points of
     /// the start pose within `tolerance` into `start`.
-    fn cast_shape(
-        &self,
+    fn cast_shape(&self, filter: QueryFilter,
         shape: &[Vec3],
         rotation: Mat3,
         from: Vec3,
@@ -49,7 +49,7 @@ pub trait PlayerWorld {
         cast: &mut Vec<WorldHit>,
         start: Option<&mut Vec<WorldHit>>,
     );
-    fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit>;
+    fn cast_ray(&self, filter: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit>;
     /// The physics material flags of a hit's body and shape key
     /// (FUN_1400922d0 + FUN_140092c10 → arkPhysicsMaterial +0x80).
     fn surface(&self, hit: &WorldHit) -> SurfaceFlags;
@@ -82,6 +82,9 @@ pub struct ProxySettings {
     pub penetration_recovery_speed: f32,
     pub max_cast_iterations: i32,
     pub refresh_manifold_in_check_support: bool,
+    /// collisionFilterInfo (cinfo +0x88 → proxy +0x3c); both proxy casts
+    /// run the world's arkCollisionFilter with it.
+    pub collision_filter: u32,
 }
 
 /// hknp SupportedState.
@@ -296,8 +299,7 @@ impl CharacterProxy {
         while remaining > EPSILON && iteration < settings.max_cast_iterations {
             cast.clear();
             start.clear();
-            world.cast_shape(
-                &self.shape,
+            world.cast_shape(QueryFilter::World(self.settings.collision_filter), &self.shape,
                 self.rotation,
                 self.position,
                 self.displacement,
@@ -321,7 +323,7 @@ impl CharacterProxy {
                 && !(self.displacement - displacement).abs().cmple(Vec3::splat(0.001)).all()
             {
                 cast.clear();
-                world.cast_shape(&self.shape, self.rotation, self.position, displacement, 0.0, &mut cast, None);
+                world.cast_shape(QueryFilter::World(self.settings.collision_filter), &self.shape, self.rotation, self.position, displacement, 0.0, &mut cast, None);
                 cast.sort_by(|a, b| a.value.total_cmp(&b.value));
                 for hit in &cast {
                     let point = ManifoldPoint::cast(hit, displacement);
@@ -413,7 +415,7 @@ mod tests {
             SurfaceFlags { allow_mantle: true, allow_vault: true }
         }
 
-        fn cast_shape(&self, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
+        fn cast_shape(&self, _: QueryFilter, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
             let points: Vec<Vec3> = shape.iter().map(|p| from + rotation * *p).collect();
             let mut start = start;
             for (key, triangle) in self.triangles.iter().enumerate() {
@@ -428,7 +430,7 @@ mod tests {
                 }
             }
         }
-        fn cast_ray(&self, _: Vec3, _: Vec3, _: f32) -> Option<RayHit> {
+        fn cast_ray(&self, _: QueryFilter, _: Vec3, _: Vec3, _: f32) -> Option<RayHit> {
             None
         }
     }
@@ -455,6 +457,7 @@ mod tests {
             penetration_recovery_speed: 10.0,
             max_cast_iterations: 5,
             refresh_manifold_in_check_support: false,
+            collision_filter: 0,
         }
     }
 

@@ -1,6 +1,6 @@
 //! Owned rigid-body motion primitives shared by machinery and physics.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BodyPose {
     pub center: [f32; 4],
     pub orientation: [f32; 4],
@@ -16,6 +16,65 @@ pub struct BodyMotion {
 
 impl BodyMotion {
     /// 140ca6f60: compose a shape's mass frame with its rigid world transform.
+    pub fn from_mass_frame(
+        frame: crate::physworld::mass::PrincipalMassProperties,
+        orientation: [f32; 4],
+        translation: [f32; 4],
+    ) -> Self {
+        let pose = BodyPose::from_mass_frame(frame, orientation, translation);
+        let inverse_mass = std::array::from_fn(|i| {
+            let value = if i == 3 { frame.mass } else { frame.inertia[i] };
+            let inverse = if value == 0. {
+                0.
+            } else {
+                super::constraint_solver::reciprocal(value)
+            };
+            let rounded = (inverse * f32::from_bits(0x3f808000)).to_bits() as i32 >> 16;
+            rounded.clamp(i16::MIN as i32, i16::MAX as i32) as u16
+        });
+        Self { pose, inverse_mass }
+    }
+
+    pub fn inverse_mass_values(&self) -> [f32; 4] {
+        self.inverse_mass
+            .map(|v| f32::from_bits(u32::from(v) << 16))
+    }
+}
+
+impl BodyPose {
+    /// aecc50 compares all quaternion lanes after choosing its sign-equivalent
+    /// representative, then the center's XYZ lanes. Center W is ignored.
+    pub fn matches_pose(&self, other: &Self, tolerance: f32) -> bool {
+        let p: [f32; 4] = std::array::from_fn(|i| other.orientation[i] * self.orientation[i]);
+        let signs = [
+            (p[3] + p[1]) + (p[2] + p[0]),
+            (p[2] + p[0]) + (p[3] + p[1]),
+            (p[1] + p[3]) + (p[0] + p[2]),
+            (p[0] + p[2]) + (p[1] + p[3]),
+        ];
+        (0..4).all(|i| {
+            let aligned =
+                f32::from_bits(other.orientation[i].to_bits() ^ (signs[i].to_bits() & 0x8000_0000));
+            (self.orientation[i] - aligned).abs() <= tolerance
+        }) && (0..3).all(|i| (self.center[i] - other.center[i]).abs() <= tolerance)
+    }
+
+    /// aa07e0's inverse quaternion rotation, including its defined W lane.
+    pub fn inverse_rotate_vector(&self, vector: [f32; 4]) -> [f32; 4] {
+        let [x, y, z, w] = self.orientation;
+        let [vx, vy, vz, vw] = vector;
+        let dot = (y * vy + x * vx) + z * vz;
+        let factor = w * w - 0.5;
+        let values = [
+            (dot * x + factor * vx) + (z * vy - vz * y) * w,
+            (dot * y + factor * vy) + (x * vz - vx * z) * w,
+            (dot * z + factor * vz) + (y * vx - vy * x) * w,
+            (dot * w + factor * vw) + (w * vw - vw * w) * w,
+        ];
+        values.map(|v| v + v)
+    }
+
+    /// Shared mass-frame composition used by ca6f60 and cb9680.
     pub fn from_mass_frame(
         frame: crate::physworld::mass::PrincipalMassProperties,
         orientation: [f32; 4],
@@ -38,32 +97,12 @@ impl BodyMotion {
             ((qy * x - y * qx) + w * qz) + z * qw,
             qw * w - ((y * qy + x * qx) + z * qz),
         ];
-        let inverse_mass = std::array::from_fn(|i| {
-            let value = if i == 3 { frame.mass } else { frame.inertia[i] };
-            let inverse = if value == 0. {
-                0.
-            } else {
-                super::constraint_solver::reciprocal(value)
-            };
-            let rounded = (inverse * f32::from_bits(0x3f808000)).to_bits() as i32 >> 16;
-            rounded.clamp(i16::MIN as i32, i16::MAX as i32) as u16
-        });
         Self {
-            pose: BodyPose {
-                center,
-                orientation,
-            },
-            inverse_mass,
+            center,
+            orientation,
         }
     }
 
-    pub fn inverse_mass_values(&self) -> [f32; 4] {
-        self.inverse_mass
-            .map(|v| f32::from_bits(u32::from(v) << 16))
-    }
-}
-
-impl BodyPose {
     /// Complete FUN_1412815e0 motion integration. Angular velocity is in
     /// principal-axis space. The game normalizes the Euler quaternion step;
     /// replacing this with an axis-angle exponential changes its trajectory.
@@ -95,6 +134,36 @@ impl BodyPose {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pose_comparison_matches_executed_routine() {
+        let mut count = 0;
+        for (case, line) in include_str!("../../tests/fixtures/pose_comparison.txt")
+            .lines()
+            .enumerate()
+        {
+            let w: Vec<u32> = line
+                .split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap())
+                .collect();
+            let vector = |at: usize| std::array::from_fn(|i| f32::from_bits(w[at + i]));
+            let a = BodyPose {
+                orientation: vector(0),
+                center: vector(4),
+            };
+            let b = BodyPose {
+                orientation: vector(8),
+                center: vector(12),
+            };
+            assert_eq!(
+                u32::from(a.matches_pose(&b, f32::from_bits(w[16]))),
+                w[17],
+                "case {case}"
+            );
+            count += 1;
+        }
+        assert_eq!(count, 1024);
+    }
 
     #[test]
     fn motion_mass_frames_match_executable() {

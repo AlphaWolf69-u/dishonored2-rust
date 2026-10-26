@@ -22,6 +22,67 @@ pub struct CachedWaterDepthSource {
 }
 
 impl ProgramLibrary {
+    /// Slot6 is the alpha prepass used for volume boundary marking. Its
+    /// empty PS640 and position-only vertex stages need no colour attachment.
+    pub fn water_stencil_source(
+        &mut self, name: &[u8], overrides: &SerializedParameterBlock,
+    ) -> Result<Option<Arc<CachedWaterDepthSource>>> {
+        let Some(hash)=self.specialization_hash(name,overrides)? else {return Ok(None)};
+        let Some(variant)=self.serialized_variant(name,overrides)? else {return Ok(None)};
+        let pair=self.stage_checksums(&variant)?;
+        let hex=|value:Option<[u8;16]>|value.map(|v|v.iter().map(|b|format!("{b:02x}")).collect::<String>());
+        let actual=pair.map(hex);
+        if actual[1].as_deref()!=Some("c1a10697307ed5a825c419158737cc9f") {
+            return Err(format!("unsupported water stencil pixel stage {:?}",actual[1]));
+        }
+        let class=match actual[0].as_deref() {
+            Some("d29749d093a59a239c0fb51d87ac4c30"|"fc98e66346f349a97e837db36ca6a102"|"ba16e8625b5dcd329749e170980574cc")=>CachedWaterDepthClass::Rigid,
+            Some("b5201c0a2e3df3004a154aa9c7a4c70b"|"47c79de56ba06d13e08ba8fd8066e90d"|"644bb6426ebbae813a49c82378850504")=>CachedWaterDepthClass::World,
+            _=>return Err(format!("unsupported water stencil vertex stage {:?}",actual[0])),
+        };
+        Ok(Some(Arc::new(CachedWaterDepthSource{class,program:name.to_vec(),variant_hash:hash,variant})))
+    }
+    pub fn model_water_colour_class(
+        &mut self,
+        variant: &D3dVariantData,
+    ) -> Result<crate::rendering::water::program::WorldWaterColourClass> {
+        let pair = self.stage_checksums(variant)?;
+        // Installed rigid horizontal VS14451/14463/14474: position-only
+        // world/clip transforms. Their fragments do not consume probe indices.
+        let supported = [
+            (
+                "d29749d093a59a239c0fb51d87ac4c30",
+                "0a1cf914f92ae63fb64778aa01507ccf",
+            ),
+            (
+                "fc98e66346f349a97e837db36ca6a102",
+                "32c29801be45bdc244de3e9d534d64f8",
+            ),
+            (
+                "ba16e8625b5dcd329749e170980574cc",
+                "ac053e35907bbb32b9356ee08262a955",
+            ),
+        ];
+        let hex = |bytes: Option<[u8; 16]>| {
+            bytes.map(|b| b.iter().map(|v| format!("{v:02x}")).collect::<String>())
+        };
+        let actual = pair.map(hex);
+        let probes = [
+            ("4d9546d195afdcd738681477a2e1045e", "5da304690551bd71dc0f9c20ca37614c"),
+            ("5555deb4610383c2391d907c7ae8d42d", "d117987c5ad5933ee06133336cfda1ca"),
+        ];
+        if probes.iter().any(|(v,p)|actual[0].as_deref()==Some(v)&&actual[1].as_deref()==Some(p)) {
+            return Ok(crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal);
+        }
+        if supported
+            .iter()
+            .any(|(v, p)| actual[0].as_deref() == Some(v) && actual[1].as_deref() == Some(p))
+        {
+            Ok(crate::rendering::water::program::WorldWaterColourClass::Horizontal)
+        } else {
+            Err(format!("unsupported model water colour stages {pair:02x?}"))
+        }
+    }
     pub(super) fn stage_checksums(
         &mut self,
         variant: &D3dVariantData,

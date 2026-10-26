@@ -8,6 +8,8 @@ const DIRECT_SHADER: Handle<bevy::shader::Shader> =
 
 /// Shared surface-lighting kernels used by authored materials and host light loops.
 pub fn register_shaders(app: &mut App) {
+    const ALPHA_CLIP: Handle<Shader> = bevy::asset::uuid_handle!("e7f61878-cebb-4244-af0f-ad48081c2673");
+    bevy::asset::load_internal_asset!(app,ALPHA_CLIP,"../../../assets/shaders/dh2_alpha_clip.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(app,DIRECT_SHADER,"../../../assets/shaders/dh2_direct.wgsl",bevy::shader::Shader::from_wgsl);
 }
 
@@ -39,6 +41,8 @@ pub struct SurfaceUniform {
     pub filling_flags: UVec4,
     pub sky: [Vec4; 7],
     pub direct: Vec4,
+    /// Refraction IOR, uint blur size converted to float, normal mask, padding.
+    pub glass: Vec4,
     /// arkSSSRender (program 11): wardRoughness2.xy/wardRoughness3.xy,
     /// SSS/tweakSpecularIntensity, then fuzz/intensity, fuzz/fresnel, SSS/Scale.x.
     pub skin: [Vec4; 3],
@@ -202,6 +206,7 @@ impl From<&Surface> for SurfaceUniform {
             filling_flags: UVec4::ZERO,
             sky: [Vec4::ZERO; 7],
             direct: Vec4::new(s.sheen[0],s.sheen[1],0.0,0.0),
+            glass: Vec4::ZERO,
             skin: [
                 Vec4::new(s.skin.ward2[0], s.skin.ward2[1], s.skin.ward3[0], s.skin.ward3[1]),
                 Vec4::from_array(s.skin.tweak_specular),

@@ -39,7 +39,13 @@ impl WorldProbeVertexStage {
     pub fn without_probes(device: &RenderDevice) -> Self {
         Self::create(device, false)
     }
+    pub fn for_model(device: &RenderDevice) -> Self {
+        Self::create_with_model(device, true, true)
+    }
     fn create(device: &RenderDevice, probes: bool) -> Self {
+        Self::create_with_model(device, probes, false)
+    }
+    fn create_with_model(device: &RenderDevice, probes: bool, model: bool) -> Self {
         let layout = |name, sizes: &[u64], uniform| {
             device.create_bind_group_layout(
                 Some(name),
@@ -67,7 +73,7 @@ impl WorldProbeVertexStage {
             parameters: layout("world water vertex parameters", &[80], true),
             inputs: layout(
                 "world water matrices and probes",
-                if probes { &[4, 48, 32, 8, 4] } else { &[4, 48] },
+                if model { &[4, 48, 32, 8, 4, 144] } else if probes { &[4, 48, 32, 8, 4] } else { &[4, 48] },
                 false,
             ),
             module: device.create_and_validate_shader_module(ShaderModuleDescriptor {
@@ -113,6 +119,15 @@ impl WorldProbeVertexStage {
         matrices: &Buffer,
     ) -> BindGroup {
         self.bind_buffers(device, &[instances, matrices])
+    }
+    pub fn bind_model_inputs(
+        &self,
+        device: &RenderDevice,
+        input: WorldProbeVertexBuffers<'_>,
+        records: &Buffer,
+    ) -> BindGroup {
+        self.bind_buffers(device, &[input.instances, input.matrices, input.references,
+            input.probe_info, input.cube_indices, records])
     }
     fn bind_buffers(&self, device: &RenderDevice, buffers: &[&Buffer]) -> BindGroup {
         device.create_bind_group(
@@ -170,6 +185,9 @@ pub struct WaterWorldColourParameters {
 
 impl WaterWorldColourParameters {
     pub fn uniform_bytes(&self) -> [u8; 80] {
+        self.uniform_bytes_with_probe_record(0)
+    }
+    pub fn uniform_bytes_with_probe_record(&self, probe_record: u32) -> [u8; 80] {
         let mut bytes = [0; 80];
         let words = self
             .clip_from_world
@@ -180,7 +198,7 @@ impl WaterWorldColourParameters {
                 self.instance_buffer_offset,
                 self.first_vertex,
                 self.first_instance,
-                0,
+                probe_record,
             ]);
         for (i, word) in words.enumerate() {
             bytes[4 * i..4 * i + 4].copy_from_slice(&word.to_le_bytes());

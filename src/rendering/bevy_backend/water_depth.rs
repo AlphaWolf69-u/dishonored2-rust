@@ -13,7 +13,7 @@ pub struct WaterDepthPass {
     pub sample: TextureView,
     copy: RenderPipeline,
     restore: RenderPipeline,
-    vertices: Buffer,
+    pub(super) vertices: Buffer,
     point: Sampler,
     source: Option<(TextureId, BindGroup, BindGroup)>,
     prepared: bool,

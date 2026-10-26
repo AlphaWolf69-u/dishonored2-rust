@@ -1,4 +1,5 @@
 //! Executable/shader-backed bilateral and Gaussian fog filtering pipelines.
+pub mod visibility;
 use bevy::{
     prelude::*,
     render::{

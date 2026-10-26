@@ -535,7 +535,7 @@ mod tests {
                 let velocity = wind.velocity(Vec3::from_array(body.mass_center()));
                 world.apply_wind(i, velocity.to_array(), 1. / 60.);
             }
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
             for &i in &shutters {
                 world.bodies[i].update_wind_triggers(&manager.trigger_shapes);
             }
@@ -567,7 +567,7 @@ mod tests {
                 let velocity = world_wind.velocity(Vec3::from_array(world.bodies[i].mass_center()));
                 world.apply_wind(i, velocity.to_array(), 1. / 60.);
             }
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
         }
         for (k, &i) in shutters.iter().enumerate() {
             assert!(!world.bodies[i].active());

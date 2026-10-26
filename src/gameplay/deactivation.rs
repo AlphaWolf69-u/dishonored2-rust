@@ -3,6 +3,12 @@
 //! check (140ce91c0). Group decisions live with the world that owns the
 //! constraint links (140cdc150).
 use super::constraint_solver::reciprocal;
+#[path = "deactivation/islands.rs"]
+mod islands;
+pub use islands::{BodyActivationCommand, DeactivatedIsland, DeactivationWorld, IslandCacheLink};
+#[path = "deactivation/contacts.rs"]
+mod contacts;
+pub use contacts::prepare_contacts;
 
 fn rsqrt_estimate(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
@@ -74,19 +80,32 @@ impl DeactivationProfile {
         }
         let still = exponent(threshold * threshold);
         let half = threshold * 0.5;
-        let quantum = f32::from_bits(0x46ff_fe00);
-        Self {
+        let mut profile = Self {
             linear_squared: linear * linear,
             angular_squared: angular * angular,
             inverse_scale: 1. / (linear * 20.),
-            coherence_high: (f32::from_bits(0x3f50_0000) * quantum) as i64 as i16,
-            coherence_low: (f32::from_bits(0xbf4c_cccd) * quantum) as i64 as i16,
+            coherence_high: 0,
+            coherence_low: 0,
             checks,
-            slow: exponent(half * half).min(still),
+            slow: 0,
             still,
-            spike_margin: 6,
-            spike: exponent(f32::from_bits(0x3c83_126f) * f32::from_bits(0x3c83_126f)),
-        }
+            spike_margin: 0,
+            spike: 0,
+        };
+        profile.set_coherence(half, f32::from_bits(0x3f50_0000),
+            f32::from_bits(0xbf4c_cccd), 3, f32::from_bits(0x3c83_126f));
+        profile
+    }
+
+    /// c9f320's complete update, retaining the stillness exponent and checks.
+    pub fn set_coherence(&mut self, slow: f32, high: f32, low: f32, margin: u8, spike: f32) {
+        use crate::float::{multiply, truncate_i64};
+        let quantum = f32::from_bits(0x46ff_fe00);
+        self.slow = exponent(multiply(slow, slow)).min(self.still);
+        self.coherence_high = truncate_i64(multiply(high, quantum)) as i16;
+        self.coherence_low = truncate_i64(multiply(low, quantum)) as i16;
+        self.spike_margin = margin.wrapping_mul(2);
+        self.spike = exponent(multiply(spike, spike));
     }
 }
 
@@ -131,12 +150,19 @@ fn quantize_orientation(orientation: [f32; 4]) -> [u8; 4] {
 impl MotionDeactivation {
     /// 140ce90e0(state, motionId & 3, mode).
     pub fn new(motion_id: u32, mode: u8) -> Self {
-        let mut state = [0u8; 32];
-        state[10] = (motion_id & 3) as u8;
-        state[4..8].copy_from_slice(&quantize_orientation([0., 0., 0., 1.]));
-        state[14] = mode;
-        state[16..20].copy_from_slice(&(-1i32).to_le_bytes());
-        Self(state)
+        // Unwritten bytes are host backing only. The constructor's zero counter
+        // prevents history controls being consumed before their first reset.
+        let mut state = Self([0; 32]);
+        state.initialize(motion_id, mode);
+        state
+    }
+    pub fn initialize(&mut self, motion_id: u32, mode: u8) {
+        self.0[0..4].fill(0);
+        self.0[4..8].copy_from_slice(&quantize_orientation([0., 0., 0., 1.]));
+        self.0[10] = (motion_id & 3) as u8;
+        self.0[11] = 0;
+        self.0[14] = mode;
+        self.0[16..20].copy_from_slice(&(-1i32).to_le_bytes());
     }
     pub fn mode(&self) -> u8 {
         self.0[14]
@@ -157,7 +183,12 @@ impl MotionDeactivation {
         }
     }
 
-    fn requantize(&mut self, center: [f32; 4], orientation: [f32; 4], profile: &DeactivationProfile) {
+    fn requantize(
+        &mut self,
+        center: [f32; 4],
+        orientation: [f32; 4],
+        profile: &DeactivationProfile,
+    ) {
         self.0[0..4].copy_from_slice(&quantize_position(center, profile).to_le_bytes());
         self.0[4..8].copy_from_slice(&quantize_orientation(orientation));
     }
@@ -200,14 +231,20 @@ impl MotionDeactivation {
                 let samples = (16i32 << level) as f32;
                 let t = f32::from_bits(0x46ff_fe00) * (cosine * rcp_estimate(samples)) + 0.5;
                 let old = i16::from_le_bytes([s[8], s[9]]) as i32;
-                let sum = old.wrapping_add(truncate(t)).clamp(i16::MIN as i32, i16::MAX as i32);
+                let sum = old
+                    .wrapping_add(truncate(t))
+                    .clamp(i16::MIN as i32, i16::MAX as i32);
                 s[8..10].copy_from_slice(&(sum as i16).to_le_bytes());
             }
             let slot = (((counter - 1) >> 1) & 1) as usize;
             let mut current = s[12 + slot] as u32;
             let other = s[13 - slot] as u32;
             if counter <= full {
-                current = if restart { magnitude } else { current.max(magnitude) };
+                current = if restart {
+                    magnitude
+                } else {
+                    current.max(magnitude)
+                };
             }
             if counter > 2
                 && magnitude > profile.spike as u32
@@ -263,7 +300,10 @@ impl MotionDeactivation {
                     } else if coherence < profile.coherence_low as i32 || slow {
                         counter = full;
                     }
-                    let (c, o) = (quantize_position(center, profile), quantize_orientation(orientation));
+                    let (c, o) = (
+                        quantize_position(center, profile),
+                        quantize_orientation(orientation),
+                    );
                     s[0..4].copy_from_slice(&c.to_le_bytes());
                     s[4..8].copy_from_slice(&o);
                     frame = 0;
@@ -293,7 +333,10 @@ mod tests {
         include_str!("../../tests/fixtures/motion_deactivation.txt")
     }
     fn bytes(hex: &str) -> Vec<u8> {
-        (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect()
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
     }
     fn float(word: &str) -> f32 {
         f32::from_bits(u32::from_str_radix(word, 16).unwrap())
@@ -317,9 +360,18 @@ mod tests {
         }
         assert_eq!(count, 64);
         let p = DeactivationProfile::default();
-        assert_eq!((p.linear_squared, p.inverse_scale), (f32::from_bits(0x3b23_d70b), 1.));
-        assert_eq!((p.coherence_high, p.coherence_low), (0x67ff, 0x999bu16 as i16));
-        assert_eq!([p.checks, p.slow, p.still, p.spike_margin, p.spike], [4, 0x73, 0x75, 6, 0x73]);
+        assert_eq!(
+            (p.linear_squared, p.inverse_scale),
+            (f32::from_bits(0x3b23_d70b), 1.)
+        );
+        assert_eq!(
+            (p.coherence_high, p.coherence_low),
+            (0x67ff, 0x999bu16 as i16)
+        );
+        assert_eq!(
+            [p.checks, p.slow, p.still, p.spike_margin, p.spike],
+            [4, 0x73, 0x75, 6, 0x73]
+        );
     }
 
     #[test]
@@ -353,5 +405,133 @@ mod tests {
             count += 1;
         }
         assert!(count > 10_000);
+    }
+}
+
+use super::body_storage::BodyStorage;
+
+/// c92970 queues the complete circular attachment ring in its existing order.
+/// Repeated requests append again; the deactivation processor owns consumption.
+pub fn queue_attached_bodies(
+    bodies: &BodyStorage,
+    first: u32,
+    pending: &mut Vec<u32>,
+) -> Result<(), String> {
+    let mut id = first;
+    for _ in 0..bodies.capacity() {
+        let body = bodies
+            .get(id)
+            .ok_or("deactivation attachment ring contains a stale body ID")?;
+        pending.push(id);
+        id = body.next_attached_body_id;
+        if id == first {
+            return Ok(());
+        }
+    }
+    Err("deactivation attachment ring does not close".into())
+}
+impl MotionDeactivation {
+    /// cd8290 appends to the motion's assigned island in arrival order. An
+    /// unassigned motion does nothing; duplicates are retained by the source.
+    pub fn register_body(&self, islands: &mut [Option<DeactivatedIsland>], body_id: u32) -> Result<(), String> {
+        if self.island() != -1 {
+            islands
+                .get_mut(self.island() as usize)
+                .and_then(Option::as_mut)
+                .ok_or("deactivation island index exceeds world storage")?
+                .bodies.push(body_id);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    #[test]
+    fn deactivation_queue_matches_executed_ring_enqueue() {
+        let mut pending = Vec::new();
+        let mut count = 0;
+        for (case, line) in include_str!("../../tests/fixtures/deactivation_queue.txt")
+            .lines()
+            .enumerate()
+        {
+            let mut w = line
+                .split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap());
+            if w.next().unwrap() != 0 {
+                pending.clear();
+            }
+            let n = w.next().unwrap() as usize;
+            let ids: Vec<_> = w.by_ref().take(n).collect();
+            let mut bodies = BodyStorage::new(33).unwrap();
+            for _ in 1..33 {
+                bodies.reserve(&mut []).unwrap();
+            }
+            for (index, &id) in ids.iter().enumerate() {
+                bodies.get_mut(id).unwrap().next_attached_body_id = ids[(index + 1) % ids.len()];
+            }
+            queue_attached_bodies(&bodies, ids[0], &mut pending).unwrap();
+            assert_eq!(
+                pending.len(),
+                w.next().unwrap() as usize,
+                "case {case} count"
+            );
+            assert_eq!(pending, w.collect::<Vec<_>>(), "case {case}");
+            count += 1;
+        }
+        assert_eq!(count, 512);
+    }
+    #[test]
+    fn deactivation_initialization_matches_executed_constructor() {
+        let mut count = 0;
+        for (case, line) in include_str!("../../tests/fixtures/deactivation_state.txt")
+            .lines()
+            .enumerate()
+        {
+            let w: Vec<u32> = line
+                .split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap())
+                .collect();
+            let before:Vec<u8> = w[2..10].iter().flat_map(|v|v.to_le_bytes()).collect();
+            let mut state=MotionDeactivation(before.try_into().unwrap());
+            state.initialize(w[0],w[1] as u8);
+            let record=state.0;
+            let actual: Vec<u32> = record
+                .chunks_exact(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            assert_eq!(actual, w[10..], "case {case}");
+            count += 1;
+        }
+        assert_eq!(count, 1024);
+    }
+    #[test]
+    fn deactivation_body_registration_matches_executed_manager() {
+        let mut states =
+            std::array::from_fn::<_, 8, _>(|i| MotionDeactivation::new(i as u32, MODE_DEACTIVATE));
+        let mut islands: [Option<DeactivatedIsland>; 4] = std::array::from_fn(|i| Some(DeactivatedIsland { id: i as u32, ..Default::default() }));
+        let mut count = 0;
+        for (case, line) in include_str!("../../tests/fixtures/deactivation_bodies.txt")
+            .lines()
+            .enumerate()
+        {
+            let mut w = line
+                .split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap());
+            let motion = w.next().unwrap() as usize;
+            states[motion].set_island(w.next().unwrap() as i32);
+            states[motion]
+                .register_body(&mut islands, w.next().unwrap())
+                .unwrap();
+            for bodies in &islands {
+                let n = w.next().unwrap() as usize;
+                let expected: Vec<_> = w.by_ref().take(n).collect();
+                assert_eq!(&bodies.as_ref().unwrap().bodies, &expected, "case {case}");
+            }
+            assert!(w.next().is_none());
+            count += 1;
+        }
+        assert_eq!(count, 512);
     }
 }
