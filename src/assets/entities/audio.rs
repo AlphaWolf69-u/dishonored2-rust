@@ -12,6 +12,7 @@ pub struct AudioBinding {
     pub settings: Settings,
     pub propagation: bool,
     pub events: Vec<Option<SoundEventDeclaration>>,
+    pub frame: crate::gameplay::reference_frame::ReferenceFrame,
 }
 impl AudioBinding {
     pub fn startup(&self) -> Startup { Startup::from_events(&self.events) }
@@ -60,7 +61,7 @@ pub fn audio_bindings(document: &Document,
             defaults.add_updates(0x10); // 14000ce50
             result.push(AudioBinding { entity_id: entity.id.clone(), slot: slot.clone(),
                 scheduling: scheduling(&fields, defaults)?, settings: Settings::read(&fields)?,
-                propagation, events: start_events });
+                propagation, events: start_events, frame: super::spawn_frame(entity)? });
         }
     }
     Ok(result)

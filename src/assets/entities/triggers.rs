@@ -1,7 +1,7 @@
 //! Trigger declarations and their owning entities, before physics allocation.
 use super::{
     components::{atom, entry_class, entry_fields},
-    field, scope, vector, Document, Value,
+    field, scope, Document,
 };
 use crate::gameplay::trigger_body::{
     trigger_shape_request, TriggerCollisionSettings, TriggerShapeRequest,
@@ -44,31 +44,15 @@ pub fn trigger_placements(
         .map(|binding| {
             let entity = entities[binding.entity_id.as_str()];
             let edit = scope(field(&entity.fields, "edit")).unwrap();
-            let read_vector =
-                |fields: &[(String, Value)], name: &str, default| match field(fields, name) {
-                    None => Ok(default),
-                    Some(Value::Scope(values)) => vector(values, default)
-                        .ok_or_else(|| format!("{}: invalid {name}", entity.id)),
-                    Some(_) => Err(format!("{}: expected vector for {name}", entity.id)),
-                };
-            // idEntity constructor 874c50 calls 18df90: zero position and identity
-            // basis. The scale is intentionally absent from 779530's shape recipe.
-            let position = read_vector(edit, "spawnPosition", [0.; 3])?;
-            let mut basis = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-            if let Some(orientation) = scope(field(edit, "spawnOrientation")) {
-                if let Some(matrix) = scope(field(orientation, "mat")) {
-                    for (i, axis) in basis.iter_mut().enumerate() {
-                        *axis = read_vector(matrix, &format!("mat[{i}]"), *axis)?;
-                    }
-                }
-            }
+            let frame = super::spawn_frame(entity)?;
+            // The scale is absent from 779530's shape recipe.
             let model = scope(field(edit, "renderModelInfo"))
                 .and_then(|info| atom(info, "model"))
                 .unwrap_or("");
-            let shape = trigger_shape_request(model, map, &entity.id, basis);
+            let shape = trigger_shape_request(model, map, &entity.id, frame.basis);
             Ok(TriggerPlacement {
                 binding,
-                position,
+                position: frame.position,
                 shape,
             })
         })
