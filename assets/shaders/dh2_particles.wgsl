@@ -35,6 +35,9 @@ struct ParticleMaterialParameters {
     colour_options:vec4<u32>,
     fade_options:vec4<u32>,
     animation_options:vec4<u32>,
+    surface_options:vec4<u32>,
+    macro_fresnel:vec4<f32>,
+    fresnel_uv:vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -47,6 +50,10 @@ struct ParticleMaterialParameters {
 @group(1) @binding(8) var linear_clamp:sampler;
 @group(1) @binding(9) var particle_animation:texture_3d<f32>;
 @group(1) @binding(10) var particle_scroll_mask:texture_2d<f32>;
+@group(1) @binding(11) var particle_macro_uv:texture_2d<f32>;
+@group(1) @binding(12) var particle_fresnel_normal:texture_2d<f32>;
+@group(1) @binding(13) var particle_fresnel_lookup:texture_2d<f32>;
+@group(1) @binding(14) var particle_bilinear:sampler;
 
 struct ParticleFragment {
     @builtin(position) position:vec4<f32>,
@@ -59,6 +66,8 @@ struct ParticleFragment {
     @location(6) @interpolate(flat) transparency_weights:vec4<f32>,
     @location(7) @interpolate(flat) transparency_parameters:vec4<f32>,
     @location(8) @interpolate(flat) transparency_mode:u32,
+    @location(9) world_normal:vec3<f32>,
+    @location(10) world_tangent:vec3<f32>,
 }
 @vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
     @builtin(instance_index) instance_index:u32)->ParticleFragment {
@@ -76,6 +85,10 @@ struct ParticleFragment {
         f32((word>>16u)&0x3fffu)*(1.0/16383.0));
     output.colour=unpack4x8unorm(instance.parameters.x);
     output.world_position=position;
+    // Grid1dc200 has local +X normal and +Y tangent. vertex::TransformVertex
+    // applies the instance matrix and normalizes both independently.
+    output.world_normal=normalize(vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w));
+    output.world_tangent=normalize(instance.axis_y.xyz);
     output.fog=material_fog_vertex(clip,vec3(position.x,position.z,-position.y),false,instance.parameters.w);
     output.clip_plane=instance.clip_plane;
     output.fade_radius=vec2(instance.clip_fade.x,unpack2x16float(instance.parameters.z).x);
@@ -113,6 +126,14 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         }
     }
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
+    let normal=normalize(input.world_normal);
+    if material.surface_options.x!=0u {
+        let tile=material.macro_fresnel.y;
+        let a=textureSample(particle_macro_uv,particle_bilinear,input.world_position.yz*tile).xy*2.0-1.0;
+        let b=textureSample(particle_macro_uv,particle_bilinear,input.world_position.zx*tile).xy*2.0-1.0;
+        let c=textureSample(particle_macro_uv,particle_bilinear,input.world_position.xy*tile).xy*2.0-1.0;
+        distorted=vec3(distorted.xy+(a*normal.x+b*normal.y+c*normal.z)*material.macro_fresnel.x,distorted.z);
+    }
     let opacity_layer=material.layers[2];
     let angle=particle_view.camera_time.w*opacity_layer.rotation_seed.x;
     let c=cos(angle);let s=sin(angle);
@@ -161,6 +182,25 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         var difference=max(0.0,linear-distance);
         if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
         colour.a*=clamp(difference/material.depth_fade_lookup.x,0.0,1.0);
+    }
+    if material.surface_options.y!=0u {
+        var fresnel_normal=normal;
+        if material.surface_options.z!=0u {
+            let uv=coordinates.xy*material.fresnel_uv.xy+material.fresnel_uv.zw;
+            let xy=textureSample(particle_fresnel_normal,particle_trilinear,uv).xy;
+            // The same global.hlsl BC5 reconstruction used by dh2_surface.
+            let ts=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
+            let tangent=normalize(input.world_tangent);
+            let bitangent=cross(normal,tangent);
+            fresnel_normal=normalize(ts.x*tangent+ts.y*bitangent+ts.z*normal);
+        }
+        let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
+        let cosine=clamp(dot(view_direction,fresnel_normal),0.0,1.0);
+        var fresnel=min(cosine/material.macro_fresnel.z,1.0);
+        if material.surface_options.w!=0u {
+            fresnel=textureSample(particle_fresnel_lookup,linear_clamp,vec2(cosine)).x;
+        }
+        colour.a*=pow(fresnel,material.macro_fresnel.w);
     }
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}

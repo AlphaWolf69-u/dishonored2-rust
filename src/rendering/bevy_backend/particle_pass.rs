@@ -50,14 +50,13 @@ struct MaterialParameters {
     colour_options: UVec4,
     fade_options: UVec4,
     animation_options: UVec4,
+    surface_options: UVec4,
+    macro_fresnel: Vec4,
+    fresnel_uv: Vec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
-        for name in [
-            "fx/opt/use_lighting",
-            "fx/opt/fresnel",
-            "fx/opt/use_macroUV",
-        ] {
+        for name in ["fx/opt/use_lighting"] {
             if source.option(name)? != 0 {
                 return Err(format!("particle {name} draw producer is not connected"));
             }
@@ -98,7 +97,38 @@ impl MaterialParameters {
         if soft > 2 {
             return Err("spherical particle soft contact is not connected".into());
         }
+        let macro_uv = if source.option("fx/opt/use_macroUV")? != 0 {
+            source.uniform("macroUvAmount")?
+        } else {
+            [0.; 4]
+        };
+        let fresnel = source.option("fx/opt/fresnel")? != 0;
         Ok(Self {
+            surface_options: UVec4::new(
+                option("fx/opt/use_macroUV")?,
+                option("fx/opt/fresnel")?,
+                option("fx/opt/fresnel/useNormalMap")?,
+                option("fx/opt/fresnel/useLUT")?,
+            ),
+            macro_fresnel: Vec4::new(
+                macro_uv[0],
+                macro_uv[1],
+                if fresnel {
+                    scalar("particleFresnelThreshold")?
+                } else {
+                    0.
+                },
+                if fresnel {
+                    scalar("particleFresnelStrength")?
+                } else {
+                    0.
+                },
+            ),
+            fresnel_uv: if fresnel && source.option("fx/opt/fresnel/useNormalMap")? != 0 {
+                Vec4::from_array(source.uniform("Layer0_ScaleBias")?)
+            } else {
+                Vec4::ZERO
+            },
             layers,
             colour_adjust: Vec4::from_array(source.uniform("color_Adjust")?),
             depth_fade_lookup: Vec4::new(
@@ -289,10 +319,10 @@ impl ParticlePass {
             &std::iter::once(buffer_entry(0, true))
                 .chain(
                     (1..=5)
-                        .chain(std::iter::once(10))
+                        .chain(10..=13)
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
-                .chain((6..=8).map(sampler_entry))
+                .chain((6..=8).chain(std::iter::once(14)).map(sampler_entry))
                 .chain(std::iter::once(texture_entry(
                     9,
                     TextureViewDimension::D3,
@@ -586,6 +616,28 @@ impl ParticlePass {
                     resource: BindingResource::Sampler(&self.clamp),
                 },
                 BindGroupEntry {
+                    binding: 14,
+                    resource: BindingResource::Sampler(&self.bilinear),
+                },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: BindingResource::TextureView(
+                        views.get("fx/macrouvmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: BindingResource::TextureView(
+                        views.get("particlefresnelnormalmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 13,
+                    resource: BindingResource::TextureView(
+                        views.get("particlefresnellut").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
                     binding: 10,
                     resource: BindingResource::TextureView(
                         views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
@@ -745,9 +797,9 @@ impl ParticlePass {
         for (tag, draw) in draws.iter().enumerate() {
             for instance in &draw.instances {
                 for v in [
-                    Vec3::from_array(instance.position).extend(0.),
-                    Vec3::from_array(instance.axes[1]).extend(0.),
-                    Vec3::from_array(instance.axes[2]).extend(0.),
+                    Vec3::from_array(instance.position).extend(instance.axes[0][0]),
+                    Vec3::from_array(instance.axes[1]).extend(instance.axes[0][1]),
+                    Vec3::from_array(instance.axes[2]).extend(instance.axes[0][2]),
                 ] {
                     self.instance_bytes
                         .extend(v.to_array().into_iter().flat_map(f32::to_le_bytes));

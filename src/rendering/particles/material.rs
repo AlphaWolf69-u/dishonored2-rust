@@ -30,6 +30,8 @@ const OPTIONS: &[&str] = &[
     "fx/opt/view_dependent_fade",
     "fx/opt/use_lighting",
     "fx/opt/fresnel",
+    "fx/opt/fresnel/useNormalMap",
+    "fx/opt/fresnel/useLUT",
     "fx/opt/use_macroUV",
 ];
 const UNIFORMS: &[&str] = &[
@@ -169,9 +171,19 @@ impl ParticleMaterial {
         } else {
             &[]
         };
+        let mut extra_uniforms = scroll_uniforms.to_vec();
+        if options["fx/opt/use_macrouv"] != 0 {
+            extra_uniforms.push("macroUvAmount");
+        }
+        if options["fx/opt/fresnel"] != 0 {
+            extra_uniforms.extend(["particleFresnelThreshold", "particleFresnelStrength"]);
+            if options["fx/opt/fresnel/usenormalmap"] != 0 {
+                extra_uniforms.push("Layer0_ScaleBias");
+            }
+        }
         let uniforms = UNIFORMS
             .iter()
-            .chain(scroll_uniforms.iter())
+            .chain(extra_uniforms.iter())
             .map(|name| {
                 scopes
                     .vector(name)
@@ -186,13 +198,21 @@ impl ParticleMaterial {
             ("fx/diffuse", Some("fx/opt/use_diffuse")),
             ("fx/lookup", Some("fx/opt/use_lookup")),
             ("fx/opacity_scroll_mask", Some("fx/opt/opacity_scroll_mask")),
+            ("fx/macroUvMap", Some("fx/opt/use_macrouv")),
+            (
+                "particleFresnelNormalMap",
+                Some("fx/opt/fresnel/usenormalmap"),
+            ),
+            ("particleFresnelLUT", Some("fx/opt/fresnel/uselut")),
         ] {
-            if option.is_some_and(|name| options[name] == 0) {
+            if option.is_some_and(|name| options[name] == 0)
+                || (image.starts_with("particleFresnel") && options["fx/opt/fresnel"] == 0)
+            {
                 continue;
             }
             let source = scopes.image_source(image)?;
             images.insert(
-                image.to_owned(),
+                image.to_ascii_lowercase(),
                 Arc::new(crate::material::load_2d_image(catalog, &source)?),
             );
         }
