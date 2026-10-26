@@ -29,6 +29,48 @@ impl Default for Parameters {
 }
 
 impl Parameters {
+    /// Delay design in 14117ed20. Lengths are sorted after conversion; equal
+    /// times remain equal, unlike RoomVerb's adjacent-length exclusion.
+    pub fn delay_lengths(&self, rate: u32, defaults: &[f32; 16]) -> Result<Vec<u32>, String> {
+        if !matches!(self.delay_count, 4 | 8 | 12 | 16) {
+            return Err("matrix reverb has no DSP path for this delay count".into());
+        }
+        if rate == 0 { return Err("matrix reverb requires a nonzero sample rate".into()); }
+        let mut lengths = Vec::with_capacity(self.delay_count as usize);
+        for (index, default) in defaults.iter().take(self.delay_count as usize).enumerate() {
+            let time = match self.delay_mode {
+                0 => *default,
+                1 => self.custom_delays[index].ok_or("matrix reverb custom delay was never initialized")?,
+                _ => return Err("matrix reverb delay mode leaves native delay slots uninitialized".into()),
+            };
+            if !time.is_finite() || time < 0.0 { return Err("invalid matrix reverb delay time".into()); }
+            lengths.push(super::room_reverb::odd_length(time, rate, None));
+        }
+        // 1411891f0 subtracts its two u32 operands and returns a signed int.
+        lengths.sort_by(|left, right| ((*left).wrapping_sub(*right) as i32).cmp(&0));
+        Ok(lengths)
+    }
+
+    /// 141189200: longest-line damping limit, then per-line gain and pole.
+    pub fn damping(&self, lengths: &[u32], rate: u32) -> Result<Vec<[f32; 2]>, String> {
+        if lengths.len() != self.delay_count as usize || lengths.is_empty() || rate == 0 {
+            return Err("matrix reverb damping requires its configured delay lines and rate".into());
+        }
+        let inverse_rate = 1.0 / f64::from(rate);
+        let amplitude = |length: u32| f64::from_bits(0x3f50624dd2f1a9fc)
+            .powf((f64::from(length) * inverse_rate) / f64::from(self.decay_time));
+        let scale = 10.0f64.ln() * 0.25; // 141a59770
+        let ratio = 1.0 / f64::from(self.hf_ratio);
+        let mut difference = 1.0 - 1.0 / (ratio * ratio);
+        let longest = amplitude(*lengths.last().unwrap()).log10();
+        if 1.0 < longest * scale * difference { difference = 1.0 / (longest * scale); }
+        Ok(lengths.iter().map(|&length| {
+            let amplitude = amplitude(length);
+            let pole = amplitude.log10() * scale * difference;
+            [((1.0 - pole) * amplitude) as f32, pole as f32]
+        }).collect())
+    }
+
     pub fn read(bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() { return Ok(Self::default()); }
         if bytes.len() < 29 { return Err("truncated matrix reverb parameters".into()); }

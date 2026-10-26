@@ -160,12 +160,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Some(dishonored2_rust::assets::sound_effects::ReflectionPatterns::load(
                     &dishonored2_rust::assets::installation::game_base()?, reflection_indices)?)
             };
+            let matrix_delays = if mix.effects.iter().any(|effect| effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN) {
+                Some(dishonored2_rust::assets::sound_effects::matrix_delays(&dishonored2_rust::assets::installation::game_base()?)?)
+            } else { None };
             mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
             for effect in &mix.effects {
                 println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
                     effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
                 if effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN {
-                    println!("  matrix reverb: {:?}", dishonored2_rust::gameplay::sound::matrix_reverb::Parameters::read(&effect.parameters)?);
+                    let parameters = dishonored2_rust::gameplay::sound::matrix_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  matrix reverb: {parameters:?}");
+                    let lengths = parameters.delay_lengths(48000, matrix_delays.as_ref().ok_or("matrix reverb delay table was not loaded")?)?;
+                    println!("  matrix delay lengths at 48 kHz: {lengths:?}, damping={:?}", parameters.damping(&lengths, 48000)?);
                 }
                 if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
                     let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;

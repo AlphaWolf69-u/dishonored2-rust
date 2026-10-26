@@ -234,20 +234,25 @@ impl Parameters {
 fn odd_lengths(times: &[f32], sample_rate: u32) -> Vec<u32> {
     let mut output = Vec::with_capacity(times.len());
     for &time in times {
-        let mut candidate = crate::float::truncate_i64(time * 0.001 * sample_rate as f32) as u32;
-        if candidate & 1 == 0 { candidate = candidate.wrapping_add(1); }
-        let limit = (f64::from(candidate).sqrt() as i32) + 1;
-        loop {
-            let mut divisor = 3u32;
-            let mut divisible = false;
-            while (divisor as i32) < limit {
-                if candidate % divisor == 0 { divisible = true; break; }
-                divisor += 2;
-            }
-            if !divisible && output.last().copied() != Some(candidate) { break; }
-            candidate = candidate.wrapping_add(2);
-        }
-        output.push(candidate);
+        output.push(odd_length(time, sample_rate, output.last().copied()));
     }
     output
+}
+
+/// Matrix Reverb (14117ed20) uses the same fixed-bound search, with no
+/// previous-length exclusion; RoomVerb's 14116de60 supplies that exclusion.
+pub(super) fn odd_length(milliseconds: f32, sample_rate: u32, previous: Option<u32>) -> u32 {
+    let mut candidate = crate::float::truncate_i64(milliseconds * 0.001 * sample_rate as f32) as u32;
+    if candidate & 1 == 0 { candidate = candidate.wrapping_add(1); }
+    let limit = (f64::from(candidate).sqrt() as i32) + 1;
+    loop {
+        let mut divisor = 3u32;
+        let mut divisible = false;
+        while (divisor as i32) < limit {
+            if candidate % divisor == 0 { divisible = true; break; }
+            divisor += 2;
+        }
+        if !divisible && previous != Some(candidate) { return candidate; }
+        candidate = candidate.wrapping_add(2);
+    }
 }
