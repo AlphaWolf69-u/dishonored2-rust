@@ -2355,8 +2355,8 @@ rules. Unsupported custom programs report their material identity. Materials tha
 enable effect support retain their ordinary bank while no effect is active,
 matching the model constructor's selector of -1; active effect overrides still
 require their actual forward-renderer producer. The ordinary
-pause-menu blur is human-confirmed; transparent appearance still needs a human
-check before DoF is complete.
+pause-menu blur is human-confirmed; transparent appearance remains unconfirmed.
+Implementation continues independently of that appearance check.
 
 Reduced alpha depth uses 36f8a0's shared downsample allocation, independently
 of 2fbc60's half-size viewport. It is resized when quality changes as well as
@@ -2442,3 +2442,16 @@ Probe alpha-depth MAIN families, and no explicit reduced-alpha overrides were
 found. This verifies source identities, rather than runtime appearance or the
 unimplemented SSS/runtime-decal primary renderers. Glass appearance remains
 pending the existing human check.
+
+Dynamic-decal lifetime now lives in `rendering::decals::DecalPool`. Its admitted
+limit is 4..128; free allocation, oldest eviction and duplicate-owner lookup
+follow the native lists/hash. Reusing a full slot preserves its committed render
+object. Removal checks both owner and slot, unregisters before destruction, and
+cannot remove a replacement through a stale FX binding. The pool reuses the
+existing hash owner, including its new unlink operation.
+
+`prepare_world` connects retained descriptions to committed WORLD projection
+geometry in physical slot order. Position, axes or scale changes invalidate
+intersection data; colour/material changes copy independently. The initial
+projection cannot publish an undefined inverse. FX event creation and GPU draw
+submission remain separate unfinished integration work.
