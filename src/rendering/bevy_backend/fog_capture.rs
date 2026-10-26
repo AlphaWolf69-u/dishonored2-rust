@@ -2,10 +2,10 @@
 use bevy::{
     prelude::*,
     render::{
+        Render, RenderApp, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_resource::*,
         renderer::RenderDevice,
-        Render, RenderApp, RenderSystems,
     },
 };
 use std::{
@@ -53,6 +53,9 @@ impl FogCaptureGpu {
         atlas_image: &bevy::render::texture::GpuImage,
         parallel: &Buffer,
         fog: &super::fog_pass::FogPass,
+        water: Option<&super::water_depth_scene::WaterDepthScene>,
+        water_frame: Option<&super::water_scene::WaterFrame>,
+        underwater_active: bool,
     ) -> Result<(), String> {
         if self.pending.is_some() {
             return Ok(());
@@ -63,7 +66,13 @@ impl FogCaptureGpu {
         let full = fog.targets.extents.full;
         let shadow = fog.targets.extents.shadow;
         let size = atlas_image.texture.size();
-        let (staging, counts) = copy_sources(
+        let stencil = water.map(|w| {
+            w.alpha.reduced.create_view(&TextureViewDescriptor {
+                aspect: TextureAspect::StencilOnly,
+                ..default()
+            })
+        });
+        let (staging, counts) = copy_sources_with_water(
             device,
             encoder,
             full,
@@ -73,9 +82,27 @@ impl FogCaptureGpu {
             &atlas_image.texture_view,
             &fog.targets.shadow.view,
             parallel,
+            stencil.as_ref(),
+            Some((&fog.targets.world.view, fog.targets.extents.world)),
         )?;
-        let metadata = format!("Fog GPU capture v1\nBinary: little-endian u32 words, contiguous depth/full, atlas/layer-major, fog-shadow, sampling-buffer planes; depth/shadow words are IEEE float32 bits.\ncounts={counts:?}\nfull={full:?}\natlas_extent={size:?}\nshadow={shadow:?}\nfog_revision={}\natlas_revision={}\nworld_from_clip_cols={:?}\neye={:?}\nview={view:?}\nsettings={:?}\nparameters={:?}\nprojected={} temporal={} projected_extent={}\n",frame.revision,atlas.revision,view.world_from_clip.to_cols_array(),view.eye.to_array(),frame.settings,frame.parameters,frame.shadow.projected,frame.shadow.temporal,frame.shadow.extent);
+        let metadata = format!(
+            "Fog GPU capture v1\nBinary: little-endian u32 words, contiguous depth/full, atlas/layer-major, fog-shadow, sampling-buffer planes; depth/shadow words are IEEE float32 bits.\ncounts={counts:?}\nfull={full:?}\natlas_extent={size:?}\nshadow={shadow:?}\nfog_revision={}\natlas_revision={}\nworld_from_clip_cols={:?}\neye={:?}\nview={view:?}\nsettings={:?}\nparameters={:?}\nprojected={} temporal={} projected_extent={}\n",
+            frame.revision,
+            atlas.revision,
+            view.world_from_clip.to_cols_array(),
+            view.eye.to_array(),
+            frame.settings,
+            frame.parameters,
+            frame.shadow.projected,
+            frame.shadow.temporal,
+            frame.shadow.extent
+        );
         let metadata = format!("{metadata}ray_settings={:?}\n", frame.rays);
+        let metadata = format!(
+            "{metadata}extra_planes=water_stencil/u32,filtered_fog_rgba/f32\nunderwater_active={underwater_active}\nwater_view={:?}\nwater_camera={:?}\n",
+            water_frame.map(|w| &w.ocean_environment.view),
+            water_frame.map(|w| w.matrices.current.position)
+        );
         self.pending = Some(Pending {
             buffer: staging,
             path,
@@ -97,6 +124,23 @@ fn copy_sources(
     fog_shadow: &TextureView,
     parallel: &Buffer,
 ) -> Result<(Buffer, Vec<u32>), String> {
+    copy_sources_with_water(
+        device, encoder, full, shadow, size, depth, atlas, fog_shadow, parallel, None, None,
+    )
+}
+fn copy_sources_with_water(
+    device: &RenderDevice,
+    encoder: &mut CommandEncoder,
+    full: UVec2,
+    shadow: UVec2,
+    size: Extent3d,
+    depth: &TextureView,
+    atlas: &TextureView,
+    fog_shadow: &TextureView,
+    parallel: &Buffer,
+    stencil: Option<&TextureView>,
+    radiance: Option<(&TextureView, UVec2)>,
+) -> Result<(Buffer, Vec<u32>), String> {
     let counts = [
         full.x.checked_mul(full.y),
         size.width
@@ -105,10 +149,27 @@ fn copy_sources(
         shadow.x.checked_mul(shadow.y),
         Some((parallel.size() / 4) as u32),
     ];
-    let counts: Vec<u32> = counts
+    let mut counts: Vec<u32> = counts
         .into_iter()
         .collect::<Option<_>>()
         .ok_or("fog numeric capture extent overflow")?;
+    // Additional planes preserve every existing plane's offset.
+    if stencil.is_some() {
+        counts.push(
+            Some((full.x / 2).max(1))
+                .and_then(|w| w.checked_mul((full.y / 2).max(1)))
+                .ok_or("water stencil capture extent overflow")?,
+        );
+    }
+    if let Some((_, extent)) = radiance {
+        counts.push(
+            extent
+                .x
+                .checked_mul(extent.y)
+                .and_then(|n| n.checked_mul(4))
+                .ok_or("fog radiance capture extent overflow")?,
+        );
+    }
     let total = counts
         .iter()
         .try_fold(0u32, |a, b| a.checked_add(*b))
@@ -151,9 +212,21 @@ fn copy_sources(
             .collect::<Vec<_>>(),
         usage: BufferUsages::UNIFORM,
     });
+    let mut shader = SHADER.to_owned();
+    let tail = "i-=sizes.shadow_width*sizes.shadow_height;output[index]=parallel[i];";
+    let mut extra = "i-=sizes.shadow_width*sizes.shadow_height;let parallel_count=arrayLength(&parallel);if i<parallel_count {output[index]=parallel[i];return;}i-=parallel_count;".to_owned();
+    if stencil.is_some() {
+        shader.push_str("\n@group(0) @binding(6) var water_stencil:texture_2d<u32>;\n");
+        extra.push_str("let sw=textureDimensions(water_stencil);let sn=sw.x*sw.y;if i<sn {output[index]=textureLoad(water_stencil,vec2<i32>(vec2(i%sw.x,i/sw.x)),0).x;return;}i-=sn;");
+    }
+    if radiance.is_some() {
+        shader.push_str("\n@group(0) @binding(7) var fog_radiance:texture_2d<f32>;\n");
+        extra.push_str("let rw=textureDimensions(fog_radiance);let pixel=i/4u;output[index]=bitcast<u32>(textureLoad(fog_radiance,vec2<i32>(vec2(pixel%rw.x,pixel/rw.x)),0)[i%4u]);");
+    }
+    shader = shader.replace(tail, &extra);
     let module = device.create_and_validate_shader_module(ShaderModuleDescriptor {
         label: Some("F8 fog numeric copy"),
-        source: ShaderSource::Wgsl(SHADER.into()),
+        source: ShaderSource::Wgsl(shader.into()),
     });
     let pipeline = device.create_compute_pipeline(&RawComputePipelineDescriptor {
         label: Some("F8 fog numeric copy"),
@@ -163,36 +236,46 @@ fn copy_sources(
         compilation_options: default(),
         cache: None,
     });
-    let binding = device.create_bind_group(
-        None,
-        &pipeline.get_bind_group_layout(0).into(),
-        &[
-            BindGroupEntry {
-                binding: 0,
-                resource: uniform.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 1,
-                resource: BindingResource::TextureView(depth),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::TextureView(atlas),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: BindingResource::TextureView(fog_shadow),
-            },
-            BindGroupEntry {
-                binding: 4,
-                resource: parallel.as_entire_binding(),
-            },
-            BindGroupEntry {
-                binding: 5,
-                resource: output.as_entire_binding(),
-            },
-        ],
-    );
+    let mut entries = vec![
+        BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        },
+        BindGroupEntry {
+            binding: 1,
+            resource: BindingResource::TextureView(depth),
+        },
+        BindGroupEntry {
+            binding: 2,
+            resource: BindingResource::TextureView(atlas),
+        },
+        BindGroupEntry {
+            binding: 3,
+            resource: BindingResource::TextureView(fog_shadow),
+        },
+        BindGroupEntry {
+            binding: 4,
+            resource: parallel.as_entire_binding(),
+        },
+        BindGroupEntry {
+            binding: 5,
+            resource: output.as_entire_binding(),
+        },
+    ];
+    if let Some(view) = stencil {
+        entries.push(BindGroupEntry {
+            binding: 6,
+            resource: BindingResource::TextureView(view),
+        });
+    }
+    if let Some((view, _)) = radiance {
+        entries.push(BindGroupEntry {
+            binding: 7,
+            resource: BindingResource::TextureView(view),
+        });
+    }
+    let binding =
+        device.create_bind_group(None, &pipeline.get_bind_group_layout(0).into(), &entries);
     {
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("F8 fog numeric sources"),

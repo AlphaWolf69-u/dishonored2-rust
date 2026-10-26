@@ -1,5 +1,12 @@
 //! Original render-model flag and finite query helpers.
 use crate::tome::NoDepthAabbQuery;
+pub use crate::storage::{
+    allocate_zeroed_pointers as allocate_zeroed_surface_pointers,
+    reallocate_pointers as reallocate_surface_pointers,
+    reserve_index as reserve_surface_candidate_row_index, PointerList as SurfacePointerList,
+};
+use crate::storage::growth_capacity as surface_candidate_growth_capacity;
+
 
 /// FUN_141374630 registers r_multiSamples="0" (no multisampled FBO).
 /// FUN_140347410 copies the setting into renderer state. This default must
@@ -306,7 +313,25 @@ pub fn prepare_depth_alpha_draw(
     if program == 0 {
         return Ok(None);
     }
-    let mut state = surface.draw_state;
+    let draw = depth_alpha_draw_state(surface.draw_state, surface.flags49, pass)?;
+    Ok(Some(DepthAlphaDrawPlan {
+        program,
+        draw_state: draw.state,
+        stencil_reference: draw.reference,
+        marks_alpha: draw.marks_alpha,
+    }))
+}
+
+pub struct DepthAlphaDrawState {
+    pub state: [u32; 9],
+    pub reference: u8,
+    pub marks_alpha: bool,
+}
+///321860's state overrides after the source owner admitted a real program.
+///Backend draws reuse this without constructing synthetic pointer banks.
+pub fn depth_alpha_draw_state(base: [u32; 9], flags49: u8, pass: u8) -> Result<DepthAlphaDrawState, String> {
+    if pass > 2 { return Err("depth-alpha pass must be 0, 1 or 2".into()); }
+    let mut state = base;
     state[0] &= 0xfe1f_ffff;
     state[1] &= 0xfe1f_ffff;
     state[4] = state[4] & 0xff | 0xe80e_8000;
@@ -315,16 +340,15 @@ pub fn prepare_depth_alpha_draw(
     } else {
         state[5] & 0xff02_02ff | 0x0002_0228
     };
-    let marks_alpha = pass == 0 && alpha;
+    let marks_alpha = pass == 0 && flags49 & 1 != 0;
     if marks_alpha {
-        state[0] = surface.draw_state[0] & 0xfe1f_fe23 | 0x0040_0023;
+        state[0] = base[0] & 0xfe1f_fe23 | 0x0040_0023;
     }
-    Ok(Some(DepthAlphaDrawPlan {
-        program,
-        draw_state: state,
-        stencil_reference: if pass == 2 { 0x80 } else { 2 },
+    Ok(DepthAlphaDrawState {
+        state,
+        reference: if pass == 2 { 0x80 } else { 2 },
         marks_alpha,
-    }))
+    })
 }
 
 // Shared declaration logic also serves the asset-audit tools; no renderer dependency.
@@ -825,66 +849,6 @@ pub fn prepare_shadow_model_draw_for_mvp(
     )
 }
 
-fn surface_candidate_growth_capacity(capacity_word: u32, grow_one_at_a_time: bool) -> u32 {
-    let capacity = capacity_word >> 8;
-    let low_flags = capacity_word as u8;
-    if grow_one_at_a_time {
-        capacity.wrapping_add(1)
-    } else if low_flags & 0x3f == 0x3f {
-        if capacity == 0 {
-            1
-        } else if capacity < 0x4000_0000 {
-            capacity * 2
-        } else {
-            0x7fff_ffff
-        }
-    } else {
-        let step = 1u32 << (low_flags & 0x1f);
-        let sum = capacity.wrapping_add(step);
-        sum.wrapping_sub((step - 1) & sum)
-    }
-}
-
-/// FUN_140339940's packed 24-bit count/capacity decision. Allocation/copy is
-/// represented by `allocation_succeeds`; the native allocator and its memory
-/// ownership are separate helpers and are not implemented here.
-pub fn reserve_surface_candidate_row_index(
-    count_word: &mut u32,
-    capacity_word: &mut u32,
-    grow_one_at_a_time: bool,
-    allocation_succeeds: bool,
-) -> u32 {
-    const COUNT_MASK: u32 = 0x00ff_ffff;
-    let count = *count_word & COUNT_MASK;
-    let capacity = *capacity_word >> 8;
-    if count == capacity {
-        let low_flags = *capacity_word as u8;
-        let requested = surface_candidate_growth_capacity(*capacity_word, grow_one_at_a_time);
-        match low_flags & 0xc0 {
-            0xc0 => {
-                if allocation_succeeds {
-                    *capacity_word = requested.wrapping_shl(8) | 0x3f;
-                }
-            }
-            0 => {
-                if !allocation_succeeds {
-                    return u32::MAX;
-                }
-                *capacity_word = (*capacity_word & 0xff) | requested.wrapping_shl(8);
-            }
-            _ => return u32::MAX,
-        }
-    }
-    let count = *count_word & COUNT_MASK;
-    let capacity = *capacity_word >> 8;
-    if count < capacity {
-        *count_word = (*count_word & !COUNT_MASK) | (count + 1);
-        count
-    } else {
-        capacity.wrapping_sub(1)
-    }
-}
-
 /// One zero-initialized 0xa8-byte row from FUN_140339de0. Bytes not written
 /// by its initializer stay deterministically zero here; whole-row equivalence
 /// awaits confirming that downstream consumers ignore those gaps.
@@ -1009,194 +973,6 @@ impl SurfaceCandidateRows {
         self.capacity_word >> 8
     }
 
-    pub fn packed_header(&self) -> (u32, u32) {
-        (self.count_word, self.capacity_word)
-    }
-}
-
-/// FUN_140675c50: allocate and zero one native 8-byte pointer-list slot per capacity unit.
-pub fn allocate_zeroed_surface_pointers(capacity: u32) -> Result<Vec<u64>, String> {
-    if capacity > 0x00ff_ffff {
-        return Err("surface pointer capacity exceeds 24 bits".to_owned());
-    }
-    let mut slots = Vec::new();
-    slots
-        .try_reserve_exact(capacity as usize)
-        .map_err(|error| format!("surface pointer allocation failed: {error}"))?;
-    slots.resize(capacity as usize, 0);
-    Ok(slots)
-}
-
-/// FUN_1403a0000: allocate zeroed replacement slots, copy the live prefix,
-/// and publish the native growth header. Caller supplies a growth capacity.
-pub fn reallocate_surface_pointers(
-    slots: &mut Vec<u64>,
-    live_count: u32,
-    capacity_word: &mut u32,
-    new_capacity: u32,
-) -> Result<(), String> {
-    if new_capacity > 0x00ff_ffff || live_count > new_capacity || live_count as usize > slots.len()
-    {
-        return Err("surface pointer reallocation metadata is out of range".to_owned());
-    }
-    let mut replacement = allocate_zeroed_surface_pointers(new_capacity)?;
-    replacement[..live_count as usize].copy_from_slice(&slots[..live_count as usize]);
-    *slots = replacement;
-    *capacity_word = new_capacity.wrapping_shl(8) | 0x3f;
-    Ok(())
-}
-
-/// Packed pointer list used by FUN_140160b50/FUN_14016a4a0 and the related
-/// FUN_14033a9e0/FUN_140646e80 path. The logical capacity dispatch is shared;
-/// Rust Vec replaces engine allocator ownership and OOM side effects.
-#[derive(Clone, Debug, Default)]
-pub struct SurfacePointerList {
-    slots: Vec<u64>,
-    count_word: u32,
-    capacity_word: u32,
-}
-
-impl SurfacePointerList {
-    pub fn with_capacity(capacity: u32, low_flags: u8) -> Result<Self, String> {
-        Ok(Self {
-            slots: allocate_zeroed_surface_pointers(capacity)?,
-            count_word: 0,
-            capacity_word: capacity.wrapping_shl(8) | u32::from(low_flags),
-        })
-    }
-
-    /// FUN_14016a4a0/FUN_140646e80 packed-list capacity dispatch. Mode 3
-    /// publishes the requested header even when its void allocator fails;
-    /// `insert` detects the resulting storage/header mismatch before writing
-    /// out of bounds. Allocator ownership/failure side effects differ by caller.
-    pub fn set_capacity(
-        &mut self,
-        requested: i32,
-        allocation_succeeds: bool,
-    ) -> Result<bool, String> {
-        if requested < 1 {
-            if self.capacity_word as u8 & 0x40 == 0 {
-                self.slots = Vec::new();
-                self.capacity_word &= 0xff;
-            }
-            self.count_word &= 0xff00_0000;
-            return Ok(true);
-        }
-        let requested = requested as u32;
-        if requested > 0x00ff_ffff {
-            return Err("surface pointer capacity exceeds 24 bits".to_owned());
-        }
-        let old_capacity = self.capacity_word >> 8;
-        if requested == old_capacity {
-            return Ok(true);
-        }
-        let allocation_mode = (self.capacity_word >> 6) & 3;
-        if allocation_mode == 3 && old_capacity < requested {
-            let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
-            if count > old_capacity || count as usize > self.slots.len() {
-                return Err("specialized surface pointer count exceeds storage".to_owned());
-            }
-            let flags = self.capacity_word as u8;
-            if allocation_succeeds {
-                let _ = reallocate_surface_pointers(
-                    &mut self.slots,
-                    count,
-                    &mut self.capacity_word,
-                    requested,
-                );
-            }
-            self.capacity_word = requested.wrapping_shl(8) | u32::from(flags);
-            return Ok(true);
-        }
-        if allocation_mode != 0 {
-            return Ok(false);
-        }
-        let count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
-        if !allocation_succeeds {
-            self.slots = Vec::new();
-            return Ok(false);
-        }
-        let mut replacement = match allocate_zeroed_surface_pointers(requested) {
-            Ok(replacement) => replacement,
-            Err(_) => {
-                self.slots = Vec::new();
-                return Ok(false);
-            }
-        };
-        let copied = count.min(requested) as usize;
-        if copied > self.slots.len() {
-            return Err("surface pointer count exceeds supplied storage".to_owned());
-        }
-        replacement[..copied].copy_from_slice(&self.slots[..copied]);
-        self.slots = replacement;
-        self.capacity_word = requested.wrapping_shl(8) | (self.capacity_word & 0xff);
-        if count > requested {
-            self.count_word = (self.count_word & 0xff00_0000) | requested;
-        }
-        Ok(true)
-    }
-
-    /// FUN_140160b50: grow when full, clamp the signed requested index, shift
-    /// the packed live range right, increment its low-24 count, and write value.
-    pub fn insert(
-        &mut self,
-        requested_index: u32,
-        value: u64,
-        grow_one_at_a_time: bool,
-    ) -> Result<u32, String> {
-        let old_count = self.count_word & SURFACE_ARRAY_COUNT_MASK;
-        let old_capacity = self.capacity_word >> 8;
-        if old_count > old_capacity || old_capacity as usize != self.slots.len() {
-            return Err("surface pointer list metadata disagrees with storage".to_owned());
-        }
-        let index = if (requested_index as i32) < 0 {
-            0
-        } else {
-            requested_index.min(old_count)
-        };
-        if old_count == old_capacity {
-            let requested =
-                surface_candidate_growth_capacity(self.capacity_word, grow_one_at_a_time);
-            if requested <= old_capacity || requested > 0x00ff_ffff {
-                return Err("surface pointer growth exceeds packed capacity".to_owned());
-            }
-            if !self.set_capacity(requested as i32, true)? {
-                return Err("surface pointer allocator rejected growth mode".to_owned());
-            }
-            if self.capacity() as usize != self.slots.len() {
-                return Err(
-                    "surface pointer allocation left a short backing array".to_owned(),
-                );
-            }
-        }
-        let appended = reserve_surface_candidate_row_index(
-            &mut self.count_word,
-            &mut self.capacity_word,
-            grow_one_at_a_time,
-            true,
-        );
-        if appended != old_count {
-            return Err("surface pointer count reservation failed".to_owned());
-        }
-        for destination in (index as usize..old_count as usize).rev() {
-            self.slots[destination + 1] = self.slots[destination];
-        }
-        self.slots[index as usize] = value;
-        Ok(index)
-    }
-
-    pub fn values(&self) -> &[u64] {
-        self.slots
-            .get(..(self.count_word & SURFACE_ARRAY_COUNT_MASK) as usize)
-            .unwrap_or(&[])
-    }
-
-    pub fn count(&self) -> u32 {
-        self.count_word & SURFACE_ARRAY_COUNT_MASK
-    }
-    pub fn capacity(&self) -> u32 {
-        self.capacity_word >> 8
-    }
     pub fn packed_header(&self) -> (u32, u32) {
         (self.count_word, self.capacity_word)
     }

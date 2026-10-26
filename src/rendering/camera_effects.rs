@@ -190,6 +190,10 @@ impl CameraSettings {
     pub fn special_alpha(&self) -> bool {
         self.flag(0x9b)
     }
+    ///321860 publishes this after alpha geometry admission in the render view.
+    pub fn set_special_alpha(&mut self, enabled: bool) {
+        self.set_flag(0x9b, enabled);
+    }
     pub fn autofocus_enabled(&self) -> bool {
         self.flag(0x16)
     }

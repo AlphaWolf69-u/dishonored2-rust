@@ -939,7 +939,8 @@ impl MachineryWorld {
             }
         }
     }
-    pub fn step(&mut self, deltas: [f32; 5]) {
+    /// The two physics timespaces supplied by 8af460 (clock groups3/4).
+    pub fn step(&mut self, deltas: [f32; 2]) {
         let Some(step) = SolverParameters::from_game_deltas(&deltas, [0., 0., -9.81, 0.]) else {
             return;
         };
@@ -1018,7 +1019,7 @@ impl MachineryWorld {
                     step.damping,
                 ),
             ];
-            let entity_seconds = deltas[3]; // Default entity timespace 0 -> clock group3 (877eb0).
+            let entity_seconds = deltas[0]; // Timespace0's entry already maps to clock group3 (877eb0/8af460).
             let scale = entity_seconds / step.seconds;
             let measured = if entity_seconds > 0. {
                 joint.measurement.measure(
@@ -1367,7 +1368,7 @@ mod tests {
         let mut world = resting_hinge();
         let mut slept = None;
         for frame in 0..600 {
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
             if slept.is_none() && !world.bodies[1].active() {
                 slept = Some(frame);
             }
@@ -1377,7 +1378,7 @@ mod tests {
         assert!((10..40).contains(&slept), "slept at frame {slept}");
         assert_eq!(world.bodies[1].deactivation.island(), 1);
         let pose = world.bodies[1].motion.pose;
-        world.step([1. / 60.; 5]);
+        world.step([1. / 60.; 2]);
         assert_eq!(world.bodies[1].motion.pose, pose);
     }
     #[test]
@@ -1391,7 +1392,7 @@ mod tests {
         assert_eq!(world.bodies[1].frozen, 1);
         let pose = world.bodies[1].motion.pose;
         for _ in 0..10 {
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
         }
         assert_eq!(world.bodies[1].motion.pose, pose);
         assert!(!world.activate(1), "mode 2 refuses activation");
@@ -1400,7 +1401,7 @@ mod tests {
         assert!(world.bodies[1].active());
         assert_eq!((world.bodies[1].frozen, world.bodies[1].deactivation.mode()), (0, 0));
         // The retained velocity resumes after the thaw.
-        world.step([1. / 60.; 5]);
+        world.step([1. / 60.; 2]);
         assert_ne!(world.bodies[1].motion.pose, pose);
     }
     #[test]
@@ -1431,7 +1432,7 @@ mod tests {
         let middle = world.systems[cable].bodies[6];
         let start = world.bodies[middle].body_transform()[3];
         for frame in 0..900 {
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
             if frame % 150 == 0 {
                 let t = world.bodies[middle].body_transform()[3];
                 println!("frame {frame}: joint6 {:?} active {}", &t[..3], world.bodies[middle].active());
@@ -1486,7 +1487,7 @@ mod tests {
         let mut maximum = 0f32;
         let mut limit_violation = 0f32;
         for _ in 0..600 {
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
             maximum = maximum.max(world.maximum_anchor_error());
             for joint in &world.joints {
                 if joint.settings.angular_constraint == "ANGULAR_CONSTRAINT_LIMITED_HINGE" {
@@ -1540,7 +1541,7 @@ mod tests {
             let mut world = rotor(0);
             let dt = v(0) / 120.;
             for _ in 0..v(1) as usize {
-                world.step([dt; 5]);
+                world.step([dt; 2]);
             }
             let body = &world.bodies[1];
             for (i, actual) in body
@@ -1573,7 +1574,7 @@ mod tests {
                 let mut previous = world.bodies[1].motion.pose.orientation;
                 let mut distance = 0.;
                 for frame in 0..1200 {
-                    world.step([substeps as f32 / 120.; 5]);
+                    world.step([substeps as f32 / 120.; 2]);
                     let body = &world.bodies[1];
                     assert!(
                         body.motion.pose.center[..3].iter().all(|v| v.abs() < 0.003),

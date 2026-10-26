@@ -134,6 +134,47 @@ impl LocalWorldQuery {
         mask
     }
 
+    /// 28c690/28c2b0: projected decals first test tree nodes against an AABB,
+    /// then test each retained WORLD record against the actual oriented box.
+    pub fn query_box(
+        &self,
+        bounds: [[f32; 3]; 2],
+        volume: &crate::rendering::bounds::OrientedBox,
+    ) -> Vec<u8> {
+        let mut mask = vec![0; self.bounds.len()];
+        if let Some(root) = &self.root {
+            self.visit_box(root, bounds, volume, &mut mask);
+        }
+        mask
+    }
+
+    fn visit_box(
+        &self,
+        node: &Node,
+        bounds: [[f32; 3]; 2],
+        volume: &crate::rendering::bounds::OrientedBox,
+        mask: &mut [u8],
+    ) {
+        if !(0..3).all(|i| bounds[0][i] - 0.0 <= node.bounds[1][i]
+            && node.bounds[0][i] <= bounds[1][i] + 0.0)
+        {
+            return;
+        }
+        for &id in &self.ids[node.range.clone()] {
+            if volume.overlaps(&crate::rendering::bounds::OrientedBox::from_aabb(
+                self.bounds[id as usize],
+            )) {
+                mask[id as usize] = 1;
+            }
+        }
+        if let Some(left) = &node.left {
+            self.visit_box(left, bounds, volume, mask);
+        }
+        if let Some(right) = &node.right {
+            self.visit_box(right, bounds, volume, mask);
+        }
+    }
+
     ///295710/28caf0/28ca10: directional queries test each tree node's
     ///bounds against the clip volume, then admit its retained records together.
     ///The explicit near threshold is the cascade's negative depth offset.

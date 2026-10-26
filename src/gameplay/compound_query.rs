@@ -1,17 +1,12 @@
-//! Float-BVH traversal in 14123b5e0 for compound closest-point queries.
+//! Float-BVH traversal in 14123b5e0/14123acd0 for compound closest-point queries.
 //! Instance flags, tags, filters, transforms and exact geometry remain with the
 //! visitor. Traversal order differs from the world's quantized hybrid tree.
 
-#[derive(Clone, Copy, Debug)]
-pub enum CompoundChildren {
-    Branch { left: u16, right: u16 },
-    Instance(u16),
-}
-#[derive(Clone, Copy, Debug)]
-pub struct CompoundNode {
-    pub bounds: [[f32; 3]; 2],
-    pub children: CompoundChildren,
-}
+pub use crate::assets::physworld::compound::types::{CompoundChildren, CompoundNode};
+#[path = "compound_query/instance.rs"]
+pub mod instance;
+#[path = "compound_query/prepare.rs"]
+pub mod prepare;
 pub struct CompoundTree<'a> {
     pub nodes: &'a [CompoundNode],
     /// The source tree reserves zero for an empty root.
@@ -65,6 +60,19 @@ impl CompoundQuery {
         squared_distance: &mut f32,
         visitor: &mut impl CompoundQueryVisitor,
     ) -> Result<(), String> {
+        self.visit_masked(tree, query, squared_distance, None, visitor)
+    }
+
+    /// The compound's optional node bitset, indexed by BVH node (not instance).
+    /// Nested child-shape masks remain the instance visitor's responsibility.
+    pub fn visit_masked(
+        &mut self,
+        tree: CompoundTree<'_>,
+        query: CompoundQueryBounds,
+        squared_distance: &mut f32,
+        node_mask: Option<&[u32]>,
+        visitor: &mut impl CompoundQueryVisitor,
+    ) -> Result<(), String> {
         self.pending.clear();
         if tree.root == 0 {
             return Ok(());
@@ -74,7 +82,19 @@ impl CompoundQuery {
                 .get(usize::from(index))
                 .ok_or_else(|| "compound query node index out of bounds".to_string())
         };
+        let enabled = |index: u16| -> Result<bool, String> {
+            match node_mask {
+                None => Ok(true),
+                Some(words) => words
+                    .get(usize::from(index) / 32)
+                    .map(|word| word >> (index & 31) & 1 != 0)
+                    .ok_or_else(|| "compound query node mask index out of bounds".to_string()),
+            }
+        };
         let mut index = tree.root;
+        if !enabled(index)? {
+            return Ok(());
+        }
         // UCOMISS/CMOVBE accepts unordered values too.
         if query.distance_squared(node(index)?.bounds) > *squared_distance {
             return Ok(());
@@ -82,12 +102,17 @@ impl CompoundQuery {
         loop {
             match node(index)?.children {
                 CompoundChildren::Instance(instance) => {
-                    visitor.query_instance(instance, squared_distance)
+                    if enabled(index)? {
+                        visitor.query_instance(instance, squared_distance)
+                    }
                 }
                 CompoundChildren::Branch { left, right } => {
                     let dl = query.distance_squared(node(left)?.bounds);
                     let dr = query.distance_squared(node(right)?.bounds);
-                    match (!(dl > *squared_distance), !(dr > *squared_distance)) {
+                    match (
+                        !(dl > *squared_distance) && enabled(left)?,
+                        !(dr > *squared_distance) && enabled(right)?,
+                    ) {
                         (true, true) => {
                             // Source ties choose LEFT. The world's hybrid
                             // traversal chooses RIGHT and cannot be reused here.
@@ -124,6 +149,12 @@ impl CompoundQuery {
     }
 }
 
+#[cfg(test)]
+#[path = "compound_query/instance_tests.rs"]
+mod instance_tests;
+#[cfg(test)]
+#[path = "compound_query/prepare_tests.rs"]
+mod prepare_tests;
 #[cfg(test)]
 #[path = "compound_query/tests.rs"]
 mod tests;

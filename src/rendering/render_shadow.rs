@@ -1586,13 +1586,7 @@ pub fn axis_rotation(axis: i32, angle: f32) -> Option<[[f32; 3]; 3]> {
 }
 
 /// FUN_14000dce0's explicit three-term row product, used by split spots.
-pub fn basis_product(left: [[f32; 3]; 3], right: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
-    std::array::from_fn(|r| {
-        std::array::from_fn(|c| {
-            (left[r][1] * right[1][c] + left[r][0] * right[0][c]) + left[r][2] * right[2][c]
-        })
-    })
-}
+pub use crate::gameplay::reference_frame::basis_product;
 
 pub struct SpotProjectionInput {
     pub position: [f32; 3],

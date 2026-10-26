@@ -177,6 +177,39 @@ impl OceanColourProgram {
         state: crate::render_state::RenderState,
         stencil_reference: u32,
     ) -> Result<Self, String> {
+        Self::create(
+            device,
+            depth_format,
+            colour_format,
+            state,
+            stencil_reference,
+            false,
+        )
+    }
+    pub fn with_view_exposure(
+        device: &RenderDevice,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        stencil_reference: u32,
+    ) -> Result<Self, String> {
+        Self::create(
+            device,
+            depth_format,
+            colour_format,
+            state,
+            stencil_reference,
+            true,
+        )
+    }
+    fn create(
+        device: &RenderDevice,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        stencil_reference: u32,
+        view_exposure: bool,
+    ) -> Result<Self, String> {
         if !depth_format.has_stencil_aspect() {
             return Err("ocean colour requires the owner's depth/stencil target".into());
         }
@@ -207,19 +240,30 @@ impl OceanColourProgram {
                 return Err(format!("ocean colour requires device feature {feature:?}"));
             }
         }
-        let parameters = device.create_bind_group_layout(
-            Some("ocean colour constants"),
-            &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
+        let mut parameter_entries = vec![BindGroupLayoutEntry {
+            binding: 0,
+            visibility: ShaderStages::VERTEX_FRAGMENT,
+            count: None,
+            ty: BindingType::Buffer {
+                ty: BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: BufferSize::new(1200),
+            },
+        }];
+        if view_exposure {
+            parameter_entries.push(BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
                 count: None,
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: BufferSize::new(1200),
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: BufferSize::new(32),
                 },
-            }],
-        );
+            });
+        }
+        let parameters =
+            device.create_bind_group_layout(Some("ocean colour constants"), &parameter_entries);
         let wave_entries = (0..11)
             .map(|binding| BindGroupLayoutEntry {
                 binding,
@@ -274,7 +318,15 @@ impl OceanColourProgram {
         });
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("arkOcean colour"),
-            source: ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: ShaderSource::Wgsl(if view_exposure {
+                format!(
+                    "{SHADER_SOURCE}\n{}",
+                    include_str!("../../../assets/shaders/dh2_ocean_colour_exposure.wgsl")
+                )
+                .into()
+            } else {
+                SHADER_SOURCE.into()
+            }),
         });
         let (front_face, cull_mode) = super::pipeline_state::mesh_raster(&state, false);
         let depth = super::pipeline_state::depth_stencil_gpu(&state, depth_format)?;
@@ -305,7 +357,11 @@ impl OceanColourProgram {
                 },
                 fragment: Some(RawFragmentState {
                     module: &shader,
-                    entry_point: Some("ocean_colour_fragment"),
+                    entry_point: Some(if view_exposure {
+                        "ocean_colour_fragment_with_exposure"
+                    } else {
+                        "ocean_colour_fragment"
+                    }),
                     compilation_options: default(),
                     targets: &colour,
                 }),
@@ -353,6 +409,31 @@ impl OceanColourProgram {
                     size: BufferSize::new(1200),
                 }),
             }],
+        )
+    }
+    pub fn parameter_binding_with_exposure(
+        &self,
+        device: &RenderDevice,
+        buffer: &Buffer,
+        adaptation: &Buffer,
+    ) -> BindGroup {
+        device.create_bind_group(
+            Some("ocean patch constants and camera adaptation"),
+            &self.parameters,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer(BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: BufferSize::new(1200),
+                    }),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: adaptation.as_entire_binding(),
+                },
+            ],
         )
     }
     /// Same eight wave images and three samplers as the depth program.

@@ -23,6 +23,9 @@ pub struct WorldProbeColourParameters {
 }
 impl WorldProbeColourParameters {
     pub fn uniform_bytes(&self) -> Result<[u8; 1008], String> {
+        self.uniform_bytes_for_geometry(false)
+    }
+    pub fn uniform_bytes_for_geometry(&self, model: bool) -> Result<[u8; 1008], String> {
         if !self.colour.horizontal {
             return Err("world probe colour stage requires the horizontal specialization".into());
         }
@@ -40,7 +43,7 @@ impl WorldProbeColourParameters {
             [
                 u32::from(self.use_sky_cube),
                 u32::from(!self.use_probes),
-                0,
+                u32::from(model),
                 0,
             ]
             .into_iter()
@@ -121,6 +124,27 @@ impl WorldProbeColourProgram {
         )
     }
 
+    pub fn new_for_model_surface(
+        device: &RenderDevice,
+        mesh: &MeshVertexBufferLayoutRef,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        class: crate::rendering::water::program::WorldWaterColourClass,
+    ) -> Result<Self, String> {
+        Self::create_with_position(
+            device,
+            mesh,
+            depth_format,
+            colour_format,
+            state,
+            true,
+            false,
+            class == crate::rendering::water::program::WorldWaterColourClass::ProbeHorizontal,
+            true,
+        )
+    }
+
     fn create(
         device: &RenderDevice,
         mesh: &MeshVertexBufferLayoutRef,
@@ -130,6 +154,30 @@ impl WorldProbeColourProgram {
         view_exposure: bool,
         indices_reversed: bool,
         use_probes: bool,
+    ) -> Result<Self, String> {
+        Self::create_with_position(
+            device,
+            mesh,
+            depth_format,
+            colour_format,
+            state,
+            view_exposure,
+            indices_reversed,
+            use_probes,
+            false,
+        )
+    }
+
+    fn create_with_position(
+        device: &RenderDevice,
+        mesh: &MeshVertexBufferLayoutRef,
+        depth_format: TextureFormat,
+        colour_format: TextureFormat,
+        state: crate::render_state::RenderState,
+        view_exposure: bool,
+        indices_reversed: bool,
+        use_probes: bool,
+        host_space: bool,
     ) -> Result<Self, String> {
         let raster = crate::render_state::raster_state(&state);
         if raster.antialiased_line || raster.multisample {
@@ -153,7 +201,9 @@ impl WorldProbeColourProgram {
                 return Err(format!("world water requires device feature {feature:?}"));
             }
         }
-        let vertex = if use_probes {
+        let vertex = if use_probes && host_space {
+            WorldProbeVertexStage::for_model(device)
+        } else if use_probes {
             WorldProbeVertexStage::new(device)
         } else {
             WorldProbeVertexStage::without_probes(device)
@@ -240,7 +290,17 @@ impl WorldProbeColourProgram {
             label: Some("arkWater world probe colour"),
             source: ShaderSource::Wgsl(source.into()),
         });
-        let mesh = vertex_buffer_layout(mesh).map_err(|e| e.to_string())?;
+        let mesh = if use_probes && !host_space {
+            vertex_buffer_layout(mesh)
+        } else {
+            mesh.0.get_layout(&[if host_space {
+                bevy::mesh::Mesh::ATTRIBUTE_POSITION
+            } else {
+                super::super::shadow_pass::VEGETATION_POSITION
+            }
+            .at_shader_location(0)])
+        }
+        .map_err(|e| e.to_string())?;
         let (front_face, cull_mode) =
             super::super::pipeline_state::mesh_raster(&state, indices_reversed);
         let depth = super::super::pipeline_state::depth_stencil_gpu(&state, depth_format)?;
@@ -251,7 +311,9 @@ impl WorldProbeColourProgram {
             layout: Some(&layout),
             vertex: RawVertexState {
                 module: &vertex.module,
-                entry_point: Some(if use_probes {
+                entry_point: Some(if use_probes && host_space {
+                    "water_model_colour_vertex"
+                } else if use_probes {
                     "water_world_colour_vertex"
                 } else {
                     "water_world_colour_vertex_without_probes"

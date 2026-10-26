@@ -1,5 +1,7 @@
 //! 141288af0 hybrid broadphase point traversal. Tree construction, collision
 //! filters and exact shape queries remain the physics world's responsibility.
+#[path = "point_query/insertion.rs"]
+pub mod insertion;
 
 #[derive(Clone, Copy, Debug)]
 pub struct QuantizedBounds {

@@ -2,12 +2,16 @@
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
+pub use components::scheduling_bindings as component_scheduling;
 pub mod wind;
 pub mod machinery;
 pub mod physics_material;
 pub mod midnight;
 pub mod scene_motion;
 pub mod player;
+pub mod triggers;
+pub mod water;
+pub mod physics;
 
 /// FUN_140135f70 uses SIGNED byte comparisons for unquoted whitespace
 /// (140135ff0/140136028: CMP byte,0x20; JG/JLE). Treating a raw 0xa0 as
@@ -1156,9 +1160,23 @@ pub fn numeric_token_value(spelling: &str, flags: u32) -> Result<(u64, u32, u32)
 
 /// Decimal floating-vector branch of FUN_1402da730. A single value splats;
 /// two/three values leave the remaining lanes ZERO, not inherited defaults.
-/// Named-color lookup through DAT_14229c5a8 and integer/bool vector kinds are
-/// separate unresolved paths, explicitly not substituted here.
+/// Named-color lookup through DAT_14229c5a8 remains separate. Uint vectors
+/// share token/scoping rules but retain integer words instead of float bits.
+#[derive(Clone, Copy)]
+enum NumericVectorKind {
+    Float,
+    Uint,
+}
 fn float_vector_literal(parser: &mut Parser<'_>) -> Result<[u32; 4], String> {
+    numeric_vector_literal(parser, NumericVectorKind::Float)
+}
+fn uint_vector_literal(parser: &mut Parser<'_>) -> Result<[u32; 4], String> {
+    numeric_vector_literal(parser, NumericVectorKind::Uint)
+}
+fn numeric_vector_literal(
+    parser: &mut Parser<'_>,
+    kind: NumericVectorKind,
+) -> Result<[u32; 4], String> {
     let braced = parser.ahead == Some(Token::Open);
     let mut text = String::new();
     if braced {
@@ -1193,13 +1211,39 @@ fn float_vector_literal(parser: &mut Parser<'_>) -> Result<[u32; 4], String> {
             return Err(format!("Non numeric term in vector constant: {part:?}"));
         }
         let floating = number.contains(['.', 'e', 'E']) || number.ends_with(['f', 'F', 'l', 'L']);
-        if !floating && number.len() > 1 && number.starts_with('0') {
-            return Err(format!("unresolved nondecimal vector token {number:?}"));
-        }
-        *word = numeric_token_value(number, if floating { 0x100 } else { 2 })?.1;
-        if negative {
-            *word ^= 0x8000_0000;
-        }
+        *word = match kind {
+            NumericVectorKind::Float => {
+                if !floating && number.len() > 1 && number.starts_with('0') {
+                    return Err(format!("unresolved nondecimal vector token {number:?}"));
+                }
+                let value = numeric_token_value(number, if floating { 0x100 } else { 2 })?.1;
+                if negative {
+                    value ^ 0x8000_0000
+                } else {
+                    value
+                }
+            }
+            NumericVectorKind::Uint => {
+                let flags = if number.starts_with("0x") || number.starts_with("0X") {
+                    4
+                } else if number.starts_with("0b") || number.starts_with("0B") {
+                    0x10
+                } else if floating {
+                    0x100
+                } else if number.len() > 1 && number.starts_with('0') {
+                    8
+                } else {
+                    2
+                };
+                let value = numeric_token_value(number, flags)?.0 as u32;
+                //2da730 subtype2 leaves the initialized zero for a negative term.
+                if negative {
+                    0
+                } else {
+                    value
+                }
+            }
+        };
     }
     if parts.len() == 1 {
         let first = words[0];
@@ -1207,7 +1251,6 @@ fn float_vector_literal(parser: &mut Parser<'_>) -> Result<[u32; 4], String> {
     }
     Ok(words)
 }
-
 /// Read the numeric initializer, not the complete range/instance/attribute
 /// declaration. Native metadata does not clamp GetVector's four raw words.
 pub fn declaration_float_vector_default(text: &str) -> Result<[u32; 4], String> {
@@ -1229,6 +1272,18 @@ pub fn declaration_float_vector_default(text: &str) -> Result<[u32; 4], String> 
     float_vector_literal(&mut parser)
 }
 
+/// First component of a uint initializer, retaining integer vector words.
+pub fn declaration_uint_default(text: &str) -> Result<u32, String> {
+    let mut parser = Parser::new(text)?;
+    parser.expect(Token::Open)?;
+    if !parser.atom()?.eq_ignore_ascii_case("uniform")
+        || !parser.atom()?.eq_ignore_ascii_case("uint")
+    {
+        return Err("not a uint Uniform declaration".into());
+    }
+    let value = uint_vector_literal(&mut parser)?[0];
+    Ok(value)
+}
 /// Registered boolean Uniform initializers in the shipped declarations use
 /// decimal 0/1. Keep this separate from floating vector word representation.
 pub fn declaration_bool_default(text: &str) -> Result<bool, String> {
@@ -1408,8 +1463,28 @@ pub fn material_resource_parameters(
 /// parameter retains the numeric-only contract. Preserve duplicate order.
 pub fn material_float_parameters_with_stage_sort(
     text: &str,
+    is_parameter: impl FnMut(&str) -> bool,
+    resolve: impl FnMut(&str) -> Result<[u32; 4], String>,
+) -> Result<Vec<(String, [u32; 4])>, String> {
+    material_numeric_parameters(text, is_parameter, resolve, float_vector_literal)
+}
+/// Unsigned Uniform vectors use integer token words, including scalar splats.
+pub fn material_uint_parameters(
+    text: &str,
+    is_parameter: impl FnMut(&str) -> bool,
+) -> Result<Vec<(String, [u32; 4])>, String> {
+    material_numeric_parameters(
+        text,
+        is_parameter,
+        |name| Err(format!("unresolved uint reference {name}")),
+        uint_vector_literal,
+    )
+}
+fn material_numeric_parameters(
+    text: &str,
     mut is_parameter: impl FnMut(&str) -> bool,
     mut resolve: impl FnMut(&str) -> Result<[u32; 4], String>,
+    literal: fn(&mut Parser<'_>) -> Result<[u32; 4], String>,
 ) -> Result<Vec<(String, [u32; 4])>, String> {
     let mut parser = Parser::new(text)?;
     parser.expect(Token::Open)?;
@@ -1448,7 +1523,7 @@ pub fn material_float_parameters_with_stage_sort(
                 parser.advance()?;
                 resolve(&reference.trim_matches('"').to_ascii_lowercase())?
             } else {
-                float_vector_literal(&mut parser)?
+                literal(&mut parser)?
             };
             values.push((name, words));
         } else {
@@ -1461,7 +1536,6 @@ pub fn material_float_parameters_with_stage_sort(
     }
     Ok(values)
 }
-
 /// Decimal option defaults: 1402d9f10 case 12 calls 14013cb90 after the
 /// type/optional NotBakeable token. Other native numeric spellings remain
 /// explicit errors here, never a fabricated zero.

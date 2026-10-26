@@ -4,7 +4,15 @@
 use std::collections::BTreeMap;
 pub mod mass;
 pub mod physics_system;
+pub mod compound;
+pub mod body;
 pub mod polytope;
+pub mod shape;
+pub mod query_geometry;
+pub mod properties;
+#[cfg(test)]
+#[path = "physworld/shape_names_tests.rs"]
+mod shape_names_tests;
 
 #[derive(Debug)]
 pub struct PhysWorld {
@@ -389,11 +397,21 @@ pub fn physics_shape_kind(suffix: &str) -> u8 {
 }
 
 /// FUN_140145000 stops at either path separator when removing an extension.
-fn strip_shape_extension(path: &str) -> &str {
+pub(crate) fn strip_shape_extension(path: &str) -> &str {
     match path.rfind(['.', '/', '\\']) {
         Some(index) if path.as_bytes()[index] == b'.' => &path[..index],
         _ => path,
     }
+}
+
+/// 00ee40/142150 scans bytes before the final character for the last dot,
+/// including dots before path separators. The search skips a final dot.
+pub fn shape_extension(path: &str) -> &str {
+    let path = path.split('\0').next().unwrap();
+    path.as_bytes()[..path.len().saturating_sub(1)]
+        .iter()
+        .rposition(|&byte| byte == b'.')
+        .map_or("", |dot| &path[dot + 1..])
 }
 
 /// FUN_140144e50 replaces an extension and accepts a leading dot in the new one.
@@ -454,10 +472,7 @@ pub fn physics_shape_key(
     let hd_name;
     let name = if hd {
         // Extraction scans all dots; stripping stops at a path separator.
-        let extension = name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension)
-            .unwrap_or("");
+        let extension = shape_extension(name);
         hd_name = format!("{}_hd.{extension}", strip_shape_extension(name));
         &hd_name
     } else {
@@ -2152,7 +2167,7 @@ mod tests {
             );
             count += 1;
         }
-        assert_eq!(count, 1128);
+        assert_eq!(count, 1143);
         assert_eq!(
             physics_shape_key("models/fence.blueprint\0ignored", 0, [1.0; 3], 0.01, true),
             Some("models/fence_hd.blueprint.hkt._100_100_100.10".into())

@@ -84,6 +84,28 @@ impl ParameterReader<'_> {
             .map_err(|e| format!("{name}: {e}"))
     }
 
+    /// Material render parameters have a distinct resource kind from images.
+    /// A null material must remain absent; it does not select a default image.
+    pub fn material_source(&self, name: &str) -> Result<Option<String>, String> {
+        let value = if let Some(value) = self.parameters.parameter(name) {
+            value.trim().trim_matches('"').to_owned()
+        } else {
+            let declaration = self.declaration(name)?;
+            let tokens = entities::declaration_lexemes(&declaration)?;
+            match tokens.as_slice() {
+                ["{", kind, material, "}"] if kind.eq_ignore_ascii_case("Material") => {
+                    (*material).to_owned()
+                }
+                _ => {
+                    return Err(format!(
+                        "{name}: unresolved material initializer {declaration}"
+                    ))
+                }
+            }
+        };
+        Ok((!matches!(value.as_str(), "0" | "NULL") && !value.is_empty()).then_some(value))
+    }
+
     /// Registered image initializers, including cube and array resources. Preserve image
     /// options in the source identity: the installed noise map's alias ends
     /// in `.tga$uncompressed`, not the ordinary `.tga` image.

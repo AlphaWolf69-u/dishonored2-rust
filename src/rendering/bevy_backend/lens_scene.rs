@@ -35,13 +35,16 @@ use bevy::render::{
 
 pub(super) struct LensImages<'a> {
     dirt: [&'a TextureView; 2],
+    profiles: [&'a TextureView; 2],
     black: &'a TextureView,
+    pre_dof: Option<&'a TextureView>,
 }
 impl<'a> LensImages<'a> {
+    pub fn with_pre_dof(mut self, source: Option<&'a TextureView>) -> Self {
+        self.pre_dof = source;
+        self
+    }
     pub fn resolve(frame: &LensFrame, images: &'a RenderAssets<GpuImage>) -> Result<Self, String> {
-        if !frame.settings.skip_lens_flares {
-            return Err("enabled lens flares await their full HDR producer".into());
-        }
         if !frame.camera_axis.is_finite() {
             return Err("lens camera axis is invalid".into());
         }
@@ -58,7 +61,9 @@ impl<'a> LensImages<'a> {
         };
         Ok(Self {
             dirt: [image(&frame.dirt.from)?, image(&frame.dirt.to)?],
+            profiles: [image(&frame.profile.from)?, image(&frame.profile.to)?],
             black: image(&frame.black)?,
+            pre_dof: None,
         })
     }
 }
@@ -66,7 +71,9 @@ pub(super) struct LensView {
     display: ToneMappingPass,
     bloom: Option<BloomChain>,
     bloom_views: Vec<BloomViewParameters>,
-    key: Option<([u32; 2], i32, i32, i32, u32)>,
+    half_hdr: Option<super::colour_downscale::HdrDownscale>,
+    flares: Option<super::lens_flare::FlareChain>,
+    key: Option<([u32; 2], i32, i32, i32, u32, i32)>,
 }
 impl LensView {
     pub fn new(device: &RenderDevice, format: TextureFormat) -> Self {
@@ -74,6 +81,8 @@ impl LensView {
             display: ToneMappingPass::new_with_lens(device, format),
             bloom: None,
             bloom_views: Vec::new(),
+            half_hdr: None,
+            flares: None,
             key: None,
         }
     }
@@ -91,6 +100,7 @@ impl LensView {
             settings.source_mip,
             settings.target_mip,
             settings.flags(),
+            settings.hdr_buffer_format,
         );
         if self.key == Some(key) {
             return Ok(());
@@ -119,6 +129,26 @@ impl LensView {
             })
             .unwrap_or_default();
         self.bloom = schedule.map(|s| BloomChain::new(device, s)).transpose()?;
+        if !settings.skip_lens_flares {
+            //327270 allocates flare output at half depthAlphaDiv2;3263e0
+            // derives its temporary viewport from half hrBufferDiv2.
+            let half = crate::rendering::luminance::downsample_extent(full, settings.downsample)?;
+            let quarter = half.map(|v| (v / 2).max(1));
+            self.half_hdr = Some(super::colour_downscale::HdrDownscale::new(
+                device,
+                half,
+                settings.hdr_buffer_format != 1,
+            )?);
+            self.flares = Some(super::lens_flare::FlareChain::new(
+                device,
+                half,
+                quarter,
+                [1., 1.],
+            )?);
+        } else {
+            self.half_hdr = None;
+            self.flares = None;
+        }
         self.key = Some(key);
         Ok(())
     }
@@ -133,6 +163,7 @@ impl LensView {
         programs: &LuminancePipelines,
         full: [u32; 2],
         camera_exposure: f32,
+        adapt_max: f32,
         parameters: &ToneMappingParameters,
         hdr: &TextureView,
         cube: &TextureView,
@@ -161,6 +192,59 @@ impl LensView {
             )?;
             bloom = chain.output();
         }
+        let mut flares = images.black;
+        let flare_enabled = if let Some(chain) = &mut self.flares {
+            let half = if let Some(source) = images.pre_dof {
+                source
+            } else {
+                let half = self.half_hdr.as_mut().ok_or("flare pre-DoF source unavailable")?;
+                half.record(
+                device,
+                queue,
+                encoder,
+                hdr,
+                full,
+                camera_exposure,
+                adapt_max,
+                frame.white_level,
+                exposure,
+                )?;
+                half.output()
+            };
+            let size = crate::rendering::luminance::downsample_extent(full, frame.settings.downsample)?;
+            let inputs = crate::rendering::colour_downscale::DownscaleInputs::new(size, [0.; 3])?;
+            let p = super::lens_flare::FlareParameters {
+                threshold: bevy::math::Vec4::new(
+                    inputs.texel_size[0],
+                    inputs.texel_size[1],
+                    frame.threshold[0],
+                    frame.threshold[1],
+                ),
+                ghost: frame.ghost.into(),
+                controls: bevy::math::Vec4::new(
+                    frame.profile.weight,
+                    frame.blur_radius as f32,
+                    frame.ghost_samples as f32,
+                    0.,
+                ),
+                ..Default::default()
+            };
+            let active = chain.record(
+                device,
+                queue,
+                encoder,
+                half,
+                images.profiles,
+                p,
+                frame.settings.flags(),
+            );
+            if active {
+                flares = chain.output();
+            }
+            active
+        } else {
+            false
+        };
         let lens = LensCompositeParameters {
             viewport: [1.0, 1.0, 0.0, 0.0],
             pixel: [
@@ -179,7 +263,7 @@ impl LensView {
             tint: [1.0, 1.0, 1.0, 0.0],
             flags: [
                 u32::from(bloom_enabled),
-                0,
+                u32::from(flare_enabled),
                 u32::from(frame.use_default_dirt),
                 0,
             ],
@@ -210,7 +294,7 @@ impl LensView {
                 bloom,
                 dirt_from: images.dirt[0],
                 dirt_to: images.dirt[1],
-                flares: images.black,
+                flares,
             },
         )
     }

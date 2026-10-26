@@ -22,6 +22,7 @@ pub(super) struct CameraScene {
     screen_fx: Option<Inputs>,
     tracks: [ParameterTrack<FloatParameter>; 33],
     controls: CameraRenderSettings,
+    controls_generation: u64,
     state: CameraSettings,
     initialized: bool,
 }
@@ -66,6 +67,7 @@ impl CameraScene {
             screen_fx: screen_fx.map(prepare).transpose()?,
             tracks: std::array::from_fn(|i| ParameterTrack::new(FloatParameter(values[i]))),
             controls: read_camera_render_settings()?,
+            controls_generation: crate::platform::console::shared().generation(),
             state,
             initialized: false,
         })
@@ -81,6 +83,11 @@ impl CameraScene {
         world_duration: f32,
         delta: f32,
     ) -> Result<CameraEffectsFrame, String> {
+        let generation = crate::platform::console::shared().generation();
+        if generation != self.controls_generation {
+            self.controls = read_camera_render_settings()?;
+            self.controls_generation = generation;
+        }
         if areas.len() != self.areas.len()
             || areas
                 .iter()

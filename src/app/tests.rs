@@ -1550,7 +1550,8 @@ fn authored_surface_gpu_pipelines_compile() {
             .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
     )
     .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-    .add_plugins(MaterialPlugin::<DecalMaterial>::default());
+    .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+    .add_plugins(super::decal_pass::DecalPassPlugin);
     super::sky_sprite::register_renderer(&mut app);
     bevy::asset::load_internal_asset!(
         app,
@@ -3357,6 +3358,7 @@ fn authored_surface_gpu_pipelines_compile() {
         ..default()
     };
     overlay.extension.surface.misc.z = 0;
+    overlay.extension.surface.misc.w |= 1 << 9;
     let overlay = app
         .world_mut()
         .resource_mut::<Assets<DecalMaterial>>()

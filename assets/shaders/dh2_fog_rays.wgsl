@@ -1,6 +1,8 @@
 // PostFX_GodRays_{Masking,Scattering}. Concatenate after dh2_shadow and
 // dh2_fog_math; the source is the separately rendered sun colour mask.
 override RAY_TURBULENCE:bool=false;
+override RAY_DEPTH_SCALE_X:f32=1.0;
+override RAY_DEPTH_SCALE_Y:f32=1.0;
 struct FogRayUniform {
     center:vec4<f32>, // projected NDC centre, same as mask Transform2
     controls:vec4<f32>, // density, decay, weight, unused
@@ -36,7 +38,7 @@ fn ray_interleave(position:vec2<f32>)->f32 {
     color+=textureGather(1,ray_source,ray_clamp,tc);
     return smoothstep(64.0/255.0,1.0,dot(color,vec4(0.25)));
 }
-@fragment fn fog_ray_scatter_fragment(in:RayVertex)->@location(0) vec4<f32> {
+fn fog_ray_scatter(in:RayVertex)->vec4<f32> {
     let density=fog_saturate(ray.controls.x);
     let delta=in.uv-ray_center_uv();
     let distance=length(delta)+ray.extent.z*0.5;
@@ -53,10 +55,13 @@ fn ray_interleave(position:vec2<f32>)->f32 {
     }
     if RAY_TURBULENCE {
         let noise=textureSampleLevel(ray_canvas,ray_clamp,in.uv,0.0).r;
-        let depth=textureSampleLevel(ray_depth,ray_clamp,in.uv,0.0).r
+        let depth=textureSampleLevel(ray_depth,ray_clamp,in.uv*vec2(RAY_DEPTH_SCALE_X,RAY_DEPTH_SCALE_Y),0.0).r
             -textureSampleLevel(ray_interior,ray_clamp,in.uv,0.0).r;
         let factor=fog_saturate((depth-world.turbulence.x)/(world.turbulence.y-world.turbulence.x));
         color=mix(color,mix(color,world.turbulence_color.rgb,noise),factor);
     }
     return vec4(color,0.0);
+}
+@fragment fn fog_ray_scatter_fragment(in:RayVertex)->@location(0) vec4<f32> {
+    return fog_ray_scatter(in);
 }

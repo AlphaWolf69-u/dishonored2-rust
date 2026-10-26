@@ -72,6 +72,7 @@ impl PreparedWaterValues {
 pub struct WaterViewParameters {
     floats: [[f32; 4]; 28],
     pub images: [String; 2],
+    pub rays: crate::rendering::environment_parameters::EnvironmentParameters,
 }
 impl ParameterSource for WaterViewParameters {
     fn vector(&self, name: &str) -> Result<[f32; 4], String> {
@@ -79,7 +80,8 @@ impl ParameterSource for WaterViewParameters {
             .iter()
             .position(|n| n.eq_ignore_ascii_case(name))
             .map(|i| self.floats[i])
-            .ok_or_else(|| format!("unprepared water uniform {name}"))
+            .map(Ok)
+            .unwrap_or_else(|| self.rays.vector(name))
     }
     fn scalar(&self, name: &str) -> Result<f32, String> {
         Ok(self.vector(name)?[0])
@@ -92,7 +94,7 @@ impl ParameterSource for WaterViewParameters {
             .ok_or_else(|| format!("unprepared water image {name}"))
     }
     fn boolean(&self, name: &str) -> Result<bool, String> {
-        Err(format!("water schema has no boolean uniform {name}"))
+        self.rays.boolean(name)
     }
 }
 pub struct WaterTracks {
@@ -159,6 +161,6 @@ impl WaterTracks {
                 .clone()
         });
         self.initialized = true;
-        WaterViewParameters { floats, images }
+        WaterViewParameters { floats, images, rays: Default::default() }
     }
 }

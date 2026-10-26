@@ -1452,7 +1452,23 @@ impl crate::Surface for Surface {
                 };
 
                 let swap_chain1 = swap_chain1.map_err(|err| {
-                    log::error!("SwapChain creation error: {err}");
+                    log::error!("SwapChain creation error: {err}; configuration={config:?}; descriptor={desc:?}");
+                    if let Ok(lib)=DxgiLib::new() {
+                        if let Ok(Some(queue))=lib.debug_interface1() {
+                            let count=unsafe {queue.GetNumStoredMessagesAllowedByRetrievalFilters(Dxgi::DXGI_DEBUG_ALL)};
+                            for index in count.saturating_sub(16)..count {
+                                let mut size=0;
+                                if unsafe {queue.GetMessage(Dxgi::DXGI_DEBUG_ALL,index,None,&mut size)}.is_err() {continue;}
+                                let mut storage=vec![0u64;size.div_ceil(8)];
+                                let message=storage.as_mut_ptr().cast::<Dxgi::DXGI_INFO_QUEUE_MESSAGE>();
+                                if unsafe {queue.GetMessage(Dxgi::DXGI_DEBUG_ALL,index,Some(message),&mut size)}.is_ok() {
+                                    let message=unsafe {&*message};
+                                    let bytes=unsafe {core::slice::from_raw_parts(message.pDescription,message.DescriptionByteLength)};
+                                    log::error!("DXGI diagnostic {}: {}",message.ID,String::from_utf8_lossy(bytes));
+                                }
+                            }
+                        }
+                    }
                     crate::SurfaceError::Other("swapchain creation")
                 })?;
 

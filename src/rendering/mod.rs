@@ -1,4 +1,5 @@
 pub mod bevy_backend;
+pub mod bounds;
 pub mod ambient_occlusion;
 pub mod environment;
 pub mod environment_effects;
@@ -17,6 +18,7 @@ pub mod viewport;
 pub mod view_history;
 pub mod colour_downscale;
 pub mod depth_of_field;
+pub mod decals;
 pub mod environment_reflection;
 pub mod filling;
 pub mod fog;

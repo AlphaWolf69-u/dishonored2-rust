@@ -37,16 +37,19 @@ pub(super) fn register(app: &mut App) {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<FogGpu>().add_systems(
             Core3d,
-            render_atmosphere
-                .in_set(AtmospherePass)
-                .in_set(Core3dSystems::MainPass)
-                .after(main_opaque_pass_3d)
-                .before(main_transparent_pass_3d),
+            (
+                prepare_atmosphere_depth.in_set(AtmosphereDepthPass)
+                    .in_set(Core3dSystems::MainPass).after(main_opaque_pass_3d).before(AtmospherePass),
+                render_atmosphere.in_set(AtmospherePass)
+                    .in_set(Core3dSystems::MainPass).before(main_transparent_pass_3d),
+            ),
         );
     }
 }
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct AtmospherePass;
+pub(crate) struct AtmospherePass;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct AtmosphereDepthPass;
 #[derive(SystemParam)]
 struct Resources<'w> {
     device: Res<'w, RenderDevice>,
@@ -59,7 +62,13 @@ struct Resources<'w> {
     program: Res<'w, SkyProgram>,
     capture_request: Res<'w, super::fog_capture::FogCaptureRequest>,
     water_frame: Option<Res<'w, super::water_scene::WaterSceneFrame>>,
+    water_selection: Option<Res<'w,super::water_scene::WaterViewSelection>>,
+    ocean_sources: Option<Res<'w, super::ocean_scene::OceanSources>>,
+    sun_ray_sources: Option<Res<'w, super::sun_rays::SunRaySources>>,
     water_materials: Option<Res<'w, super::water_scene::WaterMaterials>>,
+    water_stencil_materials: Option<Res<'w, super::water_scene::WaterStencilMaterials>>,
+    water_model_colours: Option<Res<'w,super::water_scene::WaterModelColours>>,
+    water_model_lighting: Option<Res<'w,super::water_scene::WaterModelLighting>>,
     water_meshes: Option<Res<'w, super::water_scene::WaterWorldMeshes>>,
     water_lighting: Option<Res<'w, super::water_scene::WaterLighting>>,
     water_images: Option<Res<'w, super::water_scene::WaterImageSources>>,
@@ -72,14 +81,32 @@ struct Resources<'w> {
     local_completion: Option<Res<'w, super::shadow_pass::LocalShadowCompletion>>,
 }
 #[derive(Resource, Default)]
-struct FogGpu {
+pub(super) struct FogGpu {
     current: Option<ViewFog>,
     reported: bool,
+    completed: Option<(Entity, u32)>,
+    depth_completed: Option<(Entity, u32)>,
+    prepared_revision: Option<(Entity, u64)>,
+}
+impl FogGpu {
+    pub(super) fn alpha_depth(&self, camera: Entity, frame:u32) -> Option<&super::water_depth_scene::WaterDepthScene> {
+        if self.depth_completed!=Some((camera,frame)) {return None;}
+        self.current.as_ref()?.water_depth.as_ref()
+    }
+    /// Borrow the completed same-frame depth producers. The post-process owner
+    /// cannot retain an old view after atmosphere preparation fails or resizes.
+    pub(super) fn camera_depth(&self, camera: Entity, frame: u32) -> Option<(&super::water_depth_scene::WaterDepthScene, &FogAttachment)> {
+        if self.completed != Some((camera, frame)) { return None; }
+        let view = self.current.as_ref()?;
+        Some((view.water_depth.as_ref()?, &view.fog.targets.depth))
+    }
 }
 #[derive(Default)]
 struct WaterSubmission {
     error: Option<String>,
     boat_error: Option<String>,
+    underwater_error: Option<String>,
+    underwater_active: bool,
     reported: bool,
 }
 #[derive(SystemParam)]
@@ -93,6 +120,9 @@ struct ViewFog {
     camera: Entity,
     water_depth: Option<super::water_depth_scene::WaterDepthScene>,
     water_colour: Option<super::water_colour_scene::WaterColourScene>,
+    ocean: Option<super::ocean_scene::OceanScene>,
+    underwater: Option<super::underwater_scattering::UnderwaterScatteringPass>,
+    sun_rays: Option<super::sun_rays::SunRays>,
     areas: Option<super::fog_volumes::AreaFogPass>,
     sun_program: Option<FogSunProgram>,
     sun_sprite: Option<SunSpritePass>,
@@ -148,6 +178,9 @@ impl ViewFog {
             camera: frame.camera,
             water_depth: None,
             water_colour: None,
+            ocean: None,
+            underwater: None,
+            sun_rays: None,
             areas: None,
             sun_program: None,
             sun_sprite: None,
@@ -187,47 +220,63 @@ fn sampled_depth(depth: &ViewDepthTexture) -> TextureView {
     })
 }
 
-fn render_atmosphere(
-    frame: Res<FogSceneFrame>,
-    resources: Resources,
-    shared: Option<Res<FogMaterialResources>>,
+#[derive(SystemParam)]
+struct AtmosphereParams<'w, 's> {
+    frame: Res<'w, FogSceneFrame>,
+    resources: Resources<'w>,
+    shared: Option<Res<'w, FogMaterialResources>>,
     views: Query<
+        'w,
+        's,
         (
-            &MainEntity,
-            &ViewTarget,
-            &ViewDepthTexture,
-            &ExtractedView,
-            &ExtractedCamera,
-            Option<&super::auto_exposure::MaterialExposure>,
+            &'static MainEntity,
+            &'static ViewTarget,
+            &'static ViewDepthTexture,
+            &'static ExtractedView,
+            &'static ExtractedCamera,
+            Option<&'static super::auto_exposure::MaterialExposure>,
         ),
         With<super::fog::FogCamera>,
     >,
-    skies: Query<&SkyInstance>,
-    interiors: Query<&InteriorInstance>,
-    water_instances: WaterInstances,
-    clock: Res<crate::gameplay::game_clock_runtime::GameplayViewClock>,
-    sampling: Option<Res<super::shadow_sampling::ParallelSamplingBuffer>>,
-    atlas_frame: Res<super::shadow_pass::ShadowSceneFrame>,
-    atlas_gpu: Res<super::shadow_pass::ShadowSceneGpu>,
-    mut capture: ResMut<super::fog_capture::FogCaptureGpu>,
-    mut gpu: ResMut<FogGpu>,
-    mut context: RenderContext,
-    mut last_error: Local<Option<String>>,
-    mut water_submission: Local<WaterSubmission>,
-) {
+    skies: Query<'w, 's, &'static SkyInstance>,
+    interiors: Query<'w, 's, &'static InteriorInstance>,
+    water_instances: WaterInstances<'w, 's>,
+    clock: Res<'w, crate::gameplay::game_clock_runtime::GameplayViewClock>,
+    sampling: Option<Res<'w, super::shadow_sampling::ParallelSamplingBuffer>>,
+    atlas_frame: Res<'w, super::shadow_pass::ShadowSceneFrame>,
+    atlas_gpu: Res<'w, super::shadow_pass::ShadowSceneGpu>,
+    capture: ResMut<'w, super::fog_capture::FogCaptureGpu>,
+    gpu: ResMut<'w, FogGpu>,
+    context: RenderContext<'w, 's>,
+    last_error: Local<'s, Option<String>>,
+    water_submission: Local<'s, WaterSubmission>,
+}
+fn prepare_atmosphere_depth(params: AtmosphereParams) {
+    submit_atmosphere(params, true);
+}
+fn render_atmosphere(params: AtmosphereParams) {
+    submit_atmosphere(params, false);
+}
+fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
+    let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut context,mut last_error,mut water_submission}=params;
+    let mut depth_prepared=false;
+
     let material_parameters = shared
         .as_ref()
         .and_then(|shared| resources.buffers.get(&shared.parameters));
-    if let Some(parameters) = material_parameters {
+    if let Some(parameters) = material_parameters.filter(|_|preparation) {
         // Queue readiness only after all same-view texture passes are recorded.
         // A pending/removed atmosphere must not leave yesterday's fog enabled.
         resources
             .queue
             .write_buffer(&parameters.buffer, 0, &[0; 16]);
     }
+    if preparation {gpu.completed=None;gpu.depth_completed=None;gpu.prepared_revision=None;}
     let Some(frame) = &frame.0 else {
         return;
     };
+    let depth_frame=resources.water_frame.as_ref().and_then(|f|f.0.as_ref()).map(|water|(frame.camera,water.matrices.frame));
+    if !preparation && gpu.prepared_revision!=Some((frame.camera,frame.revision)) {return;}
     let result = (|| -> Result<(), String> {
         let (main, target, depth, view, camera, material_exposure) =
             views.single().map_err(|error| error.to_string())?;
@@ -336,6 +385,7 @@ fn render_atmosphere(
                 TextureFormat::R8Unorm,
             );
         }
+        if preparation {
         if let Some((world, canvas, _)) = outputs {
             current.fog.update_shared(
                 &resources.device,
@@ -382,48 +432,6 @@ fn render_atmosphere(
             depth.view(),
             &current.mask.view,
         );
-        if let Some(sun) = &frame.sun_sprite {
-            if let Some(projection) = sun.parameters.project(
-                fog_view.clip_from_game_world(),
-                frame.settings.far_clip,
-                full,
-            )? {
-                let image = resources
-                    .images
-                    .get(&sun.image)
-                    .ok_or("sun sprite image awaits GPU preparation")?;
-                let uniform = FogSunMaskUniform::sprite(sun.parameters, projection, fog_view, full);
-                if current
-                    .sun_sprite
-                    .as_ref()
-                    .is_none_or(|pass| pass.state != sun.state)
-                {
-                    let program = current
-                        .sun_program
-                        .get_or_insert_with(|| FogSunProgram::new(&resources.device));
-                    current.sun_sprite = Some(SunSpritePass::new(
-                        &resources.device,
-                        program,
-                        sun.state,
-                        target.main_texture_format(),
-                        depth.texture.format(),
-                        uniform,
-                    )?);
-                }
-                let pass = current.sun_sprite.as_mut().unwrap();
-                pass.prepare(
-                    &resources.device,
-                    &resources.queue,
-                    uniform,
-                    &image.texture_view,
-                );
-                pass.record(
-                    context.command_encoder(),
-                    target.main_texture_view(),
-                    depth.view(),
-                    sun.parameters.additive,
-                );
-            }
         }
         // The native lookup owner runs even when this environment disables
         // world fog. Keep the same history available when a later area enables it.
@@ -497,6 +505,7 @@ fn render_atmosphere(
         {
             *plan
         } else {
+            if !preparation {return Err("fog curve awaits depth preparation".into());}
             let plan = lookup.record(
                 &resources.device,
                 &resources.queue,
@@ -520,48 +529,16 @@ fn render_atmosphere(
                 .lights
                 .iter()
                 .any(|p| f32::from_bits(p[13]) > 0.);
-        if frame.parameters.flags.x & 24 == 0
+        let no_atmosphere=frame.parameters.flags.x & 24 == 0
             && frame.areas.is_empty()
             && !scattering_enabled
             && water_instances.water.is_empty()
             && water_instances.boats.is_empty()
-        {
-            return Ok(());
-        }
-        let noise = resources
-            .images
-            .get(&frame.noise)
-            .ok_or("fog noise awaits GPU preparation")?;
-        let projected_height = resources
-            .images
-            .get(&frame.shadow.image)
-            .ok_or("fog projected height awaits GPU preparation")?;
-        let sampling = sampling
-            .as_ref()
-            .ok_or("fog parallel sampling owner unavailable")?;
-        let parallel = resources
-            .buffers
-            .get(&sampling.buffer)
-            .ok_or("fog shadow parameters await GPU preparation")?;
-        let atlas = if frame.parameters.flags.x & 64 != 0 {
-            if !atlas_gpu.completed_revision(atlas_frame.revision) {
-                return Err("fog shadows await current atlas submission".into());
-            }
-            let super::shadow_pass::ShadowSceneState::Ready { target_image, .. } =
-                &atlas_frame.state
-            else {
-                return Err("fog shadow atlas unavailable".into());
-            };
-            resources
-                .images
-                .get(target_image)
-                .ok_or("fog atlas awaits GPU preparation")?
-        } else {
-            resources
-                .images
-                .get(&sampling.unavailable_depth)
-                .ok_or("disabled shadow binding awaits GPU preparation")?
-        };
+            && !resources.water_frame.as_ref().and_then(|f|f.0.as_ref()).is_some_and(|f|
+                (f.ocean_environment.view.enabled && !f.ocean_render_settings.skip)
+                || f.ocean_environment.view.water_volume)
+;
+        if preparation {
         current.interiors.prepare(
             &resources.device,
             &resources.queue,
@@ -604,7 +581,15 @@ fn render_atmosphere(
                 )?);
             }
             let owner = current.water_depth.as_mut().unwrap();
-            owner.prepare(
+            owner.alpha.resize(&resources.device, extents);
+            let volume_stencil=if water_frame.ocean_environment.view.water_volume {
+                Some((resources.water_stencil_materials.as_deref()
+                    .ok_or("water boundary stencil registry unavailable")?,
+                    resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
+                        .ok_or("water volume programs unavailable")?.volume_underwater_state,
+                    depth.texture.format()))
+            } else {None};
+            owner.prepare_with_stencil(
                 &resources.device,
                 &resources.queue,
                 water_instances.water.iter(),
@@ -620,6 +605,7 @@ fn render_atmosphere(
                 &resources.allocator,
                 &resources.buffers,
                 water_frame.matrices,
+                volume_stencil,
             )?;
             if let Some(materials) = resources.boat_materials.as_ref() {
                 let pending = owner.boats.prepare(
@@ -649,14 +635,104 @@ fn render_atmosphere(
             } else {
                 owner.boats = default();
             }
-            owner.record_with_main(
+            owner.request_ocean_depth(water_frame.ocean_environment.view.enabled && !water_frame.ocean_render_settings.skip);
+            owner.begin_depth(
                 &resources.device,
                 context.command_encoder(),
                 &depth.texture,
-                Some(depth.view()),
             )?;
+            if current.ocean.is_some() || (water_frame.ocean_environment.view.enabled && !water_frame.ocean_render_settings.skip) {
+                if current.ocean.is_none() {
+                    current.ocean=Some(super::ocean_scene::OceanScene::new(&resources.device,&resources.queue)?);
+                }
+                let ocean=current.ocean.as_mut().unwrap();
+                ocean.prepare_with_selection(&resources.device,&resources.queue,context.command_encoder(),water_frame,
+                    resources.water_images.as_ref().ok_or("ocean image sources unavailable")?,full.to_array(),
+                    resources.water_selection.as_ref().and_then(|s|s.0.as_ref()))?;
+                let programs=resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
+                    .ok_or("ocean programs unavailable")?;
+                ocean.record_depth(&resources.device,&resources.queue,context.command_encoder(),water_frame,
+                    programs,&owner.water.attachment,&owner.motion,full.to_array())?;
+            }
+            owner.finish_depth(context.command_encoder(), full.to_array())?;
+            owner.record_alpha(&resources.device,context.command_encoder(),&depth.texture,Some(depth.view()))?;
+            if let Some(ocean)=current.ocean.as_mut() {
+                let programs=resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
+                    .ok_or("ocean programs unavailable")?;
+                ocean.record_underwater(&resources.device,&resources.queue,context.command_encoder(),water_frame,programs,owner,depth)?;
+            }
+            if water_frame.ocean_environment.view.water_volume {
+                let programs=resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
+                    .ok_or("water volume programs unavailable")?;
+                owner.record_volume_underwater(&resources.device,&resources.queue,
+                    context.command_encoder(),water_frame,programs.volume_underwater_state,depth)?;
+            }
         } else {
             current.water_depth = None;
+            current.ocean = None;
+        }
+            depth_prepared=true;
+            return Ok(());
+        }
+        if no_atmosphere {
+            let source=current.water_depth.as_ref().map_or(&current.depth_view,|owner|&owner.water.sample);
+            current.fog.record_linear_depth(&resources.device,context.command_encoder(),source);
+            return Ok(());
+        }
+        let noise = resources
+            .images
+            .get(&frame.noise)
+            .ok_or("fog noise awaits GPU preparation")?;
+        let projected_height = resources
+            .images
+            .get(&frame.shadow.image)
+            .ok_or("fog projected height awaits GPU preparation")?;
+        let sampling = sampling
+            .as_ref()
+            .ok_or("fog parallel sampling owner unavailable")?;
+        let parallel = resources
+            .buffers
+            .get(&sampling.buffer)
+            .ok_or("fog shadow parameters await GPU preparation")?;
+        let atlas = if frame.parameters.flags.x & 64 != 0 {
+            if !atlas_gpu.completed_revision(atlas_frame.revision) {
+                return Err("fog shadows await current atlas submission".into());
+            }
+            let super::shadow_pass::ShadowSceneState::Ready { target_image, .. } =
+                &atlas_frame.state
+            else {
+                return Err("fog shadow atlas unavailable".into());
+            };
+            resources
+                .images
+                .get(target_image)
+                .ok_or("fog atlas awaits GPU preparation")?
+        } else {
+            resources
+                .images
+                .get(&sampling.unavailable_depth)
+                .ok_or("disabled shadow binding awaits GPU preparation")?
+        };
+        //309430 places resource hash407bd17f (depthWater) in context slot7;
+        //307530 passes that attachment to30a800, rather than opaque depth.
+        if let Some(sun) = &frame.sun_sprite {
+            if let Some(projection) = sun.parameters.project(
+                fog_view.clip_from_game_world(),frame.settings.far_clip,full,
+            )? {
+                let owner=current.water_depth.as_ref().ok_or("sun depthWater awaits preparation")?;
+                let sun_depth=&owner.water.attachment;
+                let sun_depth_format=owner.water.texture.format();
+                let image=resources.images.get(&sun.image).ok_or("sun sprite image awaits GPU preparation")?;
+                let uniform=FogSunMaskUniform::sprite(sun.parameters,projection,fog_view,full);
+                if current.sun_sprite.as_ref().is_none_or(|pass|pass.state!=sun.state || pass.depth_format!=sun_depth_format) {
+                    let program=current.sun_program.get_or_insert_with(||FogSunProgram::new(&resources.device));
+                    current.sun_sprite=Some(SunSpritePass::new(&resources.device,program,sun.state,
+                        target.main_texture_format(),sun_depth_format,uniform)?);
+                }
+                let pass=current.sun_sprite.as_mut().unwrap();
+                pass.prepare(&resources.device,&resources.queue,uniform,&image.texture_view);
+                pass.record(context.command_encoder(),target.main_texture_view(),sun_depth,sun.parameters.additive);
+            }
         }
         if scattering_enabled {
             use super::fog_light_scattering::{
@@ -820,7 +896,110 @@ fn render_atmosphere(
                 &current.fog.targets.depth.view,
             )?;
         }
-        let fog_source = current.fog.record_sources(
+        let underwater_result=(|| -> Result<bool,String> {
+            use super::underwater_scattering::{UnderwaterInputs,UnderwaterScatteringPass};
+            let Some(water_frame)=resources.water_frame.as_ref().and_then(|f|f.0.as_ref()) else {return Ok(false)};
+            let volume=water_frame.ocean_environment.view.water_volume;
+            let ocean_underwater=current.ocean.as_ref().is_some_and(|o|o.state.view.enabled
+                && !water_frame.ocean_render_settings.skip
+                && water_frame.matrices.current.position[2]<o.state.view.water_level+o.state.view.max_wave_amplitude);
+            if !volume && !ocean_underwater {return Ok(false)}
+            let console=crate::platform::console::shared().read();
+            let scattering=!console.cvars.get("r_skipFogUnderWater").is_some_and(|v|v.int!=0);
+            let program=&resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
+                .ok_or("underwater program inputs unavailable")?.underwater_effect;
+            let selected=if volume {
+                let material=resources.water_selection.as_ref().and_then(|s|s.0.as_ref())
+                    .and_then(|s|s.surface_material.as_ref()).ok_or("underwater volume material publication pending")?;
+                Some(resources.water_materials.as_ref().ok_or("underwater material registry unavailable")?
+                    .0.get(material).ok_or("selected underwater material unavailable")?.as_ref().map_err(Clone::clone)?)
+            } else {None};
+            let mut blocks=vec![&program.parameters[0],&program.parameters[1]];
+            if let Some(material)=selected {blocks.push(&material.parameters[1]);}
+            let settings=crate::rendering::water::WaterSettings::resolve(
+                &crate::render_program::parameters::ParameterScopes{view:&water_frame.values,blocks:&blocks})?;
+            let mut ray_blocks=vec![&program.ray_parameters[0],&program.ray_parameters[1]];
+            if let Some(material)=selected {ray_blocks.push(&material.parameters[1]);}
+            let mut rays=crate::rendering::water::rays::WaterRaySettings::resolve(
+                &crate::render_program::parameters::ParameterScopes{view:&water_frame.values,blocks:&ray_blocks})?;
+            rays.enabled &= !console.cvars.get("r_skipGodRaysUnderWater").is_some_and(|v|v.int!=0);
+            drop(console);
+            if !scattering && !rays.enabled {return Ok(false)}
+            let display=resources.display.as_ref().and_then(|f|f.0.as_ref())
+                .filter(|f|f.camera==frame.camera).and_then(|f|f.lens.as_ref())
+                .ok_or("underwater HDR view parameters unavailable")?;
+            let exposure=resources.buffers.get(&material_exposure.ok_or("underwater adaptation owner unavailable")?.0)
+                .ok_or("underwater adaptation buffer awaits GPU preparation")?;
+            let (water_atlas,shadow)=match &atlas_frame.state {
+                super::shadow_pass::ShadowSceneState::Ready{target_image,receiver,..}=>{
+                    if !atlas_gpu.completed_revision(atlas_frame.revision) {return Err("underwater shadows await current atlas submission".into());}
+                    (&resources.images.get(target_image).ok_or("underwater shadow atlas unavailable")?.texture_view,
+                        super::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(receiver)?)
+                },
+                super::shadow_pass::ShadowSceneState::Disabled=>(&atlas.texture_view,default()),
+                _=>return Err("underwater shadows are not ready".into()),
+            };
+            let shadow=super::water_refraction::WaterShadowParameters{
+                world_to_shadow:shadow.world_to_shadow.map(|m|m.to_cols_array()),view_row:shadow.view_row2.to_array(),
+                slice_fars:shadow.cascade_fars.to_array(),sun_direction:shadow.sun_direction.to_array(),
+                shadow_size:shadow.shadow_size.to_array(),bias:shadow.bias.to_array(),
+                options:[u32::from(shadow.config.x!=0),shadow.config.z,0,0],
+            };
+            let compressed=display.settings.hdr_buffer_format!=1;
+            if current.underwater.as_ref().is_none_or(|u|!u.matches(full.to_array(),compressed,target.main_texture_format())) {
+                current.underwater=Some(UnderwaterScatteringPass::new(&resources.device,&resources.queue,
+                    full.to_array(),compressed,target.main_texture_format(),program)?);
+            }
+            let water_depth=current.water_depth.as_ref().ok_or("underwater alpha depth unavailable")?;
+            let water_level=if volume {water_frame.ocean_environment.view.surface_water_level}
+                else {current.ocean.as_ref().ok_or("underwater ocean state unavailable")?.state.view.water_level};
+            current.underwater.as_mut().unwrap().prepare(&resources.device,&resources.queue,context.command_encoder(),UnderwaterInputs{
+                frame:water_frame,settings:&settings,water_level,white_level:display.white_level,camera_exposure:camera.exposure,
+                adaptation:&exposure.buffer,shadow,atlas:water_atlas,
+                opaque:outputs.map_or(&depth.texture,|(_,_,opaque)|&opaque.texture),alpha:&water_depth.alpha,hdr:target,
+                images:resources.water_images.as_deref().ok_or("underwater images unavailable")?,
+                depth_programs:resources.depth_programs.as_deref().ok_or("underwater depth programs unavailable")?,
+                extent:extents.world.to_array(),
+                rays, ray_depth:&water_depth.water.sample, ray_shadow:&current.fog.targets.shadow.view,
+                jitter:[fog_view.jitter.x,fog_view.jitter.y], temporal:frame.shadow.temporal,
+                downsample:frame.settings.downsample, scattering,
+            })?;
+            if !water_submission.underwater_active {
+                info!(volume, scattering, rays=rays.enabled, shadowed_rays=rays.shadowing,
+                    ray_intensity=rays.intensity, water_level=if volume {water_frame.ocean_environment.view.surface_water_level} else {current.ocean.as_ref().unwrap().state.view.water_level},
+                    eye_z=water_frame.matrices.current.position[2], extinction=settings.extinction,
+                    inscattering=settings.inscattering, "Underwater effect inputs admitted");
+            }
+            Ok(true)
+        })();
+        let underwater_active=underwater_result.as_ref().copied().unwrap_or(false);
+        if underwater_active != water_submission.underwater_active {
+            info!(active=underwater_active, "Underwater effect submission changed");
+            water_submission.underwater_active=underwater_active;
+        }
+        let underwater_error=underwater_result.err();
+        if underwater_error!=water_submission.underwater_error {
+            if let Some(error)=&underwater_error {warn!("Underwater scattering pending: {error}");}
+            water_submission.underwater_error=underwater_error;
+        }
+        let underwater=current.underwater.as_ref().filter(|_|underwater_active);
+        let ray_projection=if crate::platform::console::shared().read().cvars.get("r_skipGodRays").is_some_and(|v|v.int!=0) {
+            None
+        } else {frame.rays.project(fog_view.clip_from_game_world(),frame.settings.far_clip,full)?};
+        if let Some(projection)=ray_projection {
+            let state=resources.sun_ray_sources.as_ref().and_then(|s|s.0).ok_or("sun ray program unavailable")?;
+            let alpha=&current.water_depth.as_ref().ok_or("sun ray water depth unavailable")?.alpha;
+            let programs=resources.depth_programs.as_deref().ok_or("sun ray depth programs unavailable")?;
+            if current.sun_rays.as_ref().is_none_or(|r|!r.matches(extents,state,alpha)) {
+                current.sun_rays=Some(super::sun_rays::SunRays::new(&resources.device,programs,extents,state,alpha,frame.settings.downsample,frame,fog_view,projection)?);
+            }
+            current.sun_rays.as_mut().unwrap().prepare(&resources.device,&resources.queue,context.command_encoder(),
+                frame,fog_view,projection,inverse.transpose().to_cols_array_2d(),target.main_texture_view(),
+                &current.fog.targets.shadow.view,&current.fog.targets.canvas.view,&current.fog.targets.interior.view,programs)?;
+        }
+        let sun_rays=current.sun_rays.as_ref().filter(|_|ray_projection.is_some());
+        let ray_visibility=sun_rays.map(|r|r.visibility()).or_else(||underwater.and_then(|u|u.visibility()));
+        let fog_source = current.fog.record_sources_with_underwater(
             &resources.device,
             &resources.queue,
             context.command_encoder(),
@@ -844,7 +1023,7 @@ fn render_atmosphere(
                     current.areas.as_ref()
                 },
                 settings: frame.settings,
-                ray_mask: None,
+                ray_mask: ray_visibility,
                 shadowed_volumes: false,
                 // 309430 ORs base-light bit5 across all admitted lights,
                 // including lights whose scattering value is zero. The TLF
@@ -861,8 +1040,13 @@ fn render_atmosphere(
                 parallel: &parallel.buffer,
             },
             &draws,
+            underwater.is_some_and(|u|u.shadowed_rays()),
+            sun_rays,
+            |encoder,target| {
+                if let Some(underwater)=underwater {underwater.record_with_visibility(encoder,target,sun_rays.map(|r|r.visibility()));}
+            },
         );
-        if !water_instances.water.is_empty() {
+        if !water_instances.water.is_empty() || current.ocean.as_ref().is_some_and(|o|o.draw_count()>0) {
             let result = (|| -> Result<_, String> {
                 use super::water_colour_scene::{
                     WaterColourResources, WaterColourScene, WaterColourView,
@@ -887,7 +1071,7 @@ fn render_atmosphere(
                             .0,
                     )
                     .ok_or("water adaptation buffer awaits GPU preparation")?;
-                let compressed = display.settings.hdr_buffer_format == 1;
+                let compressed = display.settings.hdr_buffer_format != 1;
                 if current.water_colour.as_ref().is_none_or(|owner| {
                     !owner.matches(
                         full.to_array(),
@@ -939,8 +1123,7 @@ fn render_atmosphere(
                     bias: shadow.bias.to_array(),
                     options: [u32::from(shadow.config.x != 0), shadow.config.z, 0, 0],
                 };
-                current.water_colour.as_mut().unwrap().record(
-                    WaterColourResources {
+                let water_resources=WaterColourResources {
                         device: &resources.device,
                         queue: &resources.queue,
                         materials: resources
@@ -967,8 +1150,8 @@ fn render_atmosphere(
                             .depth_programs
                             .as_ref()
                             .ok_or("water depth programs unavailable")?,
-                    },
-                    WaterColourView {
+                    };
+                let water_view=WaterColourView {
                         frame: water_frame,
                         white_level: display.white_level,
                         camera_exposure: camera.exposure,
@@ -989,9 +1172,20 @@ fn render_atmosphere(
                             .as_ref()
                             .and_then(|c| c.pyramid_for(depth.texture.id())),
                         shared_pyramid_expected: resources.coarse.is_some(),
-                    },
+                    };
+                if let Some(ocean)=current.ocean.as_mut() {
+                    ocean.record_colour(&water_resources,&water_view,
+                        resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref()).ok_or("ocean programs unavailable")?,
+                        full.to_array(),compressed,target.main_texture_format(),
+                        &current.water_depth.as_ref().unwrap().water.sample,context.command_encoder())?;
+                }
+                current.water_colour.as_mut().unwrap().record_with_models(
+                    water_resources,
+                    water_view,
                     water_instances.water.iter(),
                     context.command_encoder(),
+                    resources.water_model_colours.as_deref().ok_or("model water colour registry unavailable")?,
+                    resources.water_model_lighting.as_deref(),
                 )
             })();
             let error = match result {
@@ -1004,12 +1198,14 @@ fn render_atmosphere(
                     warn!("Water colour submission pending: {error}");
                 }
             }
+            let ocean_patches=current.ocean.as_ref().map_or(0,|owner|owner.draw_count());
             let draws = current
                 .water_colour
                 .as_ref()
-                .map_or(0, |owner| owner.draw_count());
+                .map_or(0, |owner| owner.draw_count())
+                +ocean_patches;
             if error.is_none() && draws > 0 && !water_submission.reported {
-                info!(draws, "Placed water colour submission active");
+                info!(draws, ocean_patches, "Water colour submission active");
                 water_submission.reported = true;
             }
             if error.is_some() {
@@ -1036,6 +1232,9 @@ fn render_atmosphere(
             atlas,
             &parallel.buffer,
             &current.fog,
+            current.water_depth.as_ref(),
+            resources.water_frame.as_ref().and_then(|f|f.0.as_ref()),
+            underwater_active,
         ) {
             warn!("Fog numeric capture failed: {error}");
         }
@@ -1068,6 +1267,14 @@ fn render_atmosphere(
     })();
     match result {
         Ok(()) => {
+            if preparation {
+                gpu.depth_completed=depth_frame.filter(|_|depth_prepared);
+                gpu.prepared_revision=depth_prepared.then_some((frame.camera,frame.revision));
+                *last_error=None;
+                return;
+            }
+            gpu.completed = resources.water_frame.as_ref().and_then(|f| f.0.as_ref())
+                .map(|water| (frame.camera, water.matrices.frame));
             if !gpu.reported {
                 info!(
                     world_fog = frame.parameters.flags.x & 24 != 0,
@@ -1079,7 +1286,7 @@ fn render_atmosphere(
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                warn!("Atmosphere submission pending: {error}");
+                warn!(preparation, "Atmosphere submission pending: {error}");
                 *last_error = Some(error);
             }
         }

@@ -21,8 +21,12 @@ pub(super) struct WaterScene {
     world: PreparedWaterValues,
     areas: Vec<(String, PreparedWaterValues)>,
     tracks: WaterTracks,
+    ray_world: crate::rendering::environment_parameters::EnvironmentParameters,
+    ray_areas: Vec<crate::rendering::environment_parameters::EnvironmentParameters>,
+    ray_tracks: crate::rendering::environment_parameters::EnvironmentTracks,
     camera: Option<Entity>,
     history: ViewMatrixHistory,
+    contacts: crate::rendering::environment_contacts::EnvironmentViewContacts,
 }
 impl WaterScene {
     pub(super) fn load(
@@ -31,6 +35,13 @@ impl WaterScene {
         areas: &[AreaEnvironment],
         materials: &WaterMaterials,
     ) -> Result<(Self, WaterImageSources), String> {
+        Self::load_with_model_colours(catalog,world,areas,materials,&crate::rendering::bevy_backend::water_scene::WaterModelColours::default())
+    }
+
+    pub(super) fn load_with_model_colours(
+        catalog:&archive::Catalog,world:&EnvironmentRenderParameters,areas:&[AreaEnvironment],
+        materials:&WaterMaterials,models:&crate::rendering::bevy_backend::water_scene::WaterModelColours,
+    )->Result<(Self,WaterImageSources),String> {
         let (_, ocean_render_settings) =
             crate::platform::game_settings::read_ocean_render_settings()?;
         let ocean_environment =
@@ -40,6 +51,15 @@ impl WaterScene {
             &EnvironmentRenderParameters { layers: Vec::new() },
             true,
         )?;
+        use crate::rendering::environment_parameters::{EnvironmentParameters, EnvironmentTracks};
+        let ray_world = EnvironmentParameters::capture(catalog, world, |read| {
+            crate::rendering::water::rays::WaterRaySettings::resolve(read)
+        })?;
+        let ray_defaults = EnvironmentParameters::defaults(catalog, &ray_world)?;
+        let ray_areas = areas.iter().map(|area| {
+            EnvironmentParameters::supplied(catalog, &area.parameters, &ray_world)
+        }).collect::<Result<Vec<_>, String>>()?;
+        let ray_tracks = EnvironmentTracks::new(&ray_defaults);
         let world = PreparedWaterValues::load(catalog, world, false)?;
         let prepared = areas
             .iter()
@@ -111,13 +131,14 @@ impl WaterScene {
                 admit(role, name)?;
             }
         }
-        for material in materials.0.values().filter_map(|v| v.as_ref().ok()) {
+        for (name,material) in materials.0.iter().filter_map(|(name,v)| v.as_ref().ok().map(|v|(name,v))) {
             let world = material.world_colour.as_ref().ok().and_then(Option::as_ref);
+            let model = models.0.get(name).and_then(|v|v.as_ref().ok()).and_then(Option::as_ref);
             for block in material.parameters.iter().chain(
                 world
                     .into_iter()
                     .flat_map(|source| source.parameters.iter()),
-            ) {
+            ).chain(model.into_iter().flat_map(|source|source.parameters.iter())) {
                 for parameter in &block.parameters {
                     for (role, name) in crate::rendering::water::IMAGE_PARAMETER_NAMES
                         .iter()
@@ -146,6 +167,30 @@ impl WaterScene {
                 }
             }
         }
+        // The ocean owns additional authored masks which placed water does not
+        // reference. Preserve the same archive identities as OceanEnvironment.
+        for name in ocean_environment.image_sources() {
+            if sources.skies.contains_key(name) || sources.caustics.contains_key(name) {
+                continue;
+            }
+            let image = if let Some(payload) = crate::material::intrinsic_image_pixels(name) {
+                let mut packed_format = 0x54a;
+                crate::texture::normalize_image_format(&mut packed_format)?;
+                crate::texture::InlineCompressedChain {
+                    info: crate::texture::BimageInfo {
+                        width: 16, height: 16, mip_count: 1, packed_format,
+                        format: crate::texture::ImageFormat::Rgba8,
+                    },
+                    payload,
+                }
+            } else {
+                let bytes = catalog.read(name).map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("missing ocean image {name}"))?;
+                crate::texture::compressed_inline_chain(&bytes)
+                    .map_err(|e| format!("{name}: {e}"))?
+            };
+            Arc::make_mut(&mut sources.ocean).insert(name.clone(), Arc::new(image));
+        }
         Ok((
             Self {
                 ocean_render_settings,
@@ -153,8 +198,12 @@ impl WaterScene {
                 world,
                 areas: prepared,
                 tracks,
+                ray_world,
+                ray_areas,
+                ray_tracks,
                 camera: None,
                 history: ViewMatrixHistory::default(),
+                contacts:crate::rendering::environment_contacts::EnvironmentViewContacts::new(0.),
             },
             sources,
         ))
@@ -180,9 +229,14 @@ impl WaterScene {
             .filter(|(_, a)| a.contains(eye))
             .map(|(i, a)| (i, &self.areas[i].1, a.blend_duration))
             .collect();
-        Ok(self
+        let mut values = self
             .tracks
-            .update(&self.world, world_duration, &active, delta))
+            .update(&self.world, world_duration, &active, delta);
+        let ray_areas = active.iter().map(|(i, _, duration)| {
+            (*i, &self.ray_areas[*i], *duration)
+        }).collect::<Vec<_>>();
+        values.rays = self.ray_tracks.update(&self.ray_world, world_duration, &ray_areas, delta)?.clone();
+        Ok(values)
     }
 
     fn camera_frame(
@@ -206,6 +260,9 @@ pub(super) fn publish_water_frame(
     frame_count: Res<bevy::diagnostic::FrameCount>,
     cameras: Query<(Entity, &GlobalTransform, &Projection), With<Camera3d>>,
     mut output: ResMut<WaterSceneFrame>,
+    mut physics:Option<ResMut<super::physics_scene::PhysicsScene>>,
+    volumes:Option<Res<super::state::EnvironmentVolumes>>,
+    mut selection:ResMut<crate::rendering::bevy_backend::water_scene::WaterViewSelection>,
     mut last_error: Local<Option<String>>,
 ) {
     let Some(water) = water.as_mut() else {
@@ -216,6 +273,7 @@ pub(super) fn publish_water_frame(
         return;
     }
     output.0 = None;
+    selection.0=None;
     let result = (|| -> Result<WaterFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
         let delta = clock.delta(3).ok_or("water gameplay clock unavailable")?;
@@ -244,8 +302,29 @@ pub(super) fn publish_water_frame(
             scene.environment_blend_duration,
             delta,
         )?;
+        let console=crate::platform::console::shared().read();
+        let ocean_render_settings=crate::platform::game_settings::OceanRenderSettings{
+            tile_size:console.cvars.get("r_oceanTileSize").ok_or("ocean tile cvar unavailable")?.float,
+            skip:console.cvars.get("r_skipOcean").ok_or("ocean skip cvar unavailable")?.int!=0,
+        };
+        let mut ocean_environment=water.ocean_environment.update(
+            &scene.area_environments,eye,scene.environment_blend_duration,delta)?;
+        let completed=if let Some(physics)=physics.as_mut() {
+            physics.resolve_view(&mut water.contacts,eye)?
+        } else {
+            water.contacts.selection.update(None);
+            false
+        };
+        let publication=water.contacts.selection.water_publication(|index|{
+            let volume=volumes.as_ref().and_then(|v|v.0.get(index)).ok_or("selected water profile absent")?;
+            Ok(volume.surface_material.as_deref().map(Arc::<str>::from))
+        })?;
+        publication.apply(&mut ocean_environment.view);
+        if completed {selection.0=Some(publication);}
         Ok(WaterFrame {
             camera,
+            delta_seconds: delta,
+            near_far: [projection.near, projection.far],
             parallel: scene.environment_lighting.and_then(|environment| {
                 Some((
                     crate::render_shadow::environment_sun_direction(
@@ -254,14 +333,9 @@ pub(super) fn publish_water_frame(
                     crate::render_light::sun_ground_color(environment.sun_color?),
                 ))
             }),
-            ocean_render_settings: water.ocean_render_settings,
+            ocean_render_settings,
             values,
-            ocean_environment: water.ocean_environment.update(
-                &scene.area_environments,
-                eye,
-                scene.environment_blend_duration,
-                delta,
-            )?,
+            ocean_environment,
             matrices,
             local_time: view_clock
                 .view_shader_times(crate::game_clock::RESET_VIEW_LOCAL_TIME_FLAG)?

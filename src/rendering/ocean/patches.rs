@@ -36,8 +36,13 @@ pub fn ocean_patch_bounds(
 
 /// Frustum branch of 140301320 through the existing 109df0/10a0d0 clip test.
 /// Supply the game's clip matrix for game-space bounds, without axis conversion.
-pub fn ocean_patch_visible(bounds: [[f32; 3]; 2], camera_clip: &[f32; 16]) -> bool {
-    !crate::render_model::transformed_aabb_clip_cull(camera_clip, bounds[0], bounds[1]).culled
+pub fn ocean_patch_visible(
+    bounds: [[f32; 3]; 2],
+    camera_clip: &crate::render_shadow::ShadowMatrix,
+) -> bool {
+    !crate::render_model::transformed_aabb_clip_cull(
+        camera_clip.as_flattened().try_into().unwrap(), bounds[0], bounds[1],
+    ).culled
 }
 
 pub fn ocean_projected_cell_area(patch: OceanPatch, view: OceanPatchView) -> f32 {
@@ -161,6 +166,58 @@ mod tests {
             .split_whitespace()
             .map(|v| u32::from_str_radix(v, 16).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn captured_nearby_ocean_view_keeps_surface_coverage() {
+        use bevy_math::{Mat4, Vec3, Vec4};
+        // Camera from collision-1792916072933. The flat surface/height extent
+        // are explicit synthetic inputs; no screenshot pixels are inspected.
+        let eye = Vec3::new(-31.709913, 188.40019, 2.8805392);
+        let forward = Vec3::new(0.95979583, -0.07928357, -0.26926923);
+        let up = Vec3::new(0.2684062, -0.02154933, 0.9630647);
+        let left = up.cross(forward);
+        let (horizontal, vertical) = crate::tome::render_fov_radians(80., 1366, 768, 1.).unwrap();
+        let right = 0.01 * (horizontal * 0.5).tan();
+        let top = 0.01 * (vertical * 0.5).tan();
+        let projection = crate::tome::render_perspective_rows(
+            [-right, right], [-top, top], 0.01, 7000.,
+        ).unwrap();
+        let view = crate::rendering::view_history::ViewMatrices::from_camera(
+            eye.to_array(), [forward.to_array(), left.to_array(), up.to_array()], projection,
+        );
+        let mut patches = Vec::new();
+        let metric = OceanPatchView {
+            eye: eye.to_array(), surface_height: 0., grid_size: 16,
+            projection_scale: [projection[0][0], projection[1][1]], pixel_area: (1366 * 768) as f32,
+        };
+        build_ocean_patches(
+            &mut patches,
+            OceanPatch { origin: [-7000.; 2], size: 14000., lod: 0, children: [-1; 4] },
+            10., 4096.,
+            |p| ocean_patch_visible(ocean_patch_bounds(p, 0., 1., 10.), &view.view_projection),
+            |p| ocean_projected_cell_area(p, metric),
+        ).unwrap();
+        let inverse = Mat4::from_cols_array_2d(&view.view_projection).transpose().inverse();
+        let mut samples = 0;
+        for y in 0..16 {
+            for x in 0..32 {
+                let ndc = Vec4::new((x as f32 + 0.5) / 16. - 1.,
+                    1. - (y as f32 + 0.5) / 8., 0.5, 1.);
+                let point = inverse * ndc;
+                let direction = point.truncate() / point.w - eye;
+                let t = -eye.z / direction.z;
+                if t <= 0. { continue; }
+                let surface = eye + direction * t;
+                if surface.distance(eye) > 500. { continue; }
+                samples += 1;
+                assert!(patches.iter().filter(|p| p.children == [-1; 4]).any(|p| {
+                    surface.x >= p.origin[0] && surface.x <= p.origin[0] + p.size
+                        && surface.y >= p.origin[1] && surface.y <= p.origin[1] + p.size
+                }), "missing nearby ocean at {surface:?}, screen sample {x},{y}");
+            }
+        }
+        assert!(samples > 100, "the captured view must exercise near surface coverage");
     }
 
     #[test]

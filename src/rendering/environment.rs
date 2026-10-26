@@ -1,6 +1,8 @@
 //! Camera-area render parameter selection (14088d060) and float blending
 //! (14088e220). Area containment is the shared trigger shape test.
 use crate::{archive, entities, gameplay::trigger_volume::TriggerVolume};
+mod volumes;
+pub use volumes::{load_environment_volumes, EnvironmentVolume};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvironmentSource {
@@ -132,24 +134,14 @@ pub fn load_area_environments(
 ) -> Result<Vec<AreaEnvironment>, String> {
     let mut result = Vec::new();
     for volume in entities::placed_environment_volumes(document) {
-        let parameters = entities::environment_render_parameters_with_inheritance(
-            &volume.id,
-            &volume.environment_decl,
-            |parent| {
-                catalog
-                    .read(&format!("generated/decls/env/{parent}.decl"))
-                    .map(|v| v.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
-                    .map_err(|e| e.to_string())
-            },
-        )?;
+        let resolved = volumes::resolve(volume, catalog)?;
         // 88d060 keeps water/IsWaterVolume volumes in a separate query result;
         // they do not override the ordinary environment stack.
-        if parameters
-            .scalar_parameter("water/IsWaterVolume")?
-            .is_some_and(|v| v != 0.0)
-        {
+        if resolved.is_water_volume {
             continue;
         }
+        let volume = resolved.placement;
+        let parameters = resolved.parameters;
         let model = volume
             .model
             .as_deref()

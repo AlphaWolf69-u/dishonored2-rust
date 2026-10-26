@@ -5,6 +5,8 @@ use bevy::render::{
     renderer::{RenderDevice, RenderQueue},
 };
 pub const SHADER_SOURCE: &str = concat!(
+    include_str!("../../../assets/shaders/dh2_glass_distortion.wgsl"),
+    "\n",
     include_str!("../../../assets/shaders/dh2_shader_math.wgsl"),
     "\n",
     include_str!("../../../assets/shaders/dh2_camera_effects.wgsl"),

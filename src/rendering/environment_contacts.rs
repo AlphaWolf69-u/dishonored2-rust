@@ -1,5 +1,11 @@
 //! 88d060's selection from an ordered, completed render-view collision query.
 //! Physics supplies hit order, class/component admission and world AABBs.
+mod resolve;
+mod view;
+pub use view::{EnvironmentViewContacts, WaterViewPublication};
+mod query;
+pub use query::EnvironmentViewQuery;
+pub use resolve::{resolve_contacts, ContactEntity};
 
 #[derive(Clone, Copy, Debug)]
 pub struct EnvironmentContact {

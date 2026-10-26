@@ -185,15 +185,38 @@ impl<Request, Hit: Copy> CollisionQueries<Request, Hit> {
     /// 0998c0/096610: FIFO work, skip cancelled jobs, mark completed only after
     /// their actual executor has returned. Appending hits leaves their order intact.
     pub fn resolve_pending(&mut self, mut execute: impl FnMut(&Request, &mut QueryHits<Hit>)) {
-        while let Some(index) = self.pending.pop_front() {
+        let result: Result<(), std::convert::Infallible> =
+            self.try_resolve_pending(|request, hits| {
+                execute(request, hits);
+                Ok(())
+            });
+        match result {
+            Ok(()) => (),
+            Err(error) => match error {},
+        }
+    }
+
+    /// Geometry decoding can fail in the host. Report that failure without
+    /// publishing an empty/partial completed query; leave its request pending.
+    /// Successful queries retain the verified FIFO and result-transfer rules.
+    pub fn try_resolve_pending<E>(
+        &mut self,
+        mut execute: impl FnMut(&Request, &mut QueryHits<Hit>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        while let Some(&index) = self.pending.front() {
             if self.slots[index].flags & 1 != 0 {
+                self.pending.pop_front();
                 self.release(index);
                 continue;
             }
             let slot = &mut self.slots[index];
-            execute(slot.request.as_ref().unwrap(), &mut slot.hits);
+            let mut hits = QueryHits::default();
+            execute(slot.request.as_ref().unwrap(), &mut hits)?;
+            slot.hits = hits;
             slot.flags |= 2;
+            self.pending.pop_front();
         }
+        Ok(())
     }
     /// 092630: pending queries leave both the caller's id and result buffer
     /// untouched. Completed queries consume the id and transfer ordered results.

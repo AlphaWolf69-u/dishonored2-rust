@@ -316,7 +316,7 @@ impl ShadowModelBoundsSources {
                 .all(|value| value.is_finite())
                 || (0..3).any(|axis| source.bounds[0][axis] > source.bounds[1][axis])
             {
-                return Err("shadow model owner has invalid prepared bounds".into());
+                return Err(format!("shadow model owner {} has invalid prepared bounds: {:?}",source.placement,source.bounds));
             }
             let mut active = false;
             for instance in &scene.instances[source.instances.clone()] {

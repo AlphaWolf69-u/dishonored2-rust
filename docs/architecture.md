@@ -73,7 +73,8 @@ Its integration tests exercise that handoff without a graphics window.
 `assets/entities/machinery/recipes.rs` resolves complete connected assemblies and
 shape mass frames directly from archives. `gameplay/machinery_world.rs` owns their
 bodies, fixed pivots, hinge alignment, angular limits, friction and motor history.
-`app/machinery.rs` advances that owner from the game clock and queues rigid pose
+`app/machinery.rs` advances that owner from the two physics timespaces (clock
+groups 3 and 4, exactly the two entries supplied by `8af460`) and queues rigid pose
 deltas before transform propagation, visibility and shadow collection. Meshes
 and per-body solver storage are reused. Missing entity endpoints retain the
 world anchor, following the constraint body's initialization rule.
@@ -177,6 +178,13 @@ pipeline and numeric checks. Never modify the Cargo registry cache. The original
 game's material and shadow logic belongs in project code, with dependency patches
 limited to the hooks, GPU data layouts and resource lifecycle fixes needed to
 express it reliably.
+
+Winit's Windows fullscreen style retains `WS_POPUP` after removing overlapped
+decorations. DXGI rejects a topmost fullscreen HWND with neither a popup style
+nor any overlapped styles. Display settings resolve the requested monitor to its
+Bevy entity after monitor registration, rather than selecting an unavailable
+monitor during initial window creation. Both fixes preserve the requested
+resolution, refresh rate and presentation policy.
 
 The DX12 HAL pools completed native command lists together with their dedicated
 command allocators. Keeping one allocator per logical encoder spreads the
@@ -1135,8 +1143,63 @@ distance changes and early termination. A retained stack avoids per-query
 allocation after warming up. Its visitor delegates collision filters and exact
 shape queries; visiting a body candidate does not itself create a contact.
 The 268-case fixture executes the original traversal on synthetic packed trees.
-Runtime tree construction, body buffers and shape dispatch still need wiring
-before this can supply gameplay environment contacts.
+The tree owner is supplied by `gameplay::broadphase`. Runtime body buffers,
+shape bounds and exact shape dispatch still need wiring before this supplies
+gameplay environment contacts.
+
+`point_query::insertion` implements insertion-leaf selection and branch-bound
+refresh. Its fixture compares 1,024 selections and 64 complete tree refreshes
+with executed game routines, including unsigned distance wrap, strict limits,
+tie order and unchanged leaf metadata. The broadphase owner uses these helpers
+for slot allocation, leaf-block insertion and splitting.
+Leaf bodies use the standard library's stable sort by lower X endpoint,
+equivalent to the game's insertion sort and checked against 128 executions
+with ties and complete body IDs.
+
+`broadphase::HybridTree` retains nodes, parents, branch counts, free-slot stacks
+and leaf blocks. Single and batch insertion preserve the factory's 29-entry
+limit, node growth and block reuse. Splitting retains midpoint partitioning,
+deferred leaf publication and the rebuilt-leaf quicksort's exact equal-key
+swaps. A 53-scenario fixture compares complete graphs, body locations and free
+lists with executed insertion and rebuild routines, including 2,048-body cases.
+
+`HybridBroadphase` owns the selected default five-layer configuration and
+classifies actual runtime flags and status. Its layer settings and classifier
+match 4,096 executions. Six complete manager comparisons cover empty, single,
+bulk, repeated and chunked additions, including each layer's dirty state. These
+are insertion operations; removal, moving-body updates, collision-pair
+generation and lifecycle signals remain with the physics world.
+
+`BroadphaseQuantization` derives both the point-query grid and packed coordinate
+layout from world bounds. It retains the two Y/Z packing layouts, byte shuffles,
+clamps and zero-extent controls. All 69 defined output words match 512 executions
+of the setup routine, including degenerate and nonfinite input cases. Producing
+shape bounds and applying the packed conversion to runtime bodies remain the
+next connection to this owner.
+
+`PackedQuantization::pack_bounds` now implements static-body padding, clamping,
+integer conversion and packed coordinates. `query_bounds` decodes the tree's
+coarse bounds. A 1,024-case fixture executes the game's static preparation and
+its actual tree insertion, comparing both representations. The signed integer
+conversion is shared through `float`; rendering retains its existing wrapper.
+
+`PackedQuantization::unpack_bounds` separately decodes the body's world-space
+bounds, including the source integer padding and per-axis quantization rules.
+These are the bounds read by the water contact path, rather than the raw
+authored shape box. All four minimum/maximum lanes match 1,536 executions of
+the game's decoder, including degenerate world configurations and empty boxes.
+
+Compound assets retain their authored local AABB and common `ShapeHeader`.
+`shape_transform::transform_bounds` implements the compound bounds virtual
+operation, including unchanged empty boxes and all four output lanes, verified
+against 2,048 executions. The installed trigger audit checks that every one of
+5,576 authored bounds encloses its compound tree root.
+
+Serialized shape key widths and instance material tags use the file's inherited
+field schema. Their offsets differ from expanded runtime objects; the readers
+no longer use runtime offsets for these fields. The installed compound audit
+covers 152,215 shapes and 1,488,370 reachable instances across all 36 worlds,
+including the invariant that every instance fits its compound key width.
 
 `gameplay::collision_filter` shares the body's five-bit layer and required-flag
 predicate with shape-pair filtering. `collision_dispatch` constructs the
@@ -1172,12 +1235,299 @@ The general distance solver, body transforms and ordered runtime contact owner
 still need integration before ocean or underwater selection can consume these
 shapes.
 
+`gameplay::collision_queries` owns the 4,096-slot generation pool, submission
+FIFO, cancellation, completion and result transfer. Its exclusive owner
+linearizes the game's worker operations; it does not introduce a second thread
+pool. Pending cancellation keeps a slot occupied until the worker drains it.
+The all-hit collector preserves traversal order and duplicates. A synthetic
+fixture checks 12,222 transitions through the installed query manager.
+
+`gameplay::compound_query` traverses the compound shape's float BVH with a
+retained stack, left-first equal-distance ordering and the optional node mask.
+This mask indexes tree nodes across 32-bit words, independently of instance
+enabled flags and nested shape masks. Executed fixtures cover 640 unmasked and
+2,560 masked queries, including nonfinite distances and deferred nodes after
+collector-distance changes. The instance visitor still owns tags, collision
+filters, transforms and exact geometry; traversal alone never publishes a hit.
+
+The opt-in `physworld::compound_shape` reader supplies the authored tree and
+instance records directly to this traversal without duplicating movement data.
+The installed-level audit covers 152,215 compounds and 1,488,370 instances across
+36 levels. Only reachable nodes participate in topology validation; free-list
+storage remains intact.
+
+Compound query preparation shares the verified `shape_transform` arithmetic and
+`convex_support` bounds/radius rules. Executed comparisons cover 1,024 complete
+query-preparation cases and 1,536 admitted child-instance preparations, including
+key prefixes, parent scaling and translation before inverse rotation. These
+owners prepare real dispatch inputs; tag/filter callbacks, geometry dispatch and
+world body publication still need connection before they produce view contacts.
+
+The convex support module also preserves support-vertex tie ordering and
+post-solver distance publication. Its 1,024 support-pair and 1,536 publication
+cases execute the corresponding installed routines. Publication tests control
+the solver-result boundary. The cold point-distance path now runs the game's
+point, segment, triangle and tetrahedron reductions and its penetration path;
+4,096 complete executed point queries cover interior, boundary and exterior
+positions, rotated targets and vertex counts1..64. Another 1,024 publication
+comparisons cover radii and strict distance thresholds. General convex/convex
+distance queries still require their distinct feature branches.
+
+Penetration support packets retain the target vertex's index bits separately
+from its transformed coordinates. Face and horizon owners preserve traversal
+order, opposite-edge links and retired-face reuse; hull expansion keeps the
+game's 90-face bound and capacity rollback. Its comparisons cover single
+updates and repeated growth through that limit. The seed state machine handles
+point, segment, triangle and tetrahedron inputs, including degenerate contacts.
+The penetration search composes these owners with face selection, witness
+publication and the game's deterministic retry rotations. Comparisons execute
+3,739 complete installed penetration searches, including rotated convex pairs
+and retry exhaustion. The penetration feature wrapper pads input simplexes,
+compacts repeated vertex IDs and retains the game's directional fallback after
+retry exhaustion. Another 2,176 executed wrapper cases cover its returned
+features, contacts and normals. Point distance and radius-adjusted publication
+are connected through `distance::query_point`. Runtime body publication remains
+unconnected; these helpers alone do not produce gameplay water contacts.
+
+`gameplay::collision_hit` transforms accepted local closest points into world
+coordinates and publishes their body, material, filter, key and user-data
+fields. Its 1,024 executed comparisons cover missing body IDs and rejected
+geometry as well as successful publication. The typed packet retains defined
+fields without reproducing unspecified padding from the source's112-byte
+record. Dispatch selection and ordered collection remain with the query owner.
+
+`closest_point_query::prepare_transforms` reproduces the query-to-target frame
+and collector-distance clipping before dispatch. Its 1,024 comparisons execute
+the installed preparation routine, including nonfinite distance inputs.
+
+`assets::physworld::body` reads inherited body creation fields from the installed
+schema. The audit covers all530 bodies in36 physics worlds, preserving item
+references, filters, transforms and attachment indices. These serialized
+positions and reserved IDs do not establish runtime body identity. The trigger
+body recipe separately applies `arkCpntTrigger` collision settings, water/wind
+component rules, material, user-data handle and keyframed motion;256 executed
+component cases verify its complete defined body parameters.
+
+`assets::entities::triggers` resolves map component declarations, direct inherited
+declarations and inline overrides, preserving independent water/wind component
+presence. Its installed audit covers 5,576 triggers across all 36 worlds,
+including every placed environment volume. `trigger_shape_request` reproduces
+the factory's case-sensitive `.lwo` selection, generated map/entity paths and
+choice of entity versus identity rotation. Another 256 executions of the
+installed factory verify resource names and the resulting body parameters.
+Missing entity positions use the constructor's zero position; missing basis
+columns retain its identity basis. Trigger shape scale remains one.
+
+`TriggerAssets` owns the resolved HKX bytes and schema, sharing resource files
+between placements while keeping every file's item references local. It retains
+compound trees, instance transforms and shape tags for query dispatch. Resource
+indices are not runtime body IDs. Runtime allocation, broadphase insertion and
+entity ownership remain with the world owner; these asset readers alone do not
+establish gameplay water contacts.
+
+`TriggerShapeAsset::query_shapes` retains decoded compound trees and convex
+polytopes once per resource. Child references remain file-local item indices;
+enabled instances retain their transforms and tags, and polytope connectivity
+is preserved. Unsupported shape classes return an explicit error. This is
+query input storage, not a replacement for world admission or hit collection.
+
+`rendering::environment::load_environment_volumes` retains resolved ordinary
+and water profiles together with their authored placement. The existing
+ordinary-area loader uses the same profile resolver and still excludes water
+volumes. The installed audit covers all 36 worlds: 2,812 ordinary profiles and
+four water profiles, each with an actual trigger owner. Classification does
+not establish containment, activation or a water surface height.
+
+`gameplay::collision_body` owns the runtime query-body record and its selected
+shape handles, motion-kind flags, cached frame and physics LOD flags. Its 512
+executed comparisons preserve source W lanes, status bits and multi-slot shapes.
+`body_storage` owns the permanent static anchor, generation-tagged reservations
+and registered property-bit clearing. Three constructors and 80 reservations
+cover generation wrap, record clearing and retained auxiliary arrays.
+The per-body change-index array maps into owned pending change records.
+Addition queues preserve generation-tagged IDs, duplicate requests and the
+last recorded queue position; static bounds changes set the shared dirty bit.
+Another 512 executed operations cover immediate static and deferred additions.
+`deactivation::queue_attached_bodies` follows the existing attachment ring into
+the pending deactivation queue, matching 512 complete game helper executions.
+Queue consumption, world activation and actor callbacks remain separate work.
+Another 1,024 executed comparisons cover motion-to-body rotation and center,
+the COM-centered bounding radius and speed LOD updates. `body_storage::link_motion`
+owns the circular attachment list and raw zero-inverse-mass classification;
+40 original attachment batches cover 248 bodies, including keyframed states.
+
+Body creation uses resolved asset references rather than serialized indices as
+pointers. The manager owns copied name bytes, the shared optional mass/motion
+property array and mass-distribution overrides. The creation method connects
+these to the runtime record in the game's call order. The numeric checks cover
+768 sidecar operations and 256 complete initialization calls, including null
+names, exceptional mass values and retained/replaced distributions. Distribution
+fields follow the installed `hknpMassDistribution` schema.
+
+The manager's `mass_frame` resolves its channel-one shape and retained sidecars
+before the shared mass selector. Another 1,024 complete executed manager calls
+cover slot selection, missing overrides, distributions and generation masking.
+Principal mass data can also produce the full rotated inertia tensor, preserving
+all twelve tensor lanes; 1,024 executed conversions cover that boundary.
+
+Mass tensors support the shipped rotation and signed parallel-axis operations.
+Compound combination retains input order, four center lanes and twelve tensor
+lanes; invalid total mass preserves the supplied output. Its 256 executed batch
+comparisons include empty inputs and groups of up to 64 elements. Principal-frame
+conversion uses the original bounded Jacobi iteration, eigenvalue clamp and
+normalized cross-product axis reconstruction, with no eigenvalue sorting or
+replacement axes. Another 1,024 comparisons cover iteration limits, diagonal,
+degenerate and asymmetric inputs through the complete conversion. Stored NaN
+words require the shared ordered arithmetic helpers and x86 division.
+
+`assets::physworld::properties` retains schema-resolved property entries and
+their last-matching-key precedence. The mass selector preserves the original's
+cached, calculated and authored-distribution branches, including unordered
+overrides. The installed body-shape audit covers all 530 records in 36 worlds;
+those serialized roots contain no embedded property entries. Numerical fixtures
+separately cover 768 property searches and 768 complete mass selections.
+
+`motion_info` connects creation data to the actual mass frame and reuses
+`rigid_body::BodyPose` for world composition. `motion` packs inverse mass and
+limits and transforms angular velocity to the principal frame. `space_cells`
+preserves the splitter's four-lane assignment, tie rules and pair indices.
+Executed comparisons cover 512 creation records, 512 runtime motions, 1,024 cell
+queries and all 1,089 pair-table entries. Existing machinery pose comparisons
+still pass after sharing its composition helper.
+Motion can read and restore world angular velocity across a principal-frame
+change without discarding W. The pose comparison aligns equivalent quaternion
+signs and tests center XYZ separately. Each has 1,024 executed comparison cases.
+`motion_mass` connects those operations to the attached-body ring, mass resource
+resolution and shape-bound dispatch. Single bodies retain their principal frame;
+multiple bodies combine full tensors before conversion. The world angular
+velocity and cached body frames follow the original pose-change decision.
+Its 256 complete executed comparisons cover shuffled rings of up to 17 bodies,
+fixed bodies, equal/sign-equivalent poses and changed frames. Resource ownership
+and world lifecycle events remain with the query-world integration.
+Executable reflection identifies the motion velocity cage, integration factor,
+space-splitter weight and previous-step velocities explicitly. The cage is three
+bfloat16 lanes beside the separate integration-factor half-word, not solver
+links. Body LOD flags and preset quality IDs remain distinct fields.
+
+`collision_body` also produces moving-body bounds from the world's solver-step
+inputs. `motion_expansion` preserves the unrefined speed estimates, packed
+velocity cage and angular padding. `predicted_frame` composes the stepped motion
+with its attached body frame, reusing the verified quaternion normalization and
+basis conversion. `swept_bounds` selects ordinary, spherical-displacement or
+predicted-rotation expansion from the requested physics-quality flags, updates
+the contact-distance cache, and marks changed packed bounds. Shape bounds come
+from the caller's actual channel-three shape dispatch. Three independent sets
+of 1,024 executed comparisons cover these routines; the complete bounds set
+also checks clamping and repeated unchanged updates. These primitives are not
+yet a connected simulation world: activation, lifecycle signals, filtering and
+ordered water-contact publication still need their owners.
+
+`body_attachment` connects the circular motion list, keyframed flags, shape-based
+motion limits, local motion frames, swept bounds, radius cache, TIM distance and
+physics LOD in the game's order. Its required world interface owns actual shape
+dispatch and deactivation registration; it supplies no substitute implementations.
+An additional 1,024 complete executed attachment cases cover all 32 presets and
+eight quality configurations, active bounds, limit changes and world call order.
+`deactivation` initializes the meaningful per-motion reference fields and appends
+body IDs to assigned islands without sorting or deduplication. Its tests compare
+1,024 partial-record initializations and 512 cumulative island registrations.
+These operations use the same `MotionDeactivation` record as the per-motion
+stillness checks. Island lifecycle and the complete world owner remain open.
+
+`signal` owns the linked observer slots needed by world and mutable-shape
+notifications. Subscriptions prepend without deduplicating; removal matches the
+first subscriber/callback pair and defers destruction during emission. Traversal
+captures the next slot before invoking a callback, preserving subscriptions and
+removals performed by that callback. Stable handles replace process pointers,
+and removed slots are reused. A 512-operation comparison executes the shipped
+subscription/removal routines and the world body's actual observer traversal,
+checking ordering, flags and callback edits. Payload dispatch remains the
+responsibility of the query-world/resource owner.
+
+`shape_registry` groups body IDs by mutable root shape and owns the two observer
+subscriptions for each registration. Stable world and entry handles preserve
+sharing between worlds. Mutation flags accumulate, destruction detaches both
+subscriptions, and explicit world release removes callbacks before the shape
+resources are released. Removing a body's first matching ID swaps the last ID
+into its slot; an empty registration detaches and returns to the recycle pool.
+Executable comparisons cover 534 lifecycle operations and a further 540
+operations including removal, duplicate IDs, pool reuse, two worlds sharing
+shapes, destruction and post-release notifications. Pending-change processing
+remains unimplemented. The runtime world must
+connect these operations and resolve each shape's actual mutation-signal support;
+the registry alone does not activate a physics or water-query world.
+Retained compound assets read `isMutable` through their file schema; both
+compound runtime classes use that byte to expose or withhold the signal pair.
+The installed-resource audit finds zero mutable shapes among 152,215 compounds
+and 5,576 trigger shapes across 36 levels. Trigger resources retain that flag
+without loading duplicate query geometry.
+
+`shape_tags` decodes game collision tags into the existing hit packet. Invalid
+tags or a missing body leave the packet unchanged; direct material tags preserve
+the collision filter, while mapped tags index the body's map relative to its
+current material and apply the resolved physics-material flags. Required source
+methods expose both lookup boundaries without fallback values. Comparisons with
+1,024 full decoder executions and 1,280 material-filter edits cover these rules.
+The game installs this codec after creating the Havok world; the Havok null
+codec is not its gameplay decoder. Runtime material-map ownership remains an
+open integration requirement.
+
+`collision_settings` retains authored block flags, version, blocker mode and
+legacy Boolean byte. Its constructors and upgrade match 769 executable cases.
+`assets::entities::physics_material` uses the shared declaration overlays, the
+executable's named enum values and the original post-parse upgrade. All 314
+installed physics materials parse; collision masks are 12 for one declaration,
+115 for two, 119 for one, and 127 for the other 310. Seven installed reference
+cases also compare the complete meaningful settings against executed conversion.
+Legacy fields stay distinct from current flags, including at the current version.
+The same material loader resolves density, friction, restitution, traversal
+flags and collision settings. The collision-settings accessor delegates to
+that loader; it does not maintain a second inheritance resolver.
+
+`body_quality` initializes all 32 physics-quality presets from welding and
+contact-cache configuration, retaining priority, supported/requested flags and
+contact-cache movement thresholds. Eight complete executed configurations cover
+all switch combinations. `body_lod` retains the original LOD thresholds and
+ordered variant-table rules; two constructors and 512 executed updates cover
+mask width, reverse writes and diagonal precedence. Automatic shape-LOD creation
+and its event subscriptions still belong to the world owner.
+
+`motion_storage` owns fixed-capacity reservations, the permanent static motion
+and the initial 32 cell lists. Three constructors and 80 reservations match the
+game's manager. Reserved records remain unreadable until initialized; this
+prevents exposing the source allocator's unspecified floats. Motion IDs have
+no body-style generation byte. Resizing, release, cell rebalancing, activation
+lists and deactivation ownership remain separate lifecycle work.
+
+Trigger resources prepare motion from their cached mass or the compound's
+mode-zero calculation. This follows the original bounds-based mass path through
+its identity shape-bound transform; it does not replace narrow-phase contacts
+with bounds tests. Another 1,024 complete compound calls verify the fallback,
+along with 1,024 bounds-mass and 1,024 box-inertia cases. Other compound mass
+calculation modes still require child aggregation and tensor combination.
+The installed preparation audit passes all 5,576 triggers across 36 levels,
+including 23 keyframed triggers and 183 water triggers. These resources have
+no embedded cached mass; their unit-scale radius-zero shape keys also have no
+separate mass resources in the archive index, so the verified fallback matters.
+
+This is CPU construction support, not an activated gameplay physics world.
+Body/entity links, lifecycle publication, dynamic bounds and ordered filtered
+shape contacts still need their actual producers before these bodies can drive
+the water renderer.
+
+`assets::entities::physics` reads the worldspawn `m_havokBroadPhase` box used by
+the original map loader, retaining constructor defaults for partially authored
+vectors and zeroing Cinfo W lanes. Every installed level supplies the box
+explicitly. A missing inherited box remains an explicit unresolved input;
+render geometry and Tome bounds never substitute for it. The installed audit
+feeds all 36 boxes into the already compared quantization owner.
+
 `ocean::OceanUpdateState` retains water height, the nine-word FFT control cache,
 spectrum invalidation and independent spectrum/surface task flags. Its initial
 tile size is 50, water height is zero and maximum wave amplitude is 5. The
 world-frame owner resets both task flags before preparing its views; actual
 water contacts supply the height-update gate. Water frames also carry the
-installed configuration's ocean tile size and skip flag, read during level
+client's shared cvar ocean tile size and skip flag, read during level
 preparation without modifying the settings file. `OceanWaves::for_view` allocates
 resources without an unnecessary initial spectrum calculation. Its view tasks
 reuse the existing FFT, displacement, collision-height and foam producers,
@@ -1225,9 +1575,9 @@ owner and its verified inherited threshold offset; it is not used as a
 replacement for the luminance pyramid. The caller must provide the pre-DOF
 source, actual target extent and full unscaled view; flare temporary/output
 targets remain separately packed.
-`rendering::depth_of_field` currently supplies material variant selection only.
-Its filter, cat-eye and fringing selection matches 315 executable calls; this
-does not provide the DOF render passes or autofocus producer.
+`rendering::depth_of_field` supplies material variant selection. Its filter,
+cat-eye and fringing selection matches 315 executable calls. The connected
+DoF passes and autofocus owner are described with `camera_view` below.
 
 `bevy_backend::luminance` owns per-view RGBA16F mip chains. Exposure renders the
 first two levels once and reads the second level for its histogram; other
@@ -1315,10 +1665,780 @@ The backend camera-combine draw implements sharpening, distortion, vignetting,
 optional noise and near/far composition. It reuses the shared D3D11 point
 sampler rules. Numerical tests cover the actual recorded frame and 64 synthetic
 frames on Vulkan and DirectX 12; the noise branch is not covered by these tests.
-The gameplay draw remains disconnected pending its actual blur/refraction
-images and autofocus depth/history inputs. The backend `AutofocusPass`
-implements the single-group focus update, verified against 128 shader states;
-its view owner must supply the real water-aware depth and focus history.
+The gameplay draw receives blur/refraction images and water-aware depth/history
+through `camera_view`. The backend `AutofocusPass` implements the single-group
+focus update, previously verified against 128 shader states.
 The separate depth-of-field module currently implements filter-material
 selection. Full bloom appearance and camera-motion parity are not established
 by these tests.
+
+### Ordinary decal submission and atmosphere
+
+`app::decal_pass` adapts the game's ordinary decal list (3386a0, bucket 0x23)
+to the host renderer. Ordinary decal types 0/3 retain their framebuffer blending
+but draw after opaque geometry and before atmosphere. Their original material
+specialization excludes alpha fog, so drawing them after atmosphere would erase
+some already-composited haze. Alpha decal types 1/2 retain the transparent path.
+
+The adapter reuses prepared host draw functions, pipelines and complete instance
+batches. It suppresses only their later per-frame draw ranges and restores those
+ranges after submission, preserving the host's retained phase entries. It does
+not add a fog shader variant or another fog calculation. The pipeline key keeps
+ordinary and alpha decal routes in separate batches.
+
+### Physics point-query composition
+
+`gameplay/world_point_query.rs` joins the owned body table, hybrid spatial trees,
+body collision filters and retained compound/polytope query geometry. It preserves
+native body/leaf traversal order and duplicate hits; contacts publish the body's
+current generation-tagged identity, material, filter and user-data handle. Asset
+resolution errors abort execution and discard that query's partial results.
+This metadata projection is intended for render-view environment contacts, not
+as a replacement for full closest-point witness results.
+
+The shape comparison covers 1,536 executed game queries, including scaling and
+missing polytope connectivity. A further 512 complete world queries compare
+ordered body/material/key/filter/user packets across two trees. Constraint
+adjacency admission in `gameplay/constraint_links.rs` has its own 512-case original
+execution corpus. These functions require actual world-owned bodies, geometry,
+links and deactivation callbacks; none creates fallback environment contacts.
+Gameplay water remains dependent on complete world admission and contact-to-component
+resolution before the ocean and underwater render paths can be connected.
+
+`gameplay/deactivation/islands.rs` owns island linkage and merging with one typed
+island representation shared by per-motion body registration. It borrows the
+existing body/motion stores, preserves attachment and pair order, and retargets
+cache links when merging. The 1,296-case executable comparison also covers free
+slot reuse, stale member IDs and pair-step clearing. Complete world activation
+and contact publication still need their owners connected.
+
+`gameplay/component_state.rs` computes base component admission flags and whether
+the scheduler must run. `gameplay/body_properties.rs` owns keyed body values and
+retained free slots, separately from body-allocation property bitsets. Executed
+comparisons cover 2,048 admission decisions and 1,024 property operations. A hit's
+user-data handle is already carried by `ShapeHitInfo`; resolving it to the actual
+component owner and entity must not be replaced by a second body-ID lookup table.
+
+`gameplay/body_activation.rs` sequences body and motion activation, notification,
+island detachment and the broadphase handoff. Active body IDs are distinct from
+allocated-body counts. Solver cell lists and pending body queues preserve native
+swap-removal and moved-index repair. Activation notifications retain callback
+mutations before later ring traversal; deferred notifications carry typed body
+commands. Numerical comparisons cover the full orchestration and its owners.
+
+The hybrid broadphase owns a capacity-aware bitfield of pending body slots, its
+minimum/maximum slot range and configured layer pairs. The marking virtual's last
+argument is an input-record stride, not a flags mask. Marking records work for
+the later update producer; it does not itself refresh tree bounds or membership.
+`gameplay/bit_field.rs` implements the shared resize/fill/padding rules used here.
+
+`body_activation/context.rs` connects the controller to the shared activation
+signals and the hybrid index's actual pending marks. Subscriber dispatch borrows
+the same body, motion, island and spatial owners so callback changes precede
+subsequent work. The integration comparison replays the existing 1,024 executed
+activation cases through these owners. The hybrid broadphase's virtual +30 is
+an empty function in the game; it must not be mistaken for pending-mark processing.
+
+`gameplay/physics_world` now holds the reflected world configuration and body
+publication composition. `WorldInfo` reuses the existing LOD and solver presets;
+game initialization overrides capacities, gravity and bounds separately from
+the SDK defaults. `BodyPublication` executes static/dynamic preparation, actual
+hybrid insertion, constraint linkage, activation and added-event dispatch in
+the game's order. Its shape and event callbacks are required owner boundaries.
+The comparison executes 128 complete game publication calls with real bounds,
+trees, overlap queries and activation; only allocation and generic signals are
+observed at their ownership boundaries. The unfiltered/filtered broadphase
+overlap producer preserves right-first traversal and packed arithmetic; 512
+queries compare the ordered output against the game.
+
+`gameplay/physics_actor` owns reciprocal movement-body links, inherited alternate
+body flags and signed-frame update admission. The old movement wrapper retains
+its actor after another body is attached, matching the game. Attachment and
+scheduling decisions compare against 640 executed calls.
+Collision data retains its component owner separately: trigger setup publishes
+the collision object at +40, while actor attachment changes the movement object
+at +20. `collision_user_data.rs` encodes that component reference as a stable
+handle; contact resolution reads its canonical `ComponentOwner::entity`.
+Thirty-two composed game setup/attachment sequences prove these links remain
+independent. Static triggers therefore need no invented physics actor for contact
+ownership. Volume bounds still come from the hit body's packed AABB. Missing
+ownership or resources fail the query instead of manufacturing dry contacts.
+
+`physics_world/update_queue.rs` implements both bounded transform-update tasks,
+versioned free-index reservation, ordered concurrent ring publication, consumption
+and record recycling. Its 8,192-entry buffers live on the heap. Constructors
+reserve a permanent sentinel, batch boundaries consume that sentinel, and teardown
+returns it. `physics_actor::consume_updates` resolves generation-tagged references,
+checks ancestors and phase stamps, then calls the required pose producer. Pre-
+and post-physics stamps remain independent. The task comparison executes 128 real
+constructors and 512 batches, including stale references, callback changes,
+sentinel boundaries and free-list reuse. Producer comparisons separately cover
+128 full queues and 512 ring pushes, plus concurrent publication. Runtime entity
+construction order and the moving-trigger pose producers still need connection
+before these contacts can drive the ocean and underwater gameplay owners.
+Existing placed water material/geometry rendering remains the single rendering
+implementation.
+
+`gameplay/motion_requests.rs` owns general actor velocity requests, signed
+priority ordering, request IDs, the ten-entry limit and timed expiry. Actors
+retain these actual lists instead of separate marker-only vectors. The player's
+one-frame projection reuses the same precedence rule. Request resolution uses
+the required body interface, preserving cache flags and changes made by body
+callbacks. Comparisons cover 1,536 request operations and 512 actor resolutions.
+
+`gameplay/reference_frame.rs` supplies compact game-frame quaternion conversion,
+binding composition, world velocity derivation and independently cached position
+and basis prediction. The existing shadow basis product is re-exported from this
+shared implementation. Packed arcsine reuses the physics rotation module; its
+machine-code polynomial replaces neither the existing sine/cosine implementation
+nor the padded Havok quaternion matrix format. Comparisons cover 1,024 bound
+frames, 1,024 helper sets and 512 prediction/getter cases.
+
+`reference_frame/joints.rs` handles phase-channel joint remaps, padded pose
+matrices, model scale, published/predicted parent frames, model-origin overrides
+and basis normalization. Empty channels and invalid joints preserve the game's
+output/admission behavior. A missing remap or transform is an ownership error.
+The 768-case comparison executes all three game joint-binding entry points.
+An installed-asset audit found 23 keyframed triggers among 5,576 triggers in 36
+worlds, including 19 water triggers and four joint-bound water triggers. The
+remaining gameplay integration must supply actual entity/component construction,
+pose-channel buffers and body interfaces; these mathematical kernels alone do
+not publish water or substitute static geometry for moving triggers.
+
+Actor construction now supplies the verified empty request managers, scheduling
+flags, frame markers and current/predicted transforms. The full executable
+constructor was compared using four poisoned input buffers; first request IDs
+start at zero after wrapping the initial unset counter.
+
+`gameplay/component_state.rs` owns declaration/entity links, generation assignment
+and ordered manager registration. The registration comparison executes 256
+sequences, covering generation wrap, signed high-water counts and denied growth.
+`storage.rs` now owns the packed pointer-list implementation shared by rendering
+and components; rendering's existing public names re-export that implementation.
+Live entity/declaration metadata and actual pose/body owners still require
+connection before ocean/underwater rendering is live.
+
+Component startup now executes the verified pending-stop cancellation, ordered
+removal, start queue insertion and required type callback. A 768-case comparison
+executes the complete game start path, including mutation by that callback.
+Entity insertion order has a separate 768-case comparison: cached and uncached
+lists intentionally differ for equal class IDs.
+
+`component_state/roster.rs` owns slot reservation, its sorted active window,
+growth blocks and cursors as offsets into owned storage. `pool.rs` owns typed
+chunks using the game's class-size policy. Comparisons cover 256 roster
+sequences and 42 complete pool construction/allocation sequences, including
+relocation and chunk boundaries. The manager allocates through this pool before
+assigning a generation. Physics actors retain the same common `ComponentOwner`
+used by lifecycle operations and references, without copied entity/generation
+fields. Fifteen composed comparisons run actual game pool, actor constructor,
+generation and owner-linking functions together.
+`PhysicsActorLinks` now uses that same `ComponentPool<PhysicsActor>` for updates,
+instead of a separate owning vector. Host-sized queue handles are checked views
+of the pool's real 16-bit slots. The installed factory check constructs an actor
+through the entity factory and updates it through the same pool, alongside water.
+
+`component_state/entity.rs` composes the complete entity factory: cache mutation,
+typed construction, generation assignment, ordered insertion, owner linking and
+immediate startup. Stable class/slot handles replace process pointers. Required
+callbacks operate on the actual component and entity; 512 comparisons execute
+the complete game path and compare callback-visible state and order. Declaration
+scheduling defaults and mask updates have a separate 512-case comparison.
+
+`component_state/entity_setup.rs` performs the entity's component setup in the
+resolved declaration-array order. It retains the small-entity uncached path,
+preallocates the class cache only above two declarations, reloads live declarations
+after factory callbacks, applies the reported prefix flag and finally caches a
+non-forcing reference-actor lookup. Its 512 comparisons execute the complete game
+routine with the actual list/cache helpers and mutable factory/prefix callbacks.
+Declaration parsing, concrete factory dispatch and later activation remain the
+level owner's responsibilities; setup does not invent an asset or spawn order.
+
+Actors retain their own current/predicted frame cache, published velocities and
+scale. Publication copies pose, velocities and marker while preserving scale
+and prediction state, verified against 512 game calls. Entity delta selection
+reuses `GameClock::delta` through the verified four-timespace mapping. Embedded
+actors and triggers share one verified basic movement interface, selected through
+their actual vtable family; rigid and unrecognized bodies have no fallback.
+Remaining integration must connect the level's class/declaration bootstrap,
+concrete body/entity/render owners and live phase pose buffers before
+ocean/underwater gameplay is live.
+
+`class_hierarchy.rs` materializes base classes, ordered child lists, descendant
+ranges, preorder type IDs and lookup tables. `name_pool.rs` owns the shared,
+case-sensitive immutable names with stable identities, exact cache/bucket rules
+and block growth. It reuses the existing declaration-name hash. `class_registry.rs`
+combines these with metadata registration, late parent repair and the distinct
+pre-/post-initialization lookup paths. Dispatch keys and raw callback descriptors
+remain separate; registration does not implement unknown class methods.
+Comparisons cover 512 hierarchy scenarios, 512 name-pool operations and 64
+composed registration scenarios. Component declarations and pools can obtain IDs
+and instance sizes from these owners. The installed-executable audit decoded
+all 1,904 class definitions, found one common initializer layout and located all
+of them in the 26,015-entry startup table. `assets/class_metadata.rs` reads those
+declarations directly from the selected installed executable, validates its
+version and compiler layout, recovers startup order and constructs the class
+registry. An installed integration check compares every declaration against an
+independent disassembly audit. This replays class registration, not unrelated
+startup functions; connection to the level's component bootstrap is still needed.
+
+Entity component release removes the first matching entry and corresponding
+class-cache slot before clearing owner links. A 512-case comparison executes
+both original routines, including unequal cache lengths and missing entries.
+Queued-start notifications are named explicitly: the notification is separate
+from activation, and the trigger's notification is empty. Actor body detachment
+restores its embedded body and updates hierarchy flags without scheduling a
+transform update; the expanded 896-operation actor corpus verifies this alongside
+attachment and update scheduling.
+
+Per-body event properties own their free chains and deferred destruction queue.
+Dispatch visits the global chain and the event's selected body chains in order;
+removing a body during an event immediately removes its head but defers value
+destruction until dispatch finishes. Required signal callbacks receive the real
+mutable owner, and the traversal reloads links after callbacks. A 256-sequence
+comparison executes the game's dispatch, removal and chain recycling routines;
+the existing 1,024 lookup/allocation comparisons remain unchanged.
+
+Machine-code inspection proved the release build's 166830 diagnostic returns.
+The actor motion resolver therefore retains/cache-completes rejected requests
+without applying them, and a detach-pending component skips startup unchanged.
+Both branches are now in their existing executed comparison corpora.
+
+The installed metadata reader also recovers all 350 generated component factory
+bindings: their class, distinct pool ordinal, in-place constructor and actual
+capacity cvar registration. It reads cvar names and reset strings from their
+initializers rather than treating zero-filled executable storage as defaults.
+`component_state/types.rs` owns the materialized class registry and these
+bindings, and creates typed pool storage using the existing client's cvar values
+and verified class-size policy. An installed check covers every binding, including
+a configured non-default water capacity. Constructing a pool does not implement
+the component type's constructor or admission behavior.
+
+`physics_actor/pre_update.rs` connects admitted pre-physics tasks to the full
+actor traversal: phase flags, live entity clock, velocity requests, bound-motion
+fallback, body callbacks, scheduling and child traversal. Entity, joint/phase,
+body and queue operations remain required live-owner interfaces. The traversal
+retains a bound entity independently of whether it has a cached physics actor,
+and reloads child identities during iteration. Its 512 comparisons run the
+complete game traversal and real motion-list resolution, with only the clock,
+bound-pose, body-virtual and final queue boundaries supplied. Actor bindings now
+retain their actual entity, joint, local offset, quaternion and phase. Four
+poisoned-storage executions of the complete constructor verify their defaults.
+The actor's entity-transform notification copies the current pose, invalidates
+prediction and optionally clears published velocity/request validity while
+preserving scale, completion marker and prediction storage. Its 512 comparisons
+execute the complete game callback and check all other bytes remain unchanged.
+
+`physics_actor/post_update.rs` connects post-physics task admission to the full
+publication traversal. It handles request resolution, independent frame/queue
+markers, stopped-time bindings, lazy prediction, alternate-body pose callbacks,
+all 21 published entity words, render gates and notifications, joint-relative
+binding updates, phase rescheduling and live child traversal. `PublishedFrame`
+represents the copied entity state without adding prediction caches to entities.
+Its 512 three-actor comparisons execute the complete game routine, including
+mutable body/render callbacks and local joint-frame composition. Concrete level
+owners remain required interfaces; the comparison supplies those boundaries.
+Ocean/underwater gameplay remains unfinished until those owners and water
+contact/render publication are connected.
+
+`physics_actor/basic_body.rs` implements the five shared virtual methods of the
+embedded and trigger movement interfaces. Explicit admission guards retain the
+distinction between those bodies. A 512-case comparison constructs both game
+types and executes their actual vtables, checking unchanged body/motion storage.
+
+`gameplay/water_component.rs` owns the water component's common component state
+and retained plane. The constructor leaves that plane uninitialized, represented
+explicitly until publication. Transform updates use the active component's main
+physics shape and its actual transformed `calcAabb`, preserving the source phase
+gate. A 1,024-case comparison runs the complete game function, including exceptional
+heights. This component plane is separate from render-view water selection,
+whose height still comes from the hit body's packed world bounds. The installed
+factory integration check constructs this actual water type through the shared
+pool, generation allocator and entity factory using current client settings.
+
+`reference_frame/basis.rs` owns the compact entity basis inverse and quaternion
+conversion used by post-physics binding updates. The inverse preserves the
+game's float cofactors, double reciprocal/products and determinant admission;
+the quaternion conversion keeps its distinct compact-matrix sign convention.
+These operations have 1,024 comparisons against the complete game functions,
+including singular and exceptional inputs. They share the existing frame basis
+product rather than modifying the separate Havok body conversion.
+The retained local-binding helper also matches 512 executions of the complete
+game post-physics branch with a non-joint parent. This comparison exposed and
+corrected the shared product's per-lane floating-point operand order; all existing
+binding, prediction and joint-frame comparisons still pass.
+
+`physics_world/publication` publishes body poses and velocities through the same
+body storage, motion storage, broadphase and deactivation owners used by body
+creation and contact queries. Pose changes retain body-cache W lanes, update
+attached motion frames/cells, accumulate movement distances and notify observers.
+Velocity changes preserve activation admission, convert world angular velocity
+to motion space, refresh every attached body's swept bounds and mark inactive
+members together. Comparisons execute the complete corresponding game paths;
+transform cache refresh and attachment/deactivation notifications still require
+concrete level implementations.
+
+`collision_user_data/velocity.rs` owns the collision payload's four velocity
+vectors and the command wrapper that publishes them. It applies the selected
+motion property's scale, selects the real immediate or queued setter, then
+updates the live attachment ring while preserving the requested linear W lane.
+The first-body reference is reloaded after callbacks. Trigger pose publication
+likewise resolves its body and water references after physics callbacks rather
+than holding stale snapshots. The command queue, component bootstrap and
+render-view water publication still need their concrete level connection.
+
+`physics_world/command_buffer.rs` implements the expandable deferred-command
+queue on retained blocks, with atomic reservations and the game's allocation,
+reuse and reset rules. Shared producers reserve disjoint byte ranges; dispatch
+and reclamation require exclusive access after producers finish. The existing
+packed pointer list retains the game's capacity policy. Comparisons cover 6,144
+queue operations, including overflowing reservations, both reset modes and a
+handler changing its packet length; a concurrent-producer check verifies payload
+integrity across block growth.
+
+`physics_world/commands.rs` supplies the installed game's 4,096-byte queue
+configuration and group-2 packet routing. Body addition, pose, velocity and
+activation commands call the same shared physics owners as their immediate
+entry points. Other known operations report missing implementations, while the
+source processor's actual no-op codes remain no-op. A comparison of 4,224 queued
+packets runs the game's router and processor; existing full world-state fixtures
+also exercise deferred pose and velocity publication. This does not yet connect
+the level component bootstrap or complete ocean/underwater gameplay rendering.
+
+`collision_body/motion_cache.rs` reconstructs the current body pose from its
+motion and cached local mass frame, updates historical movement counters,
+refreshes swept bounds and collision LOD, and preserves or expands retained
+bounds according to the game's slow-motion rules. It reuses the existing bounds
+expansion, packing, quaternion-basis and inverse-length code. Its 1,024 full-game
+comparisons cover every body quality/configuration, missing selected-shape state,
+optional LOD manager, retained bounds and exceptional floating-point branches.
+
+`deactivation/contacts.rs` preserves the game's overlap-pair and swap-removal
+order. `DeactivationWorld::queue_island` retains wake bits and queues each island
+once. `physics_world/publication/deactivation.rs` composes those rules with the
+existing activation, attachment-ring and constraint owners. These algorithms now
+exist as concrete implementations; the level still needs to bind their settings,
+geometry and observers before ocean/underwater gameplay rendering is connected.
+
+`physics_world::PublicationContext` supplies concrete transform-cache and
+attached-body updates to immediate and queued world publication. It borrows
+geometry, observer dispatch, immutable quality/constraint data and current world
+settings; mutable bodies, motions, deactivation and broadphase remain the same
+owners passed through publication. `TriggerAssets` implements this geometry
+boundary using the retained resource's `QueryShapes::bounds`, preserving root
+and compound/convex dispatch. Resource index zero is valid, lookup errors remain
+errors, and source NULL is a distinct explicit geometry state. Level bootstrap
+and rendering publication still need to instantiate these owners.
+
+`trigger_body::TriggerComponent` uses the shared component owner/factory and
+retains only the index of its movement interface in `PhysicsActorLinks::bodies`.
+That table owns the single mutable body ID and reciprocal actor link. Trigger
+collision velocities and live water/wind component handles stay with the typed
+trigger pool. Constructor comparisons execute7792c0 on16 poisoned records;
+the installed factory test constructs water, reference actors and triggers
+through their actual class metadata and common entity registration path.
+
+`WorldPointQuery::resolve_pending` executes queued point requests through the
+same broadphase/body/filter/shape path as direct queries. Host geometry failures
+propagate without publishing empty or partial completed results. Successful
+completion still uses `CollisionQueries`' verified ordering, generations and
+owned-result transfer. `EnvironmentContactSelection::consume_query` composes
+88d060's clear/readiness gate, result transfer, collision-component resolution,
+packed world bounds and ordered selection. Live contact overrides still require
+the level's physics/component admission and frame scheduling. Ocean surface
+submission does not wait for completion of that wider lifecycle.
+
+`physics_world/storage.rs` composes the canonical body, motion, deactivation,
+broadphase, quantization and shape-observer owners for body creation and queued
+point queries. Geometry and component signals are borrowed from the level.
+The installed Edge of the World integration check creates 332 triggers through
+this path and resolves their real compound geometry; startup phase processing
+and renderer publication remain separate unfinished connections. Body lookup
+masks the generation byte from broadphase IDs, matching `1288af0`; the native
+multi-body query comparisons include generation-tagged leaf entries.
+
+`bevy_backend/ocean_scene.rs` connects the existing ocean implementations to the
+gameplay atmosphere owner: installed program states and authored mask images,
+view-dependent patches, retained FFT simulation, displaced water depth, foam,
+and HDR colour. It uses the same camera history, opaque-depth reduction, shadow
+atlas, fog and GPU exposure as placed water. The rewrite's shared console owns
+ocean settings. CPU patch culling consumes the game matrix rows; GPU vertex
+uniforms consume the separate column-ordered transport. A captured nearby-ocean
+view checks that the generated leaves cover visible surface intersections.
+Pending contact queries use the existing invalid-query rule;
+live water-trigger overrides and underwater composition remain unfinished.
+
+`gameplay/motion_properties.rs` retains the world's64-byte property records,
+source profile presets, bitwise sharing identity, free-slot chain, growth and
+added observers. Profile configuration reuses `DeactivationProfile`; its generic
+coherence update retains the source's integer-indefinite conversion, exponent
+controls and byte wrapping. `body_velocity_scale` resolves BodyStorage ->
+MotionStorage -> property ID -> actual+0c value, with errors for missing owners.
+No default unit scale substitutes for an absent table. The existing solver
+receives its named properties through a projection of the same retained record.
+
+`collision_user_data::velocity::VelocityPublication` binds18d020 to the real
+BodyPublication, MotionPropertiesLibrary and PhysicsCommands. References and
+velocity payloads are resolved through the same observer/component owner;
+PublicationContext forwards these lookups to its event owner, so activation
+callbacks can change the referenced body before the next read. Ring traversal
+reads canonical BodyStorage links and user data. Immediate publication uses the
+actual world setter; deferred publication emits the existing type9 packet.
+
+`trigger_body::TriggerComponentStore` borrows the same typed component pools and
+movement-body table used by entity construction. `ComponentPublicationEvents`
+emits world signals with access to those live components and physics owners;
+`TriggerPublication` composes pose publication, deferred packets, motion reset
+and water-plane updates. Its source comparisons run the real queue/router and
+physics helpers, including observer changes to references and deferred state.
+`DeferredPhysicsState` preserves the actual three-byte OR decision from8a7820;
+it does not assign defaults to the owning level's state.
+
+`WorldStorage` owns body event properties with typed `Signal` values alongside
+the canonical body and motion buffers. Trigger startup uses the same publication
+context as creation, then registers the trigger on its live body's event chain.
+Component update scheduling partitions the existing factory roster rather than
+creating another object list. The installed-level composition check covers
+static and moving trigger startup, reference-actor attachment and collision
+queries. Trigger observers borrow the whole canonical actor/body owner, so a
+binding never requires a copied movement table. `EnvironmentViewQuery` retains
+the render view's query ID, cancels unconsumed work and submits the actual
+camera point against trigger and water-trigger layers. App-level contact
+publication remains unfinished.
+
+`assets/entities/water.rs` resolves water component inheritance and inline
+overrides, including spawn/context admission, density, current, material
+references and wave amplitude. Constructor and enum defaults come from the
+installed executable. `WaterComponent` retains the plane and current/density
+vector only after publication; material IDs belong to the level's shared
+physics material owner.
+
+`gameplay/materials.rs` owns declaration handles, material records, free slots
+and registration signals for the shared physics world. Material conversion,
+duplicate registration and name collisions use the game's rules. Packing
+constants come directly from the audited installed executable through the
+shared checked PE reader in `assets/executable.rs`; no extracted table is needed.
+
+`EntityComponents::find_component` implements877720's cached/uncached search
+and phase preference, including the last eligible fallback. Reference policy
+controls state admission and never forces component creation. Common base
+initialization uses `ComponentOwner::mark_initialized`. Full1024 source
+comparisons cover lookup order and admission across initialized owner states.
+The level still needs body/motion creation and component lifecycle scheduling
+before these owners can feed actual water rendering.
+
+The trigger publication comparison now covers1,024 complete static and
+keyframed-motion cases. It executes the game's body-cache, motion-frame,
+queue/router/processor, bounds and water-plane functions, comparing body history,
+motion state, pending broadphase updates and live observer changes. Level
+creation remains a separate unfinished connection; these checks do not imply
+that ocean or underwater rendering is active in gameplay.
+
+`DeactivationWorld` represents allocated but uncreated motion states explicitly
+as `None`; level construction initializes only the permanent anchor. Indexed
+access requires an initialized state. Reinitialization preserves the exact
+bytes left untouched by the game's partial constructor. The provided-record
+constructor remains available for owners that already have initialized data.
+
+`BodyPublication::create_motion` composes the real free-list reservation,
+runtime motion initialization, deactivation-state growth and creation observers.
+`PublicationContext` forwards capacity/creation signals through the same live
+component owner. Full512 source comparisons cover table growth, all initialized
+motion/state bytes and callback mutations. Buffer-resize subscribers and the
+surrounding body/level bootstrap remain separate unfinished connections.
+
+
+`water_component::startup::start_water` publishes through a component handle in
+its owning pool. Bounds/material callbacks and contact notifications resolve the
+same retained component; no temporary removal or duplicate owner is required.
+The trigger handle is resolved once and its movement body is read again before
+material registration, matching callback-sensitive startup ordering.
+
+`gameplay/water_contacts.rs` owns per-body water membership and density updates.
+The contact table preserves bucket and body-index order, duplicate water entries,
+generation-sensitive body removal, and start/stop notifications. Its default
+bucket count comes from the game constructor. Density uses the custom signed
+shape-volume property at key1, independently of cached mass/inertia keyf100.
+The separately owned body callbacks remain required. Executed-code comparisons
+cover entry/exit, start/stop reordering, density and body destruction. This is the
+membership owner, not the water-force simulation or its four deferred query queues;
+those queues and live camera/contact publication remain unfinished.
+
+
+`EnvironmentViewContacts` retains a camera query and its ordered selection.
+It resolves requests through `WorldStorage` and then consumes their actual body,
+component and entity results; no separate query-only collision world is created.
+`WaterViewPublication` implements the water override after ordinary environment
+tracking: a non-null `water/SurfaceMaterial` selects the surface and publishes
+its physical upper height, while a missing material disables that surface.
+Water-trigger admission controls ocean-height updates independently.
+`ParameterReader::material_source` reads Material resources separately from
+images; environment volumes retain these references at load time. The installed
+composition test connects geometry, RTTI admission, selection and publication.
+Gameplay level bootstrap and render-frame/material binding remain unfinished.
+
+
+`ComponentRegistry::initialize_and_start` processes the game's sorted
+initialization and startup batches, including registrations made by callbacks,
+startup deferred until initialization, failed-initialization stop requests and
+queue prefix cleanup. Active cursors stay with the registry. The component owner
+supplies required callbacks and its factory initialization rank; LOD scheduling
+priority is a separate value. The shared idLib sorter lives in `sorting.rs`,
+with the menu retaining its existing alias. Registry queue constructors preserve
+the source owned-list header flags. Level bootstrap remains unfinished; the
+dispatcher is not yet invoked by gameplay.
+
+
+`component_state::dependencies::InitializationPlan` expands exact and inherited
+class dependencies in factory order, preserves duplicate edges, partitions weakly
+connected groups, then applies the game's dependency-first traversal and cycle
+paths. Source comparisons cover complete350-type graphs. Factory ranks are unique
+across types; equal-rank component instances still use the shared source sorter.
+
+The checked PE reader also loads350 `ComponentTypeDeclaration` inputs from the
+generated descriptor constructor. Class references are cross-checked against the
+same installed factories; setup addresses and static definition identities remain
+explicit. `ComponentTypes` retains them alongside its class registry and pools.
+The reader does not execute game code or mistake zeroed PE storage for constructed
+dependency declarations. `component_definitions` reconstructs all350 static
+definitions from their literal constructors using iced-x86. Its bounded reader
+accepts the audited constant operations and typed declaration helpers; it never
+executes game code. All938 ordered records, reasons, exact-class flags and eight
+stage values match independent execution of the installed constructors.
+`ComponentTypes` resolves initialization ranks through the shared class hierarchy
+and dependency graph. Its98 groups and all350 ranks match execution of the game's
+class registration, hierarchy and graph routines. Update-stage scheduling and the
+level-owned lifecycle adapter remain separate unfinished integration work.
+
+`trigger_body::initialization::initialize_trigger` owns779530's initialization
+sequence: copied owner bit, shape admission, base initialization, live water/wind
+lookups, body recipe/publication and update request or entity keyframing. Its
+required world interface resolves the same pools and movement-body table used by
+publication. The declaration identity survives body creation and its keyframed
+field is read again afterward, including observer changes. Missing shapes follow
+the game's reporting/release continuation, rather than trusting the decompiler's
+noreturn annotation. These operations still need the gameplay level adapter.
+`ComponentRegistry::request_release` implements7e72c0's preceding stop request,
+initialization cancellation and immediate shutdown/release callbacks or deferred
+release queue. Queue draining remains a separate lifecycle operation.
+
+The trigger initialization and water startup `physics` adapters borrow one
+`WorldStorage`, its geometry resources and `ComponentPublicationEvents`. Trigger
+body creation uses Disabled/Activate and publishes directly into the shared
+movement interface. Water admission schedules the real water pool; bounds use
+the main shape's calcAabb and live transform, and material resolution/assignment
+uses the world's existing material library with mode zero. Entity lookup,
+reporting/release, material observers and water-contact notification remain
+required level operations. Installed composition checks create real water
+instances, run these adapters and consume their live flags through camera queries
+on four levels. These checks still supply explicit component lifecycle inputs;
+they do not replace the unfinished gameplay bootstrap or render-frame binding.
+
+Placed rigid horizontal water now submits colour through the gameplay fog/water
+owner. `WaterModelColours` retains bank0 selections independently of world bank2;
+exact installed shader pairs admit the supported position-only horizontal forms,
+with either no probes or one reflection probe per model.
+Both use the existing water shading and HDR composition. Models supply current
+host mesh positions and a game-space affine matrix, so baked shear and CPU mesh
+updates match their depth pass; world geometry retains its raw source positions.
+`WaterModelLighting` shares the existing object lighting buffer and its draw
+indices. Unused record lanes retain the query's tetrahedron and barycentrics;
+the water vertex stage selects the strongest probe in the installed accumulation
+order and maps its ID through the real cube-array lookup. Model motion updates
+these inputs together with opaque lighting, without a second query or GPU pass.
+World water keeps its per-vertex probe transport. Skinned water, nonhorizontal
+forms and complete underwater integration remain unfinished. Appearance awaits
+human confirmation.
+
+Underwater classification now has independent ocean and water-volume dispatch.
+The volume branch uses the prepared surface height and installed volume-stencil
+program, even with ocean rendering disabled. Its fullscreen classification and
+visible rigid/world water boundaries mark main camera stencil and reduced alpha
+stencil; boundary
+admission uses material bank0/bank2 slot6 (`zPrePassAlphaProgram`), independently
+of the normal depth pass in slot4. Empty PS640 and supported position-only vertex
+stages reuse the shared mesh submission without a colour attachment.
+Water depth submission is split at the ocean insertion point: clear/copy and
+boats, ocean, placed water and boat restoration, one alpha-depth preparation,
+then underwater marking. The gameplay publisher now resolves camera contacts
+through the level-owned `PhysicsScene` and applies the selected water material
+and physical surface height after ordinary environment blending. Runtime
+admission and appearance of this integration remain unconfirmed.
+
+`UnderwaterScatteringPass` loads `water/underWaterPostFX.material` and blends the
+installed scattering/caustics formula into the fog radiance buffer after local
+light scattering and before bilateral filtering. It reconstructs world positions
+from current opaque and water depth, uses actual exposure and low-quality sun
+visibility, and preserves the source's radiance/alpha blend. The host reads the
+reduced stencil's 0x40 bit through a stencil-only integer view, so fog quality
+does not require copying stencil or matching framebuffer attachment dimensions.
+The full-resolution mark targets the main camera's D24S8 attachment; reduced
+marking targets depthAlphaDiv2's D32S8 attachment, with separate pipeline formats.
+Ocean admission follows the prepared water height plus maximum wave amplitude;
+the volume branch requires the selected surface material publication. That live
+contact publication is connected through the gameplay publisher. CPU/shader
+parameter preparation and render submission are connected; runtime and visual
+confirmation remain pending. `ComputeGodRays` now follows underwater scattering,
+using the installed eight-step caustic accumulation, optional fog-shadow input,
+and independent skip controls. `CopyWaterStencil` supplies its reduced filter
+visibility mask; authored enable/intensity values use ordinary environment
+tracks. Moving trigger propagation and complete reference actor binding remain
+unfinished.
+
+Gameplay submits the authored celestial disc through the retained atmosphere
+sun pass after water depth preparation and before water colour. It tests against
+`depthWater`, as the game's fog-task context specifies, so a water surface can
+occlude the direct disc before underwater refraction supplies its sun highlight.
+The former transparent celestial material is no
+longer registered by gameplay: submitting both rendered a second undistorted
+disc after water and supplied that duplicate to bloom.
+
+`SunRays` submits the installed projected colour mask and radial sun scattering
+before area/local fog. It reads the real water-depth pyramid, shared fog
+shadow/canvas/interior sources and camera stencil. Its small visibility target
+also receives underwater classification before the common fog filter. Shader
+depth coordinates account for pyramid padding independently of projection.
+
+The lens owner now supplies `FlareChain` with a real pre-DOF half HDR image from
+`HdrDownscale`, the authored profile pair and current adaptation clamp. It no
+longer bypasses bloom and lens composition whenever flares are enabled. The
+flare target is half the half-depth dimensions, independently of luminance mips.
+Water and lens adapters both follow the installed HDR selection: format 0 is
+compressed packed colour; format 1 is uncompressed half-float colour. Appearance
+of these newly connected paths remains pending human confirmation.
+
+The shared sun/underwater visibility mask now passes through the installed
+horizontal and vertical `renderBilateralBlurNoDepth` expansion before the
+common fog filter. The retained owner uses one small R8 scratch allocation;
+the source mask receives the second pass. It preserves the shader's saturated
+sum, mirror sampling and width-based step in both directions. Fog-shadow
+strength, marching taps and full-size filtering remain unchanged.
+Underwater rays likewise sample `depthWater` hardware depth for inverse clip
+projection, rather than interpreting the fog filter's linear min/max distances
+as clip depth. This shares the existing water-depth allocation.
+
+DirectX stencil-only shader views remap DXGI's green stencil component to the
+single red component expected by WGSL, with absent channels set to (0,0,1).
+This applies to both D24S8 and D32S8 in the vendored backend; shader consumers
+retain their ordinary portable `.x` reads without extra conversion passes.
+
+Water appearance confirmation (2026-10-25): the user confirmed that underwater
+visibility now fades with distance and that moving wave-generated light bands
+are visible away from the sun. The DX12 stencil sampling correction is confirmed
+by both same-view numerical captures and this human check. The user also sees
+sun-centred streaks above water. That radial streak pass excludes underwater
+pixels using stencil bit 0x40, matching game function309b50; it is distinct from
+underwater `ComputeGodRays`. The earlier notes that all underwater appearance
+was pending are superseded for attenuation and wave beams. Underwater solar
+disc/glow alignment was also confirmed by the user. DoF is the next requested
+rendering feature after this water handoff.
+
+`bevy_backend::camera_view` now composes the existing autofocus, masks, opaque
+colour filters and final camera combine. `camera_scene` submits this after
+transparency and before exposure/bloom, borrows completed same-frame water and
+alpha depth from the atmosphere owner, and retains focus and scratch images.
+The final combine samples the hardware depth aspect directly. The flare owner
+borrows the pre-DoF colour image instead of reducing the already blurred frame.
+Camera controls follow the shared console generation, including settings-menu
+changes, and `r_skipDOF` continues to bypass camera effects.
+
+Transparent DoF preparation (`camera_alpha_colours`) and composition
+(`camera_alpha_composite`) follow 317890/313730, with the shared packed glass
+decoder and explicit material/stencil selection. `CameraView` composes them
+with 318390's alpha mask when supplied completed opacity geometry. Gameplay
+supplies that producer through `alpha_depth_scene`: actual transparent mesh
+instances reuse their forward vertex deformation and material bindings for the
+full/reduced alpha-depth draws. Refraction writes packed glass distortion into
+the RG16 opacity target and supplies the special-alpha flag to the camera task.
+Material-slot admission comes from installed declarations and shared program
+rules. Unsupported custom programs report their material identity. Materials that
+enable effect support retain their ordinary bank while no effect is active,
+matching the model constructor's selector of -1; active effect overrides still
+require their actual forward-renderer producer. The ordinary
+pause-menu blur is human-confirmed; transparent appearance still needs a human
+check before DoF is complete.
+
+Reduced alpha depth uses 36f8a0's shared downsample allocation, independently
+of 2fbc60's half-size viewport. It is resized when quality changes as well as
+when the window changes. DoF and flare colour allocations use the same reduced
+dimensions. The ordinary alpha-depth copy preserves its source viewport and
+clips the scissor to the attachment as required by the host API.
+
+The alpha clip helper is shared by the prepass and transparent-depth shader.
+Glass IOR/normal-mask values honor MAIN defaults and authored overrides; blur
+size retains its uint representation until its shader conversion. The packed
+angle uses the installed shader's acos lowering and half-float packing. Alpha
+pipeline preparation waits for every admitted pipeline before publishing that
+view, and DoF consumes only same-camera, same-frame outputs.
+
+Explicit F8 display captures include the completed same-frame RG16 DoF opacity
+image when transparent geometry was submitted. This adds no per-frame readback.
+
+Atmosphere submission has separate depth preparation and composition phases.
+Opaque decals precede depth preparation; the alpha geometry phase then updates
+its real depth/stencil targets before atmosphere composition. Transparent colour
+continues after atmosphere, followed by camera DoF and exposure. The preparation
+phase publishes its own camera/frame marker, independently of completed fog;
+lookup generation, sky, snapshots and water depth are recorded only once.
+Alpha-depth vertices retain the mesh's deformation but omit colour-only fog
+interpolators. Alpha depth remains available when DoF is disabled because fog
+also consumes it.
+
+Linear water-depth reduction has its own binding and recording method, shared
+by normal atmosphere submission and views with fog disabled. Those views still
+prepare opaque/water/alpha depth for DoF, while skipping fog radiance, shafts and
+fog-shadow work. Material uint vectors retain integer token words, scalar splats
+and zero tail lanes; they share material scoping with floating vectors without
+converting integer components through float storage.
+
+Runtime capture confirms the glass depth/opacity producer writes nonzero packed
+refraction values before camera composition. Its final geometry draw uses the
+actual main depth format; full/reduced alpha targets retain their own format.
+Clear colour follows the same host-to-game radiance conversion as HDR pixels.
+This numeric confirmation does not replace the pending human glass appearance
+check.
+
+DoF alpha-depth program coverage follows installed program branches. Default and
+vegetation materials share their Z clip; vistas use their authored alpha-test
+switch and fixed 0.5 cutoff; simple sprite meshes have no depth-stage discard;
+mesh filling containers reuse their existing fill/plane clipping. Default and
+vegetation glass supply packed distortion. The prepass and alpha-depth wrapper
+share this clipping code, including anisotropic Z sampling and the shadow path's
+fixed cutoff. Program overrides with different parameter/geometry requirements,
+late projected decals, active material-effect banks and special model depth
+variants still need their actual source producers; they are not generic glass.
+
+The simple DoF branch (`r_dofOpaqueEnabled=0`) also writes the shared half-size
+colour before combining and publishing it to flares. It reuses `HdrDownscale`;
+the enhanced branch continues writing that same target through `CameraColours`.
+Switching modes cannot leave the simple combine reading an unwritten or stale
+half-colour image. This adds no draw to the enhanced path.
+
+Late projected decals depend on the runtime projection system's affected-instance
+lists, three World2Decal rows and per-instance colour. These are separate from
+static BWM decal meshes and cannot be inferred from the BWM's fifth buffer.
+Their absent scene producer remains an explicit renderer integration limitation.
+
+Alpha-depth geometry follows 321860's quality-scaled viewport, independently of
+the reduced texture's minimum allocation dimensions. Its scissor is bounded by
+the attachment. This differs from the preceding 2fbc60 depth-copy pass, which
+uses its own half-size viewport; the two source rules remain separate.
+
+Projected-decal geometry now has a reusable producer in `rendering::decals`.
+It reuses the existing authored affine, inverse and transformed-bounds rules,
+then queries the retained WORLD tree with the asymmetric projection box
+`[-1,-1,-1]..[1,1,0]`. `rendering::bounds::OrientedBox` implements the source's
+15-axis overlap rule without padding. `LocalWorldQuery::query_box` retains
+node broadphase and individual oriented-box tests. These functions supply
+geometry intersections; runtime decal creation, material-dependent receiver
+filtering, matrix/colour upload and shader submission remain unconnected.
+
+The installed-resource DoF census covers all 36 WORLD files and 6,191 material
+declarations. WORLD MAIN names use the existing mesh owners; the additional
+`particle/add_default` records are screen-gate impostors excluded during material
+admission. Of 1,599 materials declaring depth-program overrides, cross-program
+names are ArkDecal or ArkSSSRender using ArkDefault for full Z. None are current
+Probe alpha-depth MAIN families, and no explicit reduced-alpha overrides were
+found. This verifies source identities, rather than runtime appearance or the
+unimplemented SSS/runtime-decal primary renderers. Glass appearance remains
+pending the existing human check.

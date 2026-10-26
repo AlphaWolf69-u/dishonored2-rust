@@ -1,0 +1,7 @@
+contactsystem/genericcontact 0000007f 01337834 00000004 0000007f
+contactsystem/env.metal.grid.rbsimple 00000073 01337834 00000004 0000007f
+contactsystem/env.metal.grid.rbsimplemoff 00000073 01337834 00000004 0000007f
+contactsystem/env.metal.grid.rbweapon 0000000c 01337834 00000004 0000007f
+contactsystem/env.metal.npcvision 00000077 01337834 00000004 0000007f
+contactsystem/projectiles 0000007f 01337834 00000004 0000004c
+contactsystem/weapons 0000007f 01337834 00000004 0000004c

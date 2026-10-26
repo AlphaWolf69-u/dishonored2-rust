@@ -511,7 +511,7 @@ mod tests {
             let mut world = crate::gameplay::machinery_world::MachineryWorld::from_recipes(&result)
                 .unwrap_or_else(|e| panic!("{path}: {e}"));
             for _ in 0..10 {
-                world.step([1. / 60.; 5]);
+                world.step([1. / 60.; 2]);
             }
             assert!(
                 world.bodies.iter().all(|b| b

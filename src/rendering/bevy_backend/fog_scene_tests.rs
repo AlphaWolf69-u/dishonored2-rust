@@ -545,6 +545,8 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
             app.insert_resource(super::water_scene::WaterSceneFrame(Some(
                 super::water_scene::WaterFrame {
                     camera,
+                    delta_seconds: 1. / 60.,
+                    near_far: [projection.near, projection.far],
                     parallel: None,
                     ocean_render_settings: crate::platform::game_settings::ocean_render_settings(
                         "",
