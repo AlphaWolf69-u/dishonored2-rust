@@ -68,6 +68,9 @@ impl WaterHdrFrame<'_> {
 }
 
 impl WaterHdr {
+    pub(super) fn capture_planes(&self) -> [(&'static str, &Texture); 2] {
+        [("ocean_refraction_source", &self.source), ("ocean_colour", &self.colour)]
+    }
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,

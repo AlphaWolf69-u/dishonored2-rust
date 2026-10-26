@@ -159,6 +159,19 @@ pub struct OceanScene {
     underwater: Option<UnderwaterTargets>,
 }
 impl OceanScene {
+    /// Borrow the actual gameplay simulation outputs only when F8 requests them.
+    pub(super) fn capture_planes(&self) -> Vec<(&'static str, &Texture)> {
+        let mut planes = vec![
+            ("ocean_displacement", self.waves.displacement()),
+            ("ocean_gradients", self.waves.gradients()),
+            ("ocean_foam", self.waves.foam_mask()),
+        ];
+        if let Some(targets) = &self.colour_targets {
+            planes.push(("ocean_foam_depth", targets.foam.texture()));
+            planes.extend(targets.hdr.capture_planes());
+        }
+        planes
+    }
     pub fn new(device: &RenderDevice, queue: &RenderQueue) -> Result<Self, String> {
         let sampler = |address| {
             device.create_sampler(&SamplerDescriptor {
