@@ -310,21 +310,21 @@ fn play_events(
                         let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
-                            let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+                            let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
                             if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
                             else if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(target, milliseconds, stop.transition.curve);
+                                    control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                                 }
                             }
                         }
                         spawned.retain(|(entity, audio_target, scheduled)| {
                             if stop.game_object && audio_target.emitter != emitter { return true; }
-                            let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+                            let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
                             if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
                             if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(target, milliseconds, stop.transition.curve);
+                                    control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                                 }
                             }
                             true

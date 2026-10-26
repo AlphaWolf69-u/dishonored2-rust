@@ -93,17 +93,21 @@ pub(super) fn play_settings(bytes: &[u8]) -> io::Result<PlaySettings> {
 pub struct StopAction {
     pub target: u32,
     pub game_object: bool,
+    pub all: bool,
     pub transition: ActionTransition,
 }
 
 /// CAkAction's property bundles (141116320), active fade curve (1411492c0),
-/// and Stop scopes (141127000). Delay and exception actions need scheduling
-/// and exclusion filtering before they can be submitted to the output backend.
+/// and Stop scopes (141127000). Target/All execution ignores the serialized
+/// exception list (141142380 / 141142190); All Except needs its own filtering.
 pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     let mut reader = Reader { bytes, offset: 4 };
-    let game_object = match reader.u8()? {
-        2 => false, 3 => true,
-        _ => return Err(invalid("Wwise all/exception Stop scopes require exclusion filtering")),
+    let scope = reader.u8()?;
+    let (game_object, all) = match scope {
+        2 => (false, false), 3 => (true, false),
+        4 => (false, true), 5 => (true, true),
+        8 | 9 => return Err(invalid("Wwise All Except Stop actions require exclusion filtering")),
+        _ => return Err(invalid("unsupported Wwise Stop scope")),
     };
     reader.u8()?;
     let target = reader.u32()?;
@@ -123,9 +127,10 @@ pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     }
     let curve = reader.u8()? & 0x1f;
     if curve > 8 { return Err(invalid("unsupported Wwise action fade curve")); }
-    if reader.u32()? != 0 { return Err(invalid("Wwise Stop exceptions require exclusion filtering")); }
+    let exceptions = reader.u32()? as usize;
+    reader.records(exceptions, 5)?; // 141141fc0: actor/bus ID and bus flag.
     if reader.offset != bytes.len() { return Err(invalid("Wwise Stop fields did not consume its action")); }
-    Ok(StopAction { target, game_object, transition: ActionTransition { milliseconds, modifiers, curve } })
+    Ok(StopAction { target, game_object, all, transition: ActionTransition { milliseconds, modifiers, curve } })
 }
 
 #[derive(Clone, Debug)]
