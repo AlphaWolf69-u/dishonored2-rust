@@ -117,6 +117,9 @@ pub enum Pending {
     /// `FUN_140517470`: `ui_main_settings_confirmation`, buttons [no, yes];
     /// the answer is `Close(answer != 0)`.
     LeaveSection,
+    /// `FUN_140510d70`: the visuals section's `ui_keep_changes`; the answer
+    /// goes to `FUN_14050eaf0`.
+    KeepChanges,
 }
 
 /// A message box the options code asks the host to show.
@@ -125,6 +128,8 @@ pub struct MessageBox {
     pub text: &'static str,
     /// The `arkMessageBox` button set (2 = [`ui_common_no`, `ui_common_yes`]).
     pub buttons: u32,
+    /// `arkMessageBoxInfo` +0x00: seconds until the movie answers 0, or 0.
+    pub timer: f64,
 }
 
 /// `arkPauseMenuSectionOptions` (`FUN_140516e40`).
@@ -600,7 +605,7 @@ impl Options {
                     return self.close(env, false);
                 }
                 self.pending = Some(Pending::LeaveSection);
-                Ok(vec![Effect::MessageBox(MessageBox { text: "ui_main_settings_confirmation", buttons: 2 })])
+                Ok(vec![Effect::MessageBox(MessageBox { text: "ui_main_settings_confirmation", buttons: 2, timer: 0.0 })])
             })(),
             // `FUN_1405172d0`.
             "OnRestoreSettings" => (|| {
@@ -630,18 +635,29 @@ impl Options {
     pub fn answer(&mut self, env: &mut Env, answer: u32) -> Result<Vec<Effect>> {
         match self.pending.take() {
             Some(Pending::LeaveSection) => self.close(env, answer != 0),
+            Some(Pending::KeepChanges) => match self.sections.iter_mut().find(|s| matches!(s.kind, Kind::Visuals(_))) {
+                Some(section) => visuals::keep_changes(env, section, answer),
+                None => Ok(Vec::new()),
+            },
             None => Ok(Vec::new()),
         }
     }
 
     /// `FUN_1405175f0` (pause Update): the current section's per-frame work.
     /// `pressed` is the engine key pressed this frame, if any.
-    pub fn update(&mut self, env: &mut Env, pressed: Option<u32>) -> Result<()> {
-        let Some(at) = self.current else { return Ok(()) };
+    pub fn update(&mut self, env: &mut Env, pressed: Option<u32>) -> Result<Vec<Effect>> {
+        let Some(at) = self.current else { return Ok(Vec::new()) };
         let section = &mut self.sections[at];
         match section.kind {
-            Kind::Controls(_) => controls::update(env, section, pressed),
-            _ => Ok(()),
+            Kind::Controls(_) => controls::update(env, section, pressed).map(|_| Vec::new()),
+            Kind::Visuals(_) => {
+                let effects = visuals::update(env, section)?;
+                if effects.iter().any(|e| matches!(e, Effect::MessageBox(_))) {
+                    self.pending = Some(Pending::KeepChanges);
+                }
+                Ok(effects)
+            }
+            _ => Ok(Vec::new()),
         }
     }
 }

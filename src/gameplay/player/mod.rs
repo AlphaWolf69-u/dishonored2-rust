@@ -359,7 +359,7 @@ impl Player {
             Emitter::PlayerBody => self.body.sound_settings,
             Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
             Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
     }
@@ -375,12 +375,29 @@ impl Player {
             Emitter::PlayerBody => return Some((origin, axis)),
             Emitter::PlayerLeftArm => 0,
             Emitter::PlayerRightArm => 1,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
         let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
         let (position, rotation) = self.arm_frame(arm, &controls);
         Some((origin + axis * position, axis * rotation))
+    }
+
+    /// 14070a7b0: the listener uses camera_jnt for orientation and its
+    /// declared main/peeking joint for position. This precedes render-camera
+    /// collision corrections and retains the entity fallback for absent tags.
+    pub fn sound_listener(&self) -> Option<(crate::gameplay::sound::spatial::Listener, &crate::gameplay::sound::listener::Settings)> {
+        let binding = self.body.sound_listener.as_ref()?;
+        let origin = self.physics.position();
+        let axis = self.physics.axis();
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let listener = binding.transform(origin, axis, self.machine.is_active(StateId(0x18)), |index| {
+            self.pose.positions.get(index)?;
+            self.pose.rotations.get(index)?;
+            let (position, rotation) = self.pose.joint_with_controls(index, &controls);
+            Some((origin + axis * position, axis * rotation))
+        })?;
+        Some((listener, &binding.settings))
     }
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {

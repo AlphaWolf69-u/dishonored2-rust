@@ -49,8 +49,8 @@ pub(super) struct PhysicsScene {
     world: WorldStorage,
     geometry: TriggerAssets,
     types: ComponentTypes,
-    factories: [u32; 4],
-    classes: [i32; 4],
+    factories: [u32; 5],
+    classes: [i32; 5],
     entities: Vec<PhysicsEntity>,
     declarations: HashMap<u64, ComponentDeclaration>,
     water_bindings: Vec<entities::water::WaterBinding>,
@@ -60,6 +60,9 @@ pub(super) struct PhysicsScene {
     /// Wind payloads already live in the existing wind owner; these are their
     /// common component reference/lifecycle headers, not another wind field.
     winds: ComponentPool<ComponentOwner>,
+    audios: ComponentPool<crate::gameplay::sound::component::AudioComponent>,
+    audio_bindings: Vec<entities::audio::AudioBinding>,
+    audio_handles: Vec<ComponentHandle>,
     actors: PhysicsActorLinks,
     registry: Option<ComponentRegistry>,
     deferred: DeferredPhysicsState,
@@ -74,6 +77,63 @@ pub(super) struct PhysicsScene {
 }
 
 impl PhysicsScene {
+    pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
+        &entities::audio::AudioBinding, &mut crate::gameplay::sound::component::AudioComponent) -> Result<(), String>) -> Result<(), String>
+    {
+        for (&handle, binding) in self.audio_handles.iter().zip(&self.audio_bindings) {
+            let audio = self.audios.get_mut(handle.slot).ok_or("level audio component absent")?;
+            visit(handle, binding, audio)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn query_snapshot(
+        &self,
+    ) -> Result<Arc<crate::gameplay::world_point_query::snapshot::PointQuerySnapshot>, String> {
+        crate::gameplay::world_point_query::snapshot::PointQuerySnapshot::capture(
+            &self.world.bodies,
+            &self.world.broadphase.query_trees(),
+            crate::gameplay::point_query::PointQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
+            },
+            crate::gameplay::ray_query::RayQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.scale[..3].try_into().unwrap(),
+            },
+            self.geometry.shapes.iter().map(|shape| shape.query_shapes.clone()).collect(),
+            |body| self.world.quantization.packed.unpack_bounds(body.bounds)[1][2],
+        ).map(Arc::new)
+    }
+
+    /// The point-query half of1fc710. This returns the selected body's packed
+    /// AABB top (c85490), independently of the view's water component plane.
+    /// The caller still owns the downward-ray fallback when this returns None.
+    pub(super) fn particle_water_body_height(
+        &mut self,
+        position: [f32; 3],
+    ) -> Result<Option<f32>, String> {
+        let hit = self.executor.closest_hit(
+            &self.world.bodies,
+            &self.world.broadphase.query_trees(),
+            crate::gameplay::point_query::PointQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
+            },
+            &WorldPointRequest::water(position),
+            |shape| Ok(WorldQueryShape {
+                shapes: &self.geometry.shapes.get(shape)
+                    .ok_or("particle water-query shape absent")?.query_shapes,
+                materials: None,
+            }),
+        )?;
+        let Some((contact, _)) = hit else { return Ok(None) };
+        let body = self.world.bodies.get(contact.target.body_id
+            .ok_or("particle water-query hit has no body")?)
+            .ok_or("particle water-query body absent")?;
+        Ok(Some(self.world.quantization.packed.unpack_bounds(body.bounds)[1][2]))
+    }
+
     pub(super) fn load(
         catalog: &archive::Catalog,
         document: &entities::Document,
@@ -102,6 +162,7 @@ impl PhysicsScene {
             factory(b"arkCpntWater")?,
             factory(b"arkCpntWind")?,
             32,
+            factory(b"arkCpntAudio")?,
         ];
         let names = installed
             .classes
@@ -116,8 +177,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 4];
-        for i in 0..4 {
+        let mut classes = [0; 5];
+        for i in 0..5 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -132,6 +193,7 @@ impl PhysicsScene {
                 .map_err(|e| e.to_string())
         };
         let water_bindings = entities::water::water_bindings(document, read)?;
+        let audio_bindings = entities::audio::audio_bindings(document, read)?;
         let wind_scheduling = entities::component_scheduling(
             document,
             "cpntwind",
@@ -176,6 +238,9 @@ impl PhysicsScene {
             triggers: types.create_pool(factories[0], &cvars.cvars)?,
             waters: types.create_pool(factories[1], &cvars.cvars)?,
             winds: types.create_pool(factories[2], &cvars.cvars)?,
+            audios: types.create_pool(factories[4], &cvars.cvars)?,
+            audio_bindings,
+            audio_handles: Vec::new(),
             actors: PhysicsActorLinks {
                 actors: types.create_pool(factories[3], &cvars.cvars)?,
                 bodies: Vec::new(),
@@ -320,6 +385,35 @@ impl PhysicsScene {
             )?
             .ok_or("trigger component creation disabled during level load")?;
             scene.declarations.insert(handle.packed(), declaration);
+        }
+        // Audio components share the same entity headers, class metadata,
+        // generation allocator and ordered lifecycle batch as physics owners.
+        for index in 0..scene.audio_bindings.len() {
+            let binding = &scene.audio_bindings[index];
+            let entity_index = match entity_indices.get(&binding.entity_id).copied() {
+                Some(index) => index,
+                None => {
+                    let definition = definitions.get(binding.entity_id.as_str()).ok_or("audio entity definition absent")?;
+                    let class = definition.fields.iter().find_map(|(key, value)| {
+                        if key != "class" { return None; }
+                        if let entities::Value::Atom(value) = value { Some(value.trim_matches('"')) } else { None }
+                    }).ok_or("audio entity class name absent")?;
+                    let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
+                    let index = scene.entities.len();
+                    scene.entities.push(PhysicsEntity { components: EntityComponents::new(index), class,
+                        environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0, priority: 0, pose: binding.frame });
+                    entity_indices.insert(binding.entity_id.clone(), index);
+                    index
+                }
+            };
+            let declaration = scene.types.declaration(factories[4], index, binding.scheduling.clone())?;
+            let handle = ComponentFactory { declaration: &declaration, pool: &mut scene.audios,
+                registry: &mut registry, grow_one_at_a_time: false }.create(
+                    &mut scene.entities[entity_index].components, declaration.scheduling.starts_on_spawn(),
+                    |_, _, _| Ok(crate::gameplay::sound::component::AudioComponent::default()), |_, _, _| Ok(()),
+                )?.ok_or("audio component creation disabled during level load")?;
+            scene.declarations.insert(handle.packed(), declaration);
+            scene.audio_handles.push(handle);
         }
         registry.initialize_and_start(&mut scene)?;
         scene.registry = Some(registry);
@@ -507,6 +601,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.winds.get(handle.slot)
         } else if handle.class_id == self.classes[3] {
             self.actors.actors.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[4] {
+            self.audios.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -524,6 +620,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .actors
                 .get_mut(handle.slot)
                 .map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[4] {
+            self.audios.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -589,6 +687,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 requests.enabled = true;
             }
             actor.owner.mark_initialized();
+            Ok(())
+        } else if handle.class_id == self.classes[4] {
+            // 140708960 initializes the default sound slot and common owner.
+            self.owner_mut(handle)?.mark_initialized();
             Ok(())
         } else {
             // Water588300 and the common wind owner initialization transition.
@@ -687,6 +789,18 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 level: &mut level,
             }
             .start(handle, declaration)
+        } else if handle.class_id == self.classes[4] {
+            let declaration = self.owner(handle)?.declaration.ok_or("audio declaration absent")?;
+            let startup = self.audio_bindings.get(declaration).ok_or("audio startup binding absent")?.startup();
+            let priority = self.entities[entity_index].priority;
+            let audio = self.audios.get_mut(handle.slot).ok_or("audio component absent")?;
+            // 140708fc0 clears the special update counter before base admission.
+            if audio.owner.flags & (1 << 30) != 0 { audio.owner.flags &= 0xf800003f; }
+            crate::gameplay::component_state::prepare_admission(&mut audio.owner.flags,
+                u8::from(scheduling.priority < 8), scheduling.priority, priority);
+            audio.startup = startup;
+            audio.started = true;
+            Ok(())
         } else {
             let priority = self.entities[entity_index].priority;
             crate::gameplay::component_state::prepare_admission(

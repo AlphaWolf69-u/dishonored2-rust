@@ -1326,6 +1326,40 @@ impl SurfaceHashIndex {
         Ok(())
     }
 
+    /// 021300: unlink this index from its bucket, then clear its chain link.
+    /// A missing index still has its link cleared; lazy sentinel storage is
+    /// left untouched. The other entries retain their insertion order.
+    pub fn remove(&mut self, key: u32, index: u32) -> Result<(), String> {
+        if self.bucket_heads.is_empty() {
+            return Ok(());
+        }
+        let index = index as usize;
+        let next = *self.next_indices.get(index)
+            .ok_or("surface HashIndex removal index exceeds storage")?;
+        let bucket = (key & self.bucket_mask) as usize;
+        let mut current = self.bucket_heads[bucket];
+        if current == index as u32 {
+            self.bucket_heads[bucket] = next;
+        } else {
+            let mut visited = 0;
+            while current != u32::MAX {
+                visited += 1;
+                if visited > self.next_indices.len() {
+                    return Err("surface HashIndex chain is cyclic".into());
+                }
+                let link = self.next_indices.get_mut(current as usize)
+                    .ok_or("surface HashIndex link exceeds storage")?;
+                if *link == index as u32 {
+                    *link = next;
+                    break;
+                }
+                current = *link;
+            }
+        }
+        self.next_indices[index] = u32::MAX;
+        Ok(())
+    }
+
     pub fn bucket_chain(&self, key: u32) -> Result<Vec<u32>, String> {
         if self.bucket_heads.is_empty() {
             return Ok(Vec::new());
@@ -3962,6 +3996,33 @@ pub fn clear_flags(flags: &mut u32, mask: u32) {
     if *flags & mask != 0 {
         *flags = (*flags | 1) & !mask;
     }
+}
+
+/// 1fddc0 selects particle water predicates from the declaration and current
+/// view. Reuse the ordinary model flag helpers, including their dirty bit.
+pub fn update_particle_water_flags(
+    flags: &mut u32,
+    underwater: bool,
+    handle_seen_from_underwater: bool,
+    view_underwater: bool,
+) {
+    if underwater {
+        request_flags(flags, 2);
+    } else {
+        clear_flags(flags, 2);
+        if handle_seen_from_underwater {
+            request_flags(flags, 4);
+            clear_flags(flags, 8);
+            return;
+        }
+        if view_underwater {
+            clear_flags(flags, 4);
+            request_flags(flags, 8);
+            return;
+        }
+    }
+    clear_flags(flags, 4);
+    clear_flags(flags, 8);
 }
 
 /// FUN_14031d0f0: preserve the native multiplication order and NaN propagation.

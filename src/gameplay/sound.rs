@@ -8,6 +8,14 @@ pub mod properties;
 pub mod resampler;
 pub mod gain;
 pub mod component;
+pub mod admission;
+pub mod propagation;
+pub mod acoustic_world;
+pub mod paths;
+pub mod positions;
+pub mod environment;
+pub mod listener;
+pub mod looping;
 
 /// The material pair and physical inputs submitted to the contact FX manager
 /// (14060a480). Sound selection is owned by the installed contact database.
@@ -29,13 +37,14 @@ pub enum Emitter {
     PlayerLeftArm,
     PlayerRightArm,
     Effect(u64),
+    Component { handle: u64, generation: u32 },
 }
 
 impl Emitter {
     /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
     pub fn player_part(self) -> u8 {
         match self {
-            Self::Menu | Self::Effect(_) => 0,
+            Self::Menu | Self::Effect(_) | Self::Component { .. } => 0,
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,

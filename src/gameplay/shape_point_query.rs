@@ -13,7 +13,7 @@ use super::{
     convex_support::{
         distance::query_point, ConvexSupportInput, ConvexSupportScale, ConvexSupportWorkspace,
     },
-    polytope_query::zero_distance_point_query,
+    polytope_query::zero_distance_point_depth,
     shape_tags::{decode_shape_tag, ShapeTagSource},
     shape_transform::{transform_bounds, transform_point, ScaledShapeTransform, ShapeMatrix},
 };
@@ -66,6 +66,21 @@ impl ShapePointQuery {
         filter: Option<CollisionQueryFilter>,
         contacts: &mut Vec<ShapePointContact>,
     ) -> Result<(), String> {
+        self.hits_with_distance(target, point, query, filter, &mut |contact, _| {
+            contacts.push(contact);
+        })
+    }
+
+    /// Execute the same shape traversal while retaining the signed distance
+    /// needed by closest-hit callers. Metadata-only callers use all_hits.
+    pub fn hits_with_distance(
+        &mut self,
+        target: PointQueryTarget<'_>,
+        point: [f32; 4],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        submit: &mut dyn FnMut(ShapePointContact, f32),
+    ) -> Result<(), String> {
         let root = target.shapes.get(target.shapes.root())?;
         let bounds = match &root.geometry {
             QueryGeometry::Compound(shape) => {
@@ -100,7 +115,7 @@ impl ShapePointQuery {
             &mut sphere,
             query,
             filter,
-            contacts,
+            submit,
         )
     }
 
@@ -115,7 +130,7 @@ impl ShapePointQuery {
         sphere: &mut PointSphere,
         query: ShapeHitInfo,
         filter: Option<CollisionQueryFilter>,
-        contacts: &mut Vec<ShapePointContact>,
+        submit: &mut dyn FnMut(ShapePointContact, f32),
     ) -> Result<(), String> {
         let shape = target.shapes.get(item)?;
         let handler = self.dispatch.select(
@@ -135,11 +150,14 @@ impl ShapePointQuery {
         self.active.push(item);
         let result: Result<(), String> = (|| match (&shape.geometry, handler) {
             (QueryGeometry::Polytope(polytope), ClosestPointHandler::ConvexConvex) => {
-                let accepted = if !state.scaled && polytope.connectivity.is_some() {
+                let distance = if !state.scaled && polytope.connectivity.is_some() {
                     let local = transform_point(relative, sphere.vertex);
-                    zero_distance_point_query(polytope, [local[0], local[1], local[2]])?.ok_or(
-                        "specialized nonfinite/radius polytope point query is not implemented",
-                    )?
+                    let distance =
+                        zero_distance_point_depth(polytope, [local[0], local[1], local[2]])?
+                            .ok_or(
+                            "specialized nonfinite/radius polytope point query is not implemented",
+                        )?;
+                    (distance < 0.).then_some(distance)
                 } else {
                     let prepared = self.support.prepare(ConvexSupportInput {
                         shape_type: shape.header.shape_type,
@@ -167,10 +185,10 @@ impl ShapePointQuery {
                         prepared.radius,
                         0.,
                     )?
-                    .is_some()
+                    .map(|geometry| geometry.distance[0])
                 };
-                if accepted {
-                    contacts.push(ShapePointContact { target: hit });
+                if let Some(distance) = distance {
+                    submit(ShapePointContact { target: hit }, distance);
                 }
                 Ok(())
             }
@@ -207,7 +225,7 @@ impl ShapePointQuery {
                     sphere,
                     query,
                     filter,
-                    contacts,
+                    submit,
                     error: None,
                 };
                 let mut distance = prepared.squared_distance;
@@ -244,7 +262,7 @@ struct InstanceVisitor<'a, 'b> {
     sphere: &'a mut PointSphere,
     query: ShapeHitInfo,
     filter: Option<CollisionQueryFilter>,
-    contacts: &'a mut Vec<ShapePointContact>,
+    submit: &'a mut dyn FnMut(ShapePointContact, f32),
     error: Option<String>,
 }
 impl InstanceVisitor<'_, '_> {
@@ -298,7 +316,7 @@ impl InstanceVisitor<'_, '_> {
             self.sphere,
             self.query,
             self.filter,
-            self.contacts,
+            self.submit,
         )
     }
 }

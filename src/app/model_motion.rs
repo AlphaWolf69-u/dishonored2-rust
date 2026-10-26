@@ -27,12 +27,16 @@ pub(super) struct BoundModels {
     binds: Vec<crate::entities::EntityBind>,
     /// Bound child placements by parent placement, resolved on first use.
     children: Option<HashMap<usize, Vec<usize>>>,
+    /// The same rigid owner deltas, including bound entities without meshes.
+    entity_deltas: HashMap<String, [[f32; 4]; 3]>,
 }
 
 impl BoundModels {
     pub(super) fn new(binds: Vec<crate::entities::EntityBind>) -> Self {
-        Self { binds, children: None }
+        Self { binds, children: None, entity_deltas: HashMap::new() }
     }
+
+    pub(super) fn entity_delta(&self, id: &str) -> Option<&[[f32; 4]; 3]> { self.entity_deltas.get(id) }
 
     fn children(&mut self, placements: &[crate::entities::PlacedModel]) -> &HashMap<usize, Vec<usize>> {
         self.children.get_or_insert_with(|| {
@@ -56,6 +60,18 @@ impl BoundModels {
 
     /// Add the poses of children whose nearest posed ancestor moved.
     pub(super) fn propagate(&mut self, poses: &mut Vec<ModelPose>, placements: &[crate::entities::PlacedModel]) {
+        // 7506d0 carries the parent's rigid world delta to bound children.
+        // Retain it by entity ID as well as placement so non-render owners
+        // (including audio targets) participate in the same propagation.
+        let mut entity_stack = poses.iter().filter_map(|pose| placements.get(pose.placement)
+            .map(|placement| (placement.id.clone(), pose.delta))).collect::<Vec<_>>();
+        let mut moved = entity_stack.iter().map(|(id, _)| id.clone()).collect::<std::collections::HashSet<_>>();
+        while let Some((id, delta)) = entity_stack.pop() {
+            self.entity_deltas.insert(id.clone(), delta);
+            for bind in self.binds.iter().filter(|bind| bind.parent == id) {
+                if moved.insert(bind.entity_id.clone()) { entity_stack.push((bind.entity_id.clone(), delta)); }
+            }
+        }
         let children = self.children(placements);
         let mut posed: std::collections::HashSet<usize> = poses.iter().map(|p| p.placement).collect();
         let mut stack: Vec<ModelPose> = poses.clone();

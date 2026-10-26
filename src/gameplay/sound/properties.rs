@@ -21,7 +21,7 @@ impl RandomProperties {
                 let Some(range) = node.ranges.iter().find(|range| range.property == property) else { continue };
                 let difference = range.max - range.min;
                 let offset = if difference == 0.0 { 0.0 } else {
-                    (f64::from(random15()) / 32767.0 * f64::from(difference)) as f32
+                    (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference)) as f32
                 };
                 values[slot] = offset + range.min + values[slot];
             }

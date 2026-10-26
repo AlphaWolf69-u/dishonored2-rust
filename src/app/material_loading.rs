@@ -8,6 +8,7 @@ use super::{
 use bevy::prelude::*;
 
 mod cache;
+mod decal;
 mod water;
 pub(in crate::app) mod alpha;
 use cache::{MaterialCache, MaterialGeometry};
@@ -998,7 +999,9 @@ impl MaterialResolver<'_> {
         uniform.misc.w = fog_flags
             | u32::from(alpha_test)
             | (u32::from(program_is_decal) << 1)
-            | (u32::from(two_sided_lighting) << 2);
+            | (u32::from(two_sided_lighting) << 2)
+            // LQ_FetchMasks treats cloth's vertex/combined mask as one.
+            | (u32::from(program_is_decal && material::program_option(bytes, program, "isCloth")) << 10);
         if env::var("DH2_TRACE_MATERIAL").ok().as_deref() == Some(path) {
             println!("MATERIAL {path}: {uniform:#?}");
         }

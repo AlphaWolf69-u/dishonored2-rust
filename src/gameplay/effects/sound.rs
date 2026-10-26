@@ -27,7 +27,7 @@ pub struct SoundUpdate {
 
 /// 22ffb0 / 1da100: three independent samples, including fixed ranges.
 pub fn sample_position(range: [Vec3; 2], seed: &mut u32) -> Vec3 {
-    Vec3::from_array(std::array::from_fn(|axis| super::timing::sample([range[0][axis], range[1][axis]], seed)))
+    Vec3::from_array(std::array::from_fn(|axis| super::timing::sample_range([range[0][axis], range[1][axis]], seed)))
 }
 
 impl SoundEffect {
@@ -37,7 +37,7 @@ impl SoundEffect {
         Self {
             local_position,
             pending: start.event,
-            post_time: super::add(start_age, super::timing::sample(start.delay, seed)),
+            post_time: super::add(start_age, super::timing::sample_range(start.delay, seed)),
             keep_alive: stop.event.is_some(),
             stop,
         }
@@ -56,7 +56,7 @@ impl SoundEffect {
         if self.stop.event.is_some() {
             clear_queued();
             self.pending = self.stop.event;
-            self.post_time = super::add(age, super::timing::sample(self.stop.delay, seed));
+            self.post_time = super::add(age, super::timing::sample_range(self.stop.delay, seed));
             self.keep_alive = false;
         }
     }

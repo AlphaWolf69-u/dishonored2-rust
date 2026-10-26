@@ -4,6 +4,118 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--level-acoustics" {
+        use dishonored2_rust::assets::{archive::Catalog, installation, level::{LevelResources, DEFAULT_LEVEL}, sound_propagation::Propagation};
+        let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
+        let catalog = Catalog::open(&installation::game_base()?)?;
+        let level = LevelResources::resolve(&catalog, &requested)?;
+        let path = format!("{}.soundpropa", level.entities.trim_end_matches(".entities"));
+        let bytes = catalog.read(&path)?.ok_or_else(|| format!("missing installed resource {path}"))?;
+        let propagation = Propagation::parse(&bytes)?;
+        println!("{path}: {} zones, {} portals, route dimension {}", propagation.zones.len(), propagation.portals.len(), propagation.routes.zone_count);
+        let mut route_count = 0usize;
+        let mut connected_pairs = 0usize;
+        for (index, zone) in propagation.zones.iter().enumerate() {
+            println!("zone={index} id={} portal_capacity={} auxiliary_bus={:?} properties={:?} shapes={}",
+                zone.id, zone.portal_capacity, zone.auxiliary_bus, zone.properties, zone.geometry.iter().count());
+            for other in &propagation.zones[index + 1..] {
+                let routes = propagation.routes.between(zone.id, other.id)?;
+                connected_pairs += usize::from(!routes.is_empty());
+                route_count += routes.len();
+                if routes.iter().flat_map(|route| &route.portals).any(|&portal| usize::from(portal) >= propagation.portals.len()) {
+                    return Err(format!("route {} to {} references missing portal", zone.id, other.id).into());
+                }
+            }
+        }
+        println!("{connected_pairs} connected zone pairs, {route_count} authored paths");
+        let flags = arguments.collect::<Vec<_>>();
+        let inspect_audio = flags.iter().any(|argument| argument == "--audio");
+        if inspect_audio || flags.iter().any(|argument| argument == "--player") {
+            let bytes = level.read_entities(&catalog)?.ok_or("level has no entities")?;
+            let document = dishonored2_rust::entities::parse(&String::from_utf8_lossy(&bytes))?;
+            let player = dishonored2_rust::entities::player_start(&document).ok_or("level has no player start")?;
+            let mut world = dishonored2_rust::gameplay::sound::acoustic_world::AcousticWorld::new(propagation, &installation::game_base()?)?;
+            let listener_zone = world.zone_at(player.position)?;
+            println!("authored player start {:?}: acoustic zone {:?}", player.position, listener_zone);
+            if inspect_audio {
+                use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
+                let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
+                    catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+                })?;
+                let mut deferred = 0usize;
+                let mut admitted = 0usize;
+                let mut active = 0usize;
+                let mut projected = 0usize;
+                let mut mixable = 0usize;
+                for binding in bindings {
+                    let startup = binding.startup();
+                    if !startup.deferred { continue; }
+                    deferred += 1;
+                    let source_zone = world.zone_at(binding.frame.position)?;
+                    let query = Query { source: binding.frame.position.into(), listener: player.position.into(),
+                        range: startup.max_distance, vertical_scale: 1.0, propagation: binding.propagation,
+                        source_zone, listener_zone };
+                    let admission = propagation::admission(&world.graph, &query, 1.0)?;
+                    if admission == Admission::Inaudible { continue; }
+                    admitted += 1;
+                    let result = paths::evaluate(&world.graph, &paths::Query {
+                        source: query.source, listener: query.listener, source_zone, listener_zone,
+                        range: query.range, propagation: query.propagation, reflection_normal: None,
+                        source_occlusion_scale: binding.settings.source_occlusion_scale(),
+                    })?;
+                    active += usize::from(result.closest.is_some());
+                    println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
+                        binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
+                    let closest = result.closest.and_then(|index| result.paths.get(index));
+                    match dishonored2_rust::gameplay::sound::positions::project(
+                        &[&result], closest, query.range, binding.frame.basis[0].into(),
+                    ) {
+                        Ok(positions) => {
+                            projected += 1;
+                            println!("  playback positions: {positions:?}");
+                        }
+                        Err(error) => println!("  playback position projection unresolved: {error}"),
+                    }
+                    match dishonored2_rust::gameplay::sound::positions::for_mixing(
+                        &[&result], closest, query.range, binding.frame.basis[0].into(),
+                    ) {
+                        Ok(positions) => {
+                            mixable += 1;
+                            println!("  mode-2 mixing positions: {positions:?}");
+                        }
+                        Err(error) => println!("  mode-2 mixing unresolved: {error}"),
+                    }
+                }
+                println!("{deferred} declared deferred loops, {admitted} admitted origins, {active} audible active results at player start");
+                println!("{projected} emitter position lists resolved from authored acoustic paths");
+                println!("{mixable} emitter position lists resolved for mode-2 mixing");
+            }
+            world.release()?;
+        }
+        return Ok(());
+    }
+    if first.to_string_lossy() == "--level-audio" {
+        use dishonored2_rust::{archive::Catalog, assets::{installation, level::{LevelResources, DEFAULT_LEVEL}}, entities};
+        let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
+        let catalog = Catalog::open(&installation::game_base()?)?;
+        let level = LevelResources::resolve(&catalog, &requested)?;
+        let bytes = level.read_entities(&catalog)?.ok_or("level has no entity resource")?;
+        let document = entities::parse(&String::from_utf8_lossy(&bytes))?;
+        let bindings = entities::audio::audio_bindings(&document, |path| {
+            catalog.read(path).map(|value| value.map(|bytes| entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+        })?;
+        println!("{}: {} audio components", level.entities, bindings.len());
+        for binding in bindings {
+            println!("entity={} slot={} spawn={} phases={:#x} propagation={} settings={:?} startup={:?}",
+                binding.entity_id, binding.slot, binding.scheduling.starts_on_spawn(), binding.scheduling.start_phases,
+                binding.propagation, binding.settings, binding.startup());
+            for event in binding.events.iter().flatten() {
+                println!("  event={:#010x} loop={} spatial={} range={} duration={:?} game_properties={:?}",
+                    event.id, event.persistent_loop(), event.spatialized, event.max_distance, event.duration, event.game_properties);
+            }
+        }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--attenuations" {
         let path = arguments.next().map(PathBuf::from).ok_or("missing package path")?;
         let wanted = arguments.next().map(|id| u32::from_str_radix(id.to_string_lossy().trim_start_matches("0x"), 16)).transpose()?;
@@ -28,6 +140,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
+                for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
+                    println!("  {group} {property}: enabled={} scaling={} points={:?}", curve.enabled, curve.scaling, curve.points);
+                }
+            }
             let mut parameters = mix.parameters.iter().collect::<Vec<_>>();
             parameters.sort_by_key(|(id, _)| **id);
             for (id, value) in parameters { println!("parameter={id:#010x} default={value}"); }
@@ -325,7 +442,9 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     match node {
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
-            println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
+            let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
+            println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
+                audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
             for properties in &variant.properties.nodes {
                 for curve in &properties.curves {
                     println!("{indent}  Node {:#010x} RTPC={:#010x} property={} kind={} accumulation={} scaling={} points={:?}",

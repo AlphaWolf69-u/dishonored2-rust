@@ -3,6 +3,11 @@ use crate::assets::wwise::Attenuation;
 use bevy_math::{Mat3, Vec3};
 use super::mix::{conversion_value, power10};
 
+/// 1400c1830: game Z-up vectors to Wwise's X-right/Y-up/Z-forward frame.
+/// Host spatial calculations retain game coordinates for both ends of a ray;
+/// use this conversion when comparing the actual middleware submissions.
+pub fn wwise_vector(vector: Vec3) -> Vec3 { Vec3::new(-vector.y, vector.z, vector.x) }
+
 #[derive(Clone, Copy, Debug)]
 pub struct Listener {
     pub position: Vec3,

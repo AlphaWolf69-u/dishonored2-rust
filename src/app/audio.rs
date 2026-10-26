@@ -7,6 +7,7 @@ mod graph;
 mod fade;
 mod contacts;
 mod spatial;
+pub(super) mod level;
 pub(super) use contacts::ContactSound;
 use pcm::PcmAudio;
 
@@ -96,7 +97,8 @@ struct AudioTarget {
     properties: Arc<crate::assets::wwise::MediaProperties>,
     random_db: f32,
     parameter: Option<(u32, f32)>,
-    clock_paused: bool,
+    paused: bool,
+    world_paused: bool,
 }
 
 pub struct SoundPlugin;
@@ -112,7 +114,9 @@ impl Plugin for SoundPlugin {
             .init_resource::<AudioMix>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
-            .add_systems(Update, (contacts::update, spatial::update, update_playing_volume, play_events).chain().after(super::player::update_player));
+            .add_systems(Update, contacts::update.after(super::player::update_player))
+            .add_systems(PostUpdate, (spatial::update, level::update, update_playing_volume, play_events)
+                .chain().after(super::model_motion::publish_model_poses));
     }
 }
 
@@ -332,7 +336,7 @@ fn play_events(
                                 Ok(gain) => gain,
                                 Err(error) => { warn!("Wwise event {event:#010x} mix unavailable: {error}"); continue; }
                             };
-                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, clock_paused: false };
+                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, paused: false, world_paused: false };
                             let Some(source) = sources.get(&variant.source) else { continue };
                             let (source, control) = source.controlled();
                             let control = PlaybackControl::Flat(control);
@@ -348,7 +352,7 @@ fn play_events(
                     SourceAction::Scheduled { target, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position) {
                             Ok((source, scheduled)) => {
-                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, clock_paused: false };
+                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, paused: false, world_paused: false };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);
                                 let entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
                                     audio_target.clone(), scheduled.clone())).id();
@@ -368,18 +372,28 @@ fn play_events(
 fn update_playing_volume(
     mut mix: ResMut<AudioMix>,
     scene: Res<spatial::Scene>,
-    mut playing: Query<(&mut AudioSink, &mut AudioTarget, Option<&PlaybackControl>)>,
+    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    mut previous_pause: Local<bool>,
+    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, Option<&PlaybackControl>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
     let mix_changed = mix.generation != generation;
     if mix_changed { mix.apply_settings(); }
     let Some(mixer) = &mix.mixer else { return };
-    for (mut sink, mut target, scheduled) in &mut playing {
-        let frozen = scene.frozen(target.emitter);
-        if frozen != target.clock_paused {
+    let world_paused = paused.is_some_and(|paused| paused.0);
+    let pause_changed = world_paused != *previous_pause;
+    for (mut target, sink, scheduled) in &mut playing {
+        // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
+        // IDs. It does not silence later UI posts: 02cbd0 uses the same
+        // world's global object, and c4550 posts new IDs while paused.
+        // Resume (788d70 -> c8070/c8080 -> c59c0) releases that pause.
+        if pause_changed { target.world_paused = world_paused; }
+        let Some(mut sink) = sink else { continue };
+        let frozen = scene.frozen(target.emitter) || target.world_paused;
+        if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
-            target.clock_paused = frozen;
+            target.paused = frozen;
         }
         if frozen { continue; }
         if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
@@ -391,5 +405,6 @@ fn update_playing_volume(
             Err(error) => warn!("Wwise mix update unavailable: {error}"),
         }
     }
+    *previous_pause = world_paused;
     mix.generation = generation;
 }

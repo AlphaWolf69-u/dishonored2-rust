@@ -45,11 +45,18 @@ impl Resampler {
     /// Unity rate uses the direct-copy dispatch, retaining the last source
     /// frame without requesting an interpolation neighbour beyond the buffer.
     pub fn sample(&self, samples: &[f32], channels: usize, channel: usize) -> Option<f32> {
+        self.sample_looped(samples, channels, channel, None)
+    }
+
+    pub fn sample_looped(&self, samples: &[f32], channels: usize, channel: usize,
+        looping: Option<super::looping::SourceLoop>) -> Option<f32>
+    {
         if channels == 0 || channel >= channels { return None; }
         let frame = usize::try_from(self.phase >> 16).ok()?;
-        let first = *samples.get(frame.checked_sub(1)?.checked_mul(channels)?.checked_add(channel)?)?;
+        let source_frame = |frame: usize| match looping { Some(looping) => looping.frame(frame as u64), None => Some(frame) };
+        let first = *samples.get(source_frame(frame.checked_sub(1)?)?.checked_mul(channels)?.checked_add(channel)?)?;
         if self.step == 65536 && self.step == self.target { return Some(first); }
-        let second = *samples.get(frame.checked_mul(channels)?.checked_add(channel)?)?;
+        let second = *samples.get(source_frame(frame)?.checked_mul(channels)?.checked_add(channel)?)?;
         let fraction = (self.phase & 65535) as f32;
         Some((second - first) * fraction * (1.0 / 65536.0) + first)
     }

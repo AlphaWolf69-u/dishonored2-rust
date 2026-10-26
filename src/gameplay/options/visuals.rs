@@ -572,14 +572,7 @@ pub fn pre_fill(env: &mut Env, section: &mut Section) -> Result<()> {
         w.selected = display.current_monitor;
     }
     if section.decl.settings[RESOLUTION].runtime_setting {
-        // `FUN_14050cd00`.
-        let w = &mut section.decl.settings[RESOLUTION].widget;
-        w.runtime_string_values = display.modes.iter().map(|&(mw, mh)| resolution_label(mw, mh)).collect();
-        let current = display.current_mode.map(|m| (m.0, m.1));
-        w.selected = display.modes.iter().position(|&m| Some(m) == current).unwrap_or(0) as i32;
-        w.minimum = 0;
-        w.maximum = display.modes.len() as i32 - 1;
-        w.interval = 1;
+        fill_resolution(section, &display);
     }
     if section.decl.settings[VIDEOCARD].runtime_setting {
         // `FUN_14050d600`.
@@ -601,6 +594,17 @@ pub fn pre_fill(env: &mut Env, section: &mut Section) -> Result<()> {
         framerate(env, section, true)?;
     }
     Ok(())
+}
+
+/// `FUN_14050cd00`: the resolution list and the row of `r_mode`'s mode.
+fn fill_resolution(section: &mut Section, display: &Display) {
+    let w = &mut section.decl.settings[RESOLUTION].widget;
+    w.runtime_string_values = display.modes.iter().map(|&(mw, mh)| resolution_label(mw, mh)).collect();
+    let current = display.current_mode.map(|m| (m.0, m.1));
+    w.selected = display.modes.iter().position(|&m| Some(m) == current).unwrap_or(0) as i32;
+    w.minimum = 0;
+    w.maximum = display.modes.len() as i32 - 1;
+    w.interval = 1;
 }
 
 /// `FUN_14050cd00`'s label: `"%d x %d (%d:%d)"` for small ratios (8:5 shown
@@ -1096,6 +1100,128 @@ fn try_display(env: &mut Env, section: &mut Section, two_step: bool) -> Result<V
     Ok(Vec::new())
 }
 
+/// `FUN_14050f120(index, v)`: a widget's selected value.
+fn set_selected(section: &mut Section, index: usize, v: i32) {
+    section.decl.settings[index].widget.selected = v;
+}
+
+fn set_fullscreen(env: &mut Env, v: i32) {
+    let i = env.cvar("r_fullscreen");
+    env.console.cvars.set_int(i, v, true);
+}
+
+/// `FUN_140512990(widget, 1)`: the resolution row of `r_mode`'s mode
+/// (vfunc +0x278); unchanged when the list lacks it, row 0 when `r_mode`
+/// names no mode. Then refresh element 0.
+fn select_current_resolution(env: &mut Env, section: &mut Section) -> Result<()> {
+    let d = state(section).display.clone();
+    if !d.modes.is_empty() {
+        match d.current_mode {
+            Some((w, h, _)) => {
+                if let Some(row) = d.modes.iter().position(|&m| m == (w, h)) {
+                    set_selected(section, RESOLUTION, row as i32);
+                }
+            }
+            None => set_selected(section, RESOLUTION, 0),
+        }
+    }
+    refresh_index(env, section, RESOLUTION)
+}
+
+/// `ui_keep_changes`' timeout (`FUN_140510d70`, `DAT_141b1a400`).
+const KEEP_CHANGES_SECONDS: f64 = 13.0;
+
+/// `FUN_140511410` (vfunc +0x28): per-frame Update. A pending display
+/// change is finished: the renderer applies the mode (`vfunc +0x200`,
+/// `FUN_1400d1a90`; here the host window follows the cvars, so the two-step
+/// pass through borderless lands as its last value) and the display widgets
+/// are read back. The next frame shows the keep-changes box.
+///
+/// Not ported: the window-focus gate (`DAT_14230a230`), the external
+/// fullscreen toggle (`FUN_140346be0` / `DAT_143982ce0`), the swap-chain
+/// recreation for a triple-buffer change (`FUN_14036aa40`) and the window
+/// placement before the box (`FUN_140347630`); they belong to the host window.
+pub fn update(env: &mut Env, section: &mut Section) -> Result<Vec<Effect>> {
+    let st = state(section);
+    if !st.display_pending {
+        if !std::mem::take(&mut st.keep_changes_box) {
+            return Ok(Vec::new());
+        }
+        // `FUN_140510d70`: buttons [no, yes]; the movie answers 0 at the timeout.
+        return Ok(vec![Effect::MessageBox(MessageBox { text: "ui_keep_changes", buttons: 2, timer: KEEP_CHANGES_SECONDS })]);
+    }
+    let two_step = st.two_step;
+    let saved_fullscreen = st.saved_mode.map(|m| m.3);
+    if two_step {
+        set_selected(section, WINDOWED, 2);
+        refresh_index(env, section, WINDOWED)?;
+        set_fullscreen(env, 2);
+        if saved_fullscreen == Some(1) {
+            set_selected(section, WINDOWED, 1);
+            refresh_index(env, section, WINDOWED)?;
+            set_fullscreen(env, 1);
+        }
+    }
+    let display = Display::query(&env.console.cvars);
+    state(section).display = display.clone();
+    set_selected(section, MONITOR, display.current_monitor);
+    refresh_index(env, section, MONITOR)?;
+    fill_resolution(section, &display);
+    refresh_index(env, section, RESOLUTION)?;
+    select_current_resolution(env, section)?;
+    let fullscreen = env.console.cvars.int("r_fullscreen").unwrap_or(0);
+    set_selected(section, WINDOWED, fullscreen);
+    refresh_index(env, section, WINDOWED)?;
+    let triple = env.console.cvars.int("r_swapChainTripleBufferEnable").unwrap_or(0) != 0;
+    set_selected(section, SWAPBUFFER, triple as i32);
+    refresh_index(env, section, SWAPBUFFER)?;
+    vsync(env, section, false)?;
+    refresh_index(env, section, VSYNC)?;
+    res_scale_limits(env, section, false)?;
+    res_scale_mode(env, section)?;
+    let mut values = [0; 4];
+    for (v, index) in values.iter_mut().zip([MONITOR, RESOLUTION, WINDOWED, SWAPBUFFER]) {
+        *v = as3(env, section, index)?;
+    }
+    let st = state(section);
+    st.display_pending = false;
+    st.display_changed = true;
+    for (v, index) in values.into_iter().zip([MONITOR, RESOLUTION, WINDOWED, SWAPBUFFER]) {
+        st.snapshot[index] = v;
+    }
+    Ok(Vec::new())
+}
+
+/// `FUN_14050eaf0`: the keep-changes answer. 0 (No, or the timeout) puts
+/// back the mode saved by the try and applies it again without a new box.
+pub fn keep_changes(env: &mut Env, section: &mut Section, answer: u32) -> Result<Vec<Effect>> {
+    let mut effects = Vec::new();
+    let saved = state(section).saved_mode;
+    let mut two_step = false;
+    if answer == 0 {
+        if let Some((w, h, mon, fullscreen, triple)) = saved {
+            let i = env.cvar("r_swapChainTripleBufferEnable");
+            env.console.cvars.set_bool(i, triple, true);
+            set_fullscreen(env, fullscreen);
+            let d = state(section).display.clone();
+            select_mode(env, &d, mon, w, h);
+            state(section).display_pending = true;
+            effects.push(Effect::DisplayChanged);
+            if state(section).two_step && fullscreen == 1 {
+                set_selected(section, WINDOWED, 2);
+                refresh_index(env, section, WINDOWED)?;
+                set_fullscreen(env, 2);
+                two_step = true;
+            }
+        }
+    }
+    let st = state(section);
+    st.two_step = two_step;
+    // The saved mode is cleared; with the two-step pass its fullscreen value stays.
+    st.saved_mode = saved.filter(|_| two_step).map(|m| (-1, -1, -1, m.3, false));
+    Ok(effects)
+}
+
 pub fn handle(env: &mut Env, section: &mut Section, name: &str, args: &[Value]) -> Option<Result<Vec<Effect>>> {
     const NAMES: [&str; 16] = [
         "OnGammaOpening",
@@ -1176,7 +1302,7 @@ pub fn handle(env: &mut Env, section: &mut Section, name: &str, args: &[Value]) 
                 let st = state(section);
                 if !st.video_card_box_shown {
                     st.video_card_box_shown = true;
-                    return Ok(vec![Effect::MessageBox(MessageBox { text: "ui_change_effect", buttons: 0 })]);
+                    return Ok(vec![Effect::MessageBox(MessageBox { text: "ui_change_effect", buttons: 0, timer: 0.0 })]);
                 }
             }
             "OnTryDisplaySetting" => return try_display(env, section, false),

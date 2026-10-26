@@ -84,8 +84,9 @@ pub struct BodyStorage {
 impl BodyStorage {
     /// Slot zero is the world's permanent static anchor; real reservations
     /// start at slot one. The capacity is supplied by the world configuration.
+    /// An anchor-only buffer has no free slots (zero acoustic volumes).
     pub fn new(capacity: usize) -> Result<Self, String> {
-        if !(2..=0x00ff_ffff).contains(&capacity) {
+        if !(1..=0x00ff_ffff).contains(&capacity) {
             return Err(
                 "body capacity must include the anchor and fit non-null 24-bit indices".into(),
             );
@@ -113,7 +114,7 @@ impl BodyStorage {
         Ok(Self {
             bodies,
             next_free,
-            free_head: Some(1),
+            free_head: (capacity > 1).then_some(1),
             active_count: 1,
             maximum_index: 0,
             allocation_marks: vec![u8::MAX; capacity],

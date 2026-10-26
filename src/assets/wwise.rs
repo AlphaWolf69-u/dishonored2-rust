@@ -7,8 +7,10 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
+mod declaration;
+pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    CurvePoint, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+    CurvePoint, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -198,10 +200,50 @@ pub struct DecodedAudio {
     pub channels: u16,
     pub sample_rate: u32,
     pub samples: Vec<f32>,
+    /// Source-frame interval with an exclusive end, independent of bank loop count.
+    pub loop_points: Option<[u32; 2]>,
+}
+
+/// 141149320 reads the first `smpl` loop before the data chunk. Its end is
+/// inclusive; source initialization treats a zero end as the full media end.
+fn wem_source_metadata(bytes: &[u8]) -> io::Result<(Option<u32>, Option<[u32; 2]>)> {
+    let mut cursor = 12usize;
+    let mut frames = None;
+    let mut points = None;
+    while cursor.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        let tag = &bytes[cursor..cursor + 4];
+        let size = slice_u32(bytes, cursor + 4)? as usize;
+        let start = cursor + 8;
+        let end = start.checked_add(size).ok_or_else(|| invalid("Wwise chunk overflow"))?;
+        let chunk = bytes.get(start..end).ok_or_else(|| invalid("truncated Wwise loop chunk"))?;
+        if tag == b"data" { break; }
+        // 1411606d0 takes the exact Vorbis frame count from fmt+18.
+        if tag == b"fmt " && slice_u16(chunk, 0)? == 0xffff && chunk.len() == 0x42 {
+            frames = Some(slice_u32(chunk, 0x18)?);
+        } else if tag == b"vorb" { frames = Some(slice_u32(chunk, 0)?); }
+        if tag == b"smpl" && slice_u32(chunk, 0x1c)? != 0 {
+            let offset = slice_u32(chunk, 0x20)? as usize;
+            let first = slice_u32(chunk, offset.checked_add(0x2c).ok_or_else(|| invalid("Wwise loop offset overflow"))?)?;
+            let last = slice_u32(chunk, offset.checked_add(0x30).ok_or_else(|| invalid("Wwise loop offset overflow"))?)?;
+            points = Some([first, last]);
+        }
+        cursor = end + (size & 1);
+    }
+    Ok((frames, points))
+}
+
+fn loop_points(points: Option<[u32; 2]>, frames: usize) -> io::Result<Option<[u32; 2]>> {
+    points.map(|[first, last]| {
+        let last = if last == 0 { u32::try_from(frames).map_err(|_| invalid("Wwise media exceeds frame index range"))? }
+            else { last.checked_add(1).ok_or_else(|| invalid("Wwise loop end overflow"))? };
+        if first >= last || last as usize > frames { return Err(invalid("Wwise loop points exceed decoded media")); }
+        Ok([first, last])
+    }).transpose()
 }
 
 pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
     let encoded = decode_wem(bytes)?;
+    let (source_frames, source_loop) = wem_source_metadata(bytes)?;
     if encoded.starts_with(b"OggS") {
         let mut reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(encoded))
             .map_err(|error| invalid_owned(format!("converted Wwise Vorbis headers: {error:?}")))?;
@@ -214,7 +256,13 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
             samples.extend(packet.samples);
         }
         if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
-        Ok(DecodedAudio { channels, sample_rate, samples })
+        if let Some(frames) = source_frames {
+            let count = (frames as usize).checked_mul(usize::from(channels)).ok_or_else(|| invalid("Wwise Vorbis sample count overflow"))?;
+            if samples.len() < count { return Err(invalid_owned(format!("Wwise Vorbis decoded {} samples, header requires {count}", samples.len()))); }
+            samples.truncate(count);
+        }
+        let loop_points = loop_points(source_loop, samples.len() / usize::from(channels))?;
+        Ok(DecodedAudio { channels, sample_rate, samples, loop_points })
     } else {
         // decode_wem's PCM and IMA paths serialize exactly pcm_wav's 44-byte
         // header and signed 16-bit samples. This is our output, not an arbitrary
@@ -222,8 +270,9 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
         let channels = slice_u16(&encoded, 22)?;
         let sample_rate = slice_u32(&encoded, 24)?;
         let data = encoded.get(44..).ok_or_else(|| invalid("truncated decoded Wwise PCM"))?;
-        let samples = data.chunks_exact(2).map(|sample| f32::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0).collect();
-        Ok(DecodedAudio { channels, sample_rate, samples })
+        let samples: Vec<_> = data.chunks_exact(2).map(|sample| f32::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0).collect();
+        let loop_points = loop_points(source_loop, samples.len() / usize::from(channels))?;
+        Ok(DecodedAudio { channels, sample_rate, samples, loop_points })
     }
 }
 
@@ -584,6 +633,7 @@ pub struct BankMix {
     pub buses: Vec<NodeProperties>,
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
+    pub environment: EnvironmentSettings,
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
@@ -609,7 +659,9 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     for ((kind, _), object) in objects {
         if kind == 8 { buses.push(bank::bus_properties(object, feedback)?); }
     }
-    Ok(Some(BankMix { buses, parameters, volume_threshold_db }))
+    // 1410f85a0 disables all six environment tables before ENVS is loaded.
+    let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
+    Ok(Some(BankMix { buses, parameters, volume_threshold_db, environment }))
 }
 
 fn media_from_sound(

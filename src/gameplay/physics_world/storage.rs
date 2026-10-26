@@ -114,6 +114,21 @@ impl WorldStorage {
         })
     }
 
+    /// c8f000 publishes active and deactivated queues in that order. The
+    /// default hybrid broadphase's finalize virtual is 1400998b0 (a no-op).
+    pub fn flush_additions<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self,
+        geometry: &mut G,
+        events: &mut E,
+    ) -> Result<(), String> {
+        for activation in [BodyActivation::Activate, BodyActivation::KeepDeactivated] {
+            let ids = self.bodies.queued_additions(activation).to_vec();
+            if !ids.is_empty() { self.add_bodies(geometry, events, &ids, BodyAddition::Immediate, activation)?; }
+        }
+        self.bodies.reset_queued_additions();
+        Ok(())
+    }
+
     /// c8e930 admission is separate from creation during component startup.
     pub fn add_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self,

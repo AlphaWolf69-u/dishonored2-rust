@@ -9,6 +9,31 @@
 
 pub type RenderState = [u32; 9];
 
+/// 31dce0's dynamicAlpha colour state. The accumulation mode additionally
+/// writes its second target; the ordinary path preserves material blending.
+/// Stencil reference is returned separately, as passed through 319900.
+pub fn alpha_surface_draw_state(
+    mut state: RenderState,
+    accumulation_targets: bool,
+    alternate_stencil: bool,
+) -> (RenderState, u32) {
+    state[5] &= !0x10;
+    if accumulation_targets {
+        state[4] |= 2;
+        state[0] = (state[0] & 0xfff8_8823) | 0x8823;
+        state[1] = (state[1] & 0xfe38_0061) | 0x0020_0061;
+    }
+    if alternate_stencil {
+        state[5] = (state[5] & 0xff04_04ff) | 0x0004_0420;
+        state[4] = (state[4] & 0xff) | 0xe80e_8000;
+        (state, 4)
+    } else {
+        state[5] = (state[5] & 0xff04_40ff) | 0x0004_4020;
+        state[4] = (state[4] & 0xff) | 0xa80a_8000;
+        (state, 0x44)
+    }
+}
+
 /// FUN_1402c4dd0 resets the decoded fields, retaining unused blend bits.
 pub fn reset_render_state(state: &mut RenderState) {
     for target in &mut state[..4] {

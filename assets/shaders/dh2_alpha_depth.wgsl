@@ -61,7 +61,11 @@ fn clip_vertex(vertex_output:VertexOutput) {
 #ifdef VERTEX_UVS_B
     uv1=vertex_output.uv_b;
 #endif
-    clip_surface(uv0,uv1,vertex_output.world_position);
+    var colour=vec4(1.0);
+#ifdef VERTEX_COLORS
+    colour=vertex_output.color;
+#endif
+    clip_surface(uv0,uv1,vertex_output.world_position,colour);
 }
 
 // Nonrefractive alpha slots disable colour writes; the value is unobservable.

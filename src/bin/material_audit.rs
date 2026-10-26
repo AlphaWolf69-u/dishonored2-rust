@@ -15,6 +15,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     let catalog = archive::Catalog::open(base)?;
     let mut args = std::env::args().skip(1);
     let world_path = args.next().unwrap_or_else(|| "tutorial_p".into());
+    if world_path == "--particle-material" {
+        let name = args
+            .next()
+            .ok_or("--particle-material requires a material")?;
+        let mut library = dishonored2_rust::shader_cache::ProgramLibrary::open(
+            base,
+            dishonored2_rust::shader_cache::ShaderCacheBackend::Pc,
+            &catalog,
+        )?;
+        let material = dishonored2_rust::rendering::particles::material::ParticleMaterial::load(
+            &catalog,
+            &mut library,
+            &name,
+        )?;
+        println!("material={} state={:?}", material.name, material.state);
+        for (name, value) in material.options {
+            println!("option {name}={value}");
+        }
+        for (name, value) in material.uniforms {
+            println!("uniform {name}={value:?}");
+        }
+        for (name, image) in material.images {
+            println!(
+                "image {name}={}x{} {:?} mips={}",
+                image.info.width, image.info.height, image.info.format, image.info.mip_count
+            );
+        }
+        return Ok(());
+    }
     if world_path == "--environment" {
         let level = args.next().ok_or("--environment requires a level")?;
         let resources = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &level)?;
@@ -181,10 +210,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = catalog
                 .read(&path)?
                 .ok_or_else(|| format!("missing resource {path}"))?;
-            println!(
-                "RESOURCE {path}\n{}",
-                entities::declaration_text(&bytes)
-            );
+            println!("RESOURCE {path}\n{}", entities::declaration_text(&bytes));
         }
         return Ok(());
     }

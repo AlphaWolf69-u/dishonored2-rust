@@ -3,8 +3,15 @@
 /// The 15-bit unit sample used by FX parameters/timings and wind. The caller
 /// owns the shared seed; every call consumes one step, including fixed ranges.
 pub fn lcg_unit(seed: &mut u32) -> f32 {
-    *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    lcg_step(seed);
     ((*seed >> 10) & 0x7fff) as f32 * f32::from_bits(0x3800_0100)
+}
+
+/// Advance the shared generator when the caller needs its integer state (for
+/// child-system seeds or a sampler with a different multiplication order).
+pub fn lcg_step(seed: &mut u32) -> u32 {
+    *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    *seed
 }
 
 /// Counter-seeded multiply-with-carry generator (7bebd0/7bf440/8bcce0 and

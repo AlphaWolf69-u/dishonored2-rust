@@ -652,6 +652,45 @@ the GPU fixture checks matching color and depth clipping.
 `rendering/particles.rs` contains the understood fade, soft-contact arithmetic,
 animation crossfade and distortion helpers. Emitter simulation and the scene
 depth/particle-center producers for other soft-contact modes remain separate.
+`gameplay/particles/` owns particle parameter sampling, cycle timing, coordinate
+spaces and stable simulation slots. `particles/emitter.rs` implements continuous
+and burst emission with independent spawn/cycle seeds, rate-derived time slices
+and explicit shape/field bindings. `particles/pose.rs` retains emitter position
+and orientation history, using the shared reference-frame quaternion conversion
+and normalized interpolation. `assets/fx/particles.rs` reads the movement
+portion of particle stage declarations with shared FX curve readers. These CPU
+pieces feed `particles/simulation.rs`, which owns stage slots and advances
+loaded declarations. `assets/fx/particle_system.rs` reads the parent FX
+descriptor and `gameplay/effects/particle.rs` implements its phase, stop, loop
+and camera/owner placement rules. Player screen-effect sources retain these
+descriptors alongside their quads, with independent readiness errors.
+`bevy_backend/screen_effects/state.rs` owns their lifecycle and simulation;
+its `particles.rs` adapter publishes same-frame sprite instances and material
+state. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
+shared material fog, depth, water clipping and the gameplay stencil attachment.
+`rendering/particles/transparency.rs` resolves the console-controlled direct
+or weighted accumulation mode; `particle_pass/transparency.rs` owns retained
+accumulation/revealage targets and resolve. This connection covers the loaded
+player underwater dirt/bubble declarations; it does not supply every world FX
+producer or animated/lit particle material path. Runtime and human appearance
+acceptance remain separate from compilation.
+
+Particle water clipping consumes an immutable publication of the canonical
+physics world through `world_point_query/snapshot.rs`. It preserves actual
+body/tree order, shared geometry, packed body-top heights and both stored
+quantization directions. Closest-point selection precedes the authored downward
+ray; only a completed miss permits fallback to the active ocean height.
+`world_ray_query.rs` dispatches filtered rigid bodies through the shared hybrid
+world tree; `shape_ray_query.rs` handles convex plane clipping and compound
+child traversal/transforms. Query failures propagate instead of becoming dry
+water results. The snapshot owns no second physics simulation.
+Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
+partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
+three components, independent pivot/rotation parameters and spawn-time RGBA8
+precision. The shared colour packer is `colour.rs`. Sprite orientation covers
+all seven emitter/camera/velocity/custom-axis modes in `particles/orientation.rs`.
+Authored sprite LOD entry allocation defaults still need their reflected
+constructors; the reader reports this explicitly instead of inventing values.
 `filling_cases.txt` contains numeric results from 64 installed-HLSL UV/fill/colour
 cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
 occlusion without looking at images.
@@ -707,13 +746,15 @@ connected to the placed-water colour owner between fog production and compositio
 
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
-and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
-particle soft-contact inputs, vertex-lit particle producers, animated-emissive mask
-production and lens-flare postprocessing are not implemented. A mesh liquid that
+and `artifacts/sky-atmosphere.decl.txt`. General world FX producer integration,
+additional particle soft-contact inputs, vertex-lit particle producers,
+animated-emissive mask production and lens-flare postprocessing remain separate
+coverage. A mesh liquid that
 requests an unavailable producer is rejected explicitly rather than passed
-through ordinary white material shading. Next steps are the native particle
-instance/clock publishers and postFX pass dependencies. Adding debug light
-markers or synthetic bloom would not provide their authored appearance.
+through ordinary white material shading. Player particle instances now have
+clock and draw publishers; other producers and postFX dependencies must use
+their actual game inputs. Adding debug light markers or synthetic bloom would
+not provide their authored appearance.
 
 F8 and streaming diagnostics belong under the checkout's `artifacts/` directory
 (or beside a packaged executable), independently of virtual archive resource
@@ -2393,8 +2434,8 @@ rules. Unsupported custom programs report their material identity. Materials tha
 enable effect support retain their ordinary bank while no effect is active,
 matching the model constructor's selector of -1; active effect overrides still
 require their actual forward-renderer producer. The ordinary
-pause-menu blur is human-confirmed; transparent appearance still needs a human
-check before DoF is complete.
+pause-menu blur is human-confirmed; transparent appearance remains unconfirmed.
+Implementation continues independently of that appearance check.
 
 Reduced alpha depth uses 36f8a0's shared downsample allocation, independently
 of 2fbc60's half-size viewport. It is resized when quality changes as well as
@@ -2442,7 +2483,14 @@ switch and fixed 0.5 cutoff; simple sprite meshes have no depth-stage discard;
 mesh filling containers reuse their existing fill/plane clipping. Default and
 vegetation glass supply packed distortion. The prepass and alpha-depth wrapper
 share this clipping code, including anisotropic Z sampling and the shadow path's
-fixed cutoff. Program overrides with different parameter/geometry requirements,
+fixed cutoff. Ordinary mesh decals also resolve their slot-six alpha-depth
+programs. Their colour and alpha-depth stages share the installed decal diffuse
+rule: anisotropic diffuse sampling, layer-zero LQ mask/tint, cloth mask handling
+and vertex colour, with the depth cutoff applied before HQ/gloss conversion.
+Projected, FX and editor-unlit variants require their corresponding producers.
+The ordinary decal-list partition precedes alpha-depth batch preparation, so
+opaque-interval decals cannot enter the later transparent-depth list depending
+on host system scheduling. Program overrides with different parameter/geometry requirements,
 late projected decals, active material-effect banks and special model depth
 variants still need their actual source producers; they are not generic glass.
 
@@ -2479,4 +2527,70 @@ names are ArkDecal or ArkSSSRender using ArkDefault for full Z. None are current
 Probe alpha-depth MAIN families, and no explicit reduced-alpha overrides were
 found. This verifies source identities, rather than runtime appearance or the
 unimplemented SSS/runtime-decal primary renderers. Glass appearance remains
-pending the existing human check.
+unconfirmed; implementation does not wait for that appearance check.
+
+Dynamic-decal lifetime now lives in `rendering::decals::DecalPool`. Its admitted
+limit is 4..128; free allocation, oldest eviction and duplicate-owner lookup
+follow the native lists/hash. Reusing a full slot preserves its committed render
+object. Removal checks both owner and slot, unregisters before destruction, and
+cannot remove a replacement through a stale FX binding. The pool reuses the
+existing hash owner, including its new unlink operation.
+
+`prepare_world` connects retained descriptions to committed WORLD projection
+geometry in physical slot order. Position, axes or scale changes invalidate
+intersection data; colour/material changes copy independently. The initial
+projection cannot publish an undefined inverse. FX event creation and GPU draw
+submission remain separate unfinished integration work.
+
+`assets::decal::DecalMaterials` reads the four material references from installed
+decal declarations and preserves their receiver/instancing identity. Suffixed
+and suffixless material names resolve only against resources actually present
+in the catalog. The app uses the existing material cache, probe and texture
+streaming owner for these variants. No extracted data or material-name heuristic
+selects an opaque/alpha substitute.
+
+`decals::gather_world_draws` prepares the projected WORLD draw packets from
+committed projections, receiver ranges and actual instance visibility. It reuses
+one 64-byte matrix/colour record per projection, retains WORLD IDs in the low
+24 bits of each remap, and preserves the source's 256-record limit and target
+cursor order. Depth-box receivers retain their separate admission path.
+Projection-bounds visibility does not add a new WORLD geometry cull. The pool's
+`register_world` supplies transformed bounds and registration flags through the
+render-world service, publishing an ID only on success. These CPU producers are
+implemented; the gameplay FX spawn owner and projected GPU draws remain to be
+connected before projected decals are a visible gameplay feature.
+
+`decals::DecalEffectBinding` connects sampled FX placement to that pool. It
+resolves the declaration only when creating a record, follows position and
+orientation independently, and updates scale/colour every tick. The attachment
+computes the source's asymmetric-box pivot offset in its local and parent frames;
+orientation reuses the shared reference-frame basis product. Eviction retires
+the old FX binding without removing the new pool owner. Descriptor loading,
+scheduler activation and parent selection remain with the gameplay FX owner.
+
+Decal phase sampling now lives in `gameplay::effects::decal`, sharing declaration
+curves through an `Arc`. Its timing update preserves delay, single loop restart,
+independent phase bases and retained fade-out values. The scalar depth/opacity
+curves reuse the existing sampler; size/colour use `effects::vector_curve`'s
+distinct two/three-channel cubic rules and per-channel minimum/maximum mixing.
+The render binding consumes the resulting sample, including expiry before pool
+updates. These helpers do not spawn an effect merely because its declaration exists.
+
+`DecalEffect::new` connects source initialization to animation, attachment and
+pool binding. Timing, size, depth, rotation, position, colour and opacity consume
+the shared RNG in source order. Shared vector randomness consumes two draws;
+independent randomness consumes all range draws followed by all curve-mix draws.
+Attachment orientation reuses the shared basis product and axis rotation, with
+exact normal-axis permutations and the source's degree conversion constant.
+Descriptor defaults come from its constructor/reset chain: independent size and
+colour randomness, unit ranges, size fade-in/out ramps and constant unit colour,
+depth and opacity curves. Following is enabled; the attachment defaults to Z
+projection, centred XY, front-face Z and zero local rotation/translation.
+
+FX group traversal now reuses `EffectPoolLinks::update_chain` for the shared
+decal/environment lifetime rule. Inactive entries detach before being returned
+to the free list; effects expiring during the current update remain linked until
+the next tick. `DecalEffectBinding::detach` checks cached slot and owner without
+resetting the retired record's fields; eviction notification remains a separate
+operation. Installed FX descriptor decoding, gameplay activation and projected
+GPU submission are still required for visible dynamic decals.

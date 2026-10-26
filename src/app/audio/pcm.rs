@@ -8,6 +8,7 @@ pub(super) struct PcmAudio {
     pub(super) samples: Arc<[f32]>,
     pub(super) channels: ChannelCount,
     pub(super) sample_rate: SampleRate,
+    pub(super) loop_points: Option<[u32; 2]>,
     fade: Option<super::fade::Control>,
 }
 
@@ -20,7 +21,7 @@ impl PcmAudio {
         if audio.samples.len() % usize::from(channels.get()) != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "partial decoded Wwise sample frame"));
         }
-        Ok(Self { samples: audio.samples.into(), channels, sample_rate, fade: None })
+        Ok(Self { samples: audio.samples.into(), channels, sample_rate, loop_points: audio.loop_points, fade: None })
     }
 
     pub fn controlled(&self) -> (Self, super::fade::Control) {
