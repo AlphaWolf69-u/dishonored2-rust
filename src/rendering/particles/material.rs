@@ -60,7 +60,10 @@ const UNIFORMS: &[&str] = &[
 
 pub struct ParticleLightingMaterial {
     pub gloss: [f32; 2],
-    pub metallic: f32,
+    pub metallic: [f32; 2],
+    /// Active gloss, metallic and specular texture reads, in that order.
+    pub maps: [bool; 3],
+    pub uv: [f32; 4],
     pub gloss_in_alpha: bool,
     pub dielectric: [f32; 4],
     pub metal_diffuse: [f32; 4],
@@ -234,9 +237,6 @@ impl ParticleMaterial {
             // admit them as untextured lighting or silently drop a map/layer.
             for name in [
                 "hasBumpMap",
-                "hasGlossMap",
-                "hasSpecularMap",
-                "hasMetallicMap",
                 "extraLayer",
                 "useParallaxMapping",
                 "hasDetailBumpMap",
@@ -252,10 +252,37 @@ impl ParticleMaterial {
                 }
             }
             let gloss = scopes.vector("wardRoughness")?;
+            let metallic = scopes.vector("metallicMinMax")?;
+            let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
+            let maps = [
+                read_option("hasGlossMap")? != 0 && !gloss_in_alpha,
+                read_option("hasMetallicMap")? != 0,
+                read_option("hasSpecularMap")? != 0,
+            ];
+            for (name, enabled) in ["glossMap", "metallicMap", "specularMap"]
+                .into_iter()
+                .zip(maps)
+            {
+                if enabled {
+                    images.insert(
+                        name.to_ascii_lowercase(),
+                        Arc::new(crate::material::load_2d_image(
+                            catalog,
+                            &scopes.image_source(name)?,
+                        )?),
+                    );
+                }
+            }
             Some(ParticleLightingMaterial {
+                maps,
+                uv: if maps.into_iter().any(|enabled| enabled) {
+                    scopes.vector("Layer0_ScaleBias")?
+                } else {
+                    [0.; 4]
+                },
                 gloss: [gloss[0], gloss[1]],
-                metallic: scopes.vector("metallicMinMax")?[1],
-                gloss_in_alpha: read_option("glossInDiffuseAlpha")? != 0,
+                metallic: [metallic[0], metallic[1]],
+                gloss_in_alpha,
                 dielectric: scopes.vector("specularTintDielectric")?,
                 metal_diffuse: scopes.vector("diffuseAlbedoMetallic")?,
                 shadow_flags: u32::from(read_option("shadow/useNormalOffset")? != 0)

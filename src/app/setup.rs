@@ -278,6 +278,8 @@ pub(super) fn setup(
     });
     let anisotropic_sampler_image =
         images.add(surface_sampler_image(catalog).expect("invalid original material sampler"));
+    commands.insert_resource(crate::rendering::bevy_backend::particle_pass::ParticleMaterialSampler(
+        anisotropic_sampler_image.clone()));
     // The original publishes parallelLightDir/Color from the environment
     // even in levels with no placed LIGHT_PRESET_SUN entity (Dust District).
     let vista_sun = scene

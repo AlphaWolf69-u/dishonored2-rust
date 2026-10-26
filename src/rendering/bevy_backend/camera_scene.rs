@@ -70,6 +70,8 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
+    app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::particle_pass::ParticleMaterialSampler>::default());
     app.init_resource::<super::particle_systems::ParticleQueryFrame>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::particle_systems::ParticleQueryFrame,
@@ -116,6 +118,7 @@ pub(super) fn register(app: &mut App) {
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    sampler: Option<Res<'w,super::particle_pass::ParticleMaterialSampler>>,
     queries: Res<'w,super::particle_systems::ParticleQueryFrame>,
     probes: Res<'w,super::water_scene::WaterLighting>,
     models: Res<'w,super::water_scene::WaterModelLighting>,
@@ -289,6 +292,8 @@ fn render_particles(
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {
+                surface_sampler: lighting_scene.sampler.as_ref().and_then(|sampler|
+                    images.get(&sampler.0)).map(|image| &image.sampler),
                 direct: if draws.iter().any(|d| d.material.option("fx/opt/use_lighting").is_ok_and(|v| v>=3)) {
                     let tiled=fog.tiled_lighting(water.camera,water.matrices.frame)
                         .ok_or("particle tiled lighting awaits the current view")?;

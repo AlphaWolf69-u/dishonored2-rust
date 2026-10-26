@@ -46,6 +46,9 @@ struct ParticleMaterialParameters {
     lighting_dielectric:vec4<f32>,
     lighting_metal_diffuse:vec4<f32>,
     shadow_options:vec4<u32>,
+    surface_map_options:vec4<u32>,
+    surface_ranges:vec4<f32>,
+    lighting_uv:vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -62,6 +65,10 @@ struct ParticleMaterialParameters {
 @group(1) @binding(12) var particle_fresnel_normal:texture_2d<f32>;
 @group(1) @binding(13) var particle_fresnel_lookup:texture_2d<f32>;
 @group(1) @binding(14) var particle_bilinear:sampler;
+@group(1) @binding(15) var particle_gloss:texture_2d<f32>;
+@group(1) @binding(16) var particle_metallic:texture_2d<f32>;
+@group(1) @binding(17) var particle_specular:texture_2d<f32>;
+@group(1) @binding(18) var particle_surface_anisotropic:sampler;
 
 struct ParticleFragment {
     @builtin(position) position:vec4<f32>,
@@ -238,12 +245,26 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
     var albedo=colour.rgb;
     if material.animation_options.w>=2u {
         let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
-        let gloss=mix(material.lighting_parameters.y,
+        let lighting_uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
+        var gloss=mix(material.lighting_parameters.y,
             mix(material.lighting_parameters.x,material.lighting_parameters.y,colour.a),
             material.lighting_parameters.w);
+        if material.surface_map_options.x!=0u {
+            gloss=mix(material.lighting_parameters.x,material.lighting_parameters.y,
+                textureSample(particle_gloss,particle_trilinear,lighting_uv).x);
+        }
         let roughness=1.0-gloss;
-        let mapped=material_lighting_values(colour.rgb,roughness,material.lighting_parameters.z,
-            vec3(1.0),true,material.lighting_dielectric.rgb,material.lighting_metal_diffuse.rgb);
+        var metallic=material.lighting_parameters.z;
+        if material.surface_map_options.y!=0u {
+            metallic=mix(material.surface_ranges.x,material.lighting_parameters.z,
+                textureSample(particle_metallic,particle_surface_anisotropic,lighting_uv).x);
+        }
+        var specular=vec3(1.0);
+        if material.surface_map_options.z!=0u {
+            specular=textureSample(particle_specular,particle_surface_anisotropic,lighting_uv).rgb;
+        }
+        let mapped=material_lighting_values(colour.rgb,roughness,metallic,
+            specular,material.surface_map_options.z==0u,material.lighting_dielectric.rgb,material.lighting_metal_diffuse.rgb);
         let root=particle_root_lighting[input.lighting_record];
         let reflection=particle_lq_reflection(input.world_position,normal,view_direction,
             roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);

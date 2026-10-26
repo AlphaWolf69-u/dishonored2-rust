@@ -15,6 +15,10 @@ use bevy::{
 use std::{collections::HashMap, sync::Arc};
 mod transparency;
 
+/// The existing installed-material sampler image, shared with ordinary surfaces.
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct ParticleMaterialSampler(pub Handle<Image>);
+
 #[derive(Clone, Copy, ShaderType)]
 struct TransparencyParameters {
     weights: Vec4,
@@ -60,6 +64,9 @@ struct MaterialParameters {
     lighting_dielectric: Vec4,
     lighting_metal_diffuse: Vec4,
     shadow_options: UVec4,
+    surface_map_options: UVec4,
+    surface_ranges: Vec4,
+    lighting_uv: Vec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -112,6 +119,22 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         Ok(Self {
+            surface_map_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                UVec4::new(
+                    u32::from(light.maps[0]),
+                    u32::from(light.maps[1]),
+                    u32::from(light.maps[2]),
+                    0,
+                )
+            }),
+            surface_ranges: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::new(light.metallic[0], 0., 0., 0.)),
+            lighting_uv: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::from_array(light.uv)),
             shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
                 UVec4::new(light.shadow_flags, light.shadow_filtering as u32, 0, 0)
             }),
@@ -119,7 +142,7 @@ impl MaterialParameters {
                 Vec4::new(
                     light.gloss[0],
                     light.gloss[1],
-                    light.metallic,
+                    light.metallic[1],
                     u32::from(light.gloss_in_alpha) as f32,
                 )
             }),
@@ -238,6 +261,7 @@ pub struct ParticleDirectLightingInputs<'a> {
     pub sun: Option<([f32; 3], [f32; 3])>,
 }
 pub struct ParticleViewInputs<'a> {
+    pub surface_sampler: Option<&'a Sampler>,
     pub direct: Option<ParticleDirectLightingInputs<'a>>,
     pub lighting: Option<ParticleLightingInputs<'a>>,
     pub matrices: &'a crate::rendering::view_history::ViewMatrices,
@@ -297,6 +321,7 @@ pub struct ParticlePass {
     _unused_cube: Texture,
     unused_cube_view: TextureView,
     materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
+    material_sampler: Option<SamplerId>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
     lighting_binding: Option<(([BufferId; 9], [TextureViewId; 3], SamplerId), BindGroup)>,
@@ -378,9 +403,10 @@ impl ParticlePass {
                 .chain(
                     (1..=5)
                         .chain(10..=13)
+                        .chain(15..=17)
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
-                .chain((6..=8).chain(std::iter::once(14)).map(sampler_entry))
+                .chain((6..=8).chain([14, 18]).map(sampler_entry))
                 .chain(std::iter::once(texture_entry(
                     9,
                     TextureViewDimension::D3,
@@ -655,6 +681,7 @@ impl ParticlePass {
             _unused_cube: unused_cube,
             unused_cube_view,
             materials: HashMap::new(),
+            material_sampler: None,
             view_bindings: None,
             fog_binding: None,
             lighting_binding: None,
@@ -671,6 +698,7 @@ impl ParticlePass {
         source: Arc<ParticleMaterial>,
         state: crate::render_state::RenderState,
         accumulation: bool,
+        anisotropic_sampler: &Sampler,
     ) -> Result<MaterialGpu, String> {
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
@@ -784,6 +812,28 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 8,
                     resource: BindingResource::Sampler(&self.clamp),
+                },
+                BindGroupEntry {
+                    binding: 15,
+                    resource: BindingResource::TextureView(
+                        views.get("glossmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 16,
+                    resource: BindingResource::TextureView(
+                        views.get("metallicmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 17,
+                    resource: BindingResource::TextureView(
+                        views.get("specularmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 18,
+                    resource: BindingResource::Sampler(anisotropic_sampler),
                 },
                 BindGroupEntry {
                     binding: 14,
@@ -929,6 +979,21 @@ impl ParticlePass {
         if count > self.max_instances || draws.len() > self.max_draws {
             return Err("particle draw exceeds admitted declaration capacity".into());
         }
+        if input.surface_sampler.is_none()
+            && draws.iter().any(|draw| {
+                draw.material
+                    .lighting
+                    .as_ref()
+                    .is_some_and(|light| light.maps[1] || light.maps[2])
+            })
+        {
+            return Err("particle surface maps await the canonical anisotropic sampler".into());
+        }
+        let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap);
+        if self.material_sampler != Some(surface_sampler.id()) {
+            self.materials.clear();
+            self.material_sampler = Some(surface_sampler.id());
+        }
         for draw in draws {
             let key = (draw.material.name.clone(), draw.state);
             if !self.materials.contains_key(&key) {
@@ -940,6 +1005,7 @@ impl ParticlePass {
                         draw.material.clone(),
                         draw.state,
                         accumulation,
+                        surface_sampler,
                     )?,
                 );
             }
