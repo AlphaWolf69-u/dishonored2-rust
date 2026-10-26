@@ -443,6 +443,9 @@ impl MachineryWorld {
                     (transform[c][1] * d[1] + transform[c][0] * d[0]) + transform[c][2] * d[2]
                 }
             });
+            // delta() is relative to the spawn motion pose: re-base it so the
+            // body still renders at its authored placement.
+            body.initial = motion.pose;
             body.motion = motion;
             body.mass_frame = (frame, center);
             if let Some(wind) = &mut body.wind {
@@ -1560,6 +1563,13 @@ mod tests {
             assert_eq!(lanes, [1.2822266, 1.2929688, 1.6669922, 1.3837891], "{name}");
             let offset: f32 = (0..3).map(|i| (body.motion.pose.center[i] - recipe.position[i]).powi(2)).sum::<f32>().sqrt();
             assert!((offset - 2.230).abs() < 2e-3, "{name}: centre offset {offset}");
+            let delta = body.delta();
+            for r in 0..3 {
+                for c in 0..4 {
+                    let identity = if r == c { 1. } else { 0. };
+                    assert!((delta[r][c] - identity).abs() < 1e-4, "{name}: spawn render delta {delta:?}");
+                }
+            }
             let transform = body.body_transform();
             let basis = physworld::quaternion_basis(recipe.orientation);
             for c in 0..3 {
