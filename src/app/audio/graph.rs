@@ -26,7 +26,7 @@ struct Container {
     avoid: u16,
     playback: ContainerPlayback,
 }
-enum Kind { Sound(usize), Layer(Vec<usize>), Container(Container) }
+enum Kind { Missing, Sound(usize), Layer(Vec<usize>), Container(Container) }
 struct Node { id: u32, kind: Kind }
 
 pub(super) struct Definition {
@@ -45,6 +45,7 @@ impl Definition {
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
+            PlaybackNode::Missing { .. } => Ok(false),
             PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
             PlaybackNode::Layer { children, .. } => {
                 for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
@@ -58,6 +59,7 @@ impl Definition {
     }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
+            PlaybackNode::Missing { .. } => true,
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
                 node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
                     || node.ranges.iter().any(|range| range.property == 0x3a))
@@ -83,6 +85,7 @@ impl Definition {
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
         // belong to the target, and empty graphs have no descendant to borrow.
         let properties = Arc::new(match &root {
+            PlaybackNode::Missing { .. } => return Err(invalid("missing Wwise Play target")),
             PlaybackNode::Sound { variant, .. } => variant.properties.clone(),
             PlaybackNode::Layer { properties, .. } => properties.clone(),
             PlaybackNode::Container(container) => container.properties.clone(),
@@ -90,6 +93,7 @@ impl Definition {
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
+                PlaybackNode::Missing { node } => (node, Kind::Missing),
                 PlaybackNode::Sound { node, variant } => {
                     let pcm = PcmAudio::from_wem(&variant.media)?;
                     if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
@@ -296,15 +300,16 @@ enum State {
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
         _activity: Option<crate::gameplay::sound::activity::Token> },
     Layer(Vec<Runtime>),
-    Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
+    Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, pending: Option<usize>, initialized: bool, exhausted: bool },
     Done,
 }
-struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope> }
+struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope>, failed_start: bool }
 
 impl Runtime {
     fn new(node: usize, now: u64, definition: &Definition,
         registrations: &[Option<crate::gameplay::sound::activity::Registration>]) -> Self {
         let state = match &definition.nodes[node].kind {
+            Kind::Missing => State::Done,
             // Random modifiers belong to each newly started source voice,
             // including when the same leaf overlaps itself in a sequence.
             Kind::Sound(index) => State::Sound { frame: 0,
@@ -324,15 +329,16 @@ impl Runtime {
                 ]).collect() },
             Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition, registrations)).collect()),
             Kind::Container(container) => State::Container { active: Vec::new(), selection: Selection::default(),
-                loops: Loops::new(&container.playback, random15), next: Some(now), initialized: false, exhausted: false },
+                loops: Loops::new(&container.playback, random15), next: Some(now), pending: None, initialized: false, exhausted: false },
         };
-        Self { node, state, fade: None }
+        Self { node, state, fade: None, failed_start: matches!(definition.nodes[node].kind, Kind::Missing) }
     }
 
     fn halt_new(&mut self) {
         match &mut self.state {
-            State::Container { active, next, exhausted, .. } => {
+            State::Container { active, next, pending, exhausted, .. } => {
                 *next = None;
+                *pending = None;
                 *exhausted = true;
                 for child in active { child.halt_new(); }
             },
@@ -345,20 +351,24 @@ impl Runtime {
     /// the PBI's sample offset elapses (14113b5c0 / 1410e6a70 / 14111b7b0).
     fn prime(&mut self, now: u64, audio: &ScheduledAudio) {
         self.start(now, audio);
-        match &mut self.state {
-            State::Layer(children) | State::Container { active: children, .. } => {
-                for child in children { child.prime(now, audio); }
-            },
-            _ => {},
+        if let State::Layer(children) = &mut self.state {
+            for child in children.iter_mut() { child.prime(now, audio); }
+            children.retain(|child| !child.finished());
+            self.failed_start = children.is_empty();
         }
     }
 
-    fn start(&mut self, now: u64, audio: &ScheduledAudio) {
-        let definition = &audio.definition;
-        let node = &definition.nodes[self.node];
-        let (State::Container { active, selection, loops, next, initialized, exhausted }, Kind::Container(container)) =
-            (&mut self.state, &node.kind) else { return; };
-        if !next.is_some_and(|deadline| now >= deadline) || *exhausted { return; }
+    fn finished(&self) -> bool {
+        match &self.state {
+            State::Done => true,
+            State::Layer(children) => children.is_empty(),
+            State::Container { active, next, exhausted, .. } => *exhausted && next.is_none() && active.is_empty(),
+            State::Sound { .. } => false,
+        }
+    }
+
+    fn select(node: &Node, container: &Container, selection: &mut Selection, loops: &mut Loops,
+        initialized: &mut bool, audio: &ScheduledAudio) -> Option<usize> {
         let key = (node.id, if container.global { None } else { Some(audio.emitter) });
         let selected = if container.playback.continuous {
             if !*initialized && container.mode == SelectionMode::Sequence && !container.reset {
@@ -379,20 +389,66 @@ impl Runtime {
             state.next(container.mode, &container.weights, container.avoid, container.playback.restart_backward, None)
         };
         *initialized = true;
+        selected.map(|index| container.children[index])
+    }
+
+    fn continue_failed(&mut self, now: u64, audio: &ScheduledAudio) {
+        let node = &audio.definition.nodes[self.node];
+        let (State::Container { active, selection, loops, next, pending, initialized, exhausted }, Kind::Container(container)) =
+            (&mut self.state, &node.kind) else { return; };
+        if !active.is_empty() || next.is_some() || *exhausted { return; }
+        // 1410ddd30 pops failed lookup records. Select the enclosing actor
+        // now, retaining that exact choice while its delayed action is queued.
+        *pending = Self::select(node, container, selection, loops, initialized, audio);
+        *pending = pending.filter(|&index| !matches!(audio.definition.nodes[index].kind, Kind::Missing));
+        if pending.is_none() {
+            *exhausted = true;
+            self.failed_start = true;
+            return;
+        }
+        let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
+        let milliseconds = transition_ms(&container.playback, seconds, random15);
+        *next = Some(crate::gameplay::sound::containers::timing::after_failed_start(
+            now, container.playback.transition, milliseconds, audio.definition.rate.get()));
+        self.failed_start = false;
+    }
+
+    fn start(&mut self, now: u64, audio: &ScheduledAudio) {
+        let definition = &audio.definition;
+        let node = &definition.nodes[self.node];
+        let (State::Container { active, selection, loops, next, pending, initialized, exhausted }, Kind::Container(container)) =
+            (&mut self.state, &node.kind) else { return; };
+        if !next.is_some_and(|deadline| now >= deadline) || *exhausted { return; }
+        let first = !*initialized;
+        let selected = pending.take().or_else(|| Self::select(node, container, selection, loops, initialized, audio));
         *next = None;
         if let Some(index) = selected {
-            active.push(Self::new(container.children[index], now, definition, &audio.control.registrations));
+            if matches!(definition.nodes[index].kind, Kind::Missing) {
+                *exhausted = true;
+                self.failed_start = true;
+                return;
+            }
+            let mut child = Self::new(index, now, definition, &audio.control.registrations);
+            child.prime(now, audio);
             if !container.playback.continuous { *exhausted = true; }
-            else if container.playback.transition == TransitionMode::TriggerRate {
+            if child.finished() && child.failed_start {
+                self.failed_start = true;
+                self.continue_failed(now, audio);
+                return;
+            }
+            self.failed_start = false;
+            active.push(child);
+            if container.playback.continuous && container.playback.transition == TransitionMode::TriggerRate {
                 let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
                 let milliseconds = transition_ms(&container.playback, seconds, random15);
                 *next = Some(now + frames(milliseconds, definition.rate).max(1024));
             }
-        } else { *exhausted = true; }
+        } else { *exhausted = true; self.failed_start = first || self.failed_start; }
     }
 
     fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, definition: &Definition) {
         if definition.nodes[self.node].id == target {
+            self.failed_start = false;
             if milliseconds == 0 { self.state = State::Done; }
             else {
                 let gain = self.fade.map_or(1.0, |fade| fade.value(now).unwrap_or(0.0));
@@ -557,11 +613,31 @@ impl Runtime {
                 resampler.sample_looped(&sound.pcm.samples, channels, 0, Some(*looping)).is_some()
             },
             (State::Layer(children), _) => {
-                children.retain_mut(|child| child.frame(now, audio, output, routing.as_deref_mut()));
+                let mut failed = false;
+                let mut ended = false;
+                children.retain_mut(|child| {
+                    let alive = child.frame(now, audio, output, routing.as_deref_mut());
+                    if !alive { if child.failed_start { failed = true; } else { ended = true; } }
+                    alive
+                });
+                self.failed_start = children.is_empty() && failed && !ended;
                 !children.is_empty()
             },
             (State::Container { active, next, exhausted, .. }, Kind::Container(container)) => {
-                active.retain_mut(|child| child.frame(now, audio, output, routing.as_deref_mut()));
+                let mut failed = false;
+                let mut ended = false;
+                active.retain_mut(|child| {
+                    let alive = child.frame(now, audio, output, routing.as_deref_mut());
+                    if !alive { if child.failed_start { failed = true; } else { ended = true; } }
+                    alive
+                });
+                if active.is_empty() && failed && !ended {
+                    self.failed_start = true;
+                    if !*exhausted && next.is_none() {
+                        self.continue_failed(now, audio);
+                        return !self.finished();
+                    }
+                }
                 if active.is_empty() && next.is_none() && !*exhausted {
                     let delay = if container.playback.transition == TransitionMode::Delay {
                         let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));

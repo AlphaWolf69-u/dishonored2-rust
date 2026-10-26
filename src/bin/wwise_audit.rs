@@ -537,6 +537,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;

@@ -158,7 +158,9 @@ impl<'a> PlaybackBanks<'a> {
         let node = if object.kind == 5 {
             let mut children = Vec::new();
             for (child, weight) in playlist.items {
-                if let Some(node) = self.resolve_node(child, media, visited)? { children.push((node, weight)); }
+                if !self.actors.contains_key(&child) {
+                    children.push((PlaybackNode::Missing { node: child }, weight));
+                } else if let Some(node) = self.resolve_node(child, media, visited)? { children.push((node, weight)); }
             }
             PlaybackNode::Container(PlaybackContainer { node: id, properties: self.media_properties(id)?, global: playlist.global,
                 avoid_repeat: playlist.avoid_repeat, mode: playlist.mode, reset_each_play: playlist.reset_each_play,
