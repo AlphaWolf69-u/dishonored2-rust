@@ -15,8 +15,64 @@ pub(crate) struct ScreenEffectState {
     frame: Option<u32>,
     quads: Vec<PlayingQuad>,
     particles: Vec<particles::PlayingParticle>,
+    query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
 }
 impl ScreenEffectState {
+    /// Execute against the physics publication for this exact view/frame.
+    /// Unsupported fallback inputs remain explicit errors, never dry hits.
+    pub(crate) fn simulate_particles(
+        &mut self,
+        frame: u32,
+        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+    ) -> Result<(), String> {
+        if self.particles.is_empty() {
+            return Ok(());
+        }
+        if self.query.is_none() {
+            self.query = Some(crate::gameplay::world_point_query::WorldPointQuery::new(
+                u32::MAX,
+            )?);
+        }
+        let query = self.query.as_mut().unwrap();
+        let mut error = None;
+        for particle in &mut self.particles {
+            let result = (|| {
+                let Some(publication) = particle.publication.as_ref().filter(|p| p.visible) else {
+                    return Ok(());
+                };
+                let Some(stage) = particle.stages.first() else {
+                    return Ok(());
+                };
+                let settings = &stage.declaration.clipping;
+                let surface = if settings.use_ocean_plane {
+                    match world.particle_water_body_height(query, publication.pose.position)? {
+                        Some(height) => Some(
+                            crate::rendering::particles::clipping::ParticleWaterSurface::Volume(
+                                height,
+                            ),
+                        ),
+                        None if settings.water_volume_raycast_distance > 0. => {
+                            return Err("particle water query requires the downward-ray fallback"
+                                .to_owned());
+                        }
+                        None => {
+                            return Err(
+                                "particle water query awaits the active ocean context".to_owned()
+                            )
+                        }
+                    }
+                } else {
+                    None
+                };
+                particle.simulate(frame, surface, particle.source_velocity)
+            })();
+            if let Err(failure) = result {
+                error.get_or_insert(failure);
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
     fn start(
         &mut self,
         definition: &sources::EffectDefinition,

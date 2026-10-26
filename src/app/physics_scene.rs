@@ -74,6 +74,21 @@ pub(super) struct PhysicsScene {
 }
 
 impl PhysicsScene {
+    pub(super) fn query_snapshot(
+        &self,
+    ) -> Result<Arc<crate::gameplay::world_point_query::snapshot::PointQuerySnapshot>, String> {
+        crate::gameplay::world_point_query::snapshot::PointQuerySnapshot::capture(
+            &self.world.bodies,
+            &self.world.broadphase.query_trees(),
+            crate::gameplay::point_query::PointQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
+            },
+            self.geometry.shapes.iter().map(|shape| shape.query_shapes.clone()).collect(),
+            |body| self.world.quantization.packed.unpack_bounds(body.bounds)[1][2],
+        ).map(Arc::new)
+    }
+
     /// The point-query half of1fc710. This returns the selected body's packed
     /// AABB top (c85490), independently of the view's water component plane.
     /// The caller still owns the downward-ray fallback when this returns None.

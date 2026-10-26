@@ -26,6 +26,9 @@ pub(super) struct PlayingParticle {
     pub first_simulation: bool,
     pub publication: Option<ParticlePublication>,
     pub clipping: Option<ParticleClipPlanes>,
+    /// 1fa780 initializes system+1d50 to zero. Player FX publication changes
+    /// rate/colour/pose, but supplies no external source-velocity producer.
+    pub source_velocity: [f32; 3],
     simulated_frame: Option<u32>,
 }
 impl PlayingParticle {
@@ -89,6 +92,7 @@ impl PlayingParticle {
             first_simulation: true,
             publication: None,
             clipping: None,
+            source_velocity: [0.; 3],
             simulated_frame: None,
         }))
     }

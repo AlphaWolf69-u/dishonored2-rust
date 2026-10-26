@@ -57,6 +57,10 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
+    app.init_resource::<super::physics_queries::PhysicsQueryFrame>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::physics_queries::PhysicsQueryFrame,
+    >::default());
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::screen_effects::ScreenEffectMaterials,
@@ -84,9 +88,11 @@ fn prepare_screen_effects(
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     water: Res<WaterSceneFrame>,
     fog: Res<FogGpu>,
+    queries: Res<super::physics_queries::PhysicsQueryFrame>,
     mut gpu: ResMut<CameraGpu>,
     view: ViewQuery<&MainEntity>,
     mut last_error: Local<Option<String>>,
+    mut particle_error: Local<Option<String>>,
 ) {
     let Some(water) = water.0.as_ref() else {
         gpu.screen_draws = None;
@@ -115,6 +121,18 @@ fn prepare_screen_effects(
     );
     match result {
         Ok(draws) => {
+            let simulation = queries.0.as_ref()
+                .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
+                .ok_or_else(|| "particle physics inputs await the current camera frame".to_owned())
+                .and_then(|q| gpu.screen_state.simulate_particles(water.matrices.frame, &q.world));
+            match simulation {
+                Ok(()) => *particle_error = None,
+                Err(error) if particle_error.as_ref() != Some(&error) => {
+                    warn!("Player particle simulation pending: {error}");
+                    *particle_error = Some(error);
+                }
+                Err(_) => {},
+            }
             gpu.screen_draws = Some((water.camera, water.matrices.frame, draws));
             *last_error = None;
         }

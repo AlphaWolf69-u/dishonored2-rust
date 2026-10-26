@@ -15,6 +15,18 @@ use super::{
     shape_transform::ScaledShapeTransform,
 };
 use crate::assets::physworld::query_geometry::QueryShapes;
+pub mod snapshot;
+
+/// Read-only body projection shared by the live physics owner and its
+/// immutable, frame-stamped query publication. Both use the same traversal.
+pub trait PointQueryBodies {
+    fn body(&self, index: u32) -> Option<&super::collision_body::CollisionBody>;
+}
+impl PointQueryBodies for BodyStorage {
+    fn body(&self, index: u32) -> Option<&super::collision_body::CollisionBody> {
+        self.get_by_index(index)
+    }
+}
 
 pub struct WorldQueryShape<'a> {
     pub shapes: &'a QueryShapes,
@@ -65,7 +77,7 @@ impl WorldPointQuery {
     /// signed distance. Equal distances keep the earlier traversal hit.
     pub fn closest_hit<'a>(
         &mut self,
-        bodies: &BodyStorage,
+        bodies: &dyn PointQueryBodies,
         trees: &[PointQueryTree<'_>],
         quantization: PointQuantization,
         request: &WorldPointRequest,
@@ -134,7 +146,7 @@ impl WorldPointQuery {
     /// Only the metadata projection consumed by the view is returned.
     pub fn all_hits<'a>(
         &mut self,
-        bodies: &BodyStorage,
+        bodies: &dyn PointQueryBodies,
         trees: &[PointQueryTree<'_>],
         quantization: PointQuantization,
         point: [f32; 3],
@@ -164,7 +176,7 @@ impl WorldPointQuery {
     /// The caller owns its collector policy and discards results on failure.
     pub fn hits_with_distance<'a>(
         &mut self,
-        bodies: &BodyStorage,
+        bodies: &dyn PointQueryBodies,
         trees: &[PointQueryTree<'_>],
         quantization: PointQuantization,
         point: [f32; 3],
@@ -200,7 +212,7 @@ impl WorldPointQuery {
 }
 
 struct Bodies<'a, F> {
-    bodies: &'a BodyStorage,
+    bodies: &'a dyn PointQueryBodies,
     shapes: &'a mut ShapePointQuery,
     point: [f32; 4],
     query: ShapeHitInfo,
@@ -215,7 +227,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> PointQueryVisit
 {
     fn accepts_body(&mut self, index: u32) -> bool {
         // 1288af0 masks the generation byte before indexing the body array.
-        let Some(body) = self.bodies.get_by_index(index & 0xffffff) else {
+        let Some(body) = self.bodies.body(index & 0xffffff) else {
             self.error
                 .get_or_insert_with(|| format!("point query references missing body slot {index}"));
             return false;
@@ -232,7 +244,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> PointQueryVisit
         let result = (|| {
             let body = self
                 .bodies
-                .get_by_index(index & 0xffffff)
+                .body(index & 0xffffff)
                 .ok_or("point query body disappeared")?;
             let resource = (self.resolve)(body.shape)?;
             self.shapes.hits_with_distance(
