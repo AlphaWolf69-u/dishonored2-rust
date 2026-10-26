@@ -10,6 +10,7 @@ pub mod camera;
 pub mod character_proxy;
 pub mod controller;
 pub mod decls;
+pub mod footsteps;
 pub mod midnight;
 pub mod physics;
 pub mod sensors;

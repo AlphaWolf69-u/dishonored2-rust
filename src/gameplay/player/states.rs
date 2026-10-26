@@ -72,6 +72,10 @@ pub struct StateFlags {
 /// arkDeclPlayerStateNavigation (ctor FUN_1408684c0).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationDecl {
+    pub footstep: super::footsteps::Footstep,
+    pub footstep_upstairs: super::footsteps::Footstep,
+    pub footstep_downstairs: super::footsteps::Footstep,
+    pub progressive_footstep_ratio: f32,
     pub posture: usize,
     pub max_forward_speed: f32,
     pub unequipped_speed_increase: f32,
@@ -103,6 +107,10 @@ pub struct NavigationDecl {
 impl Default for NavigationDecl {
     fn default() -> Self {
         Self {
+            footstep: super::footsteps::Footstep::default(),
+            footstep_upstairs: super::footsteps::Footstep::default(),
+            footstep_downstairs: super::footsteps::Footstep::default(),
+            progressive_footstep_ratio: 1.0,
             posture: POSTURE_STANDING,
             max_forward_speed: 4.0,
             unequipped_speed_increase: 0.0,

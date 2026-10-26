@@ -6,6 +6,7 @@ pub use components::scheduling_bindings as component_scheduling;
 pub mod wind;
 pub mod machinery;
 pub mod physics_material;
+pub mod contacts;
 pub mod midnight;
 pub mod scene_motion;
 pub mod player;

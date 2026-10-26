@@ -365,6 +365,19 @@ pub fn default_state(mode: &Fields) -> StateId {
     atom(mode, "m_defaultStateId").and_then(state_id).unwrap_or(StateId::RUNNING)
 }
 
+fn footstep(fields: &Fields, key: &str, default: super::footsteps::Footstep) -> Result<super::footsteps::Footstep, String> {
+    let Some(fields) = scope(fields, key) else { return Ok(default) };
+    Ok(super::footsteps::Footstep {
+        material: match atom(fields, "m_physMat") {
+            Some("") => None,
+            Some(name) => Some(name.to_owned()),
+            None => default.material,
+        },
+        sound: if atom(fields, "m_soundEvent").is_some() { sound_event_id(fields, "m_soundEvent") } else { default.sound },
+        step_length: number(fields, "m_stepLength", default.step_length)?,
+    })
+}
+
 fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, String> {
     if let Some(name) = atom(fields, "m_posture") {
         d.posture = shape::posture(name).ok_or_else(|| format!("unknown posture {name}"))?;
@@ -373,6 +386,10 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
         d.next_crushed_state = state_id(name).unwrap_or(StateId::NULL);
     }
     Ok(NavigationDecl {
+        footstep: footstep(fields, "m_footStep", d.footstep.clone())?,
+        footstep_upstairs: footstep(fields, "m_footStepUpstairs", d.footstep_upstairs.clone())?,
+        footstep_downstairs: footstep(fields, "m_footStepDownstairs", d.footstep_downstairs.clone())?,
+        progressive_footstep_ratio: number(fields, "m_progressiveFootStepRatio", d.progressive_footstep_ratio)?,
         max_forward_speed: number(fields, "m_maxForwardSpeed", d.max_forward_speed)?,
         unequipped_speed_increase: number(fields, "m_unequippedSpeedIncrease", d.unequipped_speed_increase)?,
         max_backward_speed: number(fields, "m_maxBackwardSpeed", d.max_backward_speed)?,
