@@ -4,6 +4,19 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule { Speakers, Headphones }
 
+/// 1410cbbb0/141104200: mode 2 combines each ray's already attenuated
+/// matrix by per-coefficient maximum. Mode 1 instead sums sources within a
+/// listener before taking the output maximum and must use a different path.
+pub fn directions(matrices: impl IntoIterator<Item = [f32; 4]>) -> [f32; 4] {
+    let mut output = [0.0; 4];
+    for matrix in matrices {
+        for (target, value) in output.iter_mut().zip(matrix) {
+            if *target <= value { *target = value; }
+        }
+    }
+    output
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SpeakerAngles {
     pub horizontal: [f32; 3],

@@ -87,6 +87,27 @@ impl Voice {
 
     pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
         let position = position.ok_or("spatial Wwise event has no emitter position")?;
+        self.direction_targets(scene, &[position], channels)
+    }
+
+    /// Mode 2's per-channel maximum and minimum ray filters (1410cbbb0,
+    /// 141104200, 1410cb3b0). The level owner supplies its projected positions.
+    pub fn direction_targets(&self, scene: &Scene, positions: &[Position], channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+        let [first, remaining @ ..] = positions else { return Err("spatial Wwise event has no admitted position".into()) };
+        let first = self.ray_targets(scene, *first, channels)?;
+        if remaining.is_empty() { return Ok(first); }
+        let mut matrices = vec![first.0];
+        let mut filters = [100.0; 2];
+        for index in 0..2 { if first.1[index] <= filters[index] { filters[index] = first.1[index]; } }
+        for position in remaining {
+            let (matrix, next) = self.ray_targets(scene, *position, channels)?;
+            matrices.push(matrix);
+            for index in 0..2 { if next[index] <= filters[index] { filters[index] = next[index]; } }
+        }
+        Ok((crate::gameplay::sound::panning::directions(matrices), filters))
+    }
+
+    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());

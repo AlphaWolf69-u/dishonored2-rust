@@ -109,6 +109,46 @@ pub struct AttenuationCurve {
     pub points: Vec<CurvePoint>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentCurve {
+    pub enabled: bool,
+    pub scaling: u8,
+    pub points: Vec<CurvePoint>,
+}
+
+/// ENVS: obstruction then occlusion, each with volume, LPF and HPF.
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentSettings {
+    pub curves: [[EnvironmentCurve; 3]; 2],
+}
+
+/// 1410f3450 dispatches ENVS to 1410f5470; 1410f8610/1410f85b0
+/// normalize the two volume tables after loading their conversion points.
+pub(super) fn environment_settings(bytes: &[u8]) -> io::Result<EnvironmentSettings> {
+    let mut reader = Reader { bytes, offset: 0 };
+    let mut settings = EnvironmentSettings::default();
+    for group in &mut settings.curves {
+        for (index, curve) in group.iter_mut().enumerate() {
+            curve.enabled = reader.u8()? != 0;
+            curve.scaling = reader.u8()?;
+            let count = usize::from(reader.u16()?);
+            curve.points = reader.points(count)?;
+            if index == 0 {
+                match curve.scaling {
+                    0 => curve.scaling = 4,
+                    2 => {
+                        for point in &mut curve.points { point.output += 1.0; }
+                        curve.scaling = 0;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if reader.offset != bytes.len() { return Err(invalid("Wwise environment settings did not consume their chunk")); }
+    Ok(settings)
+}
+
 #[derive(Clone, Debug)]
 pub struct AttenuationCone {
     pub inside_half_angle: f32,

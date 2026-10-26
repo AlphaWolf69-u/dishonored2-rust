@@ -94,11 +94,13 @@ pub struct Mixer {
     pub buses: HashMap<u32, NodeProperties>,
     pub parameters: HashMap<u32, f32>,
     pub volume_threshold_db: f32,
+    pub environment: crate::assets::wwise::EnvironmentSettings,
 }
 
 impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
-        Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters, volume_threshold_db: bank.volume_threshold_db }
+        Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
+            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment }
     }
 }
 

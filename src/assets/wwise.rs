@@ -10,7 +10,7 @@ mod bank;
 mod declaration;
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    CurvePoint, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+    CurvePoint, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -633,6 +633,7 @@ pub struct BankMix {
     pub buses: Vec<NodeProperties>,
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
+    pub environment: EnvironmentSettings,
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
@@ -658,7 +659,9 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     for ((kind, _), object) in objects {
         if kind == 8 { buses.push(bank::bus_properties(object, feedback)?); }
     }
-    Ok(Some(BankMix { buses, parameters, volume_threshold_db }))
+    // 1410f85a0 disables all six environment tables before ENVS is loaded.
+    let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
+    Ok(Some(BankMix { buses, parameters, volume_threshold_db, environment }))
 }
 
 fn media_from_sound(

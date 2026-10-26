@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut admitted = 0usize;
                 let mut active = 0usize;
                 let mut projected = 0usize;
+                let mut mixable = 0usize;
                 for binding in bindings {
                     let startup = binding.startup();
                     if !startup.deferred { continue; }
@@ -59,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     admitted += 1;
                     let result = paths::evaluate(&world.graph, &paths::Query {
                         source: query.source, listener: query.listener, source_zone, listener_zone,
-                        range: query.range, propagation: query.propagation, reflection_normal: None, source_obstruction_scale: 1.0,
+                        range: query.range, propagation: query.propagation, reflection_normal: None, source_occlusion_scale: 1.0,
                     })?;
                     active += usize::from(result.closest.is_some());
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
@@ -74,9 +75,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                         Err(error) => println!("  playback position projection unresolved: {error}"),
                     }
+                    match dishonored2_rust::gameplay::sound::positions::for_mixing(
+                        &[&result], closest, query.range, binding.frame.basis[0].into(),
+                    ) {
+                        Ok(positions) => {
+                            mixable += 1;
+                            println!("  mode-2 mixing positions: {positions:?}");
+                        }
+                        Err(error) => println!("  mode-2 mixing unresolved: {error}"),
+                    }
                 }
                 println!("{deferred} declared deferred loops, {admitted} admitted origins, {active} audible active results at player start");
                 println!("{projected} emitter position lists resolved from authored acoustic paths");
+                println!("{mixable} emitter position lists resolved for mode-2 mixing");
             }
             world.release()?;
         }
@@ -128,6 +139,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
+                for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
+                    println!("  {group} {property}: enabled={} scaling={} points={:?}", curve.enabled, curve.scaling, curve.points);
+                }
+            }
             let mut parameters = mix.parameters.iter().collect::<Vec<_>>();
             parameters.sort_by_key(|(id, _)| **id);
             for (id, value) in parameters { println!("parameter={id:#010x} default={value}"); }
