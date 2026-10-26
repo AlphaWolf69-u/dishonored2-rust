@@ -117,7 +117,7 @@ impl Mixer {
         let mut game_decibels = 0.0;
         if let Some(node) = source.nodes.iter().find(|node| node.auxiliary_flags & 1 != 0 || node.parent == 0) {
             game_enabled = node.auxiliary_flags & 2 != 0;
-            game_decibels = self.auxiliary_property(node, 0x16, 0x13, parameters)?;
+            game_decibels = node.float(0x16) + self.rtpc_contribution(node, 0x13, parameters)?;
         }
         let mut user = Vec::new();
         if let Some(node) = source.nodes.iter().find(|node| node.auxiliary_flags & 4 != 0 || node.parent == 0) {
@@ -126,26 +126,28 @@ impl Mixer {
             if node.auxiliary_buses.iter().any(|bus| *bus != 0) {
                 for (slot, &bus) in node.auxiliary_buses.iter().enumerate() {
                     user.push(super::auxiliary::UserSend { bus,
-                        decibels: self.auxiliary_property(node, 0x12 + slot as u8, 0x38 + slot as u8, parameters)? });
+                        decibels: node.float(0x12 + slot as u8) + self.rtpc_contribution(node, 0x38 + slot as u8, parameters)? });
                 }
             }
         }
         super::auxiliary::controls(game, game_enabled, game_decibels, &user)
     }
 
-    fn auxiliary_property(&self, node: &NodeProperties, property: u8, rtpc: u8,
+    /// Subscription evaluation (1410d1480/1410cf060/1410cf230). Authored
+    /// properties are added by their callers, after the curve fold.
+    fn rtpc_contribution(&self, node: &NodeProperties, rtpc: u8,
         parameters: &[(u32, f32)]) -> Result<f32, String>
     {
         let mut contribution = None;
         let mut accumulation = None;
         for curve in node.curves.iter().filter(|curve| curve.property == rtpc) {
-            if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter auxiliary curve", node.id)); }
+            if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter curve", node.id)); }
             let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
                 .or_else(|| self.parameters.get(&curve.parameter).copied())
                 .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
-            let next = curve_value(curve, input).ok_or("empty Wwise auxiliary curve")?;
+            let next = curve_value(curve, input).ok_or("empty Wwise parameter curve")?;
             if accumulation.is_some_and(|mode| mode != curve.accumulation) {
-                return Err("Wwise auxiliary curves disagree on subscription accumulation".into());
+                return Err("Wwise curves disagree on subscription accumulation".into());
             }
             accumulation = Some(curve.accumulation);
             // 1410d1480 selects 1410cf230 for multiplicative subscriptions,
@@ -155,7 +157,7 @@ impl Mixer {
                 contribution.unwrap_or(1.0) * next
             } else { contribution.unwrap_or(0.0) + next });
         }
-        Ok(node.float(property) + contribution.unwrap_or(0.0))
+        Ok(contribution.unwrap_or(0.0))
     }
 
     /// Source pitch (2), LPF (3), and HPF (4), accumulated through the
@@ -172,21 +174,8 @@ impl Mixer {
         if !matches!(property, 2 | 3 | 4) { return Err("unsupported Wwise source property".into()); }
         let mut result = 0.0;
         for node in &source.nodes {
-            let mut value = node.float(property);
-            for curve in node.curves.iter().filter(|curve| curve.property == property) {
-                if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter source curve", node.id)); }
-                let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
-                    .or_else(|| self.parameters.get(&curve.parameter).copied())
-                    .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
-                let next = curve_value(curve, input).ok_or("empty Wwise source curve")?;
-                match curve.accumulation {
-                    0 => value = next,
-                    1 => value += next,
-                    2 => value *= next,
-                    _ => return Err("unsupported Wwise source accumulation".into()),
-                }
-            }
-            result += value;
+            result += node.float(property);
+            result = self.rtpc_contribution(node, property, parameters)? + result;
         }
         Ok(result)
     }
@@ -194,22 +183,13 @@ impl Mixer {
     fn node_volume(&self, node: &NodeProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
         // RTPC parameter IDs differ from static property IDs for makeup gain
         // and output-bus volume in bank version 113.
-        let mut values = [node.float(0), node.float(5), node.float(0x21), node.float(0x17)];
-        for curve in &node.curves {
-            let slot = match curve.property { 0 => 0, 5 => 1, 0x24 => 2, 0x3c => 3, _ => continue };
-            if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter volume curve", node.id)); }
-            let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
-                .or_else(|| self.parameters.get(&curve.parameter).copied())
-                .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
-            let value = curve_value(curve, input).ok_or("empty Wwise volume curve")?;
-            match curve.accumulation {
-                0 => values[slot] = value,
-                1 => values[slot] += value,
-                2 => values[slot] *= value,
-                _ => return Err("unsupported Wwise volume accumulation".into()),
-            }
+        // Source values: 1410dbb30; bus values: 14111e0d0/14111e660.
+        let mut value = 0.0;
+        for (property, rtpc) in [(0, 0), (5, 5), (0x21, 0x24), (0x17, 0x3c)] {
+            value += node.float(property);
+            value = self.rtpc_contribution(node, rtpc, parameters)? + value;
         }
-        Ok(values.into_iter().sum())
+        Ok(value)
     }
 
     pub fn volume_db(&self, source: &MediaProperties) -> Result<f32, String> {
