@@ -244,3 +244,5 @@ pub mod alpha_depth_scene;
 pub mod screen_effects;
 #[cfg(feature = "game")]
 pub mod particle_pass;
+#[cfg(feature = "game")]
+pub(crate) mod particle_system;

@@ -1,11 +1,17 @@
 //! CPU player FX lifecycle, separate from the retained GPU distortion passes.
 //! The view owner supplies its actual underwater state and camera publication.
-use super::{particles, sources, PlayingQuad, QuadDraw, ScreenEffectSources};
+use super::super::particle_system::ParticleSystem;
+use super::{sources, PlayingQuad, QuadDraw, ScreenEffectSources};
 use crate::{
     assets::fx::screen_quad::ScreenQuadStage,
     gameplay::effects::environment::EnvironmentBlendEffect,
 };
 use bevy::prelude::{info, warn};
+
+struct ScreenParticle {
+    leaving: bool,
+    system: ParticleSystem,
+}
 
 #[derive(Default)]
 pub(crate) struct ScreenEffectState {
@@ -14,7 +20,7 @@ pub(crate) struct ScreenEffectState {
     seed: u32,
     frame: Option<u32>,
     quads: Vec<PlayingQuad>,
-    particles: Vec<particles::PlayingParticle>,
+    particles: Vec<ScreenParticle>,
     query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
     ray: crate::gameplay::world_ray_query::WorldRayQuery,
 }
@@ -22,7 +28,10 @@ impl ScreenEffectState {
     pub(crate) fn particle_capacity(&self) -> (usize, usize) {
         let mut instances = 0;
         let mut draws = 0;
-        for particle in &self.particles {
+        for ScreenParticle {
+            system: particle, ..
+        } in &self.particles
+        {
             for stage in &particle.stages {
                 let sprites = stage.declaration.stages[stage.index]
                     .sprites
@@ -44,7 +53,10 @@ impl ScreenEffectState {
         ) -> Result<super::ParticleDrawContext<'a>, String>,
     ) -> Result<Vec<super::super::particle_pass::ParticleDraw>, String> {
         let mut draws = Vec::new();
-        for particle in &self.particles {
+        for ScreenParticle {
+            system: particle, ..
+        } in &self.particles
+        {
             if let Some(pose) = particle.draw_pose(frame) {
                 particle.publish_draws(frame, context(pose)?, &mut draws)?;
             }
@@ -71,36 +83,11 @@ impl ScreenEffectState {
         let query = self.query.as_mut().unwrap();
         let ray = &mut self.ray;
         let mut error = None;
-        for particle in &mut self.particles {
-            let result = (|| {
-                let Some(publication) = particle.publication.as_ref().filter(|p| p.visible) else {
-                    return Ok(());
-                };
-                let Some(stage) = particle.stages.first() else {
-                    return Ok(());
-                };
-                let settings = &stage.declaration.clipping;
-                let surface = if settings.use_ocean_plane {
-                    match world.particle_water_height(
-                        query,
-                        ray,
-                        publication.pose.position,
-                        settings.water_volume_raycast_distance,
-                    )? {
-                        Some(height) => Some(
-                            crate::rendering::particles::clipping::ParticleWaterSurface::Volume(
-                                height,
-                            ),
-                        ),
-                        None => ocean_height.map(
-                            crate::rendering::particles::clipping::ParticleWaterSurface::Ocean,
-                        ),
-                    }
-                } else {
-                    None
-                };
-                particle.simulate(frame, surface, particle.source_velocity)
-            })();
+        for ScreenParticle {
+            system: particle, ..
+        } in &mut self.particles
+        {
+            let result = particle.simulate_in_world(frame, world, query, ray, ocean_height);
             if let Err(failure) = result {
                 error.get_or_insert(failure);
             }
@@ -125,15 +112,10 @@ impl ScreenEffectState {
                     .as_ref()
                     .map_err(Clone::clone)
                     .and_then(|definition| {
-                        particles::PlayingParticle::start(
-                            definition,
-                            offsets,
-                            leaving,
-                            &mut self.seed,
-                        )
+                        ParticleSystem::start(definition, offsets, &mut self.seed)
                     });
                 match result {
-                    Ok(Some(particle)) => self.particles.push(particle),
+                    Ok(Some(system)) => self.particles.push(ScreenParticle { leaving, system }),
                     Ok(None) => {}
                     Err(error) => warn!("Player particle FX unavailable: {error}"),
                 }
@@ -166,7 +148,7 @@ impl ScreenEffectState {
         if self.frame != Some(frame) {
             self.age += delta;
             self.quads.retain(|q| q.blend.active);
-            self.particles.retain(|p| p.effect.active);
+            self.particles.retain(|p| p.system.effect.active);
             if underwater != self.underwater {
                 // Stop the opposite FX instance before starting its replacement.
                 for quad in &mut self.quads {
@@ -176,7 +158,7 @@ impl ScreenEffectState {
                 }
                 for particle in &mut self.particles {
                     if particle.leaving == underwater {
-                        particle.effect.stop(self.age);
+                        particle.system.effect.stop(self.age);
                     }
                 }
                 self.start(
@@ -199,8 +181,24 @@ impl ScreenEffectState {
                     .cvars
                     .float("pm_screenParticleOffset")
                     .ok_or("pm_screenParticleOffset is not registered")?;
-                for particle in &mut self.particles {
-                    particle.update(self.age, camera, offset, delta, underwater, &mut self.seed)?;
+                for ScreenParticle {
+                    system: particle, ..
+                } in &mut self.particles
+                {
+                    particle.update(
+                        self.age,
+                        &crate::gameplay::effects::particle::ParticleEffectFrame {
+                            owner: camera,
+                            camera: Some(camera),
+                            screen_offset: offset,
+                            view_mask: 1,
+                            allowed_mask: 1,
+                            bounds_dirty: false,
+                            delta,
+                        },
+                        underwater,
+                        &mut self.seed,
+                    )?;
                 }
             }
             self.frame = Some(frame);

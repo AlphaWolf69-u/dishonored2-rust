@@ -1,5 +1,6 @@
 pub mod game_clock;
 pub mod effects;
+pub mod event_gate;
 pub mod particles;
 pub mod sound;
 #[cfg(feature = "game")]

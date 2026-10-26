@@ -7,6 +7,7 @@ pub mod envelope;
 pub mod groups;
 pub mod parameters;
 pub mod particle;
+pub mod world_node;
 pub mod pool;
 pub mod sound;
 pub mod timing;

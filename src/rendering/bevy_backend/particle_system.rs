@@ -1,6 +1,6 @@
-//! Player FX particle instances share their parent screen effect's timing and
-//! random generator. Stage simulation and draw publication retain their slots.
-use super::sources::ParticleDefinition;
+//! Particle FX instances consume their parent owner, camera and shared RNG.
+//! Stage simulation and draw publication retain their slots.
+use crate::rendering::particles::definition::ParticleDefinition;
 use crate::{
     gameplay::{
         effects::particle::{ParticleEffect, ParticleEffectFrame, ParticlePublication},
@@ -25,11 +25,10 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub query_visibility: f32,
     pub alpha_scale: f32,
     pub cvars: &'a crate::platform::cvars::CVars,
-    pub areas: &'a [super::super::fog::AreaFogFrame],
+    pub areas: &'a [super::fog::AreaFogFrame],
 }
 
-pub(super) struct PlayingParticle {
-    pub leaving: bool,
+pub(crate) struct ParticleSystem {
     pub effect: ParticleEffect,
     pub stages: Vec<StageSimulation>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
@@ -43,7 +42,7 @@ pub(super) struct PlayingParticle {
     pub water_flags: u32,
     simulated_frame: Option<u32>,
 }
-impl PlayingParticle {
+impl ParticleSystem {
     pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
         (self.simulated_frame == Some(frame))
             .then(|| {
@@ -59,7 +58,7 @@ impl PlayingParticle {
         &self,
         frame: u32,
         context: ParticleDrawContext<'_>,
-        output: &mut Vec<super::super::particle_pass::ParticleDraw>,
+        output: &mut Vec<super::particle_pass::ParticleDraw>,
     ) -> Result<(), String> {
         if self.simulated_frame != Some(frame) {
             return Ok(());
@@ -95,7 +94,7 @@ impl PlayingParticle {
             context.view_z,
         )
         .map(|selected| {
-            super::super::fog_objects::FogObjectParameters::selected(
+            super::fog_objects::FogObjectParameters::selected(
                 &context.areas[selected.index],
                 selected.depths,
             )
@@ -152,7 +151,7 @@ impl PlayingParticle {
                     transparency.mode != 0,
                     self.water_flags & 8 != 0,
                 );
-                output.push(super::super::particle_pass::ParticleDraw {
+                output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
                     transparency,
                     state,
@@ -180,7 +179,6 @@ impl PlayingParticle {
     pub fn start(
         definition: &ParticleDefinition,
         offsets: [f32; 4],
-        leaving: bool,
         seed: &mut u32,
     ) -> Result<Option<Self>, String> {
         let Some(index) =
@@ -240,7 +238,6 @@ impl PlayingParticle {
             }
         }
         Ok(Some(Self {
-            leaving,
             effect,
             stages,
             materials: definition.materials.clone(),
@@ -271,26 +268,11 @@ impl PlayingParticle {
     pub fn update(
         &mut self,
         now: f32,
-        camera: ReferenceFrame,
-        screen_offset: f32,
-        delta: f32,
+        frame: &ParticleEffectFrame,
         view_underwater: bool,
         seed: &mut u32,
     ) -> Result<(), String> {
-        self.publication = self.effect.update(
-            now,
-            &ParticleEffectFrame {
-                owner: camera,
-                camera: Some(camera),
-                screen_offset,
-                view_mask: 1,
-                allowed_mask: 1,
-                bounds_dirty: false,
-                delta,
-            },
-            self.finished(),
-            seed,
-        )?;
+        self.publication = self.effect.update(now, frame, self.finished(), seed)?;
         if let Some(stage) = self.stages.first() {
             crate::render_model::update_particle_water_flags(
                 &mut self.water_flags,
@@ -305,6 +287,37 @@ impl PlayingParticle {
     /// Consume a completed physics/ocean lookup at the published FX origin.
     /// None means neither a queried water body nor an active ocean was found;
     /// an unavailable query must be resolved before invoking this method.
+    pub fn simulate_in_world(
+        &mut self,
+        frame: u32,
+        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+        point_query: &mut crate::gameplay::world_point_query::WorldPointQuery,
+        ray_query: &mut crate::gameplay::world_ray_query::WorldRayQuery,
+        ocean_height: Option<f32>,
+    ) -> Result<(), String> {
+        let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
+            return Ok(());
+        };
+        let Some(stage) = self.stages.first() else {
+            return Ok(());
+        };
+        let settings = &stage.declaration.clipping;
+        let surface = if settings.use_ocean_plane {
+            match world.particle_water_height(
+                point_query,
+                ray_query,
+                publication.pose.position,
+                settings.water_volume_raycast_distance,
+            )? {
+                Some(height) => Some(ParticleWaterSurface::Volume(height)),
+                None => ocean_height.map(ParticleWaterSurface::Ocean),
+            }
+        } else {
+            None
+        };
+        self.simulate(frame, surface, self.source_velocity)
+    }
+
     pub fn simulate(
         &mut self,
         frame: u32,
