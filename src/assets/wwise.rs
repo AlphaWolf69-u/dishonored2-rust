@@ -21,6 +21,11 @@ pub fn declared_rtpc_id(source: &str) -> io::Result<u32> {
     declared_engine_id(source, "m_engineID")
 }
 
+/// arkDeclSoundAuxBus uses the same reflected engine-ID member spelling.
+pub fn declared_auxiliary_id(source: &str) -> io::Result<u32> {
+    declared_engine_id(source, "m_engineID")
+}
+
 /// arkDeclSoundRTPC's constructor (1400b4510) initializes all three values
 /// to zero. The declaration supplies partial edits over those defaults.
 #[derive(Clone, Copy, Debug)]

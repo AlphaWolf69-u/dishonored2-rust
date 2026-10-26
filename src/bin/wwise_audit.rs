@@ -39,6 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("authored player start {:?}: acoustic zone {:?}", player.position, listener_zone);
             if inspect_audio {
                 use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
+                use dishonored2_rust::gameplay::sound::auxiliary;
+                let auxiliary_buses = auxiliary::Buses::load(&world.graph, |path| {
+                    catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+                })?;
+                let detail = dishonored2_rust::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
+                    .ok_or("environmental audio detail cvar is absent")?;
                 let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
                     catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
                 })?;
@@ -67,6 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
                         binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
                     let closest = result.closest.and_then(|index| result.paths.get(index));
+                    let sends = auxiliary::project(&world.graph, closest, binding.settings.auxiliary_sends,
+                        detail, |name| auxiliary_buses.resolve(name))?;
+                    println!("  environmental sends: {sends:?}");
                     match dishonored2_rust::gameplay::sound::positions::project(
                         &[&result], closest, query.range, binding.frame.basis[0].into(),
                     ) {
