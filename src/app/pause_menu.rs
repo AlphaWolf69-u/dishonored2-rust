@@ -459,10 +459,8 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 phases[1] = tick_started.elapsed();
                 let pressed = l.pressed.take();
                 changed |= pressed.is_some();
-                if let Err(e) = l.pause.update(&mut l.player, pressed) {
-                    warn!("Pause options: {e}");
-                }
-                let handled = l.pause.handle_notifications(&mut l.player, &mut unhandled).and_then(|mut r| {
+                let handled = l.pause.update(&mut l.player, pressed).and_then(|mut r| {
+                    r.extend(l.pause.handle_notifications(&mut l.player, &mut unhandled)?);
                     r.extend(l.pause.handle_global_notifications(&mut l.player, &mut unhandled)?);
                     Ok(r)
                 });

@@ -311,14 +311,11 @@ pub fn run(
     let body = unit.body(index)?;
     let declared = info.params.len();
     let flags = info.flags;
-    let required = declared - info.params.iter().filter(|p| p.default_value.is_some()).count();
-    let rest = flags.contains(MethodFlags::NEED_REST) || flags.contains(MethodFlags::NEED_ARGUMENTS);
-    if args.len() < required || (args.len() > declared && !rest && !flags.contains(MethodFlags::IGNORE_REST)) {
-        return Err(vm.argument_error(
-            1063,
-            format!("Argument count mismatch on {}. Expected {}, got {}.", info.name.0, declared, args.len()),
-        ));
-    }
+    // Iggy checks no argument count: its only ArgumentError raises
+    // (`FUN_1410459a0(player, 0x72)`) are the class-coercion call, construct
+    // and addChild/addChildAt. Extra arguments are dropped and missing ones
+    // take their default or undefined; the movies rely on it (event
+    // listeners such as `CustomDifficultyScreen._BPressed()` take none).
     if this.is_nullish() {
         if let Some(global) = outer.first() {
             this = global.value.clone();
