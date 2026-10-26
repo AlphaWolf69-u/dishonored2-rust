@@ -192,8 +192,14 @@ impl Mixer {
         self.voice_routing_inner(source, parameters, false)
     }
 
-    pub fn source_ducks(&self, source: &MediaProperties) -> Result<bool, String> {
-        Ok(self.bus_chain(source.bus)?.iter().any(|bus| bus.bus_settings.as_ref().is_some_and(|settings| !settings.ducks.is_empty())))
+    /// Both playing-count owners and receiving buses need the output clock's
+    /// ducking transitions, rather than frame-rate host volume updates.
+    pub fn source_has_ducking(&self, source: &MediaProperties) -> Result<bool, String> {
+        Ok(self.bus_chain(source.bus)?.iter().any(|bus| {
+            bus.bus_settings.as_ref().is_some_and(|settings| !settings.ducks.is_empty())
+                || self.buses.values().any(|source| source.bus_settings.as_ref().is_some_and(|settings|
+                    settings.ducks.iter().any(|duck| duck.bus == bus.id)))
+        }))
     }
 
     fn voice_routing_inner(&self, source: &MediaProperties, parameters: &[(u32, f32)], ducking: bool) -> Result<VoiceRouting, String> {
