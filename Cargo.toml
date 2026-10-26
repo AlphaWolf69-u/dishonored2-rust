@@ -28,7 +28,9 @@ swf = { version = "0.3.0", default-features = false }
 # Reuse Bevy/wgpu's existing logging facade to set its fast runtime level cap.
 log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }
-bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts"] }
+bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio"] }
+ww2ogg = "0.1.0"
+rand = "0.10.3"
 
 [patch.crates-io]
 winit = { path = "vendor/winit-0.30.13" }
@@ -81,6 +83,10 @@ path = "src/bin/physworld_audit.rs"
 [[bin]]
 name = "entity-audit"
 path = "src/bin/entity_audit.rs"
+
+[[bin]]
+name = "wwise-audit"
+path = "src/bin/wwise_audit.rs"
 
 [[bin]]
 name = "level-audit"

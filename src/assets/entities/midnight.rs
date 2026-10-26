@@ -1,6 +1,6 @@
 //! Midnight scene decls (arkDeclMidnightScene) as the player body plays
 //! them: group infos, scenes with their EMTT_ANIM clip keys and EMTT_EVENT
-//! point keys, CONDMD6 graph nodes and the settings. Sfx, barks, motion and
+//! point keys, SFX keys, CONDMD6 graph nodes and the settings. Barks, motion and
 //! timed-event tracks are not read here.
 use super::scene_motion::{atom, child, items};
 use super::{field, float, parse_declaration, Value};
@@ -48,11 +48,23 @@ pub struct EventKey {
     pub event: String,
 }
 
+/// An EMTT_SFX key with arkMidnightKeyPropSfx (reflection 1415c4ff0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundKey {
+    pub time_ms: i32,
+    pub event: String,
+    pub is_clip: bool,
+    pub duration_ms: i32,
+    pub stop_on_interruption: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneGroup {
     pub group: u32,
+    pub specific_models: Vec<String>,
     pub anim_keys: Vec<AnimKey>,
     pub events: Vec<EventKey>,
+    pub sounds: Vec<SoundKey>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -170,7 +182,14 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
             if boolean(g, "m_isDisabled") {
                 continue;
             }
-            let mut group = SceneGroup { group: uid(child(g, "m_handle"), "groupUID")?, anim_keys: Vec::new(), events: Vec::new() };
+            let mut specific_models = atoms(child(g, "m_specificMD6s")).into_iter().map(str::to_owned).collect::<Vec<_>>();
+            if let Some(model) = atom(g, "m_specificMD6").filter(|model| !model.is_empty() && *model != "NULL") {
+                specific_models.push(model.to_owned());
+            }
+            let mut group = SceneGroup {
+                group: uid(child(g, "m_handle"), "groupUID")?, specific_models,
+                anim_keys: Vec::new(), events: Vec::new(), sounds: Vec::new(),
+            };
             for track in items(child(g, "m_lTracks")).map(object) {
                 let track_type = atom(track, "m_trackType");
                 for key in items(child(track, "m_keys")) {
@@ -201,6 +220,13 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                         Some("EMTT_EVENT") => group.events.push(EventKey {
                             time_ms: int(key, "m_startTime", 0)?,
                             event: atom(prop, "m_event").unwrap_or("").to_owned(),
+                        }),
+                        Some("EMTT_SFX") => group.sounds.push(SoundKey {
+                            time_ms: int(key, "m_startTime", 0)?,
+                            event: atom(prop, "m_soundEvent").unwrap_or("").to_owned(),
+                            is_clip: atom(key, "m_type") == Some("EMKT_CLIP"),
+                            duration_ms: int(key, "m_duration", 0)?,
+                            stop_on_interruption: boolean(prop, "m_stopEventOnInterruption"),
                         }),
                         _ => {}
                     }

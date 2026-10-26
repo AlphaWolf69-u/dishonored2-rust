@@ -139,6 +139,9 @@ pub struct JumpingDecl {
     pub maximum_velocity: f32,
     pub steepness: f32,
     pub ceil_collision_factor: f32,
+    pub jump_sound_event: Option<u32>,
+    pub double_jump_sound_event: Option<u32>,
+    pub super_jump_sound_event: Option<u32>,
 }
 
 impl Default for JumpingDecl {
@@ -151,6 +154,9 @@ impl Default for JumpingDecl {
             maximum_velocity: 13.0,
             steepness: 0.28,
             ceil_collision_factor: 0.5,
+            jump_sound_event: None,
+            double_jump_sound_event: None,
+            super_jump_sound_event: None,
         }
     }
 }
@@ -320,8 +326,7 @@ impl Default for SlippingDecl {
 }
 
 /// arkDeclPlayerStateLeaning (ctor FUN_14085d010). Durations are seconds;
-/// buttons are eActions_t. The start/stop sounds and HUD labels are not
-/// ported.
+/// buttons are eActions_t. HUD labels are not ported.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LeaningDecl {
     pub lean_speed_gamepad: f32,
@@ -342,6 +347,10 @@ pub struct LeaningDecl {
     pub lean_right_button: i32,
     pub lean_up_button: i32,
     pub lean_down_button: i32,
+    /// `m_startSoundEvent` (`arkDeclPlayerStateLeaning` +0xa8).
+    pub start_sound_event: Option<u32>,
+    /// `m_stopSoundEvent` (`arkDeclPlayerStateLeaning` +0xb0).
+    pub stop_sound_event: Option<u32>,
 }
 
 impl Default for LeaningDecl {
@@ -364,6 +373,8 @@ impl Default for LeaningDecl {
             lean_right_button: ACTION_LEAN_RIGHT,
             lean_up_button: ACTION_MOVE_FORWARD,
             lean_down_button: ACTION_MOVE_BACKWARD,
+            start_sound_event: None,
+            stop_sound_event: None,
         }
     }
 }
@@ -646,6 +657,7 @@ struct Jump {
     apex_z: f32,
     max_velocity: f32,
     steepness: f32,
+    sound_event: Option<u32>,
     leaving_to_falling: bool,
 }
 
@@ -678,6 +690,23 @@ struct Slide {
 
 /// The installed midnight scenes the states play, by decl path.
 pub type Scenes = std::collections::HashMap<String, Arc<PreparedScene>>;
+
+/// Midnight resources required by the player states currently hosted here.
+pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
+    let mut result = Vec::new();
+    for state in states {
+        let paths: Vec<&String> = match &state.kind {
+            Kind::CatFall(d) => d.low_damage_midnight.iter().chain(d.high_damage_midnight.iter()).collect(),
+            Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
+            Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
+            _ => Vec::new(),
+        };
+        for path in paths {
+            if !result.contains(path) { result.push(path.clone()); }
+        }
+    }
+    result
+}
 
 /// arkCpntRetargeting of the mantle dummy with the player as its slave
 /// (FUN_140860680 setup, FUN_1407583e0 update, FUN_140757c10 release).
@@ -731,6 +760,8 @@ struct Leaning {
     rotation_blend: f32,
     recenter_timer: f32,
     exit_timer: f32,
+    /// +0x36: the native has posted the start cue and awaits the stop cue.
+    sound_active: bool,
 }
 
 /// FUN_14085d380.
@@ -808,6 +839,7 @@ pub struct StateMachine {
     queue: Vec<Command>,
     rules: HashMap<(StateId, StateId), Rule>,
     default_state: StateId,
+    pending_sounds: Vec<u32>,
 }
 
 fn cos_snap(degrees: f32) -> f32 {
@@ -837,7 +869,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new() }
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -899,11 +931,15 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new() }
     }
 
     pub fn active_states(&self) -> &[StateId] {
         &self.active
+    }
+
+    pub fn take_sound_events(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_sounds)
     }
 
     pub fn is_active(&self, id: StateId) -> bool {
@@ -1021,13 +1057,13 @@ impl StateMachine {
 
     /// The installed scene at `path` started on the player (FUN_1408549c0);
     /// 0 when it is missing or fails to start.
-    fn play(path: Option<&String>, rate: f32, frame: &mut Frame) -> u32 {
+    fn play(path: Option<&String>, rate: f32, parts: u8, frame: &mut Frame) -> u32 {
         let Some(path) = path else { return 0 };
         let Some(scene) = frame.scenes.get(path) else {
             eprintln!("Midnight scene {path} was not loaded");
             return 0;
         };
-        match frame.midnight.start(scene, frame.md6, rate, frame.animations) {
+        match frame.midnight.start_with_parts(scene, frame.md6, rate, frame.animations, parts) {
             Ok(handle) => handle,
             Err(error) => {
                 eprintln!("Midnight scene {path}: {error}");
@@ -1316,7 +1352,8 @@ impl StateMachine {
             let scene = if high { catfall.high_damage_midnight.as_ref() } else { catfall.low_damage_midnight.as_ref() };
             frame.follow_slope.midnight_requests += 1;
             let rate = frame.attributes.0.get("ARK_ATTRIBUTE_CATFALL_SPEED_FACTOR").copied().unwrap_or(1.0);
-            self.states[index].midnight = Self::play(scene, rate, frame);
+            // CatFall 14085b400 casts body and both empty arms (mask 7).
+            self.states[index].midnight = Self::play(scene, rate, 7, frame);
             return;
         }
         if let Kind::Mantle(mantle) = &decl.kind {
@@ -1359,6 +1396,7 @@ impl StateMachine {
                 rotation_blend: 1.0,
                 recenter_timer: leaning.recenter_delay,
                 exit_timer: leaning.exit_delay,
+                sound_active: false,
             };
             frame.lean.set(state.left, state.up, 1.0, frame.lean_sensor);
             self.states[index].leaning = state;
@@ -1442,9 +1480,10 @@ impl StateMachine {
                     apex_z: frame.origin.z,
                     max_velocity: jumping.maximum_velocity,
                     steepness: jumping.steepness,
+                    sound_event: jumping.jump_sound_event,
                     leaving_to_falling: false,
                 };
-                Self::do_jump(jump, frame.physics);
+                Self::do_jump(jump, frame.physics, &jumping, &mut self.pending_sounds);
                 // 0x140867d03.
                 frame.jump_anim.start(in_air.from_sneaking, 1.0, false);
             }
@@ -1516,10 +1555,16 @@ impl StateMachine {
     }
 
     /// FUN_1408680a0.
-    fn do_jump(jump: &mut Jump, physics: &mut PlayerPhysics) {
+    /// FUN_1408680a0 posts the current +0xb0 cue, decrements the remaining
+    /// impulses, then replaces that cue with m_doubleJumpSoundEvent if one remains.
+    fn do_jump(jump: &mut Jump, physics: &mut PlayerPhysics, decl: &JumpingDecl, sounds: &mut Vec<u32>) {
+        if let Some(event) = jump.sound_event { sounds.push(event); }
         jump.apex_z += jump.height;
         physics.start_vertical(jump.apex_z, jump.max_velocity, jump.steepness);
         jump.successive -= 1;
+        if jump.successive > 0 {
+            jump.sound_event = decl.double_jump_sound_event;
+        }
     }
 
     /// Slot 12 Deactivate.
@@ -1566,6 +1611,10 @@ impl StateMachine {
         }
         if let Kind::Leaning(leaning) = self.states[index].decl.kind {
             // FUN_14085d490.
+            if self.states[index].leaning.sound_active {
+                if let Some(event) = leaning.stop_sound_event { self.pending_sounds.push(event); }
+                self.states[index].leaning.sound_active = false;
+            }
             frame.lean.end(leaning.blend_duration);
             return;
         }
@@ -1733,7 +1782,10 @@ impl StateMachine {
         self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8 };
         if scenes[slot].is_some() {
             let rate = frame.attributes.0.get("ARK_ATTRIBUTE_MANTLE_SPEED_FACTOR").copied().unwrap_or(1.0);
-            self.states[index].midnight = Self::play(scenes[slot].as_ref(), rate, frame);
+            // Mantle casting 140860030 uses the sensor's hand flags. The
+            // corpse/equipment branch is absent while both hands are empty.
+            let parts = 1 | if sensor.use_left_hand { 2 } else { 0 } | if sensor.use_right_hand { 4 } else { 0 };
+            self.states[index].midnight = Self::play(scenes[slot].as_ref(), rate, parts, frame);
             // FUN_140860680: retarget the player onto the dummy at the destination.
             let low = height == MantleHeight::Low;
             *frame.retargeting = Some(Retargeting {
@@ -1861,7 +1913,8 @@ impl StateMachine {
         }
         *frame.random = frame.random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
         let pick = ((*frame.random >> 10) & 0x7fff) as usize % list.len();
-        let handle = Self::play(Some(&list[pick]), 1.0, frame);
+        // Vault 140872490 casts all three parts with no carried equipment.
+        let handle = Self::play(Some(&list[pick]), 1.0, 7, frame);
         if handle == 0 {
             return false;
         }
@@ -2009,9 +2062,17 @@ impl StateMachine {
             new_left = 0.0;
         }
         st.recenter_timer -= dt;
+        let motion = (st.left - new_left).abs().max((st.up - new_up).abs());
         st.left = new_left;
         st.up = new_up;
         frame.lean.set(new_left, new_up, st.rotation_blend, frame.lean_sensor);
+        if !st.sound_active && motion > 0.0 {
+            if let Some(event) = decl.start_sound_event { self.pending_sounds.push(event); }
+            st.sound_active = true;
+        } else if st.sound_active && motion <= 0.0 {
+            if let Some(event) = decl.stop_sound_event { self.pending_sounds.push(event); }
+            st.sound_active = false;
+        }
         self.states[index].leaning = st;
     }
 
@@ -2283,7 +2344,8 @@ impl StateMachine {
         if !frame.physics.vertical_active() {
             if frame.physics.ground.state == SupportState::Unsupported {
                 if jump.successive > 0 && jump_held {
-                    Self::do_jump(&mut self.states[index].jump, frame.physics);
+                    let jump = &mut self.states[index].jump;
+                    Self::do_jump(jump, frame.physics, decl, &mut self.pending_sounds);
                 } else {
                     self.quit(id);
                     self.states[index].jump.leaving_to_falling = true;

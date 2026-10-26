@@ -8,11 +8,13 @@
 //!
 //! Only the groups cast to the player entity (PlayerBody, PlayerCamera;
 //! FUN_1408542b0 bit 1) play here: the arm, weapon and dummy entities have
-//! no trees in the rewrite. Sfx, barks and timed events are not ported.
+//! no midnight trees in the rewrite. SFX tracks on the body and cast arms
+//! post to their audio emitters; barks and timed events are not ported.
 use super::animation::{blend_add, blend_lerp, sample, Pose};
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::JointRestPose;
 use crate::entities::midnight::{FloatCurve, MidnightScene, Next};
+use crate::gameplay::sound::{Emitter, Request as SoundRequest};
 use bevy_math::{Mat3, Quat, Vec3};
 use std::sync::Arc;
 
@@ -22,6 +24,52 @@ pub struct PreparedScene {
     pub decl: MidnightScene,
     /// Per (scene index, key index) of the player group: the body clip.
     pub clips: Vec<Vec<usize>>,
+    /// SFX keys resolved to installed event IDs and their cast audio owners.
+    pub sounds: Vec<Vec<PreparedSound>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedSound {
+    pub key: crate::entities::midnight::SoundKey,
+    pub event: u32,
+    pub emitter: Emitter,
+}
+
+/// Resolve each cast group's SFX against its actual model and the event
+/// declaration's engine ID. The same preparation is used by the client and
+/// installed-resource diagnostics.
+pub fn prepare_sounds(
+    decl: &MidnightScene,
+    casting: &[(&str, &str, Emitter)],
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Vec<Vec<PreparedSound>>, String> {
+    let mut ids = std::collections::HashMap::new();
+    let mut sounds = vec![Vec::new(); decl.scenes.len()];
+    for (index, scene) in decl.scenes.iter().enumerate() {
+        for group in &scene.groups {
+            let Some((_, model, emitter)) = casting.iter().find(|(name, _, _)| Some(*name) == decl.group_name(group.group)) else { continue };
+            if !group.specific_models.is_empty() && !group.specific_models.iter().any(|m| m == model) { continue; }
+            for key in group.sounds.iter().filter(|key| !key.event.is_empty()) {
+                let event = match ids.get(&key.event) {
+                    Some(&event) => event,
+                    None => {
+                        let resource = format!("generated/decls/soundevent/{}.decl", key.event);
+                        let source = read(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
+                        let event = crate::assets::wwise::declared_event_id(&source).map_err(|e| format!("{resource}: {e}"))?;
+                        ids.insert(key.event.clone(), event);
+                        event
+                    }
+                };
+                if event != 0 { sounds[index].push(PreparedSound { key: key.clone(), event, emitter: *emitter }); }
+            }
+        }
+    }
+    Ok(sounds)
+}
+
+struct ScheduledSound {
+    sound: PreparedSound,
+    fired: bool,
 }
 
 /// The group names cast to the player entity.
@@ -80,6 +128,9 @@ struct Instance {
     rate: f32,
     clips: Vec<Clip>,
     events: Vec<(i32, String)>,
+    sounds: Vec<ScheduledSound>,
+    playing_sounds: std::collections::HashMap<(u32, Emitter), bool>,
+    parts: u8,
     md6: String,
 }
 
@@ -88,6 +139,7 @@ struct Instance {
 pub struct Midnight {
     instance: Option<Instance>,
     next_handle: u32,
+    sound_requests: Vec<SoundRequest>,
     /// The anim track's midnightData of the latest write.
     data: Vec<ClipInfo>,
     /// The previous tree evaluation's inputs, for the root delta.
@@ -134,6 +186,38 @@ fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
 }
 
 impl Midnight {
+    pub fn take_sound_requests(&mut self) -> Vec<SoundRequest> {
+        std::mem::take(&mut self.sound_requests)
+    }
+
+    fn schedule_sounds(prepared: &PreparedScene, index: usize, parts: u8) -> Vec<ScheduledSound> {
+        prepared.sounds[index].iter().filter(|s| s.emitter.player_part() & parts != 0)
+            .cloned().map(|sound| ScheduledSound { sound, fired: false }).collect()
+    }
+
+    /// Track initialization 1407dfbd0 selects point keys at zero and clips
+    /// containing zero. Zero-duration SFX clips fire on the next time step.
+    fn initial_sounds(inst: &mut Instance, out: &mut Vec<SoundRequest>) {
+        for sound in &mut inst.sounds {
+            let s = &sound.sound;
+            let selected = if s.key.is_clip {
+                s.key.time_ms <= 0 && s.key.time_ms.saturating_add(s.key.duration_ms).saturating_sub(1) >= 0
+            } else { s.key.time_ms == 0 };
+            if selected {
+                out.push(SoundRequest::Post { event: s.event, emitter: s.emitter });
+                inst.playing_sounds.insert((s.event, s.emitter), s.key.stop_on_interruption);
+                sound.fired = true;
+            }
+        }
+    }
+
+    /// SFX interruption cleanup 1408279c0 stops flagged events on their
+    /// owning audio component. Other one-shot events continue playing.
+    fn interrupt_sounds(inst: &Instance, out: &mut Vec<SoundRequest>) {
+        for (&(event, emitter), &stop) in &inst.playing_sounds {
+            if stop { out.push(SoundRequest::Stop { event, emitter }); }
+        }
+    }
     /// The main clip of the latest data (mainAnimPtr / mainAnimFrame):
     /// (clip, frame).
     pub fn main_clip(&self) -> Option<(usize, f32)> {
@@ -208,13 +292,24 @@ impl Midnight {
     /// FUN_1408549c0 → FUN_1407d6040 / FUN_1407d9270: start at t = 0 (the
     /// first data is written now). An interrupted previous scene snapshots.
     pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: &str, rate: f32, animations: &[EdgeAnimation]) -> Result<u32, String> {
+        self.start_with_parts(prepared, md6, rate, animations, 1)
+    }
+
+    pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: &str, rate: f32, animations: &[EdgeAnimation], parts: u8) -> Result<u32, String> {
         let Some(index) = Self::resolve(prepared, prepared.decl.first, md6)? else { return Ok(0) };
         let (clips, events) = self.enter(prepared, index, animations)?;
         if let Some(old) = &self.instance {
+            Self::interrupt_sounds(old, &mut self.sound_requests);
             self.pending_snapshot = Some(old.scene.decl.blend_out_time);
         }
         self.next_handle = self.next_handle.wrapping_add(1).max(1);
-        self.instance = Some(Instance { handle: self.next_handle, scene: prepared.clone(), current: index, time: 0, abs: 0, carry: 0.0, rate, clips, events, md6: md6.to_owned() });
+        let sounds = Self::schedule_sounds(prepared, index, parts);
+        let mut inst = Instance {
+            handle: self.next_handle, scene: prepared.clone(), current: index, time: 0, abs: 0, carry: 0.0, rate,
+            clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.to_owned(),
+        };
+        Self::initial_sounds(&mut inst, &mut self.sound_requests);
+        self.instance = Some(inst);
         self.write(animations);
         Ok(self.next_handle)
     }
@@ -223,6 +318,7 @@ impl Midnight {
     /// last pose over the scene's m_blendOutTime.
     pub fn stop(&mut self, handle: u32) {
         if self.instance.as_ref().is_some_and(|i| i.handle == handle) {
+            Self::interrupt_sounds(self.instance.as_ref().unwrap(), &mut self.sound_requests);
             let blend = self.instance.take().map_or(0.0, |i| i.scene.decl.blend_out_time);
             self.data.clear();
             self.pending_snapshot = Some(blend);
@@ -256,6 +352,18 @@ impl Midnight {
                 messages.push((event.clone(), inst.handle));
             }
         }
+        // The SFX track uses the same forward key crossing as 1407dfdd0.
+        // Its clip keys at zero are eligible on the first step, unlike points.
+        for sound in &mut inst.sounds {
+            let s = &sound.sound;
+            let k = s.key.time_ms;
+            let entered = (from <= k && k < to) || (k == to && ended);
+            if !sound.fired && entered && (s.key.is_clip || !(k == 0 && first_step)) {
+                self.sound_requests.push(SoundRequest::Post { event: s.event, emitter: s.emitter });
+                inst.playing_sounds.insert((s.event, s.emitter), s.key.stop_on_interruption);
+                sound.fired = true;
+            }
+        }
         self.write(animations);
         if ended {
             // FUN_1407d2800: the next element; FINAL clears the data with no
@@ -271,6 +379,8 @@ impl Midnight {
                     let (clips, events) = self.enter(&prepared, index, animations)?;
                     let inst = self.instance.as_mut().unwrap();
                     (inst.current, inst.time, inst.clips, inst.events) = (index, 0, clips, events);
+                    inst.sounds = Self::schedule_sounds(&prepared, index, inst.parts);
+                    Self::initial_sounds(inst, &mut self.sound_requests);
                     self.write(animations);
                 }
             }
