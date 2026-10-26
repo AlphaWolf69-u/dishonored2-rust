@@ -326,6 +326,42 @@ impl PhysicsScene {
         Ok(scene)
     }
 
+    fn water_component(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
+        let entity = self.entities.get(index).ok_or("water query entity absent")?;
+        entity.components.find_component(self.dependency_ranges[0], [0x20, 0], |handle| {
+            Ok(crate::gameplay::component_state::entity_lookup::ComponentLookupState {
+                flags: self.waters.get(handle.slot).ok_or("water query component absent")?.owner.flags,
+                start_phases: Some(self.declarations.get(&handle.packed())
+                    .ok_or("water query declaration absent")?.scheduling.start_phases),
+            })
+        })
+    }
+
+    /// 852ff0 / 8a7d30's Boolean projection for FX group eligibility.
+    /// Any unstarted water component makes the native query return 0xff;
+    /// the caller accepts only 1. Otherwise any started water contact admits
+    /// the group. This Boolean result is independent of the distance sort.
+    pub(super) fn water_at(&mut self, position: [f32; 3]) -> Result<bool, String> {
+        let mut contacts = Vec::new();
+        self.world.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
+            Ok(WorldQueryShape {
+                shapes: &self.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
+                materials: None,
+            })
+        }, &mut contacts)?;
+        let mut found = false;
+        for contact in contacts {
+            let entity = crate::gameplay::collision_user_data::CollisionUserData::decode(contact.target.user_data)?
+                .entity(|handle| self.owner(handle).ok())?;
+            if let Some(handle) = self.water_component(entity)? {
+                let water = self.waters.get(handle.slot).ok_or("water query component absent")?;
+                if water.owner.flags & 0xc < 8 { return Ok(false); }
+                found = true;
+            }
+        }
+        Ok(found)
+    }
+
     pub(super) fn resolve_view(
         &mut self,
         view: &mut EnvironmentViewContacts,
