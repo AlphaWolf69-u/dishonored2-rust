@@ -79,10 +79,6 @@ impl Definition {
                         if matches!(container.playback.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
                             return Err(invalid("continuous Wwise crossfades require voice envelopes"));
                         }
-                        if container.playback.transition == TransitionMode::TriggerRate
-                            && container.playback.transition_ms + container.playback.transition_modifiers_ms[0] <= 0.0 {
-                            return Err(invalid("zero-rate Wwise triggers require the engine quantum limit"));
-                        }
                     }
                     let mut children = Vec::new();
                     let mut weights = Vec::new();
@@ -381,7 +377,9 @@ impl Runtime {
 }
 
 fn frames(milliseconds: f32, rate: SampleRate) -> u64 {
-    (f64::from(milliseconds) * f64::from(rate.get()) * 0.001 + 0.5) as u64
+    // 1410ddd30 clamps Delay (3) and TriggerRate (5) continuation actions
+    // to ten engine quanta. Zero authored intervals remain valid.
+    ((f64::from(milliseconds) * f64::from(rate.get()) * 0.001 + 0.5) as u64).max(10 * 1024)
 }
 
 pub(super) struct Decoder {
