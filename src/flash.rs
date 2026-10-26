@@ -243,9 +243,9 @@ impl Player {
             return Ok(());
         }
         let list = self.member(&handler, "soundsList")?;
-        let length = self.member(&list, "length")?;
-        let length = self.vm.to_uint(&length)?;
         let data = self.member(&list, "data")?;
+        let length = self.member(&data, "length")?;
+        let length = self.vm.to_uint(&length)?;
         for index in 0..length {
             let entry = self.member(&data, &index.to_string())?;
             let name = self.member(&entry, "name")?;
