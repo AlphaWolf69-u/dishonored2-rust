@@ -80,6 +80,37 @@ impl ParticleStage {
         planes: &[[f32; 4]],
         mut source_velocity: impl FnMut(usize, &ParticleState, &mut u32) -> Result<[f32; 3], String>,
         mut motion: impl FnMut(usize, f32, &mut u32) -> Result<MotionSample, String>,
+        after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.advance_with_forces(
+            delta,
+            maximum_step,
+            loop_life,
+            bounds,
+            planes,
+            |index, particle, seed| {
+                source_velocity(index, particle, seed).map(|velocity| (velocity, None))
+            },
+            |index, age, seed, _| motion(index, age, seed),
+            after_advance,
+        )
+    }
+
+    /// The acceleration-field input is sampled before source-over-life and
+    /// passed to1dbce0 without consuming the generator a second time.
+    pub fn advance_with_forces(
+        &mut self,
+        delta: f32,
+        maximum_step: f32,
+        loop_life: bool,
+        bounds: [[f32; 3]; 2],
+        planes: &[[f32; 4]],
+        mut source_velocity: impl FnMut(
+            usize,
+            &ParticleState,
+            &mut u32,
+        ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
+        mut motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
         mut after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
     ) -> Result<(), String> {
         if !maximum_step.is_finite() || maximum_step <= 0. {
@@ -92,7 +123,7 @@ impl ParticleStage {
                 // 1f5620 restarts this copy at every substep, including the
                 // source-velocity sampling which precedes motion sampling.
                 let mut seed = particle.seed;
-                let source_velocity = source_velocity(index, &particle.state, &mut seed)?;
+                let (source_velocity, forces) = source_velocity(index, &particle.state, &mut seed)?;
                 let step = remaining.min(maximum_step);
                 let alive = particle.state.advance(
                     step,
@@ -100,7 +131,7 @@ impl ParticleStage {
                     particle.base_velocity,
                     source_velocity,
                     &mut particle.accumulated_velocity,
-                    |age| motion(index, age, &mut seed),
+                    |age| motion(index, age, &mut seed, forces),
                 )?;
                 remaining = crate::float::subtract(remaining, step);
                 if !alive || !contains(particle.state.position, bounds, planes) {

@@ -14,6 +14,7 @@ pub(crate) struct ParticleQueryPublication {
     pub camera: Entity,
     pub frame: u32,
     pub state: Option<crate::tome::RenderQueryState>,
+    pub wind: crate::gameplay::wind::WindSnapshot,
 }
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub(crate) struct ParticleQueryFrame(pub Option<Arc<ParticleQueryPublication>>);
@@ -144,6 +145,7 @@ impl ParticleSystems {
         ocean_height: Option<f32>,
         view: &crate::rendering::view_history::ViewMatrices,
         visibility: Option<&crate::tome::RenderQueryState>,
+        wind: &crate::gameplay::wind::WindSnapshot,
     ) -> Result<(), String> {
         if self.links.allocated_count == 0 {
             return Ok(());
@@ -172,6 +174,7 @@ impl ParticleSystems {
                 view,
                 visibility.as_ref(),
                 minimum_angular_size,
+                wind,
             ) {
                 error.get_or_insert(failure);
             }

@@ -39,6 +39,8 @@ pub(crate) struct ParticleSystem {
     /// 1fa780 initializes system+1d50 to zero. Player FX publication changes
     /// rate/colour/pose, but supplies no external source-velocity producer.
     pub source_velocity: [f32; 3],
+    /// 201400 refreshes system+1d00 before the queued simulation task.
+    wind: [f32; 3],
     pub water_flags: u32,
     simulated_frame: Option<u32>,
     visible_frame: Option<u32>,
@@ -272,6 +274,7 @@ impl ParticleSystem {
             publication: None,
             clipping: None,
             source_velocity: [0.; 3],
+            wind: [0.; 3],
             water_flags: 0,
             simulated_frame: None,
             visible_frame: None,
@@ -327,6 +330,7 @@ impl ParticleSystem {
         view: &crate::rendering::view_history::ViewMatrices,
         visibility: Option<&crate::tome::RenderAabbQuery<'_>>,
         minimum_angular_size: f32,
+        wind: &crate::gameplay::wind::WindSnapshot,
     ) -> Result<(), String> {
         if self.simulated_frame == Some(frame) {
             return Ok(());
@@ -414,6 +418,11 @@ impl ParticleSystem {
             return Ok(());
         }
         let settings = &self.stages[0].declaration.clipping;
+        self.wind = if self.stages[0].declaration.wind.enabled {
+            wind.velocity(world, point_query, publication.pose.position)?
+        } else {
+            [0.; 3]
+        };
         let surface = if settings.use_ocean_plane {
             match world.particle_water_height(
                 point_query,
@@ -485,7 +494,7 @@ impl ParticleSystem {
                 .clipping
                 .as_ref()
                 .map(|p| if worldspace { p.world } else { p.local });
-            stage.advance_frame(
+            stage.advance_frame_with_wind(
                 delta,
                 &StageFrame {
                     pose: publication.pose,
@@ -495,6 +504,7 @@ impl ParticleSystem {
                     rate: publication.rate,
                     lod: 0,
                 },
+                self.wind,
             )?;
         }
         self.first_simulation = false;

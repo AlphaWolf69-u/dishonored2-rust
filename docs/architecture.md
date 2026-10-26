@@ -741,6 +741,16 @@ completed fade-out forces simulation until the owner can retire. Culled systems
 discard unused delta, and admitted updates retain the game's 125 ms clamp.
 Clock-only updates still commit the emitter pose. Flushing returns live slots in
 ascending order to the existing free list without resetting its history.
+The same frame publishes immutable snapshots of the existing world and trigger
+wind owners. Particle wind queries use layer16 and canonical collision geometry;
+the physics snapshot retains trigger-to-wind component identities. Selection
+replaces only a strictly lower priority, preserving traversal order on ties,
+then falls back to the registered world wind on a completed absence. Wind is
+acceleration, with independent cycle and lifetime curves. It stays separate
+from inherited source velocity and consumes the original particle RNG sequence.
+Local stages transform wind with the emitter-axis dot products. Spawn-time
+inherited velocity retains the source's linear/angular point-sampling kernel;
+nondefault inheritance still requires its actual producer before admission.
 The connected world path currently admits particle-only groups without an
 unavailable target/tag, spawn-occlusion or physics-velocity dependency. Other
 enabled FX families, parameter blocks, animated/lit particle material inputs and

@@ -5,6 +5,47 @@ use crate::{
     gameplay::reference_frame::{axis_angle_basis, basis_product},
 };
 
+/// The cached linear/center/angular record at stage+160 (1db610/1db630).
+/// The owner must publish its real velocity before enabling inheritance.
+#[derive(Default)]
+pub struct SpawnVelocity {
+    pub linear: [f32; 3],
+    pub center: [f32; 3],
+    pub angular: [f32; 3],
+    pub angular_enabled: bool,
+}
+impl SpawnVelocity {
+    pub fn at_point(&self, position: [f32; 3]) -> [f32; 3] {
+        if !self.angular_enabled {
+            return self.linear;
+        }
+        let delta: [f32; 3] = std::array::from_fn(|i| subtract(position[i], self.center[i]));
+        [
+            add(
+                subtract(
+                    multiply(self.angular[1], delta[2]),
+                    multiply(self.angular[2], delta[1]),
+                ),
+                self.linear[0],
+            ),
+            add(
+                subtract(
+                    multiply(self.angular[2], delta[0]),
+                    multiply(self.angular[0], delta[2]),
+                ),
+                self.linear[1],
+            ),
+            add(
+                subtract(
+                    multiply(self.angular[0], delta[1]),
+                    multiply(self.angular[1], delta[0]),
+                ),
+                self.linear[2],
+            ),
+        ]
+    }
+}
+
 pub struct SpawnOrientation {
     pub angles: VectorParameter,
     pub worldspace: bool,

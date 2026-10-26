@@ -35,6 +35,7 @@ pub struct StageSimulation {
     /// stable when particles die or the free list reuses a previous slot.
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     mesh_cursor: usize,
+    inherited_velocity: super::spawn::SpawnVelocity,
 }
 
 struct Bindings<'a> {
@@ -44,6 +45,7 @@ struct Bindings<'a> {
     owner_basis: [[f32; 3]; 3],
     lod: usize,
     mesh_cursor: &'a mut usize,
+    inherited_velocity: &'a super::spawn::SpawnVelocity,
 }
 
 impl EmitterBindings for Bindings<'_> {
@@ -126,9 +128,11 @@ impl EmitterBindings for Bindings<'_> {
         let position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
         let particle_seed = crate::random::lcg_step(seed);
         let mut motion_seed = particle_seed;
+        let inherited = self.inherited_velocity.at_point(position);
+        let base_velocity = std::array::from_fn(|i| add(inherited[i], velocity[i]));
         let mut particle = Particle {
             state: ParticleState::new(position, velocity, life),
-            base_velocity: velocity,
+            base_velocity,
             accumulated_velocity: [0.; 3],
             seed: particle_seed,
         };
@@ -202,6 +206,7 @@ impl StageSimulation {
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut self.mesh_cursor,
+            inherited_velocity: &self.inherited_velocity,
         };
         self.emitter.advance_clock(delta, &mut bindings)?;
         self.commit_pose(pose);
@@ -220,8 +225,8 @@ impl StageSimulation {
         if !definition.enabled {
             return Err("disabled particle stage cannot be instantiated".into());
         }
-        if definition.enable_wind || definition.enable_velocity_inheritance {
-            return Err("particle wind/inheritance providers are not connected".into());
+        if definition.enable_velocity_inheritance {
+            return Err("particle velocity inheritance provider is not connected".into());
         }
         if !definition.burst_event.is_empty() {
             return Err("particle burst-event provider is not connected".into());
@@ -238,6 +243,7 @@ impl StageSimulation {
         let _cycle_seed = crate::random::lcg_step(system_seed);
         let spawn_seed = crate::random::lcg_step(system_seed);
         let mut mesh_cursor = 0;
+        let inherited_velocity = super::spawn::SpawnVelocity::default();
         let mut bindings = Bindings {
             definition,
             particles: &mut particles,
@@ -245,6 +251,7 @@ impl StageSimulation {
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut mesh_cursor,
+            inherited_velocity: &inherited_velocity,
         };
         let emitter = ParticleEmitter::new(
             Arc::new(definition.emitter.clone()),
@@ -263,6 +270,7 @@ impl StageSimulation {
             particles,
             sprites,
             mesh_cursor,
+            inherited_velocity,
         })
     }
 
@@ -270,9 +278,19 @@ impl StageSimulation {
     /// outer slice by 1/60, four percent of cycle duration and its next boundary.
     /// Emission advances the interpolation fraction across all those slices.
     pub fn advance_frame(&mut self, delta: f32, frame: &StageFrame<'_>) -> Result<(), String> {
+        self.advance_frame_with_wind(delta, frame, [0.; 3])
+    }
+
+    pub fn advance_frame_with_wind(
+        &mut self,
+        delta: f32,
+        frame: &StageFrame<'_>,
+        wind: [f32; 3],
+    ) -> Result<(), String> {
         use crate::float::subtract;
         let delta = self.emitter.consume_delay(delta);
         self.prepare_pose(delta, frame.pose);
+        let wind = self.wind(frame, wind)?;
         let source_velocity = self.source_velocity(frame)?;
         let mut remaining = delta;
         while remaining > 0. {
@@ -287,7 +305,7 @@ impl StageSimulation {
             if !step.is_finite() || step <= 0. {
                 return Err("particle cycle produces an invalid outer time slice".into());
             }
-            self.advance_chunk(step, frame, source_velocity)?;
+            self.advance_chunk(step, frame, source_velocity, wind)?;
             remaining = subtract(remaining, step);
         }
         self.commit_pose(frame.pose);
@@ -343,6 +361,35 @@ impl StageSimulation {
         }))
     }
 
+    /// 1f63b0 uses a local cycle-seed copy. Local stages dot the world wind
+    /// with the emitter axes directly; this is not the inherited-velocity inverse.
+    fn wind(&self, frame: &StageFrame<'_>, world_wind: [f32; 3]) -> Result<[f32; 3], String> {
+        let definition = &self.declaration.stages[self.index];
+        if !definition.enable_wind {
+            return Ok([0.; 3]);
+        }
+        let mut seed = self.emitter.cycle_seed();
+        let strength = self
+            .declaration
+            .wind
+            .over_cycle
+            .sample(self.emitter.cycle.fraction, &mut seed)?;
+        let wind = world_wind.map(|value| multiply(strength, value));
+        Ok(if definition.worldspace {
+            wind
+        } else {
+            std::array::from_fn(|i| {
+                add(
+                    add(
+                        multiply(wind[1], frame.pose.basis[i][1]),
+                        multiply(wind[0], frame.pose.basis[i][0]),
+                    ),
+                    multiply(wind[2], frame.pose.basis[i][2]),
+                )
+            })
+        })
+    }
+
     /// Existing particles advance before newly emitted particles integrate the
     /// remaining slice immediately in 1f4e00.
     fn advance_chunk(
@@ -350,30 +397,32 @@ impl StageSimulation {
         delta: f32,
         frame: &StageFrame<'_>,
         source_velocity: [f32; 3],
+        wind: [f32; 3],
     ) -> Result<(), String> {
         let declaration = self.declaration.clone();
         let definition = &declaration.stages[self.index];
         let space = ParticleSpace::new(frame.pose.basis, definition.worldspace);
         let sprites = &mut self.sprites;
-        self.particles.advance(
+        self.particles.advance_with_forces(
             delta,
             self.emitter.simulation_step,
             definition.infinite_life,
             frame.bounds,
             frame.planes,
             |_, particle, seed| {
-                // 1f5620 samples global wind strength before source-over-life
-                // even when this stage's wind vector is disabled/zero.
-                crate::random::lcg_step(seed);
-                crate::random::lcg_step(seed);
+                // 1f5620 samples wind-over-life even for a zero wind vector,
+                // before the existing source-over-life parameter samples.
+                let strength = declaration.wind.over_life.sample(particle.age, seed)?;
+                let force = wind.map(|value| add(0., multiply(strength, value)));
                 let source = definition
                     .source_velocity_over_life
                     .sample(particle.age, seed)?;
-                Ok(std::array::from_fn(|i| {
-                    multiply(source[i], source_velocity[i])
-                }))
+                Ok((
+                    std::array::from_fn(|i| multiply(source[i], source_velocity[i])),
+                    Some(force),
+                ))
             },
-            |_, age, seed| definition.motion.sample(age, seed, &space, None),
+            |_, age, seed, forces| definition.motion.sample(age, seed, &space, forces),
             |index, particle, seed| {
                 for (sprite, slots) in definition.sprites.iter().zip(sprites.iter_mut()) {
                     if let Some(state) = &mut slots[index] {
@@ -390,6 +439,7 @@ impl StageSimulation {
             owner_basis: frame.pose.basis,
             lod: frame.lod,
             mesh_cursor: &mut self.mesh_cursor,
+            inherited_velocity: &self.inherited_velocity,
         };
         let free = bindings.particles.capacity() - bindings.particles.len();
         // 1ffff0 calls ordinary emission after integration. The parent's

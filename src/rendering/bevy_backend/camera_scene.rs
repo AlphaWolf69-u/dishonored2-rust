@@ -417,13 +417,16 @@ fn prepare_screen_effects(
                         })
                         .transpose()?
                         .flatten();
+                    let particle_view = particle_view.0.as_ref()
+                        .filter(|query| query.camera == water.camera && query.frame == water.matrices.frame)
+                        .ok_or("particle visibility awaits the current camera frame")?;
                     gpu.particle_systems.simulate(
                         water.matrices.frame,
                         &q.world,
                         ocean_height,
                         &water.matrices.current,
-                        particle_view.0.as_ref().filter(|query| query.camera == water.camera && query.frame == water.matrices.frame)
-                            .ok_or("particle visibility awaits the current camera frame")?.state.as_ref(),
+                        particle_view.state.as_ref(),
+                        &particle_view.wind,
                     )
                 });
             match simulation {

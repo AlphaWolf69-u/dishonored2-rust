@@ -151,6 +151,39 @@ impl ParticleDistance {
     }
 }
 
+/// 1f9060 and1579b70: independent cycle/lifetime scalar wind modulation.
+pub struct ParticleWind {
+    pub enabled: bool,
+    pub over_cycle: crate::gameplay::particles::parameters::ScalarParameter,
+    pub over_life: crate::gameplay::particles::parameters::ScalarParameter,
+}
+impl Default for ParticleWind {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            over_cycle: crate::gameplay::particles::parameters::ScalarParameter::constant(1.),
+            over_life: crate::gameplay::particles::parameters::ScalarParameter::constant(1.),
+        }
+    }
+}
+impl ParticleWind {
+    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_enabled" => self.enabled = boolean(value)?,
+                "m_windOverCycle" => {
+                    particles::scalar_parameter(&mut self.over_cycle, scope(value)?)?
+                }
+                "m_windOverLife" => {
+                    particles::scalar_parameter(&mut self.over_life, scope(value)?)?
+                }
+                _ => return Err(format!("unknown particle wind field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
     pub visibility: ParticleVisibility,
@@ -158,6 +191,7 @@ pub struct ParticleDeclaration {
     pub handle_seen_from_underwater: bool,
     pub clipping: ParticleClipping,
     pub distance: ParticleDistance,
+    pub wind: ParticleWind,
     pub stages: Vec<ParticleStageAsset>,
 }
 
@@ -170,6 +204,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
             "m_distance" => result.distance.edit(scope(value)?)?,
+            "m_wind" => result.wind.edit(scope(value)?)?,
             "m_stages" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {
