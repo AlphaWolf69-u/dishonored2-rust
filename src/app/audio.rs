@@ -127,6 +127,8 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
+        let audio_language = crate::assets::lang::read_audio_language(&base)?;
+        let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
         let mut paths = std::fs::read_dir(base.join("pck"))?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
@@ -140,7 +142,8 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let mut library = crate::assets::wwise::PlaybackBanks::default();
         for path in paths {
             let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
+            let language = package.language_id(package_language);
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
