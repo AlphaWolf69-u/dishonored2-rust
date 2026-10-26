@@ -503,6 +503,10 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+            let source = dishonored2_rust::gameplay::sound::looping::SourceLoop::new(audio.loop_points,
+                audio.samples.len() / usize::from(audio.channels), loops.count as u16)?;
+            println!("{indent}  Authored decoder duration before random loop modifiers/pitch: {} ms (0 = infinite)",
+                source.duration_ms(audio.sample_rate));
             let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
             println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
                 dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
