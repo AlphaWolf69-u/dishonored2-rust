@@ -2480,3 +2480,11 @@ Projection-bounds visibility does not add a new WORLD geometry cull. The pool's
 render-world service, publishing an ID only on success. These CPU producers are
 implemented; the gameplay FX spawn owner and projected GPU draws remain to be
 connected before projected decals are a visible gameplay feature.
+
+`decals::DecalEffectBinding` connects sampled FX placement to that pool. It
+resolves the declaration only when creating a record, follows position and
+orientation independently, and updates scale/colour every tick. The attachment
+computes the source's asymmetric-box pivot offset in its local and parent frames;
+orientation reuses the shared reference-frame basis product. Eviction retires
+the old FX binding without removing the new pool owner. Scheduler activation,
+curve sampling and parent selection remain with the gameplay FX owner.

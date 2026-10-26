@@ -2,8 +2,10 @@
 //! Material variants, runtime decal ownership and draw submission are separate.
 use super::{bounds::OrientedBox, shadows::local_caster_query::LocalWorldQuery};
 
+mod effect;
 mod pool;
 mod world_draws;
+pub use effect::{DecalAttachment, DecalEffectBinding};
 pub use pool::{DecalPool, DecalSlot};
 pub use world_draws::{
     gather_world_draws, ProjectedWorldDraw, ProjectedWorldDraws, ProjectionData,
