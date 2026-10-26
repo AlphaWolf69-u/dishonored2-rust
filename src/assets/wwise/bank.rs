@@ -95,6 +95,33 @@ pub struct NodeProperties {
     pub curves: Vec<RtpcCurve>,
     pub positioning_flags: u8,
     pub positioning_3d: Option<Positioning3d>,
+    pub effects: EffectChain,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EffectChain {
+    pub override_parent: bool,
+    pub bypass: u8,
+    pub slots: Vec<EffectReference>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectReference {
+    pub slot: u8,
+    pub id: u32,
+    pub shared: bool,
+    pub flags: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectDefinition {
+    pub id: u32,
+    pub shared: bool,
+    pub plugin: u32,
+    pub parameters: Vec<u8>,
+    pub media: Vec<(u8, u32)>,
+    pub curves: Vec<RtpcCurve>,
+    pub values: Vec<(u8, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -326,9 +353,8 @@ impl<'a> Reader<'a> {
 
     fn node_base(&mut self, feedback: bool) -> io::Result<NodeProperties> {
         let mut node = NodeProperties::default();
-        self.u8()?; // Override parent effects.
-        let effects = self.u8()? as usize;
-        if effects != 0 { self.u8()?; self.records(effects, 7)?; }
+        let override_parent = self.u8()? != 0;
+        node.effects = self.effects(override_parent)?;
         self.u8()?; // Attachment override.
         node.bus = self.u32()?;
         node.parent = self.u32()?;
@@ -368,6 +394,18 @@ impl<'a> Reader<'a> {
         Ok(node)
     }
 
+    /// 1411204d0: the bypass mask follows a nonempty slot list's count.
+    fn effects(&mut self, override_parent: bool) -> io::Result<EffectChain> {
+        let count = self.u8()?;
+        let bypass = if count == 0 { 0 } else { self.u8()? };
+        let mut slots = Vec::new();
+        for _ in 0..count {
+            slots.push(EffectReference { slot: self.u8()?, id: self.u32()?,
+                shared: self.u8()? != 0, flags: self.u8()? });
+        }
+        Ok(EffectChain { override_parent, bypass, slots })
+    }
+
     fn children(&mut self) -> io::Result<Vec<u32>> {
         let count = self.u32()? as usize;
         let bytes = self.take(count.checked_mul(4).ok_or_else(|| invalid("Wwise child count overflow"))?)?;
@@ -398,14 +436,42 @@ pub(super) fn bus_properties(object: &[u8], feedback: bool) -> io::Result<NodePr
     reader.take(17)?; // Bus flags/limits/channel configuration, HDR and duck limits.
     let ducks = reader.u32()? as usize;
     reader.records(ducks, 18)?;
-    let effects = reader.u8()? as usize;
-    if effects != 0 { reader.u8()?; reader.records(effects, 7)?; }
+    node.effects = reader.effects(true)?;
     reader.take(6)?; // Mixer share set and attachment override.
     node.curves = reader.rtpcs()?;
     reader.states()?;
     if feedback { reader.u32()?; }
     if reader.offset != object.len() { return Err(invalid("Wwise bus fields did not consume its object")); }
     Ok(node)
+}
+
+/// Both FX ShareSet (18) and custom FX (19) call 1411278b0. Parameter bytes
+/// belong to the registered plug-in; retain them intact until its reader runs.
+pub(super) fn effect_definition(object: &[u8], shared: bool) -> io::Result<EffectDefinition> {
+    let mut reader = Reader { bytes: object, offset: 0 };
+    let id = reader.u32()?;
+    let plugin = reader.u32()?;
+    let length = reader.u32()? as usize;
+    let parameters = reader.take(length)?.to_vec();
+    let mut media = Vec::<(u8, u32)>::new();
+    let count = reader.u8()?;
+    for _ in 0..count {
+        let key = reader.u8()?;
+        let value = reader.u32()?;
+        if let Some(entry) = media.iter_mut().find(|entry| entry.0 == key) { entry.1 = value; }
+        else { media.push((key, value)); }
+    }
+    let curves = reader.rtpcs()?;
+    let mut values = Vec::<(u8, u32)>::new();
+    let count = reader.u16()?;
+    for _ in 0..count {
+        let key = reader.u8()?;
+        let value = reader.u32()?;
+        if let Some(entry) = values.iter_mut().find(|entry| entry.0 == key) { entry.1 = value; }
+        else { values.push((key, value)); }
+    }
+    if reader.offset != object.len() { return Err(invalid("Wwise effect fields did not consume its object")); }
+    Ok(EffectDefinition { id, shared, plugin, parameters, media, curves, values })
 }
 
 pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>)> {

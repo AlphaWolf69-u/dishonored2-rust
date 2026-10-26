@@ -149,6 +149,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
+            for effect in &mix.effects {
+                println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
+                    effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
+            }
             for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
                 for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
                     println!("  {group} {property}: enabled={} scaling={} points={:?}", curve.enabled, curve.scaling, curve.points);
@@ -160,6 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                if !bus.effects.slots.is_empty() { println!("  effects: {:?}", bus.effects); }
                 for curve in &bus.curves {
                     println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
                         curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
