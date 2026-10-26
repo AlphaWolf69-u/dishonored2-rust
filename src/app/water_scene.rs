@@ -27,6 +27,7 @@ pub(super) struct WaterScene {
     camera: Option<Entity>,
     history: ViewMatrixHistory,
     contacts: crate::rendering::environment_contacts::EnvironmentViewContacts,
+    swimming_contacts:crate::rendering::environment_contacts::EnvironmentViewContacts,
 }
 impl WaterScene {
     pub(super) fn load(
@@ -204,6 +205,7 @@ impl WaterScene {
                 camera: None,
                 history: ViewMatrixHistory::default(),
                 contacts:crate::rendering::environment_contacts::EnvironmentViewContacts::new(0.),
+                swimming_contacts:crate::rendering::environment_contacts::EnvironmentViewContacts::new(0.),
             },
             sources,
         ))
@@ -264,6 +266,8 @@ pub(super) fn publish_water_frame(
     volumes:Option<Res<super::state::EnvironmentVolumes>>,
     mut selection:ResMut<crate::rendering::bevy_backend::water_scene::WaterViewSelection>,
     mut last_error: Local<Option<String>>,
+    player:Res<super::player::PlayerState>,
+    screen_effects:Res<crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials>,
 ) {
     let Some(water) = water.as_mut() else {
         output.0 = None;
@@ -286,6 +290,14 @@ pub(super) fn publish_water_frame(
             .ok_or("water camera projection type unavailable")?;
         let pose = transform.compute_transform();
         let eye = super::view_to_game(pose.translation);
+        let head=Vec3::from_array(eye);
+        let (body,body_axis)=if let Some(player)=player.player.as_ref().filter(|_|!player.debug_free_fly) {
+            (player.physics.position(),player.physics.axis())
+        } else {
+            let forward=Vec3::from_array(super::view_to_game(pose.rotation*Vec3::NEG_Z));
+            (head-Vec3::Z*super::controls::DEBUG_CAMERA_EYE_HEIGHT,
+                crate::gameplay::player::physics::yaw_axis(forward.y.atan2(forward.x)))
+        };
         let matrices = ViewMatrices::from_camera(
             eye,
             [
@@ -315,15 +327,25 @@ pub(super) fn publish_water_frame(
             water.contacts.selection.update(None);
             false
         };
+        let swimming_completed=if let Some(physics)=physics.as_mut() {
+            physics.resolve_view(&mut water.swimming_contacts,body.to_array())?
+        } else {false};
         let publication=water.contacts.selection.water_publication(|index|{
             let volume=volumes.as_ref().and_then(|v|v.0.get(index)).ok_or("selected water profile absent")?;
             Ok(volume.surface_material.as_deref().map(Arc::<str>::from))
         })?;
         publication.apply(&mut ocean_environment.view);
         if completed {selection.0=Some(publication);}
+        let follow_waves=console.cvars.get("ark_player_follow_waves").ok_or("swimming wave cvar absent")?.int!=0;
+        let head_wave_points=if swimming_completed && water.swimming_contacts.head_water_is_ocean && follow_waves {
+            screen_effects.0.as_ref().map(|fx| {
+                fx.swimming.wave_points(head,body,body_axis)
+            })
+        } else {None};
         Ok(WaterFrame {
             camera,
-            head_water_surface: completed.then_some(water.contacts.head_water_surface).flatten(),
+            head_wave_points,
+            head_water_surface: swimming_completed.then_some(water.swimming_contacts.head_water_surface).flatten(),
             delta_seconds: delta,
             near_far: [projection.near, projection.far],
             parallel: scene.environment_lighting.and_then(|environment| {

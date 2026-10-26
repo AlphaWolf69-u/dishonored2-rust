@@ -16,6 +16,7 @@ use bevy::{
     },
 };
 use std::{collections::HashMap, sync::Arc};
+mod head_queries;
 
 /// 302960's seven program slots, loaded from the installed material declarations.
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
@@ -157,6 +158,7 @@ pub struct OceanScene {
     caustics: HashMap<String, super::layered_images::LayeredImage>,
     comparison: Sampler,
     underwater: Option<UnderwaterTargets>,
+    head_queries: Option<head_queries::HeadQueries>,
 }
 impl OceanScene {
     /// Borrow the actual gameplay simulation outputs only when F8 requests them.
@@ -207,6 +209,7 @@ impl OceanScene {
             caustics: default(),
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             underwater: None,
+            head_queries: None,
         })
     }
     fn admit_images(
@@ -390,6 +393,7 @@ impl OceanScene {
         )?;
         self.waves
             .record_view_surfaces(queue, encoder, &mut self.state, self.records.len() as u32);
+        self.record_head_queries(device,queue,encoder,frame)?;
         Ok(())
     }
     pub fn draw_count(&self) -> usize {

@@ -108,83 +108,12 @@ impl OceanHeightQueries {
             compilation_options: Default::default(),
             cache: None,
         });
-        let linear_wrap = super::shadow_pipeline::shadow_alpha_sampler(device);
-        let linear_clamp = device.create_sampler(&SamplerDescriptor {
-            label: Some("ocean query bilinearClamp"),
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            address_mode_w: AddressMode::ClampToEdge,
-            min_filter: FilterMode::Linear,
-            mag_filter: FilterMode::Linear,
-            mipmap_filter: MipmapFilterMode::Nearest,
-            lod_max_clamp: 13.0,
-            ..Default::default()
-        });
-        let layout = pipeline.get_bind_group_layout(0).into();
-        let bindings = textures.displacement.map(|displacement| {
-            device.create_bind_group(
-                "ocean query inputs",
-                &layout,
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: surface.as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: controls.as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: BindingResource::TextureView(textures.noise.permutation()),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        resource: BindingResource::TextureView(textures.noise.gradients()),
-                    },
-                    BindGroupEntry {
-                        binding: 4,
-                        resource: BindingResource::Sampler(textures.noise.point_wrap()),
-                    },
-                    BindGroupEntry {
-                        binding: 5,
-                        resource: BindingResource::Sampler(&linear_wrap),
-                    },
-                    BindGroupEntry {
-                        binding: 6,
-                        resource: BindingResource::Sampler(&linear_clamp),
-                    },
-                    BindGroupEntry {
-                        binding: 7,
-                        resource: BindingResource::TextureView(textures.shore_distance),
-                    },
-                    BindGroupEntry {
-                        binding: 8,
-                        resource: BindingResource::TextureView(displacement),
-                    },
-                    BindGroupEntry {
-                        binding: 9,
-                        resource: BindingResource::TextureView(textures.collision_height),
-                    },
-                    BindGroupEntry {
-                        binding: 10,
-                        resource: BindingResource::TextureView(textures.foam),
-                    },
-                    BindGroupEntry {
-                        binding: 11,
-                        resource: BindingResource::TextureView(textures.amplitude_mask),
-                    },
-                    BindGroupEntry {
-                        binding: 12,
-                        resource: positions.as_entire_binding(),
-                    },
-                    BindGroupEntry {
-                        binding: 13,
-                        resource: evaluations.as_entire_binding(),
-                    },
-                ],
-            )
-        });
+        let bindings = height_query_bindings(
+            device,
+            textures,
+            &pipeline,
+            [&positions, &evaluations, &surface, &controls],
+        );
         Self {
             positions,
             evaluations,
@@ -195,6 +124,22 @@ impl OceanHeightQueries {
             position_bytes: Vec::with_capacity(8192),
             prepared_count: 0,
         }
+    }
+
+    /// Update only resource bindings when an area changes its authored masks.
+    /// Pending query handles/readbacks and the compiled pipeline stay intact.
+    pub fn rebind_textures(&mut self, device: &RenderDevice, textures: OceanHeightTextures<'_>) {
+        self.bindings = height_query_bindings(
+            device,
+            textures,
+            &self.pipeline,
+            [
+                &self.positions,
+                &self.evaluations,
+                &self.surface,
+                &self.controls,
+            ],
+        );
     }
 
     /// Prepare before recording/submitting this dispatch. Calling this again
@@ -254,6 +199,93 @@ impl OceanHeightQueries {
     pub fn buffer_bytes(&self) -> u64 {
         self.positions.size() + self.evaluations.size() + self.surface.size() + self.controls.size()
     }
+}
+
+fn height_query_bindings(
+    device: &RenderDevice,
+    textures: OceanHeightTextures<'_>,
+    pipeline: &ComputePipeline,
+    buffers: [&Buffer; 4],
+) -> [BindGroup; 2] {
+    let [positions, evaluations, surface, controls] = buffers;
+    let linear_wrap = super::shadow_pipeline::shadow_alpha_sampler(device);
+    let linear_clamp = device.create_sampler(&SamplerDescriptor {
+        label: Some("ocean query bilinearClamp"),
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        address_mode_w: AddressMode::ClampToEdge,
+        min_filter: FilterMode::Linear,
+        mag_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Nearest,
+        lod_max_clamp: 13.0,
+        ..Default::default()
+    });
+    let layout = pipeline.get_bind_group_layout(0).into();
+    let bindings = textures.displacement.map(|displacement| {
+        device.create_bind_group(
+            "ocean query inputs",
+            &layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: surface.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: controls.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(textures.noise.permutation()),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::TextureView(textures.noise.gradients()),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::Sampler(textures.noise.point_wrap()),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::Sampler(&linear_wrap),
+                },
+                BindGroupEntry {
+                    binding: 6,
+                    resource: BindingResource::Sampler(&linear_clamp),
+                },
+                BindGroupEntry {
+                    binding: 7,
+                    resource: BindingResource::TextureView(textures.shore_distance),
+                },
+                BindGroupEntry {
+                    binding: 8,
+                    resource: BindingResource::TextureView(displacement),
+                },
+                BindGroupEntry {
+                    binding: 9,
+                    resource: BindingResource::TextureView(textures.collision_height),
+                },
+                BindGroupEntry {
+                    binding: 10,
+                    resource: BindingResource::TextureView(textures.foam),
+                },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: BindingResource::TextureView(textures.amplitude_mask),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: positions.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 13,
+                    resource: evaluations.as_entire_binding(),
+                },
+            ],
+        )
+    });
+    bindings
 }
 
 #[cfg(test)]
