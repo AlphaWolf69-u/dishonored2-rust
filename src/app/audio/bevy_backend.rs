@@ -7,6 +7,8 @@ use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
 use std::{sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use crate::gameplay::sound::{activity::Activity, ducking::Ducking};
 
+pub(super) type StateGroups = Arc<Mutex<crate::gameplay::sound::states::States>>;
+
 #[derive(Resource, Default)]
 pub(super) struct Engine {
     shared: Option<Arc<Mutex<Shared>>>,
@@ -27,31 +29,95 @@ impl Drop for VoiceHandle {
 }
 
 struct Voice { audio: graph::Routed, control: Arc<Control> }
+struct PendingState {
+    tick: u64,
+    action: crate::assets::wwise::StateAction,
+    event: u32,
+    emitter: crate::gameplay::sound::Emitter,
+    world_paused: bool,
+    paused_at: Option<u64>,
+}
 struct Shared {
     buses: Buses,
     activity: Arc<Activity>,
     ducking: Ducking,
     tick: u64,
     voices: Vec<Voice>,
+    states: StateGroups,
+    pending_states: Vec<PendingState>,
     failed: bool,
     error: Option<String>,
 }
 
 impl Engine {
-    pub fn new(mixer: &crate::gameplay::sound::mix::Mixer) -> Result<(Self, OutputAudio), String> {
+    pub fn new(mixer: &crate::gameplay::sound::mix::Mixer, states: StateGroups) -> Result<(Self, OutputAudio), String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let activity = Arc::new(Activity::new(mixer)?);
         let ducking = Ducking::new(mixer)?;
         ducking.publish(&activity);
         let buses = Buses::new(mixer, &base, activity.clone())?;
         let shared = Arc::new(Mutex::new(Shared { buses, activity: activity.clone(), ducking, tick: 0,
-            voices: Vec::new(), failed: false, error: None }));
+            voices: Vec::new(), states, pending_states: Vec::new(), failed: false, error: None }));
         let output = OutputAudio { shared: shared.clone(), channels: ChannelCount::new(2).ok_or("invalid host stereo format")?,
             rate: SampleRate::new(48000).ok_or("invalid host processing rate")? };
         Ok((Self { shared: Some(shared), activity: Some(activity) }, output))
     }
 
     pub fn activity(&self) -> Option<Arc<Activity>> { self.activity.clone() }
+
+    pub fn post_state(&self, action: crate::assets::wwise::StateAction, event: u32,
+        emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
+        let shared = self.shared.as_ref().ok_or("shared audio action clock is unavailable")?;
+        let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+        if shared.failed { return Err("shared audio action clock stopped after a processing error".into()); }
+        let delay = action.delay.sample_frames(|| rand::random_range(0..=32767));
+        // 1410e5600 splits the delay into a tick and sample offset. Set State
+        // (14113c610) does not read that offset, so it changes at the tick.
+        let quanta = u64::from(delay) / FRAMES as u64;
+        if quanta == 0 {
+            shared.states.lock().unwrap_or_else(|error| error.into_inner()).set(action.group, action.value);
+        } else {
+            let tick = shared.tick.wrapping_add(quanta);
+            shared.pending_states.push(PendingState { tick, action, event, emitter, world_paused: false, paused_at: None });
+        }
+        Ok(())
+    }
+
+    pub fn cancel_state_event(&self, event: u32, emitter: crate::gameplay::sound::Emitter) {
+        if let Some(shared) = &self.shared {
+            shared.lock().unwrap_or_else(|error| error.into_inner()).pending_states
+                .retain(|pending| pending.event != event || pending.emitter != emitter);
+        }
+    }
+
+    /// Stop All also cancels pending non-Play actions (1410e9950). A global
+    /// Set State has no game-object execution scope and survives an emitter's
+    /// Stop All, while stopping its posted event still cancels that action.
+    pub fn cancel_state_actions(&self, emitter: Option<crate::gameplay::sound::Emitter>) {
+        if let Some(shared) = &self.shared {
+            shared.lock().unwrap_or_else(|error| error.into_inner()).pending_states
+                .retain(|pending| emitter.is_some_and(|emitter| !pending.action.game_object || pending.emitter != emitter));
+        }
+    }
+
+    pub fn update_state_pause(&self, world_change: Option<bool>, frozen: impl Fn(crate::gameplay::sound::Emitter) -> bool) {
+        if let Some(shared) = &self.shared {
+            let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+            let tick = shared.tick;
+            for pending in &mut shared.pending_states {
+                // Pause snapshots existing playing IDs. Later UI posts keep
+                // running; an owner's stopped clock remains an independent pause.
+                if let Some(paused) = world_change { pending.world_paused = paused; }
+                if pending.world_paused || frozen(pending.emitter) {
+                    if pending.paused_at.is_none() { pending.paused_at = Some(tick); }
+                } else if let Some(start) = pending.paused_at.take() {
+                    // Resume shifts the due tick by the paused interval
+                    // (1410ea0e0); it does not restart the authored delay.
+                    pending.tick = pending.tick.wrapping_add(tick.wrapping_sub(start));
+                }
+            }
+        }
+    }
 
     pub fn submit(&self, audio: graph::ScheduledAudio) -> Result<VoiceHandle, String> {
         let shared = self.shared.as_ref().ok_or("shared audio output is unavailable")?;
@@ -72,6 +138,14 @@ impl Engine {
 
 impl Shared {
     fn block(&mut self) -> Result<[f32; FRAMES * 2], String> {
+        let tick = self.tick;
+        let states = &self.states;
+        // Due actions execute before voice preparation/rendering (1410e6800).
+        self.pending_states.retain(|pending| {
+            if pending.paused_at.is_some() || pending.tick > tick { return true; }
+            states.lock().unwrap_or_else(|error| error.into_inner()).set(pending.action.group, pending.action.value);
+            false
+        });
         self.buses.begin();
         for voice in &mut self.voices {
             if voice.control.stopped.load(Ordering::Relaxed) { voice.control.finished.store(true, Ordering::Relaxed); }
@@ -122,6 +196,7 @@ impl Iterator for Decoder {
                     Err(error) => {
                         for voice in &shared.voices { voice.control.finished.store(true, Ordering::Relaxed); }
                         shared.voices.clear();
+                        shared.pending_states.clear();
                         shared.error = Some(error);
                         shared.failed = true;
                         self.block.fill(0.0);

@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
     if first.to_string_lossy() == "--container-playback" {
-        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, TransitionMode}};
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, TransitionMode}};
         let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
         let mut paths = if path.is_dir() {
             std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
@@ -18,6 +18,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut file = File::open(&path)?;
             for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
                 let bytes = package.read_entry(&mut file, *entry)?;
+                for (_, state) in bank_state_actions(&bytes)? {
+                    *totals.entry("Set State actions".into()).or_default() += 1;
+                    if state.delay.frames != 0 || state.delay.modifiers != [0; 2] {
+                        *totals.entry("Set State actions with a delay".into()).or_default() += 1;
+                    }
+                }
                 for (_, settings) in bank_play_settings(&bytes)? {
                     *totals.entry("Play actions".into()).or_default() += 1;
                     for (name, present) in [
@@ -182,6 +188,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            println!("{} global state groups", mix.state_groups.len());
             println!("primary output bus: {:x?}", mix.primary_bus);
             let mut reflection_indices = std::collections::BTreeSet::new();
             for effect in &mix.effects {
@@ -451,6 +458,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 use dishonored2_rust::assets::wwise::PlaybackCommand;
                 match action {
                     PlaybackCommand::Failed { action, target, reason } => println!("  Failed action={action:#010x} target={target:#010x}: {reason}"),
+                    PlaybackCommand::SetState(state) => println!("  Set State group={:#010x}, value={:#010x}, {:?}", state.group, state.value, state.delay),
                     PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
                     PlaybackCommand::Play { target, settings, node } => {
                         println!("  Play target={target:#010x}, {settings:?}");
@@ -463,6 +471,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 use dishonored2_rust::assets::wwise::EventCommand;
                 match action {
                     EventCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
+                    EventCommand::SetState(state) => println!("  Set State group={:#010x}, value={:#010x}, {:?}", state.group, state.value, state.delay),
                     EventCommand::Play { target, settings, groups } => {
                         println!("  Play target={target:#010x}, {settings:?}");
                         for (group_index, group) in groups.iter().enumerate() {

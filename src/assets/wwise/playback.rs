@@ -198,6 +198,7 @@ impl<'a> PlaybackBanks<'a> {
             let target = read_u32_slice(action, 6)?;
             let command = match action[5] {
                 1 => bank::stop_action(action).map(|stop| Some(PlaybackCommand::Stop(stop))),
+                0x12 => bank::state_action(action).map(|state| Some(PlaybackCommand::SetState(state))),
                 4 => {
                     self.actor_playback(target, &mut media).and_then(|node| node.map(|node|
                         bank::play_settings(action).map(|settings| PlaybackCommand::Play { target, settings, node })).transpose())

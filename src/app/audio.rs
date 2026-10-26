@@ -22,6 +22,7 @@ struct WwiseRegistry {
     library: crate::assets::wwise::PlaybackBanks<'static>,
     sources: HashMap<u32, Vec<SourceAction>>,
     scheduled_selections: graph::Selections,
+    states: bevy_backend::StateGroups,
 }
 
 #[derive(Resource, Default)]
@@ -72,6 +73,7 @@ struct AudioVariant {
 #[derive(Clone)]
 enum SourceAction {
     Stop(crate::assets::wwise::StopAction),
+    SetState(crate::assets::wwise::StateAction),
     Play { target: u32, settings: crate::assets::wwise::PlaySettings, groups: Vec<AudioGroup> },
     Scheduled { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
 }
@@ -182,6 +184,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     })();
     match result {
         Ok((banks, attenuations, library, output_mix, bindings, time_dilation)) => {
+            registry.states = Arc::new(std::sync::Mutex::new(crate::gameplay::sound::states::States::new(output_mix.state_groups.iter().cloned())));
             mix.time_dilation = Some(time_dilation);
             registry.attenuations = attenuations;
             info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
@@ -191,7 +194,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
             mix.bindings = bindings;
             mix.apply_settings();
             if let Some(mixer) = &mix.mixer {
-                match bevy_backend::Engine::new(mixer) {
+                match bevy_backend::Engine::new(mixer, registry.states.clone()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
@@ -226,6 +229,7 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
+                engine.cancel_state_event(event, emitter);
                 for (entity, target, _) in &playing {
                     if target.event == event && target.emitter == emitter { commands.entity(entity).try_despawn(); }
                 }
@@ -263,6 +267,7 @@ fn play_events(
                     PlaybackCommand::Failed { action, target, reason } => Err(format!(
                         "action {action:#010x}, target {target:#010x}: {reason}").into()),
                     PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                    PlaybackCommand::SetState(state) => Ok(SourceAction::SetState(state)),
                     PlaybackCommand::Play { target, settings, node } => {
                         if settings.requires_scheduling() || graph::Definition::required(&node)
                             || graph::Definition::requires_buses(&node, mixer)? {
@@ -310,7 +315,13 @@ fn play_events(
         if let Some(actions) = registry.sources.get(&event).cloned() {
             for action in actions {
                 match action {
+                    SourceAction::SetState(state) => {
+                        if let Err(error) = engine.post_state(state, event, emitter) {
+                            warn!("Wwise event {event:#010x} Set State unavailable: {error}");
+                        }
+                    },
                     SourceAction::Stop(stop) => {
+                        if stop.all { engine.cancel_state_actions(stop.game_object.then_some(emitter)); }
                         let target = stop.target;
                         let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
                         for (entity, audio_target, scheduled) in &playing {
@@ -416,6 +427,7 @@ fn update_playing_volume(
     if let Err(error) = engine.update(mixer) { error!("Shared Wwise audio mix update failed: {error}"); }
     let world_paused = paused.is_some_and(|paused| paused.0);
     let pause_changed = world_paused != *previous_pause;
+    engine.update_state_pause(pause_changed.then_some(world_paused), |emitter| scene.frozen(emitter));
     for (mut target, sink, scheduled, voice) in &mut playing {
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same

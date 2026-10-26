@@ -97,6 +97,45 @@ pub struct StopAction {
     pub transition: ActionTransition,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct StateAction {
+    pub group: u32,
+    pub value: u32,
+    pub game_object: bool,
+    pub delay: ActionDelay,
+}
+
+/// 14113c730 reads the group and value after CAkAction's common bundles.
+/// Execute (14113c610) changes the global group, independently of its target.
+pub(super) fn state_action(bytes: &[u8]) -> io::Result<StateAction> {
+    let mut reader = Reader { bytes, offset: 4 };
+    let game_object = reader.u8()? & 1 != 0;
+    reader.take(6)?; // Action type, unused target and bus flag.
+    let properties = reader.properties()?;
+    let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
+        .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
+    let count = reader.u8()? as usize;
+    let ids = reader.take(count)?.to_vec();
+    for id in ids {
+        let values = [reader.u32()? as i32, reader.u32()? as i32];
+        if id == 0xe { delay.modifiers = values.map(|value| value.wrapping_mul(48)); }
+    }
+    let group = reader.u32()?;
+    let value = reader.u32()?;
+    if reader.offset != bytes.len() { return Err(invalid("Wwise Set State fields did not consume its action")); }
+    Ok(StateAction { group, value, game_object, delay })
+}
+
+#[derive(Clone, Debug)]
+pub struct StateTransition { pub from: u32, pub to: u32, pub milliseconds: u32 }
+
+#[derive(Clone, Debug)]
+pub struct StateGroup {
+    pub id: u32,
+    pub milliseconds: u32,
+    pub transitions: Vec<StateTransition>,
+}
+
 /// CAkAction's property bundles (141116320), active fade curve (1411492c0),
 /// and Stop scopes (141127000). Target/All execution ignores the serialized
 /// exception list (141142380 / 141142190); All Except needs its own filtering.
@@ -600,15 +639,21 @@ pub(super) fn effect_definition(object: &[u8], shared: bool) -> io::Result<Effec
     Ok(EffectDefinition { id, shared, plugin, parameters, media, curves, values })
 }
 
-pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>)> {
+pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>, Vec<StateGroup>)> {
     let mut reader = Reader { bytes, offset: 0 };
     let threshold = reader.f32()?;
     reader.u16()?; // Voice limit.
     let states = reader.u32()?;
+    let mut state_groups = Vec::new();
     for _ in 0..states {
-        reader.take(8)?; // State group and default transition time.
-        let transitions = reader.u32()? as usize;
-        reader.records(transitions, 12)?;
+        let id = reader.u32()?;
+        let milliseconds = reader.u32()?;
+        let count = reader.u32()?;
+        let mut transitions = Vec::new();
+        for _ in 0..count {
+            transitions.push(StateTransition { from: reader.u32()?, to: reader.u32()?, milliseconds: reader.u32()? });
+        }
+        state_groups.push(StateGroup { id, milliseconds, transitions });
     }
     let switches = reader.u32()?;
     for _ in 0..switches {
@@ -624,7 +669,7 @@ pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collectio
         reader.take(13)?; // Ramp type, up/down times and built-in binding.
     }
     if reader.offset != bytes.len() { return Err(invalid("Wwise global settings did not consume their chunk")); }
-    Ok((threshold, parameters))
+    Ok((threshold, parameters, state_groups))
 }
 
 pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Result<(Vec<u32>, Playlist)> {
