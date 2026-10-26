@@ -668,6 +668,52 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     };
     arm_report(&mut player, "idle");
     if !full {
+        // DH2_NAV_YAW + DH2_NAV_JUMP (frame): hold forward, press jump at
+        // that frame and trace states, the mantle sensor and the proxy.
+        if let (Some(degrees), Some(jump_frames)) = (
+            std::env::var("DH2_NAV_YAW").ok().and_then(|v| v.parse::<f32>().ok()),
+            std::env::var("DH2_NAV_JUMP").ok(),
+        ) {
+          let start = player.feet();
+          for jump_frame in jump_frames.split(',').filter_map(|v| v.parse::<usize>().ok()) {
+            let setup = load_player_setup(catalog, super::pause_menu::debug_character())?;
+            player = Player::new(setup, start, degrees.to_radians(), base_fov())?;
+            println!("NAV PROBE jumpto attempt jump at {jump_frame}");
+            for frame in 0..360 {
+                // After the jump, press jump again (every other frame) while
+                // the mantle sensor offers a destination.
+                let again = frame > jump_frame + 1 && player.mantle_sensor.can_mantle() && !player.machine.active_states().iter().any(|s| s.0 == 8);
+                let events = match frame {
+                    0 => vec![key(ACTION_MOVE_FORWARD, true)],
+                    f if f == jump_frame => vec![key(ACTION_JUMP, true)],
+                    f if f == jump_frame + 1 => vec![key(ACTION_JUMP, false)],
+                    f if again && f % 2 == 0 => vec![key(ACTION_JUMP, true)],
+                    f if f % 2 == 1 && f > jump_frame + 1 => vec![key(ACTION_JUMP, false)],
+                    _ => Vec::new(),
+                };
+                player.frame(&world, &events, &settings, dt, dt, 80.0);
+                if frame % 5 == 0 || player.machine.active_states().iter().any(|s| s.0 == 8) && frame % 2 == 0 {
+                    let eye = player.view().origin.z;
+                    let m = &player.mantle_sensor;
+                    println!(
+                        "NAV PROBE jumpto {frame}: states={:?} feet={:?} eye={:.3} vel={:?} support={:?} can_mantle={} dest={:?} collisions={:?} ceil={:.3} penetrating={} posture={}",
+                        player.machine.active_states(),
+                        player.feet(),
+                        eye,
+                        player.physics.velocity,
+                        player.physics.ground.state,
+                        m.can_mantle(),
+                        m.destination,
+                        m.collisions,
+                        player.physics.ceil_distance,
+                        player.physics.penetrating,
+                        player.physics.posture,
+                    );
+                }
+            }
+          }
+            return Ok(());
+        }
         // DH2_NAV_YAW (degrees): hold forward and trace the proxy.
         if let Some(degrees) = std::env::var("DH2_NAV_YAW").ok().and_then(|v| v.parse::<f32>().ok()) {
             player.teleport(player.feet(), degrees.to_radians());

@@ -630,7 +630,23 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let start = game_to_view([values[0], values[1], values[2]]);
             let direction = game_to_view([values[3], values[4], values[5]]).normalize();
+            {
+                use crate::gameplay::collision_filter::{filter_info, layer, QueryFilter};
+                for (label, filter) in [
+                    ("player proxy", QueryFilter::World(filter_info(layer::PLAYER) & 0xfbffffff)),
+                    ("mantle 0x2b", QueryFilter::layers(0x2b, 1 << layer::PLAYER)),
+                ] {
+                    let hit = world.first_hit_details(start, start + direction * 40.0, filter);
+                    println!(
+                        "NAV RAY {label} hit={:?}",
+                        hit.map(|(distance, index, _, vertices)| (distance, world.collision_filter(index).map(|f| format!("{f:#x}")), vertices.map(view_to_game)))
+                    );
+                }
+            }
             let hit = world.first_hit_details(start, start + direction * 40.0, crate::gameplay::collision_filter::QueryFilter::ALL);
+            if let Some((_, index, _, _)) = hit {
+                println!("NAV RAY all-layers filter word={:?}", world.collision_filter(index).map(|f| format!("{f:#x}")));
+            }
             println!(
                 "NAV RAY hit={:?}",
                 hit.map(|(distance, index, owner, vertices)| (

@@ -705,6 +705,18 @@ struct MantleRun {
     destination: Vec3,
     destination_yaw: f32,
     height: u8,
+    destination_body: u32,
+}
+
+/// Mantle Activate / Deactivate: the destination entity's collision with
+/// the proxy (FUN_1407fd740 / FUN_1407fd880 with layers 3, or
+/// FUN_1407fd780 / FUN_1407fd8c0 for an arkCpntRigidBody's body).
+fn set_mantle_collision(physics: &mut PlayerPhysics, body: u32, enabled: bool) {
+    if body == 0 {
+        physics.set_proxy_layers(1 << layer::WORLD_LOW | 1 << layer::WORLD_LOW_HIGH, enabled);
+    } else {
+        physics.proxy.set_body_ignored(body, !enabled);
+    }
 }
 
 /// Vault runtime (arkPlayerStateVault +0x38..+0x7c).
@@ -1535,6 +1547,7 @@ impl StateMachine {
             }
             Kind::Mantle(_) => {
                 // FUN_14085fd40.
+                set_mantle_collision(frame.physics, self.states[index].mantle.destination_body, true);
                 frame.controller.support_state = SupportState::Supported;
                 frame.physics.disable_gravity(false);
                 frame.body.bob_enabled = true;
@@ -1730,7 +1743,8 @@ impl StateMachine {
             MantleHeight::Mid => &decl.mid_midnights,
             MantleHeight::High => &decl.high_midnights,
         };
-        self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8 };
+        let destination_body = sensor.destination_body;
+        self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8, destination_body };
         if scenes[slot].is_some() {
             let rate = frame.attributes.0.get("ARK_ATTRIBUTE_MANTLE_SPEED_FACTOR").copied().unwrap_or(1.0);
             self.states[index].midnight = Self::play(scenes[slot].as_ref(), rate, frame);
@@ -1757,6 +1771,9 @@ impl StateMachine {
         let posture = if final_posture == POSTURE_AUTOCROUCHING { POSTURE_AUTOCROUCHING } else { POSTURE_SNEAKING };
         frame.physics.set_posture(posture, 0.0);
         frame.physics.disable_gravity(true);
+        // The level (idWorldspawn) drops WORLD_LOW and WORLD_LOW_HIGH from
+        // the proxy for the move; a rigid body only loses its pair.
+        set_mantle_collision(frame.physics, destination_body, false);
         if height == MantleHeight::Low {
             frame.camera.constraints = camera::constraints(decl.constraint_params);
             frame.camera.set_target_mode(MODE_CONSTRAINED_WITH_ARMS, -1.0);
