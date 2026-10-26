@@ -58,7 +58,10 @@ pub fn decode_wem(bytes: &[u8]) -> io::Result<Vec<u8>> {
     let bits_per_sample = slice_u16(format, 14)?;
     match codec {
         0xffff => {
-            let codebooks = ww2ogg::CodebookLibrary::default_codebooks()
+            // Installed DH2 media uses aoTuV 6.03's packed codebook IDs. The
+            // standard library rebuilds invalid setup headers for menu media;
+            // the aoTuV library resolves them into fully decodable packets.
+            let codebooks = ww2ogg::CodebookLibrary::aotuv_codebooks()
                 .map_err(|error| invalid_owned(format!("Wwise Vorbis codebooks unavailable: {error}")))?;
             let mut converter = ww2ogg::WwiseRiffVorbis::new(Cursor::new(bytes), codebooks)
                 .map_err(|error| invalid_owned(format!("invalid Wwise Vorbis media: {error}")))?;
@@ -155,6 +158,41 @@ fn slice_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
     Ok(u32::from_le_bytes(bytes.get(offset..offset + 4).ok_or_else(|| invalid("truncated Wwise media field"))?.try_into().unwrap()))
 }
 fn invalid_owned(message: String) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message) }
+
+/// Fully decoded, interleaved samples. Encoded Wwise media is resolved here,
+/// where errors retain the event/node context, before reaching an audio task.
+pub struct DecodedAudio {
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub samples: Vec<f32>,
+}
+
+pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
+    let encoded = decode_wem(bytes)?;
+    if encoded.starts_with(b"OggS") {
+        let mut reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(encoded))
+            .map_err(|error| invalid_owned(format!("converted Wwise Vorbis headers: {error:?}")))?;
+        let channels = u16::from(reader.ident_hdr.audio_channels);
+        let sample_rate = reader.ident_hdr.audio_sample_rate;
+        let mut samples = Vec::new();
+        while let Some(packet) = reader.read_dec_packet_generic::<lewton::samples::InterleavedSamples<f32>>()
+            .map_err(|error| invalid_owned(format!("converted Wwise Vorbis packet: {error:?}")))?
+        {
+            samples.extend(packet.samples);
+        }
+        if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
+        Ok(DecodedAudio { channels, sample_rate, samples })
+    } else {
+        // decode_wem's PCM and IMA paths serialize exactly pcm_wav's 44-byte
+        // header and signed 16-bit samples. This is our output, not an arbitrary
+        // RIFF layout supplied by the installation.
+        let channels = slice_u16(&encoded, 22)?;
+        let sample_rate = slice_u32(&encoded, 24)?;
+        let data = encoded.get(44..).ok_or_else(|| invalid("truncated decoded Wwise PCM"))?;
+        let samples = data.chunks_exact(2).map(|sample| f32::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0).collect();
+        Ok(DecodedAudio { channels, sample_rate, samples })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Language {

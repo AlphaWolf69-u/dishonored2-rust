@@ -2578,6 +2578,7 @@ dependencies = [
  "git2",
  "half",
  "iced-x86",
+ "lewton",
  "log",
  "png",
  "rand",
