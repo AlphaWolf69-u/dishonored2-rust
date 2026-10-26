@@ -579,7 +579,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                 }
             }
         },
-        PlaybackNode::Layer { node, children } => {
+        PlaybackNode::Layer { node, children, .. } => {
             println!("{indent}Layer {node:#010x}");
             // 14112f0a0 does not schedule an outer early crossfade through
             // a parallel group; its last branch releases that continuation.

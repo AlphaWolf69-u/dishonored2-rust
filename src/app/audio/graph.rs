@@ -17,7 +17,7 @@ struct Sound {
     loop_count: crate::gameplay::sound::looping::LoopCount,
 }
 struct Container {
-    properties: Option<crate::assets::wwise::NodeProperties>,
+    properties: crate::assets::wwise::NodeProperties,
     children: Vec<usize>,
     weights: Vec<u32>,
     mode: SelectionMode,
@@ -33,6 +33,7 @@ pub(super) struct Definition {
     nodes: Vec<Node>,
     sounds: Vec<Sound>,
     root: usize,
+    properties: Arc<MediaProperties>,
     channels: ChannelCount,
     rate: SampleRate,
 }
@@ -71,13 +72,21 @@ impl Definition {
                         || node.ranges.iter().any(|range| matches!(range.property, 0 | 2 | 3 | 4 | 0x21)
                             && (range.min != 0.0 || range.max != 0.0))
                 }),
-            PlaybackNode::Layer { children, .. } => children.iter().any(Self::required),
-            PlaybackNode::Container(container) => container.playback.continuous
+            PlaybackNode::Layer { children, .. } => children.is_empty() || children.iter().any(Self::required),
+            PlaybackNode::Container(container) => container.children.is_empty() || container.playback.continuous
                 || container.children.iter().any(|(child, _)| !matches!(child, PlaybackNode::Sound { .. }) || Self::required(child)),
         }
     }
 
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<Self> {
+        // The Play target owns its properties even when no source is selected
+        // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
+        // belong to the target, and empty graphs have no descendant to borrow.
+        let properties = Arc::new(match &root {
+            PlaybackNode::Sound { variant, .. } => variant.properties.clone(),
+            PlaybackNode::Layer { properties, .. } => properties.clone(),
+            PlaybackNode::Container(container) => container.properties.clone(),
+        });
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
@@ -92,7 +101,7 @@ impl Definition {
                     sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial, looping, loop_count });
                     (node, Kind::Sound(sound))
                 },
-                PlaybackNode::Layer { node: id, children } => {
+                PlaybackNode::Layer { node: id, children, .. } => {
                     let children = children.into_iter().map(|child| node(child, nodes, sounds, attenuations)).collect::<io::Result<_>>()?;
                     (id, Kind::Layer(children))
                 },
@@ -113,8 +122,9 @@ impl Definition {
                         children.push(node(child, nodes, sounds, attenuations)?);
                         weights.push(weight);
                     }
-                    let properties = sounds.iter().flat_map(|sound| &sound.properties.nodes)
-                        .find(|node| node.id == container.node).cloned();
+                    let properties = container.properties.nodes.into_iter().next()
+                        .filter(|properties| properties.id == container.node)
+                        .ok_or_else(|| invalid("Wwise container has no own properties"))?;
                     (container.node, Kind::Container(Container { properties, children, weights, mode: container.mode,
                         global: container.global, reset: container.reset_each_play, avoid: container.avoid_repeat,
                         playback: container.playback }))
@@ -127,9 +137,9 @@ impl Definition {
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
         let root = node(root, &mut nodes, &mut sounds, attenuations)?;
-        let first = sounds.first().ok_or_else(|| invalid("Wwise playback graph has no media"))?;
         let stereo = sounds.iter().all(|sound| sound.pcm.channels.get() <= 2);
-        let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? } else { first.pcm.channels };
+        let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? }
+            else { sounds[0].pcm.channels };
         if channels.get() > 8 { return Err(invalid("scheduled Wwise graph exceeds eight output channels")); }
         // The original engine's DSP/output clock is 48 kHz (142427c24).
         // Each source's fixed-point resampler converts its own media rate.
@@ -137,13 +147,11 @@ impl Definition {
         if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.pcm.channels != channels) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
-        Ok(Self { nodes, sounds, root, channels, rate })
+        Ok(Self { nodes, sounds, root, properties, channels, rate })
     }
 
     pub fn root_properties(&self) -> Arc<MediaProperties> {
-        let first = &self.sounds[0].properties;
-        let nodes = first.nodes.iter().skip_while(|node| node.id != self.nodes[self.root].id).cloned().collect();
-        Arc::new(MediaProperties { nodes, bus: first.bus })
+        self.properties.clone()
     }
 
     pub fn prepare(self: &Arc<Self>, selections: Selections, emitter: Emitter, mixer: &Mixer,
@@ -205,11 +213,7 @@ impl Playing {
         let parameters = scene.parameters(self.emitter, self.parameter);
         for (node, target) in self.definition.nodes.iter().zip(&self.control.transitions) {
             if let Kind::Container(container) = &node.kind {
-                // Empty containers have no source/property owner and select
-                // no child (141119b70); they never schedule a transition.
-                if let Some(properties) = &container.properties {
-                    target.store(mixer.transition_seconds(properties, &parameters)?.to_bits(), Ordering::Relaxed);
-                }
+                target.store(mixer.transition_seconds(&container.properties, &parameters)?.to_bits(), Ordering::Relaxed);
             }
         }
         let routes = if self.definition.can_route() {

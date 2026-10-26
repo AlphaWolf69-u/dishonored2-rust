@@ -527,13 +527,14 @@ pub enum PlaybackCommand {
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
     Sound { node: u32, variant: MediaVariant },
-    Layer { node: u32, children: Vec<PlaybackNode> },
+    Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
 }
 
 #[derive(Clone, Debug)]
 pub struct PlaybackContainer {
     pub node: u32,
+    pub properties: MediaProperties,
     pub global: bool,
     pub avoid_repeat: u16,
     pub mode: SelectionMode,
