@@ -148,6 +148,7 @@ mod fog_pass_tests;
 pub mod fog_pipeline;
 #[cfg(feature = "game")]
 pub mod fog_rays;
+#[cfg(feature = "game")]
 pub mod sun_rays;
 #[cfg(all(test, feature = "game"))]
 mod fog_rays_tests;
