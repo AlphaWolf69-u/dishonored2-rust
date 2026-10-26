@@ -315,6 +315,12 @@ impl Mixer {
         self.source_property_with_parameters(source, property, parameter.as_slice())
     }
 
+    /// 14111b290 queries only this container's transition subscription (7).
+    /// The result is seconds; authored/random milliseconds are added later.
+    pub fn transition_seconds(&self, node: &NodeProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
+        self.rtpc_contribution(node, 7, parameters)
+    }
+
     pub fn source_property_with_parameters(&self, source: &MediaProperties, property: u8,
         parameters: &[(u32, f32)]) -> Result<f32, String>
     {

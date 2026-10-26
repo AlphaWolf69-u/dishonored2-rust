@@ -17,6 +17,7 @@ struct Sound {
     loop_count: crate::gameplay::sound::looping::LoopCount,
 }
 struct Container {
+    properties: crate::assets::wwise::NodeProperties,
     children: Vec<usize>,
     weights: Vec<u32>,
     mode: SelectionMode,
@@ -107,7 +108,10 @@ impl Definition {
                         children.push(node(child, nodes, sounds, attenuations)?);
                         weights.push(weight);
                     }
-                    (container.node, Kind::Container(Container { children, weights, mode: container.mode,
+                    let properties = sounds.iter().flat_map(|sound| &sound.properties.nodes)
+                        .find(|node| node.id == container.node).cloned()
+                        .ok_or_else(|| invalid("Wwise container has no retained node properties"))?;
+                    (container.node, Kind::Container(Container { properties, children, weights, mode: container.mode,
                         global: container.global, reset: container.reset_each_play, avoid: container.avoid_repeat,
                         playback: container.playback }))
                 },
@@ -129,14 +133,6 @@ impl Definition {
         if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.pcm.channels != channels) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
-        for entry in &nodes {
-            if let Kind::Container(container) = &entry.kind {
-                if container.playback.continuous && sounds.iter().any(|sound| sound.properties.nodes.iter()
-                    .any(|node| node.id == entry.id && node.curves.iter().any(|curve| curve.property == 7))) {
-                    return Err(invalid("scheduled Wwise transition RTPCs require live timing evaluation"));
-                }
-            }
-        }
         Ok(Self { nodes, sounds, root, channels, rate })
     }
 
@@ -150,6 +146,7 @@ impl Definition {
         parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>) -> Result<(ScheduledAudio, Playing), String>
     {
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
+            transitions: (0..self.nodes.len()).map(|_| AtomicU32::new(0)).collect(),
             spatial: (0..self.sounds.len()).map(|_| std::array::from_fn(|index| AtomicU32::new(if index < 4 { 1.0f32.to_bits() } else { 0 }))).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
@@ -164,6 +161,7 @@ impl Definition {
 }
 
 struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+    transitions: Vec<AtomicU32>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
     activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
     registrations: Vec<Option<crate::gameplay::sound::activity::Registration>> }
@@ -199,6 +197,11 @@ impl Playing {
     }
     pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
         let parameters = scene.parameters(self.emitter, self.parameter);
+        for (node, target) in self.definition.nodes.iter().zip(&self.control.transitions) {
+            if let Kind::Container(container) = &node.kind {
+                target.store(mixer.transition_seconds(&container.properties, &parameters)?.to_bits(), Ordering::Relaxed);
+            }
+        }
         let routes = if self.definition.can_route() {
             let game_sends = scene.propagated(self.emitter).map_or(&[][..], |propagated| propagated.auxiliary.as_slice());
             Some(Arc::new(self.definition.sounds.iter().map(|sound| Ok(VoiceRoute {
@@ -517,7 +520,8 @@ impl Runtime {
                         active.push(Self::new(container.children[index], now, definition, &audio.control.registrations));
                         if !container.playback.continuous { *exhausted = true; }
                         else if container.playback.transition == TransitionMode::TriggerRate {
-                            let milliseconds = transition_ms(&container.playback, 0.0, random15);
+                            let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
+                            let milliseconds = transition_ms(&container.playback, seconds, random15);
                             *next = Some(now + frames(milliseconds, definition.rate));
                         }
                     } else { *exhausted = true; }
@@ -525,7 +529,8 @@ impl Runtime {
                 active.retain_mut(|child| child.frame(now, audio, output, routing.as_deref_mut()));
                 if active.is_empty() && next.is_none() && !*exhausted {
                     let delay = if container.playback.transition == TransitionMode::Delay {
-                        frames(transition_ms(&container.playback, 0.0, random15), definition.rate)
+                        let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
+                        frames(transition_ms(&container.playback, seconds, random15), definition.rate)
                     } else { 0 };
                     *next = Some(now + 1 + delay);
                 }
