@@ -12,6 +12,7 @@ struct Object { kind: u8, bank: usize, start: usize, length: usize }
 
 #[derive(Debug, Default)]
 pub struct References {
+    pub music_actors: usize,
     pub parents_in_other_banks: usize,
     pub playlist_items_in_other_banks: usize,
     pub actions_in_other_banks: usize,
@@ -20,6 +21,8 @@ pub struct References {
     pub missing_playlist_items: usize,
     pub missing_actions: usize,
     pub missing_play_targets: usize,
+    pub unresolved_playlist: Vec<(u32, u32)>,
+    pub unresolved_play_targets: Vec<(u32, u32)>,
 }
 
 #[derive(Default)]
@@ -46,7 +49,9 @@ impl<'a> PlaybackBanks<'a> {
         self.banks.push(LoadedBank { bytes, feedback });
         for (id, object) in records {
             match object.kind {
-                2 | 5 | 6 | 7 | 9 => { self.actors.entry(id).or_insert(object); },
+                // 141150a90 loads music kinds 10..13 into the same actor
+                // namespace (141150660 / 1411508b0), via the music engine.
+                2 | 5 | 6 | 7 | 9 | 10..=13 => { self.actors.entry(id).or_insert(object); },
                 3 => { self.actions.entry(id).or_insert(object); },
                 4 => { self.events.entry(id).or_insert(object); },
                 _ => {},
@@ -66,7 +71,8 @@ impl<'a> PlaybackBanks<'a> {
     /// Inspect reference ownership without decoding media or running playback.
     pub fn references(&self) -> io::Result<References> {
         let mut result = References::default();
-        for &actor in self.actors.values() {
+        for (&actor_id, &actor) in &self.actors {
+            if matches!(actor.kind, 10..=13) { result.music_actors += 1; continue; }
             let bytes = self.bytes(actor);
             let feedback = self.banks[actor.bank].feedback;
             let properties = bank::node_properties(bytes, actor.kind, feedback)?;
@@ -80,7 +86,7 @@ impl<'a> PlaybackBanks<'a> {
                 for (id, _) in bank::node_children(bytes, actor.kind, feedback)?.1.items {
                     match self.actors.get(&id) {
                         Some(child) => result.playlist_items_in_other_banks += usize::from(child.bank != actor.bank),
-                        None => result.missing_playlist_items += 1,
+                        None => { result.missing_playlist_items += 1; result.unresolved_playlist.push((actor_id, id)); },
                     }
                 }
             }
@@ -95,15 +101,17 @@ impl<'a> PlaybackBanks<'a> {
                 }
             }
         }
-        for &action in self.actions.values() {
+        for (&action_id, &action) in &self.actions {
             let bytes = self.bytes(action);
             if bytes.get(5) != Some(&4) { continue; }
             let id = read_u32_slice(bytes, 6)?;
             match self.actors.get(&id) {
                 Some(target) => result.play_targets_in_other_banks += usize::from(target.bank != action.bank),
-                None => result.missing_play_targets += 1,
+                None => { result.missing_play_targets += 1; result.unresolved_play_targets.push((action_id, id)); },
             }
         }
+        result.unresolved_playlist.sort_unstable();
+        result.unresolved_play_targets.sort_unstable();
         Ok(result)
     }
 
@@ -117,6 +125,9 @@ impl<'a> PlaybackBanks<'a> {
         while id != 0 {
             if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
             let object = *self.actors.get(&id).ok_or_else(|| invalid_owned(format!("missing Wwise parent {id:#010x}")))?;
+            if matches!(object.kind, 10..=13) {
+                return Err(invalid_owned(format!("Wwise music parent {id:#010x} requires music properties")));
+            }
             let node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
             if properties.bus == 0 { properties.bus = node.bus; }
             id = node.parent;
@@ -131,6 +142,9 @@ impl<'a> PlaybackBanks<'a> {
         let Some(&object) = self.actors.get(&id) else { visited.remove(&id); return Ok(None); };
         let bytes = self.bytes(object);
         let feedback = self.banks[object.bank].feedback;
+        if matches!(object.kind, 10..=13) {
+            return Err(invalid_owned(format!("Wwise music actor {id:#010x} (HIRC {}) requires music scheduling", object.kind)));
+        }
         if object.kind == 2 {
             if read_u32_slice(bytes, 4)? & 0xf != 1 { return Err(invalid("Wwise source-plugin playback requires its source processor")); }
             let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
