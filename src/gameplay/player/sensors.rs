@@ -606,6 +606,11 @@ pub struct MantleSensor {
     /// m_destinationPosition (zero: none) and m_destinationAxis.
     pub destination: Vec3,
     pub destination_axis: Mat3,
+    /// The body the destination ray hit (0: the level, as idWorldspawn).
+    pub destination_body: u32,
+    /// m_forwardCollisionResults (+0x6c): a missed ray clears only its
+    /// collision flag, keeping the rest from earlier frames.
+    forward_results: [ForwardRay; 13],
     pending: Option<MantleQueries>,
 }
 
@@ -632,6 +637,8 @@ impl MantleSensor {
             use_right_hand: false,
             destination: Vec3::ZERO,
             destination_axis: Mat3::IDENTITY,
+            destination_body: 0,
+            forward_results: [ForwardRay::default(); 13],
             pending: None,
         }
     }
@@ -672,21 +679,21 @@ impl MantleSensor {
         if let Some(rays) = q.rays {
             let h0 = d.forward_cast_height_min;
             let ceil = physics.ceil_distance;
-            let mut results = [ForwardRay::default(); 13];
-            for (i, (r, hit)) in results.iter_mut().zip(rays).enumerate() {
+            for (i, (r, hit)) in self.forward_results.iter_mut().zip(rays).enumerate() {
                 let z = origin.z + h0 + i as f32 * step;
-                if let Some(hit) = hit {
-                    *r = ForwardRay {
-                        collision: true,
-                        distance: hit.position.distance(Vec3::new(origin.x, origin.y, z)),
-                        position: hit.position,
-                        normal: hit.normal,
-                        over_ceiling: false,
-                    };
+                match hit {
+                    Some(hit) => {
+                        r.collision = true;
+                        r.distance = hit.position.distance(Vec3::new(origin.x, origin.y, z));
+                        r.position = hit.position;
+                        r.normal = hit.normal;
+                    }
+                    None => r.collision = false,
                 }
                 // phys+0xdc, the AUTOCROUCHING height.
                 r.over_ceiling = ceil < self.autocrouch_height + h0 + i as f32 * step;
             }
+            let results = self.forward_results;
             if let Some(best) = self.edge(&results, step) {
                 let e = results[best];
                 let nz = e.normal.z.max(0.0);
@@ -699,6 +706,7 @@ impl MantleSensor {
                     if world.surface(&surface).allow_mantle {
                         let rise = if velocity_z > 0.0 { dt * velocity_z } else { 0.0 };
                         self.destination = Vec3::new(hit.position.x, hit.position.y, hit.position.z + 0.01 + rise);
+                        self.destination_body = hit.body;
                     }
                 }
             }
