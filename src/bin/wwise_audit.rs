@@ -450,7 +450,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             for action in actions {
                 use dishonored2_rust::assets::wwise::PlaybackCommand;
                 match action {
-                    PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    PlaybackCommand::Failed { action, target, reason } => println!("  Failed action={action:#010x} target={target:#010x}: {reason}"),
+                    PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
                     PlaybackCommand::Play { target, settings, node } => {
                         println!("  Play target={target:#010x}, {settings:?}");
                         print_playback(&node, 2, &mixer, None)?;
@@ -461,7 +462,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for action in dishonored2_rust::assets::wwise::flatten_playback_actions(actions)? {
                 use dishonored2_rust::assets::wwise::EventCommand;
                 match action {
-                    EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    EventCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
                     EventCommand::Play { target, settings, groups } => {
                         println!("  Play target={target:#010x}, {settings:?}");
                         for (group_index, group) in groups.iter().enumerate() {

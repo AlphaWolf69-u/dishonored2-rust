@@ -195,15 +195,19 @@ impl<'a> PlaybackBanks<'a> {
             let Some(&action) = self.actions.get(&id) else { continue; };
             let action = self.bytes(action);
             if action.len() < 10 { return Err(invalid("truncated Wwise action")); }
-            match action[5] {
-                1 => commands.push(PlaybackCommand::Stop(bank::stop_action(action)?)),
+            let target = read_u32_slice(action, 6)?;
+            let command = match action[5] {
+                1 => bank::stop_action(action).map(|stop| Some(PlaybackCommand::Stop(stop))),
                 4 => {
-                    let target = read_u32_slice(action, 6)?;
-                    if let Some(node) = self.actor_playback(target, &mut media)? {
-                        commands.push(PlaybackCommand::Play { target, settings: bank::play_settings(action)?, node });
-                    }
+                    self.actor_playback(target, &mut media).and_then(|node| node.map(|node|
+                        bank::play_settings(action).map(|settings| PlaybackCommand::Play { target, settings, node })).transpose())
                 },
-                _ => {},
+                _ => continue,
+            };
+            match command {
+                Ok(Some(command)) => commands.push(command),
+                Ok(None) => {},
+                Err(error) => commands.push(PlaybackCommand::Failed { action: id, target, reason: error.to_string() }),
             }
         }
         Ok((!commands.is_empty()).then_some(commands))

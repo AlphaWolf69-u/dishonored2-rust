@@ -501,6 +501,8 @@ pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec
         }
     }
     actions.into_iter().map(|action| match action {
+        PlaybackCommand::Failed { action, target, reason } => Err(invalid_owned(format!(
+            "Wwise action {action:#010x}, target {target:#010x}: {reason}"))),
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
         PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
     }).collect()
@@ -521,6 +523,9 @@ pub fn event_playback_with(
 
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
+    /// One action can fail while the event's other actions still execute
+    /// (1410e5600 / 1410e8260 ignore the individual Execute result).
+    Failed { action: u32, target: u32, reason: String },
     Stop(StopAction),
     Play { target: u32, settings: PlaySettings, node: PlaybackNode },
 }
