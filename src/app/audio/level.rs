@@ -36,6 +36,7 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
     physics: Option<ResMut<super::super::physics_scene::PhysicsScene>>,
     bound: Option<Res<super::super::model_motion::BoundModels>>, mut scene: ResMut<Scene>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
+    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     playing: Query<(Entity, &super::AudioTarget)>, mut events: MessageWriter<super::SoundEvent>)
 {
     let (Some(mut level), Some(mut physics), Some(listener), Some(bound), Some(clock)) = (level, physics, scene.listener(), bound, clock) else { return };
@@ -92,7 +93,7 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                 Some(Propagated { positions, levels })
             } else { None };
             // A zero owner clock freezes the component update (8abb10).
-            if rates[1] != 0.0 {
+            if rates[1] != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {
                 match audio.startup.update(audio.allocated, object.audible_mask == 0, origin == Admission::Inaudible) {
                     StartupAction::Stop => {
                         // 1400c5d80 stops every playing ID, zero milliseconds,

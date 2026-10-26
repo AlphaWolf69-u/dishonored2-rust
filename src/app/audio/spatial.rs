@@ -138,10 +138,8 @@ impl Voice {
         let mut matrices = Vec::with_capacity(propagated.positions.len());
         let mut rays = Vec::with_capacity(propagated.positions.len());
         for &position in &propagated.positions {
-            let (mut matrix, _) = self.ray_targets(scene, position, channels)?;
-            let transmission = environment::gains(settings, propagated.levels,
-                spatial::Gains { dry: 1.0, user_auxiliary: 1.0, game_auxiliary: 1.0, cone_ratio: 1.0 });
-            for gain in &mut matrix { *gain *= transmission.dry; }
+            let (matrix, _) = self.ray_targets_with_environment(scene, position, channels,
+                Some((settings, propagated.levels)))?;
             matrices.push(matrix);
             let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
             let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
@@ -176,12 +174,20 @@ impl Voice {
     }
 
     fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+        self.ray_targets_with_environment(scene, position, channels, None)
+    }
+
+    fn ray_targets_with_environment(&self, scene: &Scene, position: Position, channels: u16,
+        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([f32; 4], [f32; 2]), String> {
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
         if cone.is_some() && position.front.is_none() { return Err("coned Wwise event has no emitter orientation".into()); }
         let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
-        let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
+        let mut gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
+        // 1410ccd30 applies environment gain to the ray before 1410cbbb0
+        // multiplies its speaker coefficients; preserve that float order.
+        if let Some((settings, levels)) = environment { gains = environment::gains(settings, levels, gains); }
         let spread = spatial::spread(attenuation, ray);
         let focus = spatial::focus(attenuation, ray);
         let pan = match channels {
