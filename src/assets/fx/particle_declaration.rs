@@ -3,6 +3,64 @@
 use super::particle_stage::ParticleStageAsset;
 use super::*;
 
+/// 1c3b80 constructor defaults; reflected layout from1559820.
+pub struct ParticleVisibility {
+    pub always_visible: bool,
+    pub always_simulate: bool,
+    pub always_update_cycles: bool,
+    pub alpha_culling: bool,
+    pub flush_on_occlusion: bool,
+    /// Serialized extents retain [maximum, minimum] order.
+    pub local_box: [[f32; 3]; 2],
+    pub world_box: [[f32; 3]; 2],
+    pub fixed_box: bool,
+}
+impl Default for ParticleVisibility {
+    fn default() -> Self {
+        Self {
+            always_visible: false,
+            always_simulate: false,
+            always_update_cycles: false,
+            alpha_culling: false,
+            flush_on_occlusion: false,
+            local_box: [[1.; 3], [-1.; 3]],
+            world_box: [[0.; 3]; 2],
+            fixed_box: false,
+        }
+    }
+}
+impl ParticleVisibility {
+    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_alwaysVisible" => self.always_visible = boolean(value)?,
+                "m_alwaysSimulate" => self.always_simulate = boolean(value)?,
+                "m_alwaysUpdateCycles" => self.always_update_cycles = boolean(value)?,
+                "m_alphaCulling" => self.alpha_culling = boolean(value)?,
+                "m_flushOnOcclusion" => self.flush_on_occlusion = boolean(value)?,
+                "m_fixedBoundingBox" => self.fixed_box = boolean(value)?,
+                "m_localBoundingBox" | "m_worldBoundingBox" => {
+                    let target = if name == "m_localBoundingBox" {
+                        &mut self.local_box
+                    } else {
+                        &mut self.world_box
+                    };
+                    for (name, value) in scope(value)? {
+                        let index = match name.as_str() {
+                            "m_max" => 0,
+                            "m_min" => 1,
+                            _ => return Err(format!("unknown particle visibility extent {name}")),
+                        };
+                        particles::vector(&mut target[index], scope(value)?)?;
+                    }
+                }
+                _ => return Err(format!("unknown particle visibility field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct ParticleClipping {
     /// Authored order is [maximum, minimum], unlike simulation contains().
     pub bounding_box: [[f32; 3]; 2],
@@ -64,6 +122,7 @@ impl ParticleClipping {
 
 #[derive(Default)]
 pub struct ParticleDeclaration {
+    pub visibility: ParticleVisibility,
     pub underwater: bool,
     pub handle_seen_from_underwater: bool,
     pub clipping: ParticleClipping,
@@ -74,6 +133,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
     let mut result = ParticleDeclaration::default();
     for (name, value) in fields {
         match name.as_str() {
+            "m_visibility" => result.visibility.edit(scope(value)?)?,
             "m_underwater" => result.underwater = boolean(value)?,
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,

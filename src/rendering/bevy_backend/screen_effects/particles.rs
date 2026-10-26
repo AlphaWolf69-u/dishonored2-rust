@@ -67,8 +67,12 @@ impl PlayingParticle {
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
             return Ok(());
         };
-        let receiver_bounds = crate::rendering::particles::bounds::default_system_bounds(
+        let Some(first) = self.stages.first() else {
+            return Ok(());
+        };
+        let receiver_bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
+            &first.declaration.visibility,
             publication.pose,
             context.view.owner_scale,
         )?;
@@ -185,6 +189,17 @@ impl PlayingParticle {
             return Ok(None);
         };
         let declaration = definition.declarations[index].as_ref().unwrap();
+        let visibility = &declaration.visibility;
+        if visibility.always_visible
+            || visibility.always_simulate
+            || visibility.always_update_cycles
+            || visibility.alpha_culling
+            || visibility.flush_on_occlusion
+        {
+            return Err(
+                "particle visibility scheduling requires its world culling producer".into(),
+            );
+        }
         let (effect, (stages, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
