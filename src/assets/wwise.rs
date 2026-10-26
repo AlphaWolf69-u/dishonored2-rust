@@ -644,6 +644,20 @@ pub struct BankMix {
     pub primary_bus: Option<u32>,
 }
 
+/// Authored random/sequence timing without loading or decoding any media.
+pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPlayback)>> {
+    let chunks = bank_chunks(bytes)?;
+    let feedback = bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let objects = bank_objects(hierarchy)?;
+    let mut result = Vec::new();
+    for (&(kind, id), &object) in &objects {
+        if kind == 5 { result.push((id, bank::node_children(object, kind, feedback)?.1.playback)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
     let chunks = bank_chunks(bytes)?;
     bank_feedback(&chunks)?; // Validate the serialized bank version.

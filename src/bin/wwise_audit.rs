@@ -4,6 +4,30 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--container-playback" {
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, TransitionMode}};
+        let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
+        let mut paths = if path.is_dir() {
+            std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
+                .into_iter().filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck"))).collect()
+        } else { vec![path] };
+        paths.sort();
+        let mut totals = BTreeMap::<String, usize>::new();
+        for path in paths {
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
+                for (id, settings) in bank_container_playback(&package.read_entry(&mut file, *entry)?)? {
+                    *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
+                    if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                        println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
+                    }
+                }
+            }
+        }
+        for (kind, count) in totals { println!("{kind}: {count}"); }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--level-acoustics" {
         use dishonored2_rust::assets::{archive::Catalog, installation, level::{LevelResources, DEFAULT_LEVEL}, sound_propagation::Propagation};
         let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
