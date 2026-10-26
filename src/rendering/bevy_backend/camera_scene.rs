@@ -31,6 +31,8 @@ pub(super) struct CameraGpu {
     current: Option<(Entity, CameraView)>,
     completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
+    screen_state: super::screen_effects::ScreenEffectState,
+    screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
 }
 impl CameraGpu {
     pub(super) fn capture_planes(
@@ -67,6 +69,61 @@ pub(super) fn register(app: &mut App) {
                 .in_set(CameraPass)
                 .before(ExposurePass),
         );
+        render.add_systems(
+            Core3d,
+            prepare_screen_effects
+                .in_set(Core3dSystems::MainPass)
+                .after(super::fog_scene::AtmospherePass)
+                .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
+        );
+    }
+}
+/// The shared CPU controller advances before transparent colour submission.
+/// Camera postprocessing consumes these commands without advancing it again.
+fn prepare_screen_effects(
+    sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    water: Res<WaterSceneFrame>,
+    fog: Res<FogGpu>,
+    mut gpu: ResMut<CameraGpu>,
+    view: ViewQuery<&MainEntity>,
+    mut last_error: Local<Option<String>>,
+) {
+    let Some(water) = water.0.as_ref() else {
+        gpu.screen_draws = None;
+        return;
+    };
+    if view.into_inner().id() != water.camera {
+        return;
+    }
+    gpu.screen_draws = None;
+    if fog.camera_depth(water.camera, water.matrices.frame).is_none() {
+        return;
+    }
+    let Some(sources) = sources.0.as_deref() else { return };
+    let underwater = fog.head_water_surface(water.camera, water.matrices.frame, water.head_water_surface)
+        .is_some_and(|height| water.matrices.current.position[2] <= height);
+    let result = gpu.screen_state.advance(
+        sources, water.matrices.frame, water.delta_seconds, underwater,
+        crate::gameplay::reference_frame::ReferenceFrame {
+            position: water.matrices.current.position,
+            basis: [
+                std::array::from_fn(|i| -water.matrices.current.view[2][i]),
+                std::array::from_fn(|i| -water.matrices.current.view[0][i]),
+                std::array::from_fn(|i| water.matrices.current.view[1][i]),
+            ],
+        },
+    );
+    match result {
+        Ok(draws) => {
+            gpu.screen_draws = Some((water.camera, water.matrices.frame, draws));
+            *last_error = None;
+        }
+        Err(error) => {
+            if last_error.as_ref() != Some(&error) {
+                warn!("Player FX preparation pending: {error}");
+                *last_error = Some(error);
+            }
+        }
     }
 }
 fn render_camera(
@@ -224,15 +281,17 @@ fn render_camera(
             .as_ref()
             .map_or_else(|| target.main_texture_view(), |w| w.destination);
         if let Some(sources) = screen_sources.0.as_deref() {
-            let underwater = fog.head_water_surface(frame.camera,water.matrices.frame,water.head_water_surface)
-                .is_some_and(|height| water.matrices.current.position[2] <= height);
-            gpu.screen_effects.record(
+            let CameraGpu {screen_draws, screen_effects, ..} = &mut *gpu;
+            let (_, _, draws) = screen_draws.as_ref()
+                .filter(|(camera, marker, _)| *camera == frame.camera && *marker == water.matrices.frame)
+                .ok_or("player FX commands await current atmosphere")?;
+            screen_effects.record(
                 &device,
                 &queue,
                 context.command_encoder(),
                 sources,
-                water,
-                underwater,
+                draws,
+                water.local_time[0],
                 colour,
                 &depth.alpha.full_sample,
                 full,
