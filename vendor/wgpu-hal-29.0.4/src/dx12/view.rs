@@ -46,7 +46,14 @@ impl ViewDescriptor {
         let mut desc = Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: self.srv_uav_format?,
             ViewDimension: Direct3D12::D3D12_SRV_DIMENSION_UNKNOWN,
-            Shader4ComponentMapping: Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            // Host integration: DXGI stencil SRVs expose G, whereas WebGPU
+            // exposes the single stencil component as R. Map G -> R and the
+            // absent channels to (0, 0, 1), for both D24S8 and D32S8 views.
+            Shader4ComponentMapping: if self.aspects == crate::FormatAspects::STENCIL {
+                1 | (4 << 3) | (4 << 6) | (5 << 9) | (1 << 12)
+            } else {
+                Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING
+            },
             Anonymous: Default::default(),
         };
 

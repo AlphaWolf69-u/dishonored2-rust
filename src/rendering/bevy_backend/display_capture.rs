@@ -200,6 +200,10 @@ fn copy_sources(
             TextureFormat::Rgba16Float => 8,
             TextureFormat::Rgba32Float => 16,
             TextureFormat::Rg11b10Ufloat => 4,
+            TextureFormat::Rg32Float => 8,
+            TextureFormat::Rg16Float => 4,
+            TextureFormat::R16Float | TextureFormat::Rg8Unorm => 2,
+            TextureFormat::R8Unorm => 1,
             format => return Err(format!("display capture unsupported format {format:?}")),
         };
         if texture.sample_count() != 1 || !texture.usage().contains(TextureUsages::COPY_SRC) {

@@ -126,7 +126,11 @@ fn hybrid_traversal_matches_executed_point_query() {
             .collect::<Vec<_>>();
         assert_eq!(visitor.visits, expected, "case{cases}");
         let distance = f32::from_bits(v[10 + n * 2]);
-        assert_eq!(control.distance.to_bits(), distance.to_bits(), "case{cases}");
+        assert_eq!(
+            control.distance.to_bits(),
+            distance.to_bits(),
+            "case{cases}"
+        );
         assert_eq!(control.early_out, v[11 + n * 2] != 0, "case{cases}");
         total += n;
         cases += 1;

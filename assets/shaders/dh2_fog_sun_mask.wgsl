@@ -3,6 +3,8 @@
 // Concatenate after dh2_fog_math.
 override SUN_SCATTERING:bool=false;
 override SUN_SHADOWING:bool=false;
+override SUN_DEPTH_SCALE_X:f32=1.0;
+override SUN_DEPTH_SCALE_Y:f32=1.0;
 struct FogSunMaskUniform {
     transform1:vec4<f32>,
     transform2:vec4<f32>,
@@ -52,7 +54,7 @@ struct SunVertex {
         color+=scattering*visibility*alpha;
     }
     var scaled=max(vec3(0.0),color-sun.threshold_bias.rgb)*sun.threshold_scale.rgb;
-    let depth=textureSampleLevel(sun_depth,sun_clamp,screen_uv,0.0).r;
+    let depth=textureSampleLevel(sun_depth,sun_clamp,screen_uv*vec2(SUN_DEPTH_SCALE_X,SUN_DEPTH_SCALE_Y),0.0).r;
     let depth_mask=fog_saturate((depth-sun.viewport.z)/(sun.projection.z-sun.viewport.z));
     let center=in.uv*2.0-vec2(1.0);
     let circle=fog_saturate((dot(center,center)-1.0)/(-0.5));

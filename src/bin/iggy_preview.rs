@@ -165,7 +165,13 @@ fn run() -> Result<(), String> {
     let mut list = if args.iter().any(|a| a == "--debug-ignore-visibility") {
         render::debug_draw_all(&player.vm)
     } else {
-        render::draw_list(&player.vm)
+        // The movie's glyph bitmap cache; `--debug-vector-glyphs` draws
+        // every glyph as vectors.
+        let mut cache = render::Cache::default();
+        if !args.iter().any(|a| a == "--debug-vector-glyphs") {
+            cache.set_font_caching(pause_state::font_caching(&catalog, &movie_path, (size.0 as u32, size.1 as u32)));
+        }
+        render::draw_list_cached(&player.vm, &mut cache)
     };
     // An open message box's global movie draws above the pause movie.
     if let Some((g, g_resources)) = pause.as_ref().and_then(|p| p.boxes.global_with_resources()) {

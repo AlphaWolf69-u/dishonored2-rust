@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 mod cache;
 mod water;
+pub(in crate::app) mod alpha;
 use cache::{MaterialCache, MaterialGeometry};
 
 #[cfg(test)]
@@ -412,11 +413,14 @@ fn forward_fog_flags(
         decal_type,
         source.sky_type,
     );
+    // 3386a0 routes ordinary decal types 0/3 into the opaque list (0x23),
+    // despite their framebuffer blend. Keep that route for the host adapter.
+    let before_fog = u32::from(is_decal && matches!(decal_type & 3, 0 | 3)) << 9;
     if !is_alpha
         || library.option_value(main.as_bytes(), &reference, b"tool/unlit")? != 0
         || library.option_value(main.as_bytes(), &reference, b"isMainPassAlpha")? != 0
     {
-        return Ok(0);
+        return Ok(before_fog);
     }
     // Existing misc.w bits0..2 retain alpha-test, decal and sided-lighting
     // controls. Fog bits participate in the same material pipeline key.
@@ -457,6 +461,8 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) shadow_materials: ShadowMaterials,
     pub(super) vegetation: super::vegetation_wind::VegetationMaterials,
     pub(super) water_materials: crate::rendering::bevy_backend::water_scene::WaterMaterials,
+    pub(super) water_model_colours: crate::rendering::bevy_backend::water_scene::WaterModelColours,
+    pub(super) water_stencil_materials: crate::rendering::bevy_backend::water_scene::WaterStencilMaterials,
     pub(super) boat_materials: crate::rendering::bevy_backend::boat_scene::BoatMaterials,
     pub(super) diffuse_image_slots: HashMap<String, usize>,
     pub(super) diffuse_image_paths: Vec<String>,
@@ -1069,8 +1075,12 @@ impl MaterialResolver<'_> {
                 let state = render_state::material_render_state(&entities::declaration_text(bytes), base)?;
                 let options = material_option_overrides(library, bytes)?;
                 let depth = water::depth_sources(library, bytes, main, &options, state);
+                let stencil=water::stencil_sources(library,bytes,main,&options,state);
+                std::sync::Arc::make_mut(&mut self.water_stencil_materials.0).insert(path.into(),stencil);
                 let parameters = water::colour_parameters(library, bytes, main)?;
                 let world_colour = water::world_colour_source(library, bytes, main, &options, state);
+                let model_colour = water::model_colour_source(library,bytes,main,&options,state);
+                std::sync::Arc::make_mut(&mut self.water_model_colours.0).insert(path.into(),model_colour);
                 Ok(std::sync::Arc::new(crate::rendering::bevy_backend::water_scene::WaterMaterialSource {
                     main_program: main.to_owned(),
                     state,

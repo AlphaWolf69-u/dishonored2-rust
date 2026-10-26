@@ -540,6 +540,7 @@ pub(super) fn stream_visible_models(
                             material: material.clone(), order: index,
                             geometry: instance.source.map(|source| match source.surface {
                                 super::RenderModelSurface::World { object, matrix } => crate::rendering::bevy_backend::water_scene::WaterGeometry::World { object, matrix },
+                                super::RenderModelSurface::Bmd6 {skin_influences,..} if skin_influences>0 => crate::rendering::bevy_backend::water_scene::WaterGeometry::SkinnedModel,
                                 _ => crate::rendering::bevy_backend::water_scene::WaterGeometry::Model,
                             }),
                         },

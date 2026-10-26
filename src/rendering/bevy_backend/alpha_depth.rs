@@ -115,11 +115,10 @@ impl AlphaDepthPass {
         });
         let (full, full_attachment, full_sample) =
             Self::target(device, "depthAlpha", extents.full, format);
-        // 2fbc60 divides the viewport by two unconditionally. This target is
-        // independent of r_downsampleQuality used for the fog colour/depth.
-        let half = (extents.full / 2).max(bevy::math::UVec2::ONE);
+        //36f8a0 allocates this with the shared reduction quality. 2fbc60's
+        //half-size viewport is separate from the allocated attachment size.
         let (reduced, reduced_attachment, reduced_sample) =
-            Self::target(device, "depthAlphaDiv2", half, format);
+            Self::target(device, "depthAlphaDiv2", extents.depth, format);
         let reduction = Self::binding(device, &downscale, &full_sample, &point);
         let triangle = [
             [-1.0f32, 1., 0., 0., 0.],
@@ -154,7 +153,7 @@ impl AlphaDepthPass {
     }
 
     pub fn resize(&mut self, device: &RenderDevice, extents: FogExtents) {
-        if self.extents.full == extents.full {
+        if self.extents.full == extents.full && self.extents.depth == extents.depth {
             self.extents = extents;
             return;
         }
@@ -163,13 +162,9 @@ impl AlphaDepthPass {
                 Self::target(device, "depthAlpha", extents.full, self.format);
             self.reduction = Self::binding(device, &self.downscale, &self.full_sample, &self.point);
         }
-        if self.extents.full != extents.full {
-            (self.reduced, self.reduced_attachment, self.reduced_sample) = Self::target(
-                device,
-                "depthAlphaDiv2",
-                (extents.full / 2).max(bevy::math::UVec2::ONE),
-                self.format,
-            );
+        if self.extents.depth != extents.depth {
+            (self.reduced, self.reduced_attachment, self.reduced_sample) =
+                Self::target(device, "depthAlphaDiv2", extents.depth, self.format);
         }
         self.extents = extents;
     }
@@ -212,18 +207,22 @@ impl AlphaDepthPass {
                 Self::binding(device, &self.copy, &view, &self.point),
             ));
         }
-        for (pipeline, binding, target, clear_stencil) in [
+        for (pipeline, binding, target, clear_stencil, viewport, allocated) in [
             (
                 &self.copy,
                 &self.source.as_ref().unwrap().1,
                 &self.full_attachment,
                 view_flags & 8 == 0,
+                self.extents.full,
+                self.extents.full,
             ),
             (
                 &self.downscale,
                 &self.reduction,
                 &self.reduced_attachment,
                 false,
+                (self.extents.full / 2).max(bevy::math::UVec2::ONE),
+                self.extents.depth,
             ),
         ] {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -246,6 +245,9 @@ impl AlphaDepthPass {
                 ..default()
             });
             pass.set_pipeline(pipeline);
+            pass.set_viewport(0., 0., viewport.x as f32, viewport.y as f32, 0., 1.);
+            let scissor = viewport.min(allocated);
+            pass.set_scissor_rect(0, 0, scissor.x, scissor.y);
             pass.set_bind_group(0, binding, &[]);
             pass.set_vertex_buffer(0, *self.vertices.slice(..));
             pass.draw(0..3, 0..1);

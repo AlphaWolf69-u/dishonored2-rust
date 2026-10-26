@@ -65,6 +65,15 @@ impl FogAttachment {
         size: UVec2,
         format: TextureFormat,
     ) -> Self {
+        Self::with_usage(device, label, size, format, TextureUsages::empty())
+    }
+    pub(super) fn with_usage(
+        device: &RenderDevice,
+        label: &'static str,
+        size: UVec2,
+        format: TextureFormat,
+        extra: TextureUsages,
+    ) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some(label),
             size: Extent3d {
@@ -76,7 +85,7 @@ impl FogAttachment {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | extra,
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());

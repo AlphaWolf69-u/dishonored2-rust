@@ -130,7 +130,7 @@ fn layer_mask(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
 fn collision_layer(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
     match atom(fields, key) {
         None => Ok(default),
-        Some(name) => crate::gameplay::collision_filter::layer_by_name(name).ok_or_else(|| format!("unknown {key} {name}")),
+        Some(name) => crate::gameplay::collision_filter::layer_index(name).ok_or_else(|| format!("unknown {key} {name}")),
     }
 }
 

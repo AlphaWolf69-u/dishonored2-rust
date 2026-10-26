@@ -88,7 +88,6 @@ impl FogInputs<'_> {
 }
 struct Bindings {
     ids: InputIds,
-    depth: BindGroup,
     interior: BindGroup,
     canvas: BindGroup,
     shadow: BindGroup,
@@ -116,7 +115,9 @@ pub struct FogPass {
     wrap: Sampler,
     comparison: Sampler,
     bindings: Option<Bindings>,
+    depth_binding: Option<(TextureViewId,BindGroup)>,
     filter: Option<FogFilter>,
+    ray_visibility: Option<super::fog_filter::visibility::RayVisibilityFilter>,
 }
 
 impl FogPass {
@@ -186,7 +187,9 @@ impl FogPass {
             wrap: sampler(FilterMode::Linear, AddressMode::Repeat, None),
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             bindings: None,
+            depth_binding: None,
             filter: None,
+            ray_visibility: None,
         }
     }
 
@@ -201,6 +204,7 @@ impl FogPass {
     ) {
         if self.targets.resize(device, extents) {
             self.bindings = None;
+            self.ray_visibility = None;
         }
         self.view.set(view);
         self.parameters.set(parameters);
@@ -225,6 +229,9 @@ impl FogPass {
             || self.targets.world.texture.id() != world.texture.id()
             || self.targets.canvas.texture.id() != canvas_image.texture.id()
         {
+            if self.targets.extents != extents {
+                self.ray_visibility = None;
+            }
             self.targets = FogTargets::shared(device, extents, world, canvas_image)?;
             self.bindings = None;
         }
@@ -310,14 +317,6 @@ impl FogPass {
         };
         self.bindings = Some(Bindings {
             ids,
-            depth: make(
-                &self.pipelines.depth,
-                &[
-                    buffer(0, view),
-                    texture(3, inputs.depth),
-                    sampler(13, &self.point),
-                ],
-            ),
             interior: device.create_bind_group(
                 None,
                 &self.pipelines.interior_view_layout,
@@ -409,6 +408,73 @@ impl FogPass {
         inputs: &FogInputs,
         interiors: &[InteriorDraw],
     ) -> FogSource<'_> {
+        self.record_sources_with_underwater(device,queue,encoder,inputs,interiors,false,None,|_,_|{})
+    }
+
+    /// Shared downsampledWaterDepth producer, also needed when fog is disabled.
+    pub fn record_linear_depth(
+        &mut self,
+        device: &RenderDevice,
+        encoder: &mut CommandEncoder,
+        depth: &TextureView,
+    ) {
+        if self
+            .depth_binding
+            .as_ref()
+            .is_none_or(|(id, _)| *id != depth.id())
+        {
+            let binding = device.create_bind_group(
+                Some("linear water depth inputs"),
+                &self.pipelines.depth.get_bind_group_layout(0).into(),
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: self.view.binding().unwrap(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(depth),
+                    },
+                    BindGroupEntry {
+                        binding: 13,
+                        resource: BindingResource::Sampler(&self.point),
+                    },
+                ],
+            );
+            self.depth_binding = Some((depth.id(), binding));
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("fog linear depth reduction"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &self.targets.depth.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(LinearRgba::NONE.into()),
+                        store: StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.pipelines.depth);
+            pass.set_bind_group(0, &self.depth_binding.as_ref().unwrap().1, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+    ///307530 inserts underwater radiance after light scattering and before
+    ///the shared bilateral filter. The callback receives the real fog target.
+    pub fn record_sources_with_underwater(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        inputs: &FogInputs,
+        interiors: &[InteriorDraw],
+        underwater_shadows: bool,
+        sun_rays: Option<&super::sun_rays::SunRays>,
+        underwater: impl FnOnce(&mut CommandEncoder,&TextureView),
+    ) -> FogSource<'_> {
         self.bind(device, inputs);
         queue.write_buffer(
             &self.shadow_parameters,
@@ -462,25 +528,8 @@ impl FogPass {
             pass.set_bind_group(0, &canvas.binding.as_ref().unwrap().1, &[]);
             pass.draw(0..3, 0..1);
         }
+        self.record_linear_depth(device,encoder,inputs.depth);
         let bindings = self.bindings.as_ref().unwrap();
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("fog linear depth reduction"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &self.targets.depth.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(LinearRgba::NONE.into()),
-                        store: StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipelines.depth);
-            pass.set_bind_group(0, &bindings.depth, &[]);
-            pass.draw(0..3, 0..1);
-        }
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("fog interior signed depth"),
@@ -511,7 +560,7 @@ impl FogPass {
         // 307530 calls 309a20 only when world fog or a shadowed volume
         // requests sunlight visibility. Keep clearing the retained attachment
         // so disabled frames cannot expose an earlier frame through readback.
-        let shadow_enabled = self.parameters.get().flags.x & 64 != 0 || inputs.shadowed_volumes;
+        let shadow_enabled = self.parameters.get().flags.x & 64 != 0 || inputs.shadowed_volumes || underwater_shadows;
         for (label, pipeline, bind, target, enabled) in [
             (
                 "fog turbulence",
@@ -554,11 +603,19 @@ impl FogPass {
                 pass.draw(0..3, 0..1);
             }
         }
+        if let Some(rays) = sun_rays {rays.record(encoder,&self.targets.world.view);}
         if let Some(areas) = inputs.areas {
             areas.record(encoder, &self.targets.world.view);
         }
         if let Some(scattering) = inputs.scattering {
             scattering.record(encoder, &self.targets.world.view);
+        }
+        underwater(encoder,&self.targets.world.view);
+        if let Some(mask)=inputs.ray_mask {
+            let extent=((self.targets.extents.full+bevy::math::UVec2::splat(15))
+                >> (inputs.settings.downsample as u32+3)).max(bevy::math::UVec2::ONE);
+            self.ray_visibility.get_or_insert_with(||super::fog_filter::visibility::RayVisibilityFilter::new(device,extent))
+                .record(device,queue,encoder,mask,inputs.settings.blur_radius);
         }
         // 307530 also filters when admitted local lights cast volumetric
         // shadows (+0x99); their eight-tap scattering contains the same dither.

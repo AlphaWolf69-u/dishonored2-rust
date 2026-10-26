@@ -13,9 +13,30 @@ pub(super) fn world_colour_source(
     reference: &render_program::SerializedParameterBlock,
     state: crate::render_state::RenderState,
 ) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
+    colour_source(library, bytes, main, reference, state, 2)
+}
+
+pub(super) fn model_colour_source(
+    library: &mut shader_cache::ProgramLibrary,
+    bytes: &[u8],
+    main: &str,
+    reference: &render_program::SerializedParameterBlock,
+    state: crate::render_state::RenderState,
+) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
+    colour_source(library, bytes, main, reference, state, 0)
+}
+
+fn colour_source(
+    library: &mut shader_cache::ProgramLibrary,
+    bytes: &[u8],
+    main: &str,
+    reference: &render_program::SerializedParameterBlock,
+    state: crate::render_state::RenderState,
+    bank: u8,
+) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
     let multi = library.registered_option_value(reference, b"useMultiInstancing")? != 0;
     let direct = library.registered_option_value(reference, b"useDirectInstancing")? != 0;
-    if material::instancing_bank_override(2, multi, direct)?.is_none() {
+    if material::instancing_bank_override(bank, multi, direct)?.is_none() {
         return Ok(None);
     }
     let decal = library.option_value(main.as_bytes(), reference, b"isDecal")? & 1 != 0;
@@ -69,6 +90,10 @@ pub(super) fn world_colour_source(
         (b"isAlpha", alpha || alternate),
         (b"noScreenShadows", no_screen),
     ] {
+        // Bank0 preserves the material's options; only bank2 forces multi.
+        if bank != 2 && name == b"useMultiInstancing" {
+            continue;
+        }
         options
             .parameters
             .push(render_program::SerializedParameter {
@@ -96,7 +121,11 @@ pub(super) fn world_colour_source(
         sky_cube: enabled(b"water/UseSkyCubeMapOption")?,
         disable_rough_reflections: enabled(b"water/disableSSReflectionOnRoughWaterOption")?,
     };
-    let class = library.world_water_colour_class(&variant);
+    let class = if bank == 2 {
+        library.world_water_colour_class(&variant)
+    } else {
+        library.model_water_colour_class(&variant)
+    };
     Ok(Some(Arc::new(
         crate::rendering::water::program::WorldWaterColourSource {
             program: selected,
@@ -119,6 +148,22 @@ pub(super) fn depth_sources(
     reference: &render_program::SerializedParameterBlock,
     state: crate::render_state::RenderState,
 ) -> [DepthSource; 2] {
+    pass_sources(library,bytes,main,reference,state,false)
+}
+
+pub(super) fn stencil_sources(
+    library: &mut shader_cache::ProgramLibrary,
+    bytes: &[u8], main: &str, reference: &render_program::SerializedParameterBlock,
+    state: crate::render_state::RenderState,
+) -> [DepthSource; 2] {
+    pass_sources(library,bytes,main,reference,state,true)
+}
+
+fn pass_sources(
+    library: &mut shader_cache::ProgramLibrary,
+    bytes: &[u8], main: &str, reference: &render_program::SerializedParameterBlock,
+    state: crate::render_state::RenderState, stencil: bool,
+) -> [DepthSource; 2] {
     let common = (|| -> Result<_, String> {
         let is_decal = library.option_value(main.as_bytes(), reference, b"isDecal")? & 1 != 0;
         let sky = library.option_value(main.as_bytes(), reference, b"skyType")? as u32;
@@ -129,12 +174,13 @@ pub(super) fn depth_sources(
             state[0],
             library.option_value(main.as_bytes(), reference, b"invisible")? != 0,
         );
-        if is_decal
-            || material::finalize_material_programs(class, hair, sky).clear_slots & (1 << 4) != 0
+        let slot=if stencil {6} else {4};
+        if (!stencil && is_decal)
+            || material::finalize_material_programs(class, hair, sky).clear_slots & (1 << slot) != 0
         {
             return Ok(None);
         }
-        let selected = material::authored_program_override(bytes, "zPrePassProgram")
+        let selected = material::authored_program_override(bytes, if stencil {"zPrePassAlphaProgram"} else {"zPrePassProgram"})
             .unwrap_or_else(|| main.to_owned());
         if selected.is_empty() || selected == "0" {
             return Ok(None);
@@ -202,12 +248,15 @@ pub(super) fn depth_sources(
         set(b"isAlpha", *alpha);
         set(b"noScreenShadows", *no_screen);
         set(b"isZPrePass", true);
-        if *force_pixel {
+        if stencil {
+            set(b"isZPrePassAlpha", true);
+        }
+        if !stencil && *force_pixel {
             set(b"forcePixelShader", true);
         }
-        let source = library
-            .water_depth_source(selected.as_bytes(), &options)?
-            .ok_or_else(|| format!("water depth slot4 needs runtime compilation: {selected}"))?;
+        let source = if stencil {library.water_stencil_source(selected.as_bytes(), &options)}
+            else {library.water_depth_source(selected.as_bytes(), &options)}?
+            .ok_or_else(|| format!("water slot{} needs runtime compilation: {selected}",if stencil {6} else {4}))?;
         let expected = if bank == 0 {
             shader_cache::CachedWaterDepthClass::Rigid
         } else {
@@ -230,40 +279,5 @@ pub(super) fn colour_parameters(
     bytes: &[u8],
     main: &str,
 ) -> Result<[render_program::SerializedParameterBlock; 2], String> {
-    use render_program::{
-        RenderParameterKind, SerializedParameter, SerializedParameterBlock,
-        SerializedParameterValue,
-    };
-    let defaults = library
-        .definition(main.as_bytes())?
-        .ok_or("water MAIN definition absent")?
-        .defaults
-        .clone();
-    let text = crate::entities::declaration_text(bytes);
-    let numeric = crate::entities::material_float_parameters(&text, |name| {
-        crate::rendering::water::FLOAT_PARAMETER_NAMES.contains(&name)
-    })?;
-    let images = crate::entities::material_resource_parameters(&text, |name| {
-        crate::rendering::water::IMAGE_PARAMETER_NAMES.contains(&name)
-    })?;
-    let mut parameters: Vec<_> = numeric
-        .into_iter()
-        .map(|(name, words)| SerializedParameter {
-            name: name.into_bytes(),
-            kind: RenderParameterKind::Uniform,
-            value: SerializedParameterValue::Words(words),
-        })
-        .collect();
-    parameters.extend(images.into_iter().map(|(name, image)| SerializedParameter {
-        name: name.into_bytes(),
-        kind: RenderParameterKind::Texture,
-        value: SerializedParameterValue::Name(image.into_bytes()),
-    }));
-    Ok([
-        defaults,
-        SerializedParameterBlock {
-            flags: 0,
-            parameters,
-        },
-    ])
+    crate::rendering::water::program::parameters(library,bytes,main)
 }

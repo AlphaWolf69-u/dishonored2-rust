@@ -73,6 +73,7 @@ pub(super) struct FogScene {
     shadow_options: [crate::rendering::bevy_backend::fog_shadow::FogShadowMaterialOptions; 2],
     default_shadow: Handle<Image>,
     sun_program: crate::render_state::RenderState,
+    ray_program: crate::render_state::RenderState,
     world: EnvironmentParameters,
     areas: Vec<EnvironmentParameters>,
     tracks: EnvironmentTracks,
@@ -131,6 +132,8 @@ impl FogScene {
             .definition(b"PostFX_Sun_Sprite")?
             .ok_or("missing PostFX_Sun_Sprite program definition")?
             .render_state();
+        let ray_program = programs.definition(b"PostFX_GodRays_Scattering")?
+            .ok_or("missing PostFX_GodRays_Scattering definition")?.render_state();
         let area_states = crate::rendering::bevy_backend::fog::AreaFogStates {
             interval: programs
                 .definition(b"atm/distanceFog/renderMinMax")?
@@ -196,6 +199,7 @@ impl FogScene {
             volumes: Vec::new(),
             area_states,
             sun_program,
+            ray_program,
             profiles: EnvironmentProfiles::new(&world),
             world,
             areas,
@@ -417,13 +421,16 @@ pub(super) fn publish_fog_frame(
     mut probe_materials: ResMut<Assets<super::ProbeMaterial>>,
     mut decal_materials: ResMut<Assets<super::DecalMaterial>>,
     mut output: ResMut<crate::rendering::bevy_backend::fog::FogSceneFrame>,
+    mut ray_sources: ResMut<crate::rendering::bevy_backend::sun_rays::SunRaySources>,
     mut last_error: Local<Option<String>>,
 ) {
     use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
     let Some(fog) = fog.as_mut() else {
         output.0 = None;
+        ray_sources.0 = None;
         return;
     };
+    ray_sources.0 = Some(fog.ray_program);
     if !clock.advanced() {
         return;
     }

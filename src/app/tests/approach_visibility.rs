@@ -80,6 +80,8 @@ fn installed_decal_depth_offsets_use_shared_uniform_resolution() {
     let mut fog_test_buffers = Assets::default();
     let mut fog_test_images = Assets::default();
     let mut resolver = MaterialResolver {
+        water_model_colours: default(),
+        water_stencil_materials: default(),
         fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings::disabled(
             &mut fog_test_images,
             &mut fog_test_buffers,

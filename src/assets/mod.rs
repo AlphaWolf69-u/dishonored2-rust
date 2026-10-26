@@ -3,6 +3,7 @@ pub mod bmd6;
 pub mod bmodel;
 pub mod bprobe;
 pub mod camera_blur;
+pub mod class_metadata;
 pub mod edge_animation;
 pub mod edge_skeleton;
 pub mod entities;
@@ -17,3 +18,6 @@ pub mod pnetwork;
 pub mod shader_cache;
 pub mod texture;
 pub mod world_mesh;
+
+pub(crate) mod executable;
+pub(crate) mod physics_material;

@@ -3,7 +3,16 @@
 //! were cross-checked against MIT-licensed TagTools by Skyth.
 use std::collections::BTreeMap;
 pub mod mass;
+pub mod physics_system;
+pub mod compound;
+pub mod body;
 pub mod polytope;
+pub mod shape;
+pub mod query_geometry;
+pub mod properties;
+#[cfg(test)]
+#[path = "physworld/shape_names_tests.rs"]
+mod shape_names_tests;
 
 #[derive(Debug)]
 pub struct PhysWorld {
@@ -150,7 +159,7 @@ pub fn shape_tag_filter(
             None => return (filter, false),
             Some(CodecMaterial::Map(index)) if tag != NO_SHAPE_TAG && tag & 0x8000 == 0 => {
                 let Some(&entry) = material_map.get(index as usize) else { return (filter, false) };
-                filter = crate::gameplay::collision_filter::apply_block_flags(filter, block_flags(entry));
+                filter = crate::gameplay::shape_tags::material_filter(filter, block_flags(entry));
             }
             Some(_) => {}
         }
@@ -421,11 +430,21 @@ pub fn physics_shape_kind(suffix: &str) -> u8 {
 }
 
 /// FUN_140145000 stops at either path separator when removing an extension.
-fn strip_shape_extension(path: &str) -> &str {
+pub(crate) fn strip_shape_extension(path: &str) -> &str {
     match path.rfind(['.', '/', '\\']) {
         Some(index) if path.as_bytes()[index] == b'.' => &path[..index],
         _ => path,
     }
+}
+
+/// 00ee40/142150 scans bytes before the final character for the last dot,
+/// including dots before path separators. The search skips a final dot.
+pub fn shape_extension(path: &str) -> &str {
+    let path = path.split('\0').next().unwrap();
+    path.as_bytes()[..path.len().saturating_sub(1)]
+        .iter()
+        .rposition(|&byte| byte == b'.')
+        .map_or("", |dot| &path[dot + 1..])
 }
 
 /// FUN_140144e50 replaces an extension and accepts a leading dot in the new one.
@@ -486,10 +505,7 @@ pub fn physics_shape_key(
     let hd_name;
     let name = if hd {
         // Extraction scans all dots; stripping stops at a path separator.
-        let extension = name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension)
-            .unwrap_or("");
+        let extension = shape_extension(name);
         hd_name = format!("{}_hd.{extension}", strip_shape_extension(name));
         &hd_name
     } else {
@@ -2204,7 +2220,7 @@ mod tests {
             );
             count += 1;
         }
-        assert_eq!(count, 1128);
+        assert_eq!(count, 1143);
         assert_eq!(
             physics_shape_key("models/fence.blueprint\0ignored", 0, [1.0; 3], 0.01, true),
             Some("models/fence_hd.blueprint.hkt._100_100_100.10".into())
@@ -2416,4 +2432,82 @@ mod tests {
         );
         assert!(convex_quad_order(&[[0.0; 3]; 4]).is_err());
     }
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_cable_physics_system_layout() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        let path = "generated/physsystem/models/environment/gameplay/speaker_01/cables_speaker/cable_01_rgdl.hkx";
+        let bytes = catalog.read(path).unwrap().unwrap();
+        let world = parse_embedded_havok(&bytes).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        fn dump(world: &PhysWorld, index: usize, depth: usize, seen: &mut std::collections::BTreeSet<usize>) {
+            if depth > 6 || !seen.insert(index) {
+                return;
+            }
+            let ty = &world.types[index];
+            println!("{}TYPE {} size={} parent={} sub={:#x} ptr={}", "  ".repeat(depth), ty.name, ty.byte_size,
+                world.types.get(ty.parent).map(|p| p.name.as_str()).unwrap_or("-"), ty.subtype, ty.pointer);
+            for field in &ty.fields {
+                println!("{}  +{:#x} {} : {}", "  ".repeat(depth), field.offset, field.name, world.types[field.type_index].name);
+                dump(world, field.type_index, depth + 2, seen);
+            }
+            if ty.parent != 0 && ty.parent < world.types.len() {
+                dump(world, ty.parent, depth + 1, seen);
+            }
+            if ty.pointer != 0 && ty.pointer < world.types.len() {
+                dump(world, ty.pointer, depth + 1, seen);
+            }
+        }
+        for wanted in ["hknpBodyCinfo", "hknpShapeMassProperties", "hknpConvexPolytopeShape", "hknpConvexShape", "hknpShape", "hkpRagdollMotorConstraintAtom", "hkpConstraintMotor", "hkCompressedMassProperties", "hkpPositionConstraintMotor"] {
+            if let Some(index) = world.types.iter().position(|t| t.name == wanted) {
+                let mut fresh = std::collections::BTreeSet::new();
+                dump(&world, index, 0, &mut fresh);
+            }
+        }
+        for (index, item) in world.items.iter().enumerate() {
+            let ty = &world.types[item.type_index];
+            if ["hkVector4", "hkVector4f", "char", "hkUint8", "hkRefPtr"].contains(&ty.name.as_str()) {
+                continue;
+            }
+            println!("ITEM {index} {} count={} offset={:#x}", ty.name, item.count, item.offset);
+            dump(&world, item.type_index, 1, &mut seen);
+            let at = world.data_start + item.offset;
+            let size = ty.byte_size * item.count;
+            let data = &bytes[at..at + size.min(0x400)];
+            for row in (0..data.len()).step_by(16) {
+                let end = (row + 16).min(data.len());
+                let words: Vec<String> = data[row..end].chunks(4).map(|c| {
+                    let mut w = [0u8; 4];
+                    w[..c.len()].copy_from_slice(c);
+                    format!("{:08x}", u32::from_le_bytes(w))
+                }).collect();
+                let floats: Vec<String> = data[row..end].chunks_exact(4).map(|c| format!("{:.4}", f32::from_le_bytes(c.try_into().unwrap()))).collect();
+                println!("    +{row:04x} {}  {}", words.join(" "), floats.join(" "));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "audit; requires installed Dust District archives"]
+    fn installed_cable_ragdoll_resource_layout() {
+        let catalog = crate::archive::Catalog::open(
+            &crate::assets::installation::game_base().unwrap(),
+        )
+        .unwrap();
+        for path in catalog.paths_with_suffix(".ragdoll") {
+            if !path.contains("cables_speaker") {
+                continue;
+            }
+            let bytes = catalog.read(&path).unwrap().unwrap();
+            println!("RAGDOLL {path} {} bytes head {:02x?}", bytes.len(), &bytes[..bytes.len().min(64)]);
+            match parse_embedded_havok(&bytes) {
+                Ok(world) => println!("  inventory {:?}", world.item_inventory()),
+                Err(e) => println!("  not tagged: {e}"),
+            }
+        }
+    }
+
 }

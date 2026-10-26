@@ -50,11 +50,13 @@ mod fog_lights;
 mod environment_reflection;
 mod model_motion;
 mod machinery;
+mod physics_skinning;
 mod shadow_updates;
 mod shadow_diagnostics;
 mod world_instances;
 mod water_objects;
 mod water_scene;
+mod physics_scene;
 mod state;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
@@ -78,10 +80,13 @@ use shadow_preparation::{
     VegetationMeshInputs, WorldShadowDrawSettings, WorldShadowMeshSources,
 };
 mod materials;
+// Standalone historical sprite comparisons; gameplay uses fog_scene's sun pass.
+#[cfg(test)]
 mod sky_sprite;
 mod fog_scene;
 mod display_scene;
 mod camera_effects;
+mod alpha_depth_pass;
 mod lens_scene;
 mod fog_volumes;
 mod fog_objects;
@@ -90,6 +95,7 @@ use materials::{
     DecalExtension, ImageAccess, ShadowImageAccess, ProbeExtension, DH2_BITANGENT, DH2_NORMAL_W,
 };
 mod scene_queue;
+mod decal_pass;
 use scene_queue::{
     bwm_lod_visibility_counts, ShadowModelBoundsSource, ShadowModelBoundsSources,
     PlacedModelQueries, PlacedModelQueryGroup, RenderSuppressionGroup, SceneRenderQueue,

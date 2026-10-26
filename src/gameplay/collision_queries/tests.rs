@@ -97,3 +97,38 @@ fn submission_phase_errors_preserve_slot_ownership() {
     assert_eq!(id.bits(), 0x2000);
     assert_eq!(pool.pending.len(), 1);
 }
+
+#[test]
+fn geometry_failure_does_not_complete_or_publish_partial_hits() {
+    let mut pool = CollisionQueries::<u32, u32>::default();
+    let mut first = pool.submit(1, true).unwrap();
+    let mut failed = pool.submit(2, true).unwrap();
+    let mut later = pool.submit(3, true).unwrap();
+    let result = pool.try_resolve_pending(|&request, hits| {
+        hits.push(request * 10);
+        if request == 2 {
+            Err("missing shape")
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(result, Err("missing shape"));
+    let mut output = vec![77];
+    assert!(pool.take_completed(&mut first, &mut output).unwrap());
+    assert_eq!(output, [10]);
+    assert!(!pool.take_completed(&mut failed, &mut output).unwrap());
+    assert!(!pool.take_completed(&mut later, &mut output).unwrap());
+    assert_eq!(output, [10]);
+    let mut order = Vec::new();
+    pool.try_resolve_pending(|&request, hits| {
+        order.push(request);
+        hits.push(request * 100);
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(order, [2, 3]);
+    assert!(pool.take_completed(&mut failed, &mut output).unwrap());
+    assert_eq!(output, [200]);
+    assert!(pool.take_completed(&mut later, &mut output).unwrap());
+    assert_eq!(output, [300]);
+}

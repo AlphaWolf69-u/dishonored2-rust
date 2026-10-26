@@ -497,7 +497,7 @@ pub struct MotionRequests {
 
 impl MotionRequests {
     pub fn push_linear(&mut self, priority: i32, velocity: Vec3) {
-        if self.linear.is_none() || priority >= self.linear_priority {
+        if self.linear.is_none() || crate::gameplay::motion_requests::takes_precedence(priority,self.linear_priority) {
             self.linear = Some(velocity);
             self.linear_priority = priority;
         }
@@ -507,7 +507,7 @@ impl MotionRequests {
     }
 
     pub fn push_angular(&mut self, priority: i32, velocity: Vec3) {
-        if self.angular.is_none() || priority >= self.angular_priority {
+        if self.angular.is_none() || crate::gameplay::motion_requests::takes_precedence(priority,self.angular_priority) {
             self.angular = Some(velocity);
             self.angular_priority = priority;
         }

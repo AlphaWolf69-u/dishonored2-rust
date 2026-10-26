@@ -46,7 +46,8 @@ struct OceanColourVertex {
         shore,displacement,previous,collision,fft_foam,amplitude);
     return OceanColourVertex(vertex.clip,vertex.world,vertex.legacy);
 }
-@fragment fn ocean_colour_fragment(vertex:OceanColourVertex,@builtin(front_facing) front:bool)->@location(0) vec4<f32> {
+fn ocean_colour(vertex:OceanColourVertex,front:bool,parameters:OceanColourView)->vec4<f32> {
+    let ocean=parameters;
     let foam_uv=vertex.legacy.xy*0.04+vec2(sin(ocean.surface.clock_view.x)*0.01);
     let foam=textureSample(foam_texture,bilinear_wrap,foam_uv).r;
     // global::screenPosToTexcoord deliberately ignores the bias.xy lanes.
@@ -61,4 +62,7 @@ struct OceanColourVertex {
         opaque_depth,reduced_depth,hdr,fog,caustics,probes,sky,shadow,
         bilinear_clamp,bilinear_wrap,bilinear_wrap,bilinear_wrap,comparison);
     return vec4(colour_output(ocean.output,result.rgb),result.a);
+}
+@fragment fn ocean_colour_fragment(vertex:OceanColourVertex,@builtin(front_facing) front:bool)->@location(0) vec4<f32> {
+    return ocean_colour(vertex,front,ocean);
 }

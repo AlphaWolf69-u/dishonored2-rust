@@ -41,6 +41,7 @@ struct Inputs {
 pub(super) struct LensScene {
     black: Handle<Image>,
     settings: crate::platform::game_settings::PostProcessSettings,
+    settings_generation: u64,
     world: Inputs,
     areas: Vec<(String, Inputs)>,
     float_tracks: [ParameterTrack<FloatParameter>; 13],
@@ -51,6 +52,14 @@ pub(super) struct LensScene {
     initialized: bool,
 }
 impl LensScene {
+    pub(super) fn refresh_settings(&mut self) -> Result<(), String> {
+        let generation = crate::platform::console::shared().generation();
+        if generation != self.settings_generation {
+            self.settings = crate::platform::game_settings::read_post_process_settings()?;
+            self.settings_generation = generation;
+        }
+        Ok(())
+    }
     pub(super) fn settings(&self) -> crate::platform::game_settings::PostProcessSettings {
         self.settings
     }
@@ -118,6 +127,7 @@ impl LensScene {
         Ok(Self {
             black,
             settings: crate::platform::game_settings::read_post_process_settings()?,
+            settings_generation: crate::platform::console::shared().generation(),
             world,
             areas,
             float_tracks: std::array::from_fn(|i| ParameterTrack::new(FloatParameter(floats[i]))),

@@ -2,7 +2,7 @@
 //! authored Havok physics world, with owner activation for collected pickups.
 //! Coordinates are Bevy Y-up metres; the player queries it through
 //! `player::character_proxy::PlayerWorld`.
-use super::collision_filter::{layer, layer_filter, QueryFilter};
+use super::collision_filter::{filter_info, layer, QueryFilter};
 use crate::entities::physics_material::PhysicsMaterial;
 use bevy_math::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -50,7 +50,7 @@ impl CollisionWorld {
         Self::with_materials(
             source
                 .into_iter()
-                .map(|(triangle, owner)| (triangle, owner, NO_MATERIAL, layer_filter(layer::WORLD_LOW))),
+                .map(|(triangle, owner)| (triangle, owner, NO_MATERIAL, filter_info(layer::WORLD_LOW))),
             owners,
             Vec::new(),
         )
@@ -390,7 +390,7 @@ mod tests {
             Vec::new(),
         );
         let (from, to) = (Vec3::new(0.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0));
-        let player = QueryFilter::World(layer_filter(layer::PLAYER) & 0xfbffffff);
+        let player = QueryFilter::World(filter_info(layer::PLAYER) & 0xfbffffff);
         assert_eq!(world.first_hit_details(from, to, player).map(|h| h.1), Some(1));
         assert_eq!(world.first_hit_details(from, to, QueryFilter::ALL).map(|h| h.1), Some(0));
         let ground = QueryFilter::layers(0x802b, 1 << layer::PLAYER);

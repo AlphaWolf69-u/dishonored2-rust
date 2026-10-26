@@ -329,9 +329,18 @@ pub fn advance(vm: &mut Vm, o: &Obj) -> Result<()> {
     }
 }
 
-/// Advance every playing clip under `o`, post-order.
+/// Advance every playing clip under `o`, post-order. A child created since
+/// the last pass is skipped with its subtree, its frame-1 script due
+/// (`FUN_141022750`'s child loop, `[DO+1] & 2`).
 pub fn advance_tree(vm: &mut Vm, o: &Obj) -> Result<()> {
     for child in super::display::children(o) {
+        let fresh = display(&child).is_some_and(|mut d| std::mem::take(&mut d.fresh));
+        if fresh {
+            if let Some(t) = display(&child).unwrap().timeline.as_mut() {
+                t.script_pending = true;
+            }
+            continue;
+        }
         advance_tree(vm, &child)?;
     }
     advance(vm, o)
@@ -341,8 +350,10 @@ pub fn advance_tree(vm: &mut Vm, o: &Obj) -> Result<()> {
 pub fn run_frame_script(vm: &mut Vm, o: &Obj) -> Result<()> {
     let script = {
         let Some(mut d) = display(o) else { return Ok(()) };
+        // `FUN_141024890`: due when counted or new; the pass clears both.
+        let fresh = std::mem::take(&mut d.fresh);
         let Some(t) = d.timeline.as_mut() else { return Ok(()) };
-        if !t.script_pending {
+        if !t.script_pending && !fresh {
             return Ok(());
         }
         t.script_pending = false;

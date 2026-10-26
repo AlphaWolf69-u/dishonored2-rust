@@ -4,6 +4,7 @@ pub mod angular;
 pub mod ball_socket;
 pub mod linear;
 pub mod motion;
+pub mod atom_stack;
 pub mod step;
 
 pub fn inverse_length(squared: f32) -> f32 {

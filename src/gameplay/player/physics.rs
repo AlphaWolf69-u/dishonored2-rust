@@ -9,7 +9,7 @@
 //! are not ported: the rewrite's collision world is static.
 use super::character_proxy::{CharacterProxy, PlayerWorld, ProxySettings, SupportState, WorldHit};
 use super::shape::{PostureShape, ShapeSettings, POSTURE_AUTOCROUCHING, POSTURE_COUNT, POSTURE_KEEP_PREVIOUS, POSTURE_SWIMMING};
-use crate::gameplay::collision_filter::{layer, layer_filter, QueryFilter};
+use crate::gameplay::collision_filter::{filter_info, layer, QueryFilter};
 use bevy_math::{Mat3, Vec3};
 
 /// "Unset" sentinel (DAT_141ae8a70).
@@ -240,7 +240,7 @@ impl PlayerPhysics {
                 max_cast_iterations: settings.max_cast_iterations,
                 refresh_manifold_in_check_support: settings.refresh_manifold_in_check_support,
                 // Start FUN_1407fe310: the layer's word without CHAIN.
-                collision_filter: layer_filter(decl.collision_layer) & 0xfbffffff,
+                collision_filter: filter_info(decl.collision_layer) & 0xfbffffff,
             },
         );
         Self {
@@ -518,7 +518,7 @@ impl PlayerPhysics {
     pub fn update_queries(&mut self, world: &dyn PlayerWorld) {
         let proxy_layers = self.proxy.settings.collision_filter >> 5;
         // The layer's word without NPC_BODY_ANIMATED and NPC_BODY_RAGDOLL.
-        let layer_layers = (layer_filter(self.collision_layer) & 0xfff77fff) >> 5;
+        let layer_layers = (filter_info(self.collision_layer) & 0xfff77fff) >> 5;
         let required = 1 << layer::PLAYER;
         let touch = QueryFilter::layers((self.ceil_collision_mask | self.ground_collision_mask) & proxy_layers, required);
         let ground = QueryFilter::layers(layer_layers & self.ground_collision_mask, required);

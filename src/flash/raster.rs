@@ -90,8 +90,8 @@ pub fn rasterize(list: &DrawList, images: &Images, width: u32, height: u32, back
             Texture::White => None,
             Texture::Bitmap(c) => images.images.get(c).cloned(),
             Texture::Ramp(i) => Some((64, 1, list.ramps[*i].to_vec())),
+            Texture::Glyphs(i) => list.glyph_pages.get(*i).map(|p| (p.width, p.height, p.rgba.clone())),
         };
-        let premultiplied = matches!(batch.texture, Texture::Ramp(_));
         let verts = &list.vertices[batch.first as usize..(batch.first + batch.count) as usize];
         for tri in verts.chunks_exact(3) {
             let p: Vec<[f32; 2]> = tri.iter().map(|v| [v.position[0] * sx, v.position[1] * sy]).collect();
@@ -134,31 +134,20 @@ pub fn rasterize(list: &DrawList, images: &Images, width: u32, height: u32, back
                         }
                         _ => (u, v),
                     };
-                    let mut texel = match &image {
+                    let texel = match &image {
                         Some(img) => sample(img, u, v, batch.repeat, batch.smooth),
                         None => sample(&white, 0.5, 0.5, false, false),
                     };
-                    if premultiplied && texel[3] > 0.0 {
-                        for k in 0..3 {
-                            texel[k] /= texel[3];
-                        }
-                    }
-                    let mul = tri[0].mul;
-                    let add = tri[0].add;
-                    let src: [f32; 4] = std::array::from_fn(|k| (texel[k] * mul[k] + add[k]).clamp(0.0, 1.0));
+                    // Premultiplied texels through GDraw's textured shader
+                    // (exe 0x229ce80) and blend states (add ONE/ONE, normal
+                    // ONE/INV_SRC_ALPHA), as dh2_flash.wgsl.
+                    let (mul, add) = (tri[0].mul, tri[0].add);
+                    let a = texel[3] * mul[3];
+                    let src: [f32; 4] = std::array::from_fn(|k| if k == 3 { a } else { (texel[k] * mul[k] * mul[3] + add[k] * a).min(a) });
                     let dst = &mut px[(y * width + x) as usize];
-                    match batch.blend {
-                        7 => {
-                            for k in 0..3 {
-                                dst[k] = (dst[k] + src[k] * src[3]).min(1.0);
-                            }
-                        }
-                        _ => {
-                            for k in 0..3 {
-                                dst[k] = src[k] * src[3] + dst[k] * (1.0 - src[3]);
-                            }
-                            dst[3] = src[3] + dst[3] * (1.0 - src[3]);
-                        }
+                    let keep = if batch.blend == 7 { 1.0 } else { 1.0 - a };
+                    for k in 0..4 {
+                        dst[k] = (src[k] + dst[k] * keep).clamp(0.0, 1.0);
                     }
                 }
             }

@@ -132,6 +132,9 @@ impl FogSunMaskPipelines {
         Self::with_program(device, &FogSunProgram::new(device))
     }
     pub fn with_program(device: &RenderDevice, program: &FogSunProgram) -> Self {
+        Self::with_depth_scale(device, program, [1., 1.])
+    }
+    pub fn with_depth_scale(device: &RenderDevice, program: &FogSunProgram, depth_scale: [f32; 2]) -> Self {
         let module = program.module.clone();
         let pipeline_layout = program.pipeline_layout.clone();
         let layout = program.layout.clone();
@@ -139,6 +142,8 @@ impl FogSunMaskPipelines {
             let constants = [
                 ("SUN_SCATTERING", f64::from(u32::from(index != 0))),
                 ("SUN_SHADOWING", f64::from(u32::from(index == 2))),
+                ("SUN_DEPTH_SCALE_X", f64::from(depth_scale[0])),
+                ("SUN_DEPTH_SCALE_Y", f64::from(depth_scale[1])),
             ];
             device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some("projected sun colour mask"),

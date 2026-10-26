@@ -437,6 +437,9 @@ impl HdrDownscale {
     pub fn output(&self) -> &TextureView {
         &self.view
     }
+    pub fn texture(&self) -> &Texture {
+        &self.texture
+    }
     /// The caller must supply the full colour source BEFORE DOF filtering,
     /// and the current adaptation buffer. Source texel offsets use that image's
     /// dimensions; target dimensions do not replace them.

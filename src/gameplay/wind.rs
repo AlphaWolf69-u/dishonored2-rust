@@ -113,6 +113,7 @@ pub struct WindManager {
 
 /// A trigger-linked wind and its arkCpntWind lifecycle state at PostLoadMap.
 pub struct TriggerWindSource {
+    pub entity: String,
     pub settings: WindSettings,
     pub priority: i32,
     pub volume: super::trigger_volume::TriggerVolume,
@@ -140,6 +141,7 @@ pub fn trigger_wind_sources(
                 format!("{}: trigger wind has no renderModelInfo shape", trigger.entity)
             })?;
             Ok(TriggerWindSource {
+                entity: trigger.entity.clone(),
                 settings: trigger.wind.settings,
                 priority: trigger.wind.priority,
                 volume: super::trigger_volume::TriggerVolume::load(
@@ -359,13 +361,13 @@ mod tests {
                 })
                 .collect()],
             hull_vertices: vec![Vec::new()],
-            hull_edges: vec![Vec::new()],
         };
         let settings = |main_speed| WindSettings {
             main_speed,
             ..WindSettings::default()
         };
         let source = |speed, priority, lo, hi, started| TriggerWindSource {
+            entity: String::new(),
             settings: settings(speed),
             priority,
             volume: cube(lo, hi),
@@ -493,6 +495,7 @@ mod tests {
         };
         let world_wind = Wind::new(crate::entities::wind::world_wind(&document, read).unwrap().unwrap());
         let triggers = trigger_wind_sources(&catalog, &document).unwrap();
+        let names: Vec<String> = triggers.iter().map(|t| t.entity.clone()).collect();
         let manager = WindManager::post_load_map(true, triggers, &[]);
         let mut placements = crate::entities::render_placements(&document);
         placements.extend(crate::entities::placed_models_with_inheritance(&document, read).unwrap());
@@ -504,21 +507,35 @@ mod tests {
             .filter(|&i| world.bodies[i].wind.is_some())
             .collect();
         assert_eq!(shutters.len(), 10);
+        // Live dust_p_lowchaos capture (analysis/probe_wind_rigid_bodies.py):
+        // every shutter lists fosterbldg_shutter then vista; the lowest one
+        // (spawn z -26.47) also touches vistatun, first.
+        for &i in &shutters {
+            world.bodies[i].update_wind_triggers(&manager.trigger_shapes);
+            let listed: Vec<&str> = world.bodies[i].wind.as_ref().unwrap().triggers.iter()
+                .map(|t| names[*t].as_str()).collect();
+            let low = world.bodies[i].mass_center()[2] < -24.;
+            let mut expected = vec!["audio_area_volume_fosterbldg_shutter", "audio_area_volume_vista"];
+            if low {
+                expected.insert(0, "audio_area_volume_vistatun");
+            }
+            assert_eq!(listed, expected);
+        }
         let start: Vec<_> = shutters.iter().map(|&i| world.bodies[i].motion.pose.orientation).collect();
         let mut world_wind = world_wind;
         let mut swing = vec![0f32; shutters.len()];
         for _ in 0..600 {
             world_wind.advance(1. / 60.);
             for &i in &shutters {
-                let body = &mut world.bodies[i];
+                let body = &world.bodies[i];
                 let wind = match body.wind.as_ref().unwrap().triggers.first() {
                     Some(&t) => &manager.triggers[t],
                     None => &world_wind,
                 };
                 let velocity = wind.velocity(Vec3::from_array(body.mass_center()));
-                body.apply_wind(velocity.to_array(), 1. / 60.);
+                world.apply_wind(i, velocity.to_array(), 1. / 60.);
             }
-            world.step([1. / 60.; 5]);
+            world.step([1. / 60.; 2]);
             for &i in &shutters {
                 world.bodies[i].update_wind_triggers(&manager.trigger_shapes);
             }
@@ -536,6 +553,26 @@ mod tests {
             shutters.iter().map(|&i| world.bodies[i].wind.as_ref().unwrap().triggers.clone()).collect::<Vec<_>>(),
             world.maximum_anchor_error());
         assert!(world.maximum_anchor_error() < 0.05);
+        let awake = shutters.iter().filter(|&&i| world.bodies[i].active()).count();
+        println!("awake in the wind: {awake}/{}", shutters.len());
+        // Live capture: all ten shutters at entity LOD 7 (view 83 m away,
+        // not drawn) are frozen in activation mode 2 and ignore the wind.
+        for &i in &shutters {
+            world.bodies[i].lod.level = 7;
+            world.entity_level_changed(i, 0, 7);
+        }
+        let poses: Vec<_> = shutters.iter().map(|&i| world.bodies[i].motion.pose).collect();
+        for _ in 0..120 {
+            for &i in &shutters {
+                let velocity = world_wind.velocity(Vec3::from_array(world.bodies[i].mass_center()));
+                world.apply_wind(i, velocity.to_array(), 1. / 60.);
+            }
+            world.step([1. / 60.; 2]);
+        }
+        for (k, &i) in shutters.iter().enumerate() {
+            assert!(!world.bodies[i].active());
+            assert_eq!(world.bodies[i].motion.pose, poses[k]);
+        }
     }
 
 }

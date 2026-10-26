@@ -118,6 +118,8 @@ pub struct ConstraintSettings {
     pub target_position: f32,
     pub linear_constraint: String,
     pub angular_friction: f32,
+    /// m_angularLimitsTauFactor (declaration +0xe0, default 1).
+    pub angular_limits_tau_factor: f32,
     pub motor: Option<AngularMotorSettings>,
 }
 
@@ -250,6 +252,7 @@ pub fn constraints(
                     .unwrap_or("LINEAR_CONSTRAINT_FIXED")
                     .to_owned(),
                 angular_friction: number("m_angularFriction", -1.)?,
+                angular_limits_tau_factor: number("m_angularLimitsTauFactor", 1.)?,
                 motor: mode.map(|mode| AngularMotorSettings {
                     mode,
                     target_velocity: if mode == MotorMode::Position {

@@ -318,6 +318,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => Vec::new(),
     };
+    let environment_volumes=match (entity_document.as_ref(),catalog.as_ref()) {
+        (Some(document),Some(catalog))=>crate::rendering::environment::load_environment_volumes(document,catalog)
+            .map_err(std::io::Error::other)?,
+        _=>Vec::new(),
+    };
     println!(
         "Loaded {} area environment trigger shapes",
         area_environments.len()
@@ -380,7 +385,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|layer| layer.parameters.len())
             .sum::<usize>();
         println!(
-            "World environment render parameters: {} layers, {value_count} raw entries; exposure, sky and world fog consume authored values; radial rays, local/transparent fog and water rendering remain pending",
+            "World environment render parameters: {} layers, {value_count} raw entries; authored inputs prepared for exposure, sky, fog and water",
             parameters.layers.len(),
         );
     }
@@ -558,7 +563,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             materials
                 .get(index as usize)
                 .and_then(|m| m.as_ref().ok())
-                .map_or(crate::gameplay::collision_filter::block::DEFAULT, |m| m.block_flags)
+                .map_or(crate::gameplay::collision_settings::CollisionSettings::default().flags, |m| m.collision.flags)
         };
         let mut undecoded_filters = 0usize;
         let level_triangles: Vec<_> = geometry
@@ -725,7 +730,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let machinery=super::machinery::AmbientMachinery::load(catalog.as_ref().unwrap(),entity_document.as_ref(),&placed_models)
         .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
+    app.insert_resource(super::model_motion::BoundModels::new(
+        entity_document.as_ref().map(crate::entities::entity_binds).unwrap_or_default(),
+    ));
     app.insert_resource(super::fog_scene::WorldWind::load(catalog.as_ref().unwrap(),entity_document.as_ref()).map_err(std::io::Error::other)?);
+    if let (Some(catalog),Some(document))=(catalog.as_ref(),entity_document.as_ref()) {
+        let map=level.entities.strip_prefix("maps/").unwrap_or(&level.entities)
+            .strip_suffix(".entities").ok_or("physics entity resource has no map name")?;
+        match super::physics_scene::PhysicsScene::load(catalog,document,map,&environment_volumes) {
+            Ok(physics)=>{app.insert_resource(physics);},
+            Err(error)=>eprintln!("Level physics publication pending: {error}"),
+        }
+    }
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(catalog.as_ref().unwrap(),entity_document.as_ref()));
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     let presentation = game_settings::read_presentation_settings().map_err(std::io::Error::other)?;
@@ -772,6 +788,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             pickups,
             catalog,
         })
+        .insert_resource(super::state::EnvironmentVolumes(environment_volumes))
         .add_plugins(
             DefaultPlugins
                 .set(bevy::log::LogPlugin {
@@ -918,6 +935,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
+        .add_plugins(super::alpha_depth_pass::AlphaDepthPassPlugin)
         .add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
         .add_plugins(super::display_settings::DisplaySettingsPlugin(std::sync::Mutex::new(display_state.take())))
         .add_plugins(game_clock_runtime::ClockRuntimePlugin)
@@ -938,6 +956,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .insert_resource(ViewSettings(view_settings))
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+        .add_plugins(super::decal_pass::DecalPassPlugin)
         .insert_resource(VisibilityElapsedTiming::default())
         .init_resource::<super::model_motion::ModelPoseUpdates>()
         .init_resource::<super::model_motion::ModelMotionBindings>()
@@ -966,6 +985,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
                 super::machinery::update_machinery,
+                super::machinery::pose_physics_systems,
                 update_coordinate_overlay,
                 interact_pickup.run_if(super::pause_menu::game_not_paused),
                 snapshot_once,
@@ -1108,7 +1128,6 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         crate::rendering::bevy_backend::probe_weights::indirect_shader
     );
     bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
-    super::sky_sprite::register(&mut app);
     bevy::asset::load_internal_asset!(
         app,
         SKY_SHADER_HANDLE,

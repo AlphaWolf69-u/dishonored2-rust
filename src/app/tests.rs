@@ -1550,7 +1550,8 @@ fn authored_surface_gpu_pipelines_compile() {
             .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
     )
     .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-    .add_plugins(MaterialPlugin::<DecalMaterial>::default());
+    .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+    .add_plugins(super::decal_pass::DecalPassPlugin);
     super::sky_sprite::register_renderer(&mut app);
     bevy::asset::load_internal_asset!(
         app,
@@ -3357,6 +3358,7 @@ fn authored_surface_gpu_pipelines_compile() {
         ..default()
     };
     overlay.extension.surface.misc.z = 0;
+    overlay.extension.surface.misc.w |= 1 << 9;
     let overlay = app
         .world_mut()
         .resource_mut::<Assets<DecalMaterial>>()
@@ -9415,4 +9417,84 @@ fn immutable_shadow_vectors_keep_raw_bits_and_model_fallbacks_live() {
         parameters.vector(b"missing", None).unwrap_err(),
         "unresolved native shadow Uniform missing"
     );
+}
+
+#[test]
+#[ignore = "requires installed Dust District archives"]
+fn installed_dust_cable_md6_placements_pose_and_query() {
+    let catalog = archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+    let bytes = level.read_entities(&catalog).unwrap().unwrap();
+    let document = entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+    let placements = expanded_model_placements(&entities::render_placements(&document), &catalog);
+    let cables: Vec<_> =
+        placements.iter().filter(|p| p.resource_path.contains("cables_speaker")).collect();
+    assert_eq!(cables.len(), 3);
+    let mut buffers = Assets::<ShaderBuffer>::default();
+    for placement in cables {
+        let path = bmd6::resolve_compiled_mesh(&placement.resource_path, |decl| {
+            catalog.read(decl).ok().flatten().map(|b| String::from_utf8_lossy(&b).into_owned())
+        })
+        .unwrap();
+        let model = bmd6::inspect(&catalog.read(&path).unwrap().unwrap()).unwrap();
+        assert!(model.has_decoded_geometry);
+        let skin = rest_skinning(&catalog, &placement.resource_path, &model, &mut buffers).unwrap();
+        let query = initial_placed_model_query(placement, model.authored_bounds).unwrap();
+        let mut low = [f32::MAX; 3];
+        let mut high = [f32::MIN; 3];
+        for surface in &model.surfaces {
+            let mut mesh = source_mesh(
+                &surface.positions,
+                &surface.uvs,
+                &surface.indices,
+                &surface.packed_channels,
+                false,
+            );
+            apply_rest_pose(&mut mesh, surface, &skin.matrices, surface.skin_influences, placement, true)
+                .unwrap();
+            let bevy::mesh::VertexAttributeValues::Float32x3(points) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+            else {
+                panic!("positions")
+            };
+            for p in points {
+                let g = view_to_game(Vec3::from_array(*p));
+                for i in 0..3 {
+                    low[i] = low[i].min(g[i]);
+                    high[i] = high[i].max(g[i]);
+                }
+            }
+        }
+        println!(
+            "{} at {:?}: posed {low:?}..{high:?}, query bounds {:?}, region {:?}, palette {}",
+            placement.id, placement.position, query.bounds, query.region, skin.matrices.len()
+        );
+        // The rest pose stays inside the authored query bounds (+5 cm).
+        for i in 0..3 {
+            assert!(low[i] >= query.bounds[0][i] - 0.05 && high[i] <= query.bounds[1][i] + 0.05);
+        }
+    }
+}
+
+#[test]
+#[ignore = "audit; requires installed Dust District archives"]
+fn installed_dust_md6_placement_audit() {
+    let catalog = archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let level = crate::assets::level::LevelResources::resolve(&catalog, "dust_p_lowchaos").unwrap();
+    let bytes = level.read_entities(&catalog).unwrap().unwrap();
+    let document = entities::parse(&String::from_utf8_lossy(&bytes)).unwrap();
+    let placements = expanded_model_placements(&entities::render_placements(&document), &catalog);
+    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+    for p in placements.iter().filter(|p| p.resource_path.ends_with(".bmd6model")) {
+        let class = document
+            .definitions
+            .iter()
+            .find(|d| d.id == p.id.split('#').next().unwrap_or(&p.id))
+            .map(|d| d.class.clone())
+            .unwrap_or_default();
+        *kinds.entry(format!("{class} {}", p.resource_path)).or_default() += 1;
+    }
+    for (kind, count) in kinds {
+        println!("{count:4} {kind}");
+    }
 }

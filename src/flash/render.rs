@@ -46,6 +46,8 @@ pub enum Texture {
     Bitmap(CharRef),
     /// Index into `DrawList::ramps`.
     Ramp(usize),
+    /// Index into `DrawList::glyph_pages`.
+    Glyphs(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +103,8 @@ pub struct DrawList {
     pub layers: Vec<Layer>,
     /// 64×1 RGBA8 gradient ramps.
     pub ramps: Vec<[u8; 256]>,
+    /// Glyph cache pages (`glyph_cache`), as of the end of the build.
+    pub glyph_pages: Vec<std::sync::Arc<super::glyph_cache::Page>>,
     pub stage: (f32, f32),
 }
 
@@ -149,12 +153,26 @@ pub struct Cache {
     /// (font, glyph, layer, scale bits); the font is held so its address
     /// stays its identity.
     glyphs: HashMap<(usize, usize, usize, u32), (std::rc::Rc<crate::assets::iggy::font::Font>, Triangles)>,
+    /// The player's glyph bitmap cache, when the movie sets one
+    /// (`IggyPlayerSetBitmapFontCaching`).
+    glyph_cache: Option<super::glyph_cache::GlyphCache>,
+    /// Fonts with cached glyphs, held so their addresses stay their identity.
+    cached_fonts: Vec<std::rc::Rc<crate::assets::iggy::font::Font>>,
 }
 
 /// Entries kept before the cache starts over (animated scales add new ones).
 const CACHE_LIMIT: usize = 50_000;
 
 impl Cache {
+    /// The movie's bitmap font caching (`FUN_14002c440`); `None` draws every
+    /// glyph as vectors.
+    pub fn set_font_caching(&mut self, caching: Option<super::glyph_cache::FontCaching>) {
+        if self.glyph_cache.as_ref().map(|c| c.caching()) != caching {
+            self.glyph_cache = caching.map(super::glyph_cache::GlyphCache::new);
+            self.cached_fonts.clear();
+        }
+    }
+
     fn trim(&mut self) {
         if self.fills.len() > CACHE_LIMIT {
             self.fills.clear();
@@ -382,14 +400,11 @@ impl Builder<'_> {
                 };
                 let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);
                 let add = c.add.map(|v| v as f32 / 255.0);
-                let vertices: Vec<Vertex> = tris
-                    .iter()
-                    .map(|&p| {
-                        let (uv, params) = texgen(p);
-                        let (x, y) = m.apply(p[0] as f64, p[1] as f64);
-                        Vertex { position: [x as f32, y as f32], uv, mul, add, params, w: 1.0 }
-                    })
-                    .collect();
+                let vertices = tris.iter().map(|&p| {
+                    let (uv, params) = texgen(p);
+                    let (x, y) = m.apply(p[0] as f64, p[1] as f64);
+                    Vertex { position: [x as f32, y as f32], uv, mul, add, params, w: 1.0 }
+                });
                 self.push(texture, repeat, smooth, blend, vertices);
             }
         }
@@ -432,23 +447,63 @@ impl Builder<'_> {
             gm.tx += offset.0;
             gm.ty += offset.1;
             let scale = ((gm.a * gm.a + gm.b * gm.b).sqrt()) as f32;
+            if self.cached_glyph(glyph, &gm, colour, c, blend) {
+                continue;
+            }
             for (li, layer) in glyph.font.glyphs[glyph.glyph].layers.iter().enumerate() {
                 // Glyph paths reference fill 1 and carry no fill list.
                 let key = (std::rc::Rc::as_ptr(&glyph.font) as usize, glyph.glyph, li, scale.to_bits());
-                let font = glyph.font.clone();
-                let tris = self.cache.glyphs.entry(key).or_insert_with(|| (font, std::rc::Rc::new(triangulate(&fill_edges(layer, 1, scale))))).1.clone();
+                let tris = self.cache.glyphs.entry(key).or_insert_with(|| (glyph.font.clone(), std::rc::Rc::new(triangulate(&fill_edges(layer, 1, scale))))).1.clone();
                 let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);
                 let add = c.add.map(|v| v as f32 / 255.0);
-                let vertices: Vec<Vertex> = tris
-                    .iter()
-                    .map(|&p| {
-                        let (x, y) = gm.apply(p[0] as f64, p[1] as f64);
-                        Vertex { position: [x as f32, y as f32], uv: [0.0; 2], mul, add, params: [0.0; 2], w: 1.0 }
-                    })
-                    .collect();
+                let vertices = tris.iter().map(|&p| {
+                    let (x, y) = gm.apply(p[0] as f64, p[1] as f64);
+                    Vertex { position: [x as f32, y as f32], uv: [0.0; 2], mul, add, params: [0.0; 2], w: 1.0 }
+                });
                 self.push(Texture::White, false, true, blend, vertices);
             }
         }
+    }
+
+    /// `FUN_141097d50`'s bitmap path: a glyph within the cache limits as a
+    /// textured quad from the cache page. False draws it as vectors (no
+    /// cache, too large, empty or a full page). Inside 3D the current 2D
+    /// matrix is the local chain (`FUN_14103b040` projects local units), so
+    /// the pixel scale is local and the quad is projected like any vertex.
+    fn cached_glyph(&mut self, glyph: &super::text_engine::PlacedGlyph, gm: &Affine, colour: [f32; 4], c: &Colour, blend: u8) -> bool {
+        let Some(cache) = self.cache.glyph_cache.as_mut() else { return false };
+        let Some(layer) = glyph.font.glyphs[glyph.glyph].layers.first() else { return false };
+        let points = &layer.points;
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in points {
+            minx = minx.min(p.x);
+            miny = miny.min(p.y);
+            maxx = maxx.max(p.x);
+            maxy = maxy.max(p.y);
+        }
+        // Pixel scales: the em size through the text's world matrix
+        // (`player+0x1f4c` / `+0x1f50` times the size).
+        let scale = ((gm.a * gm.a + gm.b * gm.b).sqrt() as f32, (gm.c * gm.c + gm.d * gm.d).sqrt() as f32);
+        if points.is_empty() || !cache.allowed((maxx - minx, maxy - miny), scale) {
+            return false;
+        }
+        let key = (std::rc::Rc::as_ptr(&glyph.font) as usize, glyph.glyph);
+        let Some(entry) = cache.glyph(key, points, scale) else { return false };
+        if !self.cache.cached_fonts.iter().any(|f| std::rc::Rc::ptr_eq(f, &glyph.font)) {
+            self.cache.cached_fonts.push(glyph.font.clone());
+        }
+        // The glyph matrix maps em units: the quad's corners are in em.
+        let [q0, q1, q2, q3] = entry.quad;
+        let [u0, v0, u1, v1] = entry.uv;
+        let mul = std::array::from_fn(|k| colour[k] * c.mul[k] as f32);
+        let add = c.add.map(|v| v as f32 / 255.0);
+        let corner = |x: f32, y: f32, u: f32, v: f32| {
+            let (px, py) = gm.apply(x as f64, y as f64);
+            Vertex { position: [px as f32, py as f32], uv: [u, v], mul, add, params: [mode::TEXTURE as f32, 0.0], w: 1.0 }
+        };
+        let (a, b, cc, d) = (corner(q0, q1, u0, v0), corner(q2, q1, u1, v0), corner(q2, q3, u1, v1), corner(q0, q3, u0, v1));
+        self.push(Texture::Glyphs(0), false, true, blend, [a, b, cc, a, cc, d]);
+        true
     }
 
     /// `FUN_141037930` for a child: its matrix and colour from the parent's.
@@ -780,6 +835,11 @@ fn build(vm: &Vm, cache: &mut Cache, debug_ignore_visibility: bool) -> DrawList 
     if let Some(stage) = stage {
         b.node(&stage, &Affine::default(), &Colour::default());
     }
+    if b.out.batches.iter().any(|batch| batch.texture == Texture::Glyphs(0)) {
+        if let Some(cache) = b.cache.glyph_cache.as_ref() {
+            b.out.glyph_pages.push(cache.page().clone());
+        }
+    }
     b.out
 }
 
@@ -803,17 +863,20 @@ pub fn stack(base: &mut DrawList, mut top: DrawList) {
     base.layers.append(&mut top.layers);
     let first = base.vertices.len() as u32;
     let ramps = base.ramps.len();
+    let pages = base.glyph_pages.len();
     for b in &mut top.batches {
         b.first += first;
         match &mut b.texture {
             Texture::Bitmap(c) => c.library += LAYER_LIBRARY_OFFSET,
             Texture::Ramp(i) => *i += ramps,
+            Texture::Glyphs(i) => *i += pages,
             Texture::White => {}
         }
     }
     base.vertices.append(&mut top.vertices);
     base.batches.append(&mut top.batches);
     base.ramps.append(&mut top.ramps);
+    base.glyph_pages.append(&mut top.glyph_pages);
 }
 
 #[cfg(test)]

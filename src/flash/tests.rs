@@ -330,3 +330,36 @@ fn pause_labels_carry_their_script_drop_shadow() {
     assert_eq!((*distance, *passes), (5.0, 2));
     assert!(!inner && !knockout && !hide_object);
 }
+
+/// Diagnostic: draw-list size and build time for the open pause menu.
+#[test]
+#[ignore = "diagnostic"]
+fn debug_pause_draw_list_cost() {
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/corvo_pause_menu.iggy").unwrap();
+    crate::gameplay::pause_state::file_ready(&mut player, (1920, 1080)).unwrap();
+    let state = crate::gameplay::pause_state::current_state(&player, language, &catalog);
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
+    pause.on_flash_loaded(&mut player).unwrap();
+    pause.show(&mut player).unwrap();
+    for _ in 0..60 {
+        player.tick(1.0 / 30.0).unwrap();
+    }
+    let mut cache = super::render::Cache::default();
+    if std::env::var_os("DH2_TEST_VECTOR_GLYPHS").is_none() {
+        cache.set_font_caching(crate::gameplay::pause_state::font_caching(&catalog, "ui/corvo_pause_menu.iggy", (1920, 1080)));
+    }
+    let list = super::render::draw_list_cached(&player.vm, &mut cache);
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        let _ = super::render::draw_list_cached(&player.vm, &mut cache);
+    }
+    println!("batches {} vertices {} build {:.2} ms", list.batches.len(), list.vertices.len(), started.elapsed().as_secs_f64() * 100.0);
+    let mut by: Vec<(usize, u32)> = list.batches.iter().enumerate().map(|(i, b)| (i, b.count)).collect();
+    by.sort_by_key(|b| std::cmp::Reverse(b.1));
+    for (i, n) in by.iter().take(8) {
+        println!("batch {i}: {n} vertices texture {:?}", list.batches[*i].texture);
+    }
+}

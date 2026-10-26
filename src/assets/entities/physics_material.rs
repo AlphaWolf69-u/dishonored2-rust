@@ -2,8 +2,7 @@
 //! Defaults come from the constructor FUN_14008b640; a declaration starts
 //! from its `inherit` parent's resolved values and applies its `edit` block.
 use super::components::atom;
-use super::{field, parse_declaration, scope, Value};
-use crate::gameplay::collision_filter::block;
+use super::{field, scope};
 
 /// arkPhysicsMaterial flag byte +0x80. Bit order is the reflection order;
 /// each getter (FUN_140990040..1409900b0) reads one bit of that byte.
@@ -47,9 +46,7 @@ pub struct PhysicsMaterial {
     pub restitution: f32,
     /// Flag byte +0x80 (`flags::*`).
     pub flags: u8,
-    /// m_collisionSettings.m_blockFlags +0x68 (`collision_filter::block`),
-    /// which the shape-tag codec applies to a triangle's filter word.
-    pub block_flags: u16,
+    pub collision: CollisionSettings,
 }
 
 impl PhysicsMaterial {
@@ -63,7 +60,7 @@ impl PhysicsMaterial {
             static_friction: 0.5,
             restitution: 0.,
             flags: flags::ALLOW_MANTLE | flags::ALLOW_VAULT,
-            block_flags: block::DEFAULT,
+            collision: CollisionSettings::default(),
         }
     }
     /// Mantle sensor surface test (FUN_1403bafe0 reads bit 0).
@@ -88,56 +85,6 @@ impl PhysicsMaterial {
     }
 }
 
-/// arkCollisionSettings_t's `m_blockFlags` in an edit scope: the eBLOCK_*
-/// list replaces the inherited value, then each named bool member sets or
-/// clears its bit.
-pub fn collision_block_flags(settings: Option<&[(String, Value)]>, inherited: u16) -> Result<u16, String> {
-    const NAMES: [(&str, u16); 11] = [
-        ("eBLOCK_NONE", 0),
-        ("eBLOCK_NPC", block::NPC),
-        ("eBLOCK_PLAYER", block::PLAYER),
-        ("eBLOCK_WEAPON", block::WEAPON),
-        ("eBLOCK_VISION", block::VISION),
-        ("eBLOCK_DYNAMIC", block::DYNAMIC),
-        ("eBLOCKED_BY_STATIC", block::BLOCKED_BY_STATIC),
-        ("eBLOCK_DEBRIS_AND_PARTICLES", block::DEBRIS_AND_PARTICLES),
-        ("eBLOCK_RAGDOLL", block::RAGDOLL),
-        ("eBLOCK_DEFAULT", block::DEFAULT),
-        ("eBLOCK_ALL", block::ALL),
-    ];
-    const MEMBERS: [(&str, u16); 8] = [
-        ("m_blockNPC", block::NPC),
-        ("m_blockPlayer", block::PLAYER),
-        ("m_blockWeapon", block::WEAPON),
-        ("m_blockVision", block::VISION),
-        ("m_blockDynamic", block::DYNAMIC),
-        ("m_blockedByStatic", block::BLOCKED_BY_STATIC),
-        ("m_blockDebrisAndParticles", block::DEBRIS_AND_PARTICLES),
-        ("m_blockRagdoll", block::RAGDOLL),
-    ];
-    let Some(settings) = settings else { return Ok(inherited) };
-    let mut value = inherited;
-    if let Some(list) = atom(settings, "m_blockFlags") {
-        value = 0;
-        for name in list.split_whitespace() {
-            value |= NAMES
-                .iter()
-                .find(|(n, _)| *n == name)
-                .ok_or_else(|| format!("unknown block flag {name}"))?
-                .1;
-        }
-    }
-    for (key, bit) in MEMBERS {
-        match atom(settings, key) {
-            Some("true") => value |= bit,
-            Some("false") => value &= !bit,
-            Some(other) => return Err(format!("invalid {key} = {other}")),
-            None => {}
-        }
-    }
-    Ok(value)
-}
-
 /// Decl float atoms may carry a C `f` suffix (installed `character_body`
 /// writes `0.0f`).
 fn decl_float(text: &str) -> Option<f32> {
@@ -153,46 +100,29 @@ pub fn physics_material(
     name: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<PhysicsMaterial, String> {
-    fn resolve(
-        name: &str,
-        depth: usize,
-        read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
-    ) -> Result<PhysicsMaterial, String> {
-        if depth > 32 {
-            return Err(format!("physics material inheritance exceeds 32: {name}"));
+    let fields = component_fields("physicsmaterial", name, 0, &mut HashMap::new(), &mut read)?;
+    let mut material = PhysicsMaterial::constructor_default(name);
+    let path = format!("generated/decls/physicsmaterial/{name}.decl");
+    for (key, slot) in [
+        ("m_Density", &mut material.density),
+        ("m_DynamicFriction", &mut material.dynamic_friction),
+        ("m_StaticFriction", &mut material.static_friction),
+        ("m_Restitution", &mut material.restitution),
+    ] {
+        if let Some(text) = atom(&fields, key) {
+            *slot = decl_float(text).ok_or_else(|| format!("invalid {key} in {path}"))?;
         }
-        let path = format!("generated/decls/physicsmaterial/{name}.decl");
-        let source = read(&path)?.ok_or_else(|| format!("missing physics material {path}"))?;
-        let fields = parse_declaration(&source)?;
-        let mut material = match atom(&fields, "inherit") {
-            Some(parent) => resolve(parent, depth + 1, read)?,
-            None => PhysicsMaterial::constructor_default(name),
-        };
-        material.name = name.to_owned();
-        let edit = scope(field(&fields, "edit")).unwrap_or(&fields);
-        for (key, slot) in [
-            ("m_Density", &mut material.density),
-            ("m_DynamicFriction", &mut material.dynamic_friction),
-            ("m_StaticFriction", &mut material.static_friction),
-            ("m_Restitution", &mut material.restitution),
-        ] {
-            if let Some(text) = atom(edit, key) {
-                *slot = decl_float(text).ok_or_else(|| format!("invalid {key} in {path}"))?;
-            }
-        }
-        material.block_flags = collision_block_flags(scope(field(edit, "m_collisionSettings")), material.block_flags)
-            .map_err(|error| format!("{error} in {path}"))?;
-        for (key, bit) in FLAG_FIELDS {
-            match atom(edit, key) {
-                Some("true") => material.flags |= bit,
-                Some("false") => material.flags &= !bit,
-                Some(other) => return Err(format!("invalid {key} = {other} in {path}")),
-                None => {}
-            }
-        }
-        Ok(material)
     }
-    resolve(name, 0, &mut read)
+    for (key, bit) in FLAG_FIELDS {
+        match atom(&fields, key) {
+            Some("true") => material.flags |= bit,
+            Some("false") => material.flags &= !bit,
+            Some(other) => return Err(format!("invalid {key} = {other} in {path}")),
+            None => {}
+        }
+    }
+    material.collision = collision_settings_fields(name, &fields)?;
+    Ok(material)
 }
 
 #[cfg(test)]
@@ -212,15 +142,6 @@ mod tests {
             "generated/decls/physicsmaterial/contactsystem/env.metal.grid.mantleoff.decl" => Some(
                 r#"{ inherit = "contactsystem/env.metal.grid";
                      edit = { m_allowMantle = false; m_allowVault = false; } }"#
-                    .into(),
-            ),
-            "generated/decls/physicsmaterial/contactsystem/projectiles.decl" => Some(
-                "{ edit = { m_collisionSettings = { m_version = 20150324; m_blockNPC = false;
-                   m_blockPlayer = false; m_blockDynamic = false; m_blockedByStatic = false; } } }"
-                    .into(),
-            ),
-            "generated/decls/physicsmaterial/contactsystem/glass.decl" => Some(
-                r#"{ edit = { m_collisionSettings = { m_blockFlags = "eBLOCK_WEAPON eBLOCK_VISION"; } } }"#
                     .into(),
             ),
             "generated/decls/physicsmaterial/character_body.decl" => Some(
@@ -248,16 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_both_block_flag_forms() {
-        let projectiles = physics_material("contactsystem/projectiles", read).unwrap();
-        assert_eq!(projectiles.block_flags, block::WEAPON | block::VISION | block::DEBRIS_AND_PARTICLES);
-        let glass = physics_material("contactsystem/glass", read).unwrap();
-        assert_eq!(glass.block_flags, block::WEAPON | block::VISION);
-        let grid = physics_material("contactsystem/env.metal.grid", read).unwrap();
-        assert_eq!(grid.block_flags, block::DEFAULT);
-    }
-
-    #[test]
     fn reads_suffixed_floats_and_rejects_missing_declarations() {
         let body = physics_material("character_body", read).unwrap();
         assert_eq!((body.dynamic_friction, body.static_friction), (0., 0.));
@@ -265,3 +176,89 @@ mod tests {
         assert!(physics_material("missing", read).is_err());
     }
 }
+
+use super::components::component_fields;
+use crate::gameplay::collision_settings::{CollisionBlock, CollisionSettings};
+use std::collections::HashMap;
+/// Resolve the complete inherited edit before the settings post-parse conversion
+/// (98aeb0). Runtime material IDs and material maps belong to the world owner.
+pub fn collision_settings(
+    name: &str,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<CollisionSettings, String> {
+    Ok(physics_material(name, &mut read)?.collision)
+}
+
+pub(crate) fn collision_settings_fields(
+    name: &str,
+    fields: &[(String, super::Value)],
+) -> Result<CollisionSettings, String> {
+    let mut result = CollisionSettings::default();
+    if let Some(value) = field(&fields, "m_collisionSettings") {
+        let settings =
+            scope(Some(value)).ok_or("physics material collision settings must be a scope")?;
+        if let Some(flags) = atom(settings, "m_blockFlags") {
+            result.flags = 0;
+            for flag in flags.split_whitespace() {
+                // Values from the executable's named enum metadata, caa8 onward.
+                result.flags |= match flag {
+                    "eBLOCK_NONE" => 0,
+                    "eBLOCK_NPC" => 1,
+                    "eBLOCK_PLAYER" => 2,
+                    "eBLOCK_WEAPON" => 4,
+                    "eBLOCK_VISION" => 8,
+                    "eBLOCK_DYNAMIC" => 16,
+                    "eBLOCKED_BY_STATIC" => 32,
+                    "eBLOCK_DEBRIS_AND_PARTICLES" => 64,
+                    "eBLOCK_RAGDOLL" => 128,
+                    "eBLOCK_DEFAULT" => 127,
+                    "eBLOCK_ALL" => 65535,
+                    _ => return Err(format!("unknown collision block flag {flag} in {name}")),
+                };
+            }
+        }
+        if let Some(version) = atom(settings, "m_version") {
+            result.version = version
+                .parse()
+                .map_err(|_| format!("invalid collision settings version in {name}"))?;
+        }
+        if let Some(blocker) = atom(settings, "m_blocker") {
+            result.blocker = match blocker {
+                "BLOCK_DEFAULT" => 0,
+                "BLOCK_NONE" => 1,
+                "BLOCK_CUSTOM" => 2,
+                "BLOCK_ALL" => 3,
+                "BLOCK_INVALID" => 4,
+                _ => return Err(format!("unknown collision blocker {blocker} in {name}")),
+            };
+        }
+        for (key, block) in [
+            ("m_blockNPC", CollisionBlock::Npc),
+            ("m_blockPlayer", CollisionBlock::Player),
+            ("m_blockWeapon", CollisionBlock::Weapon),
+            ("m_blockVision", CollisionBlock::Vision),
+            ("m_blockDynamic", CollisionBlock::Dynamic),
+            ("m_blockedByStatic", CollisionBlock::BlockedByStatic),
+            (
+                "m_blockDebrisAndParticles",
+                CollisionBlock::DebrisAndParticles,
+            ),
+            ("m_blockRagdoll", CollisionBlock::Ragdoll),
+        ] {
+            if let Some(value) = atom(settings, key) {
+                let enabled = match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(format!("invalid {key} in {name}")),
+                };
+                result.set_legacy_blocking(block, enabled);
+            }
+        }
+    }
+    result.upgrade();
+    Ok(result)
+}
+
+#[cfg(test)]
+#[path = "physics_material/tests.rs"]
+mod collision_tests;

@@ -4,6 +4,7 @@
 
 pub mod parameters;
 pub mod program;
+pub mod rays;
 mod settings;
 pub use settings::{FLOAT_PARAMETER_NAMES, IMAGE_PARAMETER_NAMES, CausticSettings, WaterReflectionSettings, WaterSettings, WaterWaveSettings};
 
