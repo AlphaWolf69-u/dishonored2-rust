@@ -145,8 +145,8 @@ pub struct SwitchParameters {
     pub first_only: bool,
     pub continue_playback: bool,
     pub on_switch: u8,
-    pub fade_out_ms: f32,
-    pub fade_in_ms: f32,
+    pub fade_out_ms: i32,
+    pub fade_in_ms: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -799,7 +799,9 @@ pub(super) fn switch_playback(object: &[u8], feedback: bool) -> io::Result<Switc
         let flags = reader.u8()?;
         let on_switch = reader.u8()? & 7;
         parameters.push(SwitchParameters { node, first_only: flags & 1 != 0, continue_playback: flags & 2 != 0,
-            on_switch, fade_out_ms: reader.f32()?, fade_in_ms: reader.f32()? });
+            // 141133710 / 1411342e0 pass these words directly as the
+            // signed millisecond field of a voice transition descriptor.
+            on_switch, fade_out_ms: reader.u32()? as i32, fade_in_ms: reader.u32()? as i32 });
     }
     if reader.offset != object.len() { return Err(invalid("Wwise switch fields did not consume their object")); }
     Ok(SwitchPlayback { group_kind, group, default, continuous, children, cases, parameters })
