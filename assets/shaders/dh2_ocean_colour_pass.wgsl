@@ -36,7 +36,7 @@ struct OceanColourView {
 @group(2) @binding(10) var probes:texture_cube_array<f32>;
 @group(2) @binding(11) var comparison:sampler_comparison;
 struct OceanColourVertex {
-    @builtin(position) position:vec4<f32>,
+    @invariant @builtin(position) position:vec4<f32>,
     @location(0) @interpolate(perspective,center) world:vec3<f32>,
     @location(1) @interpolate(perspective,center) legacy:vec4<f32>,
 }

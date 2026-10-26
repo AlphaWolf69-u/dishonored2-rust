@@ -17,7 +17,9 @@ struct OceanDepthParameters {
 @group(1) @binding(9) var bilinear_wrap:sampler;
 @group(1) @binding(10) var bilinear_clamp:sampler;
 struct OceanDepthVertex {
-    @builtin(position) position:vec4<f32>,
+    // The colour pass compares depth for exact equality. Preserve the shared
+    // displacement/projection arithmetic through backend shader optimization.
+    @invariant @builtin(position) position:vec4<f32>,
     @location(0) @interpolate(perspective,center) current:vec4<f32>,
     @location(1) @interpolate(perspective,center) previous:vec4<f32>,
 }
