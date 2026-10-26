@@ -42,8 +42,8 @@ enum Command {
     Tick(f64, std::time::Instant),
     /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
     Close,
-    /// Diagnostic (`DH2_DEBUG_FLASH_DUMP=1`, F11): write the display trees and
-    /// the draw list to `artifacts/flash-dumps/`, with the window size.
+    /// Diagnostic (F11, like the F8 capture): write the display trees and the
+    /// draw list to `artifacts/flash-dumps/`, with the window size.
     DebugDump { window: (u32, u32) },
 }
 
@@ -598,11 +598,10 @@ pub fn update_pause_menu(
         if input.repeat {
             continue;
         }
-        // Diagnostic: DH2_DEBUG_FLASH_DUMP=1 makes F11 dump the open menu.
-        if menu.open && input.key_code == KeyCode::F11 && input.state == ButtonState::Pressed && std::env::var_os("DH2_DEBUG_FLASH_DUMP").is_some_and(|v| v == "1") {
+        // Diagnostic: F11 dumps the open menu; the key still reaches the movie.
+        if menu.open && input.key_code == KeyCode::F11 && input.state == ButtonState::Pressed {
             let window = windows.iter().next().map_or((0, 0), |w| (w.physical_width(), w.physical_height()));
             let _ = menu.commands.send(Command::DebugDump { window });
-            continue;
         }
         let Some(key) = super::engine_keys::engine_key(input.key_code) else { continue };
         let down = input.state == ButtonState::Pressed;

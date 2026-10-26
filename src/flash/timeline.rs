@@ -158,11 +158,13 @@ fn bind_name(vm: &mut Vm, parent: &Obj, child: &Obj, name: &str) -> Result<()> {
 
 /// One PLACE command (`FUN_141023360`). New instances are linked, their own
 /// first frame is placed and they are bound to the parent's named property;
-/// constructors run later in `construct_pending`.
+/// constructors run later in `construct_pending`. A reset placement (a
+/// backward goto across the object's span) only modifies the object at its
+/// depth: one that script removed is not created again.
 fn place_command(vm: &mut Vm, parent: &Obj, library: usize, p: &Place, frame: u32, reset: bool) -> Result<()> {
     let depth = p.depth as i32;
     let existing = child_at_depth(parent, depth);
-    if p.creates() && !(reset && existing.is_some()) {
+    if p.creates() && !reset {
         if let Some(old) = &existing {
             detach(vm, old)?;
         }
