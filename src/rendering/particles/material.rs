@@ -33,6 +33,8 @@ const OPTIONS: &[&str] = &[
     "fx/opt/use_macroUV",
 ];
 const UNIFORMS: &[&str] = &[
+    "fx/auto_exposure_amount",
+    "particleFogScatterPower",
     "material_seed",
     "color_Adjust",
     "radial_RampPow",

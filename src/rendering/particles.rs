@@ -2,7 +2,9 @@
 //! particle-instance producers remain separate from these shader helpers.
 use bevy_math::{Vec2, Vec4};
 pub mod geometry;
+pub mod clipping;
 pub mod material;
+pub mod publication;
 
 /// 1ee880's twelve-byte instance record, consumed by particles_instancing.
 /// The upper half of size is unused by GetParticleRadius and starts at zero.

@@ -240,3 +240,5 @@ mod direct_lighting_tests;
 pub mod alpha_depth_scene;
 #[cfg(feature = "game")]
 pub mod screen_effects;
+#[cfg(feature = "game")]
+pub mod particle_pass;
