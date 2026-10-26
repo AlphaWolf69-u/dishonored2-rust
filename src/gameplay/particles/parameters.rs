@@ -6,16 +6,36 @@ use crate::{
     random::lcg_unit,
 };
 
+#[derive(Clone)]
 pub struct RateParameter {
     pub range: [f32; 2],
     pub lods: Vec<[f32; 2]>,
 }
 
+#[derive(Clone)]
 pub struct EmissionRate {
     pub range: RateParameter,
     pub curve: EffectFloatCurvePair,
 }
 impl EmissionRate {
+    /// 1f72f0 includes every authored LOD range when estimating burst capacity.
+    pub fn maximum_burst(&self) -> f32 {
+        let mut maximum = self.range.range[0];
+        for value in std::iter::once(&self.range.range[1]).chain(self.range.lods.iter().flatten()) {
+            if maximum <= *value {
+                maximum = *value;
+            }
+        }
+        maximum
+    }
+
+    /// 1f7260 applies the maximum stored rate-curve key to that range bound.
+    pub fn maximum_rate(&self) -> Result<f32, String> {
+        Ok(multiply(
+            self.maximum_burst(),
+            self.curve.maximum_key_value(0.)?,
+        ))
+    }
     /// 1f39b0 samples from a COPY of the cycle seed at each emission slice.
     /// The caller's mutable spawn seed is reserved for accepted emissions.
     pub fn sample(

@@ -11,6 +11,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct EmitterDefinition {
     pub cycles: u32,
     pub duration: [f32; 2],

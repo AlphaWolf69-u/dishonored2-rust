@@ -2,10 +2,12 @@
 //! submission have separate owners; these routines never infer missing inputs.
 pub mod emitter;
 pub mod orientation;
-pub mod sprite;
 pub mod parameters;
 pub mod pose;
+pub mod simulation;
 pub mod space;
+pub mod spawn;
+pub mod sprite;
 pub mod stage;
 pub mod timing;
 

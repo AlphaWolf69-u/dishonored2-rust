@@ -1,11 +1,11 @@
 //! 1cbd50's scalar max/min curve sampling. Interior keys use packed Bezier
 //! triples [incoming offset, value, outgoing offset], not motion-curve keys.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct EffectFloatCurve {
     pub times: Vec<f32>,
     pub values: Vec<f32>,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct EffectFloatCurvePair {
     pub maximum: EffectFloatCurve,
     pub minimum: EffectFloatCurve,
@@ -172,6 +172,23 @@ impl EffectFloatCurve {
     }
 }
 impl EffectFloatCurvePair {
+    /// 1d0f00 accumulates a bound over stored key values, minimum curve first.
+    /// Tangents are skipped even when the curve stores Bezier triples.
+    pub fn maximum_key_value(&self, mut maximum: f32) -> Result<f32, String> {
+        for curve in [&self.minimum, &self.maximum] {
+            let triples = curve.values.len() == curve.times.len() * 3;
+            for index in 0..curve.times.len() {
+                let value = *curve
+                    .values
+                    .get(if triples { index * 3 + 1 } else { index })
+                    .ok_or("particle curve key exceeds stored value count")?;
+                if maximum <= value {
+                    maximum = value;
+                }
+            }
+        }
+        Ok(maximum)
+    }
     /// 1cd690 consumes a random step only when a minimum curve exists. The
     /// range reduction multiplies by the raw 15-bit integer before its scale.
     pub fn sample_particle_rate(&self, time: f32, seed: &mut u32) -> Result<f32, String> {

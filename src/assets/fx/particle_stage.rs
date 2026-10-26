@@ -50,6 +50,8 @@ pub struct ParticleStageAsset {
     pub event_normal: ScalarParameter,
     pub location: SpawnVector,
     pub velocity: SpawnVector,
+    pub velocity_orientation: crate::gameplay::particles::spawn::SpawnOrientation,
+    pub velocity_spray: ScalarParameter,
     pub motion: MotionParameters,
     pub source_velocity_over_cycle: VectorParameter,
     pub source_velocity_over_life: VectorParameter,
@@ -89,6 +91,8 @@ impl Default for ParticleStageAsset {
             event_normal: ScalarParameter::constant(0.),
             location: SpawnVector::new([0.; 3]),
             velocity: SpawnVector::new([0., 0., 1.]),
+            velocity_orientation: Default::default(),
+            velocity_spray: ScalarParameter::constant(0.),
             motion: MotionParameters::default(),
             source_velocity_over_cycle: VectorParameter::constant([0.; 3]),
             source_velocity_over_life: VectorParameter::constant([1.; 3]),
@@ -105,6 +109,48 @@ fn unsigned(value: &Value) -> Result<u32, String> {
 }
 
 impl ParticleStageAsset {
+    /// 1f82c0's allocation estimate. The stage owner caps it at 8192 slots;
+    /// mesh renderers use their own lower cap over the same estimate.
+    pub fn estimated_capacity(&self) -> Result<u64, String> {
+        use crate::float::{add, divide, multiply, truncate_i64};
+        let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
+        if !self.infinite_life {
+            let life = multiply(
+                self.life.curve.maximum_key_value(0.)?,
+                self.life.range[0].max(self.life.range[1]),
+            );
+            if !self.burst {
+                let count = multiply(self.emitter.rate.maximum_rate()?, life).ceil();
+                return Ok(ceil(multiply(add(count, 1.), f32::from_bits(0x3f86_6666))));
+            }
+            let duration = self.emitter.duration[0].min(self.emitter.duration[1]);
+            let mut cycles = divide(life, duration).ceil();
+            if self.emitter.cycles != 0 && self.emitter.cycles as f32 <= cycles {
+                cycles = self.emitter.cycles as f32;
+            }
+            let count = truncate_i64(multiply(self.emitter.rate.maximum_burst(), cycles)) as u64;
+            return Ok(if self.burst_event.is_empty() {
+                count
+            } else {
+                (count as u32).wrapping_mul(self.maximum_burst_events) as u64
+            });
+        }
+        let per_cycle = if self.burst {
+            ceil(self.emitter.rate.maximum_burst())
+        } else {
+            ceil(multiply(
+                self.emitter.duration[0].max(self.emitter.duration[1]),
+                self.emitter.rate.maximum_rate()?,
+            ))
+        };
+        let count = (per_cycle as u32).wrapping_mul(self.emitter.cycles);
+        Ok(if self.burst_event.is_empty() {
+            count
+        } else {
+            count.wrapping_mul(self.maximum_burst_events)
+        } as u64)
+    }
+
     fn spawn(&mut self, fields: &Fields) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
@@ -128,6 +174,9 @@ impl ParticleStageAsset {
                 "m_duration" => bounds(&mut self.emitter.duration, scope(value)?)?,
                 "m_initialLocation" => self.location.edit(scope(value)?)?,
                 "m_initialVelocity" => self.velocity.edit(scope(value)?)?,
+                "m_velocitySprayCone" => {
+                    particles::scalar_parameter(&mut self.velocity_spray, scope(value)?)?
+                }
                 "m_useEventLocation" => self.use_event_location = boolean(value)?,
                 "m_eventVelocity" => {
                     particles::scalar_parameter(&mut self.event_velocity, scope(value)?)?

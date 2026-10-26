@@ -25,6 +25,7 @@ pub struct GroupDefinition {
 pub struct ParticleDefinition {
     pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
     pub declarations: Vec<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>,
+    pub materials: HashMap<String, Arc<crate::rendering::particles::material::ParticleMaterial>>,
 }
 pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
@@ -54,6 +55,7 @@ impl ScreenEffectSources {
         let leave_water = atom(swimming, "m_leaveWaterFX").ok_or("player leave-water FX absent")?;
         let mut materials = Vec::new();
         let mut indices = HashMap::<String, usize>::new();
+        let mut particle_materials = HashMap::new();
         let mut load = |effect: &str| -> Result<EffectDefinition, String> {
             let mut read = |p: &str| catalog.read(p).ok().flatten();
             let fields = read_edit(&mut read, "fx", effect)?;
@@ -138,9 +140,24 @@ impl ScreenEffectSources {
                                         .map_err(|error| format!("{path}: {error}"))
                                     })
                                     .collect::<Result<Vec<_>, String>>()?;
+                                let mut materials = HashMap::new();
+                                for declaration in &declarations {
+                                    for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                                        for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
+                                            let Some(name) = &sprite.material else { continue };
+                                            if !particle_materials.contains_key(name) {
+                                                particle_materials.insert(name.clone(), Arc::new(
+                                                    crate::rendering::particles::material::ParticleMaterial::load(
+                                                        catalog, library, name)?));
+                                            }
+                                            materials.insert(name.clone(), particle_materials[name].clone());
+                                        }
+                                    }
+                                }
                                 Ok(ParticleDefinition {
                                     owner: Arc::new(owner),
                                     declarations,
+                                    materials,
                                 })
                             }
                             _ => Err("particle FX descriptor requires a scope".into()),

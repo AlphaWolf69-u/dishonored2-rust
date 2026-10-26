@@ -26,12 +26,17 @@ impl ParticleSpace {
         }
     }
 
-    pub fn transform(&self, value: [f32; 3], worldspace: bool) -> [f32; 3] {
-        let basis = if worldspace {
-            &self.world_to_stage
+    /// 208b50 returns the selected basis without transforming an input vector.
+    pub fn basis(&self, worldspace: bool) -> [[f32; 3]; 3] {
+        if worldspace {
+            self.world_to_stage
         } else {
-            &self.local_to_stage
-        };
+            self.local_to_stage
+        }
+    }
+
+    pub fn transform(&self, value: [f32; 3], worldspace: bool) -> [f32; 3] {
+        let basis = self.basis(worldspace);
         std::array::from_fn(|i| {
             let pair = if i == 0 {
                 add(
