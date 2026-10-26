@@ -40,6 +40,27 @@ impl Default for ParticleSpriteAsset {
     }
 }
 
+impl ParticleSpriteAsset {
+    /// 1ecd80 prepares the radius consumed by 1ecc30/1ee520. Preserve its
+    /// component maximum and multiplication order, including authored LODs.
+    pub fn bounding_radius(&self) -> Result<f32, String> {
+        use crate::float::multiply;
+        let maximum = |a: f32, b: f32| if a <= b { b } else { a };
+        let component_maximum = |v: [f32; 3]| maximum(v[0], maximum(v[1], v[2]));
+        let mut spawn = component_maximum(self.spawn.size.maximum_magnitude()?);
+        for lod in &self.spawn.size_lods {
+            let size = std::array::from_fn(|i| maximum(lod[0][i], lod[1][i]));
+            spawn = maximum(spawn, component_maximum(size));
+        }
+        let life = component_maximum(self.appearance.size_over_life.maximum_magnitude()?);
+        let velocity = component_maximum(self.appearance.size_over_velocity.maximum_magnitude()?);
+        Ok(multiply(
+            multiply(multiply(life, f32::from_bits(0x3fb5_04f3)), spawn),
+            velocity,
+        ))
+    }
+}
+
 fn orientation(result: &mut ParticleOrientation, fields: &Fields) -> Result<(), String> {
     for (name, value) in fields {
         match name.as_str() {

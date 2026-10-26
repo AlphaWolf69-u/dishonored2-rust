@@ -41,6 +41,12 @@ pub fn curve_key_times(times: &[f32], index: i32) -> [f32; 2] {
     }
 }
 impl EffectFloatCurve {
+    /// 1ee9b0's inline query-visibility curves use the same sequential cubic
+    /// reduction as 1cd690's minimum path, including endpoint admission.
+    pub fn sample_visibility(&self, time: f32) -> Result<f32, String> {
+        self.sample_particle_rate(time, true)
+    }
+
     /// 1cd690's scalar particle-rate path. It has different cubic reduction
     /// orders for maximum and minimum, independently of 1cbd50's SIMD sampler.
     fn sample_particle_rate(&self, time: f32, minimum: bool) -> Result<f32, String> {

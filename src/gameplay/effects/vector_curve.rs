@@ -14,6 +14,22 @@ pub struct EffectVectorCurvePair<const N: usize> {
     pub minimum: EffectVectorCurve<N>,
 }
 impl<const N: usize> EffectVectorCurve<N> {
+    /// 1e9820 accumulates absolute logical key values, skipping tangent
+    /// vectors. This is a conservative key bound, not a cubic extrema solve.
+    pub fn accumulate_key_magnitudes(&self, maximum: &mut [f32; N]) -> Result<(), String> {
+        let tripled = self.values.len() == self.times.len() * 3;
+        for key in 0..self.times.len() {
+            let value = self.value(if tripled { key * 3 + 1 } else { key })?;
+            for i in 0..N {
+                let candidate = f32::from_bits(value[i].to_bits() & 0x7fff_ffff);
+                if maximum[i] <= candidate {
+                    maximum[i] = candidate;
+                }
+            }
+        }
+        Ok(())
+    }
+
     ///00d550/00d760 append logical key/value data. Mode4 constructors use
     ///cubic triples; an existing tripled curve retains that representation.
     ///Allocation and inline-storage flags remain with Rust's Vec owner.

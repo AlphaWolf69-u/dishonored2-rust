@@ -31,6 +31,7 @@ impl PackedParticleParameters {
 
 /// View inputs for a single sprite after 1f2c50 has transformed its particle
 /// into world space. Custom orientation and emitter axes have distinct owners.
+#[derive(Clone, Copy)]
 pub struct SpriteView {
     pub camera_position: [f32; 3],
     pub camera_axes: [[f32; 3]; 3],
@@ -38,6 +39,29 @@ pub struct SpriteView {
     pub emitter_basis: [[f32; 3]; 3],
     pub owner_colour: [f32; 4],
     pub owner_scale: f32,
+}
+
+impl SpriteView {
+    /// 1ee9b0 applies query visibility to owner alpha and sprite scale before
+    /// 1edb20 publishes individual particles. Query evaluation consumes no RNG.
+    pub fn with_query_visibility(
+        &self,
+        descriptor: &crate::assets::fx::particle_sprite::ParticleSpriteAsset,
+        query: f32,
+        alpha_scale: f32,
+    ) -> Result<Self, String> {
+        use crate::float::multiply;
+        let mut colour = self.owner_colour;
+        colour[3] = multiply(
+            multiply(descriptor.query_alpha.sample_visibility(query)?, colour[3]),
+            alpha_scale,
+        );
+        Ok(Self {
+            owner_colour: colour,
+            owner_scale: multiply(descriptor.query_size.sample_visibility(query)?, self.owner_scale),
+            ..*self
+        })
+    }
 }
 
 pub struct SpriteInstance {

@@ -149,6 +149,21 @@ pub struct VectorParameter<const N: usize = 3> {
     pub curve: EffectVectorCurvePair<N>,
     pub uniform: bool,
 }
+impl VectorParameter<3> {
+    /// 1e9940: accumulate both curve key magnitudes, then multiply each by
+    /// the larger serialized range endpoint. The endpoint is not absolutized.
+    pub fn maximum_magnitude(&self) -> Result<[f32; 3], String> {
+        let mut maximum = [0.; 3];
+        self.curve.minimum.accumulate_key_magnitudes(&mut maximum)?;
+        self.curve.maximum.accumulate_key_magnitudes(&mut maximum)?;
+        Ok(std::array::from_fn(|i| {
+            let endpoint = if self.range[0][i] <= self.range[1][i] {
+                self.range[1][i]
+            } else { self.range[0][i] };
+            multiply(endpoint, maximum[i])
+        }))
+    }
+}
 impl<const N: usize> VectorParameter<N> {
     /// 1ef520's vector parameter initialization; callers supply its explicit
     /// range default (zero for acceleration, one for velocity-over-life).
