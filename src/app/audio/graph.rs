@@ -17,7 +17,7 @@ struct Sound {
     loop_count: crate::gameplay::sound::looping::LoopCount,
 }
 struct Container {
-    properties: crate::assets::wwise::NodeProperties,
+    properties: Option<crate::assets::wwise::NodeProperties>,
     children: Vec<usize>,
     weights: Vec<u32>,
     mode: SelectionMode,
@@ -109,8 +109,7 @@ impl Definition {
                         weights.push(weight);
                     }
                     let properties = sounds.iter().flat_map(|sound| &sound.properties.nodes)
-                        .find(|node| node.id == container.node).cloned()
-                        .ok_or_else(|| invalid("Wwise container has no retained node properties"))?;
+                        .find(|node| node.id == container.node).cloned();
                     (container.node, Kind::Container(Container { properties, children, weights, mode: container.mode,
                         global: container.global, reset: container.reset_each_play, avoid: container.avoid_repeat,
                         playback: container.playback }))
@@ -199,7 +198,11 @@ impl Playing {
         let parameters = scene.parameters(self.emitter, self.parameter);
         for (node, target) in self.definition.nodes.iter().zip(&self.control.transitions) {
             if let Kind::Container(container) = &node.kind {
-                target.store(mixer.transition_seconds(&container.properties, &parameters)?.to_bits(), Ordering::Relaxed);
+                // Empty containers have no source/property owner and select
+                // no child (141119b70); they never schedule a transition.
+                if let Some(properties) = &container.properties {
+                    target.store(mixer.transition_seconds(properties, &parameters)?.to_bits(), Ordering::Relaxed);
+                }
             }
         }
         let routes = if self.definition.can_route() {
