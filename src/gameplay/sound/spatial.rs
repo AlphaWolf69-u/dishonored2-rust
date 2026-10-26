@@ -3,6 +3,11 @@ use crate::assets::wwise::Attenuation;
 use bevy_math::{Mat3, Vec3};
 use super::mix::{conversion_value, power10};
 
+/// 1400c1830: game Z-up vectors to Wwise's X-right/Y-up/Z-forward frame.
+/// Host spatial calculations retain game coordinates for both ends of a ray;
+/// use this conversion when comparing the actual middleware submissions.
+pub fn wwise_vector(vector: Vec3) -> Vec3 { Vec3::new(-vector.y, vector.z, vector.x) }
+
 #[derive(Clone, Copy, Debug)]
 pub struct Listener {
     pub position: Vec3,
@@ -72,8 +77,10 @@ pub fn gains(attenuation: Option<&Attenuation>, ray: Ray, outside_volume_db: f32
     let mut result = Gains { dry: 1.0, user_auxiliary: 1.0, game_auxiliary: 1.0, cone_ratio: 1.0 };
     let Some(attenuation) = attenuation else { return result };
     result.dry = curve(attenuation, 0, ray.distance).unwrap_or(1.0);
-    result.user_auxiliary = curve(attenuation, 1, ray.distance).unwrap_or(1.0);
-    result.game_auxiliary = curve(attenuation, 2, ray.distance).unwrap_or(1.0);
+    // 1410cd110 maps slots 1/2 to ray+14/+18 (1410ccd30).
+    // 141103810 and 1410fc0f0 identify those as game/user respectively.
+    result.game_auxiliary = curve(attenuation, 1, ray.distance).unwrap_or(1.0);
+    result.user_auxiliary = curve(attenuation, 2, ray.distance).unwrap_or(1.0);
     if let Some(cone) = &attenuation.cone {
         result.cone_ratio = if ray.cone_angle <= cone.inside_half_angle { 0.0 }
             else if cone.outside_half_angle <= ray.cone_angle { 1.0 }

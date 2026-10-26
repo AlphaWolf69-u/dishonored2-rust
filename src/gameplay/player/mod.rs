@@ -50,6 +50,7 @@ pub struct Player {
     pub pose: BodyPose,
     pub autocrouch: AutoCrouchSensor,
     pub lean_sensor: LeanSensor,
+    pub catfall_sensor: sensors::CatfallSensor,
     pub mantle_sensor: MantleSensor,
     pub vault_sensor: VaultSensor,
     /// The mantle dummy's arkCpntRetargeting while it drives the player.
@@ -118,6 +119,7 @@ impl Player {
             pose,
             autocrouch,
             lean_sensor: LeanSensor::new(setup.lean),
+            catfall_sensor: sensors::CatfallSensor::new(Default::default()),
             mantle_sensor,
             vault_sensor,
             retargeting: None,
@@ -137,7 +139,8 @@ impl Player {
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
-        match self.body.midnight.advance(dt, &self.body.animations) {
+        let cast = body::cast(&self.body.animations, &self.body.arms);
+        match self.body.midnight.advance(dt, cast) {
             Ok(messages) => {
                 for (event, handle) in messages {
                     self.machine.handle_message(&event, handle);
@@ -154,6 +157,7 @@ impl Player {
         self.lean_sensor.update(world, self.camera.eye, self.physics.position(), self.physics.axis());
         self.mantle_sensor.update(world, &self.physics, dt, self.physics.velocity.z);
         self.vault_sensor.update(world, &self.physics, dt);
+        self.catfall_sensor.update(world, &self.physics);
         self.controller.think(settings, frame_delta);
         self.requests = MotionRequests::default();
         let origin = self.physics.position();
@@ -182,11 +186,14 @@ impl Player {
                     look_stick_sensitivity: settings.look_stick_sensitivity,
                     lean: &mut self.body.lean,
                     lean_sensor: &mut self.lean_sensor,
+                    catfall_sensor: &mut self.catfall_sensor,
+                    arms_shown: &mut self.body.arms_shown,
+                    desired_legs: &mut self.body.desired_legs,
                     jump_anim: &mut self.body.jump,
                     midnight: &mut self.body.midnight,
                     scenes: &self.scenes,
-                    md6: &self.md6,
-                    animations: &self.body.animations,
+                    md6: body::cast_md6(&self.md6, &self.body.arms),
+                    animations: body::cast(&self.body.animations, &self.body.arms),
                     mantle_sensor: &mut self.mantle_sensor,
                     vault_sensor: &mut self.vault_sensor,
                     retargeting: &mut self.retargeting,
@@ -300,8 +307,12 @@ impl Player {
         let shoulder_controls = self.camera.arm_controls(body_yaw);
         let (position, axis) = (self.physics.position(), self.physics.axis());
         let mut render = Vec::with_capacity(self.body.arms.len());
-        for (side, arm) in self.body.arms.iter().enumerate() {
-            let Ok(joints) = arm.pose() else { continue };
+        let poses: Vec<_> = {
+            let Body { arms, midnight, .. } = &mut self.body;
+            arms.iter().enumerate().map(|(side, arm)| arm.pose(midnight, side + 1)).collect()
+        };
+        for ((side, arm), joints) in self.body.arms.iter().enumerate().zip(poses) {
+            let Ok(joints) = joints else { continue };
             let (frame_p, frame_r) = self.arm_frame(arm, &body_controls);
             let shoulder = arm.skeleton.shoulder;
             let pivot = frame_p + frame_r * joints[shoulder].0;
@@ -320,7 +331,19 @@ impl Player {
                     std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
                 })
                 .collect();
-            render.push(ArmRender { model: arm.model.clone(), joints: rows, visible: arm.visible });
+            render.push(ArmRender { model: arm.model.clone(), joints: rows, visible: arm.visible && self.body.arms_shown[side.min(1)] });
+        }
+        // The body entity's own model: hidden-legs materials (nothing drawn)
+        // unless the legs are visible (FUN_140776e60).
+        if self.body.legs_visible {
+            let joints = (0..self.pose.positions.len())
+                .map(|j| {
+                    let (p, r) = self.pose.joint_with_controls(j, &body_controls);
+                    let (p, r) = (position + axis * p, axis * r);
+                    std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
+                })
+                .collect();
+            render.push(ArmRender { model: self.md6.clone(), joints, visible: true });
         }
         self.arm_render = render;
     }
@@ -336,7 +359,7 @@ impl Player {
             Emitter::PlayerBody => self.body.sound_settings,
             Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
             Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
     }
@@ -352,12 +375,29 @@ impl Player {
             Emitter::PlayerBody => return Some((origin, axis)),
             Emitter::PlayerLeftArm => 0,
             Emitter::PlayerRightArm => 1,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
         let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
         let (position, rotation) = self.arm_frame(arm, &controls);
         Some((origin + axis * position, axis * rotation))
+    }
+
+    /// 14070a7b0: the listener uses camera_jnt for orientation and its
+    /// declared main/peeking joint for position. This precedes render-camera
+    /// collision corrections and retains the entity fallback for absent tags.
+    pub fn sound_listener(&self) -> Option<(crate::gameplay::sound::spatial::Listener, &crate::gameplay::sound::listener::Settings)> {
+        let binding = self.body.sound_listener.as_ref()?;
+        let origin = self.physics.position();
+        let axis = self.physics.axis();
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let listener = binding.transform(origin, axis, self.machine.is_active(StateId(0x18)), |index| {
+            self.pose.positions.get(index)?;
+            self.pose.rotations.get(index)?;
+            let (position, rotation) = self.pose.joint_with_controls(index, &controls);
+            Some((origin + axis * position, axis * rotation))
+        })?;
+        Some((listener, &binding.settings))
     }
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {

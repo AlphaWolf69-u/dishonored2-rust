@@ -61,6 +61,15 @@ impl SourceLoop {
         self.count = count;
         self
     }
+
+    /// 141149850: finite decoder duration, before the PBI pitch adjustment
+    /// in 1411287f0. Zero denotes an infinite source, not a zero-length clip.
+    /// Keep the float conversions and multiplication order of the decoder.
+    pub fn duration_ms(self, sample_rate: u32) -> f32 {
+        if self.count == 0 { return 0.0; }
+        let repeated = (self.end - self.start) as f32 * f32::from(self.count - 1);
+        (repeated + self.frames as f32) * 1000.0 / sample_rate as f32
+    }
     /// 1411425c0/141142d50: inclusive file endpoints become exclusive buffer
     /// bounds; absent loop points use the entire media. Finite playback keeps
     /// the intro once, repeats the loop region, and plays the final tail once.

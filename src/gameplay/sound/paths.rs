@@ -11,7 +11,7 @@ pub struct Query {
     pub range: f32,
     pub propagation: bool,
     pub reflection_normal: Option<Vec3>,
-    pub source_obstruction_scale: f32,
+    pub source_occlusion_scale: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +118,11 @@ pub struct ListenerState {
     pub obstruction: f32,
 }
 impl ListenerState {
+    pub fn levels(&self, minimum: super::environment::Levels, scale: f32) -> super::environment::Levels {
+        super::environment::Levels { obstruction: self.obstruction, occlusion: self.occlusion }
+            .for_listener(minimum, scale)
+    }
+
     pub fn update(
         &mut self,
         graph: &Propagation,
@@ -156,13 +161,13 @@ impl ListenerState {
         Ok(())
     }
 }
-fn obstruction(graph: &Propagation, zone: Option<usize>) -> Result<f32, String> {
+fn occlusion(graph: &Propagation, zone: Option<usize>) -> Result<f32, String> {
     zone.map(|index| {
         graph
             .zones
             .get(index)
             .map(|zone| f32::from_bits(zone.properties[1]))
-            .ok_or_else(|| "missing obstruction zone".into())
+            .ok_or_else(|| "missing occlusion zone".into())
     })
     .unwrap_or(Ok(0.0))
 }
@@ -184,9 +189,9 @@ pub fn direct(graph: &Propagation, query: &Query) -> Result<Results, String> {
     if query.range <= distance && distance != query.range {
         return Ok(inaudible(query));
     }
-    let source_obstruction =
-        obstruction(graph, query.source_zone)? * query.source_obstruction_scale;
-    let obstruction = source_obstruction + obstruction(graph, query.listener_zone)?;
+    let source_occlusion =
+        occlusion(graph, query.source_zone)? * query.source_occlusion_scale;
+    let occlusion = source_occlusion + occlusion(graph, query.listener_zone)?;
     // Unlike the portal projection's JA branch, the direct projection takes
     // its reflection branch on unordered input as well (1400b8e00).
     let position = if let Some(normal) = query.reflection_normal {
@@ -202,7 +207,7 @@ pub fn direct(graph: &Propagation, query: &Query) -> Result<Results, String> {
     let mut path = Path {
         position,
         distance,
-        obstruction: unit_clamp(obstruction),
+        occlusion: unit_clamp(occlusion),
         ..Path::default()
     };
     if let Some(zone) = query.source_zone {
@@ -212,20 +217,20 @@ pub fn direct(graph: &Propagation, query: &Query) -> Result<Results, String> {
     Ok(Results {
         paths: vec![path],
         closest: Some(0),
-        score: (obstruction * 100.0 + 10.0 * 0.0 + 1.0) * (distance / query.range),
+        score: (occlusion * 100.0 + 10.0 * 0.0 + 1.0) * (distance / query.range),
         ..Results::default()
     })
 }
 
 /// 1400b8c90: multi-position emitters bypass the range/portal solver but
-/// retain source/listener zone obstruction and the raw distance as score.
+/// retain source/listener zone occlusion and the raw distance as score.
 pub fn unpropagated(graph: &Propagation, query: &Query) -> Result<Results, String> {
     let distance = length(query.source - query.listener);
     let mut path = Path {
         position: query.source,
         distance,
-        obstruction: unit_clamp(
-            obstruction(graph, query.source_zone)? + obstruction(graph, query.listener_zone)?,
+        occlusion: unit_clamp(
+            occlusion(graph, query.source_zone)? + occlusion(graph, query.listener_zone)?,
         ),
         ..Path::default()
     };
@@ -267,7 +272,7 @@ fn portal_path(
     let mut direction = Vec3::ZERO;
     let mut distance = 0.0;
     let mut bends = 0.0;
-    let mut obstruction_sum = obstruction(graph, Some(zone))? * query.source_obstruction_scale;
+    let mut occlusion_sum = occlusion(graph, Some(zone))? * query.source_occlusion_scale;
     let mut last_portal = 0;
     for step in 0..route.portals.len() {
         let index = if reverse {
@@ -290,7 +295,7 @@ fn portal_path(
         let next_direction = relative * inverse_length(relative);
         if step != 0 {
             bends -= (dot(next_direction, direction) - 1.0) * 0.5;
-            obstruction_sum += obstruction(graph, Some(zone))?;
+            occlusion_sum += occlusion(graph, Some(zone))?;
             path.last_zone_slot = (path.last_zone_slot + 1) & 3;
         }
         path.zones[path.last_zone_slot] = Some(ZoneSegment {
@@ -311,16 +316,18 @@ fn portal_path(
     if !(total <= query.range) {
         return Ok(None);
     }
-    obstruction_sum += obstruction(graph, Some(listener_zone))?;
+    occlusion_sum += occlusion(graph, Some(listener_zone))?;
     let final_direction = relative * inverse_length(relative);
     let inverse = inverse_length(direction);
     let turn = final_direction.y * direction.y * inverse
         + final_direction.x * direction.x * inverse
         + final_direction.z * direction.z * inverse;
     bends -= (turn - 1.0) * 0.5;
-    path.score = Some((obstruction_sum * 100.0 + bends * 10.0 + 1.0) * (total / query.range));
-    path.occlusion = unit_clamp(bends);
-    path.obstruction = unit_clamp(obstruction_sum);
+    path.score = Some((occlusion_sum * 100.0 + bends * 10.0 + 1.0) * (total / query.range));
+    // 1400c5ba0 forwards +14 (bends) as Wwise obstruction and +18
+    // (zone accumulation) as occlusion; these have different bus effects.
+    path.obstruction = unit_clamp(bends);
+    path.occlusion = unit_clamp(occlusion_sum);
     path.distance = total;
     path.position = reflect(query.listener + final_direction * -total, query);
     path.last_zone_slot = (path.last_zone_slot + 1) & 3;

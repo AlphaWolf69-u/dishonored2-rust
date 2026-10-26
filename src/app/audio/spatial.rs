@@ -2,6 +2,7 @@
 use bevy::prelude::*;
 use crate::{assets::wwise::{Attenuation, MediaProperties}, gameplay::sound::{panning::{Rule, Stereo}, spatial, Emitter}};
 use std::{collections::HashMap, sync::Arc};
+use crate::gameplay::sound::environment::{self, ControlLevels, FilterRay};
 
 #[derive(Clone, Copy)]
 pub(super) struct Position {
@@ -9,21 +10,51 @@ pub(super) struct Position {
     pub front: Option<Vec3>,
 }
 
+pub(super) struct Propagated {
+    pub positions: Vec<Position>,
+    pub levels: ControlLevels,
+    pub auxiliary: Vec<crate::gameplay::sound::auxiliary::Send>,
+}
+
+pub(super) struct Targets {
+    pub gains: [f32; 4],
+    /// Game, then user sends; each is reduced independently across rays.
+    pub auxiliary: [[f32; 4]; 2],
+    pub voice_filters: [f32; 2],
+    pub output_filters: [Option<f32>; 2],
+}
+
 #[derive(Resource)]
 pub(super) struct Scene {
     listener: Option<spatial::Listener>,
+    minimum: environment::Levels,
+    reflection: bool,
+    collects_environment: bool,
     rule: Rule,
     panner: Stereo,
     emitters: HashMap<Emitter, Position>,
+    propagated: HashMap<Emitter, Propagated>,
     rates: HashMap<Emitter, (f32, bool)>,
     time_dilation: Option<u32>,
 }
 impl Default for Scene {
-    fn default() -> Self { Self { listener: None, rule: Rule::Speakers, panner: Stereo::default(),
-        emitters: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
+    fn default() -> Self { Self { listener: None, minimum: environment::Levels::default(), reflection: false, collects_environment: false,
+        rule: Rule::Speakers, panner: Stereo::default(),
+        emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
 }
 impl Scene {
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
+    pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
+    pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
+    pub fn minimum(&self) -> environment::Levels { self.minimum }
+    pub fn collects_environment(&self) -> bool { self.collects_environment }
+    pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) { self.rates.insert(emitter, (rate, frozen)); }
+    pub fn reflection_normal(&self) -> Option<Vec3> { self.listener.filter(|_| self.reflection).map(|listener| listener.axis.z_axis) }
+    pub fn publish(&mut self, emitter: Emitter, position: Position, propagated: Propagated, rate: f32, frozen: bool) {
+        self.emitters.insert(emitter, position);
+        self.propagated.insert(emitter, propagated);
+        self.rates.insert(emitter, (rate, frozen));
+    }
     pub fn frozen(&self, emitter: Emitter) -> bool { self.rates.get(&emitter).is_some_and(|(_, frozen)| *frozen) }
     pub fn parameters(&self, emitter: Emitter, parameter: Option<(u32, f32)>) -> Vec<(u32, f32)> {
         let mut parameters = parameter.into_iter().collect::<Vec<_>>();
@@ -41,10 +72,21 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
     player: Option<Res<super::super::player::PlayerState>>, mix: Res<super::AudioMix>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>) {
     scene.emitters.clear();
+    scene.propagated.clear();
     scene.rates.clear();
     scene.time_dilation = mix.time_dilation;
+    scene.listener = None;
+    scene.minimum = environment::Levels::default();
+    scene.reflection = false;
+    scene.collects_environment = false;
     let rate = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| clock.rates(3)).map(|rates| rates[1]);
     if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
+        if let Some((listener, settings)) = player.sound_listener() {
+            scene.listener = Some(listener);
+            scene.minimum = settings.minimum;
+            scene.reflection = settings.swap_back_to_front;
+            scene.collects_environment = settings.collects_environment;
+        }
         for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
             if let Some((position, axis)) = player.sound_transform(emitter) {
                 scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
@@ -56,11 +98,15 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             }
         }
     }
-    scene.listener = cameras.single().ok().map(|camera| {
+    // G is a host diagnostic camera; ordinary gameplay uses the component's
+    // declared skeleton joints above, independently of the rendered camera.
+    if player.as_ref().is_some_and(|state| state.debug_free_fly) {
+        scene.listener = cameras.single().ok().map(|camera| {
         let game = |value| Vec3::from_array(super::super::view_to_game(value));
         spatial::Listener { position: game(camera.translation),
             axis: Mat3::from_cols(game(*camera.right()), game(*camera.up()), game(*camera.forward())), distance_scale: 1.0 }
-    });
+        });
+    }
     scene.rule = if crate::platform::console::shared().read().cvars.int("s_useHeadphoneMode").unwrap_or(0) != 0 {
         Rule::Headphones
     } else { Rule::Speakers };
@@ -85,14 +131,75 @@ impl Voice {
         Ok(Some(Self { attenuation }))
     }
 
-    pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+    pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<Targets, String> {
         let position = position.ok_or("spatial Wwise event has no emitter position")?;
+        self.direction_targets(scene, &[position], channels)
+    }
+
+    pub fn propagated_targets(&self, scene: &Scene, propagated: &Propagated, channels: u16,
+        settings: &crate::assets::wwise::EnvironmentSettings) -> Result<Targets, String>
+    {
+        let listener = scene.listener.ok_or("propagated Wwise event has no listener")?;
+        let attenuation = self.attenuation.as_deref();
+        let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
+        let mut matrices = Vec::with_capacity(propagated.positions.len());
+        let mut rays = Vec::with_capacity(propagated.positions.len());
+        for &position in &propagated.positions {
+            let (matrix, _) = self.ray_targets_with_environment(scene, position, channels,
+                Some((settings, propagated.levels)))?;
+            matrices.push(matrix);
+            let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
+            let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
+            rays.push(FilterRay {
+                levels: propagated.levels,
+                distance: std::array::from_fn(|index| attenuation.and_then(|attenuation|
+                    spatial::curve(attenuation, 3 + index, ray.distance)).unwrap_or(0.0)),
+                cone: cone.map_or([0.0; 2], |cone|
+                    [gains.cone_ratio * cone.low_pass, gains.cone_ratio * cone.high_pass]),
+            });
+        }
+        let filters = environment::filters(settings, &rays, [0.0; 2])?;
+        let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
+        Ok(Targets { gains, auxiliary: [game, user],
+            voice_filters: filters.voice, output_filters: filters.output })
+    }
+
+    /// Mode 2's per-channel maximum and minimum ray filters (1410cbbb0,
+    /// 141104200, 1410cb3b0). The level owner supplies its projected positions.
+    pub fn direction_targets(&self, scene: &Scene, positions: &[Position], channels: u16) -> Result<Targets, String> {
+        let [first, remaining @ ..] = positions else { return Err("spatial Wwise event has no admitted position".into()) };
+        let first = self.ray_targets(scene, *first, channels)?;
+        if remaining.is_empty() {
+            let [gains, game, user] = first.0;
+            return Ok(Targets { gains, auxiliary: [game, user], voice_filters: first.1, output_filters: [None; 2] });
+        }
+        let mut matrices = vec![first.0];
+        let mut filters = [100.0; 2];
+        for index in 0..2 { if first.1[index] <= filters[index] { filters[index] = first.1[index]; } }
+        for position in remaining {
+            let (matrix, next) = self.ray_targets(scene, *position, channels)?;
+            matrices.push(matrix);
+            for index in 0..2 { if next[index] <= filters[index] { filters[index] = next[index]; } }
+        }
+        let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
+        Ok(Targets { gains, auxiliary: [game, user], voice_filters: filters, output_filters: [None; 2] })
+    }
+
+    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
+        self.ray_targets_with_environment(scene, position, channels, None)
+    }
+
+    fn ray_targets_with_environment(&self, scene: &Scene, position: Position, channels: u16,
+        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
         if cone.is_some() && position.front.is_none() { return Err("coned Wwise event has no emitter orientation".into()); }
         let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
-        let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
+        let mut gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
+        // 1410ccd30 applies environment gain to the ray before 1410cbbb0
+        // multiplies its speaker coefficients; preserve that float order.
+        if let Some((settings, levels)) = environment { gains = environment::gains(settings, levels, gains); }
         let spread = spatial::spread(attenuation, ray);
         let focus = spatial::focus(attenuation, ray);
         let pan = match channels {
@@ -102,7 +209,6 @@ impl Voice {
         };
         let filters = spatial::filters(attenuation, ray, gains.cone_ratio,
             cone.map_or([0.0; 2], |cone| [cone.low_pass, cone.high_pass]), [0.0; 2]);
-        Ok(([pan[0][0] * gains.dry, pan[0][1] * gains.dry,
-            pan[1][0] * gains.dry, pan[1][1] * gains.dry], filters))
+        Ok((crate::gameplay::sound::panning::send_matrices(pan, gains), filters))
     }
 }

@@ -1,11 +1,15 @@
 //! Constant-pitch sample-rate conversion (141138270 / 141146820).
 //! A source frame position uses sixteen fractional bits, as in the decoder.
 
+pub fn pitch_ratio(cents: f32) -> f32 {
+    2.0f32.powf(cents * f32::from_bits(0x3a5a740e))
+}
+
 pub fn pitch_step(cents: f32, source_rate: u32, output_rate: u32) -> Result<u32, String> {
     if !cents.is_finite() || source_rate == 0 || output_rate == 0 {
         return Err("invalid sound pitch or sample rate".into());
     }
-    let ratio = 2.0f32.powf(cents * f32::from_bits(0x3a5a740e));
+    let ratio = pitch_ratio(cents);
     let step = ratio * (source_rate as f32 / output_rate as f32) * 65536.0 + 0.5;
     if !step.is_finite() || step > u32::MAX as f32 {
         return Err("sound pitch exceeds the fixed-point resampler range".into());

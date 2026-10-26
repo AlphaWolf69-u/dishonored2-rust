@@ -8,9 +8,18 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
 mod declaration;
+mod playback;
+pub use playback::{PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
-pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    CurvePoint, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+
+/// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).
+pub fn language_name(game_language: &str) -> Option<&'static str> {
+    let id = super::lang::LANGUAGES.iter().position(|(name, _)| name.eq_ignore_ascii_case(game_language))?;
+    Some(["English(US)", "French(France)", "Italian", "German", "Spanish(Spain)", "Russian",
+        "Polish", "Spanish(Mexico)", "Portuguese(Brazil)", "Chinese(Taiwan)", "Japanese"][id])
+}
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -18,6 +27,11 @@ pub fn declared_event_id(source: &str) -> io::Result<u32> {
 }
 
 pub fn declared_rtpc_id(source: &str) -> io::Result<u32> {
+    declared_engine_id(source, "m_engineID")
+}
+
+/// arkDeclSoundAuxBus uses the same reflected engine-ID member spelling.
+pub fn declared_auxiliary_id(source: &str) -> io::Result<u32> {
     declared_engine_id(source, "m_engineID")
 }
 
@@ -380,6 +394,12 @@ impl Package {
         self.banks.iter().copied().find(|entry| entry.id == id && entry.language_id == language_id)
     }
 
+    /// Package language IDs are local to each AKPK file. English and Russian
+    /// packages can both use ID 1; select by the middleware language name.
+    pub fn language_id(&self, name: &str) -> Option<u32> {
+        self.languages.iter().find(|language| language.name.eq_ignore_ascii_case(name)).map(|language| language.id)
+    }
+
     pub fn media_file(&self, id: u64, language_id: u32) -> Option<Entry> {
         self.media.iter().chain(&self.external_media).copied()
             .find(|entry| entry.id == id && entry.language_id == language_id)
@@ -438,8 +458,14 @@ pub fn event_commands_with(
     event: u32,
     package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<EventCommand>>> {
+    event_playback_with(bank, event, package_media)?.map(flatten_playback_actions).transpose()
+}
+
+/// Convert already resolved global references for the flat playback path.
+pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
+            PlaybackNode::Missing { .. } => Err(invalid("unresolved Wwise playlist entries require scheduled playback")),
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
                 node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
                 reset_each_play: true, restart_backward: false, variants: vec![variant],
@@ -474,10 +500,10 @@ pub fn event_commands_with(
             },
         }
     }
-    event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
+    actions.into_iter().map(|action| match action {
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
-        PlaybackCommand::Play { target, node } => Ok(EventCommand::Play { target, groups: flatten(node)? }),
-    }).collect()).transpose()
+        PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
+    }).collect()
 }
 
 /// Preserve the authored HIRC graph, including nested containers and their
@@ -488,89 +514,31 @@ pub fn event_playback_with(
     event: u32,
     mut package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<PlaybackCommand>>> {
-    let chunks = bank_chunks(bank)?;
-    let feedback = bank_feedback(&chunks)?;
-    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(None) };
-    let objects = bank_objects(hierarchy)?;
-
-    let Some(event_object) = objects.get(&(4, event)).copied() else { return Ok(None) };
-    if event_object.len() < 8 { return Err(invalid("truncated Wwise event")); }
-    let action_count = read_u32_slice(event_object, 4)? as usize;
-    fn resolve_node(
-        id: u32,
-        objects: &BankObjects<'_>,
-        chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
-        package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
-        visited: &mut std::collections::HashSet<u32>,
-        feedback: bool,
-    ) -> io::Result<Option<PlaybackNode>> {
-        if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
-        let Some((kind, object)) = audio_node(objects, id) else { visited.remove(&id); return Ok(None) };
-        if kind == 2 {
-            let media = media_from_sound(object, chunks, package_media)?;
-            let properties = media_properties(id, objects, feedback)?;
-            visited.remove(&id);
-            return Ok(media.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
-        }
-        if kind != 5 && kind != 9 { visited.remove(&id); return Ok(None); }
-        let (children, playlist) = bank::node_children(object, kind, feedback)?;
-        let node = if kind == 5 {
-            let mut children = Vec::new();
-            for (child, weight) in playlist.items {
-                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? {
-                    children.push((node, weight));
-                }
-            }
-            PlaybackNode::Container(PlaybackContainer {
-                node: id, global: playlist.global, avoid_repeat: playlist.avoid_repeat,
-                mode: playlist.mode, reset_each_play: playlist.reset_each_play,
-                playback: playlist.playback, children,
-            })
-        } else {
-            let mut layers = Vec::new();
-            for child in children {
-                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? { layers.push(node); }
-            }
-            PlaybackNode::Layer { node: id, children: layers }
-        };
-        visited.remove(&id);
-        Ok(Some(node))
-    }
-    let mut commands = Vec::new();
-    for index in 0..action_count {
-        let action_id = read_u32_slice(event_object, 8 + index * 4)?;
-        let Some(action) = objects.get(&(3, action_id)).copied() else { continue };
-        if action.len() < 10 { continue; }
-        let target = read_u32_slice(action, 6)?;
-        if action[5] == 0x01 { // Wwise action type 0x01 is Stop.
-            commands.push(PlaybackCommand::Stop(bank::stop_action(action)?));
-            continue;
-        }
-        if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
-        let mut visited = std::collections::HashSet::new();
-        if let Some(node) = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)? {
-            commands.push(PlaybackCommand::Play { target, node });
-        }
-    }
-    Ok((!commands.is_empty()).then_some(commands))
+    let mut banks = PlaybackBanks::default();
+    banks.insert(std::borrow::Cow::Borrowed(bank))?;
+    banks.event_playback(event, |_, id| package_media(id))
 }
 
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
     Stop(StopAction),
-    Play { target: u32, node: PlaybackNode },
+    Play { target: u32, settings: PlaySettings, node: PlaybackNode },
 }
 
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
+    /// Keep the authored slot and weight when the global actor lookup fails
+    /// (141119b70). Removing it would change random and sequence selection.
+    Missing { node: u32 },
     Sound { node: u32, variant: MediaVariant },
-    Layer { node: u32, children: Vec<PlaybackNode> },
+    Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
 }
 
 #[derive(Clone, Debug)]
 pub struct PlaybackContainer {
     pub node: u32,
+    pub properties: MediaProperties,
     pub global: bool,
     pub avoid_repeat: u16,
     pub mode: SelectionMode,
@@ -582,7 +550,7 @@ pub struct PlaybackContainer {
 #[derive(Clone, Debug)]
 pub enum EventCommand {
     Stop(StopAction),
-    Play { target: u32, groups: Vec<MediaGroup> },
+    Play { target: u32, settings: PlaySettings, groups: Vec<MediaGroup> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -613,26 +581,42 @@ pub struct MediaProperties {
     pub bus: u32,
 }
 
-fn media_properties(mut id: u32, objects: &BankObjects<'_>, feedback: bool) -> io::Result<MediaProperties> {
-    let mut properties = MediaProperties::default();
-    let mut visited = std::collections::HashSet::new();
-    while id != 0 {
-        if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
-        let Some((kind, object)) = audio_node(objects, id) else { return Err(invalid_owned(format!("missing Wwise parent {id:#010x}"))); };
-        if !matches!(kind, 2 | 5 | 6 | 7 | 9) { return Err(invalid("unsupported Wwise parent type")); }
-        let node = bank::node_properties(object, kind, feedback)?;
-        if properties.bus == 0 { properties.bus = node.bus; }
-        id = node.parent;
-        properties.nodes.push(node);
-    }
-    Ok(properties)
-}
-
 #[derive(Clone, Debug)]
 pub struct BankMix {
     pub buses: Vec<NodeProperties>,
+    pub effects: Vec<EffectDefinition>,
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
+    pub environment: EnvironmentSettings,
+    /// 141120750 marks the first root as the primary device's master bus.
+    pub primary_bus: Option<u32>,
+}
+
+/// Authored Play action settings without loading or decoding any media.
+pub fn bank_play_settings(bytes: &[u8]) -> io::Result<Vec<(u32, PlaySettings)>> {
+    let chunks = bank_chunks(bytes)?;
+    bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 3 && object.get(5) == Some(&4) { result.push((id, bank::play_settings(object)?)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
+/// Authored random/sequence timing without loading or decoding any media.
+pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPlayback)>> {
+    let chunks = bank_chunks(bytes)?;
+    let feedback = bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let objects = bank_objects(hierarchy)?;
+    let mut result = Vec::new();
+    for (&(kind, id), &object) in &objects {
+        if kind == 5 { result.push((id, bank::node_children(object, kind, feedback)?.1.playback)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
@@ -653,12 +637,22 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     let Some(settings) = chunks.get(b"STMG") else { return Ok(None) };
     let feedback = bank_feedback(&chunks)?;
     let (volume_threshold_db, parameters) = bank::global_parameters(settings)?;
-    let objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?;
+    let mut objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?
+        .into_iter().collect::<Vec<_>>();
+    // Object slices share the HIRC allocation. Restore their serialized order
+    // after the lookup map's duplicate-ID validation; root selection depends
+    // on that order, not on the hash table's randomized iteration order.
+    objects.sort_by_key(|(_, object)| object.as_ptr());
     let mut buses = Vec::new();
+    let mut effects = Vec::new();
     for ((kind, _), object) in objects {
-        if kind == 8 { buses.push(bank::bus_properties(object, feedback)?); }
+        if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback, kind == 20)?); }
+        if matches!(kind, 18 | 19) { effects.push(bank::effect_definition(object, kind == 18)?); }
     }
-    Ok(Some(BankMix { buses, parameters, volume_threshold_db }))
+    // 1410f85a0 disables all six environment tables before ENVS is loaded.
+    let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
+    let primary_bus = buses.iter().find(|bus| bus.parent == 0).map(|bus| bus.id);
+    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment, primary_bus }))
 }
 
 fn media_from_sound(
@@ -697,10 +691,6 @@ pub fn bank_event_ids(bank: &[u8]) -> io::Result<Vec<u32>> {
 
 type BankChunks<'a> = std::collections::HashMap<[u8; 4], &'a [u8]>;
 type BankObjects<'a> = std::collections::HashMap<(u8, u32), &'a [u8]>;
-
-fn audio_node<'a>(objects: &BankObjects<'a>, id: u32) -> Option<(u8, &'a [u8])> {
-    [2, 5, 6, 7, 9].into_iter().find_map(|kind| objects.get(&(kind, id)).map(|object| (kind, *object)))
-}
 
 fn bank_feedback(chunks: &BankChunks<'_>) -> io::Result<bool> {
     let header = chunks.get(b"BKHD").ok_or_else(|| invalid("Wwise bank has no BKHD"))?;

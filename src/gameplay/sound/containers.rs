@@ -2,6 +2,7 @@
 use crate::assets::wwise::ContainerPlayback;
 use crate::assets::wwise::SelectionMode;
 use std::collections::{HashSet, VecDeque};
+pub mod timing;
 
 /// Playback-local cycle limit (`FUN_14111b7b0`). Step containers omit it.
 #[derive(Clone, Debug)]
@@ -20,7 +21,8 @@ impl Loops {
                 let [min, max] = settings.loop_modifiers;
                 let difference = max.wrapping_sub(min);
                 let offset = if difference == 0 { 0 } else {
-                    (f64::from(random15()) / 32767.0 * f64::from(difference) + 0.5) as i32 as i16
+                    (f64::from(random15()) * f64::from_bits(0x3f00002000400080)
+                        * f64::from(difference) + 0.5) as i32 as i16
                 };
                 let sampled = (count as i16).wrapping_add(min.wrapping_add(offset));
                 Some(sampled.max(1) as u16)
@@ -47,7 +49,7 @@ pub fn transition_ms(settings: &ContainerPlayback, rtpc_seconds: f32, mut random
     let [min, max] = settings.transition_modifiers_ms;
     let difference = max - min;
     let offset = if difference == 0.0 { 0.0 } else {
-        (f64::from(random15()) / 32767.0 * f64::from(difference)) as f32
+        (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference)) as f32
     };
     let time = offset + min + settings.transition_ms + rtpc_seconds * 1000.0;
     if time < 0.0 { 0.0 } else { time }
@@ -120,6 +122,12 @@ impl Selection {
             if loops.is_some_and(|loops| !loops.next_cycle()) { return None; }
             self.visited.clear();
         }
+        // 141119b70 resolves a one-entry playlist directly, regardless of
+        // its authored weight. It consumes no random draw or avoid history.
+        if weights.len() == 1 {
+            self.visited.insert(0);
+            return Some(0);
+        }
         let avoid = usize::from(avoid_repeat).min(weights.len().saturating_sub(1));
         // Shuffle always retains at least the last entry across cycles.
         let avoid = if mode == SelectionMode::Shuffle { avoid.max(1).min(weights.len().saturating_sub(1)) } else { avoid };
@@ -128,7 +136,17 @@ impl Selection {
             && (mode != SelectionMode::Shuffle || !self.visited.contains(&index));
         let total = weights.iter().enumerate().filter(|(index, _)| eligible(*index)).map(|(_, weight)| u64::from(*weight)).sum::<u64>();
         if total == 0 { return None; }
-        let mut pick = rand::random_range(0..total);
+        // 141118eb0 enables weighted selection when any authored weight is
+        // not the default 50000. 14111aa00 uses rand() % eligible-count for
+        // the default case; 14113dfb0 combines two MSVC 15-bit draws for the
+        // weighted case. Preserve their finite range and modulo bias.
+        let weighted = weights.iter().any(|&weight| weight != 50000);
+        let draw = u64::from(rand::random_range(0u16..=32767));
+        let mut pick = if weighted {
+            (draw * 32768 + u64::from(rand::random_range(0u16..=32767))) % total
+        } else {
+            draw % (total / 50000) * 50000
+        };
         let index = weights.iter().enumerate().position(|(index, weight)| {
             if !eligible(index) { return false; }
             if pick < u64::from(*weight) { true } else { pick -= u64::from(*weight); false }

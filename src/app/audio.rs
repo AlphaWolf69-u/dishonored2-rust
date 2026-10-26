@@ -4,9 +4,11 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use crate::gameplay::sound::{Emitter, Request};
 mod pcm;
 mod graph;
+mod bevy_backend;
 mod fade;
 mod contacts;
 mod spatial;
+pub(super) mod level;
 pub(super) use contacts::ContactSound;
 use pcm::PcmAudio;
 
@@ -17,7 +19,7 @@ pub struct SoundEvent(pub Request);
 struct WwiseRegistry {
     banks: Vec<Bank>,
     attenuations: HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-    event_banks: HashMap<u32, Vec<usize>>,
+    library: crate::assets::wwise::PlaybackBanks<'static>,
     sources: HashMap<u32, Vec<SourceAction>>,
     scheduled_selections: graph::Selections,
 }
@@ -70,8 +72,8 @@ struct AudioVariant {
 #[derive(Clone)]
 enum SourceAction {
     Stop(crate::assets::wwise::StopAction),
-    Play { target: u32, groups: Vec<AudioGroup> },
-    Scheduled { target: u32, definition: Arc<graph::Definition> },
+    Play { target: u32, settings: crate::assets::wwise::PlaySettings, groups: Vec<AudioGroup> },
+    Scheduled { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
 }
 
 #[derive(Component, Clone)]
@@ -96,7 +98,8 @@ struct AudioTarget {
     properties: Arc<crate::assets::wwise::MediaProperties>,
     random_db: f32,
     parameter: Option<(u32, f32)>,
-    clock_paused: bool,
+    paused: bool,
+    world_paused: bool,
 }
 
 pub struct SoundPlugin;
@@ -105,20 +108,27 @@ impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<PcmAudio>()
             .add_audio_source::<graph::ScheduledAudio>()
+            .add_audio_source::<bevy_backend::OutputAudio>()
             .add_message::<SoundEvent>()
             .add_message::<ContactSound>()
             .init_resource::<contacts::ContactSounds>()
             .init_resource::<WwiseRegistry>()
             .init_resource::<AudioMix>()
+            .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
-            .add_systems(Update, (contacts::update, spatial::update, update_playing_volume, play_events).chain().after(super::player::update_player));
+            .add_systems(Update, contacts::update.after(super::player::update_player))
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, update_playing_volume, play_events)
+                .chain().after(super::model_motion::publish_model_poses));
     }
 }
 
-fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
+fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
+    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
+        let audio_language = crate::assets::lang::read_audio_language(&base)?;
+        let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
         let mut paths = std::fs::read_dir(base.join("pck"))?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
@@ -129,22 +139,22 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
         let mut banks = Vec::new();
         let mut attenuations = HashMap::new();
         let mut output_mix = None;
-        let mut event_banks = HashMap::<u32, Vec<usize>>::new();
+        let mut library = crate::assets::wwise::PlaybackBanks::default();
         for path in paths {
             let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
+            let language = package.language_id(package_language);
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
-                    Ok((crate::assets::wwise::bank_event_ids(&bytes)?, crate::assets::wwise::bank_mix(&bytes)?, crate::assets::wwise::bank_attenuations(&bytes)?))
+                    Ok((crate::assets::wwise::bank_mix(&bytes)?, crate::assets::wwise::bank_attenuations(&bytes)?, bytes))
                 })();
                 match indexed {
-                    Ok((events, bank_mix, bank_attenuations)) => {
-                        for attenuation in bank_attenuations { attenuations.insert(attenuation.id, Arc::new(attenuation)); }
+                    Ok((bank_mix, bank_attenuations, bytes)) => {
+                        for attenuation in bank_attenuations { attenuations.entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        let index = banks.len();
+                        library.insert(bytes.into())?;
                         banks.push(Bank { path: path.clone(), package: package.clone(), entry });
-                        for event in events { event_banks.entry(event).or_default().push(index); }
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
                 }
@@ -168,18 +178,29 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
         let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
         let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
         let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
-        Ok((banks, attenuations, event_banks, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
+        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
     })();
     match result {
-        Ok((banks, attenuations, event_banks, output_mix, bindings, time_dilation)) => {
+        Ok((banks, attenuations, library, output_mix, bindings, time_dilation)) => {
             mix.time_dilation = Some(time_dilation);
             registry.attenuations = attenuations;
-            info!("Indexed {} installed Wwise banks and {} event IDs", banks.len(), event_banks.len());
+            info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
             registry.banks = banks;
-            registry.event_banks = event_banks;
+            registry.library = library;
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
+            if let Some(mixer) = &mix.mixer {
+                match bevy_backend::Engine::new(mixer) {
+                    Ok((initialized, output)) => {
+                        if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
+                        *engine = initialized;
+                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE));
+                        info!("Shared stereo audio output initialized with installed bus effects");
+                    },
+                    Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
+                }
+            }
         }
         Err(error) => warn!("Installed Wwise banks unavailable: {error}"),
     }
@@ -193,6 +214,7 @@ fn play_events(
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
+    engine: Res<bevy_backend::Engine>,
     playing: Query<(Entity, &AudioTarget, Option<&PlaybackControl>)>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
@@ -220,37 +242,37 @@ fn play_events(
         if scene.frozen(emitter) { continue; }
         if !registry.sources.contains_key(&event) {
             let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
-                let indexes = registry.event_banks.get(&event).ok_or("no installed bank contains this event")?;
-                let mut actions = None;
-                for &index in indexes {
-                    let bank = &registry.banks[index];
-                    let mut file = std::fs::File::open(&bank.path)?;
-                    let bytes = bank.package.read_entry(&mut file, bank.entry)?;
-                    let graph_actions = crate::assets::wwise::event_playback_with(&bytes, event, |media_id| {
-                        let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None) };
-                        bank.package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    if let Some(graph_actions) = graph_actions {
-                        use crate::assets::wwise::PlaybackCommand;
-                        if graph_actions.iter().any(|action| matches!(action, PlaybackCommand::Play { node, .. } if graph::Definition::required(node))) {
-                            return graph_actions.into_iter().map(|action| match action {
-                                PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                                PlaybackCommand::Play { target, node } => Ok(SourceAction::Scheduled {
-                                    target, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
-                                }),
-                            }).collect();
-                        }
+                let mut files = HashMap::<usize, std::fs::File>::new();
+                let graph_actions = registry.library.event_playback(event, |owner, media_id| {
+                    let bank = registry.banks.get(owner).ok_or_else(|| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
+                    let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+                    let file = match files.entry(owner) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
+                    };
+                    bank.package.read_entry(file, media).map(Some)
+                })?.ok_or("event has no supported Wwise actions")?;
+                use crate::assets::wwise::PlaybackCommand;
+                let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
+                    match action {
+                        PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
+                            || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
+                        _ => Ok(required),
                     }
-                    let resolved = crate::assets::wwise::event_commands_with(&bytes, event, |media_id| {
-                        let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None) };
-                        bank.package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    if resolved.is_some() { actions = resolved; break; }
+                })?;
+                if scheduled {
+                    return graph_actions.into_iter().map(|action| match action {
+                        PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                        PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
+                            target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
+                        }),
+                    }).collect();
                 }
-                let actions = actions.ok_or("event has no supported Wwise actions")?;
+                let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
                 actions.into_iter().map(|action| match action {
                     crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                    crate::assets::wwise::EventCommand::Play { target, groups } => {
+                    crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
                         let groups = groups.into_iter().map(|group| {
                             let variants = group.variants.into_iter().map(|variant| {
                                 let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
@@ -268,7 +290,7 @@ fn play_events(
                                 restart_backward: group.restart_backward,
                             })
                         }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                        Ok(SourceAction::Play { target, groups })
+                        Ok(SourceAction::Play { target, settings, groups })
                     }
                 }).collect()
             })();
@@ -289,7 +311,7 @@ fn play_events(
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
                             let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds <= 0 { commands.entity(entity).try_despawn(); }
+                            if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
                             else if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(target, milliseconds, stop.transition.curve);
@@ -299,7 +321,7 @@ fn play_events(
                         spawned.retain(|(entity, audio_target, scheduled)| {
                             if stop.game_object && audio_target.emitter != emitter { return true; }
                             let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds <= 0 { commands.entity(*entity).try_despawn(); return false; }
+                            if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
                             if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(target, milliseconds, stop.transition.curve);
@@ -308,7 +330,8 @@ fn play_events(
                             true
                         });
                     }
-                    SourceAction::Play { target, groups } => {
+                    SourceAction::Play { target, settings, groups } => {
+                        if !settings.admits(|| rand::random_range(0..=32767)) { continue; }
                         let mut random_values = HashMap::new();
                         for group in groups {
                             let owner = if group.global { None } else { Some(emitter) };
@@ -324,7 +347,7 @@ fn play_events(
                             let Some(selected) = selected else { continue };
                             let variant = &group.variants[selected];
                             let random_db = variant.properties.nodes.iter().map(|node| *random_values.entry(node.id).or_insert_with(|| {
-                                node.ranges.iter().filter(|range| matches!(range.property, 0 | 5 | 0x21 | 0x17)).map(|range| {
+                                node.ranges.iter().filter(|range| matches!(range.property, 0 | 0x21)).map(|range| {
                                     if range.min == range.max { range.min } else { rand::random_range(range.min..=range.max) }
                                 }).sum::<f32>()
                             })).sum::<f32>();
@@ -332,7 +355,7 @@ fn play_events(
                                 Ok(gain) => gain,
                                 Err(error) => { warn!("Wwise event {event:#010x} mix unavailable: {error}"); continue; }
                             };
-                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, clock_paused: false };
+                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, paused: false, world_paused: false };
                             let Some(source) = sources.get(&variant.source) else { continue };
                             let (source, control) = source.controlled();
                             let control = PlaybackControl::Flat(control);
@@ -345,13 +368,20 @@ fn play_events(
                             spawned.push((entity, audio_target, Some(control)));
                         }
                     }
-                    SourceAction::Scheduled { target, definition } => {
-                        match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position) {
+                    SourceAction::Scheduled { target, settings, definition } => {
+                        match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
                             Ok((source, scheduled)) => {
-                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, clock_paused: false };
+                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, paused: false, world_paused: false };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);
-                                let entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
-                                    audio_target.clone(), scheduled.clone())).id();
+                                let entity = if source.can_route() {
+                                    match engine.submit(source) {
+                                        Ok(voice) => commands.spawn((voice, audio_target.clone(), scheduled.clone())).id(),
+                                        Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
+                                    }
+                                } else {
+                                    commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
+                                        audio_target.clone(), scheduled.clone())).id()
+                                };
                                 spawned.push((entity, audio_target, Some(scheduled)));
                             },
                             Err(error) => warn!("Wwise event {event:#010x} scheduled mix unavailable: {error}"),
@@ -368,18 +398,40 @@ fn play_events(
 fn update_playing_volume(
     mut mix: ResMut<AudioMix>,
     scene: Res<spatial::Scene>,
-    mut playing: Query<(&mut AudioSink, &mut AudioTarget, Option<&PlaybackControl>)>,
+    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    mut previous_pause: Local<bool>,
+    engine: Res<bevy_backend::Engine>,
+    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, Option<&PlaybackControl>, Option<&bevy_backend::VoiceHandle>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
     let mix_changed = mix.generation != generation;
     if mix_changed { mix.apply_settings(); }
     let Some(mixer) = &mix.mixer else { return };
-    for (mut sink, mut target, scheduled) in &mut playing {
-        let frozen = scene.frozen(target.emitter);
-        if frozen != target.clock_paused {
+    if let Err(error) = engine.update(mixer) { error!("Shared Wwise audio mix update failed: {error}"); }
+    let world_paused = paused.is_some_and(|paused| paused.0);
+    let pause_changed = world_paused != *previous_pause;
+    for (mut target, sink, scheduled, voice) in &mut playing {
+        // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
+        // IDs. It does not silence later UI posts: 02cbd0 uses the same
+        // world's global object, and c4550 posts new IDs while paused.
+        // Resume (788d70 -> c8070/c8080 -> c59c0) releases that pause.
+        if pause_changed { target.world_paused = world_paused; }
+        let frozen = scene.frozen(target.emitter) || target.world_paused;
+        if let Some(voice) = voice {
+            voice.pause(frozen);
+            target.paused = frozen;
+            if !frozen {
+                if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
+                    if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
+                }
+            }
+            continue;
+        }
+        let Some(mut sink) = sink else { continue };
+        if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
-            target.clock_paused = frozen;
+            target.paused = frozen;
         }
         if frozen { continue; }
         if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
@@ -391,5 +443,6 @@ fn update_playing_volume(
             Err(error) => warn!("Wwise mix update unavailable: {error}"),
         }
     }
+    *previous_pause = world_paused;
     mix.generation = generation;
 }

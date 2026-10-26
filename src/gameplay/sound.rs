@@ -13,6 +13,16 @@ pub mod propagation;
 pub mod acoustic_world;
 pub mod paths;
 pub mod positions;
+pub mod environment;
+pub mod auxiliary;
+pub mod room_reverb;
+pub mod matrix_reverb;
+pub mod bus_effects;
+pub mod ducking;
+pub mod activity;
+pub mod delay;
+pub mod tail;
+pub mod listener;
 pub mod looping;
 
 /// The material pair and physical inputs submitted to the contact FX manager
@@ -35,13 +45,14 @@ pub enum Emitter {
     PlayerLeftArm,
     PlayerRightArm,
     Effect(u64),
+    Component { handle: u64, generation: u32 },
 }
 
 impl Emitter {
     /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
     pub fn player_part(self) -> u8 {
         match self {
-            Self::Menu | Self::Effect(_) => 0,
+            Self::Menu | Self::Effect(_) | Self::Component { .. } => 0,
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,

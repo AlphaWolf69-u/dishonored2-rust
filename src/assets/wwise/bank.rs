@@ -13,13 +13,80 @@ pub struct ActionTransition {
 impl ActionTransition {
     /// FUN_141115f20: integer milliseconds, with an additive rounded rand().
     pub fn sample_ms(self, mut random15: impl FnMut() -> u16) -> i32 {
-        let [min, max] = self.modifiers;
-        let difference = max.wrapping_sub(min);
-        let offset = if difference == 0 { 0 } else {
-            (f64::from(random15()) / 32767.0 * f64::from(difference) + 0.5) as i32
-        };
-        self.milliseconds.wrapping_add(min).wrapping_add(offset)
+        sample_integer(self.milliseconds, self.modifiers, &mut random15)
     }
+}
+
+fn sample_integer(base: i32, [min, max]: [i32; 2], mut random15: impl FnMut() -> u16) -> i32 {
+    let difference = max.wrapping_sub(min);
+    let offset = if difference == 0 { 0 } else {
+        (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference) + 0.5) as i32
+    };
+    base.wrapping_add(min).wrapping_add(offset)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ActionDelay {
+    pub frames: i32,
+    pub modifiers: [i32; 2],
+}
+impl ActionDelay {
+    /// 141116320 converts milliseconds before 141115e20 randomizes the
+    /// integer frame interval. The action scheduler interprets it unsigned.
+    pub fn sample_frames(self, random15: impl FnMut() -> u16) -> u32 {
+        sample_integer(self.frames, self.modifiers, random15) as u32
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlaySettings {
+    pub transition: ActionTransition,
+    pub delay: ActionDelay,
+    pub probability: Option<f32>,
+    pub bank: u32,
+}
+impl PlaySettings {
+    pub fn requires_scheduling(self) -> bool {
+        self.transition.milliseconds != 0 || self.transition.modifiers != [0; 2]
+            || self.delay.frames != 0 || self.delay.modifiers != [0; 2]
+    }
+
+    /// 14113b5c0 uses two MSVC rand() values as a 30-bit draw. An absent
+    /// probability property plays unconditionally; explicit zero consumes no RNG.
+    pub fn admits(self, mut random15: impl FnMut() -> u16) -> bool {
+        let Some(probability) = self.probability else { return true; };
+        if probability == 0.0 { return false; }
+        let draw = u32::from(random15()) * 0x8000 + u32::from(random15());
+        f64::from(draw) * f64::from_bits(0x3e10000000400000) * 100.0 <= f64::from(probability)
+    }
+}
+
+/// 141116320's common action properties, then 14113b7a0's fade curve and
+/// bank ID. Keep the frame conversion ahead of delay randomization.
+pub(super) fn play_settings(bytes: &[u8]) -> io::Result<PlaySettings> {
+    let mut reader = Reader { bytes, offset: 4 };
+    reader.take(6)?; // Scope/type and target ID, retained by the Play command.
+    if reader.u8()? != 0 { return Err(invalid("Wwise bus Play actions require bus dispatch")); }
+    let properties = reader.properties()?;
+    let property = |id| properties.iter().find(|(property, _)| *property == id).map(|(_, value)| *value);
+    let mut transition = ActionTransition { milliseconds: property(0xf).unwrap_or(0) as i32, modifiers: [0; 2], curve: 4 };
+    let mut delay = ActionDelay { frames: (property(0xe).unwrap_or(0) as i32).wrapping_mul(48), modifiers: [0; 2] };
+    let probability = property(0x10).map(f32::from_bits);
+    let count = usize::from(reader.u8()?);
+    let ids = reader.take(count)?.to_vec();
+    for id in ids {
+        let values = [reader.u32()? as i32, reader.u32()? as i32];
+        match id {
+            0xf => transition.modifiers = values,
+            0xe => delay.modifiers = values.map(|value| value.wrapping_mul(48)),
+            _ => {},
+        }
+    }
+    transition.curve = reader.u8()? & 0x1f;
+    if transition.curve > 8 { return Err(invalid("unsupported Wwise Play fade curve")); }
+    let bank = reader.u32()?;
+    if reader.offset != bytes.len() { return Err(invalid("Wwise Play fields did not consume its action")); }
+    Ok(PlaySettings { transition, delay, probability, bank })
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +162,63 @@ pub struct NodeProperties {
     pub curves: Vec<RtpcCurve>,
     pub positioning_flags: u8,
     pub positioning_3d: Option<Positioning3d>,
+    pub effects: EffectChain,
+    /// 1410deb00: game override, game enable, user override, serialized IDs.
+    pub auxiliary_flags: u8,
+    pub auxiliary_buses: [u32; 4],
+    pub bus_settings: Option<BusSettings>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BusSettings {
+    pub auxiliary: bool,
+    pub flags: u8,
+    pub limit_flags: u8,
+    pub max_instances: u16,
+    pub channel_config: u32,
+    pub hdr_flags: u8,
+    pub recovery_ms: u32,
+    pub max_duck_volume: f32,
+    pub ducks: Vec<BusDuck>,
+    pub mixer_id: u32,
+    pub mixer_shared: bool,
+    pub attachment_override: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BusDuck {
+    pub bus: u32,
+    pub volume: f32,
+    pub fade_out_ms: u32,
+    pub fade_in_ms: u32,
+    pub curve: u8,
+    pub property: u8,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EffectChain {
+    pub override_parent: bool,
+    pub bypass: u8,
+    pub slots: Vec<EffectReference>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectReference {
+    pub slot: u8,
+    pub id: u32,
+    pub shared: bool,
+    pub flags: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectDefinition {
+    pub id: u32,
+    pub shared: bool,
+    pub plugin: u32,
+    pub parameters: Vec<u8>,
+    pub media: Vec<(u8, u32)>,
+    pub curves: Vec<RtpcCurve>,
+    pub values: Vec<(u8, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +231,46 @@ pub struct Positioning3d {
 pub struct AttenuationCurve {
     pub scaling: u8,
     pub points: Vec<CurvePoint>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentCurve {
+    pub enabled: bool,
+    pub scaling: u8,
+    pub points: Vec<CurvePoint>,
+}
+
+/// ENVS: obstruction then occlusion, each with volume, LPF and HPF.
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentSettings {
+    pub curves: [[EnvironmentCurve; 3]; 2],
+}
+
+/// 1410f3450 dispatches ENVS to 1410f5470; 1410f8610/1410f85b0
+/// normalize the two volume tables after loading their conversion points.
+pub(super) fn environment_settings(bytes: &[u8]) -> io::Result<EnvironmentSettings> {
+    let mut reader = Reader { bytes, offset: 0 };
+    let mut settings = EnvironmentSettings::default();
+    for group in &mut settings.curves {
+        for (index, curve) in group.iter_mut().enumerate() {
+            curve.enabled = reader.u8()? != 0;
+            curve.scaling = reader.u8()?;
+            let count = usize::from(reader.u16()?);
+            curve.points = reader.points(count)?;
+            if index == 0 {
+                match curve.scaling {
+                    0 => curve.scaling = 4,
+                    2 => {
+                        for point in &mut curve.points { point.output += 1.0; }
+                        curve.scaling = 0;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if reader.offset != bytes.len() { return Err(invalid("Wwise environment settings did not consume their chunk")); }
+    Ok(settings)
 }
 
 #[derive(Clone, Debug)]
@@ -286,9 +450,8 @@ impl<'a> Reader<'a> {
 
     fn node_base(&mut self, feedback: bool) -> io::Result<NodeProperties> {
         let mut node = NodeProperties::default();
-        self.u8()?; // Override parent effects.
-        let effects = self.u8()? as usize;
-        if effects != 0 { self.u8()?; self.records(effects, 7)?; }
+        let override_parent = self.u8()? != 0;
+        node.effects = self.effects(override_parent)?;
         self.u8()?; // Attachment override.
         node.bus = self.u32()?;
         node.parent = self.u32()?;
@@ -319,13 +482,27 @@ impl<'a> Reader<'a> {
                 self.records(paths, 20)?; // Vertex spans and XYZ ranges.
             }
         }
-        let auxiliary = self.u8()?;
-        if auxiliary & 8 != 0 { self.take(16)?; }
+        node.auxiliary_flags = self.u8()?;
+        if node.auxiliary_flags & 8 != 0 {
+            for bus in &mut node.auxiliary_buses { *bus = self.u32()?; }
+        }
         self.take(6)?; // Voice limit, virtualization and analysis settings.
         self.states()?;
         node.curves = self.rtpcs()?;
         if feedback { self.u32()?; }
         Ok(node)
+    }
+
+    /// 1411204d0: the bypass mask follows a nonempty slot list's count.
+    fn effects(&mut self, override_parent: bool) -> io::Result<EffectChain> {
+        let count = self.u8()?;
+        let bypass = if count == 0 { 0 } else { self.u8()? };
+        let mut slots = Vec::new();
+        for _ in 0..count {
+            slots.push(EffectReference { slot: self.u8()?, id: self.u32()?,
+                shared: self.u8()? != 0, flags: self.u8()? });
+        }
+        Ok(EffectChain { override_parent, bypass, slots })
     }
 
     fn children(&mut self) -> io::Result<Vec<u32>> {
@@ -351,21 +528,70 @@ pub(super) fn node_properties(object: &[u8], kind: u8, feedback: bool) -> io::Re
     Ok(node)
 }
 
-pub(super) fn bus_properties(object: &[u8], feedback: bool) -> io::Result<NodeProperties> {
+pub(super) fn bus_properties(object: &[u8], feedback: bool, auxiliary: bool) -> io::Result<NodeProperties> {
     let mut reader = Reader { bytes: object, offset: 0 };
     let mut node = NodeProperties { id: reader.u32()?, parent: reader.u32()?, ..Default::default() };
     node.values = reader.properties()?;
-    reader.take(17)?; // Bus flags/limits/channel configuration, HDR and duck limits.
+    // 1411205f0 follows the property bundle with flags, limits, channel
+    // configuration and HDR; 141120750 then reads recovery/duck settings.
+    let flags = reader.u8()?;
+    let limit_flags = reader.u8()?;
+    let max_instances = reader.u16()? & 0x3ff;
+    let mut channel_config = reader.u32()?;
+    if channel_config & 0xf00 == 0x100 {
+        let mask = (channel_config >> 12) & 0x3ff3f;
+        channel_config = (mask << 12) | 0x100 | mask.count_ones();
+    }
+    let hdr_flags = reader.u8()?;
+    let recovery_ms = reader.u32()?;
+    let max_duck_volume = reader.f32()?;
     let ducks = reader.u32()? as usize;
-    reader.records(ducks, 18)?;
-    let effects = reader.u8()? as usize;
-    if effects != 0 { reader.u8()?; reader.records(effects, 7)?; }
-    reader.take(6)?; // Mixer share set and attachment override.
+    let mut duck_settings = Vec::<BusDuck>::new();
+    for _ in 0..ducks {
+        let duck = BusDuck { bus: reader.u32()?, volume: reader.f32()?,
+            fade_out_ms: reader.u32()?, fade_in_ms: reader.u32()?, curve: reader.u8()?, property: reader.u8()? };
+        // 14111ff70 replaces a target's definition, retaining its list slot.
+        if let Some(previous) = duck_settings.iter_mut().find(|previous| previous.bus == duck.bus) { *previous = duck; }
+        else { duck_settings.push(duck); }
+    }
+    node.effects = reader.effects(true)?;
+    node.bus_settings = Some(BusSettings { auxiliary, flags, limit_flags, max_instances,
+        channel_config, hdr_flags, recovery_ms, max_duck_volume, ducks: duck_settings,
+        mixer_id: reader.u32()?, mixer_shared: reader.u8()? != 0, attachment_override: reader.u8()? & 1 != 0 });
     node.curves = reader.rtpcs()?;
     reader.states()?;
     if feedback { reader.u32()?; }
     if reader.offset != object.len() { return Err(invalid("Wwise bus fields did not consume its object")); }
     Ok(node)
+}
+
+/// Both FX ShareSet (18) and custom FX (19) call 1411278b0. Parameter bytes
+/// belong to the registered plug-in; retain them intact until its reader runs.
+pub(super) fn effect_definition(object: &[u8], shared: bool) -> io::Result<EffectDefinition> {
+    let mut reader = Reader { bytes: object, offset: 0 };
+    let id = reader.u32()?;
+    let plugin = reader.u32()?;
+    let length = reader.u32()? as usize;
+    let parameters = reader.take(length)?.to_vec();
+    let mut media = Vec::<(u8, u32)>::new();
+    let count = reader.u8()?;
+    for _ in 0..count {
+        let key = reader.u8()?;
+        let value = reader.u32()?;
+        if let Some(entry) = media.iter_mut().find(|entry| entry.0 == key) { entry.1 = value; }
+        else { media.push((key, value)); }
+    }
+    let curves = reader.rtpcs()?;
+    let mut values = Vec::<(u8, u32)>::new();
+    let count = reader.u16()?;
+    for _ in 0..count {
+        let key = reader.u8()?;
+        let value = reader.u32()?;
+        if let Some(entry) = values.iter_mut().find(|entry| entry.0 == key) { entry.1 = value; }
+        else { values.push((key, value)); }
+    }
+    if reader.offset != object.len() { return Err(invalid("Wwise effect fields did not consume its object")); }
+    Ok(EffectDefinition { id, shared, plugin, parameters, media, curves, values })
 }
 
 pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>)> {
@@ -442,7 +668,9 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
         for _ in 0..count {
             let child = reader.u32()?;
             let weight = reader.u32()?;
-            if !children.contains(&child) { return Err(invalid("Wwise playlist references a non-child node")); }
+            // 14111aed0 / 141118eb0 append playlist IDs independently of
+            // the child list. 141119b70 resolves them in the global node
+            // registry, so membership in this serialized list is not required.
             playlist.items.push((child, weight));
         }
     } else if kind == 9 {

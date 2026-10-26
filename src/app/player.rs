@@ -274,6 +274,7 @@ fn load_body(
     body_decl: &[(String, crate::entities::Value)],
     additives: &[(String, crate::entities::Value)],
     scene_paths: &[String],
+    listener: Option<crate::gameplay::sound::listener::Settings>,
 ) -> Result<(Body, Scenes), String> {
     let text = |path: &str| text_of(catalog, path);
     let rig = load_rig(catalog, body_model)?;
@@ -330,37 +331,56 @@ fn load_body(
         arms.push(load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?);
     }
     use crate::gameplay::sound::Emitter;
+    let arm_models: Vec<String> = arms.iter().map(|arm| arm.model.clone()).collect();
     let casting = [
         ("PlayerBody", body_model, Emitter::PlayerBody),
         ("PlayerCamera", body_model, Emitter::PlayerBody),
-        ("PlayerLeftArm", arms[0].model.as_str(), Emitter::PlayerLeftArm),
-        ("PlayerRightArm", arms[1].model.as_str(), Emitter::PlayerRightArm),
+        ("PlayerLeftArm", arm_models[0].as_str(), Emitter::PlayerLeftArm),
+        ("PlayerRightArm", arm_models[1].as_str(), Emitter::PlayerRightArm),
     ];
     // The states' midnight scenes: the player group's clips of every scene
     // the graph reaches for this body md6.
     let mut scenes = Scenes::new();
+    // The arm groups resolve through each arm's own animsets.
+    let arm_rigs = arms.iter().map(|arm| load_rig(catalog, &arm.model)).collect::<Result<Vec<_>, _>>()?;
+    let mut arm_clips: Vec<Clips> = arms
+        .iter_mut()
+        .zip(&arm_rigs)
+        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
+        .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");
         let source = text(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
         let decl = crate::entities::midnight::parse(&source).map_err(|e| format!("{resource}: {e}"))?;
         let sounds = prepare_sounds(&decl, &casting, |path| text_of(catalog, path))?;
-        let mut prepared = PreparedScene { clips: vec![Vec::new(); decl.scenes.len()], decl, sounds };
+        let count = decl.scenes.len();
+        let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
         let mut next = Some(prepared.decl.first);
         for _ in 0..16 {
             let Some(element) = next.take() else { break };
-            let Some(index) = Midnight::resolve(&prepared, element, body_model).map_err(|e| format!("{resource}: {e}"))? else { break };
+            let Some(index) = Midnight::resolve(&prepared, element, [body_model, &arm_models[0], &arm_models[1]]).map_err(|e| format!("{resource}: {e}"))? else { break };
             if let Some(g) = prepared.player_group(index).map_err(|e| format!("{resource}: {e}"))? {
                 let keys = prepared.decl.scenes[index].groups[g].anim_keys.clone();
                 prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
+            }
+            for (side, clips) in arm_clips.iter_mut().enumerate() {
+                if let Some(g) = prepared.group(index, side + 1).map_err(|e| format!("{resource}: {e}"))? {
+                    let keys = prepared.decl.scenes[index].groups[g].anim_keys.clone();
+                    prepared.arm_clips[side][index] = keys.iter().map(|k| clips.clip(&k.anim)).collect::<Result<_, _>>()?;
+                }
             }
             next = Some(prepared.decl.scenes[index].next).filter(|n| *n != crate::entities::midnight::Next::Final);
         }
         scenes.insert(path.clone(), std::sync::Arc::new(prepared));
     }
+    for (arm, clips) in arms.iter_mut().zip(arm_clips) {
+        arm.animations = clips.animations;
+    }
     let animations = clips.animations;
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.sound_listener = listener.map(|settings| crate::gameplay::sound::listener::Binding::resolve(settings, &rig.skeleton.joint_names));
     body.footstep_settings = decls::footstep_settings(body_decl)?;
     body.arms = arms;
 
@@ -377,8 +397,12 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
     let scene_paths = scene_paths(&states);
+    let listener = crate::entities::player::entity_component(
+        &format!("models/characters/player/{}/body.def", character_name(character)), "cpntaudiolistener",
+        |path| text_of(catalog, path),
+    )?.map(|fields| crate::gameplay::sound::listener::Settings::read(&fields)).transpose()?;
     let (mut body, scenes) =
-        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths)?;
+        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener)?;
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)? + attributes.get("ARK_ATTRIBUTE_HEALTH_MAX");
@@ -934,7 +958,7 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
     let trace = |player: &mut Player, line: &str, t: f32| {
         let eye = player.view().origin;
         println!(
-            "ANIM PROBE {line} t={t:.3}: states={:?} feet={:?} eye-feet={:.3} mode={}/{} pitch={:.3} yaw={:.3} scene={:?}",
+            "ANIM PROBE {line} t={t:.3}: states={:?} feet={:?} eye-feet={:.3} mode={}/{} pitch={:.3} yaw={:.3} scene={:?} arms={}{} hand={:?} catfall_hits={:?} shown={:?} legs={}",
             player.machine.active_states(),
             player.feet(),
             eye.z - player.feet().z,
@@ -943,6 +967,16 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
             player.camera.pitch,
             player.physics.yaw,
             player.body.midnight.playing(),
+            player.body.midnight.drives(1) as u8,
+            player.body.midnight.drives(2) as u8,
+            player.arms().get(1).and_then(|a| a.joints.last()).map(|m| {
+                let d = Vec3::new(m[0][3], m[1][3], m[2][3]) - eye;
+                let axis = player.physics.axis();
+                (d.dot(axis.x_axis), d.dot(axis.y_axis), d.dot(axis.z_axis))
+            }),
+            (player.catfall_sensor.enabled, player.catfall_sensor.left_hit, player.catfall_sensor.right_hit),
+            player.body.arms_shown,
+            player.body.legs_visible,
         );
     };
     let scenario = |label: &str, box_triangles: Vec<[Vec3; 3]>, start: Vec3, seconds: f32, input: &dyn Fn(usize, &Player) -> Vec<ActionEvent>| -> Result<(), String> {

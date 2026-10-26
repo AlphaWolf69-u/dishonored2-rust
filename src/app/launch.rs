@@ -757,6 +757,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(physics)=>{app.insert_resource(physics);},
             Err(error)=>eprintln!("Level physics publication pending: {error}"),
         }
+        app.insert_resource(super::audio::level::LevelAudio::load(catalog, &level.entities,
+            game_base.as_deref().unwrap()).map_err(std::io::Error::other)?);
     }
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(catalog.as_ref().unwrap(),entity_document.as_ref()));
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);

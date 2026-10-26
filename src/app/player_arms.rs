@@ -104,17 +104,30 @@ impl PlayerArms {
 /// keep a zero local value and inherit it through the attachment. The body
 /// model's flags at runtime carried only addAlways (castShadow clear).
 fn arm_model_depth_hack(player_depth_hack: f32) -> (f32, Option<f32>) {
-    let body = render_model::resolve_inherited_model_depth_state(
-        render_model::parent_model_depth_state(None),
-        player_depth_hack,
-        0,
-        0,
-    );
+    let body = body_model_depth_state(player_depth_hack);
     let inherited =
         render_model::parent_model_depth_state(Some((0, Some((0x10, body.depth_hack)))));
     let arm = render_model::resolve_inherited_model_depth_state(inherited, 0.0, 0, 0);
     let (mut flags, mut depth_hack) = (render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC, 0.0);
     let parameter = render_model::publish_model_depth_state(&mut flags, &mut depth_hack, arm);
+    (depth_hack, parameter)
+}
+
+/// The body entity's own model state: r_playerDepthHack set on it.
+fn body_model_depth_state(player_depth_hack: f32) -> render_model::InheritedModelDepthState {
+    render_model::resolve_inherited_model_depth_state(
+        render_model::parent_model_depth_state(None),
+        player_depth_hack,
+        0,
+        0,
+    )
+}
+
+/// The body model's published depth hack and parameter.
+fn body_model_depth_hack(player_depth_hack: f32) -> (f32, Option<f32>) {
+    let body = body_model_depth_state(player_depth_hack);
+    let (mut flags, mut depth_hack) = (render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC, 0.0);
+    let parameter = render_model::publish_model_depth_state(&mut flags, &mut depth_hack, body);
     (depth_hack, parameter)
 }
 
@@ -142,9 +155,17 @@ pub(super) fn load_player_arms(
     let character = character_name(super::pause_menu::debug_character());
     let declarations = entities::player::player_declarations(character, text)?;
     let view = entities::player::player_view_models(&declarations.body, text)?;
-    let (model_depth_hack, parameter) = arm_model_depth_hack(view.depth_hack);
+    // The arm entities and the body entity's own model (drawn only while
+    // the legs are visible).
+    let arm_hack = arm_model_depth_hack(view.depth_hack);
+    let models = view
+        .arms
+        .into_iter()
+        .flatten()
+        .map(|model| (model, arm_hack))
+        .chain(std::iter::once((declarations.body_model.clone(), body_model_depth_hack(view.depth_hack))));
     let mut arms = Vec::new();
-    for model in view.arms.into_iter().flatten() {
+    for (model, (model_depth_hack, parameter)) in models {
         let stem = model
             .strip_suffix(".md6")
             .ok_or_else(|| format!("arm model {model} is not an md6"))?;
@@ -196,7 +217,9 @@ pub(super) fn load_player_arms(
                     surface.material_path
                 ));
             };
-            let influences = resolver.shadow_materials.skin_influences(&resolved.handle);
+            // The surface's vertex declaration fixes its weights per vertex
+            // (decl 9: four, else eight), the stream the skinning reads.
+            let influences = surface.skin_influences;
             let mut mesh =
                 source_mesh(&surface.positions, &surface.uvs, &surface.indices, &surface.packed_channels, false);
             shadow_preparation::skin_surface(

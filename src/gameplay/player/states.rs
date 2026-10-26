@@ -21,7 +21,7 @@ use super::character_proxy::{PlayerWorld, SupportState};
 use crate::gameplay::collision_filter::{layer, QueryFilter};
 use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
-use super::sensors::{AutoCrouchSensor, LeanSensor};
+use super::sensors::{AutoCrouchSensor, CatfallSensor, LeanSensor};
 use super::shape::{POSTURE_AUTOCROUCHING, POSTURE_KEEP_PREVIOUS, POSTURE_SLIDING, POSTURE_SNEAKING, POSTURE_STANDING};
 use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
@@ -203,6 +203,10 @@ impl Default for FallingDecl {
 pub struct CatFallDecl {
     pub low_damage_midnight: Option<String>,
     pub high_damage_midnight: Option<String>,
+    /// m_lowDamageMidnightLeftArm / RightArm and the high-damage pair
+    /// (+0x78 / +0x80, +0xb0 / +0xb8); the sword variants need equipment.
+    pub low_damage_arm_midnights: [Option<String>; 2],
+    pub high_damage_arm_midnights: [Option<String>; 2],
     pub damage_threshold: f32,
     /// m_lookAtParams (degrees: pitch up, down, yaw left, right).
     pub look_at_params: [f32; 4],
@@ -210,7 +214,14 @@ pub struct CatFallDecl {
 
 impl Default for CatFallDecl {
     fn default() -> Self {
-        Self { low_damage_midnight: None, high_damage_midnight: None, damage_threshold: 10.0, look_at_params: [50.0, 0.0, 50.0, 50.0] }
+        Self {
+            low_damage_midnight: None,
+            high_damage_midnight: None,
+            low_damage_arm_midnights: [None, None],
+            high_damage_arm_midnights: [None, None],
+            damage_threshold: 10.0,
+            look_at_params: [50.0, 0.0, 50.0, 50.0],
+        }
     }
 }
 
@@ -595,12 +606,18 @@ pub struct Frame<'a> {
     pub look_stick_sensitivity: [f32; 2],
     pub lean: &'a mut Lean,
     pub lean_sensor: &'a mut LeanSensor,
+    pub catfall_sensor: &'a mut CatfallSensor,
+    /// The arm parts' shown state (FUN_140774a10), left and right.
+    pub arms_shown: &'a mut [bool; 2],
+    /// body+0xc58 m_desiredLegsVisibility.
+    pub desired_legs: &'a mut i32,
     pub jump_anim: &'a mut JumpAnim,
     pub midnight: &'a mut Midnight,
     pub scenes: &'a Scenes,
     /// The player body md6 (CONDMD6 choices).
-    pub md6: &'a str,
-    pub animations: &'a [EdgeAnimation],
+    pub md6: [&'a str; 3],
+    /// The body's and both arms' animations (the midnight cast).
+    pub animations: super::midnight::Cast<'a>,
     pub mantle_sensor: &'a mut MantleSensor,
     pub vault_sensor: &'a mut VaultSensor,
     pub retargeting: &'a mut Option<Retargeting>,
@@ -676,6 +693,8 @@ struct Jump {
 struct Fall {
     accumulated_height: f32,
     last_origin: Vec3,
+    /// +0xa0: CATFALL was requested (its sensor stays on into CatFall).
+    catfall_taken: bool,
 }
 
 /// arkPlayerStateSliding runtime (size 0x108).
@@ -707,7 +726,13 @@ pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
     let mut result = Vec::new();
     for state in states {
         let paths: Vec<&String> = match &state.kind {
-            Kind::CatFall(d) => d.low_damage_midnight.iter().chain(d.high_damage_midnight.iter()).collect(),
+            Kind::CatFall(d) => d
+                .low_damage_midnight
+                .iter()
+                .chain(d.high_damage_midnight.iter())
+                .chain(d.low_damage_arm_midnights.iter().flatten())
+                .chain(d.high_damage_arm_midnights.iter().flatten())
+                .collect(),
             Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
             Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
             _ => Vec::new(),
@@ -1364,19 +1389,46 @@ impl StateMachine {
     fn activate(&mut self, index: usize, slide_speed: Option<f32>, frame: &mut Frame) {
         self.states[index].active = true;
         let decl = self.states[index].decl.clone();
+        // Base Activate FUN_140853d40: a LEGS owner wants the legs shown
+        // (FUN_140774900 +1).
+        if decl.flags.body_parts & LEGS != 0 {
+            *frame.desired_legs += 1;
+        }
         if let Kind::CatFall(catfall) = &decl.kind {
-            // FUN_14085a910 (arms, equipment, the wind blast, fail chance and
+            // FUN_14085a910 (equipment, the wind blast, fail chance and
             // footsteps are not ported).
             self.states[index].damage = slide_speed.unwrap_or(0.0);
             frame.physics.set_posture(POSTURE_LEAN_FORWARD, 0.0);
             frame.camera.constraints = camera::constraints(catfall.look_at_params);
             frame.camera.set_target_mode(MODE_CATFALL, -1.0);
+            // The catfall sensor's hand hits choose the shown hands.
+            let mut shown = [frame.catfall_sensor.left_hit, frame.catfall_sensor.right_hit];
+            frame.catfall_sensor.enable(false);
             let high = self.states[index].damage >= catfall.damage_threshold && catfall.high_damage_midnight.is_some();
-            let scene = if high { catfall.high_damage_midnight.as_ref() } else { catfall.low_damage_midnight.as_ref() };
+            let (scene, arm_scenes) = if high {
+                shown = [true, true];
+                (catfall.high_damage_midnight.as_ref(), &catfall.high_damage_arm_midnights)
+            } else {
+                (catfall.low_damage_midnight.as_ref(), &catfall.low_damage_arm_midnights)
+            };
+            // FUN_140774a10: hide the arms that are not shown.
+            for (side, show) in shown.into_iter().enumerate() {
+                if !show {
+                    frame.arms_shown[side] = false;
+                }
+            }
             frame.follow_slope.midnight_requests += 1;
             let rate = frame.attributes.0.get("ARK_ATTRIBUTE_CATFALL_SPEED_FACTOR").copied().unwrap_or(1.0);
-            // CatFall 14085b400 casts body and both empty arms (mask 7).
-            self.states[index].midnight = Self::play(scene, rate, 7, frame);
+            // FUN_14085b400: with both arm scenes the arms play them (masks 2
+            // and 4) beside the main one (1); otherwise the main one casts
+            // all (7).
+            if arm_scenes[0].is_some() && arm_scenes[1].is_some() {
+                Self::play(arm_scenes[0].as_ref(), rate, 2, frame);
+                Self::play(arm_scenes[1].as_ref(), rate, 4, frame);
+                self.states[index].midnight = Self::play(scene, rate, 1, frame);
+            } else {
+                self.states[index].midnight = Self::play(scene, rate, 7, frame);
+            }
             return;
         }
         if let Kind::Mantle(mantle) = &decl.kind {
@@ -1513,6 +1565,8 @@ impl StateMachine {
             Kind::Falling(falling) => {
                 self.activate_in_air(index, frame);
                 self.states[index].fall.last_origin = frame.origin;
+                self.states[index].fall.catfall_taken = false;
+                frame.catfall_sensor.enable(true);
                 // FUN_140865310: a walk-off fall weighs the camera additive by
                 // its depth below the feet.
                 let in_air = self.states[index].in_air;
@@ -1593,9 +1647,15 @@ impl StateMachine {
     /// Slot 12 Deactivate.
     fn deactivate(&mut self, index: usize, frame: &mut Frame) {
         self.states[index].active = false;
+        // Base Deactivate FUN_1408541a0.
+        if self.states[index].decl.flags.body_parts & LEGS != 0 {
+            *frame.desired_legs -= 1;
+        }
         match self.states[index].decl.kind.clone() {
             Kind::CatFall(_) => {
-                // FUN_14085b1e0 (the scene keeps playing).
+                // FUN_14085b1e0 (the scene keeps playing): show the hidden
+                // arms again.
+                *frame.arms_shown = [true; 2];
                 let crouch = frame.controller.toggled(frame.controller.sneak_action);
                 self.request(if crouch { StateId::SNEAKING } else { StateId::RUNNING });
                 frame.follow_slope.midnight_requests -= 1;
@@ -1670,6 +1730,9 @@ impl StateMachine {
                     frame.jump_anim.end(crouch, false);
                 }
                 frame.physics.ground_query_length = self.states[index].decl.navigation.max_ground_distance;
+                if !self.states[index].fall.catfall_taken {
+                    frame.catfall_sensor.enable(false);
+                }
                 self.states[index].in_air = InAir::default();
             }
             Kind::Sprinting(_) => {
@@ -2447,6 +2510,7 @@ impl StateMachine {
         let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
         self.states[index].fall.accumulated_height = 0.0;
         if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
+            self.states[index].fall.catfall_taken = true;
             self.quit(id);
             self.queue.push(Command::RequestCatFall(damage));
             return;

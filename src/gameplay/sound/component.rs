@@ -38,17 +38,48 @@ impl Startup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupAction { None, Stop, Post }
 
+/// Common ownership and default-slot state of arkCpntAudio. The host audio
+/// backend owns voice storage; this component retains the sound object after
+/// its voices stop, until the component's shutdown releases it (140708620).
+pub struct AudioComponent {
+    pub owner: crate::gameplay::component_state::ComponentOwner,
+    pub startup: Startup,
+    pub allocated: bool,
+    pub started: bool,
+}
+impl Default for AudioComponent {
+    fn default() -> Self {
+        Self { owner: Default::default(), startup: Startup::default(), allocated: false, started: false }
+    }
+}
+impl crate::gameplay::component_state::ComponentInstance for AudioComponent {
+    fn owner(&self) -> &crate::gameplay::component_state::ComponentOwner { &self.owner }
+    fn owner_mut(&mut self) -> &mut crate::gameplay::component_state::ComponentOwner { &mut self.owner }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub dilation_factor: f32,
+    pub occlusion_and_obstruction: bool,
+    pub auxiliary_sends: bool,
+    pub occlusion_at_emitter: bool,
 }
 impl Default for Settings {
-    fn default() -> Self { Self { dilation_factor: 1.0 } } // 14000ce50
+    fn default() -> Self { Self { dilation_factor: 1.0, occlusion_and_obstruction: true,
+        auxiliary_sends: true, occlusion_at_emitter: true } } // 14000ce50 sets all four low flag bits.
 }
 impl Settings {
     /// Reflected at offset 0x6c by 1415536e0.
     pub fn read(fields: &[(String, Value)]) -> Result<Self, String> {
         let mut settings = Self::default();
+        let boolean = |name| match crate::entities::scene_motion::atom(fields, name) {
+            None | Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            _ => Err(format!("invalid audio {name}")),
+        };
+        settings.occlusion_and_obstruction = boolean("m_enableOcclusionAndObstruction")?;
+        settings.auxiliary_sends = boolean("m_enableAuxiliarySends")?;
+        settings.occlusion_at_emitter = boolean("m_enableOcclusionAtEmitterPos")?;
         if let Some(value) = crate::entities::scene_motion::atom(fields, "m_dilationFactor") {
             settings.dilation_factor = value.parse::<f32>().map_err(|error| format!("audio dilation factor: {error}"))?;
             if !settings.dilation_factor.is_finite() { return Err("non-finite audio dilation factor".into()); }
@@ -57,4 +88,10 @@ impl Settings {
     }
 
     pub fn rate(self, clock_rate: f32) -> f32 { clock_rate * self.dilation_factor }
+
+    /// 140708340 applies declaration flags through 1400c3b40/1400c3b70.
+    /// The two scales are independent: one affects propagation path scoring,
+    /// the other scales the levels eventually submitted to Wwise.
+    pub fn source_occlusion_scale(self) -> f32 { if self.occlusion_at_emitter { 1.0 } else { 0.0 } }
+    pub fn level_scale(self) -> f32 { if self.occlusion_and_obstruction { 1.0 } else { 0.0 } }
 }

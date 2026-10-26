@@ -4,6 +4,39 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--container-playback" {
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, TransitionMode}};
+        let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
+        let mut paths = if path.is_dir() {
+            std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
+                .into_iter().filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck"))).collect()
+        } else { vec![path] };
+        paths.sort();
+        let mut totals = BTreeMap::<String, usize>::new();
+        for path in paths {
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
+                let bytes = package.read_entry(&mut file, *entry)?;
+                for (_, settings) in bank_play_settings(&bytes)? {
+                    *totals.entry("Play actions".into()).or_default() += 1;
+                    for (name, present) in [
+                        ("Play actions with a fade", settings.transition.milliseconds != 0 || settings.transition.modifiers != [0; 2]),
+                        ("Play actions with a delay", settings.delay.frames != 0 || settings.delay.modifiers != [0; 2]),
+                        ("Play actions with probability", settings.probability.is_some()),
+                    ] { if present { *totals.entry(name.into()).or_default() += 1; } }
+                }
+                for (id, settings) in bank_container_playback(&bytes)? {
+                    *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
+                    if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                        println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
+                    }
+                }
+            }
+        }
+        for (kind, count) in totals { println!("{kind}: {count}"); }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--level-acoustics" {
         use dishonored2_rust::assets::{archive::Catalog, installation, level::{LevelResources, DEFAULT_LEVEL}, sound_propagation::Propagation};
         let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
@@ -39,6 +72,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("authored player start {:?}: acoustic zone {:?}", player.position, listener_zone);
             if inspect_audio {
                 use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
+                use dishonored2_rust::gameplay::sound::auxiliary;
+                let auxiliary_buses = auxiliary::Buses::load(&world.graph, |path| {
+                    catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+                })?;
+                let detail = dishonored2_rust::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
+                    .ok_or("environmental audio detail cvar is absent")?;
                 let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
                     catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
                 })?;
@@ -46,6 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut admitted = 0usize;
                 let mut active = 0usize;
                 let mut projected = 0usize;
+                let mut mixable = 0usize;
                 for binding in bindings {
                     let startup = binding.startup();
                     if !startup.deferred { continue; }
@@ -59,12 +99,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     admitted += 1;
                     let result = paths::evaluate(&world.graph, &paths::Query {
                         source: query.source, listener: query.listener, source_zone, listener_zone,
-                        range: query.range, propagation: query.propagation, reflection_normal: None, source_obstruction_scale: 1.0,
+                        range: query.range, propagation: query.propagation, reflection_normal: None,
+                        source_occlusion_scale: binding.settings.source_occlusion_scale(),
                     })?;
                     active += usize::from(result.closest.is_some());
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
                         binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
                     let closest = result.closest.and_then(|index| result.paths.get(index));
+                    let sends = auxiliary::project(&world.graph, closest, binding.settings.auxiliary_sends,
+                        detail, |name| auxiliary_buses.resolve(name))?;
+                    println!("  environmental sends: {sends:?}");
                     match dishonored2_rust::gameplay::sound::positions::project(
                         &[&result], closest, query.range, binding.frame.basis[0].into(),
                     ) {
@@ -74,9 +118,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                         Err(error) => println!("  playback position projection unresolved: {error}"),
                     }
+                    match dishonored2_rust::gameplay::sound::positions::for_mixing(
+                        &[&result], closest, query.range, binding.frame.basis[0].into(),
+                    ) {
+                        Ok(positions) => {
+                            mixable += 1;
+                            println!("  mode-2 mixing positions: {positions:?}");
+                        }
+                        Err(error) => println!("  mode-2 mixing unresolved: {error}"),
+                    }
                 }
                 println!("{deferred} declared deferred loops, {admitted} admitted origins, {active} audible active results at player start");
                 println!("{projected} emitter position lists resolved from authored acoustic paths");
+                println!("{mixable} emitter position lists resolved for mode-2 mixing");
             }
             world.release()?;
         }
@@ -94,9 +148,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?;
         println!("{}: {} audio components", level.entities, bindings.len());
         for binding in bindings {
-            println!("entity={} slot={} spawn={} phases={:#x} propagation={} dilation={} startup={:?}",
+            println!("entity={} slot={} spawn={} phases={:#x} propagation={} settings={:?} startup={:?}",
                 binding.entity_id, binding.slot, binding.scheduling.starts_on_spawn(), binding.scheduling.start_phases,
-                binding.propagation, binding.settings.dilation_factor, binding.startup());
+                binding.propagation, binding.settings, binding.startup());
             for event in binding.events.iter().flatten() {
                 println!("  event={:#010x} loop={} spatial={} range={} duration={:?} game_properties={:?}",
                     event.id, event.persistent_loop(), event.spatialized, event.max_distance, event.duration, event.game_properties);
@@ -128,16 +182,69 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            println!("primary output bus: {:x?}", mix.primary_bus);
+            let mut reflection_indices = std::collections::BTreeSet::new();
+            for effect in &mix.effects {
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    if parameters.early_reflections { reflection_indices.insert(parameters.early_pattern); }
+                }
+            }
+            let reflection_patterns = if reflection_indices.is_empty() { None } else {
+                Some(dishonored2_rust::assets::sound_effects::ReflectionPatterns::load(
+                    &dishonored2_rust::assets::installation::game_base()?, reflection_indices)?)
+            };
+            let matrix_delays = if mix.effects.iter().any(|effect| effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN) {
+                Some(dishonored2_rust::assets::sound_effects::matrix_delays(&dishonored2_rust::assets::installation::game_base()?)?)
+            } else { None };
+            mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
+            for effect in &mix.effects {
+                println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
+                    effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
+                if effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::matrix_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  matrix reverb: {parameters:?}");
+                    let lengths = parameters.delay_lengths(48000, matrix_delays.as_ref().ok_or("matrix reverb delay table was not loaded")?)?;
+                    println!("  matrix delay lengths at 48 kHz: {lengths:?}, damping={:?}", parameters.damping(&lengths, 48000)?);
+                }
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  room reverb: {parameters:?}");
+                    if parameters.early_reflections {
+                        let pattern = reflection_patterns.as_ref().ok_or("room reflection patterns were not loaded")?.get(parameters.early_pattern)?;
+                        println!("  early pattern={} left_taps={} right_taps={} first_ms={:?}",
+                            parameters.early_pattern, pattern.left.len(), pattern.right.len(),
+                            [pattern.left[0].milliseconds, pattern.right[0].milliseconds]);
+                    }
+                }
+            }
+            for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
+                for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
+                    println!("  {group} {property}: enabled={} scaling={} points={:?}", curve.enabled, curve.scaling, curve.points);
+                }
+            }
             let mut parameters = mix.parameters.iter().collect::<Vec<_>>();
             parameters.sort_by_key(|(id, _)| **id);
             for (id, value) in parameters { println!("parameter={id:#010x} default={value}"); }
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                println!("  settings: {:?}", bus.bus_settings);
+                if !bus.effects.slots.is_empty() { println!("  effects: {:?}", bus.effects); }
                 for curve in &bus.curves {
                     println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
                         curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
                 }
+            }
+            let mixer = dishonored2_rust::gameplay::sound::mix::Mixer::from(mix);
+            let tables = dishonored2_rust::gameplay::sound::bus_effects::EffectTables::load(
+                &mixer, &dishonored2_rust::assets::installation::game_base()?)?;
+            for &id in &mixer.bus_order {
+                if !mixer.bus_mixes(id)? { continue; }
+                let bus = mixer.buses.get(&id).ok_or("missing mixing bus")?;
+                let effects = dishonored2_rust::gameplay::sound::bus_effects::BusEffects::new(bus, &mixer, &tables, 48000, 3,
+                    bus.bus_settings.as_ref().ok_or("missing bus settings")?.auxiliary)?;
+                println!("prepared stereo mixing bus {id:#010x}: {} effect slots, output_db={}", effects.slot_count(), mixer.bus_output_db(id)?);
             }
         }
         return Ok(());
@@ -273,9 +380,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event") {
+    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node") {
         let playback = first.to_string_lossy() == "--playback-event";
-        let id = arguments.next().ok_or("missing event ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+        let actor = first.to_string_lossy() == "--playback-node";
+        let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
         let id = u32::from_str_radix(&id, 16)?;
         let directory = match arguments.next() {
             Some(path) => PathBuf::from(path),
@@ -295,67 +403,79 @@ fn main() -> Result<(), Box<dyn Error>> {
             .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
             .collect::<Vec<_>>();
         paths.sort();
-        let mut found = false;
+        let mut library = dishonored2_rust::assets::wwise::PlaybackBanks::default();
+        let mut owners = Vec::new();
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let audio_language = dishonored2_rust::assets::lang::read_audio_language(&base)?;
+        let package_language = dishonored2_rust::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
+        println!("Audio language: {audio_language} ({package_language})");
         for path in paths {
-            let Ok(package) = Package::open(&path) else { continue };
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
-                let mut file = File::open(&path)?;
-                let bank = package.read_entry(&mut file, entry)?;
-                if !dishonored2_rust::assets::wwise::bank_event_ids(&bank)?.contains(&id) { continue; }
-                found = true;
-                if playback {
-                    let actions = dishonored2_rust::assets::wwise::event_playback_with(&bank, id, |media_id| {
-                        let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
-                        package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    println!("{} bank={:#x}", path.display(), entry.id);
-                    for action in actions.into_iter().flatten() {
-                        use dishonored2_rust::assets::wwise::PlaybackCommand;
-                        match action {
-                            PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            PlaybackCommand::Play { target, node } => {
-                                println!("  Play target={target:#010x}");
-                                print_playback(&node, 2)?;
-                            },
-                        }
-                    }
-                    continue;
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            let language = package.language_id(package_language);
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
+                library.insert(package.read_entry(&mut file, entry)?.into())?;
+                owners.push((path.clone(), package.clone(), entry));
+            }
+        }
+        println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
+        println!("Loaded reference ownership: {:?}", library.references()?);
+        if !actor && library.event_ids().binary_search(&id).is_err() {
+            println!("event {id:#010x} is not present in the selected installed banks");
+            return Ok(());
+        }
+        let mut files = std::collections::HashMap::<usize, File>::new();
+        let media = |owner: usize, media_id| {
+            let (path, package, entry) = &owners[owner];
+            let Some(media) = package.media_file(u64::from(media_id), entry.language_id) else { return Ok(None); };
+            let file = match files.entry(owner) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(File::open(path)?),
+            };
+            println!("media {media_id:#010x}: {} bank={:#010x}", path.display(), entry.id);
+            package.read_entry(file, media).map(Some)
+        };
+        if actor {
+            if let Some(node) = library.actor_playback(id, media)? {
+                print_playback(&node, 0, &mixer, None)?;
+            } else { println!("actor {id:#010x} is not available for playback"); }
+            return Ok(());
+        }
+        let actions = library.event_playback(id, media)?;
+        let Some(actions) = actions else {
+            println!("event {id:#010x} has no supported Wwise actions");
+            return Ok(());
+        };
+        if playback {
+            for action in actions {
+                use dishonored2_rust::assets::wwise::PlaybackCommand;
+                match action {
+                    PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    PlaybackCommand::Play { target, settings, node } => {
+                        println!("  Play target={target:#010x}, {settings:?}");
+                        print_playback(&node, 2, &mixer, None)?;
+                    },
                 }
-                let actions = dishonored2_rust::assets::wwise::event_commands_with(&bank, id, |media_id| {
-                    let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
-                    package.read_entry(&mut file, media).map(Some)
-                })?;
-                println!("{} bank={:#x}", path.display(), entry.id);
-                match actions {
-                    Some(actions) => for action in actions {
-                        match action {
-                            dishonored2_rust::assets::wwise::EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            dishonored2_rust::assets::wwise::EventCommand::Play { target, groups } => {
-                                println!("  Play target={target:#010x}");
-                                for (group_index, group) in groups.iter().enumerate() {
-                                    for (variant_index, variant) in group.variants.iter().enumerate() {
-                                        println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
-                                            variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
-                                        match dishonored2_rust::assets::wwise::decode_wem_pcm(&variant.media) {
-                                            Ok(audio) => println!("      decoded {} samples, {} channels at {} Hz", audio.samples.len(), audio.channels, audio.sample_rate),
-                                            Err(error) => {
-                                                println!("      decoding error: {error}");
-                                                if let Ok(encoded) = dishonored2_rust::assets::wwise::decode_wem(&variant.media) {
-                                                    println!("      converted header: {:02x?}", &encoded[..encoded.len().min(64)]);
-                                                }
-                                                println!("      WEM header: {:02x?}", &variant.media[..variant.media.len().min(96)]);
-                                            },
-                                        }
-                                    }
-                                }
+            }
+        } else {
+            for action in dishonored2_rust::assets::wwise::flatten_playback_actions(actions)? {
+                use dishonored2_rust::assets::wwise::EventCommand;
+                match action {
+                    EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    EventCommand::Play { target, settings, groups } => {
+                        println!("  Play target={target:#010x}, {settings:?}");
+                        for (group_index, group) in groups.iter().enumerate() {
+                            for (variant_index, variant) in group.variants.iter().enumerate() {
+                                println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes",
+                                    group.mode, variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
+                                let audio = dishonored2_rust::assets::wwise::decode_wem_pcm(&variant.media)?;
+                                println!("      decoded {} samples, {} channels at {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
                             }
                         }
                     },
-                    None => println!("  event has no supported Wwise actions"),
                 }
             }
         }
-        if !found { println!("event {id:#010x} is not present in installed language-neutral banks"); }
         return Ok(());
     }
     let (summary_only, object_filter, resolve_events, path) = match first.to_string_lossy().as_ref() {
@@ -419,16 +539,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize) -> Result<(), Box<dyn Error>> {
+fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
+    mixer: &dishonored2_rust::gameplay::sound::mix::Mixer,
+    continuation: Option<(u32, &dishonored2_rust::assets::wwise::ContainerPlayback)>) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+            let source = dishonored2_rust::gameplay::sound::looping::SourceLoop::new(audio.loop_points,
+                audio.samples.len() / usize::from(audio.channels), loops.count as u16)?;
+            println!("{indent}  Authored decoder duration before random loop modifiers/pitch: {} ms (0 = infinite)",
+                source.duration_ms(audio.sample_rate));
+            if let Some((owner, settings)) = continuation {
+                use dishonored2_rust::gameplay::sound::{containers::timing, resampler::pitch_ratio};
+                let duration = source.duration_ms(audio.sample_rate)
+                    / pitch_ratio(mixer.source_property(&variant.properties, 2, None)?);
+                if let Some(plan) = timing::crossfade(settings.transition, duration, settings.transition_ms, 48000) {
+                    println!("{indent}  Crossfade if container {owner:#010x} continues, before random modifiers/transition RTPC: {plan:?}");
+                }
+            }
+            let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
+            println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
+                dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
             for properties in &variant.properties.nodes {
+                println!("{indent}  Node {:#010x} auxiliary_flags={:#x} buses={:x?}",
+                    properties.id, properties.auxiliary_flags, properties.auxiliary_buses);
                 for curve in &properties.curves {
                     println!("{indent}  Node {:#010x} RTPC={:#010x} property={} kind={} accumulation={} scaling={} points={:?}",
                         properties.id, curve.parameter, curve.property, curve.kind, curve.accumulation, curve.scaling, curve.points);
@@ -448,16 +588,20 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                 }
             }
         },
-        PlaybackNode::Layer { node, children } => {
+        PlaybackNode::Layer { node, children, .. } => {
             println!("{indent}Layer {node:#010x}");
-            for child in children { print_playback(child, depth + 1)?; }
+            // 14112f0a0 does not schedule an outer early crossfade through
+            // a parallel group; its last branch releases that continuation.
+            let continuation = if children.len() == 1 { continuation } else { None };
+            for child in children { print_playback(child, depth + 1, mixer, continuation)?; }
         },
         PlaybackNode::Container(container) => {
             println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
                 container.node, container.mode, container.global, container.reset_each_play, container.avoid_repeat, container.playback);
             for (child, weight) in &container.children {
                 println!("{indent}  weight={weight}");
-                print_playback(child, depth + 2)?;
+                let continuation = if container.playback.continuous { Some((container.node, &container.playback)) } else { continuation };
+                print_playback(child, depth + 2, mixer, continuation)?;
             }
         },
     }
