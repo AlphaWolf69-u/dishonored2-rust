@@ -1,5 +1,5 @@
 use crate::{
-    core_3d::Opaque3d,
+    core_3d::{Opaque3d, ViewSssSurfaceTexture},
     skybox::{SkyboxBindGroup, SkyboxPipelineId},
 };
 use bevy_camera::{MainPassResolutionOverride, Viewport};
@@ -29,6 +29,7 @@ pub fn main_opaque_pass_3d(
         Option<&SkyboxBindGroup>,
         &ViewUniformOffset,
         Option<&MainPassResolutionOverride>,
+        Option<&ViewSssSurfaceTexture>,
     )>,
     opaque_phases: Res<ViewBinnedRenderPhases<Opaque3d>>,
     alpha_mask_phases: Res<ViewBinnedRenderPhases<AlphaMask3d>>,
@@ -46,6 +47,7 @@ pub fn main_opaque_pass_3d(
         skybox_bind_group,
         view_uniform_offset,
         resolution_override,
+        sss_surface,
     ) = view.into_inner();
 
     let (Some(opaque_phase), Some(alpha_mask_phase)) = (
@@ -61,7 +63,33 @@ pub fn main_opaque_pass_3d(
     let diagnostics = ctx.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
 
-    let mut color_attachments = [Some(target.get_color_attachment())];
+    let mut color_attachments = vec![Some(target.get_color_attachment())];
+    // DH2: opaque mesh pipelines carry sssBuffer and sssSurface targets on
+    // single-sample views (see bevy_pbr MeshPipeline::specialize).
+    if let Some(sss_surface) = sss_surface
+        && depth.texture.sample_count() == 1
+    {
+        color_attachments.push(Some(bevy_render::render_resource::RenderPassColorAttachment {
+            view: target.main_texture_other_view(),
+            depth_slice: None,
+            resolve_target: None,
+            ops: bevy_render::render_resource::Operations {
+                load: bevy_render::render_resource::LoadOp::Load,
+                store: StoreOp::Store,
+            },
+        }));
+        color_attachments.push(Some(bevy_render::render_resource::RenderPassColorAttachment {
+            view: &sss_surface.texture.default_view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: bevy_render::render_resource::Operations {
+                load: bevy_render::render_resource::LoadOp::Clear(
+                    bevy_color::LinearRgba::new(0.0, 0.0, 0.0, -1.0).into(),
+                ),
+                store: StoreOp::Store,
+            },
+        }));
+    }
     let mut depth_stencil_attachment = Some(depth.get_attachment(StoreOp::Store));
 
     if let Some(chunk_size) = world.get_resource::<bevy_render::render_phase::CameraDrawChunking>()

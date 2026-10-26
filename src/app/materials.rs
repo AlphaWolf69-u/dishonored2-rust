@@ -128,6 +128,18 @@ pub(super) struct ProbeExtension {
     pub(super) vegetation_slots: Handle<ShaderBuffer>,
     #[storage(169, read_only)]
     pub(super) vegetation_instances: Handle<ShaderBuffer>,
+    /// arkSSSRender images: SSS/SkinFresnelLookup, diffuseLookup, SSS/Mask,
+    /// fuzz/mask (roles 34..37).
+    #[texture(170)]
+    pub(super) skin_fresnel_lookup: Option<Handle<Image>>,
+    #[texture(171)]
+    pub(super) diffuse_lookup: Option<Handle<Image>>,
+    #[texture(172)]
+    pub(super) sss_mask: Option<Handle<Image>>,
+    #[texture(173)]
+    pub(super) fuzz_mask: Option<Handle<Image>>,
+    #[texture(174)]
+    pub(super) translucency_mask: Option<Handle<Image>>,
 }
 
 // Original common vertex shader transforms N/T/B independently with the
@@ -263,6 +275,26 @@ pub(super) fn specialize_surface(
     }
 }
 
+/// arkSSSRender writes its specular to hdrBuffer and its diffuse irradiance
+/// to sssBuffer (FUN_140311aa0 binds both for the sssSurf list), and the
+/// main colour pass carries both targets plus the host's sssSurface target.
+/// Only skin programs unmask them; other opaque programs leave them as is.
+fn specialize_skin(descriptor: &mut RenderPipelineDescriptor, key: surface_gpu::SurfaceKey) {
+    if key.0[6] != 11 {
+        return;
+    }
+    let Some(fragment) = descriptor.fragment.as_mut() else {
+        return;
+    };
+    fragment.shader_defs.push("DH2_SKIN".into());
+    if fragment.targets.len() == 3 {
+        fragment.shader_defs.push("DH2_SSS_TARGETS".into());
+        for target in fragment.targets[1..].iter_mut().flatten() {
+            target.write_mask = bevy::render::render_resource::ColorWrites::ALL;
+        }
+    }
+}
+
 pub(super) fn authored_basis_pipeline(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
@@ -295,7 +327,7 @@ pub(super) fn specialize_vertex_lighting(
     layout: &MeshVertexBufferLayoutRef,
     key: surface_gpu::SurfaceKey,
 ) {
-    let lighting = matches!(key.0[6], 1 | 2 | 6)
+    let lighting = matches!(key.0[6], 1 | 2 | 6 | 11)
         && layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
         && layout.0.contains(Mesh::ATTRIBUTE_TANGENT)
         && descriptor.fragment.as_ref().is_some_and(|fragment| {
@@ -354,6 +386,7 @@ impl MaterialExtension for ProbeExtension {
         }
         specialize_vertex_lighting(descriptor, layout, key.bind_group_data);
         specialize_surface(descriptor, key.bind_group_data);
+        specialize_skin(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)?;
         specialize_model_depth_hack(descriptor, layout)?;
         crate::rendering::bevy_backend::vegetation_wind::specialize(
@@ -493,7 +526,7 @@ pub(super) trait ImageAccess {
     fn image_mut(&mut self, role: surface_gpu::ImageRole) -> &mut Option<Handle<Image>>;
 }
 macro_rules! image_access {
-    ($ty:ty) => {
+    ($ty:ty $(, $role:literal => $field:ident)*) => {
         impl ImageAccess for $ty {
             fn image_mut(&mut self, role: surface_gpu::ImageRole) -> &mut Option<Handle<Image>> {
                 match role.0 {
@@ -528,13 +561,14 @@ macro_rules! image_access {
                     29 => &mut self.cloud_opacity,
                     30 => &mut self.cloud_density,
                     31 => &mut self.cloud_back_density,
+                    $($role => &mut self.$field,)*
                     _ => panic!("invalid authored image role"),
                 }
             }
         }
     };
 }
-image_access!(ProbeExtension);
+image_access!(ProbeExtension, 34 => skin_fresnel_lookup, 35 => diffuse_lookup, 36 => sss_mask, 37 => fuzz_mask, 38 => translucency_mask);
 image_access!(DecalExtension);
 
 pub(super) trait ShadowImageAccess {

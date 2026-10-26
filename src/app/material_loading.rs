@@ -891,7 +891,7 @@ impl MaterialResolver<'_> {
             MaterialGeometry::Model => 1,
         }];
         let mut fog_flags = 0;
-        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6) {
+        if !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11) {
             let receiver = (|| -> Result<UVec4, String> {
                 let source = resolve_shadow_source_inputs(
                     self.programs.as_deref_mut(),
@@ -940,6 +940,48 @@ impl MaterialResolver<'_> {
                 Ok(value) => uniform.shadow = value,
                 Err(error) => {
                     eprintln!("Forward shadow receiver unavailable for {path}: {error}")
+                }
+            }
+        }
+        if surface.program() == material_surface::Program::Skin {
+            // arkSSSRender's compile switches resolve through the program's
+            // own options block (it defaults hasBumpMap to 1) and the
+            // registered renderParm defaults, like every other program option.
+            let options = (|| -> Result<[u32; 5], String> {
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let main = surface.main_program.as_deref().ok_or("skin MAIN is absent")?;
+                let overrides = material_option_overrides(library, bytes)?;
+                let mut option =
+                    |name: &[u8]| library.option_value(main.as_bytes(), &overrides, name);
+                Ok([
+                    u32::from(option(b"SSS/useSecondarySpecular")? != 0),
+                    u32::from(option(b"fuzz/enable")? != 0),
+                    u32::from(option(b"hasBumpMap")? != 0),
+                    u32::from(option(b"translucency_hq/enable")? != 0),
+                    u32::from(option(b"translucency/hasMask")? != 0),
+                ])
+            })();
+            match options {
+                Ok([secondary, fuzz, bump, translucency, translucency_mask]) => {
+                    uniform.skin_flags.x = secondary;
+                    uniform.skin_flags.y = fuzz;
+                    uniform.misc.x = bump;
+                    uniform.skin_flags.w |= (translucency << 3) | (translucency_mask << 4);
+                    if translucency != 0 {
+                        // BRDF_skin's per-light SSSTransmittance (shadow-map
+                        // thickness through GetShadowMapZandPos) is not ported;
+                        // its ambient normal bend is.
+                        eprintln!("Skin translucency_hq transmittance unported: {path}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Skin program options unavailable {path}: {error}");
+                    return None;
                 }
             }
         }
@@ -1049,7 +1091,7 @@ impl MaterialResolver<'_> {
             cull_mode,
             ..default()
         };
-        let vertex_lighting = !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6);
+        let vertex_lighting = !boat_volume && matches!(uniform.misc.z, 1 | 2 | 6 | 11);
         let handle = if surface.program() == material_surface::Program::InteriorVolume {
             MaterialHandle::Interior(path.into())
         } else if boat_volume || surface.program() == material_surface::Program::BoatVolume {
@@ -1247,6 +1289,11 @@ impl MaterialResolver<'_> {
                     linear_clamp_image: Some(self.linear_clamp_image.clone()),
                     vegetation_slots: self.vegetation.slots.clone(),
                     vegetation_instances: self.vegetation.instances.clone(),
+                    skin_fresnel_lookup: None,
+                    diffuse_lookup: None,
+                    sss_mask: None,
+                    fuzz_mask: None,
+                    translucency_mask: None,
                 },
             }))
         };

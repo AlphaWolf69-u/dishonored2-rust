@@ -213,6 +213,7 @@ pub(super) fn stream_visible_models(
     view_settings: Option<Res<ViewSettings>>,
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
+    arms: Option<Res<super::player_arms::PlayerArms>>,
 ) {
     let started = Instant::now();
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
@@ -386,6 +387,15 @@ pub(super) fn stream_visible_models(
                                     &scene.material_images,
                                 )
                                 .map(|_| ())
+                        })
+                        .and_then(|()| {
+                            arms.as_deref().map_or(Ok(()), |arms| {
+                                arms.submit_texture_demands(
+                                    output.state.as_ref(),
+                                    &scene.material_images,
+                                    &scene.diffuse_image_demands,
+                                )
+                            })
                         })
                         .and_then(|()| {
                             let _span = profile.as_deref().map(|p| p.measure(48));

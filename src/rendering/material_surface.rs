@@ -77,6 +77,8 @@ pub struct SkinInputs {
     pub skin_fresnel_lookup: Option<String>,
     pub diffuse_lookup: Option<String>,
     pub fuzz_mask: Option<String>,
+    /// translucency/mask: BRDF_skin's surf.translucency.
+    pub translucency_mask: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +359,9 @@ impl Surface {
                     .then(|| image(&v, "diffuselookup").unwrap_or_else(|| "_default".into())),
                 fuzz_mask: (number(&v, "fuzz/enable", 0) != 0 && number(&v, "fuzz/hasmask", 0) != 0)
                     .then(|| image(&v, "fuzz/mask").unwrap_or_else(|| "_default".into())),
+                translucency_mask: (number(&v, "translucency_hq/enable", 0) != 0
+                    && number(&v, "translucency/hasmask", 0) != 0)
+                    .then(|| image(&v, "translucency/mask").unwrap_or_else(|| "_default".into())),
             },
         }
     }
@@ -469,6 +474,7 @@ impl Surface {
                 (35, &self.skin.diffuse_lookup),
                 (36, &self.skin.sss_mask),
                 (37, &self.skin.fuzz_mask),
+                (38, &self.skin.translucency_mask),
             ] {
                 if let Some(name) = name {
                     bindings.push((role, name.as_str()));
@@ -665,6 +671,36 @@ mod tests {
             Surface::parse(b"mainProgram arkVegetation\n").program(),
             Program::Vegetation
         );
+    }
+
+    #[test]
+    fn arksssrender_reads_skin_inputs_and_lookup_roles() {
+        // Shape of the installed player_corvo_hands material.
+        let s = Surface::parse(
+            b"hasglossmap 1
+hasdiffuselookup 1
+sss/hasskinfresnellookup 1
+mainProgram arksssrender
+              glossmap g.tga
+sss/skinfresnellookup f.tga
+diffuselookup d.tga
+              wardRoughness { 0, 0.9, 0, 0 }
+wardroughness2 { 0.1, 1, 0, 0 }
+              sss/scale { 0.0008, 0.001, 0.001, 0.001 }
+sss/tweakspecularintensity { 0.4, 0.3, 0.2, 0.5 }
+              fuzz/intensity { 0.02, 0.25, 0.25, 0.25 }
+",
+        );
+        assert_eq!(s.program(), Program::Skin);
+        assert_eq!(s.skin.ward2, [0.1, 1.0]);
+        // Registered wardRoughness3 / fuzz/fresnel defaults.
+        assert_eq!(s.skin.ward3, [0.0, 0.5]);
+        assert_eq!(s.skin.fuzz, [0.02, 5.0]);
+        assert_eq!(s.skin.scale, 0.0008);
+        assert_eq!(s.skin.tweak_specular, [0.4, 0.3, 0.2, 0.5]);
+        let roles: Vec<usize> = s.texture_bindings(false).into_iter().map(|(role, _)| role).collect();
+        assert!(roles.contains(&34) && roles.contains(&35) && !roles.contains(&36));
+        assert_eq!(Surface::parse(b"").skin.tweak_specular, [0.6, 0.4, 1.0, 0.2]);
     }
 
     #[test]

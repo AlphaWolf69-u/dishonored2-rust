@@ -67,3 +67,13 @@ fn parallel_depth_visibility(viewer_position: vec3<f32>, viewer_vertex_normal: v
     }
     return visibility;
 }
+
+// BRDF_skin's directional `GetFastCloudShadowing( _Surface.wsPositionHacked )`,
+// applied in the BRDF on top of the light's shadow term.
+fn parallel_cloud_shadowing(viewer_position: vec3<f32>) -> f32 {
+    if parallel.config.x == 0u || parallel.cloud_density.w == 0.0 { return 1.0; }
+    let position = vec3(viewer_position.x, -viewer_position.z, viewer_position.y);
+    return fast_cloud_shadowing(position, parallel.sun_direction.xyz,
+        parallel.camera_time.w, parallel.cloud_motion, parallel.cloud_density,
+        cloud, cloud_sampler);
+}

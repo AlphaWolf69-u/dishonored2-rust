@@ -130,6 +130,7 @@ impl Plugin for FogPlugin {
             FogCamera,
         >::default());
         super::fog_scene::register(app);
+        super::sss_blur::register(app);
         super::fog_capture::register(app);
         app.init_asset::<super::sky_mask::SkyMaterial>();
         app.add_plugins(bevy::render::render_asset::RenderAssetPlugin::<

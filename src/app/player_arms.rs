@@ -43,6 +43,8 @@ struct ArmModel {
     surfaces: Vec<ArmSurface>,
     lighting: crate::probe_lighting::ProbeQuery,
     shown: bool,
+    /// Current world bounds (model vtable+88), while shown.
+    world_bounds: Option<[[f32; 3]; 2]>,
 }
 
 #[derive(Resource)]
@@ -50,9 +52,10 @@ pub(super) struct PlayerArms {
     /// r_playerDepthHack after the body component's start.
     pub(super) player_depth_hack: f32,
     arms: Vec<ArmModel>,
-    /// `DH2_DEBUG_REST_ARMS=1`: draw the arm skeletons' rest pose in front
-    /// of the camera instead of `Player::arms()` (a diagnostic only).
-    debug_rest: bool,
+    /// `DH2_DEBUG_REST_ARMS=1`: draw the arm skeletons' rest pose 0.5 m in
+    /// front of the camera instead of `Player::arms()`; another number sets
+    /// that distance in metres (a diagnostic only).
+    debug_rest: Option<f32>,
 }
 
 impl PlayerArms {
@@ -63,6 +66,36 @@ impl PlayerArms {
             .iter()
             .filter(|arm| arm.shown)
             .flat_map(|arm| arm.surfaces.iter().map(|part| &part.material))
+    }
+}
+
+impl PlayerArms {
+    /// FUN_14031ad30 (dynamic model gather) gives every drawn model's
+    /// material images its FUN_140a764c0 flag-0 area for the model's current
+    /// world bounds (1.0 when the query leaves it untouched), through
+    /// FUN_14031a510 -> FUN_14031a410's maximum. The arms are dynamic render
+    /// models, so their images stream by their own projected area.
+    pub(super) fn submit_texture_demands(
+        &self,
+        state: Option<&crate::visibility::tome::RenderQueryState>,
+        bindings: &std::collections::HashMap<MaterialHandle, Vec<usize>>,
+        demands: &[crate::texture::ProjectedAreaDemand],
+    ) -> Result<(), String> {
+        for arm in self.arms.iter().filter(|arm| arm.shown) {
+            let Some(bounds) = arm.world_bounds else { continue };
+            let (_, area) =
+                crate::visibility::tome::render_query_aabb_visibility_without_depth(state, bounds)?;
+            let area = area.unwrap_or(1.0);
+            for part in &arm.surfaces {
+                for &slot in bindings.get(&part.material).into_iter().flatten() {
+                    demands
+                        .get(slot)
+                        .ok_or("arm material references an unknown image")?
+                        .submit(area);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -216,24 +249,27 @@ pub(super) fn load_player_arms(
             surfaces,
             lighting: Default::default(),
             shown: false,
+            world_bounds: None,
         });
     }
     Ok(PlayerArms {
         player_depth_hack: view.depth_hack,
         arms,
-        debug_rest: std::env::var("DH2_DEBUG_REST_ARMS").as_deref() == Ok("1"),
+        debug_rest: std::env::var("DH2_DEBUG_REST_ARMS").ok().and_then(|value| {
+            if value == "1" { Some(0.5) } else { value.parse().ok() }
+        }),
     })
 }
 
 /// The rest pose with the arm entity frame placed in front of the camera,
 /// oriented like the body's spine03 rest frame (local x left, y up, z
 /// forward). Diagnostic geometry only.
-fn debug_rest_arms(arms: &PlayerArms, camera: &Transform) -> Vec<ArmRender> {
+fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<ArmRender> {
     let direction = |v: Vec3| Vec3::from_array(view_to_game(v));
     let forward = direction(*camera.forward());
     let up = direction(*camera.up());
     let left = -direction(*camera.right());
-    let origin = Vec3::from_array(view_to_game(camera.translation)) + forward * 0.5 - up * 0.15;
+    let origin = Vec3::from_array(view_to_game(camera.translation)) + forward * distance - up * 0.15;
     let rotation = Quat::from_mat3(&Mat3::from_cols(left, up, forward));
     let root = edge_skeleton::JointRestPose {
         rotation: rotation.to_array(),
@@ -280,9 +316,9 @@ pub(super) fn update_player_arms(
     mut last_error: Local<Option<String>>,
 ) {
     let Some(mut arms) = arms else { return };
-    let renders: Cow<[ArmRender]> = if arms.debug_rest {
+    let renders: Cow<[ArmRender]> = if let Some(distance) = arms.debug_rest {
         match cameras.single() {
-            Ok(camera) => Cow::Owned(debug_rest_arms(&arms, camera)),
+            Ok(camera) => Cow::Owned(debug_rest_arms(&arms, camera, distance)),
             Err(_) => Cow::Borrowed(&[]),
         }
     } else {
@@ -332,6 +368,7 @@ pub(super) fn update_player_arms(
                 std::array::from_fn(|axis| std::array::from_fn(|row| frame[row][axis])),
                 [1.0; 3],
             );
+            arm.world_bounds = Some(bounds);
             let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
             if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_ref()) {
                 if let Some(lighting) = probes.interpolate_query_sh(center, &mut arm.lighting) {
@@ -345,6 +382,9 @@ pub(super) fn update_player_arms(
             }
             Ok(())
         });
+        if !matches!(skinned, Some(Ok(()))) {
+            arm.world_bounds = None;
+        }
         let show = match skinned {
             Some(Ok(())) => true,
             Some(Err(message)) => {

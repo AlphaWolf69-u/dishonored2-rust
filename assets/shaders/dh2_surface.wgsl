@@ -30,6 +30,8 @@ struct SurfaceUniform {
     sky:array<vec4<f32>,7>,
     direct:vec4<f32>,
     glass:vec4<f32>,
+    skin:array<vec4<f32>,3>,
+    skin_flags:vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -78,6 +80,13 @@ const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAG
 @group(#{MATERIAL_BIND_GROUP}) @binding(152) var cloud_density:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(153) var cloud_back_density:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(154) var<storage,read> material_exposure:array<f32>;
+#ifdef DH2_SKIN
+// arkSSSRender images: SSS/SkinFresnelLookup, SSS/Mask, fuzz/mask.
+@group(#{MATERIAL_BIND_GROUP}) @binding(170) var skin_fresnel_lookup:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(172) var sss_mask:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(173) var fuzz_mask:texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;
+#endif
 #ifdef PREPASS_PIPELINE
 #import bevy_render::globals::Globals
 @group(0) @binding(1) var<uniform> globals:Globals;
@@ -123,6 +132,9 @@ struct SurfaceResult {
     direct_ior:vec3<f32>,
     fresnel_strength:f32,
     emissive:vec3<f32>,
+    // Layer-composed gloss sample before wardRoughness mapping (HQ_FetchGloss2
+    // maps it through three ranges); -1 when the material has no gloss map.
+    gloss_sample:f32,
 }
 
 fn scaled_uv(uv: vec2<f32>, scale_bias: vec4<f32>) -> vec2<f32> {
@@ -294,6 +306,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         out.emissive=surface.emissive_color.w*e;
     }
     if !is_decal && !is_vegetation { out.albedo = max(out.albedo, vec4<f32>(0.00001)); }
+    out.gloss_sample = select(-1.0, g, compiled_flags.y != 0u && compiled_flags.z == 0u);
     if compiled_flags.z != 0u {
         g = mix(surface.ranges.x, surface.ranges.y, out.albedo.a);
         out.albedo.a = 1.0;

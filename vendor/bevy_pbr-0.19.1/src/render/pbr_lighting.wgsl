@@ -1,7 +1,7 @@
 #define_import_path bevy_pbr::lighting
 
 #ifdef DH2_SURFACE_ENABLED
-#import dh2_direct::{WardSurface,WardLight,ward_direct}
+#import dh2_direct::{WardSurface,WardLight,ward_direct,skin_direct,skin_light_diffuse}
 #endif
 
 #import bevy_pbr::{
@@ -699,6 +699,11 @@ fn point_light(
         return vec3<f32>(0.0);
     }
 
+#ifdef DH2_SKIN
+    // BRDF_skin: specular returns here, diffuse leaves through skin_light_diffuse.
+    return skin_direct(WardLight(L,rangeAttenuation*half_point_attenuation,
+        (*light).color_inverse_square_range.rgb,1.0,(*light).surface_parameters.x));
+#endif
 #ifdef DH2_SURFACE_ENABLED
     if (#{DH2_ALPHA_FLAGS}u & 128u)!=0u {
         // idLight updater 140881640 publishes the authored specular attenuation.
@@ -888,6 +893,9 @@ fn spot_light(
     }
 #endif
 
+#ifdef DH2_SKIN
+    skin_light_diffuse *= spot_attenuation * texture_sample;
+#endif
     return point_light * spot_attenuation * texture_sample;
 }
 
@@ -906,6 +914,9 @@ fn directional_light(
     let light = &view_bindings::lights.directional_lights[light_id];
 
     let L = (*light).direction_to_light.xyz;
+#ifdef DH2_SKIN
+    return skin_direct(WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));
+#endif
 #ifdef DH2_SURFACE_ENABLED
     if (#{DH2_ALPHA_FLAGS}u & 128u)!=0u {
         let r=ward_direct((*input).direct_surface,WardLight(L,1.0,(*light).color.rgb,1.0,(*light).specular_attenuation));

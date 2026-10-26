@@ -171,6 +171,8 @@ pub mod pipeline_state;
 #[cfg(feature = "game")]
 pub mod depth_buffer_hack;
 #[cfg(feature = "game")]
+pub mod sss_blur;
+#[cfg(feature = "game")]
 pub mod screen_shadow_pass;
 #[cfg(feature = "game")]
 mod screen_visibility;
