@@ -121,6 +121,27 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    /// 1410df700 selects the nearest positioning override or root.
+    /// 141112160 uses static X/Y only if neither axis has an RTPC; once
+    /// either is subscribed, an unsubscribed axis is zero. These controls
+    /// replace the base property, unlike the additive voice parameters.
+    pub fn panner_2d(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<super::panning::Panner2d, String> {
+        let Some(node) = source.nodes.iter().find(|node| node.positioning_flags & 1 != 0 || node.parent == 0) else {
+            return Ok(super::panning::Panner2d { left_right: 0.5, front_rear: 0.5, center: 0.0, enabled: false });
+        };
+        let subscribed = |property| node.curves.iter().any(|curve| curve.property == property);
+        let axes = if subscribed(0x14) || subscribed(0x15) {
+            [self.rtpc_contribution(node, 0x14, parameters)?, self.rtpc_contribution(node, 0x15, parameters)?]
+        } else { [node.float(0xb), node.float(0xc)] };
+        let center = if subscribed(0xb) { self.rtpc_contribution(node, 0xb, parameters)? } else { node.float(0xd) };
+        let normalize = |value: f32| {
+            let value = (value + 100.0) * 0.005;
+            if 0.0 <= value { if 1.0 < value { 1.0 } else { value } } else { 0.0 }
+        };
+        Ok(super::panning::Panner2d { left_right: normalize(axes[0]), front_rear: normalize(axes[1]),
+            center: center * 0.01, enabled: node.positioning_flags & 7 == 7 }) // 1410deec0
+    }
+
     fn bus_chain(&self, mut id: u32) -> Result<Vec<&NodeProperties>, String> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();

@@ -40,12 +40,15 @@ fn invalid(message: impl Into<String>) -> io::Error { io::Error::new(io::ErrorKi
 fn random15() -> u16 { rand::random_range(0..=32767) }
 
 impl Definition {
-    fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.spatial.is_some()) }
+    fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
                 node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
                     || node.ranges.iter().any(|range| range.property == 0x3a))
+                || crate::gameplay::sound::auxiliary::enabled(&variant.properties)
+                || variant.properties.nodes.iter().find(|node| node.positioning_flags & 1 != 0 || node.parent == 0)
+                    .is_some_and(|node| node.positioning_flags & 7 == 7)
                 || variant.properties.nodes.iter()
                 .find(|node| node.positioning_flags & 1 != 0).is_some_and(|node| node.positioning_3d.is_some())
                 || variant.properties.nodes.iter().any(|node| {
@@ -108,13 +111,13 @@ impl Definition {
         let mut sounds = Vec::new();
         let root = node(root, &mut nodes, &mut sounds, attenuations)?;
         let first = sounds.first().ok_or_else(|| invalid("Wwise playback graph has no media"))?;
-        let spatial = sounds.iter().any(|sound| sound.spatial.is_some());
-        let channels = if spatial { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? } else { first.pcm.channels };
+        let stereo = sounds.iter().all(|sound| sound.pcm.channels.get() <= 2);
+        let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? } else { first.pcm.channels };
         if channels.get() > 8 { return Err(invalid("scheduled Wwise graph exceeds eight output channels")); }
         // The original engine's DSP/output clock is 48 kHz (142427c24).
         // Each source's fixed-point resampler converts its own media rate.
         let rate = SampleRate::new(48000).ok_or_else(|| invalid("invalid output sample rate"))?;
-        if sounds.iter().any(|sound| if sound.spatial.is_some() { sound.pcm.channels.get() > 2 } else { sound.pcm.channels != channels }) {
+        if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.pcm.channels != channels) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
         for entry in &nodes {
@@ -192,25 +195,28 @@ impl Playing {
             })).collect::<Result<Vec<_>, String>>()?))
         } else { None };
         for (index, (sound, targets)) in self.definition.sounds.iter().zip(&self.control.spatial).enumerate() {
-            if let Some(spatial) = &sound.spatial {
-                let values = if let Some(propagated) = scene.propagated(self.emitter) {
+            let values = if let Some(spatial) = &sound.spatial {
+                if let Some(propagated) = scene.propagated(self.emitter) {
                     spatial.propagated_targets(scene, propagated, sound.pcm.channels.get(), &mixer.environment)?
                 } else {
                     spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?
-                };
-                let gains = values.gains;
-                let filters = values.voice_filters;
-                for (target, value) in targets[..6].iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
-                    target.store(value.to_bits(), Ordering::Relaxed);
                 }
-                for (slot, (target, value)) in targets[6..8].iter().zip(values.output_filters).enumerate() {
-                    let base = routes.as_ref().map_or(0.0, |routes| routes[index].routing.output_filters[slot]);
-                    let value = value.map_or(base, |value| if value <= base { base } else { value });
-                    target.store(value.to_bits(), Ordering::Relaxed);
-                }
-                for (target, value) in targets[8..].iter().zip(values.auxiliary.into_iter().flatten()) {
-                    target.store(value.to_bits(), Ordering::Relaxed);
-                }
+            } else if routes.is_some() {
+                let gains = mixer.panner_2d(&sound.properties, &parameters)?.stereo_matrix(sound.pcm.channels.get())?;
+                super::spatial::Targets { gains, auxiliary: [gains; 2], voice_filters: [0.0; 2], output_filters: [None; 2] }
+            } else { continue };
+            let gains = values.gains;
+            let filters = values.voice_filters;
+            for (target, value) in targets[..6].iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
+                target.store(value.to_bits(), Ordering::Relaxed);
+            }
+            for (slot, (target, value)) in targets[6..8].iter().zip(values.output_filters).enumerate() {
+                let base = routes.as_ref().map_or(0.0, |routes| routes[index].routing.output_filters[slot]);
+                let value = value.map_or(base, |value| if value <= base { base } else { value });
+                target.store(value.to_bits(), Ordering::Relaxed);
+            }
+            for (target, value) in targets[8..].iter().zip(values.auxiliary.into_iter().flatten()) {
+                target.store(value.to_bits(), Ordering::Relaxed);
             }
         }
         for (sound, volume) in self.definition.sounds.iter().zip(&self.control.volumes_db) {
@@ -367,7 +373,7 @@ impl Runtime {
                 if *frame % 1024 == 0 {
                     let dry = gain * route.map_or(1.0, |route| power10(route.routing.dry_db * 0.05));
                     let mut target = [dry; 8];
-                    if sound.spatial.is_some() {
+                    if sound.spatial.is_some() || route.is_some() {
                         for (channel, target) in target[..channels * output.len()].iter_mut().enumerate() {
                             *target *= f32::from_bits(audio.control.spatial[*index][channel].load(Ordering::Relaxed));
                         }
@@ -534,8 +540,8 @@ impl RouteContext<'_> {
     }
 }
 
-/// Scheduled sources on the shared output clock. Format conversion for
-/// non-spatial graphs remains owned by their existing output source.
+/// Scheduled mono/stereo sources on the shared output clock. Multichannel
+/// graphs still require their separate conversion and speaker-layout paths.
 pub(super) struct Routed {
     audio: ScheduledAudio,
     root: Runtime,
@@ -543,7 +549,7 @@ pub(super) struct Routed {
 }
 impl Routed {
     pub fn new(audio: ScheduledAudio) -> Result<Self, String> {
-        if !audio.can_route() { return Err("shared audio graph requires its non-spatial format conversion path".into()); }
+        if !audio.can_route() { return Err("shared audio graph requires its multichannel format conversion path".into()); }
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
