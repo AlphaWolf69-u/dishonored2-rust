@@ -2,6 +2,7 @@
 use crate::assets::wwise::ContainerPlayback;
 use crate::assets::wwise::SelectionMode;
 use std::collections::{HashSet, VecDeque};
+pub mod timing;
 
 /// Playback-local cycle limit (`FUN_14111b7b0`). Step containers omit it.
 #[derive(Clone, Debug)]

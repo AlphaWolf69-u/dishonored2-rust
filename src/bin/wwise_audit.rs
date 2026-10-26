@@ -422,7 +422,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
                             PlaybackCommand::Play { target, settings, node } => {
                                 println!("  Play target={target:#010x}, {settings:?}");
-                                print_playback(&node, 2, &mixer)?;
+                                print_playback(&node, 2, &mixer, None)?;
                             },
                         }
                     }
@@ -527,7 +527,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
-    mixer: &dishonored2_rust::gameplay::sound::mix::Mixer) -> Result<(), Box<dyn Error>> {
+    mixer: &dishonored2_rust::gameplay::sound::mix::Mixer,
+    continuation: Option<(u32, &dishonored2_rust::assets::wwise::ContainerPlayback)>) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
@@ -540,6 +541,14 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                 audio.samples.len() / usize::from(audio.channels), loops.count as u16)?;
             println!("{indent}  Authored decoder duration before random loop modifiers/pitch: {} ms (0 = infinite)",
                 source.duration_ms(audio.sample_rate));
+            if let Some((owner, settings)) = continuation {
+                use dishonored2_rust::gameplay::sound::{containers::timing, resampler::pitch_ratio};
+                let duration = source.duration_ms(audio.sample_rate)
+                    / pitch_ratio(mixer.source_property(&variant.properties, 2, None)?);
+                if let Some(plan) = timing::crossfade(settings.transition, duration, settings.transition_ms, 48000) {
+                    println!("{indent}  Crossfade if container {owner:#010x} continues, before random modifiers/transition RTPC: {plan:?}");
+                }
+            }
             let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
             println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
                 dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
@@ -567,14 +576,18 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         },
         PlaybackNode::Layer { node, children } => {
             println!("{indent}Layer {node:#010x}");
-            for child in children { print_playback(child, depth + 1, mixer)?; }
+            // 14112f0a0 does not schedule an outer early crossfade through
+            // a parallel group; its last branch releases that continuation.
+            let continuation = if children.len() == 1 { continuation } else { None };
+            for child in children { print_playback(child, depth + 1, mixer, continuation)?; }
         },
         PlaybackNode::Container(container) => {
             println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
                 container.node, container.mode, container.global, container.reset_each_play, container.avoid_repeat, container.playback);
             for (child, weight) in &container.children {
                 println!("{indent}  weight={weight}");
-                print_playback(child, depth + 2, mixer)?;
+                let continuation = if container.playback.continuous { Some((container.node, &container.playback)) } else { continuation };
+                print_playback(child, depth + 2, mixer, continuation)?;
             }
         },
     }
