@@ -69,6 +69,7 @@ struct MaterialParameters {
     lighting_uv: Vec4,
     normal_options: UVec4,
     detail_normal: Vec4,
+    alpha_test: f32,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -111,8 +112,8 @@ impl MaterialParameters {
             );
         }
         let soft = option("fx/opt/use_softcontact")?;
-        if soft > 2 {
-            return Err("spherical particle soft contact is not connected".into());
+        if soft > 3 {
+            return Err(format!("unknown particle soft contact mode {soft}"));
         }
         let macro_uv = if source.option("fx/opt/use_macroUV")? != 0 {
             source.uniform("macroUvAmount")?
@@ -121,6 +122,7 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         Ok(Self {
+            alpha_test: scalar("particleAlphaTest")?,
             normal_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
                 UVec4::new(u32::from(light.bump), u32::from(light.detail_bump.is_some()), 0, 0)
             }),

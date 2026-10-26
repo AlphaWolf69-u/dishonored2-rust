@@ -51,6 +51,7 @@ struct ParticleMaterialParameters {
     lighting_uv:vec4<f32>,
     normal_options:vec4<u32>,
     detail_normal:vec4<f32>,
+    alpha_test:f32,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -93,6 +94,7 @@ struct ParticleFragment {
     @location(14) light_basis_x:vec3<f32>,
     @location(15) light_basis_y:vec3<f32>,
     @location(16) light_basis_z:vec3<f32>,
+    @location(17) @interpolate(flat) particle_center:vec3<f32>,
 }
 @vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
     @builtin(instance_index) instance_index:u32)->ParticleFragment {
@@ -110,6 +112,7 @@ struct ParticleFragment {
         f32((word>>16u)&0x3fffu)*(1.0/16383.0));
     output.colour=unpack4x8unorm(instance.parameters.x);
     output.world_position=position;
+    output.particle_center=instance.center.xyz;
     // Grid1dc200 has local +X normal and +Y tangent. vertex::TransformVertex
     // applies the instance matrix and normalizes both independently.
     output.world_normal=normalize(vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w));
@@ -217,9 +220,20 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let uv=input.position.xy/particle_view.exposure_extent.zw;
         let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
         let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
-        var difference=max(0.0,linear-distance);
-        if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
-        colour.a*=clamp(difference/material.depth_fade_lookup.x,0.0,1.0);
+        if material.fade_options.z==3u {
+            // particles::Opacity_Spherical halves GetParticleRadius before
+            // integrating the density over the scene-clipped back hemisphere.
+            let radius=input.fade_radius.y*0.5;
+            let radial_distance=length(input.particle_center-input.world_position);
+            let ratio=radial_distance/radius;
+            let back=distance+sqrt(radius*radius-radial_distance*radial_distance);
+            let thickness=min(linear,back)-distance;
+            colour.a*=shadow_saturate(1.0-exp(-material.depth_fade_lookup.x*(1.0-ratio)*thickness));
+        } else {
+            var difference=max(0.0,linear-distance);
+            if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
+            colour.a*=shadow_saturate(difference/material.depth_fade_lookup.x);
+        }
     }
     var lighting_normal=normal;
     if material.normal_options.x!=0u {
@@ -263,6 +277,9 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
     var lit_colour=colour.rgb;
     var albedo=colour.rgb;
     if material.animation_options.w>=2u {
+        // add_default calls particles::ClipAlpha after all opacity fades,
+        // in addition to TextureColor's earlier texture-only alpha clip.
+        if colour.a<max(material.alpha_test,0.0001) {discard;}
         let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
         let lighting_uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
         var gloss=mix(material.lighting_parameters.y,
