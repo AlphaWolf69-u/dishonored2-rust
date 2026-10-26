@@ -8,8 +8,14 @@ mod feedback;
 pub use feedback::FeedbackNetwork;
 mod late;
 pub use late::LateReverb;
+mod tone;
+mod processor;
+pub use processor::RoomReverb;
 
-#[derive(Clone, Copy, Debug)]
+#[repr(align(16))]
+struct Block([f32; 256]);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterBand {
     pub gain_db: f32,
     pub frequency: f32,

@@ -1,6 +1,8 @@
 //! Voice LPF/HPF frequency mapping, Butterworth coefficients and parameter
 //! interpolation (141145ec0 / 141136670 / 1411367a0 / 141135f80 / 141136300).
 use super::mix::power_from_bits;
+mod biquad;
+pub use biquad::Biquad;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Kind { LowPass, HighPass }

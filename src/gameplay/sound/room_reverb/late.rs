@@ -32,49 +32,34 @@ pub struct LateReverb {
     units: Vec<Unit>,
     dc: [DcBlocker; 2],
     normalization: f32,
-    decay: f32,
-    damping: f32,
-    diffusion: f32,
 }
 impl LateReverb {
     pub fn new(parameters: &Parameters, rate: u32) -> Result<Self, String> {
-        // 14116f350's fixed local arrays hold four lengths per unit.
-        if parameters.quality > 16 { return Err("room reverb quality exceeds sixteen units".into()); }
-        let count = parameters.quality as usize;
-        let times = distribution(parameters, count * 4)?;
-        let lengths = super::odd_lengths(&times, rate);
-        let mut seed = 0x01bc_0f99u32;
-        let mut units = Vec::new();
-        for index in 0..count {
-            // 14116d9f0 uses incremental input delays; their processing is
-            // deliberately cascaded through the common input buffer below.
-            let base = (1.0 / count as f32) * parameters.tuning[9];
-            seed = seed.wrapping_mul(0x0bb3_8435).wrapping_add(0x3619_636b);
-            let milliseconds = parameters.tuning[10] * 0.01 * base * seed as f32 * f32::from_bits(0x2f800000) + base;
-            let frames = crate::float::truncate_i64(milliseconds * 0.001 * rate as f32) as u32;
-            let requested = std::array::from_fn(|quarter| lengths[index + quarter * count]);
-            units.push(Unit { input_delay: Delay::new(frames)?,
-                network: FeedbackNetwork::new(requested, parameters.decay_time, parameters.hf_damping, rate)? });
-        }
-        let normalization = if count < 2 { 1.0 } else { 1.0 / (count as f32).sqrt() };
+        let (units, normalization) = allocate_units(parameters, rate)?;
         let pole = 1.0 - (parameters.tuning[8] * f32::from_bits(0x40c90fdb)) / rate as f32;
         Ok(Self { rate, pre_delay: parameters.pre_delay_line(rate)?, diffusers: parameters.input_diffusers(rate)?, units,
             dc: [DcBlocker { input: 0.0, output: 0.0, pole }; 2],
-            normalization: normalization * f32::from_bits(0x3fb504f3), decay: parameters.decay_time,
-            damping: parameters.hf_damping, diffusion: parameters.diffusion })
+            normalization })
     }
 
-    pub fn configure_rtpc(&mut self, parameters: &Parameters) {
-        if self.decay != parameters.decay_time || self.damping != parameters.hf_damping {
-            for unit in &mut self.units { unit.network.configure(parameters.decay_time, parameters.hf_damping, self.rate); }
-            self.decay = parameters.decay_time;
-            self.damping = parameters.hf_damping;
+    pub fn configure_room(&mut self, previous: &Parameters, parameters: &Parameters) -> Result<(), String> {
+        if previous.quality != parameters.quality || previous.density != parameters.density || previous.room_shape != parameters.room_shape {
+            let (units, normalization) = allocate_units(parameters, self.rate)?;
+            self.units = units;
+            self.normalization = normalization;
         }
-        if self.diffusion != parameters.diffusion {
+        if previous.pre_delay != parameters.pre_delay { self.pre_delay = parameters.pre_delay_line(self.rate)?; }
+        Ok(())
+    }
+
+    pub fn configure_rtpc(&mut self, previous: &Parameters, parameters: &Parameters) {
+        if previous.decay_time != parameters.decay_time || previous.hf_damping != parameters.hf_damping {
+            for unit in &mut self.units { unit.network.configure(parameters.decay_time, parameters.hf_damping, self.rate); }
+        }
+        if previous.diffusion != parameters.diffusion {
             for (diffuser, coefficient) in self.diffusers.iter_mut().zip(parameters.diffusion_coefficients(true)) {
                 diffuser.set_coefficient(coefficient);
             }
-            self.diffusion = parameters.diffusion;
         }
     }
 
@@ -94,10 +79,10 @@ impl LateReverb {
         if input.len() != left.len() || input.len() != right.len() || input.len() % 4 != 0 {
             return Err("late reverb buffers require equal frame counts divisible by four".into());
         }
-        let mut work = [0.0; 256];
+        let mut work = super::Block([0.0; 256]);
         for start in (0..input.len()).step_by(256) {
             let count = (input.len() - start).min(256);
-            let work = &mut work[..count];
+            let work = &mut work.0[..count];
             work.copy_from_slice(&input[start..start + count]);
             if let Some(delay) = &mut self.pre_delay { delay.process_in_place(work); }
             for diffuser in &mut self.diffusers { diffuser.process_in_place(work); }
@@ -115,6 +100,27 @@ impl LateReverb {
         }
         Ok(())
     }
+}
+
+fn allocate_units(parameters: &Parameters, rate: u32) -> Result<(Vec<Unit>, f32), String> {
+    // 14116f350's fixed local arrays hold four lengths per unit.
+    if parameters.quality > 16 { return Err("room reverb quality exceeds sixteen units".into()); }
+    let count = parameters.quality as usize;
+    let times = distribution(parameters, count * 4)?;
+    let lengths = super::odd_lengths(&times, rate);
+    let mut seed = 0x01bc_0f99u32;
+    let mut units = Vec::new();
+    for index in 0..count {
+        let base = (1.0 / count as f32) * parameters.tuning[9];
+        seed = seed.wrapping_mul(0x0bb3_8435).wrapping_add(0x3619_636b);
+        let milliseconds = parameters.tuning[10] * 0.01 * base * seed as f32 * f32::from_bits(0x2f800000) + base;
+        let frames = crate::float::truncate_i64(milliseconds * 0.001 * rate as f32) as u32;
+        let requested = std::array::from_fn(|quarter| lengths[index + quarter * count]);
+        units.push(Unit { input_delay: Delay::new(frames)?,
+            network: FeedbackNetwork::new(requested, parameters.decay_time, parameters.hf_damping, rate)? });
+    }
+    let normalization = if count < 2 { 1.0 } else { 1.0 / (count as f32).sqrt() };
+    Ok((units, normalization * f32::from_bits(0x3fb504f3)))
 }
 
 fn distribution(parameters: &Parameters, count: usize) -> Result<Vec<f32>, String> {
