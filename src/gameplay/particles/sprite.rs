@@ -180,6 +180,22 @@ pub struct SpriteInitialState {
     pub animation_frame: Option<f32>,
 }
 impl SpriteInitialState {
+    /// 1eeea0 advances an allocated CYCLE_RATE phase before rotation. Phase
+    /// remains unwrapped; the material's volume sampler owns its address mode.
+    pub fn advance(
+        &mut self,
+        appearance: &SpriteAppearance,
+        animation: &SpriteFlipbook,
+        age: f32,
+        delta: f32,
+        seed: &mut u32,
+    ) -> Result<(), String> {
+        if let Some(frame) = &mut self.animation_frame {
+            *frame = add(multiply(animation.rate.sample(age, seed)?, delta), *frame);
+        }
+        self.advance_rotation(appearance, age, delta, seed)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         definition: &SpriteSpawnDefinition,

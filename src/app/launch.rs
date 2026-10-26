@@ -770,6 +770,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     graphics.features |= bevy::render::settings::WgpuFeatures::DEPTH_CLIP_CONTROL
         | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
         | bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE;
+    graphics.features |= bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
+        | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(ProgramCacheSource(program_cache))

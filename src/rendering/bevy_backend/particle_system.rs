@@ -245,26 +245,6 @@ impl ParticleSystem {
                 Ok((stages, system_seed))
             },
         )?;
-        // These initial states cannot be sampled without their material sheet
-        // metadata. Admit no animated sheets until that producer is connected.
-        for stage in &stages {
-            for sprite in &stage.declaration.stages[stage.index].sprites {
-                if !sprite.enabled {
-                    continue;
-                }
-                if let Some(material) = sprite
-                    .material
-                    .as_ref()
-                    .and_then(|n| definition.materials.get(n))
-                {
-                    if material.option("fx/opt/use_flipbook")? != 0 {
-                        return Err(
-                            "particle animated material sheet producer is not connected".into()
-                        );
-                    }
-                }
-            }
-        }
         Ok(Self {
             effect,
             stages,

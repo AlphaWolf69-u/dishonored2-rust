@@ -34,6 +34,7 @@ struct ParticleMaterialParameters {
     distort_options:vec4<u32>,
     colour_options:vec4<u32>,
     fade_options:vec4<u32>,
+    animation_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -44,6 +45,7 @@ struct ParticleMaterialParameters {
 @group(1) @binding(6) var particle_trilinear:sampler;
 @group(1) @binding(7) var particle_surface_sampler:sampler;
 @group(1) @binding(8) var linear_clamp:sampler;
+@group(1) @binding(9) var particle_animation:texture_3d<f32>;
 
 struct ParticleFragment {
     @builtin(position) position:vec4<f32>,
@@ -121,7 +123,16 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let delta=coordinates.xy+distorted.xy-vec2(1.0);
         colour=vec4(pow(clamp(1.0-dot(delta,delta),0.0,1.0),material.radial_exposure_fog.x));
     } else {
-        colour.a=textureSample(particle_opacity,particle_surface_sampler,opacity_uv).x;
+        if material.animation_options.x!=0u {
+            // particles::TextureColor uses unrotated distorted XY for the
+            // volume, while ordinary opacity/diffuse retain opacity rotation.
+            let volume_uv=vec3(distorted.xy*opacity_layer.tiling_pan.xy+
+                opacity_layer.tiling_pan.zw*particle_view.camera_time.w,coordinates.z);
+            let animation=textureSample(particle_animation,particle_surface_sampler,volume_uv);
+            colour=select(animation,vec4(1.0,1.0,1.0,animation.x),material.animation_options.y!=0u);
+        } else {
+            colour.a=textureSample(particle_opacity,particle_surface_sampler,opacity_uv).x;
+        }
         if material.fade_options.x!=0u {colour.a*=distorted.z;}
         if material.colour_options.y!=0u {colour=vec4(textureSample(particle_diffuse,particle_surface_sampler,opacity_uv).rgb,colour.a);}
         if material.colour_options.z!=0u {

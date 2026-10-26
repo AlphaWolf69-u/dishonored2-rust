@@ -168,12 +168,16 @@ impl EmitterBindings for Bindings<'_> {
                 self.lod,
                 mesh_colour,
                 definition.flipbook.flips,
-                None,
+                definition
+                    .flipbook
+                    .cycle_rate
+                    .then_some(&definition.flipbook.initial),
                 &mut sprite_seed,
             )?;
             let mut update_seed = particle_seed;
-            state.advance_rotation(
+            state.advance(
                 &definition.appearance,
+                &definition.flipbook,
                 age,
                 context.remaining_delta,
                 &mut update_seed,
@@ -426,7 +430,13 @@ impl StageSimulation {
             |index, particle, seed| {
                 for (sprite, slots) in definition.sprites.iter().zip(sprites.iter_mut()) {
                     if let Some(state) = &mut slots[index] {
-                        state.advance_rotation(&sprite.appearance, particle.age, delta, seed)?;
+                        state.advance(
+                            &sprite.appearance,
+                            &sprite.flipbook,
+                            particle.age,
+                            delta,
+                            seed,
+                        )?;
                     }
                 }
                 Ok(())

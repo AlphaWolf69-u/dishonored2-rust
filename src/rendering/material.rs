@@ -887,6 +887,23 @@ pub fn load_2d_image(catalog: &crate::archive::Catalog, source: &str)
     crate::texture::compressed_inline_chain(&bytes)
 }
 
+/// Volume counterpart of the shared2D loader. Installed intrinsic volumes use
+/// sixteen identical16x16 slices (the same2f5fc0 generator as other intrinsics).
+pub fn load_3d_image(catalog: &crate::archive::Catalog, source: &str)
+    -> Result<crate::texture::InlineVolumeChain, String> {
+    let path = image_load_resource(catalog, source)
+        .ok_or_else(|| format!("material volume unresolved: {source}"))?;
+    if intrinsic_image_pixels(&path).is_some() {
+        let image = load_2d_image(catalog, source)?;
+        return Ok(crate::texture::InlineVolumeChain {
+            info: image.info, depth: 16, payload: image.payload.repeat(16),
+        });
+    }
+    let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("material volume absent: {path}"))?;
+    crate::texture::compressed_inline_volume(&bytes)
+}
+
 #[test]
 fn intrinsic_images_match_generator_pixels() {
     let default = intrinsic_image_pixels("_default").unwrap();

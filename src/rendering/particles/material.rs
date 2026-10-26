@@ -64,6 +64,7 @@ pub struct ParticleMaterial {
     pub options: BTreeMap<String, i32>,
     pub uniforms: BTreeMap<String, [f32; 4]>,
     pub images: BTreeMap<String, Arc<crate::texture::InlineCompressedChain>>,
+    pub volume: Option<Arc<crate::texture::InlineVolumeChain>>,
 }
 impl ParticleMaterial {
     pub fn option(&self, name: &str) -> Result<i32, String> {
@@ -184,6 +185,14 @@ impl ParticleMaterial {
                 Arc::new(crate::material::load_2d_image(catalog, &source)?),
             );
         }
+        let volume = if options["fx/opt/use_flipbook"] != 0 {
+            Some(Arc::new(crate::material::load_3d_image(
+                catalog,
+                &scopes.image_source("fx/flipbook")?,
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
             name: name.to_owned(),
             state,
@@ -191,6 +200,7 @@ impl ParticleMaterial {
             options,
             uniforms,
             images,
+            volume,
         })
     }
 }

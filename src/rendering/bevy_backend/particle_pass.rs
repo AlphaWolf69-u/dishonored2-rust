@@ -49,6 +49,7 @@ struct MaterialParameters {
     distort_options: UVec4,
     colour_options: UVec4,
     fade_options: UVec4,
+    animation_options: UVec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -56,7 +57,6 @@ impl MaterialParameters {
             "fx/opt/use_lighting",
             "fx/opt/fresnel",
             "fx/opt/use_macroUV",
-            "fx/opt/use_flipbook",
             "fx/opt/opacity_scroll_mask",
         ] {
             if source.option(name)? != 0 {
@@ -120,6 +120,12 @@ impl MaterialParameters {
                 option("fx/opt/view_dependent_fade")?,
                 soft,
                 option("fx/opt/no_alpha_lookup_modulate")?,
+            ),
+            animation_options: UVec4::new(
+                option("fx/opt/use_flipbook")?,
+                option("fx/opt/flipbook_is_mask")?,
+                0,
+                0,
             ),
         })
     }
@@ -192,6 +198,8 @@ pub struct ParticlePass {
     clamp: Sampler,
     mirror: Sampler,
     bilinear: Sampler,
+    _unused_volume: Texture,
+    unused_volume_view: TextureView,
     materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
@@ -271,6 +279,11 @@ impl ParticlePass {
             &std::iter::once(buffer_entry(0, true))
                 .chain((1..=5).map(|b| texture_entry(b, TextureViewDimension::D2, false)))
                 .chain((6..=8).map(sampler_entry))
+                .chain(std::iter::once(texture_entry(
+                    9,
+                    TextureViewDimension::D3,
+                    false,
+                )))
                 .collect::<Vec<_>>(),
         );
         let fog_layout = device.create_bind_group_layout(
@@ -385,6 +398,28 @@ impl ParticlePass {
             exposure: 1.,
         });
         fog_view.write_buffer(device, queue);
+        // Required only by the host's fixed binding layout when no authored
+        // volume is used. The disabled shader branch cannot sample this image.
+        let unused_volume = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("unused particle volume binding"),
+                size: Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D3,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            &[0; 4],
+        );
+        let unused_volume_view = unused_volume.create_view(&default());
         Ok(Self {
             view,
             fog_view,
@@ -404,6 +439,8 @@ impl ParticlePass {
             clamp: sampler(AddressMode::ClampToEdge, MipmapFilterMode::Nearest),
             mirror: sampler(AddressMode::MirrorRepeat, MipmapFilterMode::Nearest),
             bilinear: sampler(AddressMode::Repeat, MipmapFilterMode::Nearest),
+            _unused_volume: unused_volume,
+            unused_volume_view,
             materials: HashMap::new(),
             view_bindings: None,
             fog_binding: None,
@@ -451,6 +488,32 @@ impl ParticlePass {
         let opacity = views
             .get("fx/opacity")
             .ok_or("particle opacity image absent")?;
+        let volume_view = if let Some(volume) = &source.volume {
+            let texture = device.create_texture_with_data(
+                queue,
+                &TextureDescriptor {
+                    label: Some(&source.name),
+                    size: Extent3d {
+                        width: volume.info.width,
+                        height: volume.info.height,
+                        depth_or_array_layers: volume.depth,
+                    },
+                    mip_level_count: volume.info.mip_count,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: super::image_formats::gpu_image_format(volume.info.format),
+                    usage: TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                TextureDataOrder::MipMajor,
+                &volume.payload,
+            );
+            let view = texture.create_view(&default());
+            images.push(texture);
+            Some(view)
+        } else {
+            None
+        };
         let surface_sampler = if source.option("fx/opt/use_mirror_sampler")? != 0 {
             &self.mirror
         } else if source.option("fx/opt/use_clamp_sampler")? != 0 {
@@ -507,6 +570,12 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 8,
                     resource: BindingResource::Sampler(&self.clamp),
+                },
+                BindGroupEntry {
+                    binding: 9,
+                    resource: BindingResource::TextureView(
+                        volume_view.as_ref().unwrap_or(&self.unused_volume_view),
+                    ),
                 },
             ],
         );
