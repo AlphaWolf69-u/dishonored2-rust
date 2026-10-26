@@ -2,7 +2,8 @@
 //! Defaults come from the constructor FUN_14008b640; a declaration starts
 //! from its `inherit` parent's resolved values and applies its `edit` block.
 use super::components::atom;
-use super::{field, parse_declaration, scope};
+use super::{field, parse_declaration, scope, Value};
+use crate::gameplay::collision_filter::block;
 
 /// arkPhysicsMaterial flag byte +0x80. Bit order is the reflection order;
 /// each getter (FUN_140990040..1409900b0) reads one bit of that byte.
@@ -46,6 +47,9 @@ pub struct PhysicsMaterial {
     pub restitution: f32,
     /// Flag byte +0x80 (`flags::*`).
     pub flags: u8,
+    /// m_collisionSettings.m_blockFlags +0x68 (`collision_filter::block`),
+    /// which the shape-tag codec applies to a triangle's filter word.
+    pub block_flags: u16,
 }
 
 impl PhysicsMaterial {
@@ -59,6 +63,7 @@ impl PhysicsMaterial {
             static_friction: 0.5,
             restitution: 0.,
             flags: flags::ALLOW_MANTLE | flags::ALLOW_VAULT,
+            block_flags: block::DEFAULT,
         }
     }
     /// Mantle sensor surface test (FUN_1403bafe0 reads bit 0).
@@ -81,6 +86,56 @@ impl PhysicsMaterial {
     pub fn is_stairs(&self) -> bool {
         self.flags & flags::IS_STAIRS != 0
     }
+}
+
+/// arkCollisionSettings_t's `m_blockFlags` in an edit scope: the eBLOCK_*
+/// list replaces the inherited value, then each named bool member sets or
+/// clears its bit.
+pub fn collision_block_flags(settings: Option<&[(String, Value)]>, inherited: u16) -> Result<u16, String> {
+    const NAMES: [(&str, u16); 11] = [
+        ("eBLOCK_NONE", 0),
+        ("eBLOCK_NPC", block::NPC),
+        ("eBLOCK_PLAYER", block::PLAYER),
+        ("eBLOCK_WEAPON", block::WEAPON),
+        ("eBLOCK_VISION", block::VISION),
+        ("eBLOCK_DYNAMIC", block::DYNAMIC),
+        ("eBLOCKED_BY_STATIC", block::BLOCKED_BY_STATIC),
+        ("eBLOCK_DEBRIS_AND_PARTICLES", block::DEBRIS_AND_PARTICLES),
+        ("eBLOCK_RAGDOLL", block::RAGDOLL),
+        ("eBLOCK_DEFAULT", block::DEFAULT),
+        ("eBLOCK_ALL", block::ALL),
+    ];
+    const MEMBERS: [(&str, u16); 8] = [
+        ("m_blockNPC", block::NPC),
+        ("m_blockPlayer", block::PLAYER),
+        ("m_blockWeapon", block::WEAPON),
+        ("m_blockVision", block::VISION),
+        ("m_blockDynamic", block::DYNAMIC),
+        ("m_blockedByStatic", block::BLOCKED_BY_STATIC),
+        ("m_blockDebrisAndParticles", block::DEBRIS_AND_PARTICLES),
+        ("m_blockRagdoll", block::RAGDOLL),
+    ];
+    let Some(settings) = settings else { return Ok(inherited) };
+    let mut value = inherited;
+    if let Some(list) = atom(settings, "m_blockFlags") {
+        value = 0;
+        for name in list.split_whitespace() {
+            value |= NAMES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .ok_or_else(|| format!("unknown block flag {name}"))?
+                .1;
+        }
+    }
+    for (key, bit) in MEMBERS {
+        match atom(settings, key) {
+            Some("true") => value |= bit,
+            Some("false") => value &= !bit,
+            Some(other) => return Err(format!("invalid {key} = {other}")),
+            None => {}
+        }
+    }
+    Ok(value)
 }
 
 /// Decl float atoms may carry a C `f` suffix (installed `character_body`
@@ -125,6 +180,8 @@ pub fn physics_material(
                 *slot = decl_float(text).ok_or_else(|| format!("invalid {key} in {path}"))?;
             }
         }
+        material.block_flags = collision_block_flags(scope(field(edit, "m_collisionSettings")), material.block_flags)
+            .map_err(|error| format!("{error} in {path}"))?;
         for (key, bit) in FLAG_FIELDS {
             match atom(edit, key) {
                 Some("true") => material.flags |= bit,
@@ -157,6 +214,15 @@ mod tests {
                      edit = { m_allowMantle = false; m_allowVault = false; } }"#
                     .into(),
             ),
+            "generated/decls/physicsmaterial/contactsystem/projectiles.decl" => Some(
+                "{ edit = { m_collisionSettings = { m_version = 20150324; m_blockNPC = false;
+                   m_blockPlayer = false; m_blockDynamic = false; m_blockedByStatic = false; } } }"
+                    .into(),
+            ),
+            "generated/decls/physicsmaterial/contactsystem/glass.decl" => Some(
+                r#"{ edit = { m_collisionSettings = { m_blockFlags = "eBLOCK_WEAPON eBLOCK_VISION"; } } }"#
+                    .into(),
+            ),
             "generated/decls/physicsmaterial/character_body.decl" => Some(
                 "{ edit = { m_DynamicFriction = 0.0f; m_StaticFriction = 0.0f;
                    m_allowMantle = false; m_allowVault = false; } }"
@@ -179,6 +245,16 @@ mod tests {
         assert!(!off.allow_mantle() && !off.allow_vault());
         assert!(off.can_grapple_through());
         assert_eq!(off.name, "contactsystem/env.metal.grid.mantleoff");
+    }
+
+    #[test]
+    fn reads_both_block_flag_forms() {
+        let projectiles = physics_material("contactsystem/projectiles", read).unwrap();
+        assert_eq!(projectiles.block_flags, block::WEAPON | block::VISION | block::DEBRIS_AND_PARTICLES);
+        let glass = physics_material("contactsystem/glass", read).unwrap();
+        assert_eq!(glass.block_flags, block::WEAPON | block::VISION);
+        let grid = physics_material("contactsystem/env.metal.grid", read).unwrap();
+        assert_eq!(grid.block_flags, block::DEFAULT);
     }
 
     #[test]

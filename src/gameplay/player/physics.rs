@@ -9,6 +9,7 @@
 //! are not ported: the rewrite's collision world is static.
 use super::character_proxy::{CharacterProxy, PlayerWorld, ProxySettings, SupportState, WorldHit};
 use super::shape::{PostureShape, ShapeSettings, POSTURE_AUTOCROUCHING, POSTURE_COUNT, POSTURE_KEEP_PREVIOUS, POSTURE_SWIMMING};
+use crate::gameplay::collision_filter::{layer, layer_filter, QueryFilter};
 use bevy_math::{Mat3, Vec3};
 
 /// "Unset" sentinel (DAT_141ae8a70).
@@ -58,6 +59,11 @@ pub struct PhysicsDecl {
     pub ground_query_length: f32,
     pub ground_ray_query_length: f32,
     pub ceil_query_length: f32,
+    /// m_collisionLayer (+0x68, PLAYER), m_groundCollisionMask (+0x7c) and
+    /// m_ceilCollisionMask (+0x80).
+    pub collision_layer: u32,
+    pub ground_collision_mask: u32,
+    pub ceil_collision_mask: u32,
     pub physics: PhysicsSettings,
     /// `m_shapes`: (posture, settings) in item order.
     pub shapes: Vec<(usize, ShapeSettings)>,
@@ -69,6 +75,9 @@ impl Default for PhysicsDecl {
             ground_query_length: 0.5,
             ground_ray_query_length: 20.0,
             ceil_query_length: 2.0,
+            collision_layer: crate::gameplay::collision_filter::layer::PLAYER,
+            ground_collision_mask: 0x802b,
+            ceil_collision_mask: 0x8023,
             physics: PhysicsSettings::default(),
             shapes: Vec::new(),
         }
@@ -159,6 +168,9 @@ pub struct PlayerPhysics {
     pub ground_query_length: f32,
     ground_ray_query_length: f32,
     ceil_query_length: f32,
+    collision_layer: u32,
+    ground_collision_mask: u32,
+    ceil_collision_mask: u32,
     pub ground_distance: f32,
     pub ceil_distance: f32,
     pub penetrating: bool,
@@ -227,6 +239,8 @@ impl PlayerPhysics {
                 penetration_recovery_speed: settings.penetration_recovery_speed,
                 max_cast_iterations: settings.max_cast_iterations,
                 refresh_manifold_in_check_support: settings.refresh_manifold_in_check_support,
+                // Start FUN_1407fe310: the layer's word without CHAIN.
+                collision_filter: layer_filter(decl.collision_layer) & 0xfbffffff,
             },
         );
         Self {
@@ -264,6 +278,9 @@ impl PlayerPhysics {
             ground_query_length: decl.ground_query_length,
             ground_ray_query_length: decl.ground_ray_query_length,
             ceil_query_length: decl.ceil_query_length,
+            collision_layer: decl.collision_layer,
+            ground_collision_mask: decl.ground_collision_mask,
+            ceil_collision_mask: decl.ceil_collision_mask,
             ground_distance: f32::MAX,
             ceil_distance: f32::MAX,
             penetrating: false,
@@ -491,8 +508,22 @@ impl PlayerPhysics {
         self.velocity - self.gravity_velocity
     }
 
-    /// QUERY_PHYSICS FUN_1408002e0 and its results FUN_1407ff230.
+    /// m_groundCollisionMask | m_ceilCollisionMask (the slide obstacle cast).
+    pub fn ground_and_ceil_mask(&self) -> u32 {
+        self.ground_collision_mask | self.ceil_collision_mask
+    }
+
+    /// QUERY_PHYSICS FUN_1408002e0 and its results FUN_1407ff230. Every
+    /// query requires the PLAYER flag except the physics-material probes.
     pub fn update_queries(&mut self, world: &dyn PlayerWorld) {
+        let proxy_layers = self.proxy.settings.collision_filter >> 5;
+        // The layer's word without NPC_BODY_ANIMATED and NPC_BODY_RAGDOLL.
+        let layer_layers = (layer_filter(self.collision_layer) & 0xfff77fff) >> 5;
+        let required = 1 << layer::PLAYER;
+        let touch = QueryFilter::layers((self.ceil_collision_mask | self.ground_collision_mask) & proxy_layers, required);
+        let ground = QueryFilter::layers(layer_layers & self.ground_collision_mask, required);
+        let ceil = QueryFilter::layers(proxy_layers & self.ceil_collision_mask, required);
+        let ground_rays = QueryFilter::layers(self.ground_collision_mask, required);
         let query = if self.shape_height(self.target) - self.shape_height(self.current) > EPSILON { self.target } else { self.current };
         let settings = self.shapes[query].settings;
         let cast_offset = settings.z_offset + (settings.height - (settings.z_offset + settings.step_height)) * 0.5;
@@ -501,30 +532,30 @@ impl PlayerPhysics {
         let start = origin + Vec3::Z * cast_offset;
         let mut hits: Vec<WorldHit> = Vec::new();
         // Touch: the posture's body shape at the origin.
-        world.cast_shape(&self.shapes[self.posture_shape[self.posture]].body, axis, origin, Vec3::ZERO, 0.0, &mut hits, None);
+        world.cast_shape(touch, &self.shapes[self.posture_shape[self.posture]].body, axis, origin, Vec3::ZERO, 0.0, &mut hits, None);
         self.penetrating = !hits.is_empty();
         let ceil_floor = &self.shapes[query].ceil_floor;
         let ground_length = self.ground_query_length + cast_offset;
         self.ground_distance = f32::MAX;
         if self.penetrating {
-            if let Some(hit) = world.cast_ray(start, -Vec3::Z, ground_length) {
+            if let Some(hit) = world.cast_ray(ground, start, -Vec3::Z, ground_length) {
                 self.ground_distance = hit.distance - cast_offset;
             }
         } else {
             hits.clear();
-            world.cast_shape(ceil_floor, axis, start, Vec3::new(0.0, 0.0, -ground_length), 0.0, &mut hits, None);
+            world.cast_shape(ground, ceil_floor, axis, start, Vec3::new(0.0, 0.0, -ground_length), 0.0, &mut hits, None);
             if let Some(fraction) = hits.iter().map(|h| h.value).min_by(f32::total_cmp) {
                 self.ground_distance = ground_length * fraction - cast_offset;
             }
         }
         self.ceil_distance = f32::MAX;
         if self.penetrating {
-            if let Some(hit) = world.cast_ray(start, Vec3::Z, self.ceil_query_length) {
+            if let Some(hit) = world.cast_ray(ceil, start, Vec3::Z, self.ceil_query_length) {
                 self.ceil_distance = hit.distance + cast_offset;
             }
         } else {
             hits.clear();
-            world.cast_shape(ceil_floor, axis, start, Vec3::new(0.0, 0.0, self.ceil_query_length), 0.0, &mut hits, None);
+            world.cast_shape(ceil, ceil_floor, axis, start, Vec3::new(0.0, 0.0, self.ceil_query_length), 0.0, &mut hits, None);
             if let Some(fraction) = hits.iter().map(|h| h.value).min_by(f32::total_cmp) {
                 self.ceil_distance = fraction * self.ceil_query_length + cast_offset + settings.step_height;
             }
@@ -536,7 +567,7 @@ impl PlayerPhysics {
         self.ground_ray_distance_max = -self.ground_ray_query_length;
         let mut sum = Vec3::ZERO;
         for (index, offset) in offsets.into_iter().enumerate() {
-            let (distance, normal) = match world.cast_ray(start + offset, -Vec3::Z, length) {
+            let (distance, normal) = match world.cast_ray(ground_rays, start + offset, -Vec3::Z, length) {
                 Some(hit) => (hit.distance - cast_offset, hit.normal),
                 None => (self.ground_ray_query_length, Vec3::Z),
             };
@@ -692,7 +723,7 @@ mod tests {
             crate::gameplay::player::character_proxy::SurfaceFlags { allow_mantle: true, allow_vault: true }
         }
 
-        fn cast_shape(&self, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
+        fn cast_shape(&self, _: QueryFilter, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3, tolerance: f32, cast: &mut Vec<WorldHit>, start: Option<&mut Vec<WorldHit>>) {
             let points: Vec<Vec3> = shape.iter().map(|p| from + rotation * *p).collect();
             let mut start = start;
             for (key, triangle) in self.0.iter().enumerate() {
@@ -707,7 +738,7 @@ mod tests {
                 }
             }
         }
-        fn cast_ray(&self, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
+        fn cast_ray(&self, _: QueryFilter, from: Vec3, direction: Vec3, length: f32) -> Option<RayHit> {
             (from.z > 0.0 && direction.z < 0.0 && from.z <= length).then(|| RayHit { distance: from.z, position: Vec3::new(from.x, from.y, 0.0), normal: Vec3::Z, body: 0, key: 0 })
         }
     }

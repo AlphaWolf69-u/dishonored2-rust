@@ -594,7 +594,7 @@ pub(super) fn static_model_collision(
     catalog: &archive::Catalog,
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
-) -> (Vec<([Vec3; 3], u32)>, Vec<String>, usize, usize) {
+) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
     let roots: HashMap<_, _> = placements
         .iter()
         .map(|placement| (placement.id.as_str(), placement))
@@ -631,6 +631,14 @@ pub(super) fn static_model_collision(
                 );
                 continue;
             }
+        };
+        let Some(filter) = body.collision_filter() else {
+            failed += 1;
+            eprintln!(
+                "Collision {}: unknown layer {:?} or malformed m_collisionSettings",
+                placement.id, body.collision_layer
+            );
+            continue;
         };
         let Some(path) = model_havok_path(placement, kind, false) else {
             failed += 1;
@@ -671,6 +679,7 @@ pub(super) fn static_model_collision(
             (
                 triangle.map(|vertex| placed_collision_vertex(&body_pose, vertex)),
                 owner,
+                filter,
             )
         }));
     }

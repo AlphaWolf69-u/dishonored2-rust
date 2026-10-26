@@ -327,11 +327,19 @@ pub(super) fn collision_report(
         None => camera.translation - Vec3::Y * 1.7,
     };
     let collision_text = if let Some(world) = collision.as_ref() {
-        let details = world.0.first_hit_details(
-            camera.translation,
-            camera.translation + direction * distance_limit,
-        );
+        use crate::gameplay::collision_filter::QueryFilter;
+        let end = camera.translation + direction * distance_limit;
+        let details = world.0.first_hit_details(camera.translation, end, QueryFilter::ALL);
         let hit = details.map(|hit| hit.0);
+        let hit_filter = details.and_then(|(_, key, _, _)| world.0.collision_filter(key));
+        // The character proxy's own filter word: its casts collide only with
+        // what the player walks on.
+        let player_filter = walker.map(|walker| walker.physics.proxy.settings.collision_filter);
+        let player_hit = player_filter.map(|filter| {
+            world.0.first_hit_details(camera.translation, end, QueryFilter::World(filter)).map(|(distance, key, _, _)| {
+                (distance, world.0.collision_filter(key).map(|f| format!("{f:#x}")))
+            })
+        });
         let provenance = details.map(|(_, _, owner, vertices)| {
             (
                 world.0.owner_name(owner).unwrap_or("level bphysworld"),
@@ -348,7 +356,9 @@ pub(super) fn collision_report(
             hit.map(|collision_distance| collision_distance - *distance)
         });
         format!(
-            "Collision ray hit: {hit:?} m; game_xyz={hit_position:?}; distance from visual surface={visual_gap:?} m\nCollision source and triangle game_xyz: {provenance:?}\nCollision triangles within 2 m of visual target: {}\nCollision triangles within 2 m of feet probe: {}\nFloor at feet probe: {:?}",
+            "Collision ray hit: {hit:?} m; game_xyz={hit_position:?}; distance from visual surface={visual_gap:?} m; filter word={:?}\nPlayer-filter collision ray hit (proxy filter {:?}): {player_hit:?}\nCollision source and triangle game_xyz: {provenance:?}\nCollision triangles within 2 m of visual target: {}\nCollision triangles within 2 m of feet probe: {}\nFloor at feet probe: {:?}",
+            hit_filter.map(|f| format!("{f:#x}")),
+            player_filter.map(|f| format!("{f:#x}")),
             world.0.nearby_triangle_count(target, 2.0),
             world.0.nearby_triangle_count(probe_feet, 2.0),
             world.0.floor_at(probe_feet, 0.5, 2.0)

@@ -110,6 +110,30 @@ fn items_atoms(list: &Fields) -> Vec<String> {
     entries.into_iter().map(|(_, v)| v).collect()
 }
 
+/// An arkCollisionLayerMask_t scope: each `m_<LAYER>` member sets or
+/// clears its bit of the constructor default.
+fn layer_mask(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
+    let Some(members) = scope(fields, key) else { return Ok(default) };
+    let mut mask = default;
+    for (member, value) in members {
+        let bit = crate::gameplay::collision_filter::layer_member(member).ok_or_else(|| format!("unknown {key} member {member}"))?;
+        match value {
+            Value::Atom(v) if v == "true" => mask |= 1 << bit,
+            Value::Atom(v) if v == "false" => mask &= !(1 << bit),
+            _ => return Err(format!("invalid {key}.{member}")),
+        }
+    }
+    Ok(mask)
+}
+
+/// An arkCollisionLayer_t field.
+fn collision_layer(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
+    match atom(fields, key) {
+        None => Ok(default),
+        Some(name) => crate::gameplay::collision_filter::layer_by_name(name).ok_or_else(|| format!("unknown {key} {name}")),
+    }
+}
+
 /// The health component's m_health (installed for the player).
 pub fn health(fields: &Fields) -> Result<f32, String> {
     number(fields, "m_health", f32::NAN).and_then(|h| if h.is_nan() { Err("player health decl has no m_health".into()) } else { Ok(h) })
@@ -131,6 +155,7 @@ pub fn mantle_sensor(fields: &Fields) -> Result<MantleDecl, String> {
         left_hand_offset: vector(fields, "m_leftHandOffset", d.left_hand_offset)?,
         right_hand_offset: vector(fields, "m_rightHandOffset", d.right_hand_offset)?,
         use_player_direction: boolean(fields, "m_usePlayerDirecton", d.use_player_direction)?,
+        collision_mask: layer_mask(fields, "m_collisionMask", d.collision_mask)?,
     })
 }
 
@@ -237,6 +262,9 @@ pub fn physics(fields: &Fields) -> Result<PhysicsDecl, String> {
         ground_query_length: number(fields, "m_groundQueryLength", d.ground_query_length)?,
         ground_ray_query_length: number(fields, "m_groundRayQueryLength", d.ground_ray_query_length)?,
         ceil_query_length: number(fields, "m_ceilQueryLength", d.ceil_query_length)?,
+        collision_layer: collision_layer(fields, "m_collisionLayer", d.collision_layer)?,
+        ground_collision_mask: layer_mask(fields, "m_groundCollisionMask", d.ground_collision_mask)?,
+        ceil_collision_mask: layer_mask(fields, "m_ceilCollisionMask", d.ceil_collision_mask)?,
         physics: PhysicsSettings {
             dynamic_friction: number(physics, "m_dynamicFriction", s.dynamic_friction)?,
             static_friction: number(physics, "m_staticFriction", s.static_friction)?,
@@ -590,6 +618,7 @@ pub fn lean_sensor(fields: &Fields) -> Result<LeanDecl, String> {
         head_shape_size: vector(fields, "m_headShapeSize", d.head_shape_size)?,
         lean_amplitude: number(fields, "m_leanAmplitude", d.lean_amplitude)?,
         lean_up_amplitude: number(fields, "m_leanUpAmplitude", d.lean_up_amplitude)?,
+        collision_layers: layer_mask(fields, "m_collisionLayers", d.collision_layers)?,
     })
 }
 

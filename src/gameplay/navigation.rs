@@ -2,6 +2,7 @@
 //! authored Havok physics world, with owner activation for collected pickups.
 //! Coordinates are Bevy Y-up metres; the player queries it through
 //! `player::character_proxy::PlayerWorld`.
+use super::collision_filter::{layer, layer_filter, QueryFilter};
 use crate::entities::physics_material::PhysicsMaterial;
 use bevy_math::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -20,6 +21,8 @@ struct Triangle {
     max: Vec3,
     owner: u32,
     material: u32,
+    /// The arkCollisionFilterInfo word of the triangle's body and shape key.
+    filter: u32,
 }
 
 pub struct CollisionWorld {
@@ -39,6 +42,7 @@ impl CollisionWorld {
         )
     }
 
+    /// Synthetic geometry (probes, tests) takes the WORLD_LOW layer's word.
     pub fn with_owned(
         source: impl IntoIterator<Item = ([Vec3; 3], u32)>,
         owners: Vec<String>,
@@ -46,16 +50,16 @@ impl CollisionWorld {
         Self::with_materials(
             source
                 .into_iter()
-                .map(|(triangle, owner)| (triangle, owner, NO_MATERIAL)),
+                .map(|(triangle, owner)| (triangle, owner, NO_MATERIAL, layer_filter(layer::WORLD_LOW))),
             owners,
             Vec::new(),
         )
     }
 
-    /// Triangles carry an owner and an index into `materials` (or
-    /// `NO_MATERIAL`); see `physics_material`.
+    /// Triangles carry an owner, an index into `materials` (or
+    /// `NO_MATERIAL`; see `physics_material`) and their filter word.
     pub fn with_materials(
-        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32)>,
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32, u32)>,
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
@@ -71,7 +75,7 @@ impl CollisionWorld {
             owner_active: vec![true; owners.len()],
             materials,
         };
-        for ([a, b, c], owner, material) in source {
+        for ([a, b, c], owner, material, filter) in source {
             if owner != u32::MAX && owner as usize >= world.owner_active.len() {
                 continue;
             }
@@ -93,6 +97,7 @@ impl CollisionWorld {
                 } else {
                     NO_MATERIAL
                 },
+                filter,
             });
             let low = cell(min);
             let high = cell(max);
@@ -133,13 +138,19 @@ impl CollisionWorld {
     }
 
     pub fn nearby_triangle_count(&self, point: Vec3, radius: f32) -> usize {
-        self.candidates(point - Vec3::splat(radius), point + Vec3::splat(radius))
+        self.candidates(point - Vec3::splat(radius), point + Vec3::splat(radius), QueryFilter::ALL)
             .len()
     }
 
-    /// First hit distance along a finite segment, testing both triangle sides.
+    /// First hit distance along a finite segment, testing both triangle sides
+    /// of every layer.
     pub fn first_hit(&self, start: Vec3, end: Vec3) -> Option<f32> {
-        self.first_hit_details(start, end).map(|hit| hit.0)
+        self.first_hit_details(start, end, QueryFilter::ALL).map(|hit| hit.0)
+    }
+
+    /// A triangle's filter word (the key `triangles_in` reports).
+    pub fn collision_filter(&self, triangle: u32) -> Option<u32> {
+        self.triangles.get(triangle as usize).map(|t| t.filter)
     }
 
     /// The arkPhysicsMaterial the game resolves for a triangle (FUN_1400922d0
@@ -153,14 +164,14 @@ impl CollisionWorld {
 
     /// Nearest hit used by first_hit: (distance, triangle index, owner,
     /// vertices). The index is the key `triangles_in` reports.
-    pub fn first_hit_details(&self, start: Vec3, end: Vec3) -> Option<(f32, u32, u32, [Vec3; 3])> {
+    pub fn first_hit_details(&self, start: Vec3, end: Vec3, filter: QueryFilter) -> Option<(f32, u32, u32, [Vec3; 3])> {
         let segment = end - start;
         let length = segment.length();
         if length <= 1e-5 {
             return None;
         }
         let direction = segment / length;
-        self.candidates(start.min(end), start.max(end))
+        self.candidates(start.min(end), start.max(end), filter)
             .into_iter()
             .filter_map(|index| {
                 let triangle = self.triangles[index];
@@ -181,10 +192,10 @@ impl CollisionWorld {
             .find_map(|(name, indices)| indices.contains(&owner).then_some(name.as_str()))
     }
 
-    /// Active triangles whose bounds overlap `min..max`: (index, vertices,
-    /// owner), owner `u32::MAX` for level geometry.
-    pub fn triangles_in(&self, min: Vec3, max: Vec3) -> Vec<(u32, [Vec3; 3], u32)> {
-        let mut indices = self.candidates(min, max);
+    /// Active triangles `filter` accepts whose bounds overlap `min..max`:
+    /// (index, vertices, owner), owner `u32::MAX` for level geometry.
+    pub fn triangles_in(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<(u32, [Vec3; 3], u32)> {
+        let mut indices = self.candidates(min, max, filter);
         // Ascending index keeps query results independent of hash order.
         indices.sort_unstable();
         indices
@@ -196,7 +207,7 @@ impl CollisionWorld {
             .collect()
     }
 
-    fn candidates(&self, min: Vec3, max: Vec3) -> Vec<usize> {
+    fn candidates(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<usize> {
         let low = cell(min);
         let high = cell(max);
         let mut found = HashSet::new();
@@ -215,6 +226,7 @@ impl CollisionWorld {
             .filter(|&index| {
                 let triangle = self.triangles[index];
                 (triangle.owner == u32::MAX || self.owner_active[triangle.owner as usize])
+                    && filter.accepts(triangle.filter)
                     && (0..3).all(|axis| {
                         triangle.min[axis] <= max[axis] && triangle.max[axis] >= min[axis]
                     })
@@ -227,7 +239,7 @@ impl CollisionWorld {
         let min = feet + Vec3::new(-0.02, -down, -0.02);
         let max = feet + Vec3::new(0.02, step_up, 0.02);
         let mut best: Option<f32> = None;
-        for index in self.candidates(min, max) {
+        for index in self.candidates(min, max, QueryFilter::ALL) {
             let triangle = self.triangles[index];
             let normal = (triangle.b - triangle.a)
                 .cross(triangle.c - triangle.a)
@@ -338,10 +350,10 @@ mod tests {
         grid.flags = 0;
         let world = CollisionWorld::with_materials(
             [
-                (wall(1.0), u32::MAX, 1),
-                (wall(2.0), u32::MAX, 0),
-                (wall(3.0), u32::MAX, NO_MATERIAL),
-                (wall(4.0), u32::MAX, 7),
+                (wall(1.0), u32::MAX, 1, 0),
+                (wall(2.0), u32::MAX, 0, 0),
+                (wall(3.0), u32::MAX, NO_MATERIAL, 0),
+                (wall(4.0), u32::MAX, 7, 0),
             ],
             Vec::new(),
             vec![
@@ -350,13 +362,13 @@ mod tests {
             ],
         );
         let (distance, index, _, _) = world
-            .first_hit_details(Vec3::new(0.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0))
+            .first_hit_details(Vec3::new(0.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0), QueryFilter::ALL)
             .unwrap();
         assert_eq!((distance, index), (1.0, 0));
         let first = world.physics_material(index).unwrap();
         assert!(!first.allow_mantle() && !first.allow_vault());
         let keys: Vec<u32> = world
-            .triangles_in(Vec3::new(1.5, 0.0, -1.0), Vec3::new(2.5, 2.0, 1.0))
+            .triangles_in(Vec3::new(1.5, 0.0, -1.0), Vec3::new(2.5, 2.0, 1.0), QueryFilter::ALL)
             .into_iter()
             .map(|(key, _, _)| key)
             .collect();
@@ -366,6 +378,24 @@ mod tests {
         // Out-of-table material indices are stored as unresolved.
         assert_eq!(world.physics_material(3), None);
         assert_eq!(world.physics_material(99), None);
+    }
+    #[test]
+    fn queries_see_only_the_triangles_their_filter_accepts() {
+        let wall = |x: f32| [Vec3::new(x, 0.0, -1.0), Vec3::new(x, 2.0, -1.0), Vec3::new(x, 0.0, 1.0)];
+        // eotw_p words: WORLD_HIGH detail (projectiles only) in front of
+        // WORLD_LOW_HIGH collision that includes PLAYER.
+        let world = CollisionWorld::with_materials(
+            [(wall(1.0), u32::MAX, NO_MATERIAL, 0x2010002), (wall(2.0), u32::MAX, NO_MATERIAL, 0x1802c01)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let (from, to) = (Vec3::new(0.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0));
+        let player = QueryFilter::World(layer_filter(layer::PLAYER) & 0xfbffffff);
+        assert_eq!(world.first_hit_details(from, to, player).map(|h| h.1), Some(1));
+        assert_eq!(world.first_hit_details(from, to, QueryFilter::ALL).map(|h| h.1), Some(0));
+        let ground = QueryFilter::layers(0x802b, 1 << layer::PLAYER);
+        assert_eq!(world.triangles_in(Vec3::new(0.0, 0.0, -1.0), Vec3::new(3.0, 2.0, 1.0), ground).len(), 1);
+        assert_eq!(world.collision_filter(0), Some(0x2010002));
     }
     #[test]
     fn collected_entity_can_disable_its_authored_collider() {
@@ -378,13 +408,13 @@ mod tests {
         let from = Vec3::new(-1.0, 0.5, 0.0);
         let to = Vec3::new(1.0, 0.5, 0.0);
         assert_eq!(world.first_hit(from, to), Some(1.0));
-        let (distance, _, owner, vertices) = world.first_hit_details(from, to).unwrap();
+        let (distance, _, owner, vertices) = world.first_hit_details(from, to, QueryFilter::ALL).unwrap();
         assert_eq!(distance, 1.0);
         assert_eq!(world.owner_name(owner), Some("pickup_1"));
         assert_eq!(vertices, wall);
         assert!(world.set_owner_active("pickup_1", false));
         assert_eq!(world.first_hit(from, to), None);
-        assert_eq!(world.first_hit_details(from, to), None);
+        assert_eq!(world.first_hit_details(from, to, QueryFilter::ALL), None);
         assert!(world.set_owner_active("pickup_1", true));
         assert_eq!(world.first_hit(from, to), Some(1.0));
     }
