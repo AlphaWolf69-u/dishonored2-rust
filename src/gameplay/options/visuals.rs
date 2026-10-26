@@ -555,8 +555,12 @@ fn res_scale_mode(env: &mut Env, section: &mut Section) -> Result<()> {
     refresh_index(env, section, RES_SCALE_MANUAL)
 }
 
-/// `FUN_14050d130` (PreFill): runtime lists and labels.
+/// `FUN_14050d130` (PreFill): runtime lists and labels. The monitor and
+/// resolution fills ask the renderer each time (`FUN_14050cd00`: vfunc
+/// `+0x2f0` for the menu modes, `+0x278` for `r_mode`'s mode), so an applied
+/// mode shows when the section is filled again.
 pub fn pre_fill(env: &mut Env, section: &mut Section) -> Result<()> {
+    state(section).display = Display::query(&env.console.cvars);
     let display = state(section).display.clone();
     if section.decl.settings[MONITOR].runtime_setting {
         // `FUN_14050c920`.
