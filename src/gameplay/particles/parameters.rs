@@ -57,6 +57,22 @@ pub struct ScalarParameter {
     pub curve: EffectFloatCurvePair,
 }
 impl ScalarParameter {
+    /// 1ea4b0 selects the capped, one-based LOD range and 1cd690 curve path.
+    /// LOD0 uses the ordinary two-sample scalar parameter implementation.
+    pub fn sample_lod(
+        &self,
+        age: f32,
+        lod: usize,
+        ranges: &[[f32; 2]],
+        seed: &mut u32,
+    ) -> Result<f32, String> {
+        let selected = lod.min(ranges.len());
+        if selected == 0 {
+            return self.sample(age, seed);
+        }
+        let range = crate::gameplay::effects::timing::sample_range(ranges[selected - 1], seed);
+        Ok(multiply(self.curve.sample_particle_rate(age, seed)?, range))
+    }
     /// 1cd130's constant scalar parameter: cubic key at zero with value one.
     pub fn constant(value: f32) -> Self {
         Self {
@@ -76,6 +92,35 @@ impl ScalarParameter {
                 self.range[1],
             ),
         ))
+    }
+}
+
+impl VectorParameter<3> {
+    /// 1ea300 uses normalized LOD endpoints and conditionally sampled curve
+    /// mixtures, rather than the base parameter's always-consumed curve RNG.
+    pub fn sample_lod(
+        &self,
+        age: f32,
+        lod: usize,
+        ranges: &[[[f32; 3]; 2]],
+        seed: &mut u32,
+    ) -> Result<[f32; 3], String> {
+        let selected = lod.min(ranges.len());
+        if selected == 0 {
+            return self.sample(age, seed);
+        }
+        let mix = if self.uniform {
+            [lcg_unit(seed); 3]
+        } else {
+            std::array::from_fn(|_| lcg_unit(seed))
+        };
+        let range = crate::gameplay::effects::parameters::position_range(ranges[selected - 1], mix);
+        let curve = self.curve.sample_particle_lod(age, seed)?;
+        Ok([
+            multiply(range[0], curve[0]),
+            multiply(curve[1], range[1]),
+            multiply(curve[2], range[2]),
+        ])
     }
 }
 

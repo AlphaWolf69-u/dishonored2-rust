@@ -659,6 +659,13 @@ these descriptors alongside their quads, with independent readiness errors.
 The system allocator, complete sprite descriptor loader and particle draw
 submission are not connected to gameplay yet. Their presence does not imply
 that underwater bubbles are rendered.
+Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
+partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
+three components, independent pivot/rotation parameters and spawn-time RGBA8
+precision. The shared colour packer is `colour.rs`. Sprite orientation covers
+all seven emitter/camera/velocity/custom-axis modes in `particles/orientation.rs`.
+Authored sprite LOD entry allocation defaults still need their reflected
+constructors; the reader reports this explicitly instead of inventing values.
 `filling_cases.txt` contains numeric results from 64 installed-HLSL UV/fill/colour
 cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
 occlusion without looking at images.

@@ -1,6 +1,8 @@
 //! CPU particle state shared by the FX emitters. Descriptor loading and sprite
 //! submission have separate owners; these routines never infer missing inputs.
 pub mod emitter;
+pub mod orientation;
+pub mod sprite;
 pub mod parameters;
 pub mod pose;
 pub mod space;

@@ -175,3 +175,23 @@ impl EffectVectorCurve<3> {
         Ok(true)
     }
 }
+
+impl EffectVectorCurvePair<3> {
+    /// 1e9c40's particle LOD path draws XYZ curve mixtures only when a minimum
+    /// curve exists. It reuses the Vec3 cubic sampler but preserves its own
+    /// minimum-first range reduction and RNG consumption.
+    pub fn sample_particle_lod(&self, time: f32, seed: &mut u32) -> Result<[f32; 3], String> {
+        let maximum = self.maximum.sample(time, false)?;
+        if self.minimum.times.is_empty() {
+            return Ok(maximum);
+        }
+        let mix: [f32; 3] = std::array::from_fn(|_| crate::random::lcg_unit(seed));
+        let minimum = self.minimum.sample(time, true)?;
+        Ok(std::array::from_fn(|i| {
+            add(
+                minimum[i],
+                multiply(mix[i], subtract(maximum[i], minimum[i])),
+            )
+        }))
+    }
+}
