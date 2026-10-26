@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
     if first.to_string_lossy() == "--container-playback" {
-        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, TransitionMode}};
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, TransitionMode}};
         let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
         let mut paths = if path.is_dir() {
             std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
@@ -17,7 +17,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             let package = Package::open(&path)?;
             let mut file = File::open(&path)?;
             for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
-                for (id, settings) in bank_container_playback(&package.read_entry(&mut file, *entry)?)? {
+                let bytes = package.read_entry(&mut file, *entry)?;
+                for (_, settings) in bank_play_settings(&bytes)? {
+                    *totals.entry("Play actions".into()).or_default() += 1;
+                    for (name, present) in [
+                        ("Play actions with a fade", settings.transition.milliseconds != 0 || settings.transition.modifiers != [0; 2]),
+                        ("Play actions with a delay", settings.delay.frames != 0 || settings.delay.modifiers != [0; 2]),
+                        ("Play actions with probability", settings.probability.is_some()),
+                    ] { if present { *totals.entry(name.into()).or_default() += 1; } }
+                }
+                for (id, settings) in bank_container_playback(&bytes)? {
                     *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
                     if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
                         println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);

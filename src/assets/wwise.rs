@@ -644,6 +644,19 @@ pub struct BankMix {
     pub primary_bus: Option<u32>,
 }
 
+/// Authored Play action settings without loading or decoding any media.
+pub fn bank_play_settings(bytes: &[u8]) -> io::Result<Vec<(u32, PlaySettings)>> {
+    let chunks = bank_chunks(bytes)?;
+    bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 3 && object.get(5) == Some(&4) { result.push((id, bank::play_settings(object)?)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
 /// Authored random/sequence timing without loading or decoding any media.
 pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPlayback)>> {
     let chunks = bank_chunks(bytes)?;
