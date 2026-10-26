@@ -127,7 +127,7 @@ pub fn admission(
             .zones
             .get(query.listener_zone.ok_or("missing listener zone")?)
             .ok_or("missing acoustic listener zone")?;
-        let cost_limit = (query.range * 1000.0) as u32;
+        let cost_limit = crate::float::truncate_i64(query.range * 1000.0) as u32;
         for route in graph
             .routes
             .between(source.id, listener.id)

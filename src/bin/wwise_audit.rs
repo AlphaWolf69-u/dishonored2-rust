@@ -28,12 +28,44 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         println!("{connected_pairs} connected zone pairs, {route_count} authored paths");
-        if arguments.any(|argument| argument == "--player") {
+        let flags = arguments.collect::<Vec<_>>();
+        let inspect_audio = flags.iter().any(|argument| argument == "--audio");
+        if inspect_audio || flags.iter().any(|argument| argument == "--player") {
             let bytes = level.read_entities(&catalog)?.ok_or("level has no entities")?;
             let document = dishonored2_rust::entities::parse(&String::from_utf8_lossy(&bytes))?;
             let player = dishonored2_rust::entities::player_start(&document).ok_or("level has no player start")?;
             let mut world = dishonored2_rust::gameplay::sound::acoustic_world::AcousticWorld::new(propagation, &installation::game_base()?)?;
-            println!("authored player start {:?}: acoustic zone {:?}", player.position, world.zone_at(player.position)?);
+            let listener_zone = world.zone_at(player.position)?;
+            println!("authored player start {:?}: acoustic zone {:?}", player.position, listener_zone);
+            if inspect_audio {
+                use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
+                let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
+                    catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+                })?;
+                let mut deferred = 0usize;
+                let mut admitted = 0usize;
+                let mut active = 0usize;
+                for binding in bindings {
+                    let startup = binding.startup();
+                    if !startup.deferred { continue; }
+                    deferred += 1;
+                    let source_zone = world.zone_at(binding.frame.position)?;
+                    let query = Query { source: binding.frame.position.into(), listener: player.position.into(),
+                        range: startup.max_distance, vertical_scale: 1.0, propagation: binding.propagation,
+                        source_zone, listener_zone };
+                    let admission = propagation::admission(&world.graph, &query, 1.0)?;
+                    if admission == Admission::Inaudible { continue; }
+                    admitted += 1;
+                    let result = paths::evaluate(&world.graph, &paths::Query {
+                        source: query.source, listener: query.listener, source_zone, listener_zone,
+                        range: query.range, propagation: query.propagation, reflection_normal: None, source_obstruction_scale: 1.0,
+                    })?;
+                    active += usize::from(result.closest.is_some());
+                    println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
+                        binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
+                }
+                println!("{deferred} declared deferred loops, {admitted} admitted origins, {active} audible active results at player start");
+            }
             world.release()?;
         }
         return Ok(());
