@@ -6,10 +6,14 @@
 //! them the body's speed and angle with a 4/s ramp, and FUN_140775440
 //! syncs their phase to the body.
 //!
-//! The rewrite has no hand equipment, so both arms stay in "Empty". Arm
-//! midnight groups, hit reactions, grapple and versus layers and the
+//! The tree's midnight node takes the PlayerLeftArm / PlayerRightArm scene
+//! groups (cast target 1 / 2) over loco ⊕ additives.
+//!
+//! The rewrite has no hand equipment, so both arms stay in "Empty". Hit
+//! reactions (no damage), grapple and versus layers (no powers) and the
 //! weapon-lowering bind rotation (identity for empty hands) are not ported.
 use super::animation::{blend_add, AnimBasicCommand, AnimBasicNode, LocoNode, Pose};
+use super::midnight::Midnight;
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::{self, JointRestPose};
 use bevy_math::{Mat3, Vec3};
@@ -74,9 +78,10 @@ impl Arm {
         self.loco.dominant_duration(&self.animations)
     }
 
-    /// The tree's pose (loco ⊕ additives) as model-space joint transforms of
-    /// the arm skeleton (its origin is the bind frame).
-    pub fn pose(&self) -> Result<Vec<(Vec3, Mat3)>, String> {
+    /// The tree's pose (loco ⊕ additives, then the midnight node of cast
+    /// `target`) as model-space joint transforms of the arm skeleton (its
+    /// origin is the bind frame).
+    pub fn pose(&self, midnight: &mut Midnight, target: usize) -> Result<Vec<(Vec3, Mat3)>, String> {
         let s = &self.skeleton;
         let mut pose = match self.loco.evaluate(&self.animations, &s.rest)? {
             Some(pose) => pose,
@@ -85,6 +90,7 @@ impl Arm {
         if let Some(additives) = self.additives.evaluate(&self.animations, &s.rest)? {
             blend_add(&mut pose, &additives, 1.0);
         }
+        let pose = midnight.evaluate_node(target, pose, &self.animations, &s.rest)?;
         let matrices = edge_skeleton::pose_matrices(&pose.joints, &s.hierarchy, &s.root)?;
         Ok(matrices
             .iter()

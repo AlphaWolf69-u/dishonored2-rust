@@ -493,6 +493,10 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                 Kind::CatFall(CatFallDecl {
                     low_damage_midnight: atom(fields, "m_lowDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
                     high_damage_midnight: atom(fields, "m_highDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
+                    low_damage_arm_midnights: ["m_lowDamageMidnightLeftArm", "m_lowDamageMidnightRightArm"]
+                        .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
+                    high_damage_arm_midnights: ["m_highDamageMidnightLeftArm", "m_highDamageMidnightRightArm"]
+                        .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
                     damage_threshold: number(fields, "m_damageThreshold", d.damage_threshold)?,
                     look_at_params: constraint_params(fields, "m_lookAtParams", d.look_at_params)?,
                 })

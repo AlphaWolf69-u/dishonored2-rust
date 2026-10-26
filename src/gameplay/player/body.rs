@@ -365,6 +365,13 @@ pub struct Body {
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
+    /// The arm parts shown by the states (FUN_140774a10), left and right.
+    pub arms_shown: [bool; 2],
+    /// +0xc58 m_desiredLegsVisibility (LEGS-owning states) and +0xc51
+    /// m_currentLegsVisibility: the body mesh shows its visible-legs
+    /// materials, otherwise the hidden ones.
+    pub desired_legs: i32,
+    pub legs_visible: bool,
     /// The arm parts (left, right).
     pub arms: Vec<Arm>,
     pub midnight: Midnight,
@@ -379,6 +386,18 @@ pub struct Body {
     /// the tree root) and the frames ApplyLean scrubs them to.
     pub lean_clips: [Option<usize>; 2],
     lean_frames: [f32; 2],
+}
+
+/// The midnight cast's md6s (CONDMD6): the body's, then the arms'.
+pub fn cast_md6<'a>(body: &'a str, arms: &'a [Arm]) -> [&'a str; 3] {
+    let arm = |i: usize| arms.get(i).map_or("", |a| a.model.as_str());
+    [body, arm(0), arm(1)]
+}
+
+/// The midnight cast's trees: the body and the left and right arms.
+pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm]) -> super::midnight::Cast<'a> {
+    let arm = |i: usize| arms.get(i).map_or(&[][..], |a| a.animations.as_slice());
+    [body, arm(0), arm(1)]
 }
 
 impl Body {
@@ -450,6 +469,9 @@ impl Body {
             angle: 0.0,
             bob_amount: 1.0,
             jump: JumpAnim::default(),
+            arms_shown: [true; 2],
+            desired_legs: 0,
+            legs_visible: false,
             arms: Vec::new(),
             midnight: Midnight::default(),
             follow_slope: FollowSlope::default(),
@@ -564,10 +586,27 @@ impl Body {
             let command = last_command(&posted, &arm.jump_items);
             arm.update(dt, &body_stance, speed, angle, midnight, rate, command);
         }
+        for side in 0..self.arms.len() {
+            self.midnight.update_node(side + 1, dt);
+        }
         // Clips are sampled once at load, so this cannot fail; a failure
         // would leave the frame without root motion.
         if self.midnight.update(dt, &self.animations, &self.skeleton.rest).is_err() {
             self.midnight.root = None;
+        }
+        self.update_legs();
+    }
+
+    /// FUN_140776e60: show the legs as soon as a LEGS owner wants them;
+    /// hiding waits while the body's midnight player is busy (shadow walk,
+    /// the bypass flag +0xc50 and the +0x318 guard are not ported).
+    fn update_legs(&mut self) {
+        let visible = self.desired_legs >= 1;
+        if visible == self.legs_visible {
+            return;
+        }
+        if visible || self.midnight.playing().is_none() {
+            self.legs_visible = visible;
         }
     }
 

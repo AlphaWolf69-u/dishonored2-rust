@@ -831,3 +831,100 @@ impl MantleSensor {
         self.destination != Vec3::ZERO && self.collisions != [true; 3]
     }
 }
+
+/// arkDeclCpntPlayerSensorCatfall (PLAYER_SENSOR 32, ctor FUN_1403a5820;
+/// the installed decl is `{}`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CatfallDecl {
+    pub left_offset: f32,
+    pub right_offset: f32,
+    pub forward_offset: f32,
+    pub max_ground_distance: f32,
+    pub max_bump_size: f32,
+    pub max_hole_size: f32,
+    pub collision_layers: u32,
+    pub start_z_offset: f32,
+}
+
+impl Default for CatfallDecl {
+    fn default() -> Self {
+        Self {
+            left_offset: 0.15,
+            right_offset: 0.15,
+            forward_offset: 0.55,
+            max_ground_distance: 10.0,
+            max_bump_size: 0.01,
+            max_hole_size: 0.05,
+            collision_layers: 0x802b,
+            start_z_offset: 1.0,
+        }
+    }
+}
+
+/// arkCpntPlayerSensorCatfall: three rays down from the feet and from both
+/// hands ahead (submit FUN_1403a5e30, results FUN_1403a5a00 a frame later).
+/// A hand counts when its ground lies within [-maxBumpSize, +maxHoleSize] of
+/// the plane through the body hit with the ground-ray normal average.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatfallSensor {
+    pub decl: CatfallDecl,
+    pub enabled: bool,
+    /// +0x65 / +0x66.
+    pub left_hit: bool,
+    pub right_hit: bool,
+    /// The queries of the previous frame: hand ray origins and the three hits.
+    pending: Option<([Vec3; 2], [Option<RayHit>; 3])>,
+}
+
+impl CatfallSensor {
+    pub fn new(decl: CatfallDecl) -> Self {
+        Self { decl, enabled: false, left_hit: false, right_hit: false, pending: None }
+    }
+
+    /// FUN_1403a5980: disabling clears the hits and drops the queries.
+    pub fn enable(&mut self, enabled: bool) {
+        if !enabled {
+            self.pending = None;
+        }
+        self.left_hit = false;
+        self.right_hit = false;
+        self.enabled = enabled;
+    }
+
+    /// The previous frame's results, then this frame's queries.
+    pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics) {
+        if !self.enabled {
+            return;
+        }
+        if let Some((origins, [body, left, right])) = self.pending.take() {
+            self.left_hit = false;
+            self.right_hit = false;
+            if let Some(body) = body {
+                let normal = physics.ground_ray_normal_average;
+                let d = -body.position.dot(normal);
+                // The hand ray's distance to that plane along (0, 0, -1).
+                let along = normal.dot(-Vec3::Z);
+                let plane = |origin: Vec3| if along != 0.0 { -(normal.dot(origin) + d) / along } else { 0.0 };
+                let within = |hit: Option<RayHit>, origin: Vec3| {
+                    hit.is_some_and(|h| {
+                        let delta = h.distance - plane(origin);
+                        delta >= -self.decl.max_bump_size && delta <= self.decl.max_hole_size
+                    })
+                };
+                self.left_hit = within(left, origins[0]);
+                self.right_hit = within(right, origins[1]);
+            }
+        }
+        let d = self.decl;
+        let origin = physics.position();
+        let axis = physics.axis();
+        let forward = axis.x_axis * d.forward_offset;
+        let start = origin + Vec3::Z * d.start_z_offset;
+        let length = d.start_z_offset + d.max_ground_distance + d.max_hole_size;
+        let filter = QueryFilter::layers(d.collision_layers, PLAYER_FLAG);
+        let left = start + forward + axis.y_axis * d.left_offset;
+        let right = start + forward - axis.y_axis * d.right_offset;
+        let ray = |from: Vec3| world.cast_ray(filter, from, -Vec3::Z, length);
+        self.pending = Some(([left, right], [ray(start), ray(left), ray(right)]));
+    }
+}

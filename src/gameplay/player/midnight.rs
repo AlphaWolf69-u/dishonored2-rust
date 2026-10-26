@@ -6,10 +6,12 @@
 //! clips over the loco pose, snapshot blend FUN_1406fe490) and its root
 //! motion (FUN_1406ffde0).
 //!
-//! Only the groups cast to the player entity (PlayerBody, PlayerCamera;
-//! FUN_1408542b0 bit 1) play here: the arm, weapon and dummy entities have
-//! no midnight trees in the rewrite. SFX tracks on the body and cast arms
-//! post to their audio emitters; barks and timed events are not ported.
+//! The cast (FUN_1408542b0) puts PlayerBody / PlayerCamera on the player
+//! entity (mask bit 1) and PlayerLeftArm / PlayerRightArm on the arm
+//! entities (bits 2 and 4); each group writes its own entity tree's
+//! midnight node. Weapon and dummy groups have no trees in the rewrite.
+//! SFX tracks post to the cast emitters; barks and timed events are not
+//! ported.
 use super::animation::{blend_add, blend_lerp, sample, Pose};
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::JointRestPose;
@@ -24,6 +26,8 @@ pub struct PreparedScene {
     pub decl: MidnightScene,
     /// Per (scene index, key index) of the player group: the body clip.
     pub clips: Vec<Vec<usize>>,
+    /// The same for the PlayerLeftArm / PlayerRightArm groups: arm clips.
+    pub arm_clips: [Vec<Vec<usize>>; 2],
     /// SFX keys resolved to installed event IDs and their cast audio owners.
     pub sounds: Vec<Vec<PreparedSound>>,
 }
@@ -74,26 +78,55 @@ struct ScheduledSound {
 
 /// The group names cast to the player entity.
 pub fn player_group(name: &str) -> bool {
-    name == "PlayerBody" || name == "PlayerCamera"
+    cast_target(name) == Some(BODY)
 }
+
+/// The player tree a cast group plays on: the body (0) or an arm (1 left,
+/// 2 right); the cast mask bit of target `t` is `1 << t`.
+pub fn cast_target(name: &str) -> Option<usize> {
+    match name {
+        "PlayerBody" | "PlayerCamera" => Some(BODY),
+        "PlayerLeftArm" => Some(1),
+        "PlayerRightArm" => Some(2),
+        _ => None,
+    }
+}
+
+pub const BODY: usize = 0;
+pub const TARGETS: usize = 3;
 
 impl PreparedScene {
     /// The scene's player group (at most one per scene in the installed
     /// decls).
     pub fn player_group(&self, scene: usize) -> Result<Option<usize>, String> {
+        self.group(scene, BODY)
+    }
+
+    /// The scene's group cast to tree `target`.
+    pub fn group(&self, scene: usize, target: usize) -> Result<Option<usize>, String> {
         let s = &self.decl.scenes[scene];
         let mut found = None;
         for (i, g) in s.groups.iter().enumerate() {
-            if self.decl.group_name(g.group).is_some_and(player_group) {
+            if self.decl.group_name(g.group).and_then(cast_target) == Some(target) {
                 if found.is_some() {
-                    return Err("a midnight scene with two player groups is not decoded".into());
+                    return Err("a midnight scene with two groups on one player tree is not decoded".into());
                 }
                 found = Some(i);
             }
         }
         Ok(found)
     }
+
+    fn target_clips(&self, scene: usize, target: usize) -> &[usize] {
+        match target {
+            BODY => &self.clips[scene],
+            t => self.arm_clips[t - 1].get(scene).map_or(&[], Vec::as_slice),
+        }
+    }
 }
+
+/// The animations of each player tree (body, left arm, right arm).
+pub type Cast<'a> = [&'a [EdgeAnimation]; TARGETS];
 
 /// One scheduled clip (0x98 record): scene ms → anim ms between two
 /// segments.
@@ -126,20 +159,18 @@ struct Instance {
     abs: i64,
     carry: f32,
     rate: f32,
-    clips: Vec<Clip>,
+    clips: [Vec<Clip>; TARGETS],
     events: Vec<(i32, String)>,
     sounds: Vec<ScheduledSound>,
     playing_sounds: std::collections::HashMap<(u32, Emitter), bool>,
     parts: u8,
-    md6: String,
+    /// The cast trees' md6s (body, left arm, right arm) for CONDMD6.
+    md6: [String; TARGETS],
 }
 
-/// The player's midnight manager subset and the body tree's midnight node.
+/// One tree's midnight node: its anim track's data and snapshot blender.
 #[derive(Default)]
-pub struct Midnight {
-    instance: Option<Instance>,
-    next_handle: u32,
-    sound_requests: Vec<SoundRequest>,
+struct Node {
     /// The anim track's midnightData of the latest write.
     data: Vec<ClipInfo>,
     /// The previous tree evaluation's inputs, for the root delta.
@@ -148,6 +179,18 @@ pub struct Midnight {
     snapshot: Option<(Pose, f32, f32)>,
     pending_snapshot: Option<f32>,
     last: Option<Pose>,
+}
+
+/// The player's midnight manager subset and the player trees' midnight
+/// nodes (body, left arm, right arm).
+#[derive(Default)]
+pub struct Midnight {
+    /// The playing scene instances (catfall plays its arm scenes beside the
+    /// body scene).
+    instances: Vec<Instance>,
+    next_handle: u32,
+    sound_requests: Vec<SoundRequest>,
+    nodes: [Node; TARGETS],
     /// m_midnightWeight: the largest full-body clip weight.
     pub weight: f32,
     /// The frame's root motion: has full body, translation, yaw (degrees).
@@ -221,20 +264,23 @@ impl Midnight {
     /// The main clip of the latest data (mainAnimPtr / mainAnimFrame):
     /// (clip, frame).
     pub fn main_clip(&self) -> Option<(usize, f32)> {
-        self.data.iter().rev().find(|c| c.main).map(|c| (c.anim, c.frame))
+        self.nodes[BODY].data.iter().rev().find(|c| c.main).map(|c| (c.anim, c.frame))
     }
 
+    /// The scene playing on the body tree.
     pub fn playing(&self) -> Option<u32> {
-        self.instance.as_ref().map(|i| i.handle)
+        self.instances.iter().find(|i| i.parts & 1 << BODY != 0).map(|i| i.handle)
     }
 
     /// FUN_1407cf250(inst, ignoreBlendOut = 1): the scene reached its end.
     pub fn finished(&self, handle: u32) -> bool {
-        self.instance.as_ref().is_none_or(|i| i.handle != handle)
+        !self.instances.iter().any(|i| i.handle == handle)
     }
 
-    /// FUN_1407cc650: resolve a graph element for the player md6.
-    pub fn resolve(scene: &PreparedScene, mut next: Next, md6: &str) -> Result<Option<usize>, String> {
+    /// FUN_1407cc650: resolve a graph element; CONDMD6 (FUN_1407ccdc0)
+    /// reads the md6 of the entity its node's group is cast to (`md6`:
+    /// body, left arm, right arm).
+    pub fn resolve(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS]) -> Result<Option<usize>, String> {
         for _ in 0..16 {
             match next {
                 Next::Final => return Ok(None),
@@ -243,9 +289,8 @@ impl Midnight {
                 }
                 Next::Node(uid) => {
                     let node = scene.decl.nodes.iter().find(|n| n.uid == uid).ok_or_else(|| format!("missing midnight node {uid}"))?;
-                    if !player_group(&node.group) {
-                        return Err(format!("CONDMD6 on group {} is not decoded", node.group));
-                    }
+                    let target = cast_target(&node.group).ok_or_else(|| format!("CONDMD6 on group {} is not decoded", node.group))?;
+                    let md6 = md6[target];
                     // The base-compatibility fallback (FUN_1401c8cc0) is not traced.
                     next = node.next.iter().find(|(m, _)| m == md6).map(|(_, n)| *n).ok_or_else(|| format!("no CONDMD6 match for {md6}"))?;
                 }
@@ -254,20 +299,27 @@ impl Midnight {
         Err("midnight graph does not reach a scene".into())
     }
 
-    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, animations: &[EdgeAnimation]) -> Result<(Vec<Clip>, Vec<(i32, String)>), String> {
-        let mut clips = Vec::new();
+    /// The clip schedule of every cast tree and the body group's events.
+    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, cast: Cast, parts: u8) -> Result<([Vec<Clip>; TARGETS], Vec<(i32, String)>), String> {
+        let mut schedules: [Vec<Clip>; TARGETS] = Default::default();
         let mut events = Vec::new();
-        if let Some(g) = prepared.player_group(index)? {
+        for (target, clips) in schedules.iter_mut().enumerate() {
+            if parts & (1 << target) == 0 {
+                continue;
+            }
+            let Some(g) = prepared.group(index, target)? else { continue };
+            let animations = cast[target];
             let group = &prepared.decl.scenes[index].groups[g];
-            if prepared.clips[index].len() != group.anim_keys.len() {
-                return Err("midnight scene was not prepared for this body".into());
+            let prepared_clips = prepared.target_clips(index, target);
+            if prepared_clips.len() != group.anim_keys.len() {
+                return Err("midnight scene was not prepared for this player".into());
             }
             let mut next_priority = 0;
             for (k, key) in group.anim_keys.iter().enumerate() {
                 if key.markers > 0 {
                     return Err("midnight clip markers are not decoded".into());
                 }
-                let anim = prepared.clips[index][k];
+                let anim = prepared_clips[k];
                 let anim_ms = (animations[anim].duration() * 1000.0) as i32;
                 let length = if key.stretched { key.duration_ms } else { anim_ms };
                 // FUN_14018f250: the key priority over the clips already scheduled.
@@ -284,134 +336,158 @@ impl Midnight {
                     main: key.main_clip,
                 });
             }
-            events = group.events.iter().map(|e| (e.time_ms, e.event.clone())).collect();
+            if target == BODY {
+                events = group.events.iter().map(|e| (e.time_ms, e.event.clone())).collect();
+            }
         }
-        Ok((clips, events))
+        Ok((schedules, events))
     }
 
     /// FUN_1408549c0 → FUN_1407d6040 / FUN_1407d9270: start at t = 0 (the
     /// first data is written now). An interrupted previous scene snapshots.
-    pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: &str, rate: f32, animations: &[EdgeAnimation]) -> Result<u32, String> {
-        self.start_with_parts(prepared, md6, rate, animations, 1)
+    pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast) -> Result<u32, String> {
+        self.start_with_parts(prepared, md6, rate, cast, 1)
     }
 
-    pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: &str, rate: f32, animations: &[EdgeAnimation], parts: u8) -> Result<u32, String> {
+    /// `parts` is the cast mask (1 body, 2 left arm, 4 right arm).
+    pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8) -> Result<u32, String> {
         let Some(index) = Self::resolve(prepared, prepared.decl.first, md6)? else { return Ok(0) };
-        let (clips, events) = self.enter(prepared, index, animations)?;
-        if let Some(old) = &self.instance {
-            Self::interrupt_sounds(old, &mut self.sound_requests);
-            self.pending_snapshot = Some(old.scene.decl.blend_out_time);
+        let (clips, events) = self.enter(prepared, index, cast, parts)?;
+        // A scene on a tree another instance plays interrupts it there.
+        let handles: Vec<u32> = self.instances.iter().filter(|i| i.parts & parts != 0).map(|i| i.handle).collect();
+        for handle in handles {
+            self.stop(handle);
         }
         self.next_handle = self.next_handle.wrapping_add(1).max(1);
         let sounds = Self::schedule_sounds(prepared, index, parts);
         let mut inst = Instance {
             handle: self.next_handle, scene: prepared.clone(), current: index, time: 0, abs: 0, carry: 0.0, rate,
-            clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.to_owned(),
+            clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
-        self.instance = Some(inst);
-        self.write(animations);
+        self.instances.push(inst);
+        self.write(cast);
         Ok(self.next_handle)
     }
 
     /// FUN_1407d9590 (flags 0x600): an interrupting stop snapshots the
     /// last pose over the scene's m_blendOutTime.
     pub fn stop(&mut self, handle: u32) {
-        if self.instance.as_ref().is_some_and(|i| i.handle == handle) {
-            Self::interrupt_sounds(self.instance.as_ref().unwrap(), &mut self.sound_requests);
-            let blend = self.instance.take().map_or(0.0, |i| i.scene.decl.blend_out_time);
-            self.data.clear();
-            self.pending_snapshot = Some(blend);
+        if let Some(i) = self.instances.iter().position(|i| i.handle == handle) {
+            let inst = self.instances.remove(i);
+            Self::interrupt_sounds(&inst, &mut self.sound_requests);
+            for (target, node) in self.nodes.iter_mut().enumerate() {
+                if inst.parts & 1 << target != 0 {
+                    node.data.clear();
+                    node.pending_snapshot = Some(inst.scene.decl.blend_out_time);
+                }
+            }
         }
     }
 
     /// The manager update before the component stages: the time step, the
     /// events (returned as (event name, handle)) and the anim data.
-    pub fn advance(&mut self, dt: f32, animations: &[EdgeAnimation]) -> Result<Vec<(String, u32)>, String> {
+    pub fn advance(&mut self, dt: f32, cast: Cast) -> Result<Vec<(String, u32)>, String> {
         let mut messages = Vec::new();
-        let Some(inst) = self.instance.as_mut() else { return Ok(messages) };
-        let length = inst.scene.decl.scenes[inst.current].length_ms;
-        let end = length - 1;
-        let total = dt * inst.rate + inst.carry;
-        let mut ms = (total * 1000.0) as i32;
-        let from = inst.time;
-        let mut to = from + ms;
-        let mut ended = false;
-        if to >= end {
-            ms = end - from;
-            to = end;
-            ended = true;
-        }
-        inst.carry = total - ms as f32 * 0.001;
-        let first_step = inst.abs == 0;
-        inst.abs += ms.unsigned_abs() as i64;
-        inst.time = to;
-        for (k, event) in &inst.events {
-            let entered = (from <= *k && *k < to) || (*k == to && ended);
-            if entered && !(*k == 0 && first_step) {
-                messages.push((event.clone(), inst.handle));
+        let mut ended_instances = Vec::new();
+        for inst in &mut self.instances {
+            let length = inst.scene.decl.scenes[inst.current].length_ms;
+            let end = length - 1;
+            let total = dt * inst.rate + inst.carry;
+            let mut ms = (total * 1000.0) as i32;
+            let from = inst.time;
+            let mut to = from + ms;
+            let mut ended = false;
+            if to >= end {
+                ms = end - from;
+                to = end;
+                ended = true;
+            }
+            inst.carry = total - ms as f32 * 0.001;
+            let first_step = inst.abs == 0;
+            inst.abs += ms.unsigned_abs() as i64;
+            inst.time = to;
+            for (k, event) in &inst.events {
+                let entered = (from <= *k && *k < to) || (*k == to && ended);
+                if entered && !(*k == 0 && first_step) {
+                    messages.push((event.clone(), inst.handle));
+                }
+            }
+            // The SFX track uses the same forward key crossing as 1407dfdd0.
+            // Its clip keys at zero are eligible on the first step, unlike points.
+            for sound in &mut inst.sounds {
+                let s = &sound.sound;
+                let k = s.key.time_ms;
+                let entered = (from <= k && k < to) || (k == to && ended);
+                if !sound.fired && entered && (s.key.is_clip || !(k == 0 && first_step)) {
+                    self.sound_requests.push(SoundRequest::Post { event: s.event, emitter: s.emitter });
+                    inst.playing_sounds.insert((s.event, s.emitter), s.key.stop_on_interruption);
+                    sound.fired = true;
+                }
+            }
+            if ended {
+                ended_instances.push(inst.handle);
             }
         }
-        // The SFX track uses the same forward key crossing as 1407dfdd0.
-        // Its clip keys at zero are eligible on the first step, unlike points.
-        for sound in &mut inst.sounds {
-            let s = &sound.sound;
-            let k = s.key.time_ms;
-            let entered = (from <= k && k < to) || (k == to && ended);
-            if !sound.fired && entered && (s.key.is_clip || !(k == 0 && first_step)) {
-                self.sound_requests.push(SoundRequest::Post { event: s.event, emitter: s.emitter });
-                inst.playing_sounds.insert((s.event, s.emitter), s.key.stop_on_interruption);
-                sound.fired = true;
-            }
-        }
-        self.write(animations);
-        if ended {
-            // FUN_1407d2800: the next element; FINAL clears the data with no
-            // snapshot.
-            let inst = self.instance.as_ref().unwrap();
-            let (prepared, md6) = (inst.scene.clone(), inst.md6.clone());
-            match Self::resolve(&prepared, prepared.decl.scenes[inst.current].next, &md6)? {
+        // FUN_1407d2800: the next element; FINAL clears the data with no
+        // snapshot (the ended instance writes no further frame).
+        for handle in ended_instances {
+            let i = self.instances.iter().position(|inst| inst.handle == handle).unwrap();
+            let inst = &self.instances[i];
+            let (prepared, md6, parts) = (inst.scene.clone(), inst.md6.clone(), inst.parts);
+            match Self::resolve(&prepared, prepared.decl.scenes[inst.current].next, md6.each_ref().map(String::as_str))? {
                 None => {
-                    self.instance = None;
-                    self.data.clear();
+                    self.instances.remove(i);
                 }
                 Some(index) => {
-                    let (clips, events) = self.enter(&prepared, index, animations)?;
-                    let inst = self.instance.as_mut().unwrap();
+                    let (clips, events) = self.enter(&prepared, index, cast, parts)?;
+                    let inst = &mut self.instances[i];
                     (inst.current, inst.time, inst.clips, inst.events) = (index, 0, clips, events);
                     inst.sounds = Self::schedule_sounds(&prepared, index, inst.parts);
                     Self::initial_sounds(inst, &mut self.sound_requests);
-                    self.write(animations);
                 }
             }
         }
+        self.write(cast);
         Ok(messages)
     }
 
     /// FUN_1407e2ad0: the clips covering the scene time with their weights,
     /// ascending by priority.
-    fn write(&mut self, animations: &[EdgeAnimation]) {
-        self.data.clear();
-        let Some(inst) = &self.instance else { return };
-        let t = inst.time;
-        let mut clips: Vec<&Clip> = inst.clips.iter().filter(|c| c.scene_from <= t && t <= c.scene_to).collect();
-        clips.sort_by_key(|c| c.priority);
-        for c in clips {
-            let frac = if c.scene_to == c.scene_from { 0.0 } else { (t - c.scene_from) as f32 / (c.scene_to - c.scene_from) as f32 };
-            let fps = animations[c.anim].frame_rate.ceil();
-            let frame = fps * (c.anim_from as f32 * 0.001 + (c.anim_to - c.anim_from) as f32 * frac * 0.001);
-            self.data.push(ClipInfo { anim: c.anim, weight: weight(&c.curve, t - c.scene_from), frame, main: c.main });
+    fn write(&mut self, cast: Cast) {
+        for node in &mut self.nodes {
+            node.data.clear();
         }
+        for inst in &self.instances {
+            let t = inst.time;
+            for (target, node) in self.nodes.iter_mut().enumerate() {
+                let animations = cast[target];
+                let mut clips: Vec<&Clip> = inst.clips[target].iter().filter(|c| c.scene_from <= t && t <= c.scene_to).collect();
+                clips.sort_by_key(|c| c.priority);
+                for c in clips {
+                    let frac = if c.scene_to == c.scene_from { 0.0 } else { (t - c.scene_from) as f32 / (c.scene_to - c.scene_from) as f32 };
+                    let fps = animations[c.anim].frame_rate.ceil();
+                    let frame = fps * (c.anim_from as f32 * 0.001 + (c.anim_to - c.anim_from) as f32 * frac * 0.001);
+                    node.data.push(ClipInfo { anim: c.anim, weight: weight(&c.curve, t - c.scene_from), frame, main: c.main });
+                }
+            }
+        }
+    }
+
+    /// Whether the playing scene writes clips to tree `target` this frame.
+    pub fn drives(&self, target: usize) -> bool {
+        !self.nodes[target].data.is_empty()
     }
 
     /// The tree update of the midnight node: root motion (FUN_1406ffde0)
     /// and the snapshot timer. `dt` is the tree delta.
     pub fn update(&mut self, dt: f32, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<(), String> {
         let full = |c: &ClipInfo| animations[c.anim].flags & 1 == 0 && animations[c.anim].properties & 0xff == 0;
-        self.weight = self.data.iter().filter(|c| full(c)).map(|c| c.weight).fold(0.0, f32::max);
+        let node = &self.nodes[BODY];
+        self.weight = node.data.iter().filter(|c| full(c)).map(|c| c.weight).fold(0.0, f32::max);
         let mut root = None;
         let (mut delta, mut yaw) = (Vec3::ZERO, 0.0f32);
-        for c in &self.data {
+        for c in &node.data {
             if !(c.weight > 0.0 && full(c)) {
                 continue;
             }
@@ -420,7 +496,7 @@ impl Midnight {
                 continue;
             }
             root = Some((Vec3::ZERO, 0.0));
-            if let Some(p) = self.previous.iter().find(|p| p.anim == c.anim) {
+            if let Some(p) = node.previous.iter().find(|p| p.anim == c.anim) {
                 if c.frame > p.frame {
                     let joint = |frame: f32| -> Result<JointRestPose, String> {
                         Ok(animation.sample(rest, frame / animation.frame_rate)?.swap_remove(0))
@@ -438,22 +514,36 @@ impl Midnight {
             }
         }
         self.root = root.map(|_| (delta, yaw));
-        self.previous = self.data.clone();
-        if let Some((_, elapsed, duration)) = &mut self.snapshot {
+        self.update_node(BODY, dt);
+        Ok(())
+    }
+
+    /// A tree's midnight node timers; the arm trees have no root motion
+    /// (their entities are bound to the body).
+    pub fn update_node(&mut self, target: usize, dt: f32) {
+        let node = &mut self.nodes[target];
+        node.previous = node.data.clone();
+        if let Some((_, elapsed, duration)) = &mut node.snapshot {
             *elapsed += dt;
             if *elapsed >= *duration {
-                self.snapshot = None;
+                node.snapshot = None;
             }
         }
-        Ok(())
     }
 
     /// The midnight node's pose over `loco` (blendarray leafMidnight_06..00,
     /// BLEND or ADD_RIGHT), then the snapshot blender. `last` records the
     /// output for a later snapshot.
     pub fn evaluate(&mut self, loco: Pose, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<Pose, String> {
+        self.evaluate_node(BODY, loco, animations, rest)
+    }
+
+    /// Tree `target`'s midnight node over its input pose, then its snapshot
+    /// blender.
+    pub fn evaluate_node(&mut self, target: usize, loco: Pose, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<Pose, String> {
+        let node = &mut self.nodes[target];
         let mut pose = loco;
-        for c in &self.data {
+        for c in &node.data {
             if c.weight <= 0.0 {
                 continue;
             }
@@ -468,18 +558,18 @@ impl Midnight {
                 blend_lerp(&mut pose, &layer, c.weight);
             }
         }
-        if let Some(duration) = self.pending_snapshot.take() {
-            if let Some(last) = self.last.clone() {
-                self.snapshot = Some((last, 0.0, duration));
+        if let Some(duration) = node.pending_snapshot.take() {
+            if let Some(last) = node.last.clone() {
+                node.snapshot = Some((last, 0.0, duration));
             }
         }
-        if let Some((snapshot, elapsed, duration)) = &self.snapshot {
+        if let Some((snapshot, elapsed, duration)) = &node.snapshot {
             let factor = if *duration > 0.0 { (1.0 - elapsed / duration).max(0.0) } else { 0.0 };
             if factor > 0.0 {
                 blend_lerp(&mut pose, snapshot, factor);
             }
         }
-        self.last = Some(pose.clone());
+        node.last = Some(pose.clone());
         Ok(pose)
     }
 }
