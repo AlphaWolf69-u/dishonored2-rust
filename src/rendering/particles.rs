@@ -9,6 +9,7 @@ pub mod material;
 pub mod publication;
 pub mod transparency;
 pub mod view;
+pub mod world_sources;
 
 /// 1ee880's twelve-byte instance record, consumed by particles_instancing.
 /// The upper half of size is unused by GetParticleRadius and starts at zero.

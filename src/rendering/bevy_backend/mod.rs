@@ -246,3 +246,5 @@ pub mod screen_effects;
 pub mod particle_pass;
 #[cfg(feature = "game")]
 pub(crate) mod particle_system;
+#[cfg(feature = "game")]
+pub mod world_effects;

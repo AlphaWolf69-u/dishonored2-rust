@@ -72,6 +72,10 @@ pub(super) fn register(app: &mut App) {
         super::physics_queries::PhysicsQueryFrame,
     >::default());
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
+    app.init_resource::<super::world_effects::WorldEffectSources>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_effects::WorldEffectSources,
+    >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::screen_effects::ScreenEffectMaterials,
     >::default());

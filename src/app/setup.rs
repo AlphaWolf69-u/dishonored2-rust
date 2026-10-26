@@ -81,6 +81,7 @@ pub(super) fn setup(
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
+    effect_graphs: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectGraphs>>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -1715,6 +1716,13 @@ pub(super) fn setup(
                 super::player::character_name(super::pause_menu::debug_character()))
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
+    }
+    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
+        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
+            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
+        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(Arc::new(
+            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.0,catalog,programs)
+        )));
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));
