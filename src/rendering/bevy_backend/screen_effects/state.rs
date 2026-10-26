@@ -18,6 +18,39 @@ pub(crate) struct ScreenEffectState {
     query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
 }
 impl ScreenEffectState {
+    pub(crate) fn particle_capacity(&self) -> (usize, usize) {
+        let mut instances = 0;
+        let mut draws = 0;
+        for particle in &self.particles {
+            for stage in &particle.stages {
+                let sprites = stage.declaration.stages[stage.index]
+                    .sprites
+                    .iter()
+                    .filter(|sprite| sprite.enabled && sprite.material.is_some())
+                    .count();
+                instances += stage.particles.capacity() * sprites;
+                draws += sprites;
+            }
+        }
+        (instances, draws)
+    }
+
+    pub(crate) fn publish_particle_draws<'a>(
+        &self,
+        frame: u32,
+        mut context: impl FnMut(
+            crate::gameplay::reference_frame::ReferenceFrame,
+        ) -> Result<super::ParticleDrawContext<'a>, String>,
+    ) -> Result<Vec<super::super::particle_pass::ParticleDraw>, String> {
+        let mut draws = Vec::new();
+        for particle in &self.particles {
+            if let Some(pose) = particle.draw_pose(frame) {
+                particle.publish_draws(frame, context(pose)?, &mut draws)?;
+            }
+        }
+        Ok(draws)
+    }
+
     /// Execute against the physics publication for this exact view/frame.
     /// Unsupported fallback inputs remain explicit errors, never dry hits.
     pub(crate) fn simulate_particles(

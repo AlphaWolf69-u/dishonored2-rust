@@ -33,6 +33,16 @@ pub(super) struct CameraGpu {
     screen_effects: super::screen_effects::ScreenEffects,
     screen_state: super::screen_effects::ScreenEffectState,
     screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
+    particles: Option<ParticleGpu>,
+    screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
+}
+struct ParticleGpu {
+    pass: super::particle_pass::ParticlePass,
+    instances: usize,
+    draws: usize,
+    colour_format: bevy::render::render_resource::TextureFormat,
+    depth_format: bevy::render::render_resource::TextureFormat,
+    source: std::sync::Arc<super::screen_effects::ScreenEffectSources>,
 }
 impl CameraGpu {
     pub(super) fn capture_planes(
@@ -75,11 +85,188 @@ pub(super) fn register(app: &mut App) {
         );
         render.add_systems(
             Core3d,
-            prepare_screen_effects
+            (prepare_screen_effects, render_particles)
+                .chain()
                 .in_set(Core3dSystems::MainPass)
                 .after(super::fog_scene::AtmospherePass)
                 .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
         );
+    }
+}
+
+/// Submit the shared FX controller's live sprites into the gameplay HDR target,
+/// after atmosphere/depth preparation and before ordinary transparency.
+fn render_particles(
+    sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    water: Res<WaterSceneFrame>,
+    fog_frame: Res<FogSceneFrame>,
+    fog: Res<FogGpu>,
+    shared: Res<super::fog_material::FogMaterialResources>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
+    mut gpu: ResMut<CameraGpu>,
+    mut context: RenderContext,
+    view: ViewQuery<(
+        &MainEntity,
+        &ExtractedView,
+        &ExtractedCamera,
+        &ViewTarget,
+        &MaterialExposure,
+    )>,
+    mut last_error: Local<Option<String>>,
+) {
+    let Some(water) = water.0.as_ref() else {
+        gpu.particles = None;
+        return;
+    };
+    let (main, view, camera, target, exposure) = view.into_inner();
+    if main.id() != water.camera {
+        return;
+    }
+    let Some(sources) = sources.0.as_ref() else {
+        gpu.particles = None;
+        return;
+    };
+    if gpu
+        .particles
+        .as_ref()
+        .is_some_and(|p| !std::sync::Arc::ptr_eq(&p.source, sources))
+    {
+        gpu.particles = None;
+    }
+    let result = (|| -> Result<(), String> {
+        let (instances, draw_capacity) = gpu.screen_state.particle_capacity();
+        if instances == 0 || draw_capacity == 0 {
+            return Ok(());
+        }
+        if !camera.hdr
+            || target.main_texture().sample_count() != 1
+            || camera.physical_viewport_size != camera.physical_target_size
+            || camera
+                .viewport
+                .as_ref()
+                .is_some_and(|v| v.physical_position != UVec2::ZERO)
+        {
+            return Err("particle colour requires a resolved full gameplay view".into());
+        }
+        let frame = fog_frame
+            .0
+            .as_ref()
+            .filter(|f| f.camera == water.camera)
+            .ok_or("particle fog awaits the gameplay camera")?;
+        let (depth, _) = fog
+            .camera_depth(water.camera, water.matrices.frame)
+            .ok_or("particle depth awaits completed atmosphere")?;
+        let matrices = &water.matrices.current;
+        let axes = [
+            std::array::from_fn(|i| -matrices.view[2][i]),
+            std::array::from_fn(|i| -matrices.view[0][i]),
+            std::array::from_fn(|i| matrices.view[1][i]),
+        ];
+        let sprite_view = crate::rendering::particles::SpriteView {
+            camera_position: matrices.position,
+            camera_axes: axes,
+            custom_basis: axes,
+            emitter_basis: axes,
+            owner_colour: [1.; 4],
+            owner_scale: 1.,
+        };
+        let draws = gpu
+            .screen_state
+            .publish_particle_draws(water.matrices.frame, |pose| {
+                Ok(super::screen_effects::ParticleDrawContext {
+                    view: &sprite_view,
+                    // This backend publishes a single logical gameplay origin.
+                    // Both view origins coincide for this supported view path.
+                    camera: crate::rendering::particles::view::ParticleCamera::select(
+                        pose.position,
+                        matrices.position,
+                        matrices.position,
+                        axes,
+                    ),
+                    view_z: std::array::from_fn(|i| -matrices.view[2][i]),
+                    query_visibility: 1.,
+                    alpha_scale: 1.,
+                    accumulation_targets: false,
+                    areas: &frame.areas,
+                })
+            })?;
+        if draws.is_empty() {
+            return Ok(());
+        }
+        let colour_format = target.main_texture_format();
+        let depth_format = depth.alpha.full.format();
+        if gpu.particles.as_ref().is_none_or(|p| {
+            p.instances < instances
+                || p.draws < draw_capacity
+                || p.colour_format != colour_format
+                || p.depth_format != depth_format
+        }) {
+            gpu.particles = Some(ParticleGpu {
+                pass: super::particle_pass::ParticlePass::new(
+                    &device,
+                    &queue,
+                    instances,
+                    draw_capacity,
+                    colour_format,
+                    depth_format,
+                )?,
+                instances,
+                draws: draw_capacity,
+                colour_format,
+                depth_format,
+                source: sources.clone(),
+            });
+        }
+        let adaptation = buffers
+            .get(&exposure.0)
+            .ok_or("particle adaptation awaits preparation")?;
+        let parameters = buffers
+            .get(&shared.parameters)
+            .ok_or("particle fog parameters await preparation")?;
+        let image = |handle| {
+            images
+                .get(handle)
+                .map(|image| &image.texture_view)
+                .ok_or("particle fog image awaits preparation")
+        };
+        let inverse = view.clip_from_view.inverse();
+        gpu.particles.as_mut().unwrap().pass.record(
+            &device,
+            &queue,
+            context.command_encoder(),
+            super::particle_pass::ParticleViewInputs {
+                matrices,
+                local_time: water.local_time[0],
+                camera_exposure: camera.exposure,
+                extent: [
+                    target.main_texture().width(),
+                    target.main_texture().height(),
+                ],
+                inverse_z: [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
+                adaptation: &adaptation.buffer,
+                colour: target.main_texture_view(),
+                depth: &depth.alpha.full_attachment,
+                fog: super::particle_pass::ParticleFogInputs {
+                    parameters: &parameters.buffer,
+                    world: image(&shared.world)?,
+                    canvas: image(&shared.canvas)?,
+                    curve: image(&shared.curve)?,
+                    depth: image(&shared.opaque_depth)?,
+                },
+            },
+            &draws,
+        )
+    })();
+    match result {
+        Ok(()) => *last_error = None,
+        Err(error) if last_error.as_ref() != Some(&error) => {
+            warn!("Player particle colour pending: {error}");
+            *last_error = Some(error);
+        }
+        Err(_) => {}
     }
 }
 /// The shared CPU controller advances before transparent colour submission.
@@ -96,20 +283,44 @@ fn prepare_screen_effects(
 ) {
     let Some(water) = water.0.as_ref() else {
         gpu.screen_draws = None;
+        gpu.screen_state = Default::default();
+        gpu.screen_sources = None;
+        gpu.particles = None;
         return;
     };
     if view.into_inner().id() != water.camera {
         return;
     }
     gpu.screen_draws = None;
-    if fog.camera_depth(water.camera, water.matrices.frame).is_none() {
+    if fog
+        .camera_depth(water.camera, water.matrices.frame)
+        .is_none()
+    {
         return;
     }
-    let Some(sources) = sources.0.as_deref() else { return };
-    let underwater = fog.head_water_surface(water.camera, water.matrices.frame, water.head_water_surface)
+    let Some(sources) = sources.0.as_ref() else {
+        gpu.screen_state = Default::default();
+        gpu.screen_sources = None;
+        gpu.particles = None;
+        return;
+    };
+    if gpu
+        .screen_sources
+        .as_ref()
+        .is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources))
+    {
+        gpu.screen_state = Default::default();
+        gpu.particles = None;
+        gpu.screen_sources = Some(sources.clone());
+    }
+    let underwater = fog
+        .head_water_surface(water.camera, water.matrices.frame, water.head_water_surface)
         .is_some_and(|height| water.matrices.current.position[2] <= height);
     let result = gpu.screen_state.advance(
-        sources, water.matrices.frame, water.delta_seconds, underwater,
+        sources,
+        water.matrices.frame,
+        water.delta_seconds,
+        underwater,
         crate::gameplay::reference_frame::ReferenceFrame {
             position: water.matrices.current.position,
             basis: [
@@ -121,17 +332,22 @@ fn prepare_screen_effects(
     );
     match result {
         Ok(draws) => {
-            let simulation = queries.0.as_ref()
+            let simulation = queries
+                .0
+                .as_ref()
                 .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
                 .ok_or_else(|| "particle physics inputs await the current camera frame".to_owned())
-                .and_then(|q| gpu.screen_state.simulate_particles(water.matrices.frame, &q.world));
+                .and_then(|q| {
+                    gpu.screen_state
+                        .simulate_particles(water.matrices.frame, &q.world)
+                });
             match simulation {
                 Ok(()) => *particle_error = None,
                 Err(error) if particle_error.as_ref() != Some(&error) => {
                     warn!("Player particle simulation pending: {error}");
                     *particle_error = Some(error);
                 }
-                Err(_) => {},
+                Err(_) => {}
             }
             gpu.screen_draws = Some((water.camera, water.matrices.frame, draws));
             *last_error = None;
@@ -299,9 +515,16 @@ fn render_camera(
             .as_ref()
             .map_or_else(|| target.main_texture_view(), |w| w.destination);
         if let Some(sources) = screen_sources.0.as_deref() {
-            let CameraGpu {screen_draws, screen_effects, ..} = &mut *gpu;
-            let (_, _, draws) = screen_draws.as_ref()
-                .filter(|(camera, marker, _)| *camera == frame.camera && *marker == water.matrices.frame)
+            let CameraGpu {
+                screen_draws,
+                screen_effects,
+                ..
+            } = &mut *gpu;
+            let (_, _, draws) = screen_draws
+                .as_ref()
+                .filter(|(camera, marker, _)| {
+                    *camera == frame.camera && *marker == water.matrices.frame
+                })
                 .ok_or("player FX commands await current atmosphere")?;
             screen_effects.record(
                 &device,

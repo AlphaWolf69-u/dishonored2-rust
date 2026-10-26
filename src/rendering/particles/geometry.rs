@@ -11,6 +11,22 @@ pub struct SpriteGrid {
     pub indices: Vec<u16>,
 }
 impl SpriteGrid {
+    /// 1eee40 selects the shared grid using the library logf, then 1dc9e0
+    /// caps the unsigned level at five. Conversion retains CVTT's indefinite
+    /// result for nonfinite/out-of-range inputs rather than Rust saturation.
+    pub fn level_for_distance(tessellation_distance: f32, view_distance: f32) -> u32 {
+        if view_distance < tessellation_distance {
+            let ratio = divide(
+                tessellation_distance,
+                add(view_distance, f32::from_bits(0x3c23_d70a)),
+            );
+            let level = multiply(ratio.ln(), f32::from_bits(0x3fb8_aa3b));
+            (crate::float::truncate_i64(level) as u32).min(5)
+        } else {
+            0
+        }
+    }
+
     /// Level selection is capped at five by 1dc9e0. Preserve incremental
     /// arithmetic along each row; recomputing index*spacing changes the grid.
     pub fn new(level: u32) -> Self {

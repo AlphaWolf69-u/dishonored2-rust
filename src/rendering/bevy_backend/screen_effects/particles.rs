@@ -17,6 +17,17 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+/// Inputs supplied by the actual render-view publication.
+pub(crate) struct ParticleDrawContext<'a> {
+    pub view: &'a crate::rendering::particles::SpriteView,
+    pub camera: crate::rendering::particles::view::ParticleCamera,
+    pub view_z: [f32; 4],
+    pub query_visibility: f32,
+    pub alpha_scale: f32,
+    pub accumulation_targets: bool,
+    pub areas: &'a [super::super::fog::AreaFogFrame],
+}
+
 pub(super) struct PlayingParticle {
     pub leaving: bool,
     pub effect: ParticleEffect,
@@ -33,6 +44,128 @@ pub(super) struct PlayingParticle {
     simulated_frame: Option<u32>,
 }
 impl PlayingParticle {
+    pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
+        (self.simulated_frame == Some(frame))
+            .then(|| {
+                self.publication
+                    .as_ref()
+                    .filter(|p| p.visible)
+                    .map(|p| p.pose)
+            })
+            .flatten()
+    }
+
+    pub fn publish_draws(
+        &self,
+        frame: u32,
+        context: ParticleDrawContext<'_>,
+        output: &mut Vec<super::super::particle_pass::ParticleDraw>,
+    ) -> Result<(), String> {
+        if self.simulated_frame != Some(frame) {
+            return Ok(());
+        }
+        let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
+            return Ok(());
+        };
+        let receiver_bounds = crate::rendering::particles::bounds::default_system_bounds(
+            &self.stages,
+            publication.pose,
+            context.view.owner_scale,
+        )?;
+        let volumes = context
+            .areas
+            .iter()
+            .map(|area| area.bounds)
+            .collect::<Vec<_>>();
+        let center = std::array::from_fn(|i| {
+            crate::float::multiply(
+                crate::float::add(receiver_bounds[0][i], receiver_bounds[1][i]),
+                0.5,
+            )
+        });
+        let fog = crate::rendering::fog::selection::select(
+            &volumes,
+            context.camera.position,
+            center,
+            receiver_bounds,
+            context.view_z,
+        )
+        .map(|selected| {
+            super::super::fog_objects::FogObjectParameters::selected(
+                &context.areas[selected.index],
+                selected.depths,
+            )
+        })
+        .unwrap_or_default();
+        let view = crate::rendering::particles::SpriteView {
+            camera_position: context.camera.position,
+            camera_axes: context.camera.axes,
+            custom_basis: publication.pose.basis,
+            owner_colour: publication.colour,
+            ..*context.view
+        };
+        for stage in &self.stages {
+            let definition = &stage.declaration.stages[stage.index];
+            let transform = if definition.worldspace {
+                ReferenceFrame::default()
+            } else {
+                publication.pose
+            };
+            for (index, sprite) in definition.sprites.iter().enumerate() {
+                if !sprite.enabled {
+                    continue;
+                }
+                let Some(name) = sprite.material.as_ref() else {
+                    continue;
+                };
+                let material = self
+                    .materials
+                    .get(name)
+                    .ok_or_else(|| format!("particle draw material absent: {name}"))?;
+                let mut instances = Vec::with_capacity(stage.particles.len());
+                let bounds = crate::rendering::particles::publication::stage_instances(
+                    stage,
+                    index,
+                    transform,
+                    &view,
+                    context.query_visibility,
+                    context.alpha_scale,
+                    context.camera.admission_plane,
+                    sprite.minimal_distance,
+                    &mut instances,
+                )?;
+                if bounds.is_none() {
+                    continue;
+                }
+                let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
+                    material.state,
+                    context.accumulation_targets,
+                    self.water_flags & 8 != 0,
+                );
+                output.push(super::super::particle_pass::ParticleDraw {
+                    material: material.clone(),
+                    state,
+                    stencil_reference,
+                    grid_level:
+                        crate::rendering::particles::geometry::SpriteGrid::level_for_distance(
+                            sprite.tessellation_distance,
+                            context.camera.emitter_distance,
+                        ),
+                    instances,
+                    clip_plane: self
+                        .clipping
+                        .as_ref()
+                        .map_or(bevy::prelude::Vec4::W, |planes| {
+                            bevy::prelude::Vec4::from_array(planes.rendering)
+                        }),
+                    clip_fade_distance: self.clipping.as_ref().map_or(0., |p| p.fade_distance),
+                    fog,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn start(
         definition: &ParticleDefinition,
         offsets: [f32; 4],

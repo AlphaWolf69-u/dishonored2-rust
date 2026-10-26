@@ -4,6 +4,7 @@ mod particles;
 mod sources;
 mod state;
 pub(super) use state::ScreenEffectState;
+pub(super) use particles::ParticleDrawContext;
 use crate::{
     assets::fx::screen_quad::ScreenQuadStage,
     gameplay::effects::environment::EnvironmentBlendEffect,

@@ -1,10 +1,12 @@
 //! Arithmetic from the installed particles render program. Scene depth and
 //! particle-instance producers remain separate from these shader helpers.
 use bevy_math::{Vec2, Vec4};
-pub mod geometry;
+pub mod bounds;
 pub mod clipping;
+pub mod geometry;
 pub mod material;
 pub mod publication;
+pub mod view;
 
 /// 1ee880's twelve-byte instance record, consumed by particles_instancing.
 /// The upper half of size is unused by GetParticleRadius and starts at zero.
@@ -58,7 +60,10 @@ impl SpriteView {
         );
         Ok(Self {
             owner_colour: colour,
-            owner_scale: multiply(descriptor.query_size.sample_visibility(query)?, self.owner_scale),
+            owner_scale: multiply(
+                descriptor.query_size.sample_visibility(query)?,
+                self.owner_scale,
+            ),
             ..*self
         })
     }
