@@ -18,6 +18,8 @@ pub struct PlayerDeclarations {
     pub mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub body: Vec<(String, Value)>,
+    /// The character's inherited player FX manager, including swimming FX.
+    pub fx: Vec<(String, Value)>,
     /// The state machine's startup mode.
     pub mode: Vec<(String, Value)>,
     /// The mode's `m_states`: (decl kind, resolved fields).
@@ -30,7 +32,7 @@ pub struct PlayerDeclarations {
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 10] = [
+const PLAYER_COMPONENTS: [&str; 11] = [
     "cpntplayerphysics",
     "cpntplayercamera",
     "cpntplayercontroller",
@@ -41,6 +43,7 @@ const PLAYER_COMPONENTS: [&str; 10] = [
     "cpntplayerbody",
     "cpntplayersensormantle",
     "cpnthealthevolved",
+    "cpntplayerfxmanager",
 ];
 
 fn kind_of(name: &str) -> Option<&str> {
@@ -134,6 +137,7 @@ pub fn player_declarations(
     let mantle_sensor = take("cpntplayersensormantle")?;
     let health = take("cpnthealthevolved")?;
     let body = take("cpntplayerbody")?;
+    let fx = take("cpntplayerfxmanager")?;
     let machine = take("cpntplayerstatemachine")?;
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
@@ -158,7 +162,7 @@ pub fn player_declarations(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, body, mode,
+    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, body, fx, mode,
  states, locomotion, additives, body_model })
 
 }

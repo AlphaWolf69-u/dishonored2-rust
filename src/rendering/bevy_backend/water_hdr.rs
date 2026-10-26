@@ -28,7 +28,7 @@ pub struct WaterHdr {
     decode: RenderPipeline,
     encode_bindings: [Option<((TextureViewId, BufferId), BindGroup)>; 2],
     next_binding: usize,
-    decode_binding: Option<(BufferId, BindGroup)>,
+    decode_bindings: [Option<(BufferId, BindGroup)>; 2],
 }
 
 /// Keeps the source, working colour, constants and exposure binding together
@@ -49,7 +49,15 @@ impl WaterHdrFrame<'_> {
         self.owner.colour.format()
     }
     pub fn finish(self, encoder: &mut CommandEncoder) {
-        let binding = &self.owner.decode_binding.as_ref().unwrap().1;
+        self.finish_attachment(encoder, 0);
+    }
+    /// A two-pass scene effect can finish in the initially immutable source
+    /// attachment after its last read, avoiding a third full-size scratch image.
+    pub(super) fn finish_source(self, encoder: &mut CommandEncoder) {
+        self.finish_attachment(encoder, 1);
+    }
+    fn finish_attachment(self, encoder: &mut CommandEncoder, attachment: usize) {
+        let binding = &self.owner.decode_bindings[attachment].as_ref().unwrap().1;
         self.owner.record(
             encoder,
             &self.owner.decode,
@@ -217,7 +225,7 @@ impl WaterHdr {
             decode,
             encode_bindings: [None, None],
             next_binding: 0,
-            decode_binding: None,
+            decode_bindings: [None, None],
         })
     }
 
@@ -267,15 +275,10 @@ impl WaterHdr {
             self.next_binding = (index + 1) % self.encode_bindings.len();
             index
         };
-        if self
-            .decode_binding
-            .as_ref()
-            .is_none_or(|v| v.0 != adaptation.id())
-        {
-            self.decode_binding = Some((
-                adaptation.id(),
-                self.binding(device, &self.colour_view, adaptation),
-            ));
+        for (index, view) in [&self.colour_view, &self.source_view].into_iter().enumerate() {
+            if self.decode_bindings[index].as_ref().is_none_or(|v| v.0 != adaptation.id()) {
+                self.decode_bindings[index] = Some((adaptation.id(), self.binding(device, view, adaptation)));
+            }
         }
         let attachment = |view| {
             Some(RenderPassColorAttachment {
