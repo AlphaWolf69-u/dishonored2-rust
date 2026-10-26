@@ -388,3 +388,41 @@ fn backward_goto_keeps_a_script_removed_child_removed() {
     timeline::goto(&mut player.vm, &o, 0).unwrap();
     assert!(!has_menu(&o), "the backward goto does not recreate the menu");
 }
+
+/// Input listeners are called with their event (`Input` dispatches through
+/// `addEventListener`), and `CustomDifficultyScreen._BPressed()` declares no
+/// parameter. Iggy has no argument-count error (its ArgumentError raises are
+/// the class coercion, construct and addChild), so the extra argument is
+/// dropped and B sends the link's cancel callback.
+#[test]
+#[ignore = "requires installed game archives"]
+fn listener_without_parameters_takes_its_event() {
+    use avm2::name::{Name, QName};
+    use avm2::value::Value;
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/corvo_pause_menu.iggy").unwrap();
+    let construct = |player: &mut Player, name: &str| {
+        let class = player.vm.class_by_name(name).unwrap().unwrap_or_else(|| panic!("{name}"));
+        player.vm.construct(&class, &[]).unwrap_or_else(|e| panic!("{name}: {}", player.describe(&e)))
+    };
+    let screen = construct(&mut player, "com.bsp.options.difficulty.CustomDifficultyScreen");
+    let link = construct(&mut player, "com.bsp.options.WidgetLinkDefinition");
+    player.set_member(&link, "gameCallbackCancel", Value::from("OnDifficultyCancel")).unwrap();
+    let private = |o: &Value, local: &str| -> QName {
+        let traits = o.as_object().unwrap().borrow().traits.clone().unwrap();
+        traits.bindings.keys().find(|q| &*q.name == local).cloned().unwrap_or_else(|| panic!("{local}"))
+    };
+    let setting = private(&screen, "_currentSetting");
+    player.vm.set_property(&screen, &Name::qname(&setting), link).unwrap();
+    let pressed = private(&screen, "_BPressed");
+    let listener = player.vm.get_property(&screen, &Name::qname(&pressed)).unwrap();
+    let event_class = player.vm.class_by_name("flash.events.Event").unwrap().unwrap();
+    let event = player.vm.construct(&event_class, &[Value::from("inputDown")]).unwrap();
+    if let Err(e) = player.vm.call(&listener, screen.clone(), &[event]) {
+        panic!("_BPressed(event): {}", player.describe(&e));
+    }
+    let names: Vec<String> = player.take_notifications().into_iter().map(|n| n.0).collect();
+    assert!(names.iter().any(|n| n == "OnDifficultyCancel"), "{names:?}");
+}

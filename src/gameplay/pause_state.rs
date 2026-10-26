@@ -255,7 +255,7 @@ impl Pause {
                     // `FUN_140517470`: the leave-section box answers the options
                     // container; the video-card notice has no callback.
                     let confirm = self.options.pending.is_some().then_some(crate::gameplay::message_box::Confirm::Options);
-                    let info = crate::gameplay::message_box::Info::with_buttons(b.text, b.buttons, 0.0);
+                    let info = crate::gameplay::message_box::Info::with_buttons(b.text, b.buttons, b.timer);
                     self.show_box(player, info, confirm, requests)?;
                 }
                 // `FUN_1406509f0`: the pause state shows bindings.
@@ -346,9 +346,12 @@ impl Pause {
 
     /// Pause Update (`FUN_14078ff90`): the options' per-frame work. `pressed`
     /// is the first engine key pressed this frame.
-    pub fn update(&mut self, player: &mut Player, pressed: Option<u32>) -> std::result::Result<(), String> {
+    pub fn update(&mut self, player: &mut Player, pressed: Option<u32>) -> std::result::Result<Vec<Request>, String> {
         self.boxes.update(&self.strings)?;
-        self.with_env(player, |options, env| options.update(env, pressed))
+        let effects = self.with_env(player, |options, env| options.update(env, pressed))?;
+        let mut requests = Vec::new();
+        self.apply_effects(player, effects, &mut requests)?;
+        Ok(requests)
     }
 
     /// The profile update after a config save (`FUN_1400d2f10`).
