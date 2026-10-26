@@ -382,7 +382,7 @@ impl Runtime {
             else if container.playback.transition == TransitionMode::TriggerRate {
                 let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
                 let milliseconds = transition_ms(&container.playback, seconds, random15);
-                *next = Some(now + frames(milliseconds, definition.rate));
+                *next = Some(now + frames(milliseconds, definition.rate).max(1024));
             }
         } else { *exhausted = true; }
     }
@@ -563,7 +563,8 @@ impl Runtime {
                         let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
                         frames(transition_ms(&container.playback, seconds, random15), definition.rate)
                     } else { 0 };
-                    *next = Some(now + 1 + delay);
+                    *next = Some(crate::gameplay::sound::containers::timing::after_source_end(
+                        now, container.playback.transition, delay as u32));
                 }
                 !*exhausted || !active.is_empty()
             },
@@ -670,9 +671,7 @@ impl Routed {
 }
 
 fn frames(milliseconds: f32, rate: SampleRate) -> u64 {
-    // 1410ddd30 clamps Delay (3) and TriggerRate (5) continuation actions
-    // to ten engine quanta. Zero authored intervals remain valid.
-    ((f64::from(milliseconds) * f64::from(rate.get()) * 0.001 + 0.5) as u64).max(10 * 1024)
+    u64::from(crate::gameplay::sound::containers::timing::samples_from_ms(f64::from(milliseconds), rate.get()))
 }
 
 pub(super) struct Decoder {
