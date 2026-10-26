@@ -375,11 +375,13 @@ impl Runtime {
                     ramp.begin(target, 1024);
                     if let Some(route) = route {
                         use crate::gameplay::sound::auxiliary::{bus_sends, SendKind};
-                        // A zero target survives its retiring quantum; the
-                        // following update drops it (1410eaac0).
-                        auxiliary.retain(|connection| connection.target > 0.0);
+                        let sends = bus_sends(&route.sends);
+                        // 1410ec0e0 retains a connection's kind if the bus is
+                        // reintroduced before 1410fc0f0 removes it, including
+                        // after its previous target reached zero.
+                        auxiliary.retain(|connection| connection.target > 0.0 || sends.iter().any(|send| send.bus == connection.bus));
                         for connection in auxiliary.iter_mut() { connection.target = 0.0; }
-                        for send in bus_sends(&route.sends) {
+                        for send in sends {
                             if let Some(connection) = auxiliary.iter_mut().find(|connection| connection.bus == send.bus) {
                                 connection.target = send.gain;
                             } else {
