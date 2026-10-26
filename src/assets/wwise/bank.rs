@@ -479,10 +479,13 @@ pub(super) fn bus_properties(object: &[u8], feedback: bool, auxiliary: bool) -> 
     let recovery_ms = reader.u32()?;
     let max_duck_volume = reader.f32()?;
     let ducks = reader.u32()? as usize;
-    let mut duck_settings = Vec::new();
+    let mut duck_settings = Vec::<BusDuck>::new();
     for _ in 0..ducks {
-        duck_settings.push(BusDuck { bus: reader.u32()?, volume: reader.f32()?,
-            fade_out_ms: reader.u32()?, fade_in_ms: reader.u32()?, curve: reader.u8()?, property: reader.u8()? });
+        let duck = BusDuck { bus: reader.u32()?, volume: reader.f32()?,
+            fade_out_ms: reader.u32()?, fade_in_ms: reader.u32()?, curve: reader.u8()?, property: reader.u8()? };
+        // 14111ff70 replaces a target's definition, retaining its list slot.
+        if let Some(previous) = duck_settings.iter_mut().find(|previous| previous.bus == duck.bus) { *previous = duck; }
+        else { duck_settings.push(duck); }
     }
     node.effects = reader.effects(true)?;
     node.bus_settings = Some(BusSettings { auxiliary, flags, limit_flags, max_instances,

@@ -4,6 +4,8 @@
 use crate::gameplay::sound::{bus_effects::{BusEffects, EffectTables}, gain::GainRamp,
     mix::{power10, Mixer}, tail::{BufferState, BufferStatus}};
 use std::{collections::HashMap, path::Path};
+use std::sync::Arc;
+use crate::gameplay::sound::activity::Activity;
 
 pub(in crate::app::audio) const FRAMES: usize = 1024; // 142427c30; also the source resampling quantum.
 
@@ -13,7 +15,7 @@ struct Bus {
     channels: [Vec<f32>; 2],
     effects: BusEffects,
     gain: GainRamp,
-    target: f32,
+    base_db: f32,
     input: bool,
     started: bool,
 }
@@ -22,14 +24,15 @@ pub(in crate::app::audio) struct Buses {
     nodes: Vec<Bus>,
     indices: HashMap<u32, usize>,
     primary: u32,
+    activity: Arc<Activity>,
     output: [f32; FRAMES * 2],
 }
 
 impl Buses {
-    pub fn new(mixer: &Mixer, base: &Path) -> Result<Self, String> {
+    pub fn new(mixer: &Mixer, base: &Path, activity: Arc<Activity>) -> Result<Self, String> {
         let tables = EffectTables::load(mixer, base)?;
         let mut result = Self { nodes: Vec::new(), indices: HashMap::new(),
-            primary: mixer.primary_bus.ok_or("Wwise initialization bank has no primary bus")?,
+            primary: mixer.primary_bus.ok_or("Wwise initialization bank has no primary bus")?, activity,
             output: [0.0; FRAMES * 2] };
         for &id in &mixer.bus_order {
             if mixer.bus_mixes(id)? { result.insert(id, mixer, &tables)?; }
@@ -52,7 +55,7 @@ impl Buses {
         let effects = BusEffects::new(definition, mixer, tables, 48000, 3, settings.auxiliary)?;
         let index = self.nodes.len();
         self.nodes.push(Bus { id, parent, channels: [vec![0.0; FRAMES], vec![0.0; FRAMES]], effects,
-            gain: GainRamp::default(), target: power10(mixer.bus_output_db(id)? * 0.05), input: false, started: false });
+            gain: GainRamp::default(), base_db: mixer.bus_output_base_db(id)?, input: false, started: false });
         self.indices.insert(id, index);
         Ok(index)
     }
@@ -61,7 +64,7 @@ impl Buses {
     /// needs an asset reader or a console lock.
     pub fn update(&mut self, mixer: &Mixer) -> Result<(), String> {
         for bus in &mut self.nodes {
-            bus.target = power10(mixer.bus_output_db(bus.id)? * 0.05);
+            bus.base_db = mixer.bus_output_base_db(bus.id)?;
             bus.effects.set_bypass(mixer.bus_bypass(mixer.buses.get(&bus.id).ok_or("mixing bus disappeared")?, &[])?);
         }
         Ok(())
@@ -106,7 +109,8 @@ impl Buses {
             let count = usize::from(status.valid_frames);
             bus.started = count != 0;
             if count == 0 { continue; }
-            bus.gain.begin([bus.target; 8], FRAMES as u16);
+            let target = power10((bus.base_db + self.activity.output_ducking(bus.id, false)) * 0.05);
+            bus.gain.begin([target; 8], FRAMES as u16);
             if let Some(parent) = bus.parent {
                 let parent = &mut parents[parent];
                 parent.input = true;

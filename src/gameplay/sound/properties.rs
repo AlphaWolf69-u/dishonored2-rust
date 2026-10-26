@@ -16,7 +16,9 @@ impl RandomProperties {
         let mut values = [0.0; 5];
         for node in &properties.nodes {
             // The getter queries these property IDs in this order, rather
-            // than using the serialized order of the modifier bundle.
+            // than using the serialized order of the modifier bundle. Other
+            // serialized ranges, including bus properties 5/0x17, are not
+            // sampled by this source getter (1410dbb30).
             for (slot, property) in [0, 2, 3, 4, 0x21].into_iter().enumerate() {
                 let Some(range) = node.ranges.iter().find(|range| range.property == property) else { continue };
                 let difference = range.max - range.min;
