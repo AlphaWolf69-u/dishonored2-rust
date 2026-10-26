@@ -49,6 +49,15 @@ pub struct UserSend {
     pub decibels: f32,
 }
 
+/// 141104010: auxiliary updates run for enabled game sends or any authored
+/// user bus, including while their current gain is below admission threshold.
+pub fn enabled(source: &crate::assets::wwise::MediaProperties) -> bool {
+    source.nodes.iter().find(|node| node.auxiliary_flags & 1 != 0 || node.parent == 0)
+        .is_some_and(|node| node.auxiliary_flags & 2 != 0)
+        || source.nodes.iter().find(|node| node.auxiliary_flags & 4 != 0 || node.parent == 0)
+            .is_some_and(|node| node.auxiliary_buses.iter().any(|bus| *bus != 0))
+}
+
 /// 141103810: game sends precede user sends, with independent admission
 /// thresholds. The input lists are the four slots of each native owner.
 pub fn controls(game: &[Send], game_enabled: bool, game_decibels: f32,

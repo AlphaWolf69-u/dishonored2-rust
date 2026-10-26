@@ -97,10 +97,12 @@ pub struct Mixer {
     pub volume_threshold_db: f32,
     pub environment: crate::assets::wwise::EnvironmentSettings,
     pub primary_bus: Option<u32>,
+    pub bus_order: Vec<u32>,
 }
 
 /// Voice properties before a mixing bus (141104c30/1410dbb30). Makeup
 /// gain is kept separate because 1410fcd00 applies it to the source stage.
+#[derive(Clone, Copy)]
 pub struct VoiceRouting {
     pub volume_db: f32,
     pub makeup_db: f32,
@@ -111,9 +113,10 @@ pub struct VoiceRouting {
 
 impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
+        let bus_order = bank.buses.iter().map(|bus| bus.id).collect();
         Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
             effects: bank.effects.into_iter().map(|effect| ((effect.shared, effect.id), effect)).collect(),
-            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus }
+            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order }
     }
 }
 
