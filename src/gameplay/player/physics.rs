@@ -512,6 +512,13 @@ impl PlayerPhysics {
         self.velocity - self.gravity_velocity
     }
 
+    /// FUN_1407fd740 → FUN_140085860 (`enabled` false) / FUN_1407fd880 →
+    /// FUN_1400858d0: remove or add `layers` in the proxy's collides-with set.
+    pub fn set_proxy_layers(&mut self, layers: u32, enabled: bool) {
+        let filter = &mut self.proxy.settings.collision_filter;
+        *filter = if enabled { *filter | layers << 5 } else { *filter & (!layers << 5 | 0x1f) };
+    }
+
     /// m_groundCollisionMask | m_ceilCollisionMask (the slide obstacle cast).
     pub fn ground_and_ceil_mask(&self) -> u32 {
         self.ground_collision_mask | self.ceil_collision_mask

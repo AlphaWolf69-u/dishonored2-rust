@@ -2,6 +2,11 @@
 //! fields are partial edits of their class constructor defaults.
 use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
+pub mod particle_system;
+pub mod particle_declaration;
+pub mod particle_sprite;
+pub mod particle_stage;
+pub mod particles;
 pub mod screen_quad;
 
 pub struct EnvironmentEffectAsset {
@@ -163,6 +168,17 @@ pub fn sound_effect(fields: &Fields) -> Result<SoundEffectAsset, String> {
     Ok(sound)
 }
 fn float_list(values: &mut Vec<f32>, fields: &Fields) -> Result<(), String> {
+    edit_list(values, fields, 0., |slot, value| {
+        *slot = number(value)?;
+        Ok(())
+    })
+}
+fn edit_list<T: Clone>(
+    values: &mut Vec<T>,
+    fields: &Fields,
+    initial: T,
+    mut edit: impl FnMut(&mut T, &Value) -> Result<(), String>,
+) -> Result<(), String> {
     let mut edited = values.clone();
     if let Some((_, count)) = fields.first().filter(|(name, _)| name == "num") {
         let count = atom(count)?
@@ -170,7 +186,7 @@ fn float_list(values: &mut Vec<f32>, fields: &Fields) -> Result<(), String> {
             .map_err(|e| format!("FX array count: {e}"))?;
         // 98c270 -> 14d230 classifies float as a zero-initialized element;
         // 9979c0 preserves old entries and clears newly exposed storage.
-        edited.resize(count, 0.);
+        edited.resize(count, initial);
     }
     for (position, (name, value)) in fields.iter().enumerate() {
         if name == "num" {
@@ -188,7 +204,7 @@ fn float_list(values: &mut Vec<f32>, fields: &Fields) -> Result<(), String> {
         let slot = edited
             .get_mut(index)
             .ok_or_else(|| format!("FX array index {index} exceeds declared count"))?;
-        *slot = number(value)?;
+        edit(slot, value)?;
     }
     *values = edited;
     Ok(())

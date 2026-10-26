@@ -30,7 +30,12 @@ impl Plugin for DecalPassPlugin {
             .init_resource::<DecalEntities>()
             .init_resource::<DecalPhases>()
             .add_systems(ExtractSchedule, extract)
-            .add_systems(Render, partition.in_set(RenderSystems::PrepareBindGroups))
+            .add_systems(
+                Render,
+                partition.in_set(RenderSystems::PrepareBindGroups).before(
+                    crate::rendering::bevy_backend::alpha_depth_scene::AlphaDepthPreparation,
+                ),
+            )
             .add_systems(Render, restore.in_set(RenderSystems::Cleanup))
             .add_systems(
                 Core3d,

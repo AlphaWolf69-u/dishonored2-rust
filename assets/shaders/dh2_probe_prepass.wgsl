@@ -8,5 +8,7 @@
 #ifdef VERTEX_UVS_B
     uv1=vertex_output.uv_b;
 #endif
-    clip_surface(uv0,uv1,vertex_output.world_position);
+    // Ordinary Z/shadow branches do not consume vertex colour. Decals have
+    // no host prepass; their Z-alpha wrapper supplies the actual mesh colour.
+    clip_surface(uv0,uv1,vertex_output.world_position,vec4(1.0));
 }

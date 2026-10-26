@@ -144,6 +144,9 @@ pub struct CharacterProxy {
     pub settings: ProxySettings,
     shape: Vec<Vec3>,
     manifold: Vec<ManifoldPoint>,
+    /// Bodies whose pair with the proxy the world's pair filter disables
+    /// (FUN_140091b50); both proxy casts skip them.
+    ignored_bodies: Vec<u32>,
 }
 
 impl CharacterProxy {
@@ -157,6 +160,17 @@ impl CharacterProxy {
             settings,
             shape,
             manifold: Vec::new(),
+            ignored_bodies: Vec::new(),
+        }
+    }
+
+    /// FUN_140091b50: disable (or, `false`, re-enable) the pair of the proxy
+    /// and `body`.
+    pub fn set_body_ignored(&mut self, body: u32, ignored: bool) {
+        if ignored {
+            self.ignored_bodies.push(body);
+        } else if let Some(i) = self.ignored_bodies.iter().position(|&b| b == body) {
+            self.ignored_bodies.remove(i);
         }
     }
 
@@ -310,6 +324,8 @@ impl CharacterProxy {
                 &mut cast,
                 Some(&mut start),
             );
+            cast.retain(|h| !self.ignored_bodies.contains(&h.body));
+            start.retain(|h| !self.ignored_bodies.contains(&h.body));
             cast.sort_by(|a, b| a.value.total_cmp(&b.value));
             start.sort_by(|a, b| a.value.total_cmp(&b.value));
             self.update_manifold(&start, &cast, self.displacement);
@@ -327,6 +343,7 @@ impl CharacterProxy {
             {
                 cast.clear();
                 world.cast_shape(QueryFilter::World(self.settings.collision_filter), &self.shape, self.rotation, self.position, displacement, 0.0, &mut cast, None);
+                cast.retain(|h| !self.ignored_bodies.contains(&h.body));
                 cast.sort_by(|a, b| a.value.total_cmp(&b.value));
                 for hit in &cast {
                     let point = ManifoldPoint::cast(hit, displacement);

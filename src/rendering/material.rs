@@ -866,6 +866,27 @@ pub fn intrinsic_image_pixels(name: &str) -> Option<Vec<u8>> {
     )
 }
 
+/// Resolve an authored image expression to its installed compiled 2D chain.
+/// This includes archived image-program results and the registered intrinsics.
+pub fn load_2d_image(catalog: &crate::archive::Catalog, source: &str)
+    -> Result<crate::texture::InlineCompressedChain, String> {
+    let path = image_load_resource(catalog, source)
+        .ok_or_else(|| format!("material image unresolved: {source}"))?;
+    if let Some(payload) = intrinsic_image_pixels(&path) {
+        let mut packed_format = 0x54a;
+        crate::texture::normalize_image_format(&mut packed_format)?;
+        return Ok(crate::texture::InlineCompressedChain {
+            info: crate::texture::BimageInfo {
+                width: 16, height: 16, mip_count: 1, packed_format,
+                format: crate::texture::ImageFormat::Rgba8,
+            }, payload,
+        });
+    }
+    let bytes = catalog.read(&path).map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("material image absent: {path}"))?;
+    crate::texture::compressed_inline_chain(&bytes)
+}
+
 #[test]
 fn intrinsic_images_match_generator_pixels() {
     let default = intrinsic_image_pixels("_default").unwrap();

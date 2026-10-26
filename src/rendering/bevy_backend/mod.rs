@@ -41,6 +41,8 @@ pub mod water_depth_program;
 #[cfg(feature = "game")]
 pub mod water_scene;
 #[cfg(feature = "game")]
+pub mod physics_queries;
+#[cfg(feature = "game")]
 pub mod water_colour_scene;
 #[cfg(feature = "game")]
 pub mod water_hdr;
@@ -240,3 +242,5 @@ mod direct_lighting_tests;
 pub mod alpha_depth_scene;
 #[cfg(feature = "game")]
 pub mod screen_effects;
+#[cfg(feature = "game")]
+pub mod particle_pass;

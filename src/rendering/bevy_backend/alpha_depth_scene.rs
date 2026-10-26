@@ -27,6 +27,9 @@ pub struct AlphaDepthMaterial {
 }
 #[derive(Resource, Default)]
 pub struct AlphaDepthSources(pub HashMap<MainEntity, Result<AlphaDepthMaterial, String>>);
+/// Forward-list partitioning must finish before alpha-depth clones its batches.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AlphaDepthPreparation;
 #[derive(Resource, Default)]
 pub(super) struct AlphaGpu {
     opacity: Option<FogAttachment>,
@@ -56,7 +59,12 @@ pub fn register(app: &mut App) {
         render
             .init_resource::<AlphaDepthSources>()
             .init_resource::<AlphaGpu>()
-            .add_systems(Render, prepare.in_set(RenderSystems::PrepareBindGroups))
+            .add_systems(
+                Render,
+                prepare
+                    .in_set(RenderSystems::PrepareBindGroups)
+                    .in_set(AlphaDepthPreparation),
+            )
             .add_systems(
                 Core3d,
                 draw.in_set(Core3dSystems::MainPass)
@@ -323,14 +331,7 @@ fn draw(
         if viewport.min_element() == 0 {
             return;
         }
-        pass.set_viewport(
-            0.,
-            0.,
-            viewport.x as f32,
-            viewport.y as f32,
-            0.,
-            1.,
-        );
+        pass.set_viewport(0., 0., viewport.x as f32, viewport.y as f32, 0., 1.);
         pass.set_scissor_rect(
             0,
             0,

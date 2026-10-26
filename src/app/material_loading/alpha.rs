@@ -15,8 +15,11 @@ impl MaterialResolver<'_> {
             .cache
             .named_values()
             .filter_map(|(name, cached)| {
-                matches!(cached.handle, super::MaterialHandle::Probe(_))
-                    .then_some((name.to_owned(), cached.handle.clone()))
+                matches!(
+                    cached.handle,
+                    super::MaterialHandle::Probe(_) | super::MaterialHandle::Decal(_)
+                )
+                .then_some((name.to_owned(), cached.handle.clone()))
             })
             .collect::<Vec<_>>();
         let mut result = HashMap::new();
@@ -99,10 +102,24 @@ impl MaterialResolver<'_> {
                 let [full, reduced] = selected;
                 let full = full?;
                 let reduced = reduced?;
+                if (full || reduced) && main.eq_ignore_ascii_case("arkdecal") {
+                    let kind = library.registered_option_value(&reference, b"decalType")?;
+                    if kind != 0 {
+                        return Err(format!(
+                            "alpha-depth projected decal type {kind} needs its projection producer"
+                        ));
+                    }
+                    if library.option_value(main.as_bytes(), &reference, b"fx/opt/use_for_fx")? != 0
+                        || library.option_value(main.as_bytes(), &reference, b"tool/unlit")? != 0
+                    {
+                        return Err("alpha-depth FX/unlit decal needs its effect producer".into());
+                    }
+                }
                 if (full || reduced)
                     && !matches!(
                         main.to_ascii_lowercase().as_str(),
                         "arkdefault"
+                            | "arkdecal"
                             | "arkvegetation"
                             | "arkvista"
                             | "arksimplesprite"

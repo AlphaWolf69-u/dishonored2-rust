@@ -4,6 +4,7 @@ pub mod bmodel;
 pub mod bprobe;
 pub mod camera_blur;
 pub mod class_metadata;
+pub mod decal;
 pub mod edge_animation;
 pub mod edge_skeleton;
 pub mod entities;
