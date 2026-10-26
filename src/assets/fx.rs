@@ -1,5 +1,5 @@
-//! Authored environment FX descriptors. Serialized fields are partial edits of
-//! 21a000's defaults, including individual entries in existing curve arrays.
+//! Authored FX groups, environment blends and sound descriptors. Serialized
+//! fields are partial edits of their class constructor defaults.
 use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
 
@@ -20,14 +20,31 @@ pub enum EffectGroupLocation {
     Underwater,
 }
 
-pub struct EnvironmentGroupAsset {
+pub struct EffectGroupAsset {
     pub name: String,
     pub enabled: bool,
     pub location: EffectGroupLocation,
     pub timings: crate::gameplay::effects::timing::EffectTimingRanges,
     pub environments: Vec<EnvironmentEffectAsset>,
+    pub sounds: Vec<SoundEffectAsset>,
 }
-impl Default for EnvironmentGroupAsset {
+pub type EnvironmentGroupAsset = EffectGroupAsset;
+
+pub struct SoundEventAsset {
+    /// Serialized order: maximum followed by minimum.
+    pub delay: [f32; 2],
+    pub event: Option<String>,
+}
+
+pub struct SoundEffectAsset {
+    pub name: String,
+    pub enabled: bool,
+    pub position: [bevy_math::Vec3; 2],
+    pub start: SoundEventAsset,
+    pub stop: SoundEventAsset,
+}
+
+impl Default for EffectGroupAsset {
     fn default() -> Self {
         // 2174a0 resets group ranges independently of StandardTimings: group
         // duration is one, while delay, fade-in and fade-out are zero.
@@ -40,6 +57,7 @@ impl Default for EnvironmentGroupAsset {
                 ..Default::default()
             },
             environments: Vec::new(),
+            sounds: Vec::new(),
         }
     }
 }
@@ -76,6 +94,72 @@ fn bounds(pair: &mut [f32; 2], fields: &Fields) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn descriptor_list<T>(list: &mut Vec<T>, fields: &Fields, read: fn(&Fields) -> Result<T, String>) -> Result<(), String> {
+    for (position, (name, value)) in fields.iter().enumerate() {
+        if name == "num" {
+            if position != 0 { return Err("FX descriptor count must precede its elements".into()); }
+            let count = atom(value)?.parse::<usize>().map_err(|e| format!("FX descriptor count: {e}"))?;
+            list.truncate(count);
+            while list.len() < count { list.push(read(&[])?); }
+        } else {
+            let index = name.strip_prefix("item[").and_then(|n| n.strip_suffix(']'))
+                .ok_or_else(|| format!("unknown FX descriptor list field {name}"))?
+                .parse::<usize>().map_err(|e| format!("FX descriptor index: {e}"))?;
+            let entry = list.get_mut(index).ok_or_else(|| format!("FX descriptor {index} exceeds declared count"))?;
+            *entry = read(scope(value)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn sound_event(fields: &Fields) -> Result<SoundEventAsset, String> {
+    let mut event = SoundEventAsset { delay: [0.0; 2], event: None };
+    // soundEvent_t reflection 141506c90; 22f560 clears both event records.
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_delay" => bounds(&mut event.delay, scope(value)?)?,
+            "m_soundEvent" => {
+                let name = atom(value)?;
+                event.event = (!name.is_empty() && !name.eq_ignore_ascii_case("NULL")).then(|| name.to_owned());
+            }
+            _ => return Err(format!("unknown FX sound event field {name}")),
+        }
+    }
+    Ok(event)
+}
+
+/// arkFXSoundDesc defaults (22f540 / 22f560) and reflected fields (1506de0).
+pub fn sound_effect(fields: &Fields) -> Result<SoundEffectAsset, String> {
+    let mut sound = SoundEffectAsset {
+        name: String::new(), enabled: true, position: [bevy_math::Vec3::ZERO; 2],
+        start: sound_event(&[])?, stop: sound_event(&[])?,
+    };
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_name" => sound.name = atom(value)?.to_owned(),
+            "m_enabled" => sound.enabled = boolean(value)?,
+            "m_startSoundEvent" => sound.start = sound_event(scope(value)?)?,
+            "m_stopSoundEvent" => sound.stop = sound_event(scope(value)?)?,
+            "m_position" => {
+                for (name, value) in scope(value)? {
+                    let slot = match name.as_str() {
+                        "m_max" => &mut sound.position[0],
+                        "m_min" => &mut sound.position[1],
+                        _ => return Err(format!("unknown FX position range field {name}")),
+                    };
+                    let position = scope(value)?;
+                    for (name, value) in position {
+                        let axis = match name.as_str() { "x" => 0, "y" => 1, "z" => 2, _ => return Err(format!("unknown FX position component {name}")) };
+                        slot[axis] = number(value)?;
+                    }
+                }
+            }
+            _ => return Err(format!("unknown sound FX field {name}")),
+        }
+    }
+    Ok(sound)
 }
 fn float_list(values: &mut Vec<f32>, fields: &Fields) -> Result<(), String> {
     let mut edited = values.clone();
@@ -187,8 +271,8 @@ pub fn environment_effect(fields: &Fields) -> Result<EnvironmentEffectAsset, Str
 /// Load the environment portion of one `m_groups/item[N]`. Other FX families
 /// remain owned by their loaders/schedulers and may consume the shared RNG
 /// before environment effects are emitted. This does not start a whole group.
-pub fn environment_group(fields: &Fields) -> Result<EnvironmentGroupAsset, String> {
-    let mut group = EnvironmentGroupAsset::default();
+pub fn effect_group(fields: &Fields) -> Result<EffectGroupAsset, String> {
+    let mut group = EffectGroupAsset::default();
     for (name, value) in fields {
         match name.as_str() {
             "m_name" => group.name = atom(value)?.to_owned(),
@@ -219,38 +303,16 @@ pub fn environment_group(fields: &Fields) -> Result<EnvironmentGroupAsset, Strin
                 }
             }
             "m_envOverrides" => {
-                let entries = scope(value)?;
-                for (position, (name, value)) in entries.iter().enumerate() {
-                    if name == "num" {
-                        if position != 0 {
-                            return Err("FX descriptor count must precede its elements".into());
-                        }
-                        let count = atom(value)?
-                            .parse::<usize>()
-                            .map_err(|e| format!("FX descriptor count: {e}"))?;
-                        group.environments.truncate(count);
-                        while group.environments.len() < count {
-                            group.environments.push(environment_effect(&[])?);
-                        }
-                    } else {
-                        let index = name
-                            .strip_prefix("item[")
-                            .and_then(|n| n.strip_suffix(']'))
-                            .ok_or_else(|| format!("unknown FX descriptor list field {name}"))?
-                            .parse::<usize>()
-                            .map_err(|e| format!("FX descriptor index: {e}"))?;
-                        let entry = group.environments.get_mut(index).ok_or_else(|| {
-                            format!("FX descriptor {index} exceeds declared count")
-                        })?;
-                        *entry = environment_effect(scope(value)?)?;
-                    }
-                }
+                descriptor_list(&mut group.environments, scope(value)?, environment_effect)?;
             }
+            "m_sounds" => descriptor_list(&mut group.sounds, scope(value)?, sound_effect)?,
             _ => {} // Other effect families are not environment descriptors.
         }
     }
     Ok(group)
 }
+
+pub use effect_group as environment_group;
 
 #[cfg(test)]
 #[path = "fx/tests.rs"]

@@ -15,30 +15,48 @@ impl Default for Footstep {
     fn default() -> Self { Self { material: None, sound: None, step_length: 2.0 } }
 }
 
+#[derive(Clone, Debug)]
+pub struct FootstepSettings {
+    pub min_speed: f32,
+    pub min_interval: f32,
+    /// Off, on (arkDeclCpntPlayerBody +0x1a0 / +0x198).
+    pub silent_events: [Option<u32>; 2],
+}
+
+impl Default for FootstepSettings {
+    /// arkDeclCpntPlayerBody constructor 14076f960.
+    fn default() -> Self { Self { min_speed: 0.1, min_interval: 0.1, silent_events: [None; 2] } }
+}
+
 /// Body fields +0xc78..+0xc90. Configuration and initialization are owned
 /// by the body; disabling leaves progress intact, matching the update routine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Footsteps {
+    pub state: super::states::StateId,
     pub enabled: bool,
     pub stride: f32,
     pub distance: f32,
     pub second_half: bool,
     pub last_time: f64,
     pub buffer: f32,
+    pub silent: bool,
 }
 
 impl Default for Footsteps {
     /// FUN_14076f430: +0xc78/+0xc7c zero, +0xc84 false, +0xc85 true,
     /// +0xc88 zero double and +0xc90 zero float.
     fn default() -> Self {
-        Self { enabled: true, stride: 0.0, distance: 0.0, second_half: false, last_time: 0.0, buffer: 0.0 }
+        Self { state: super::states::StateId::NULL, enabled: true, stride: 0.0, distance: 0.0, second_half: false, last_time: 0.0, buffer: 0.0, silent: false }
     }
 }
 
 impl Footsteps {
     /// SetFootStep (FUN_140774620) stores twice the declared step length:
     /// each half of this distance cycle produces one footstep.
-    pub fn configure(&mut self, step: &Footstep) { self.stride = step.step_length * 2.0; }
+    pub fn configure(&mut self, step: &Footstep, state: super::states::StateId) {
+        self.stride = step.step_length * 2.0;
+        self.state = state;
+    }
 
     /// The callback returns the contact emission result (FUN_140770990).
     /// An attempted step changes the half-cycle even if emission fails;

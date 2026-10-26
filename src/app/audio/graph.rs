@@ -3,7 +3,7 @@
 use super::pcm::PcmAudio;
 use crate::{assets::wwise::{ContainerPlayback, MediaProperties, PlaybackNode, SelectionMode, TransitionMode},
     gameplay::sound::{containers::{transition_ms, Loops, Selection}, filters::{Kind as FilterKind, VoiceFilter},
-        mix::{Mixer, power10}, properties::RandomProperties, resampler::{pitch_step, Resampler}, Emitter}};
+        mix::{Mixer, power10}, properties::RandomProperties, resampler::{pitch_step, Resampler}, gain::GainRamp, Emitter}};
 use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
 use std::{collections::HashMap, io, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}, time::Duration};
 
@@ -12,6 +12,7 @@ pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection
 struct Sound {
     pcm: PcmAudio,
     properties: Arc<MediaProperties>,
+    spatial: Option<super::spatial::Voice>,
 }
 struct Container {
     children: Vec<usize>,
@@ -39,15 +40,23 @@ fn random15() -> u16 { rand::random_range(0..=32767) }
 impl Definition {
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
-            PlaybackNode::Sound { .. } => false,
+            PlaybackNode::Sound { variant, .. } => variant.properties.nodes.iter()
+                .find(|node| node.positioning_flags & 1 != 0).is_some_and(|node| node.positioning_3d.is_some())
+                || variant.properties.nodes.iter().any(|node| {
+                    [2, 3, 4].iter().any(|property| node.float(*property) != 0.0)
+                        || node.curves.iter().any(|curve| matches!(curve.property, 2 | 3 | 4))
+                        || node.ranges.iter().any(|range| matches!(range.property, 0 | 2 | 3 | 4 | 0x21)
+                            && (range.min != 0.0 || range.max != 0.0))
+                }),
             PlaybackNode::Layer { children, .. } => children.iter().any(Self::required),
             PlaybackNode::Container(container) => container.playback.continuous
-                || container.children.iter().any(|(child, _)| !matches!(child, PlaybackNode::Sound { .. })),
+                || container.children.iter().any(|(child, _)| !matches!(child, PlaybackNode::Sound { .. }) || Self::required(child)),
         }
     }
 
-    pub fn decode(root: PlaybackNode) -> io::Result<Self> {
-        fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>) -> io::Result<usize> {
+    pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<Self> {
+        fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
+            attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
                 PlaybackNode::Sound { node, variant } => {
                     if variant.properties.nodes.iter().any(|node| node.ranges.iter().any(|range|
@@ -57,11 +66,12 @@ impl Definition {
                     let pcm = PcmAudio::from_wem(&variant.media)?;
                     if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
-                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties) });
+                    let spatial = super::spatial::Voice::read(&variant.properties, attenuations).map_err(invalid)?;
+                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children } => {
-                    let children = children.into_iter().map(|child| node(child, nodes, sounds)).collect::<io::Result<_>>()?;
+                    let children = children.into_iter().map(|child| node(child, nodes, sounds, attenuations)).collect::<io::Result<_>>()?;
                     (id, Kind::Layer(children))
                 },
                 PlaybackNode::Container(container) => {
@@ -77,7 +87,7 @@ impl Definition {
                     let mut children = Vec::new();
                     let mut weights = Vec::new();
                     for (child, weight) in container.children {
-                        children.push(node(child, nodes, sounds)?);
+                        children.push(node(child, nodes, sounds, attenuations)?);
                         weights.push(weight);
                     }
                     (container.node, Kind::Container(Container { children, weights, mode: container.mode,
@@ -91,14 +101,15 @@ impl Definition {
         }
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
-        let root = node(root, &mut nodes, &mut sounds)?;
+        let root = node(root, &mut nodes, &mut sounds, attenuations)?;
         let first = sounds.first().ok_or_else(|| invalid("Wwise playback graph has no media"))?;
-        let channels = first.pcm.channels;
+        let spatial = sounds.iter().any(|sound| sound.spatial.is_some());
+        let channels = if spatial { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? } else { first.pcm.channels };
         if channels.get() > 8 { return Err(invalid("scheduled Wwise graph exceeds eight output channels")); }
         // The original engine's DSP/output clock is 48 kHz (142427c24).
         // Each source's fixed-point resampler converts its own media rate.
         let rate = SampleRate::new(48000).ok_or_else(|| invalid("invalid output sample rate"))?;
-        if sounds.iter().any(|sound| sound.pcm.channels != channels) {
+        if sounds.iter().any(|sound| if sound.spatial.is_some() { sound.pcm.channels.get() != 1 } else { sound.pcm.channels != channels }) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
         for entry in &nodes {
@@ -119,19 +130,20 @@ impl Definition {
     }
 
     pub fn prepare(self: &Arc<Self>, selections: Selections, emitter: Emitter, mixer: &Mixer,
-        parameter: Option<(u32, f32)>) -> Result<(ScheduledAudio, Playing), String>
+        parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>) -> Result<(ScheduledAudio, Playing), String>
     {
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
+            spatial: (0..self.sounds.len()).map(|_| [AtomicU32::new(1.0f32.to_bits()), AtomicU32::new(1.0f32.to_bits()), AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()) });
-        let playing = Playing { definition: self.clone(), control: control.clone(), parameter };
-        playing.update(mixer)?;
+        let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position };
+        playing.update(mixer, scene)?;
         Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter }, playing))
     }
 }
 
-struct Control { volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { spatial: Vec<[AtomicU32; 4]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>> }
 
 #[derive(Component, Clone)]
@@ -139,6 +151,7 @@ pub(super) struct Playing {
     definition: Arc<Definition>,
     control: Arc<Control>,
     parameter: Option<(u32, f32)>,
+    position: Option<super::spatial::Position>,
 }
 impl Playing {
     pub fn stop(&self, target: u32, milliseconds: i32, curve: u8) {
@@ -148,7 +161,15 @@ impl Playing {
         } else { target };
         self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((target, milliseconds, curve));
     }
-    pub fn update(&self, mixer: &Mixer) -> Result<(), String> {
+    pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
+        for (sound, targets) in self.definition.sounds.iter().zip(&self.control.spatial) {
+            if let Some(spatial) = &sound.spatial {
+                let (gains, filters) = spatial.targets(scene, self.position)?;
+                for (target, value) in targets.iter().zip([gains[0], gains[1], filters[0], filters[1]]) {
+                    target.store(value.to_bits(), Ordering::Relaxed);
+                }
+            }
+        }
         for (sound, volume) in self.definition.sounds.iter().zip(&self.control.volumes_db) {
             volume.store(mixer.volume_db_with_parameter(&sound.properties, self.parameter)?.to_bits(), Ordering::Relaxed);
         }
@@ -185,7 +206,7 @@ pub(super) struct ScheduledAudio {
 }
 
 enum State {
-    Sound { frame: u64, random: RandomProperties, resampler: Option<Resampler>, filters: Vec<[VoiceFilter; 2]> },
+    Sound { frame: u64, random: RandomProperties, resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
     Done,
@@ -200,7 +221,8 @@ impl Runtime {
             Kind::Sound(index) => State::Sound { frame: 0,
                 random: RandomProperties::sample(&definition.sounds[*index].properties, random15),
                 resampler: None,
-                filters: (0..definition.channels.get()).map(|_| [
+                gain: GainRamp::default(),
+                filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
                 ]).collect() },
@@ -253,7 +275,7 @@ impl Runtime {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, resampler, filters }, Kind::Sound(index)) => {
+            (State::Sound { frame, random, resampler, gain: ramp, filters }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
@@ -274,15 +296,34 @@ impl Runtime {
                     + random.volume_db + random.makeup_db;
                 let threshold = f32::from_bits(audio.control.threshold_db.load(Ordering::Relaxed));
                 let gain = if volume <= threshold { 0.0 } else { power10(volume * 0.05) };
+                if *frame % 1024 == 0 {
+                    let mut target = [gain; 8];
+                    if sound.spatial.is_some() {
+                        for (channel, target) in target[..output.len()].iter_mut().enumerate() {
+                            *target *= f32::from_bits(audio.control.spatial[*index][channel].load(Ordering::Relaxed));
+                        }
+                    }
+                    ramp.begin(target, 1024);
+                }
+                let gains = ramp.next_frame();
                 let low_pass = f32::from_bits(audio.control.filters[*index][0].load(Ordering::Relaxed)) + random.low_pass;
                 let high_pass = f32::from_bits(audio.control.filters[*index][1].load(Ordering::Relaxed)) + random.high_pass;
-                for ((out, sample), filters) in output.iter_mut().zip(samples).zip(filters) {
+                let distance_low = f32::from_bits(audio.control.spatial[*index][2].load(Ordering::Relaxed));
+                let distance_high = f32::from_bits(audio.control.spatial[*index][3].load(Ordering::Relaxed));
+                for (sample, filters) in samples[..channels].iter_mut().zip(filters) {
                     if *frame % 1024 == 0 {
-                        filters[0].set_target(low_pass);
-                        filters[1].set_target(high_pass);
+                        filters[0].set_target(low_pass.max(distance_low));
+                        filters[1].set_target(high_pass.max(distance_high));
                     }
-                    let sample = filters[0].process(sample);
-                    *out += filters[1].process(sample) * gain;
+                    *sample = filters[0].process(*sample);
+                    *sample = filters[1].process(*sample);
+                }
+                if sound.spatial.is_some() {
+                    for (channel, out) in output.iter_mut().enumerate() {
+                        *out += samples[0] * gains[channel];
+                    }
+                } else {
+                    for ((out, sample), gain) in output.iter_mut().zip(samples).zip(gains) { *out += sample * gain; }
                 }
                 resampler.advance();
                 *frame += 1;

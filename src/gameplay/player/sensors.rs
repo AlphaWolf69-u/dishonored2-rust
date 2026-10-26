@@ -43,11 +43,7 @@ fn box_points(min: Vec3, max: Vec3) -> Vec<Vec3> {
     points
 }
 
-/// FUN_140112000: a frame whose +X is `direction` and +Z up.
-fn frame(direction: Vec3) -> Mat3 {
-    let left = Vec3::Z.cross(direction).normalize_or_zero();
-    Mat3::from_cols(direction, left, Vec3::Z)
-}
+use crate::gameplay::reference_frame::direction_basis as frame;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoCrouchSensor {

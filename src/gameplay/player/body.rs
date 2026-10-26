@@ -10,6 +10,7 @@ use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNo
 use super::camera::BodyPose;
 use super::arms::Arm;
 use super::midnight::Midnight;
+use super::footsteps::{Footstep, Footsteps, FootstepSettings};
 use super::sensors::LeanSensor;
 use super::states::LocoStances;
 use crate::edge_animation::EdgeAnimation;
@@ -355,6 +356,11 @@ pub struct Body {
     /// m_speedInterpolation (+0x2b0), ramped in at 4/s.
     speed_interpolation: f32,
     pub speed: f32,
+    pub footstep: Footstep,
+    pub footsteps: Footsteps,
+    pub footstep_settings: FootstepSettings,
+    sound_requests: Vec<crate::gameplay::sound::Request>,
+    contact_requests: Vec<crate::gameplay::sound::Contact>,
     pub angle: f32,
     bob_amount: f32,
     pub jump: JumpAnim,
@@ -375,6 +381,53 @@ pub struct Body {
 }
 
 impl Body {
+    pub fn take_sound_requests(&mut self) -> Vec<crate::gameplay::sound::Request> { std::mem::take(&mut self.sound_requests) }
+    pub fn take_contact_requests(&mut self) -> Vec<crate::gameplay::sound::Contact> { std::mem::take(&mut self.contact_requests) }
+
+    /// 776310 -> 770990 for the ordinary player controller. Physics supplies
+    /// the dedicated ground material probe; navigation supplies the source.
+    pub fn update_footsteps(&mut self, world: &dyn super::character_proxy::PlayerWorld, physics: &super::physics::PlayerPhysics,
+        attributes: &super::states::Attributes, dt: f32, now: f64)
+    {
+        use crate::gameplay::sound::{Contact, Emitter, Request};
+        use super::states::StateId;
+        let target = physics.ground_material_hit.as_ref().and_then(|hit| world.material(hit));
+        let source = self.footstep.material.as_deref();
+        let buffer = self.footsteps.buffer;
+        let mut attempted = false;
+        self.footsteps.update(dt, now, self.speed, self.footstep_settings.min_speed, self.footstep_settings.min_interval, || {
+            attempted = true;
+            target.is_some() && ((source.is_some() && buffer <= 0.0) || self.footstep.sound.is_some())
+        });
+        let Some(target) = target.filter(|_| attempted) else { return };
+        if let Some(source) = source {
+            let silent = match self.footsteps.state {
+                StateId::RUNNING => attributes.get("ARK_ATTRIBUTE_PLAYER_RUNNING_FOOTSTEP_SILENT") > f32::EPSILON,
+                StateId::SPRINTING => attributes.get("ARK_ATTRIBUTE_PLAYER_SPRINTING_FOOTSTEP_SILENT") > f32::EPSILON,
+                _ => false,
+            };
+            if silent != self.footsteps.silent {
+                if let Some(event) = self.footstep_settings.silent_events[usize::from(silent)] {
+                    self.sound_requests.push(Request::Post { event, emitter: Emitter::PlayerBody });
+                }
+                self.footsteps.silent = silent;
+            }
+            if buffer <= 0.0 {
+                self.contact_requests.push(Contact {
+                    source: source.to_owned(), target: target.to_owned(), position: physics.position(),
+                    normal: Vec3::Z, direction: Vec3::ZERO,
+                    speed: self.speed.max(physics.gravity_velocity.z.abs()),
+                    // c84ca0's proxy body retains Cinfo's fixed motion 0;
+                    // its inverse mass is zero, so 092260 returns zero.
+                    mass: 0.0,
+                });
+            }
+        }
+        if let Some(event) = self.footstep.sound {
+            self.sound_requests.push(Request::Post { event, emitter: Emitter::PlayerBody });
+        }
+    }
+
     pub fn new(skeleton: BodySkeleton, animations: Vec<EdgeAnimation>, decl: BodyDecl, body_node: LocoNode, bob_node: LocoNode) -> Self {
         Self {
             skeleton,
@@ -387,6 +440,11 @@ impl Body {
             move_timer: 0.0,
             speed_interpolation: 0.0,
             speed: 0.0,
+            footstep: Footstep { step_length: 0.0, ..Footstep::default() },
+            footsteps: Footsteps::default(),
+            footstep_settings: FootstepSettings::default(),
+            sound_requests: Vec::new(),
+            contact_requests: Vec::new(),
             angle: 0.0,
             bob_amount: 1.0,
             jump: JumpAnim::default(),

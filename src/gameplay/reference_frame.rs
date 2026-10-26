@@ -3,6 +3,24 @@ use crate::float::{add, divide, multiply, subtract};
 mod basis;
 pub use basis::{basis_quaternion, invert_basis, relative_binding};
 
+/// idVec3::ToMat3 (140112000): normalize +X along the input, construct the
+/// horizontal left axis, then cross them for up. Vertical inputs use the
+/// executable's explicit signed frame rather than a degenerate cross product.
+pub fn direction_basis(direction: bevy_math::Vec3) -> bevy_math::Mat3 {
+    use bevy_math::{Mat3, Vec3};
+    let horizontal = direction.x * direction.x + direction.y * direction.y;
+    if horizontal.abs() > f32::MIN_POSITIVE {
+        let inverse_horizontal = 1.0 / horizontal.max(f32::MIN_POSITIVE).sqrt();
+        let length = horizontal + direction.z * direction.z;
+        let forward = direction * (1.0 / length.max(f32::MIN_POSITIVE).sqrt());
+        let left = Vec3::new(-direction.y * inverse_horizontal, direction.x * inverse_horizontal, 0.0);
+        Mat3::from_cols(forward, left, forward.cross(left))
+    } else {
+        let sign = if direction.z < 0.0 { -1.0 } else { 1.0 };
+        Mat3::from_cols(Vec3::new(0.0, 0.0, sign), Vec3::X, Vec3::new(0.0, sign, 0.0))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ReferenceFrame {
     pub position: [f32; 3],

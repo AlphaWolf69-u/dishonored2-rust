@@ -579,6 +579,9 @@ pub struct Frame<'a> {
     pub controller: &'a mut Controller,
     pub physics: &'a mut PlayerPhysics,
     pub body: &'a mut LocoStances,
+    pub footstep: &'a mut super::footsteps::Footstep,
+    pub footstep_clock: &'a mut super::footsteps::Footsteps,
+    pub body_speed: f32,
     pub camera: &'a mut PlayerCamera,
     pub follow_slope: &'a mut FollowSlope,
     pub requests: &'a mut MotionRequests,
@@ -1627,6 +1630,8 @@ impl StateMachine {
             return;
         }
         // Navigation Deactivate FUN_140868d70.
+        *frame.footstep = super::footsteps::Footstep { step_length: 0.0, ..Default::default() };
+        frame.footstep_clock.configure(frame.footstep, self.states[index].decl.id);
         frame.body.max_speeds = [UNSET; 4];
         if self.states[index].navigation.small_fall_started {
             frame.jump_anim.end(false, true);
@@ -2299,7 +2304,9 @@ impl StateMachine {
         turn.turn_speed_joystick = joystick * turn.pitch_speed_ratio;
         frame.requests.push_linear(0, velocity);
         frame.requests.push_angular(0, Vec3::new(0.0, 0.0, yaw_rate));
+        *frame.footstep = super::footsteps::navigation_step(&decl, frame.physics.ground.normal.dot(frame.axis.x_axis), frame.body_speed);
         let id = self.states[index].decl.id;
+        frame.footstep_clock.configure(frame.footstep, id);
         let navigation = &mut self.states[index].navigation;
         // The small-fall camera additive (0x140869b9c / 0x140869bbe).
         if decl.small_fall_min_height > 0.0 && navigation.small_fall_cooldown <= 0.0 {

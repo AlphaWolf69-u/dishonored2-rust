@@ -39,6 +39,10 @@ fn to_game(v: Vec3) -> Vec3 {
 pub(super) struct GameCollision<'a>(pub &'a CollisionWorld);
 
 impl PlayerWorld for GameCollision<'_> {
+    fn material(&self, hit: &WorldHit) -> Option<&str> {
+        self.0.physics_material(hit.key).map(|material| material.name.as_str())
+    }
+
     // The triangle's arkPhysicsMaterial; colliders without a resolved
     // material (placed models, entities) keep the material ctor's flags 3
     // (FUN_14008b640: mantle and vault allowed).
@@ -354,6 +358,7 @@ fn load_body(
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.footstep_settings = decls::footstep_settings(body_decl)?;
     body.arms = arms;
 
     body.lean_clips = lean_clips;
@@ -568,6 +573,7 @@ pub(super) fn update_player(
     mut input: ResMut<PlayerInput>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
+    mut contact_sounds: MessageWriter<super::audio::ContactSound>,
 ) {
     if benchmark.is_some() || state.debug_free_fly {
         input.events.clear();
@@ -595,7 +601,7 @@ pub(super) fn update_player(
             let events = std::mem::take(&mut input.events);
             player.body_settings = body_settings(difficulty.as_ref());
 
-            player.frame(&world, &events, &look_settings(), dt, frame_delta, base);
+            player.frame(&world, &events, &look_settings(), dt, frame_delta, game_clock.time(3).unwrap_or(0.0), base);
         }
     }
     for event in player.machine.take_sound_events() {
@@ -605,6 +611,12 @@ pub(super) fn update_player(
     }
     for request in player.body.midnight.take_sound_requests() {
         sound_events.write(super::audio::SoundEvent(request));
+    }
+    for request in player.body.take_sound_requests() {
+        sound_events.write(super::audio::SoundEvent(request));
+    }
+    for contact in player.body.take_contact_requests() {
+        contact_sounds.write(super::audio::ContactSound(contact));
     }
     let view = player.view();
     let Ok((mut transform, mut projection)) = cameras.single_mut() else { return };
@@ -630,12 +642,14 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     let world = GameCollision(world);
     let settings = look_settings();
     let dt = 1.0 / 120.0;
+    let probe_time = std::cell::Cell::new(0.0f64);
     let key = |action: i32, down: bool| ActionEvent { action, key: 0, value: [0.0; 2], flags: down as u32 };
     let run = |player: &mut Player, frames: usize, events: Vec<ActionEvent>| {
         let mut peak = player.feet().z;
         for frame in 0..frames {
             let events = if frame == 0 { events.clone() } else { Vec::new() };
-            player.frame(&world, &events, &settings, dt, dt, 80.0);
+            probe_time.set(probe_time.get() + f64::from(dt));
+            player.frame(&world, &events, &settings, dt, dt, probe_time.get(), 80.0);
             peak = peak.max(player.feet().z);
         }
         peak
@@ -705,7 +719,8 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         let lean_step = |player: &mut Player, label: &str, frames: usize, events: Vec<ActionEvent>| {
             for frame in 0..frames {
                 let events = if frame == 0 { events.clone() } else { Vec::new() };
-                player.frame(&world, &events, &settings, dt, dt, 80.0);
+                probe_time.set(probe_time.get() + f64::from(dt));
+                player.frame(&world, &events, &settings, dt, dt, probe_time.get(), 80.0);
                 player.view();
             }
             let axis = player.axis();
@@ -733,14 +748,16 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         lean_step(&mut player, "E held again", 1, vec![key(ACTION_LEAN_RIGHT, true)]);
         for _ in 0..30 {
             player.physics.add_yaw(70f32.to_radians() / 30.0);
-            player.frame(&world, &[], &settings, dt, dt, 80.0);
+            probe_time.set(probe_time.get() + f64::from(dt));
+            player.frame(&world, &[], &settings, dt, dt, probe_time.get(), 80.0);
             player.view();
         }
         lean_step(&mut player, "turning 70°", 0, Vec::new());
         lean_step(&mut player, "E released after turn", 1, vec![key(ACTION_LEAN_RIGHT, false)]);
         for _ in 0..30 {
             player.physics.add_yaw(-70f32.to_radians() / 30.0);
-            player.frame(&world, &[], &settings, dt, dt, 80.0);
+            probe_time.set(probe_time.get() + f64::from(dt));
+            player.frame(&world, &[], &settings, dt, dt, probe_time.get(), 80.0);
             player.view();
         }
         lean_step(&mut player, "turning back 70°", 0, Vec::new());
@@ -886,7 +903,7 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
         let mut player = Player::new(setup, start, 0.0, base_fov())?;
         for frame in 0..(seconds / dt) as usize {
             let events = input(frame, &player);
-            player.frame(&collision, &events, &settings, dt, dt, 80.0);
+            player.frame(&collision, &events, &settings, dt, dt, (frame + 1) as f64 * f64::from(dt), 80.0);
             player.view();
             if frame % 6 == 5 {
                 trace(&mut player, label, (frame + 1) as f32 * dt);
