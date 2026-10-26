@@ -302,9 +302,7 @@ impl Player {
         let mut render = Vec::with_capacity(self.body.arms.len());
         for (side, arm) in self.body.arms.iter().enumerate() {
             let Ok(joints) = arm.pose() else { continue };
-            let (tag_p, tag_r) = self.pose.joint_with_controls(arm.bind_joint, &body_controls);
-            let frame_p = tag_p + tag_r * arm.bind.0;
-            let frame_r = tag_r * arm.bind.1;
+            let (frame_p, frame_r) = self.arm_frame(arm, &body_controls);
             let shoulder = arm.skeleton.shoulder;
             let pivot = frame_p + frame_r * joints[shoulder].0;
             let rows = joints
@@ -325,6 +323,30 @@ impl Player {
             render.push(ArmRender { model: arm.model.clone(), joints: rows, visible: arm.visible });
         }
         self.arm_render = render;
+    }
+
+    fn arm_frame(&self, arm: &arms::Arm, controls: &[(usize, Mat3)]) -> (Vec3, Mat3) {
+        let (tag_p, tag_r) = self.pose.joint_with_controls(arm.bind_joint, controls);
+        (tag_p + tag_r * arm.bind.0, tag_r * arm.bind.1)
+    }
+
+    /// Audio without a joint attachment uses its entity's origin and axis
+    /// (140709ee0 / 1400c5b70). Bound arms use the same frame as their model
+    /// (1407506d0), before shoulder controls modify individual joints.
+    pub fn sound_transform(&self, emitter: crate::gameplay::sound::Emitter) -> Option<(Vec3, Mat3)> {
+        use crate::gameplay::sound::Emitter;
+        let origin = self.physics.position();
+        let axis = self.physics.axis();
+        let side = match emitter {
+            Emitter::PlayerBody => return Some((origin, axis)),
+            Emitter::PlayerLeftArm => 0,
+            Emitter::PlayerRightArm => 1,
+            Emitter::Menu | Emitter::Effect(_) => return None,
+        };
+        let arm = self.body.arms.get(side)?;
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let (position, rotation) = self.arm_frame(arm, &controls);
+        Some((origin + axis * position, axis * rotation))
     }
 
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {

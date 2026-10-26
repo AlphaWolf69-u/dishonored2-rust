@@ -137,7 +137,7 @@ impl Definition {
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()) });
-        let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position };
+        let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position, emitter };
         playing.update(mixer, scene)?;
         Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter }, playing))
     }
@@ -152,6 +152,7 @@ pub(super) struct Playing {
     control: Arc<Control>,
     parameter: Option<(u32, f32)>,
     position: Option<super::spatial::Position>,
+    emitter: Emitter,
 }
 impl Playing {
     pub fn stop(&self, target: u32, milliseconds: i32, curve: u8) {
@@ -164,7 +165,7 @@ impl Playing {
     pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
         for (sound, targets) in self.definition.sounds.iter().zip(&self.control.spatial) {
             if let Some(spatial) = &sound.spatial {
-                let (gains, filters) = spatial.targets(scene, self.position)?;
+                let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)))?;
                 for (target, value) in targets.iter().zip([gains[0], gains[1], filters[0], filters[1]]) {
                     target.store(value.to_bits(), Ordering::Relaxed);
                 }
