@@ -1,6 +1,6 @@
 //! World/listener integration for the recovered Wwise spatial calculations.
 use bevy::prelude::*;
-use crate::{assets::wwise::{Attenuation, MediaProperties}, gameplay::sound::{panning::{Rule, Stereo}, spatial}};
+use crate::{assets::wwise::{Attenuation, MediaProperties}, gameplay::sound::{panning::{Rule, Stereo}, spatial, Emitter}};
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Copy)]
@@ -14,12 +14,25 @@ pub(super) struct Scene {
     listener: Option<spatial::Listener>,
     rule: Rule,
     panner: Stereo,
+    emitters: HashMap<Emitter, Position>,
 }
 impl Default for Scene {
-    fn default() -> Self { Self { listener: None, rule: Rule::Speakers, panner: Stereo::default() } }
+    fn default() -> Self { Self { listener: None, rule: Rule::Speakers, panner: Stereo::default(), emitters: HashMap::new() } }
+}
+impl Scene {
+    pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
 }
 
-pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<Camera3d>>) {
+pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<Camera3d>>,
+    player: Option<Res<super::super::player::PlayerState>>) {
+    scene.emitters.clear();
+    if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
+        for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
+            if let Some((position, axis)) = player.sound_transform(emitter) {
+                scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
+            }
+        }
+    }
     scene.listener = cameras.single().ok().map(|camera| {
         let game = |value| Vec3::from_array(super::super::view_to_game(value));
         spatial::Listener { position: game(camera.translation),
