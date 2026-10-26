@@ -169,6 +169,32 @@ pub struct RigidBodySettings {
     pub min_contact_impulse_for_damage: Option<f32>,
     pub max_contact_impulse_for_damage: Option<f32>,
     pub lock_rotation: [bool; 3],
+    /// m_collisionSettings (decl +0x7c, FUN_140088f70 default); `None` when
+    /// malformed.
+    pub collision: Option<crate::gameplay::collision_settings::CollisionSettings>,
+    /// m_canTouchTrigger (decl +0xc4 bit 0, clear in 806eb0).
+    pub can_touch_trigger: bool,
+}
+
+impl RigidBodySettings {
+    /// The body's filter word as arkCpntRigidBody builds it (FUN_14080a720):
+    /// the layer's word, the block flags, then the TRIGGER bit for bodies
+    /// that touch triggers or feel wind. `None` for an unknown layer name or
+    /// malformed block flags.
+    pub fn collision_filter(&self) -> Option<u32> {
+        use crate::gameplay::collision_filter as filter;
+        let layer = match self.collision_layer.as_deref() {
+            Some(name) => filter::layer_index(name)?,
+            None => filter::layer::RIGID_BODY,
+        };
+        let word = crate::gameplay::shape_tags::material_filter(filter::filter_info(layer), self.collision?.flags);
+        let trigger = 1 << (filter::layer::TRIGGER + 5);
+        Some(if self.can_touch_trigger || self.wind_speed_factor.unwrap_or(0.0) > 0.0 {
+            word | trigger
+        } else {
+            word & !trigger
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2198,6 +2224,8 @@ pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
                 max_contact_impulse_for_damage: number("m_maxContactImpulseForDamage", 100.0),
                 lock_rotation: ["m_lockRotationX", "m_lockRotationY", "m_lockRotationZ"]
                     .map(|key| atom(key).as_deref() == Some("true")),
+                collision: physics_material::collision_settings_fields(&definition.id, edit).ok(),
+                can_touch_trigger: atom("m_canTouchTrigger").as_deref() == Some("true"),
             })
         })
         .collect()

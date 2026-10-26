@@ -18,6 +18,7 @@ use super::shape::{POSTURE_LEAN_FORWARD, POSTURE_VAULTING};
 use crate::edge_animation::EdgeAnimation;
 use std::sync::Arc;
 use super::character_proxy::{PlayerWorld, SupportState};
+use crate::gameplay::collision_filter::{layer, QueryFilter};
 use super::controller::{Controller, ACTION_JUMP, ACTION_LEAN_LEFT, ACTION_LEAN_RIGHT, ACTION_MOVE_BACKWARD, ACTION_MOVE_FORWARD};
 use super::physics::{PlayerPhysics, UNSET};
 use super::sensors::{AutoCrouchSensor, LeanSensor};
@@ -1071,7 +1072,9 @@ impl StateMachine {
         let to_autocrouch = frame.body.duration(self.stance(StateId::SLIDING), self.stance(StateId::AUTOCROUCH));
         let factor = self.state(StateId::SLIDING).map_or(1.0, |s| s.decl.navigation.physics_shape_transition_speed_factor);
         let mut hits = Vec::new();
+        // The physics decl's ground and ceil masks, PLAYER required.
         frame.world.cast_shape(
+            QueryFilter::layers(physics.ground_and_ceil_mask(), 1 << layer::PLAYER),
             physics.posture_body(POSTURE_SLIDING),
             frame.axis,
             frame.origin,
@@ -1770,7 +1773,7 @@ impl StateMachine {
         let (mut cast, mut start) = (Vec::new(), Vec::new());
         let rotation = Mat3::from_rotation_z(run.destination_yaw);
         let at = run.destination + Vec3::Z * 0.01;
-        frame.world.cast_shape(frame.physics.posture_body(POSTURE_AUTOCROUCHING), rotation, at, Vec3::ZERO, 0.001, &mut cast, Some(&mut start));
+        frame.world.cast_shape(QueryFilter::layers(0x802b, 1 << layer::PLAYER), frame.physics.posture_body(POSTURE_AUTOCROUCHING), rotation, at, Vec3::ZERO, 0.001, &mut cast, Some(&mut start));
         let overlap = start.iter().any(|h| h.value <= 0.0);
         let mut final_state = StateId(run.final_state);
         if overlap {

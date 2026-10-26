@@ -189,7 +189,7 @@ pub fn collision_settings(
     Ok(physics_material(name, &mut read)?.collision)
 }
 
-fn collision_settings_fields(
+pub(crate) fn collision_settings_fields(
     name: &str,
     fields: &[(String, super::Value)],
 ) -> Result<CollisionSettings, String> {

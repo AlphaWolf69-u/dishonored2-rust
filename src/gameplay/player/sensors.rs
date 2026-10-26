@@ -7,6 +7,10 @@
 //! WallCrouch sensor's decl starts disabled and no enabling caller was found,
 //! so it is not ported (WALLCROUCH stays unreachable, as in the game).
 use super::character_proxy::{PlayerWorld, RayHit, WorldHit};
+use crate::gameplay::collision_filter::{layer, QueryFilter};
+
+/// Every player sensor query requires its target to block the player.
+const PLAYER_FLAG: u32 = 1 << layer::PLAYER;
 use super::physics::PlayerPhysics;
 use super::shape::{POSTURE_AUTOCROUCHING, POSTURE_SNEAKING, POSTURE_STANDING};
 use bevy_math::{Mat3, Vec3};
@@ -100,9 +104,9 @@ impl AutoCrouchSensor {
         self.detection_distance = distance.max(self.decl.min_detection_distance);
     }
 
-    fn hit_distance(world: &dyn PlayerWorld, shape: &[Vec3], rotation: Mat3, from: Vec3, direction: Vec3, length: f32) -> (f32, Option<WorldHit>) {
+    fn hit_distance(world: &dyn PlayerWorld, filter: QueryFilter, shape: &[Vec3], rotation: Mat3, from: Vec3, direction: Vec3, length: f32) -> (f32, Option<WorldHit>) {
         let mut hits = Vec::new();
-        world.cast_shape(shape, rotation, from, direction * length, 0.0, &mut hits, None);
+        world.cast_shape(filter, shape, rotation, from, direction * length, 0.0, &mut hits, None);
         match hits.into_iter().min_by(|a, b| a.value.total_cmp(&b.value)) {
             Some(hit) => (hit.value * length, Some(hit)),
             None => (length, None),
@@ -129,19 +133,21 @@ impl AutoCrouchSensor {
         let length = self.detection_distance + self.player_radius + self.decl.min_hole_depth + 0.05;
         let rotation = frame(self.direction);
         let start = origin + Vec3::Z * (self.step_offset + self.keep_distance);
-        let (left, _) = Self::hit_distance(world, &self.sneak_left, rotation, start, self.direction, length);
-        let (right, _) = Self::hit_distance(world, &self.sneak_right, rotation, start, self.direction, length);
-        let (crouch, _) = Self::hit_distance(world, &self.crouch, rotation, start, self.direction, length);
+        // FUN_1403a2f60 submits every cast with layers 0x2b.
+        let filter = QueryFilter::layers(0x2b, PLAYER_FLAG);
+        let (left, _) = Self::hit_distance(world, filter, &self.sneak_left, rotation, start, self.direction, length);
+        let (right, _) = Self::hit_distance(world, filter, &self.sneak_right, rotation, start, self.direction, length);
+        let (crouch, _) = Self::hit_distance(world, filter, &self.crouch, rotation, start, self.direction, length);
         self.sneak_distance = left.max(right);
         if self.step_offset == 0.0 {
             self.sneak_distance_no_step = left.min(right);
         }
         self.step_offset = 0.0;
         let step_start = origin + Vec3::Z * self.keep_distance;
-        if Self::hit_distance(world, &self.crouch, rotation, step_start, self.direction, length).1.is_some() {
+        if Self::hit_distance(world, filter, &self.crouch, rotation, step_start, self.direction, length).1.is_some() {
             for _ in 0..2 {
                 let from = origin + Vec3::Z * self.step_offset;
-                let Some(hit) = Self::hit_distance(world, &self.crouch, rotation, from, self.direction, length).1 else { break };
+                let Some(hit) = Self::hit_distance(world, filter, &self.crouch, rotation, from, self.direction, length).1 else { break };
                 let h = hit.position.z - origin.z;
                 if h <= self.step_offset || h >= self.step_height {
                     break;
@@ -171,18 +177,19 @@ impl AutoCrouchSensor {
 }
 
 /// arkDeclCpntPlayerSensorLean (ctor FUN_1403b91c0; the installed decl is
-/// `{}`). `m_collisionLayers` 0x802b is not distinguished: the world is the
-/// level's static collision.
+/// `{}`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LeanDecl {
     pub head_shape_size: Vec3,
     pub lean_amplitude: f32,
     pub lean_up_amplitude: f32,
+    /// m_collisionLayers (+0x84), queried with the PLAYER flag required.
+    pub collision_layers: u32,
 }
 
 impl Default for LeanDecl {
     fn default() -> Self {
-        Self { head_shape_size: Vec3::new(0.05, 0.2, 0.1), lean_amplitude: 0.8, lean_up_amplitude: 0.35 }
+        Self { head_shape_size: Vec3::new(0.05, 0.2, 0.1), lean_amplitude: 0.8, lean_up_amplitude: 0.35, collision_layers: 0x802b }
     }
 }
 
@@ -226,7 +233,8 @@ impl LeanSensor {
         from.z -= (self.decl.head_shape_size.z - 0.05) + 0.01;
         let amplitude = self.decl.lean_amplitude;
         let limit = |direction: Vec3| {
-            let (distance, hit) = AutoCrouchSensor::hit_distance(world, &self.head, axis, from, direction, amplitude);
+            let filter = QueryFilter::layers(self.decl.collision_layers, PLAYER_FLAG);
+            let (distance, hit) = AutoCrouchSensor::hit_distance(world, filter, &self.head, axis, from, direction, amplitude);
             if hit.is_some() { distance / amplitude } else { 1.0 }
         };
         self.left_limit = limit(left);
@@ -343,6 +351,9 @@ pub struct VaultSensor {
     depth_blocked: bool,
     depth: f32,
     pending: Option<VaultQueries>,
+    /// +0x110 m_collisionMask: the sensor decl's m_collisionLayers (Start
+    /// FUN_1403d0210; ctor FUN_1403cf880 0x802b, installed decl empty).
+    collision_mask: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -388,6 +399,7 @@ impl VaultSensor {
             depth_blocked: false,
             depth: 0.0,
             pending: None,
+            collision_mask: 0x802b,
         }
     }
 
@@ -425,24 +437,27 @@ impl VaultSensor {
         self.axis = Mat3::from_cols(ahead, side, up);
         let l = self.limits;
         let mut q = VaultQueries { distance_shape: None, distance_ray: None, ray_position: Vec3::ZERO, ray_cast: false, height: None, depth: None, origin: self.origin, up };
-        let closest = |shape: &[Vec3], from: Vec3, direction: Vec3, length: f32| {
+        // FUN_1403d0bf0: the height and distance casts add NPC.
+        let plain = QueryFilter::layers(self.collision_mask, PLAYER_FLAG);
+        let with_npc = QueryFilter::layers(self.collision_mask | 1 << layer::NPC, PLAYER_FLAG);
+        let closest = |filter: QueryFilter, shape: &[Vec3], from: Vec3, direction: Vec3, length: f32| {
             let mut hits = Vec::new();
-            world.cast_shape(shape, self.axis, from, direction * length, 0.0, &mut hits, None);
+            world.cast_shape(filter, shape, self.axis, from, direction * length, 0.0, &mut hits, None);
             hits.into_iter().min_by(|a, b| a.value.total_cmp(&b.value)).map(|h| (h.value * length, h))
         };
         if self.distance_hit {
             if l.max_height > 0.0 {
                 let length = l.max_height - l.min_height;
-                q.height = Some(closest(&self.height_shape, self.obstacle, -up, length).map(|(d, _)| d));
+                q.height = Some(closest(with_npc, &self.height_shape, self.obstacle, -up, length).map(|(d, _)| d));
             }
             if l.max_depth > 0.0 {
-                q.depth = Some(closest(&self.depth_shape, self.obstacle, -ahead, l.max_depth).map(|(d, _)| d));
+                q.depth = Some(closest(plain, &self.depth_shape, self.obstacle, -ahead, l.max_depth).map(|(d, _)| d));
             }
         }
         if l.max_distance > 0.0 {
-            q.distance_shape = closest(&self.distance_shape, self.origin, ahead, l.max_distance).map(|(_, h)| h);
+            q.distance_shape = closest(with_npc, &self.distance_shape, self.origin, ahead, l.max_distance).map(|(_, h)| h);
             q.ray_cast = true;
-            if let Some(hit) = world.cast_ray(self.origin + up * l.min_height, ahead, l.max_distance) {
+            if let Some(hit) = world.cast_ray(plain, self.origin + up * l.min_height, ahead, l.max_distance) {
                 q.distance_ray = Some(hit.distance);
                 q.ray_position = hit.position;
             }
@@ -506,6 +521,9 @@ pub struct MantleDecl {
     pub left_hand_offset: Vec3,
     pub right_hand_offset: Vec3,
     pub use_player_direction: bool,
+    /// m_collisionMask (+0xb4): the layers every mantle query reads, with
+    /// the PLAYER flag required.
+    pub collision_mask: u32,
 }
 
 impl Default for MantleDecl {
@@ -523,6 +541,7 @@ impl Default for MantleDecl {
             left_hand_offset: Vec3::new(0.0, 0.2, 0.0),
             right_hand_offset: Vec3::new(0.0, 0.2, 0.0),
             use_player_direction: false,
+            collision_mask: 0x2b,
         }
     }
 }
@@ -679,7 +698,7 @@ impl MantleSensor {
                 let nxy = nxy / nxy.length_squared().max(f32::MIN_POSITIVE).sqrt();
                 let p = e.position - nxy * (nz * step + d.destination_depth);
                 let start = Vec3::new(p.x, p.y, e.position.z + step + 0.01);
-                if let Some(hit) = world.cast_ray(start, -Vec3::Z, 2.0 * step) {
+                if let Some(hit) = world.cast_ray(QueryFilter::layers(self.decl.collision_mask, PLAYER_FLAG), start, -Vec3::Z, 2.0 * step) {
                     let surface = WorldHit { position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
                     if world.surface(&surface).allow_mantle {
                         let rise = if velocity_z > 0.0 { dt * velocity_z } else { 0.0 };
@@ -742,14 +761,17 @@ impl MantleSensor {
         let d = self.decl;
         let origin = physics.position();
         let forward = physics.axis().x_axis;
+        let mask = QueryFilter::layers(d.collision_mask, PLAYER_FLAG);
+        // ShapeCastForward_Deferred FUN_1403bbf00 adds INTERACTABLE.
+        let posture_mask = QueryFilter::layers(d.collision_mask | 1 << layer::INTERACTABLE, PLAYER_FLAG);
         let first = |shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3| {
             let mut hits = Vec::new();
-            world.cast_shape(shape, rotation, from, displacement, 0.0, &mut hits, None);
+            world.cast_shape(mask, shape, rotation, from, displacement, 0.0, &mut hits, None);
             hits.into_iter().min_by(|a, b| a.value.total_cmp(&b.value))
         };
-        let any = |shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3| {
+        let any = |filter: QueryFilter, shape: &[Vec3], rotation: Mat3, from: Vec3, displacement: Vec3| {
             let (mut hits, mut start) = (Vec::new(), Vec::new());
-            world.cast_shape(shape, rotation, from, displacement, 0.001, &mut hits, Some(&mut start));
+            world.cast_shape(filter, shape, rotation, from, displacement, 0.001, &mut hits, Some(&mut start));
             !hits.is_empty() || start.iter().any(|h| h.value <= 0.001)
         };
         let mut q = MantleQueries::default();
@@ -762,7 +784,7 @@ impl MantleSensor {
             let length = d.max_distance_from_wall + (d.wall_angle_max * 0.017453292).tan() * step;
             q.rays = Some(
                 (0..13)
-                    .map(|i| world.cast_ray(origin + Vec3::Z * (d.forward_cast_height_min + i as f32 * step), self.search_direction, length))
+                    .map(|i| world.cast_ray(mask, origin + Vec3::Z * (d.forward_cast_height_min + i as f32 * step), self.search_direction, length))
                     .collect(),
             );
         }
@@ -770,10 +792,10 @@ impl MantleSensor {
             let dest = self.destination;
             let flat = Vec3::new(dest.x - origin.x, dest.y - origin.y, 0.0);
             let from = Vec3::new(origin.x, origin.y, dest.z + 0.01);
-            q.postures = Some([POSTURE_STANDING, POSTURE_SNEAKING, POSTURE_AUTOCROUCHING].map(|p| any(physics.posture_body(p), Mat3::IDENTITY, from, flat)));
+            q.postures = Some([POSTURE_STANDING, POSTURE_SNEAKING, POSTURE_AUTOCROUCHING].map(|p| any(posture_mask, physics.posture_body(p), Mat3::IDENTITY, from, flat)));
             let left = dest + self.destination_axis * d.left_hand_offset;
             let right = dest - self.destination_axis * d.right_hand_offset;
-            q.hands = Some([left, right].map(|p| any(&self.hand, Mat3::IDENTITY, p, Vec3::ZERO)));
+            q.hands = Some([left, right].map(|p| any(mask, &self.hand, Mat3::IDENTITY, p, Vec3::ZERO)));
         }
         self.pending = Some(q);
     }

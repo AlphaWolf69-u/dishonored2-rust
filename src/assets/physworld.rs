@@ -81,6 +81,11 @@ pub struct MeshTriangle {
     /// `None` for standalone shapes and for codec paths whose result is a
     /// runtime material-library id rather than a world-table entry.
     pub material: Option<u32>,
+    /// The body's hknpBodyCinfo collisionFilterInfo (0 for standalone shapes).
+    pub body_filter: u32,
+    /// The body's materialId the codec starts from; `None` for standalone
+    /// shapes and for systems whose material ids are remapped at insertion.
+    pub body_material: Option<u16>,
 }
 
 /// The hknpMaterialId FUN_1400922d0 threads through the shape-tag codec:
@@ -132,6 +137,34 @@ pub fn shape_tag_material(
         CodecMaterial::Map(index) => material_map.get(index as usize).copied(),
         CodecMaterial::Raw(_) => None,
     }
+}
+
+/// FUN_140853b80's filter output along a shape-key path: each world-table
+/// tag hands the word to FUN_14081a5f0 with that material's block flags
+/// (`block_flags(index into materials)`). Returns the word and whether every
+/// tag was decodable; past a relative tag after a table hit, the runtime
+/// library id (and so the material) is not statically known.
+pub fn shape_tag_filter(
+    body_material: u16,
+    body_filter: u32,
+    shape_tags: &ShapeTagPath,
+    material_map: &[u32],
+    block_flags: impl Fn(u32) -> u16,
+) -> (u32, bool) {
+    let mut material = Some(CodecMaterial::Raw(body_material));
+    let mut filter = body_filter;
+    for &tag in shape_tags {
+        material = decode_shape_tag(material, tag);
+        match material {
+            None => return (filter, false),
+            Some(CodecMaterial::Map(index)) if tag != NO_SHAPE_TAG && tag & 0x8000 == 0 => {
+                let Some(&entry) = material_map.get(index as usize) else { return (filter, false) };
+                filter = crate::gameplay::shape_tags::material_filter(filter, block_flags(entry));
+            }
+            Some(_) => {}
+        }
+    }
+    (filter, true)
 }
 
 /// hknpShapeTag "invalid": FUN_140853b80 leaves the material unchanged.
@@ -988,6 +1021,10 @@ impl PhysWorld {
                 .try_into()
                 .unwrap(),
             );
+            let body_filter = le32(
+                info,
+                self.field_offset(body_item.type_index, "collisionFilterInfo")?,
+            )?;
             let first = output.triangles.len();
             self.visit_shape(
                 bytes,
@@ -997,6 +1034,10 @@ impl PhysWorld {
                 NO_SHAPE_TAGS,
                 &mut output,
             )?;
+            for triangle in &mut output.triangles[first..] {
+                triangle.body_filter = body_filter;
+                triangle.body_material = body_ids_are_raw.then_some(body_material);
+            }
             if body_ids_are_raw {
                 for triangle in &mut output.triangles[first..] {
                     triangle.material =
@@ -1073,6 +1114,8 @@ impl PhysWorld {
                             source_shape_item: index,
                             shape_tags,
                             material: None,
+                            body_filter: 0,
+                            body_material: None,
                         });
                     }
                     output.convex.push(ConvexCollider {
@@ -1176,6 +1219,8 @@ impl PhysWorld {
                             source_shape_item: index,
                             shape_tags,
                             material: None,
+                            body_filter: 0,
+                            body_material: None,
                         });
                     }
                 }
@@ -1526,6 +1571,8 @@ impl PhysWorld {
                         source_shape_item: shape_index,
                         shape_tags: leaf_tags,
                         material: None,
+                        body_filter: 0,
+                        body_material: None,
                     });
                 }
                 if distinct3(primitive[0], primitive[2], primitive[3]) {
@@ -1535,6 +1582,8 @@ impl PhysWorld {
                         source_shape_item: shape_index,
                         shape_tags: leaf_tags,
                         material: None,
+                        body_filter: 0,
+                        body_material: None,
                     });
                 }
             }
@@ -1716,6 +1765,8 @@ fn triangulate_convex_vertices(
                 source_shape_item,
                 shape_tags,
                 material: None,
+                body_filter: 0,
+                body_material: None,
             });
         }
         return Ok(());
@@ -1777,6 +1828,8 @@ fn triangulate_convex_vertices(
             source_shape_item,
             shape_tags,
             material: None,
+            body_filter: 0,
+            body_material: None,
         });
     }
     Ok(())

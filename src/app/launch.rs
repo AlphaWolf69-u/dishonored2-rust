@@ -556,22 +556,50 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         let index_start = std::time::Instant::now();
+        // FUN_140853b80 hands each world-table tag's material block flags to
+        // the triangle's filter word; an unresolved declaration keeps the
+        // arkCollisionSettings_t default.
+        let block_flags = |index: u32| {
+            materials
+                .get(index as usize)
+                .and_then(|m| m.as_ref().ok())
+                .map_or(crate::gameplay::collision_settings::CollisionSettings::default().flags, |m| m.collision.flags)
+        };
+        let mut undecoded_filters = 0usize;
+        let level_triangles: Vec<_> = geometry
+            .triangles
+            .iter()
+            .map(|triangle| {
+                let material = triangle
+                    .material
+                    .and_then(|index| slot.get(index as usize).copied())
+                    .unwrap_or(navigation::NO_MATERIAL);
+                let filter = match triangle.body_material {
+                    Some(body_material) => {
+                        let (filter, decoded) = physworld::shape_tag_filter(
+                            body_material,
+                            triangle.body_filter,
+                            &triangle.shape_tags,
+                            &physics.material_map,
+                            block_flags,
+                        );
+                        undecoded_filters += usize::from(!decoded);
+                        filter
+                    }
+                    None => triangle.body_filter,
+                };
+                (triangle.vertices.map(game_to_view), u32::MAX, material, filter)
+            })
+            .collect();
+        if undecoded_filters > 0 {
+            println!("Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path");
+        }
         let world = navigation::CollisionWorld::with_materials(
-            geometry
-                .triangles
-                .iter()
-                .map(|triangle| {
-                    let material = triangle
-                        .material
-                        .and_then(|index| slot.get(index as usize).copied())
-                        .unwrap_or(navigation::NO_MATERIAL);
-                    (triangle.vertices.map(game_to_view), u32::MAX, material)
-                })
-                .chain(
-                    model_collision
-                        .into_iter()
-                        .map(|(triangle, owner)| (triangle, owner, navigation::NO_MATERIAL)),
-                ),
+            level_triangles.into_iter().chain(
+                model_collision
+                    .into_iter()
+                    .map(|(triangle, owner, filter)| (triangle, owner, navigation::NO_MATERIAL, filter)),
+            ),
             collider_owners,
             resolved,
         );
@@ -602,7 +630,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let start = game_to_view([values[0], values[1], values[2]]);
             let direction = game_to_view([values[3], values[4], values[5]]).normalize();
-            let hit = world.first_hit_details(start, start + direction * 40.0);
+            let hit = world.first_hit_details(start, start + direction * 40.0, crate::gameplay::collision_filter::QueryFilter::ALL);
             println!(
                 "NAV RAY hit={:?}",
                 hit.map(|(distance, index, owner, vertices)| (
