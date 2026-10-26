@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
     if first.to_string_lossy() == "--container-playback" {
-        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, TransitionMode}};
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, bank_switch_playback, TransitionMode}};
         let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
         let mut paths = if path.is_dir() {
             std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
@@ -18,6 +18,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut file = File::open(&path)?;
             for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
                 let bytes = package.read_entry(&mut file, *entry)?;
+                for (_, settings) in bank_switch_playback(&bytes)? {
+                    *totals.entry(format!("Switch containers: global_state={}, continuous={}", settings.group_kind == 1, settings.continuous)).or_default() += 1;
+                }
                 for (_, state) in bank_state_actions(&bytes)? {
                     *totals.entry("Set State actions".into()).or_default() += 1;
                     if state.delay.frames != 0 || state.delay.modifiers != [0; 2] {

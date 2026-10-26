@@ -136,6 +136,31 @@ pub struct StateGroup {
     pub transitions: Vec<StateTransition>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SwitchCase { pub value: u32, pub children: Vec<u32> }
+
+#[derive(Clone, Debug)]
+pub struct SwitchParameters {
+    pub node: u32,
+    pub first_only: bool,
+    pub continue_playback: bool,
+    pub on_switch: u8,
+    pub fade_out_ms: f32,
+    pub fade_in_ms: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchPlayback {
+    /// 141135e70: 1 reads the global state; other values read a switch.
+    pub group_kind: u8,
+    pub group: u32,
+    pub default: u32,
+    pub continuous: bool,
+    pub children: Vec<u32>,
+    pub cases: Vec<SwitchCase>,
+    pub parameters: Vec<SwitchParameters>,
+}
+
 /// CAkAction's property bundles (141116320), active fade curve (1411492c0),
 /// and Stop scopes (141127000). Target/All execution ignores the serialized
 /// exception list (141142380 / 141142190); All Except needs its own filtering.
@@ -740,4 +765,42 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
     }
     if reader.offset != object.len() { return Err(invalid("Wwise container fields did not consume its object")); }
     Ok((children, playlist))
+}
+
+/// 141133dd0: group selection, independently serialized child/case lists,
+/// then 14-byte child controls. Retain all branches for selection at playback
+/// time rather than resolving a cached event to one default branch.
+pub(super) fn switch_playback(object: &[u8], feedback: bool) -> io::Result<SwitchPlayback> {
+    let mut reader = Reader { bytes: object, offset: 4 };
+    reader.node_base(feedback)?;
+    let group_kind = reader.u8()?;
+    let group = reader.u32()?;
+    let default = reader.u32()?;
+    let continuous = reader.u8()? != 0;
+    let children = reader.children()?;
+    let count = reader.u32()?;
+    let mut cases = Vec::new();
+    for _ in 0..count {
+        let value = reader.u32()?;
+        let count = reader.u32()?;
+        let mut children = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..count {
+            let child = reader.u32()?;
+            if !seen.insert(child) { return Err(invalid("duplicate Wwise switch case child")); }
+            children.push(child);
+        }
+        cases.push(SwitchCase { value, children });
+    }
+    let count = reader.u32()?;
+    let mut parameters = Vec::new();
+    for _ in 0..count {
+        let node = reader.u32()?;
+        let flags = reader.u8()?;
+        let on_switch = reader.u8()? & 7;
+        parameters.push(SwitchParameters { node, first_only: flags & 1 != 0, continue_playback: flags & 2 != 0,
+            on_switch, fade_out_ms: reader.f32()?, fade_in_ms: reader.f32()? });
+    }
+    if reader.offset != object.len() { return Err(invalid("Wwise switch fields did not consume their object")); }
+    Ok(SwitchPlayback { group_kind, group, default, continuous, children, cases, parameters })
 }

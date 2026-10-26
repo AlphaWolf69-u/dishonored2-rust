@@ -12,7 +12,7 @@ mod playback;
 pub use playback::{PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, TransitionMode};
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
 
 /// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).
 pub fn language_name(game_language: &str) -> Option<&'static str> {
@@ -636,6 +636,19 @@ pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPl
     let mut result = Vec::new();
     for (&(kind, id), &object) in &objects {
         if kind == 5 { result.push((id, bank::node_children(object, kind, feedback)?.1.playback)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
+/// Switch/state container controls without loading media or selecting a case.
+pub fn bank_switch_playback(bytes: &[u8]) -> io::Result<Vec<(u32, SwitchPlayback)>> {
+    let chunks = bank_chunks(bytes)?;
+    let feedback = bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 6 { result.push((id, bank::switch_playback(object, feedback)?)); }
     }
     result.sort_by_key(|(id, _)| *id);
     Ok(result)
