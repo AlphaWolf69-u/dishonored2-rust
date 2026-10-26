@@ -668,7 +668,9 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
         for _ in 0..count {
             let child = reader.u32()?;
             let weight = reader.u32()?;
-            if !children.contains(&child) { return Err(invalid("Wwise playlist references a non-child node")); }
+            // 14111aed0 / 141118eb0 append playlist IDs independently of
+            // the child list. 141119b70 resolves them in the global node
+            // registry, so membership in this serialized list is not required.
             playlist.items.push((child, weight));
         }
     } else if kind == 9 {
