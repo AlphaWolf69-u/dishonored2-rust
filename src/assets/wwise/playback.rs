@@ -13,6 +13,9 @@ struct Object { kind: u8, bank: usize, start: usize, length: usize }
 #[derive(Debug, Default)]
 pub struct References {
     pub music_actors: usize,
+    pub switch_actors: usize,
+    pub continuous_switch_actors: usize,
+    pub state_switch_actors: usize,
     pub parents_in_other_banks: usize,
     pub playlist_items_in_other_banks: usize,
     pub actions_in_other_banks: usize,
@@ -75,6 +78,12 @@ impl<'a> PlaybackBanks<'a> {
             if matches!(actor.kind, 10..=13) { result.music_actors += 1; continue; }
             let bytes = self.bytes(actor);
             let feedback = self.banks[actor.bank].feedback;
+            if actor.kind == 6 {
+                let settings = bank::switch_playback(bytes, feedback)?;
+                result.switch_actors += 1;
+                result.continuous_switch_actors += usize::from(settings.continuous);
+                result.state_switch_actors += usize::from(settings.group_kind == 1);
+            }
             let properties = bank::node_properties(bytes, actor.kind, feedback)?;
             if properties.parent != 0 {
                 match self.actors.get(&properties.parent) {
@@ -198,6 +207,7 @@ impl<'a> PlaybackBanks<'a> {
             let target = read_u32_slice(action, 6)?;
             let command = match action[5] {
                 1 => bank::stop_action(action).map(|stop| Some(PlaybackCommand::Stop(stop))),
+                0x12 => bank::state_action(action).map(|state| Some(PlaybackCommand::SetState(state))),
                 4 => {
                     self.actor_playback(target, &mut media).and_then(|node| node.map(|node|
                         bank::play_settings(action).map(|settings| PlaybackCommand::Play { target, settings, node })).transpose())

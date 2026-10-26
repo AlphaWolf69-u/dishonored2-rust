@@ -12,7 +12,7 @@ mod playback;
 pub use playback::{PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
 
 /// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).
 pub fn language_name(game_language: &str) -> Option<&'static str> {
@@ -447,7 +447,7 @@ pub fn event_media_with(
     package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<MediaGroup>>> {
     Ok(event_commands_with(bank, event, package_media)?.and_then(|commands| commands.into_iter().find_map(|command| {
-        match command { EventCommand::Play { groups, .. } => Some(groups), EventCommand::Stop(_) => None }
+        match command { EventCommand::Play { groups, .. } => Some(groups), EventCommand::Stop(_) | EventCommand::SetState(_) => None }
     })))
 }
 
@@ -504,6 +504,7 @@ pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec
         PlaybackCommand::Failed { action, target, reason } => Err(invalid_owned(format!(
             "Wwise action {action:#010x}, target {target:#010x}: {reason}"))),
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
+        PlaybackCommand::SetState(state) => Ok(EventCommand::SetState(state)),
         PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
     }).collect()
 }
@@ -527,6 +528,7 @@ pub enum PlaybackCommand {
     /// (1410e5600 / 1410e8260 ignore the individual Execute result).
     Failed { action: u32, target: u32, reason: String },
     Stop(StopAction),
+    SetState(StateAction),
     Play { target: u32, settings: PlaySettings, node: PlaybackNode },
 }
 
@@ -555,6 +557,7 @@ pub struct PlaybackContainer {
 #[derive(Clone, Debug)]
 pub enum EventCommand {
     Stop(StopAction),
+    SetState(StateAction),
     Play { target: u32, settings: PlaySettings, groups: Vec<MediaGroup> },
 }
 
@@ -591,6 +594,7 @@ pub struct BankMix {
     pub buses: Vec<NodeProperties>,
     pub effects: Vec<EffectDefinition>,
     pub parameters: std::collections::HashMap<u32, f32>,
+    pub state_groups: Vec<StateGroup>,
     pub volume_threshold_db: f32,
     pub environment: EnvironmentSettings,
     /// 141120750 marks the first root as the primary device's master bus.
@@ -610,6 +614,19 @@ pub fn bank_play_settings(bytes: &[u8]) -> io::Result<Vec<(u32, PlaySettings)>> 
     Ok(result)
 }
 
+/// Authored global-state changes without loading media or executing actions.
+pub fn bank_state_actions(bytes: &[u8]) -> io::Result<Vec<(u32, StateAction)>> {
+    let chunks = bank_chunks(bytes)?;
+    bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 3 && object.get(5) == Some(&0x12) { result.push((id, bank::state_action(object)?)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
 /// Authored random/sequence timing without loading or decoding any media.
 pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPlayback)>> {
     let chunks = bank_chunks(bytes)?;
@@ -619,6 +636,19 @@ pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPl
     let mut result = Vec::new();
     for (&(kind, id), &object) in &objects {
         if kind == 5 { result.push((id, bank::node_children(object, kind, feedback)?.1.playback)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
+/// Switch/state container controls without loading media or selecting a case.
+pub fn bank_switch_playback(bytes: &[u8]) -> io::Result<Vec<(u32, SwitchPlayback)>> {
+    let chunks = bank_chunks(bytes)?;
+    let feedback = bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 6 { result.push((id, bank::switch_playback(object, feedback)?)); }
     }
     result.sort_by_key(|(id, _)| *id);
     Ok(result)
@@ -641,7 +671,7 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     let chunks = bank_chunks(bytes)?;
     let Some(settings) = chunks.get(b"STMG") else { return Ok(None) };
     let feedback = bank_feedback(&chunks)?;
-    let (volume_threshold_db, parameters) = bank::global_parameters(settings)?;
+    let (volume_threshold_db, parameters, state_groups) = bank::global_parameters(settings)?;
     let mut objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?
         .into_iter().collect::<Vec<_>>();
     // Object slices share the HIRC allocation. Restore their serialized order
@@ -657,7 +687,7 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     // 1410f85a0 disables all six environment tables before ENVS is loaded.
     let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
     let primary_bus = buses.iter().find(|bus| bus.parent == 0).map(|bus| bus.id);
-    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment, primary_bus }))
+    Ok(Some(BankMix { buses, effects, parameters, state_groups, volume_threshold_db, environment, primary_bus }))
 }
 
 fn media_from_sound(
