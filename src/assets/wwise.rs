@@ -9,7 +9,7 @@ use std::path::Path;
 mod bank;
 mod declaration;
 pub use declaration::SoundEventDeclaration;
-pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
+pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
@@ -481,7 +481,7 @@ pub fn event_commands_with(
     }
     event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
-        PlaybackCommand::Play { target, node } => Ok(EventCommand::Play { target, groups: flatten(node)? }),
+        PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
     }).collect()).transpose()
 }
 
@@ -554,7 +554,7 @@ pub fn event_playback_with(
         if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
         let mut visited = std::collections::HashSet::new();
         if let Some(node) = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)? {
-            commands.push(PlaybackCommand::Play { target, node });
+            commands.push(PlaybackCommand::Play { target, settings: bank::play_settings(action)?, node });
         }
     }
     Ok((!commands.is_empty()).then_some(commands))
@@ -563,7 +563,7 @@ pub fn event_playback_with(
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
     Stop(StopAction),
-    Play { target: u32, node: PlaybackNode },
+    Play { target: u32, settings: PlaySettings, node: PlaybackNode },
 }
 
 #[derive(Clone, Debug)]
@@ -587,7 +587,7 @@ pub struct PlaybackContainer {
 #[derive(Clone, Debug)]
 pub enum EventCommand {
     Stop(StopAction),
-    Play { target: u32, groups: Vec<MediaGroup> },
+    Play { target: u32, settings: PlaySettings, groups: Vec<MediaGroup> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -642,6 +642,33 @@ pub struct BankMix {
     pub environment: EnvironmentSettings,
     /// 141120750 marks the first root as the primary device's master bus.
     pub primary_bus: Option<u32>,
+}
+
+/// Authored Play action settings without loading or decoding any media.
+pub fn bank_play_settings(bytes: &[u8]) -> io::Result<Vec<(u32, PlaySettings)>> {
+    let chunks = bank_chunks(bytes)?;
+    bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let mut result = Vec::new();
+    for ((kind, id), object) in bank_objects(hierarchy)? {
+        if kind == 3 && object.get(5) == Some(&4) { result.push((id, bank::play_settings(object)?)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
+}
+
+/// Authored random/sequence timing without loading or decoding any media.
+pub fn bank_container_playback(bytes: &[u8]) -> io::Result<Vec<(u32, ContainerPlayback)>> {
+    let chunks = bank_chunks(bytes)?;
+    let feedback = bank_feedback(&chunks)?;
+    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(Vec::new()); };
+    let objects = bank_objects(hierarchy)?;
+    let mut result = Vec::new();
+    for (&(kind, id), &object) in &objects {
+        if kind == 5 { result.push((id, bank::node_children(object, kind, feedback)?.1.playback)); }
+    }
+    result.sort_by_key(|(id, _)| *id);
+    Ok(result)
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {

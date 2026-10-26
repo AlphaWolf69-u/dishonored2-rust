@@ -6,6 +6,7 @@ pub(super) struct Envelope {
     start: u64,
     duration: u64,
     from: f32,
+    to: f32,
     curve: u32,
 }
 impl Envelope {
@@ -13,12 +14,17 @@ impl Envelope {
         // Voice transitions set bUseReciprocalCurve. Downward transitions
         // reverse complementary curves, except the two symmetric S curves.
         let curve = if curve == 3 || curve == 5 { curve } else { 8 - curve };
-        Self { start, duration, from, curve: u32::from(curve) }
+        Self { start, duration, from, to: 0.0, curve: u32::from(curve) }
+    }
+    /// 1411064a0 uses the same reciprocal transition descriptor, with
+    /// increasing endpoints 0 -> 1; the authored curve is not reversed.
+    pub fn fade_in(start: u64, duration: u64, curve: u8) -> Self {
+        Self { start, duration, from: 0.0, to: 1.0, curve: u32::from(curve) }
     }
     pub fn value(self, frame: u64) -> Option<f32> {
         let age = frame.saturating_sub(self.start);
-        if age >= self.duration { return None; }
-        Some(crate::gameplay::sound::mix::interpolate(age as f32 / self.duration as f32, self.from, 0.0, self.curve))
+        if age >= self.duration { return if self.to == 0.0 { None } else { Some(self.to) }; }
+        Some(crate::gameplay::sound::mix::interpolate(age as f32 / self.duration as f32, self.from, self.to, self.curve))
     }
 }
 
@@ -34,9 +40,9 @@ impl Control {
 }
 
 pub(super) fn frames(milliseconds: i32, rate: u32) -> u64 {
-    if milliseconds <= 0 { return 0; }
+    if milliseconds == 0 { return 0; }
     // 142427c20/c24/c30: 21-ms transition ticks, 48 kHz, 1024 output
     // samples per quantum. 141130c50 rounds duration up to whole ticks.
-    let quanta = (milliseconds as u64 + 20) / 21;
+    let quanta = u64::from((milliseconds.wrapping_add(20) / 21) as u32);
     (quanta * 1024 * u64::from(rate) + 47_999) / 48_000
 }

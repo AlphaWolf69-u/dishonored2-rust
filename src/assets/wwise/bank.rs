@@ -13,13 +13,80 @@ pub struct ActionTransition {
 impl ActionTransition {
     /// FUN_141115f20: integer milliseconds, with an additive rounded rand().
     pub fn sample_ms(self, mut random15: impl FnMut() -> u16) -> i32 {
-        let [min, max] = self.modifiers;
-        let difference = max.wrapping_sub(min);
-        let offset = if difference == 0 { 0 } else {
-            (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference) + 0.5) as i32
-        };
-        self.milliseconds.wrapping_add(min).wrapping_add(offset)
+        sample_integer(self.milliseconds, self.modifiers, &mut random15)
     }
+}
+
+fn sample_integer(base: i32, [min, max]: [i32; 2], mut random15: impl FnMut() -> u16) -> i32 {
+    let difference = max.wrapping_sub(min);
+    let offset = if difference == 0 { 0 } else {
+        (f64::from(random15()) * f64::from_bits(0x3f00002000400080) * f64::from(difference) + 0.5) as i32
+    };
+    base.wrapping_add(min).wrapping_add(offset)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ActionDelay {
+    pub frames: i32,
+    pub modifiers: [i32; 2],
+}
+impl ActionDelay {
+    /// 141116320 converts milliseconds before 141115e20 randomizes the
+    /// integer frame interval. The action scheduler interprets it unsigned.
+    pub fn sample_frames(self, random15: impl FnMut() -> u16) -> u32 {
+        sample_integer(self.frames, self.modifiers, random15) as u32
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlaySettings {
+    pub transition: ActionTransition,
+    pub delay: ActionDelay,
+    pub probability: Option<f32>,
+    pub bank: u32,
+}
+impl PlaySettings {
+    pub fn requires_scheduling(self) -> bool {
+        self.transition.milliseconds != 0 || self.transition.modifiers != [0; 2]
+            || self.delay.frames != 0 || self.delay.modifiers != [0; 2]
+    }
+
+    /// 14113b5c0 uses two MSVC rand() values as a 30-bit draw. An absent
+    /// probability property plays unconditionally; explicit zero consumes no RNG.
+    pub fn admits(self, mut random15: impl FnMut() -> u16) -> bool {
+        let Some(probability) = self.probability else { return true; };
+        if probability == 0.0 { return false; }
+        let draw = u32::from(random15()) * 0x8000 + u32::from(random15());
+        f64::from(draw) * f64::from_bits(0x3e10000000400000) * 100.0 <= f64::from(probability)
+    }
+}
+
+/// 141116320's common action properties, then 14113b7a0's fade curve and
+/// bank ID. Keep the frame conversion ahead of delay randomization.
+pub(super) fn play_settings(bytes: &[u8]) -> io::Result<PlaySettings> {
+    let mut reader = Reader { bytes, offset: 4 };
+    reader.take(6)?; // Scope/type and target ID, retained by the Play command.
+    if reader.u8()? != 0 { return Err(invalid("Wwise bus Play actions require bus dispatch")); }
+    let properties = reader.properties()?;
+    let property = |id| properties.iter().find(|(property, _)| *property == id).map(|(_, value)| *value);
+    let mut transition = ActionTransition { milliseconds: property(0xf).unwrap_or(0) as i32, modifiers: [0; 2], curve: 4 };
+    let mut delay = ActionDelay { frames: (property(0xe).unwrap_or(0) as i32).wrapping_mul(48), modifiers: [0; 2] };
+    let probability = property(0x10).map(f32::from_bits);
+    let count = usize::from(reader.u8()?);
+    let ids = reader.take(count)?.to_vec();
+    for id in ids {
+        let values = [reader.u32()? as i32, reader.u32()? as i32];
+        match id {
+            0xf => transition.modifiers = values,
+            0xe => delay.modifiers = values.map(|value| value.wrapping_mul(48)),
+            _ => {},
+        }
+    }
+    transition.curve = reader.u8()? & 0x1f;
+    if transition.curve > 8 { return Err(invalid("unsupported Wwise Play fade curve")); }
+    let bank = reader.u32()?;
+    if reader.offset != bytes.len() { return Err(invalid("Wwise Play fields did not consume its action")); }
+    Ok(PlaySettings { transition, delay, probability, bank })
 }
 
 #[derive(Clone, Debug)]
@@ -601,7 +668,9 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
         for _ in 0..count {
             let child = reader.u32()?;
             let weight = reader.u32()?;
-            if !children.contains(&child) { return Err(invalid("Wwise playlist references a non-child node")); }
+            // 14111aed0 / 141118eb0 append playlist IDs independently of
+            // the child list. 141119b70 resolves them in the global node
+            // registry, so membership in this serialized list is not required.
             playlist.items.push((child, weight));
         }
     } else if kind == 9 {

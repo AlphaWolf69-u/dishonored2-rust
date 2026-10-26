@@ -147,7 +147,8 @@ impl Definition {
     }
 
     pub fn prepare(self: &Arc<Self>, selections: Selections, emitter: Emitter, mixer: &Mixer,
-        parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>) -> Result<(ScheduledAudio, Playing), String>
+        parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>,
+        settings: crate::assets::wwise::PlaySettings) -> Result<(ScheduledAudio, Playing), String>
     {
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             transitions: (0..self.nodes.len()).map(|_| AtomicU32::new(0)).collect(),
@@ -160,7 +161,8 @@ impl Definition {
                 .map(|activity| activity.registration(sound.properties.bus)).transpose()).collect::<Result<Vec<_>, String>>()? });
         let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position, emitter };
         playing.update(mixer, scene)?;
-        Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter }, playing))
+        Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter,
+            delay_frames: settings.delay.sample_frames(random15), settings }, playing))
     }
 }
 
@@ -277,6 +279,8 @@ pub(super) struct ScheduledAudio {
     control: Arc<Control>,
     selections: Selections,
     emitter: Emitter,
+    delay_frames: u32,
+    settings: crate::assets::wwise::PlaySettings,
 }
 impl ScheduledAudio {
     pub fn can_route(&self) -> bool { self.definition.can_route() }
@@ -333,9 +337,59 @@ impl Runtime {
         }
     }
 
+    /// Resolve the initial child graph when the Play action executes, before
+    /// the PBI's sample offset elapses (14113b5c0 / 1410e6a70 / 14111b7b0).
+    fn prime(&mut self, now: u64, audio: &ScheduledAudio) {
+        self.start(now, audio);
+        match &mut self.state {
+            State::Layer(children) | State::Container { active: children, .. } => {
+                for child in children { child.prime(now, audio); }
+            },
+            _ => {},
+        }
+    }
+
+    fn start(&mut self, now: u64, audio: &ScheduledAudio) {
+        let definition = &audio.definition;
+        let node = &definition.nodes[self.node];
+        let (State::Container { active, selection, loops, next, initialized, exhausted }, Kind::Container(container)) =
+            (&mut self.state, &node.kind) else { return; };
+        if !next.is_some_and(|deadline| now >= deadline) || *exhausted { return; }
+        let key = (node.id, if container.global { None } else { Some(audio.emitter) });
+        let selected = if container.playback.continuous {
+            if !*initialized && container.mode == SelectionMode::Sequence && !container.reset {
+                if let Some(shared) = audio.selections.lock().unwrap_or_else(|error| error.into_inner()).get(&key) {
+                    selection.sequence = shared.sequence.clone();
+                }
+            }
+            let selected = selection.next(container.mode, &container.weights, container.avoid,
+                container.playback.restart_backward, Some(loops));
+            if container.mode == SelectionMode::Sequence && !container.reset {
+                audio.selections.lock().unwrap_or_else(|error| error.into_inner()).entry(key).or_default().sequence = selection.sequence.clone();
+            }
+            selected
+        } else {
+            let mut states = audio.selections.lock().unwrap_or_else(|error| error.into_inner());
+            let state = states.entry(key).or_default();
+            if container.reset && container.mode == SelectionMode::Sequence { state.sequence = Default::default(); }
+            state.next(container.mode, &container.weights, container.avoid, container.playback.restart_backward, None)
+        };
+        *initialized = true;
+        *next = None;
+        if let Some(index) = selected {
+            active.push(Self::new(container.children[index], now, definition, &audio.control.registrations));
+            if !container.playback.continuous { *exhausted = true; }
+            else if container.playback.transition == TransitionMode::TriggerRate {
+                let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
+                let milliseconds = transition_ms(&container.playback, seconds, random15);
+                *next = Some(now + frames(milliseconds, definition.rate));
+            }
+        } else { *exhausted = true; }
+    }
+
     fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, definition: &Definition) {
         if definition.nodes[self.node].id == target {
-            if milliseconds <= 0 { self.state = State::Done; }
+            if milliseconds == 0 { self.state = State::Done; }
             else {
                 let gain = self.fade.map_or(1.0, |fade| fade.value(now).unwrap_or(0.0));
                 self.fade = Some(super::fade::Envelope::new(now, super::fade::frames(milliseconds, definition.rate.get()), gain, curve));
@@ -366,6 +420,7 @@ impl Runtime {
     }
 
     fn frame_inner(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32], mut routing: Option<&mut RouteContext<'_>>) -> bool {
+        self.start(now, audio);
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
@@ -501,39 +556,7 @@ impl Runtime {
                 children.retain_mut(|child| child.frame(now, audio, output, routing.as_deref_mut()));
                 !children.is_empty()
             },
-            (State::Container { active, selection, loops, next, initialized, exhausted }, Kind::Container(container)) => {
-                let key = (node.id, if container.global { None } else { Some(audio.emitter) });
-                if next.is_some_and(|deadline| now >= deadline) && !*exhausted {
-                    let selected = if container.playback.continuous {
-                        if !*initialized && container.mode == SelectionMode::Sequence && !container.reset {
-                            if let Some(shared) = audio.selections.lock().unwrap_or_else(|error| error.into_inner()).get(&key) {
-                                selection.sequence = shared.sequence.clone();
-                            }
-                        }
-                        let selected = selection.next(container.mode, &container.weights, container.avoid,
-                            container.playback.restart_backward, Some(loops));
-                        if container.mode == SelectionMode::Sequence && !container.reset {
-                            audio.selections.lock().unwrap_or_else(|error| error.into_inner()).entry(key).or_default().sequence = selection.sequence.clone();
-                        }
-                        selected
-                    } else {
-                        let mut states = audio.selections.lock().unwrap_or_else(|error| error.into_inner());
-                        let state = states.entry(key).or_default();
-                        if container.reset && container.mode == SelectionMode::Sequence { state.sequence = Default::default(); }
-                        state.next(container.mode, &container.weights, container.avoid, container.playback.restart_backward, None)
-                    };
-                    *initialized = true;
-                    *next = None;
-                    if let Some(index) = selected {
-                        active.push(Self::new(container.children[index], now, definition, &audio.control.registrations));
-                        if !container.playback.continuous { *exhausted = true; }
-                        else if container.playback.transition == TransitionMode::TriggerRate {
-                            let seconds = f32::from_bits(audio.control.transitions[self.node].load(Ordering::Relaxed));
-                            let milliseconds = transition_ms(&container.playback, seconds, random15);
-                            *next = Some(now + frames(milliseconds, definition.rate));
-                        }
-                    } else { *exhausted = true; }
-                }
+            (State::Container { active, next, exhausted, .. }, Kind::Container(container)) => {
                 active.retain_mut(|child| child.frame(now, audio, output, routing.as_deref_mut()));
                 if active.is_empty() && next.is_none() && !*exhausted {
                     let delay = if container.playback.transition == TransitionMode::Delay {
@@ -571,12 +594,59 @@ impl RouteContext<'_> {
     }
 }
 
+/// Pending actions and their sample offset on the output clock.
+struct Playback {
+    audio: ScheduledAudio,
+    root: Option<Runtime>,
+    frame: u64,
+    stopped: bool,
+}
+impl Playback {
+    fn new(audio: ScheduledAudio) -> Self {
+        let mut playback = Self { audio, root: None, frame: 0, stopped: false };
+        playback.prepare();
+        playback
+    }
+
+    fn prepare(&mut self) {
+        if self.stopped || self.root.is_some() { return; }
+        let deadline = u64::from(self.audio.delay_frames);
+        // 1410e5600 executes the action in its quotient quantum and passes
+        // the remainder to the PBI as a sample offset. Create the voice in
+        // that quantum, preserving its bus activity before samples start.
+        if deadline.saturating_sub(self.frame) >= 1024 { return; }
+        if !self.audio.settings.admits(random15) { self.stopped = true; return; }
+        let milliseconds = self.audio.settings.transition.sample_ms(random15);
+        let mut root = Runtime::new(self.audio.definition.root, deadline, &self.audio.definition, &self.audio.control.registrations);
+        root.prime(deadline, &self.audio);
+        if milliseconds != 0 {
+            root.fade = Some(super::fade::Envelope::fade_in(self.frame,
+                super::fade::frames(milliseconds, self.audio.definition.rate.get()), self.audio.settings.transition.curve));
+        }
+        self.root = Some(root);
+    }
+
+    fn begin(&mut self) {
+        for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
+            if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
+            else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
+        }
+        self.prepare();
+    }
+
+    fn frame(&mut self, output: &mut [f32], routing: Option<&mut RouteContext<'_>>) -> bool {
+        if self.stopped { return false; }
+        let now = self.frame;
+        self.frame += 1;
+        if now < u64::from(self.audio.delay_frames) { return true; }
+        self.root.as_mut().is_some_and(|root| root.frame(now, &self.audio, output, routing))
+    }
+}
+
 /// Scheduled mono/stereo sources on the shared output clock. Multichannel
 /// graphs still require their separate conversion and speaker-layout paths.
 pub(super) struct Routed {
-    audio: ScheduledAudio,
-    root: Runtime,
-    frame: u64,
+    playback: Playback,
 }
 impl Routed {
     pub fn new(audio: ScheduledAudio) -> Result<Self, String> {
@@ -584,20 +654,16 @@ impl Routed {
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
-        let root = Runtime::new(audio.definition.root, 0, &audio.definition, &audio.control.registrations);
-        Ok(Self { audio, root, frame: 0 })
+        Ok(Self { playback: Playback::new(audio) })
     }
 
     pub fn begin(&mut self) {
-        for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
-            self.root.stop(target, milliseconds, curve, self.frame, &self.audio.definition);
-        }
+        self.playback.begin();
     }
 
     pub fn frame(&mut self, buses: &mut super::bevy_backend::buses::Buses, offset: usize) -> Result<bool, String> {
         let mut context = RouteContext { buses, offset, gain: 1.0, error: None };
-        let alive = self.root.frame(self.frame, &self.audio, &mut [0.0; 2], Some(&mut context));
-        self.frame += 1;
+        let alive = self.playback.frame(&mut [0.0; 2], Some(&mut context));
         if let Some(error) = context.error { return Err(error); }
         Ok(alive)
     }
@@ -610,9 +676,7 @@ fn frames(milliseconds: f32, rate: SampleRate) -> u64 {
 }
 
 pub(super) struct Decoder {
-    audio: ScheduledAudio,
-    root: Runtime,
-    frame: u64,
+    playback: Playback,
     output: [f32; 8],
     channel: usize,
     alive: bool,
@@ -620,15 +684,12 @@ pub(super) struct Decoder {
 impl Iterator for Decoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
-        let channels = usize::from(self.audio.definition.channels.get());
+        let channels = usize::from(self.playback.audio.definition.channels.get());
         if self.channel == channels {
             if !self.alive { return None; }
             self.output.fill(0.0);
-            for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
-                self.root.stop(target, milliseconds, curve, self.frame, &self.audio.definition);
-            }
-            self.alive = self.root.frame(self.frame, &self.audio, &mut self.output[..channels], None);
-            self.frame += 1;
+            if self.playback.frame % 1024 == 0 { self.playback.begin(); }
+            self.alive = self.playback.frame(&mut self.output[..channels], None);
             self.channel = 0;
         }
         let sample = self.output[self.channel];
@@ -638,14 +699,14 @@ impl Iterator for Decoder {
 }
 impl Source for Decoder {
     fn current_span_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> ChannelCount { self.audio.definition.channels }
-    fn sample_rate(&self) -> SampleRate { self.audio.definition.rate }
+    fn channels(&self) -> ChannelCount { self.playback.audio.definition.channels }
+    fn sample_rate(&self) -> SampleRate { self.playback.audio.definition.rate }
     fn total_duration(&self) -> Option<Duration> { None }
 }
 impl Decodable for ScheduledAudio {
     type Decoder = Decoder;
     fn decoder(&self) -> Decoder {
-        Decoder { audio: self.clone(), root: Runtime::new(self.definition.root, 0, &self.definition, &self.control.registrations), frame: 0,
+        Decoder { playback: Playback::new(self.clone()),
             output: [0.0; 8], channel: usize::from(self.definition.channels.get()), alive: true }
     }
 }

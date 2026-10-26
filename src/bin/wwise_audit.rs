@@ -4,6 +4,39 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--container-playback" {
+        use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, TransitionMode}};
+        let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
+        let mut paths = if path.is_dir() {
+            std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()?
+                .into_iter().filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck"))).collect()
+        } else { vec![path] };
+        paths.sort();
+        let mut totals = BTreeMap::<String, usize>::new();
+        for path in paths {
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
+                let bytes = package.read_entry(&mut file, *entry)?;
+                for (_, settings) in bank_play_settings(&bytes)? {
+                    *totals.entry("Play actions".into()).or_default() += 1;
+                    for (name, present) in [
+                        ("Play actions with a fade", settings.transition.milliseconds != 0 || settings.transition.modifiers != [0; 2]),
+                        ("Play actions with a delay", settings.delay.frames != 0 || settings.delay.modifiers != [0; 2]),
+                        ("Play actions with probability", settings.probability.is_some()),
+                    ] { if present { *totals.entry(name.into()).or_default() += 1; } }
+                }
+                for (id, settings) in bank_container_playback(&bytes)? {
+                    *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
+                    if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                        println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
+                    }
+                }
+            }
+        }
+        for (kind, count) in totals { println!("{kind}: {count}"); }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--level-acoustics" {
         use dishonored2_rust::assets::{archive::Catalog, installation, level::{LevelResources, DEFAULT_LEVEL}, sound_propagation::Propagation};
         let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
@@ -387,8 +420,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         use dishonored2_rust::assets::wwise::PlaybackCommand;
                         match action {
                             PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            PlaybackCommand::Play { target, node } => {
-                                println!("  Play target={target:#010x}");
+                            PlaybackCommand::Play { target, settings, node } => {
+                                println!("  Play target={target:#010x}, {settings:?}");
                                 print_playback(&node, 2, &mixer)?;
                             },
                         }
@@ -404,8 +437,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Some(actions) => for action in actions {
                         match action {
                             dishonored2_rust::assets::wwise::EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            dishonored2_rust::assets::wwise::EventCommand::Play { target, groups } => {
-                                println!("  Play target={target:#010x}");
+                            dishonored2_rust::assets::wwise::EventCommand::Play { target, settings, groups } => {
+                                println!("  Play target={target:#010x}, {settings:?}");
                                 for (group_index, group) in groups.iter().enumerate() {
                                     for (variant_index, variant) in group.variants.iter().enumerate() {
                                         println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
@@ -503,6 +536,10 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+            let source = dishonored2_rust::gameplay::sound::looping::SourceLoop::new(audio.loop_points,
+                audio.samples.len() / usize::from(audio.channels), loops.count as u16)?;
+            println!("{indent}  Authored decoder duration before random loop modifiers/pitch: {} ms (0 = infinite)",
+                source.duration_ms(audio.sample_rate));
             let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
             println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
                 dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
