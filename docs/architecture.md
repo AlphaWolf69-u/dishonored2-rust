@@ -2063,8 +2063,20 @@ view-dependent patches, retained FFT simulation, displaced water depth, foam,
 and HDR colour. It uses the same camera history, opaque-depth reduction, shadow
 atlas, fog and GPU exposure as placed water. The rewrite's shared console owns
 ocean settings. CPU patch culling consumes the game matrix rows; GPU vertex
-uniforms consume the separate column-ordered transport. A captured nearby-ocean
-view checks that the generated leaves cover visible surface intersections.
+uniforms consume the separate column-ordered transport. Both ocean vertex entry
+points declare invariant positions: the colour pass requires exact equality with
+the depth prepass, so backend shader optimization must preserve their shared
+displacement and projection arithmetic. Otherwise the colour pass can reject
+water pixels and expose the pre-water scene through waves.
+
+F8 numerical display captures include same-frame ocean displacement, gradients,
+persistent foam, shoreline foam depth, immutable refraction source and water
+colour, together with the resolved ocean environment and clocks. These copies
+run only on request; they do not add a continuous rendering pass. Comparing
+water colour with its immutable source distinguishes rejected water draws from
+foam or reflection contributions without inspecting screenshot images.
+A captured nearby-ocean view checks that the generated leaves cover visible
+surface intersections.
 Pending contact queries use the existing invalid-query rule;
 live water-trigger overrides and underwater composition remain unfinished.
 
