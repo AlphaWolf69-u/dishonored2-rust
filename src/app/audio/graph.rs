@@ -147,7 +147,7 @@ impl Definition {
     }
 }
 
-struct Control { spatial: Vec<[AtomicU32; 8]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>> }
 
 #[derive(Component, Clone)]
@@ -173,16 +173,18 @@ impl Playing {
                 let values = if let Some(propagated) = scene.propagated(self.emitter) {
                     spatial.propagated_targets(scene, propagated, sound.pcm.channels.get(), &mixer.environment)?
                 } else {
-                    let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?;
-                    super::spatial::Targets { gains, voice_filters: filters, output_filters: [None; 2] }
+                    spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?
                 };
                 let gains = values.gains;
                 let filters = values.voice_filters;
                 for (target, value) in targets[..6].iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
                     target.store(value.to_bits(), Ordering::Relaxed);
                 }
-                for (target, value) in targets[6..].iter().zip(values.output_filters) {
+                for (target, value) in targets[6..8].iter().zip(values.output_filters) {
                     if let Some(value) = value { target.store(value.to_bits(), Ordering::Relaxed); }
+                }
+                for (target, value) in targets[8..].iter().zip(values.auxiliary.into_iter().flatten()) {
+                    target.store(value.to_bits(), Ordering::Relaxed);
                 }
             }
         }

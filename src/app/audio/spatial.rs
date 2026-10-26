@@ -18,6 +18,8 @@ pub(super) struct Propagated {
 
 pub(super) struct Targets {
     pub gains: [f32; 4],
+    /// Game, then user sends; each is reduced independently across rays.
+    pub auxiliary: [[f32; 4]; 2],
     pub voice_filters: [f32; 2],
     pub output_filters: [Option<f32>; 2],
 }
@@ -129,7 +131,7 @@ impl Voice {
         Ok(Some(Self { attenuation }))
     }
 
-    pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+    pub fn targets(&self, scene: &Scene, position: Option<Position>, channels: u16) -> Result<Targets, String> {
         let position = position.ok_or("spatial Wwise event has no emitter position")?;
         self.direction_targets(scene, &[position], channels)
     }
@@ -157,16 +159,20 @@ impl Voice {
             });
         }
         let filters = environment::filters(settings, &rays, [0.0; 2])?;
-        Ok(Targets { gains: crate::gameplay::sound::panning::directions(matrices),
+        let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
+        Ok(Targets { gains, auxiliary: [game, user],
             voice_filters: filters.voice, output_filters: filters.output })
     }
 
     /// Mode 2's per-channel maximum and minimum ray filters (1410cbbb0,
     /// 141104200, 1410cb3b0). The level owner supplies its projected positions.
-    pub fn direction_targets(&self, scene: &Scene, positions: &[Position], channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+    pub fn direction_targets(&self, scene: &Scene, positions: &[Position], channels: u16) -> Result<Targets, String> {
         let [first, remaining @ ..] = positions else { return Err("spatial Wwise event has no admitted position".into()) };
         let first = self.ray_targets(scene, *first, channels)?;
-        if remaining.is_empty() { return Ok(first); }
+        if remaining.is_empty() {
+            let [gains, game, user] = first.0;
+            return Ok(Targets { gains, auxiliary: [game, user], voice_filters: first.1, output_filters: [None; 2] });
+        }
         let mut matrices = vec![first.0];
         let mut filters = [100.0; 2];
         for index in 0..2 { if first.1[index] <= filters[index] { filters[index] = first.1[index]; } }
@@ -175,15 +181,16 @@ impl Voice {
             matrices.push(matrix);
             for index in 0..2 { if next[index] <= filters[index] { filters[index] = next[index]; } }
         }
-        Ok((crate::gameplay::sound::panning::directions(matrices), filters))
+        let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
+        Ok(Targets { gains, auxiliary: [game, user], voice_filters: filters, output_filters: [None; 2] })
     }
 
-    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([f32; 4], [f32; 2]), String> {
+    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
         self.ray_targets_with_environment(scene, position, channels, None)
     }
 
     fn ray_targets_with_environment(&self, scene: &Scene, position: Position, channels: u16,
-        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([f32; 4], [f32; 2]), String> {
+        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
@@ -202,7 +209,6 @@ impl Voice {
         };
         let filters = spatial::filters(attenuation, ray, gains.cone_ratio,
             cone.map_or([0.0; 2], |cone| [cone.low_pass, cone.high_pass]), [0.0; 2]);
-        Ok(([pan[0][0] * gains.dry, pan[0][1] * gains.dry,
-            pan[1][0] * gains.dry, pan[1][1] * gains.dry], filters))
+        Ok((crate::gameplay::sound::panning::send_matrices(pan, gains), filters))
     }
 }
