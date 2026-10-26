@@ -8,6 +8,7 @@ pub(super) struct PcmAudio {
     pub(super) samples: Arc<[f32]>,
     pub(super) channels: ChannelCount,
     pub(super) sample_rate: SampleRate,
+    fade: Option<super::fade::Control>,
 }
 
 impl PcmAudio {
@@ -19,25 +20,43 @@ impl PcmAudio {
         if audio.samples.len() % usize::from(channels.get()) != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "partial decoded Wwise sample frame"));
         }
-        Ok(Self { samples: audio.samples.into(), channels, sample_rate })
+        Ok(Self { samples: audio.samples.into(), channels, sample_rate, fade: None })
+    }
+
+    pub fn controlled(&self) -> (Self, super::fade::Control) {
+        let control = super::fade::Control::default();
+        let mut audio = self.clone();
+        audio.fade = Some(control.clone());
+        (audio, control)
     }
 }
 
 pub(super) struct PcmDecoder {
     audio: PcmAudio,
     position: usize,
+    envelope: Option<super::fade::Envelope>,
+    gain: f32,
 }
 
 impl Iterator for PcmDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
+        let channels = usize::from(self.audio.channels.get());
+        if self.position % channels == 0 {
+            let frame = (self.position / channels) as u64;
+            if let Some((milliseconds, curve)) = self.audio.fade.as_ref().and_then(|control| control.take()) {
+                let from = self.envelope.and_then(|envelope| envelope.value(frame)).unwrap_or(self.gain);
+                self.envelope = Some(super::fade::Envelope::new(frame, super::fade::frames(milliseconds, self.audio.sample_rate.get()), from, curve));
+            }
+            self.gain = match self.envelope { Some(envelope) => envelope.value(frame)?, None => 1.0 };
+        }
         let sample = *self.audio.samples.get(self.position)?;
         self.position += 1;
-        Some(sample)
+        Some(sample * self.gain)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.audio.samples.len() - self.position;
-        (remaining, Some(remaining))
+        (if self.audio.fade.is_some() { 0 } else { remaining }, Some(remaining))
     }
 }
 
@@ -54,5 +73,5 @@ impl Source for PcmDecoder {
 
 impl Decodable for PcmAudio {
     type Decoder = PcmDecoder;
-    fn decoder(&self) -> PcmDecoder { PcmDecoder { audio: self.clone(), position: 0 } }
+    fn decoder(&self) -> PcmDecoder { PcmDecoder { audio: self.clone(), position: 0, envelope: None, gain: 1.0 } }
 }

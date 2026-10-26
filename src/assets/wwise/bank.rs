@@ -4,6 +4,63 @@
 use super::{invalid, invalid_owned, SelectionMode};
 use std::io;
 
+#[derive(Clone, Copy, Debug)]
+pub struct ActionTransition {
+    pub milliseconds: i32,
+    pub modifiers: [i32; 2],
+    pub curve: u8,
+}
+impl ActionTransition {
+    /// FUN_141115f20: integer milliseconds, with an additive rounded rand().
+    pub fn sample_ms(self, mut random15: impl FnMut() -> u16) -> i32 {
+        let [min, max] = self.modifiers;
+        let difference = max.wrapping_sub(min);
+        let offset = if difference == 0 { 0 } else {
+            (f64::from(random15()) / 32767.0 * f64::from(difference) + 0.5) as i32
+        };
+        self.milliseconds.wrapping_add(min).wrapping_add(offset)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StopAction {
+    pub target: u32,
+    pub game_object: bool,
+    pub transition: ActionTransition,
+}
+
+/// CAkAction's property bundles (141116320), active fade curve (1411492c0),
+/// and Stop scopes (141127000). Delay and exception actions need scheduling
+/// and exclusion filtering before they can be submitted to the output backend.
+pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
+    let mut reader = Reader { bytes, offset: 4 };
+    let game_object = match reader.u8()? {
+        2 => false, 3 => true,
+        _ => return Err(invalid("Wwise all/exception Stop scopes require exclusion filtering")),
+    };
+    reader.u8()?;
+    let target = reader.u32()?;
+    if reader.u8()? != 0 { return Err(invalid("Wwise bus Stop actions are unsupported")); }
+    let properties = reader.properties()?;
+    let milliseconds = properties.iter().find(|(id, _)| *id == 0xf).map_or(0, |(_, value)| *value as i32);
+    if properties.iter().any(|(id, value)| *id == 0xe && *value != 0) {
+        return Err(invalid("delayed Wwise Stop actions require action scheduling"));
+    }
+    let count = reader.u8()? as usize;
+    let ids = reader.take(count)?.to_vec();
+    let mut modifiers = [0; 2];
+    for id in ids {
+        let values = [reader.u32()? as i32, reader.u32()? as i32];
+        if id == 0xf { modifiers = values; }
+        if id == 0xe && values != [0; 2] { return Err(invalid("randomized Wwise action delays require scheduling")); }
+    }
+    let curve = reader.u8()? & 0x1f;
+    if curve > 8 { return Err(invalid("unsupported Wwise action fade curve")); }
+    if reader.u32()? != 0 { return Err(invalid("Wwise Stop exceptions require exclusion filtering")); }
+    if reader.offset != bytes.len() { return Err(invalid("Wwise Stop fields did not consume its action")); }
+    Ok(StopAction { target, game_object, transition: ActionTransition { milliseconds, modifiers, curve } })
+}
+
 #[derive(Clone, Debug)]
 pub struct CurvePoint {
     pub input: f32,
