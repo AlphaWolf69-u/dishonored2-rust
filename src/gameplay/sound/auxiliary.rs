@@ -32,6 +32,69 @@ pub struct Send {
     pub gain: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendKind { Game, User }
+
+#[derive(Clone, Copy, Debug)]
+pub struct ControlSend {
+    pub bus: u32,
+    pub gain: f32,
+    pub kind: SendKind,
+}
+
+/// The four authored user-send gains are in dB; game-object sends are linear.
+#[derive(Clone, Copy, Debug)]
+pub struct UserSend {
+    pub bus: u32,
+    pub decibels: f32,
+}
+
+/// 141103810: game sends precede user sends, with independent admission
+/// thresholds. The input lists are the four slots of each native owner.
+pub fn controls(game: &[Send], game_enabled: bool, game_decibels: f32,
+    user: &[UserSend]) -> Result<Vec<ControlSend>, String>
+{
+    if game.len() > 4 || user.len() > 4 {
+        return Err("auxiliary send owner exceeds four slots".into());
+    }
+    let mut result = Vec::with_capacity(8);
+    if game_enabled {
+        let gain = super::mix::power10(game_decibels * 0.05);
+        for send in game {
+            if send.bus == 0 { break; }
+            let gain = gain * send.gain;
+            // DAT_142427a50; ordered comparison also excludes NaN.
+            if gain > f32::from_bits(0x37800000) {
+                result.push(ControlSend { bus: send.bus, gain, kind: SendKind::Game });
+            }
+        }
+    }
+    for send in user {
+        // DAT_142427a54. A zero user bus skips its slot, rather than
+        // terminating the list as it does for game-object sends.
+        if send.bus != 0 && send.decibels > f32::from_bits(0xc2c0999a) {
+            result.push(ControlSend { bus: send.bus,
+                gain: super::mix::power10(send.decibels * 0.05), kind: SendKind::User });
+        }
+    }
+    Ok(result)
+}
+
+/// 1410fc0f0 adds all matching control entries in their stored order.
+/// 1410ec0e0 creates one connection to each bus/device, retaining the first
+/// connection's kind. Repeated zones therefore add gains before bus DSP.
+pub fn bus_sends(controls: &[ControlSend]) -> Vec<ControlSend> {
+    let mut buses: Vec<ControlSend> = Vec::new();
+    for send in controls.iter().take(8).take_while(|send| send.bus != 0) {
+        if let Some(bus) = buses.iter_mut().find(|bus| bus.bus == send.bus) {
+            bus.gain += send.gain;
+        } else {
+            buses.push(ControlSend { gain: 0.0 + send.gain, ..*send });
+        }
+    }
+    buses
+}
+
 /// Rebuild the object's send list in reverse zone-ring order. Repeated bus
 /// IDs are retained: c4f70 appends and leaves reconciliation to Wwise.
 pub fn project(graph: &Propagation, path: Option<&Path>, enabled: bool, detail: i32,

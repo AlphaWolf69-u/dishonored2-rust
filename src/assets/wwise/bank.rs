@@ -96,6 +96,9 @@ pub struct NodeProperties {
     pub positioning_flags: u8,
     pub positioning_3d: Option<Positioning3d>,
     pub effects: EffectChain,
+    /// 1410deb00: game override, game enable, user override, serialized IDs.
+    pub auxiliary_flags: u8,
+    pub auxiliary_buses: [u32; 4],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -385,8 +388,10 @@ impl<'a> Reader<'a> {
                 self.records(paths, 20)?; // Vertex spans and XYZ ranges.
             }
         }
-        let auxiliary = self.u8()?;
-        if auxiliary & 8 != 0 { self.take(16)?; }
+        node.auxiliary_flags = self.u8()?;
+        if node.auxiliary_flags & 8 != 0 {
+            for bus in &mut node.auxiliary_buses { *bus = self.u32()?; }
+        }
         self.take(6)?; // Voice limit, virtualization and analysis settings.
         self.states()?;
         node.curves = self.rtpcs()?;

@@ -368,7 +368,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
                             PlaybackCommand::Play { target, node } => {
                                 println!("  Play target={target:#010x}");
-                                print_playback(&node, 2)?;
+                                print_playback(&node, 2, &mixer)?;
                             },
                         }
                     }
@@ -472,7 +472,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize) -> Result<(), Box<dyn Error>> {
+fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
+    mixer: &dishonored2_rust::gameplay::sound::mix::Mixer) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
@@ -481,7 +482,12 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+            let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
+            println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
+                dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
             for properties in &variant.properties.nodes {
+                println!("{indent}  Node {:#010x} auxiliary_flags={:#x} buses={:x?}",
+                    properties.id, properties.auxiliary_flags, properties.auxiliary_buses);
                 for curve in &properties.curves {
                     println!("{indent}  Node {:#010x} RTPC={:#010x} property={} kind={} accumulation={} scaling={} points={:?}",
                         properties.id, curve.parameter, curve.property, curve.kind, curve.accumulation, curve.scaling, curve.points);
@@ -503,14 +509,14 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         },
         PlaybackNode::Layer { node, children } => {
             println!("{indent}Layer {node:#010x}");
-            for child in children { print_playback(child, depth + 1)?; }
+            for child in children { print_playback(child, depth + 1, mixer)?; }
         },
         PlaybackNode::Container(container) => {
             println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
                 container.node, container.mode, container.global, container.reset_each_play, container.avoid_repeat, container.playback);
             for (child, weight) in &container.children {
                 println!("{indent}  weight={weight}");
-                print_playback(child, depth + 2)?;
+                print_playback(child, depth + 2, mixer)?;
             }
         },
     }

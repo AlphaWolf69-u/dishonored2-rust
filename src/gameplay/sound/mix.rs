@@ -107,6 +107,57 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    /// The nearest game/user override owns that category's complete settings
+    /// (1410dbb30). The root supplies either category when no child overrides.
+    pub fn auxiliary_controls(&self, source: &MediaProperties,
+        game: &[super::auxiliary::Send], parameters: &[(u32, f32)])
+        -> Result<Vec<super::auxiliary::ControlSend>, String>
+    {
+        let mut game_enabled = false;
+        let mut game_decibels = 0.0;
+        if let Some(node) = source.nodes.iter().find(|node| node.auxiliary_flags & 1 != 0 || node.parent == 0) {
+            game_enabled = node.auxiliary_flags & 2 != 0;
+            game_decibels = self.auxiliary_property(node, 0x16, 0x13, parameters)?;
+        }
+        let mut user = Vec::new();
+        if let Some(node) = source.nodes.iter().find(|node| node.auxiliary_flags & 4 != 0 || node.parent == 0) {
+            // The native array is allocated only when at least one bus is
+            // nonzero. An empty override still prevents parent inheritance.
+            if node.auxiliary_buses.iter().any(|bus| *bus != 0) {
+                for (slot, &bus) in node.auxiliary_buses.iter().enumerate() {
+                    user.push(super::auxiliary::UserSend { bus,
+                        decibels: self.auxiliary_property(node, 0x12 + slot as u8, 0x38 + slot as u8, parameters)? });
+                }
+            }
+        }
+        super::auxiliary::controls(game, game_enabled, game_decibels, &user)
+    }
+
+    fn auxiliary_property(&self, node: &NodeProperties, property: u8, rtpc: u8,
+        parameters: &[(u32, f32)]) -> Result<f32, String>
+    {
+        let mut contribution = None;
+        let mut accumulation = None;
+        for curve in node.curves.iter().filter(|curve| curve.property == rtpc) {
+            if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter auxiliary curve", node.id)); }
+            let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
+                .or_else(|| self.parameters.get(&curve.parameter).copied())
+                .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
+            let next = curve_value(curve, input).ok_or("empty Wwise auxiliary curve")?;
+            if accumulation.is_some_and(|mode| mode != curve.accumulation) {
+                return Err("Wwise auxiliary curves disagree on subscription accumulation".into());
+            }
+            accumulation = Some(curve.accumulation);
+            // 1410d1480 selects 1410cf230 for multiplicative subscriptions,
+            // otherwise 1410cf060 sums them. 1410dbb30 then adds that result
+            // to the authored property; the base is not part of the fold.
+            contribution = Some(if curve.accumulation == 2 {
+                contribution.unwrap_or(1.0) * next
+            } else { contribution.unwrap_or(0.0) + next });
+        }
+        Ok(node.float(property) + contribution.unwrap_or(0.0))
+    }
+
     /// Source pitch (2), LPF (3), and HPF (4), accumulated through the
     /// source hierarchy by 1410dbb30. Output-bus filters are a separate stage.
     pub fn source_property(&self, source: &MediaProperties, property: u8,
