@@ -713,7 +713,8 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
                     f if f % 2 == 1 && f > jump_frame + 1 => vec![key(ACTION_JUMP, false)],
                     _ => Vec::new(),
                 };
-                player.frame(&world, &events, &settings, dt, dt, 80.0);
+                probe_time.set(probe_time.get() + f64::from(dt));
+                player.frame(&world, &events, &settings, dt, dt, probe_time.get(), 80.0);
                 if frame % 5 == 0 || player.machine.active_states().iter().any(|s| s.0 == 8) && frame % 2 == 0 {
                     let eye = player.view().origin.z;
                     let m = &player.mantle_sensor;
