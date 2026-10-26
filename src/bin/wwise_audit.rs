@@ -4,6 +4,19 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--attenuations" {
+        let path = arguments.next().map(PathBuf::from).ok_or("missing package path")?;
+        let wanted = arguments.next().map(|id| u32::from_str_radix(id.to_string_lossy().trim_start_matches("0x"), 16)).transpose()?;
+        let package = Package::open(&path)?;
+        let mut file = File::open(&path)?;
+        for entry in &package.banks {
+            for attenuation in dishonored2_rust::assets::wwise::bank_attenuations(&package.read_entry(&mut file, *entry)?)? {
+                if wanted.is_some_and(|id| id != attenuation.id) { continue; }
+                println!("bank={:#x} {attenuation:#?}", entry.id);
+            }
+        }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--mix" {
         let path = match arguments.next() {
             Some(path) => PathBuf::from(path),
@@ -310,6 +323,12 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
+            for properties in &variant.properties.nodes {
+                if properties.positioning_flags & 1 != 0 {
+                    println!("{indent}  Positioning node={:#010x} flags={:#x} {:?}", properties.id, properties.positioning_flags, properties.positioning_3d);
+                    break;
+                }
+            }
         },
         PlaybackNode::Layer { node, children } => {
             println!("{indent}Layer {node:#010x}");

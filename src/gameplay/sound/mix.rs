@@ -68,18 +68,22 @@ pub(crate) fn interpolate(mut t: f32, a: f32, b: f32, mode: u32) -> f32 {
 }
 
 pub fn curve_value(curve: &RtpcCurve, input: f32) -> Option<f32> {
-    let first = curve.points.first()?;
-    let last = curve.points.last()?;
+    conversion_value(&curve.points, curve.scaling, input)
+}
+
+pub fn conversion_value(points: &[crate::assets::wwise::CurvePoint], scaling: u8, input: f32) -> Option<f32> {
+    let first = points.first()?;
+    let last = points.last()?;
     let value = if input <= first.input {
         first.output
     } else if input >= last.input {
         last.output
     } else {
-        let upper = curve.points.partition_point(|point| point.input <= input);
-        let (a, b) = (&curve.points[upper - 1], &curve.points[upper]);
+        let upper = points.partition_point(|point| point.input <= input);
+        let (a, b) = (&points[upper - 1], &points[upper]);
         interpolate((input - a.input) / (b.input - a.input), a.output, b.output, a.interpolation)
     };
-    Some(scale(value, curve.scaling))
+    Some(scale(value, scaling))
 }
 
 pub struct Mixer {
