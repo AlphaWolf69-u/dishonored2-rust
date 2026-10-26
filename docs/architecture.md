@@ -700,6 +700,19 @@ bindings remain explicit errors. `effects/world_node.rs` handles instance-ID
 observers, start/stop ordering, timed expiry and saved remaining duration.
 These world graph pieces still need the application owner and renderer handoff;
 their presence does not imply world flames or smoke are already drawn.
+
+Level startup parses world FX graphs into `WorldEffectGraphs` and prepares
+their installed declarations through `particles::world_sources`, sharing
+particle definitions and material storage across references. Preparation does
+not activate effects. Group location, timing, other effect families and local
+descriptor failures remain available to the playback owner. The renderer
+receives shared declaration resources through ordinary resource extraction.
+`WorldFxComponent` owns the source's deferred creation and removal state;
+actual allocation, target pose, velocity and completion callbacks remain host
+operations. `WorldEffectFrames` reuses the common entity spawn-frame reader
+and moving-model pose publication, including non-rendered bound targets.
+Unresolved tags and parents stay explicit errors. World FX manager activation
+and particle submission still need connecting before flames or smoke are visible.
 Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
 partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
 three components, independent pivot/rotation parameters and spawn-time RGBA8

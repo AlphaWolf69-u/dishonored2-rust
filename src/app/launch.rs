@@ -780,6 +780,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Authored shadow flags remain intact.
         .insert_resource(PointLightShadowMap { size: 128 })
         .insert_resource(DirectionalLightShadowMap { size: 512 })
+        .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectFrames::load(
+            entity_document.as_ref()).map_err(std::io::Error::other)?)
         .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectGraphs(
             entity_document.as_ref().map(crate::assets::entities::effects::load)
                 .transpose().map_err(std::io::Error::other)?.unwrap_or_default()

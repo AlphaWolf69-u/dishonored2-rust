@@ -132,6 +132,7 @@ pub(super) fn publish_model_poses(
     probe_buffer: Option<Res<ModelProbeLighting>>,
     mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
     bound: Option<ResMut<BoundModels>>,
+    mut effect_frames: Option<ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
 ) {
     if let Some(mut bound) = bound {
         bound.propagate(&mut pending.0, &placements.0);
@@ -198,6 +199,12 @@ pub(super) fn publish_model_poses(
                     .sum::<f32>()
             })
         });
+        if let Some(frames) = effect_frames.as_mut() {
+            frames.publish(&placement.id, crate::gameplay::reference_frame::ReferenceFrame {
+                position: placement.position,
+                basis: placement.rotation,
+            });
+        }
         let source = &mut models.0[binding.source];
         source.bounds = render_model::transformed_bounds(
             source.local_bounds,
