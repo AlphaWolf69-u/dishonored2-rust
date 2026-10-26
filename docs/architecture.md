@@ -659,13 +659,31 @@ and explicit shape/field bindings. `particles/pose.rs` retains emitter position
 and orientation history, using the shared reference-frame quaternion conversion
 and normalized interpolation. `assets/fx/particles.rs` reads the movement
 portion of particle stage declarations with shared FX curve readers. These CPU
-pieces are under construction. `assets/fx/particle_system.rs` reads the parent
-FX descriptor and `gameplay/effects/particle.rs` implements its phase, stop,
-loop and camera/owner placement rules. Player screen-effect sources retain
-these descriptors alongside their quads, with independent readiness errors.
-The system allocator, complete sprite descriptor loader and particle draw
-submission are not connected to gameplay yet. Their presence does not imply
-that underwater bubbles are rendered.
+pieces feed `particles/simulation.rs`, which owns stage slots and advances
+loaded declarations. `assets/fx/particle_system.rs` reads the parent FX
+descriptor and `gameplay/effects/particle.rs` implements its phase, stop, loop
+and camera/owner placement rules. Player screen-effect sources retain these
+descriptors alongside their quads, with independent readiness errors.
+`bevy_backend/screen_effects/state.rs` owns their lifecycle and simulation;
+its `particles.rs` adapter publishes same-frame sprite instances and material
+state. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
+shared material fog, depth, water clipping and the gameplay stencil attachment.
+`rendering/particles/transparency.rs` resolves the console-controlled direct
+or weighted accumulation mode; `particle_pass/transparency.rs` owns retained
+accumulation/revealage targets and resolve. This connection covers the loaded
+player underwater dirt/bubble declarations; it does not supply every world FX
+producer or animated/lit particle material path. Runtime and human appearance
+acceptance remain separate from compilation.
+
+Particle water clipping consumes an immutable publication of the canonical
+physics world through `world_point_query/snapshot.rs`. It preserves actual
+body/tree order, shared geometry, packed body-top heights and both stored
+quantization directions. Closest-point selection precedes the authored downward
+ray; only a completed miss permits fallback to the active ocean height.
+`world_ray_query.rs` dispatches filtered rigid bodies through the shared hybrid
+world tree; `shape_ray_query.rs` handles convex plane clipping and compound
+child traversal/transforms. Query failures propagate instead of becoming dry
+water results. The snapshot owns no second physics simulation.
 Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
 partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
 three components, independent pivot/rotation parameters and spawn-time RGBA8
@@ -728,13 +746,15 @@ connected to the placed-water colour owner between fog production and compositio
 
 The corresponding installed shader captures remain private under
 `artifacts/dust-background-programs.txt`, `artifacts/dust-background-helpers.txt`
-and `artifacts/sky-atmosphere.decl.txt`. General particle emitter simulation,
-particle soft-contact inputs, vertex-lit particle producers, animated-emissive mask
-production and lens-flare postprocessing are not implemented. A mesh liquid that
+and `artifacts/sky-atmosphere.decl.txt`. General world FX producer integration,
+additional particle soft-contact inputs, vertex-lit particle producers,
+animated-emissive mask production and lens-flare postprocessing remain separate
+coverage. A mesh liquid that
 requests an unavailable producer is rejected explicitly rather than passed
-through ordinary white material shading. Next steps are the native particle
-instance/clock publishers and postFX pass dependencies. Adding debug light
-markers or synthetic bloom would not provide their authored appearance.
+through ordinary white material shading. Player particle instances now have
+clock and draw publishers; other producers and postFX dependencies must use
+their actual game inputs. Adding debug light markers or synthetic bloom would
+not provide their authored appearance.
 
 F8 and streaming diagnostics belong under the checkout's `artifacts/` directory
 (or beside a packaged executable), independently of virtual archive resource
