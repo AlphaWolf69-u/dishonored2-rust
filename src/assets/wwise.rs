@@ -9,7 +9,7 @@ use std::path::Path;
 mod bank;
 mod declaration;
 pub use declaration::SoundEventDeclaration;
-pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
+pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
@@ -481,7 +481,7 @@ pub fn event_commands_with(
     }
     event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
-        PlaybackCommand::Play { target, node } => Ok(EventCommand::Play { target, groups: flatten(node)? }),
+        PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
     }).collect()).transpose()
 }
 
@@ -554,7 +554,7 @@ pub fn event_playback_with(
         if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
         let mut visited = std::collections::HashSet::new();
         if let Some(node) = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)? {
-            commands.push(PlaybackCommand::Play { target, node });
+            commands.push(PlaybackCommand::Play { target, settings: bank::play_settings(action)?, node });
         }
     }
     Ok((!commands.is_empty()).then_some(commands))
@@ -563,7 +563,7 @@ pub fn event_playback_with(
 #[derive(Clone, Debug)]
 pub enum PlaybackCommand {
     Stop(StopAction),
-    Play { target: u32, node: PlaybackNode },
+    Play { target: u32, settings: PlaySettings, node: PlaybackNode },
 }
 
 #[derive(Clone, Debug)]
@@ -587,7 +587,7 @@ pub struct PlaybackContainer {
 #[derive(Clone, Debug)]
 pub enum EventCommand {
     Stop(StopAction),
-    Play { target: u32, groups: Vec<MediaGroup> },
+    Play { target: u32, settings: PlaySettings, groups: Vec<MediaGroup> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

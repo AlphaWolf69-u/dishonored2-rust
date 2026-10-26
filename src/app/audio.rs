@@ -72,8 +72,8 @@ struct AudioVariant {
 #[derive(Clone)]
 enum SourceAction {
     Stop(crate::assets::wwise::StopAction),
-    Play { target: u32, groups: Vec<AudioGroup> },
-    Scheduled { target: u32, definition: Arc<graph::Definition> },
+    Play { target: u32, settings: crate::assets::wwise::PlaySettings, groups: Vec<AudioGroup> },
+    Scheduled { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
 }
 
 #[derive(Component, Clone)]
@@ -254,7 +254,7 @@ fn play_events(
                         use crate::assets::wwise::PlaybackCommand;
                         let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
                             match action {
-                                PlaybackCommand::Play { node, .. } => Ok(required || graph::Definition::required(node)
+                                PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling() || graph::Definition::required(node)
                                     || graph::Definition::requires_buses(node, mixer)?),
                                 _ => Ok(required),
                             }
@@ -262,8 +262,8 @@ fn play_events(
                         if scheduled {
                             return graph_actions.into_iter().map(|action| match action {
                                 PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                                PlaybackCommand::Play { target, node } => Ok(SourceAction::Scheduled {
-                                    target, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
+                                PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
+                                    target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
                                 }),
                             }).collect();
                         }
@@ -277,7 +277,7 @@ fn play_events(
                 let actions = actions.ok_or("event has no supported Wwise actions")?;
                 actions.into_iter().map(|action| match action {
                     crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                    crate::assets::wwise::EventCommand::Play { target, groups } => {
+                    crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
                         let groups = groups.into_iter().map(|group| {
                             let variants = group.variants.into_iter().map(|variant| {
                                 let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
@@ -295,7 +295,7 @@ fn play_events(
                                 restart_backward: group.restart_backward,
                             })
                         }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                        Ok(SourceAction::Play { target, groups })
+                        Ok(SourceAction::Play { target, settings, groups })
                     }
                 }).collect()
             })();
@@ -316,7 +316,7 @@ fn play_events(
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
                             let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds <= 0 { commands.entity(entity).try_despawn(); }
+                            if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
                             else if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(target, milliseconds, stop.transition.curve);
@@ -326,7 +326,7 @@ fn play_events(
                         spawned.retain(|(entity, audio_target, scheduled)| {
                             if stop.game_object && audio_target.emitter != emitter { return true; }
                             let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds <= 0 { commands.entity(*entity).try_despawn(); return false; }
+                            if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
                             if let Some(control) = scheduled {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(target, milliseconds, stop.transition.curve);
@@ -335,7 +335,8 @@ fn play_events(
                             true
                         });
                     }
-                    SourceAction::Play { target, groups } => {
+                    SourceAction::Play { target, settings, groups } => {
+                        if !settings.admits(|| rand::random_range(0..=32767)) { continue; }
                         let mut random_values = HashMap::new();
                         for group in groups {
                             let owner = if group.global { None } else { Some(emitter) };
@@ -372,8 +373,8 @@ fn play_events(
                             spawned.push((entity, audio_target, Some(control)));
                         }
                     }
-                    SourceAction::Scheduled { target, definition } => {
-                        match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position) {
+                    SourceAction::Scheduled { target, settings, definition } => {
+                        match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
                             Ok((source, scheduled)) => {
                                 let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, paused: false, world_paused: false };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);

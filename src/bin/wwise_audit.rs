@@ -411,8 +411,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         use dishonored2_rust::assets::wwise::PlaybackCommand;
                         match action {
                             PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            PlaybackCommand::Play { target, node } => {
-                                println!("  Play target={target:#010x}");
+                            PlaybackCommand::Play { target, settings, node } => {
+                                println!("  Play target={target:#010x}, {settings:?}");
                                 print_playback(&node, 2, &mixer)?;
                             },
                         }
@@ -428,8 +428,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Some(actions) => for action in actions {
                         match action {
                             dishonored2_rust::assets::wwise::EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            dishonored2_rust::assets::wwise::EventCommand::Play { target, groups } => {
-                                println!("  Play target={target:#010x}");
+                            dishonored2_rust::assets::wwise::EventCommand::Play { target, settings, groups } => {
+                                println!("  Play target={target:#010x}, {settings:?}");
                                 for (group_index, group) in groups.iter().enumerate() {
                                     for (variant_index, variant) in group.variants.iter().enumerate() {
                                         println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
