@@ -138,7 +138,7 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
     }
     if material.fade_options.z!=0u {
         let uv=input.position.xy/particle_view.exposure_extent.zw;
-        let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0.0);
+        let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
         let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
         var difference=max(0.0,linear-distance);
         if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}

@@ -7,6 +7,7 @@ use crate::{
         body_storage::BodyStorage,
         collision_body::CollisionBody,
         point_query::{PointQuantization, PointQueryBody, PointQueryNode, PointQueryTree},
+        ray_query::RayQuantization,
     },
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -22,6 +23,7 @@ pub struct PointQuerySnapshot {
     shapes: Vec<Arc<QueryShapes>>,
     heights: BTreeMap<u32, f32>,
     quantization: PointQuantization,
+    ray_quantization: RayQuantization,
 }
 impl PointQueryBodies for PointQuerySnapshot {
     fn body(&self, index: u32) -> Option<&CollisionBody> {
@@ -35,6 +37,7 @@ impl PointQuerySnapshot {
         bodies: &BodyStorage,
         trees: &[PointQueryTree<'_>],
         quantization: PointQuantization,
+        ray_quantization: RayQuantization,
         shapes: Vec<Arc<QueryShapes>>,
         mut body_top: impl FnMut(&CollisionBody) -> f32,
     ) -> Result<Self, String> {
@@ -89,7 +92,57 @@ impl PointQuerySnapshot {
             shapes,
             heights,
             quantization,
+            ray_quantization,
         })
+    }
+
+    /// 1fc710's complete body selection: closest point, then the authored
+    /// downward ray. A completed miss leaves ocean fallback to the FX owner.
+    pub fn particle_water_height(
+        &self,
+        point_query: &mut WorldPointQuery,
+        ray_query: &mut crate::gameplay::world_ray_query::WorldRayQuery,
+        point: [f32; 3],
+        distance: f32,
+    ) -> Result<Option<f32>, String> {
+        if let Some(height) = self.particle_water_body_height(point_query, point)? {
+            return Ok(Some(height));
+        }
+        if !(0. < distance) {
+            return Ok(None);
+        }
+        let trees = self
+            .trees
+            .iter()
+            .map(|tree| PointQueryTree {
+                root: tree.root,
+                nodes: &tree.nodes,
+                blocks: &tree.blocks,
+            })
+            .collect::<Vec<_>>();
+        let hit = ray_query.closest_hit(
+            self,
+            &trees,
+            self.ray_quantization,
+            &crate::gameplay::world_ray_query::WorldRayRequest::particle_water(point, distance),
+            |index| {
+                Ok(WorldQueryShape {
+                    shapes: self
+                        .shapes
+                        .get(index)
+                        .ok_or("water ray snapshot shape absent")?,
+                    materials: None,
+                })
+            },
+        )?;
+        hit.map(|hit| {
+            let id = hit.target.body_id.ok_or("water ray hit has no body ID")?;
+            self.heights
+                .get(&id)
+                .copied()
+                .ok_or_else(|| "water ray body height absent".to_owned())
+        })
+        .transpose()
     }
 
     /// 1fc710's point-query half. A miss still requires the caller's downward

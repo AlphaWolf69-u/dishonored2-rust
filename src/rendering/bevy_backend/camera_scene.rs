@@ -117,6 +117,7 @@ fn render_particles(
         &MaterialExposure,
     )>,
     mut last_error: Local<Option<String>>,
+    mut reported: Local<bool>,
 ) {
     let Some(water) = water.0.as_ref() else {
         gpu.particles = None;
@@ -273,7 +274,16 @@ fn render_particles(
                 },
             },
             &draws,
-        )
+        )?;
+        if !*reported {
+            info!(
+                draws = draws.len(),
+                instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
+                "Player particle colour submission active"
+            );
+            *reported = true;
+        }
+        Ok(())
     })();
     match result {
         Ok(()) => *last_error = None,

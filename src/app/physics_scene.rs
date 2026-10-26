@@ -84,6 +84,10 @@ impl PhysicsScene {
                 offset: self.world.quantization.offset[..3].try_into().unwrap(),
                 scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
             },
+            crate::gameplay::ray_query::RayQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.scale[..3].try_into().unwrap(),
+            },
             self.geometry.shapes.iter().map(|shape| shape.query_shapes.clone()).collect(),
             |body| self.world.quantization.packed.unpack_bounds(body.bounds)[1][2],
         ).map(Arc::new)

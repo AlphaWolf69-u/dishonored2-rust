@@ -16,6 +16,7 @@ pub(crate) struct ScreenEffectState {
     quads: Vec<PlayingQuad>,
     particles: Vec<particles::PlayingParticle>,
     query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
+    ray: crate::gameplay::world_ray_query::WorldRayQuery,
 }
 impl ScreenEffectState {
     pub(crate) fn particle_capacity(&self) -> (usize, usize) {
@@ -52,7 +53,7 @@ impl ScreenEffectState {
     }
 
     /// Execute against the physics publication for this exact view/frame.
-    /// Unsupported fallback inputs remain explicit errors, never dry hits.
+    /// Query failures remain explicit errors, never fabricated dry hits.
     pub(crate) fn simulate_particles(
         &mut self,
         frame: u32,
@@ -68,6 +69,7 @@ impl ScreenEffectState {
             )?);
         }
         let query = self.query.as_mut().unwrap();
+        let ray = &mut self.ray;
         let mut error = None;
         for particle in &mut self.particles {
             let result = (|| {
@@ -79,16 +81,17 @@ impl ScreenEffectState {
                 };
                 let settings = &stage.declaration.clipping;
                 let surface = if settings.use_ocean_plane {
-                    match world.particle_water_body_height(query, publication.pose.position)? {
+                    match world.particle_water_height(
+                        query,
+                        ray,
+                        publication.pose.position,
+                        settings.water_volume_raycast_distance,
+                    )? {
                         Some(height) => Some(
                             crate::rendering::particles::clipping::ParticleWaterSurface::Volume(
                                 height,
                             ),
                         ),
-                        None if settings.water_volume_raycast_distance > 0. => {
-                            return Err("particle water query requires the downward-ray fallback"
-                                .to_owned());
-                        }
                         None => ocean_height.map(
                             crate::rendering::particles::clipping::ParticleWaterSurface::Ocean,
                         ),
