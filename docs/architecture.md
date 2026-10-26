@@ -645,6 +645,12 @@ the GPU fixture checks matching color and depth clipping.
 `rendering/particles.rs` contains the understood fade, soft-contact arithmetic,
 animation crossfade and distortion helpers. Emitter simulation and the scene
 depth/particle-center producers for other soft-contact modes remain separate.
+`gameplay/particles/` owns particle parameter sampling, cycle timing, coordinate
+spaces and stable simulation slots. `assets/fx/particles.rs` reads the movement
+portion of particle stage declarations with shared FX curve readers. These CPU
+pieces are under construction: the FX emitter start/stop owner, complete sprite
+descriptor loader and particle draw submission are not connected to gameplay
+yet. Their presence does not imply that underwater bubbles are rendered.
 `filling_cases.txt` contains numeric results from 64 installed-HLSL UV/fill/colour
 cases; the GPU test also draws full/empty/Fresnel liquid and checks celestial
 occlusion without looking at images.
