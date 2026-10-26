@@ -194,6 +194,8 @@ fn installed_atmosphere_materials_retain_geometry_and_images() {
         shadow_materials: default(),
         vegetation: default(),
         water_materials: default(),
+        water_model_colours: default(),
+        water_stencil_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),

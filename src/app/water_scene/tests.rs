@@ -354,8 +354,15 @@ fn installed_ocean_submits_depth_and_colour() {
         depths.request_ocean_depth(true);
         depths.record_with_main(device, &mut encoder, &opaque, None).unwrap();
         ocean.prepare(device, queue, &mut encoder, &frame, &images, extent).unwrap();
+        let main = bevy::render::view::ViewDepthTexture::new(
+            bevy::render::texture::CachedTexture {
+                texture: opaque.clone(),
+                default_view: opaque.create_view(&default()),
+            },
+            None,
+        );
         ocean.record_underwater(device, queue, &mut encoder, &frame,
-            sources.0.as_deref().unwrap(), &depths).unwrap();
+            sources.0.as_deref().unwrap(), &depths, &main).unwrap();
         for (texture, offset) in [(&depths.alpha.full, 0), (&depths.alpha.reduced, 64 * 256)] {
             encoder.copy_texture_to_buffer(
                 TexelCopyTextureInfo { texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::StencilOnly },
@@ -428,6 +435,8 @@ fn installed_water_view_inputs_prepare_for_every_level() {
         shadow_materials: default(),
         vegetation: default(),
         water_materials: default(),
+        water_model_colours: default(),
+        water_stencil_materials: default(),
         boat_materials: default(),
         diffuse_image_slots: default(),
         diffuse_image_paths: default(),
