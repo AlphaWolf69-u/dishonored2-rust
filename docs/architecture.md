@@ -646,7 +646,11 @@ the GPU fixture checks matching color and depth clipping.
 animation crossfade and distortion helpers. Emitter simulation and the scene
 depth/particle-center producers for other soft-contact modes remain separate.
 `gameplay/particles/` owns particle parameter sampling, cycle timing, coordinate
-spaces and stable simulation slots. `assets/fx/particles.rs` reads the movement
+spaces and stable simulation slots. `particles/emitter.rs` implements continuous
+and burst emission with independent spawn/cycle seeds, rate-derived time slices
+and explicit shape/field bindings. `particles/pose.rs` retains emitter position
+and orientation history, using the shared reference-frame quaternion conversion
+and normalized interpolation. `assets/fx/particles.rs` reads the movement
 portion of particle stage declarations with shared FX curve readers. These CPU
 pieces are under construction. `assets/fx/particle_system.rs` reads the parent
 FX descriptor and `gameplay/effects/particle.rs` implements its phase, stop,

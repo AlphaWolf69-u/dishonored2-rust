@@ -41,6 +41,57 @@ pub fn curve_key_times(times: &[f32], index: i32) -> [f32; 2] {
     }
 }
 impl EffectFloatCurve {
+    /// 1cd690's scalar particle-rate path. It has different cubic reduction
+    /// orders for maximum and minimum, independently of 1cbd50's SIMD sampler.
+    fn sample_particle_rate(&self, time: f32, minimum: bool) -> Result<f32, String> {
+        use crate::float::{add, divide, multiply, subtract};
+        let count = self.times.len();
+        if count == 0 {
+            return Ok(0.);
+        }
+        let triples = self.values.len() == count * 3;
+        if count == 1 || time <= self.times[0] {
+            return self.value(usize::from(triples));
+        }
+        if !(time < self.times[count - 1]) {
+            return self.value(if triples {
+                (count - 1) * 3 + 1
+            } else {
+                count - 1
+            });
+        }
+        let mut index = 0;
+        while index + 1 < count && !(time <= self.times[index + 1]) {
+            index += 1;
+        }
+        let mut t = subtract(time, self.times[index]);
+        let interval = subtract(
+            *self
+                .times
+                .get(index + 1)
+                .ok_or("particle curve has no enclosing interval")?,
+            self.times[index],
+        );
+        if interval > f32::from_bits(0x3400_0000) {
+            t = divide(t, interval);
+        }
+        let u = subtract(1., t);
+        let at = index * 3 + 1;
+        let a = self.value(at)?;
+        let out = self.value(at + 1)?;
+        let incoming = self.value(at + 2)?;
+        let b = self.value(at + 3)?;
+        let first = multiply(multiply(multiply(a, u), u), u);
+        let second = multiply(multiply(multiply(multiply(add(a, out), t), 3.), u), u);
+        let third = multiply(multiply(multiply(multiply(add(b, incoming), t), 3.), t), u);
+        let last = multiply(multiply(multiply(b, t), t), t);
+        Ok(if minimum {
+            add(add(add(last, second), third), first)
+        } else {
+            add(add(last, second), add(third, first))
+        })
+    }
+
     /// 2266c0's FX constant-curve classification. Its reference is the first
     /// stored float, including the incoming tangent in a tripled curve.
     pub fn is_constant(&self) -> Result<bool, String> {
@@ -121,6 +172,25 @@ impl EffectFloatCurve {
     }
 }
 impl EffectFloatCurvePair {
+    /// 1cd690 consumes a random step only when a minimum curve exists. The
+    /// range reduction multiplies by the raw 15-bit integer before its scale.
+    pub fn sample_particle_rate(&self, time: f32, seed: &mut u32) -> Result<f32, String> {
+        use crate::float::{add, multiply, subtract};
+        let maximum = self.maximum.sample_particle_rate(time, false)?;
+        if self.minimum.times.is_empty() {
+            return Ok(maximum);
+        }
+        let state = crate::random::lcg_step(seed);
+        let minimum = self.minimum.sample_particle_rate(time, true)?;
+        Ok(add(
+            multiply(
+                multiply(subtract(maximum, minimum), ((state >> 10) & 0x7fff) as f32),
+                f32::from_bits(0x3800_0100),
+            ),
+            minimum,
+        ))
+    }
+
     /// Mode4 single-key initialization used by scalar FX parameters.
     pub fn constant(value: f32) -> Self {
         Self {

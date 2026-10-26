@@ -10,6 +10,27 @@ pub struct RateParameter {
     pub range: [f32; 2],
     pub lods: Vec<[f32; 2]>,
 }
+
+pub struct EmissionRate {
+    pub range: RateParameter,
+    pub curve: EffectFloatCurvePair,
+}
+impl EmissionRate {
+    /// 1f39b0 samples from a COPY of the cycle seed at each emission slice.
+    /// The caller's mutable spawn seed is reserved for accepted emissions.
+    pub fn sample(
+        &self,
+        lod: usize,
+        age: f32,
+        cycle_seed: u32,
+        multiplier: f32,
+    ) -> Result<f32, String> {
+        let mut seed = cycle_seed;
+        let range = self.range.sample(lod, &mut seed);
+        let curve = self.curve.sample_particle_rate(age, &mut seed)?;
+        Ok(multiply(multiply(range, curve), multiplier))
+    }
+}
 impl RateParameter {
     /// 1f88a0 selects a one-based LOD, capped at the authored list length.
     /// 1f7340 samples its range with one RNG step. Only LOD ranges normalize

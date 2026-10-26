@@ -20,9 +20,9 @@ pub struct ParticleEffectFrame {
     pub screen_offset: f32,
     pub view_mask: u8,
     pub allowed_mask: u8,
-    /// The particle render-model's +1c30 bit0 also requests the +78 reset
+    /// The particle render-model's +1c30 bit0 also requests a +78 bounds
     /// publication, independently of this FX instance's first visible update.
-    pub restart_required: bool,
+    pub bounds_dirty: bool,
     pub delta: f32,
 }
 
@@ -31,7 +31,7 @@ pub struct ParticlePublication {
     pub rate: f32,
     pub colour: [f32; 4],
     pub visible: bool,
-    pub restart: bool,
+    pub refresh_bounds: bool,
     pub stop: bool,
     pub simulation_delta: f32,
 }
@@ -64,8 +64,8 @@ impl ParticleEffect {
         seed: &mut u32,
         prepare_system: impl FnOnce(&ParticleSystemAsset, u32) -> Result<T, String>,
     ) -> Result<(Self, T), String> {
-        crate::random::lcg_unit(seed);
-        let system = prepare_system(&definition, *seed)?;
+        let system_seed = crate::random::lcg_step(seed);
+        let system = prepare_system(&definition, system_seed)?;
         let rate = ScalarEnvelopeSample::new(&definition.rate, seed)?;
         let colour = VectorEnvelopeSample::new(&definition.colour, seed)?;
         let alpha = ScalarEnvelopeSample::new(&definition.alpha, seed)?;
@@ -232,7 +232,7 @@ impl ParticleEffect {
         stop: bool,
     ) -> Result<ParticlePublication, String> {
         let visible = frame.view_mask & frame.allowed_mask != 0;
-        let mut restart = false;
+        let mut refresh_bounds = false;
         if !visible {
             self.first_update = true;
         } else {
@@ -289,7 +289,7 @@ impl ParticleEffect {
                     };
                 }
             }
-            restart = self.first_update || frame.restart_required;
+            refresh_bounds = self.first_update || frame.bounds_dirty;
             self.first_update = false;
         }
         Ok(ParticlePublication {
@@ -297,7 +297,7 @@ impl ParticleEffect {
             rate: self.published_rate,
             colour: self.published_colour,
             visible,
-            restart,
+            refresh_bounds,
             stop,
             simulation_delta: if visible { frame.delta } else { 0. },
         })
