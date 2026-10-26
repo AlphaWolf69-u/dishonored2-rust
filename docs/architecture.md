@@ -664,9 +664,11 @@ loaded declarations. `assets/fx/particle_system.rs` reads the parent FX
 descriptor and `gameplay/effects/particle.rs` implements its phase, stop, loop
 and camera/owner placement rules. Player screen-effect sources retain these
 descriptors alongside their quads, with independent readiness errors.
-`bevy_backend/screen_effects/state.rs` owns their lifecycle and simulation;
-its `particles.rs` adapter publishes same-frame sprite instances and material
-state. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
+`bevy_backend/screen_effects/state.rs` owns the player transition lifecycle;
+`bevy_backend/particle_system.rs` owns reusable particle instances, simulation,
+and same-frame sprite/material publication. Its inputs separate the owning
+entity frame from the camera. Enter/leave-water membership stays in the screen
+owner, outside the shared particle system. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
 shared material fog, depth, water clipping and the gameplay stencil attachment.
 `rendering/particles/transparency.rs` resolves the console-controlled direct
 or weighted accumulation mode; `particle_pass/transparency.rs` owns retained
@@ -684,6 +686,20 @@ ray; only a completed miss permits fallback to the active ocean height.
 world tree; `shape_ray_query.rs` handles convex plane clipping and compound
 child traversal/transforms. Query failures propagate instead of becoming dry
 water results. The snapshot owns no second physics simulation.
+
+Serialized event nodes and links live in `assets/entities/event_graph.rs`;
+motion scenes and world FX share this parser. `gameplay/event_graph.rs` supplies
+the common variable/entity input readers used by motion playback.
+`assets/entities/effects.rs` resolves the world FX node schema and preserves
+the surrounding graph instead of treating every FX reference as active.
+`gameplay/effects/graph.rs` executes understood FX/gate actions against a world
+owner. Gate condition outputs precede the matching regular output and `Out`,
+following the installed dispatcher. The graph owner supplies random samples,
+named-variable bindings, actual entity clocks and effect allocation; missing
+bindings remain explicit errors. `effects/world_node.rs` handles instance-ID
+observers, start/stop ordering, timed expiry and saved remaining duration.
+These world graph pieces still need the application owner and renderer handoff;
+their presence does not imply world flames or smoke are already drawn.
 Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
 partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
 three components, independent pivot/rotation parameters and spawn-time RGBA8

@@ -26,24 +26,7 @@ pub struct MotionCurve {
     pub interpolation: Interpolation,
     pub keys: Vec<CurveKey>,
 }
-pub fn atom<'a>(f: &'a [(String, Value)], k: &str) -> Option<&'a str> {
-    match field(f, k)? {
-        Value::Atom(s) => Some(s.trim_matches('"')),
-        _ => None,
-    }
-}
-pub fn child<'a>(f: &'a [(String, Value)], k: &str) -> &'a [(String, Value)] {
-    scope(field(f, k)).unwrap_or(&[])
-}
-pub fn items(f: &[(String, Value)]) -> impl Iterator<Item = &[(String, Value)]> {
-    f.iter().filter_map(|(k, v)| {
-        if k.starts_with("item[") {
-            scope(Some(v))
-        } else {
-            None
-        }
-    })
-}
+pub use super::event_graph::{atom, child, items};
 fn object(f: &[(String, Value)]) -> &[(String, Value)] {
     child(f, "m_object")
 }

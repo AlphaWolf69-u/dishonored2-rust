@@ -16,16 +16,16 @@ pub struct Node {
     pub params: Vec<(String, Value)>,
     pub ports: Vec<Port>,
 }
-fn child<'a>(fields: &'a [(String, Value)], name: &str) -> &'a [(String, Value)] {
+pub fn child<'a>(fields: &'a [(String, Value)], name: &str) -> &'a [(String, Value)] {
     scope(field(fields, name)).unwrap_or(&[])
 }
-fn atom<'a>(fields: &'a [(String, Value)], name: &str) -> Option<&'a str> {
+pub fn atom<'a>(fields: &'a [(String, Value)], name: &str) -> Option<&'a str> {
     match field(fields, name)? {
         Value::Atom(value) => Some(value.trim_matches('"')),
         _ => None,
     }
 }
-fn items(fields: &[(String, Value)]) -> impl Iterator<Item = &[(String, Value)]> {
+pub fn items(fields: &[(String, Value)]) -> impl Iterator<Item = &[(String, Value)]> {
     fields.iter().filter_map(|(name, value)| {
         name.starts_with("item[")
             .then(|| scope(Some(value)))

@@ -39,6 +39,9 @@ pub struct FxNodeSavedState {
     pub remaining: f32,
 }
 impl FxNode {
+    pub fn scheduled(&self) -> bool {
+        self.clock_entity.is_some()
+    }
     fn clear(&mut self) {
         self.effect = None;
         self.clock_entity = None;

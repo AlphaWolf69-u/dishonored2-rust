@@ -1,5 +1,6 @@
 //! Startup execution for autonomous motion scenes. Cinematic/non-motion tracks
 //! and weather-event production remain separate integrations.
+use super::event_graph::GraphInputs;
 use super::machinery_world::MachineryWorld;
 use super::motion_curve::angle_basis;
 use crate::entities::{
@@ -119,93 +120,21 @@ impl MotorControl {
         fraction >= 1.
     }
 }
+impl GraphInputs for RunningGraph {
+    fn graph_nodes(&self) -> &[Node] {
+        &self.graph.nodes
+    }
+    fn graph_owner(&self) -> &str {
+        &self.graph.owner
+    }
+    fn random_sample(&self, node: u32) -> Option<f32> {
+        self.random.get(&node).copied()
+    }
+    fn named_value(&self, name: &str) -> Result<Option<f32>, String> {
+        Ok(self.variables.get(name).copied())
+    }
+}
 impl RunningGraph {
-    fn node(&self, id: u32) -> Result<&Node, String> {
-        self.graph
-            .nodes
-            .iter()
-            .find(|n| n.id == id)
-            .ok_or_else(|| format!("missing node {id}"))
-    }
-    fn input(&self, node: &Node, name: &str) -> Option<(u32, u32)> {
-        node.ports
-            .iter()
-            .find(|p| p.name == name && p.kind == "InputVariable")
-            .and_then(|p| p.links.first())
-            .copied()
-    }
-    fn number(&self, id: u32, port: u32, depth: usize) -> Result<f32, String> {
-        if depth > 64 {
-            return Err("cyclic variable graph".into());
-        }
-        let n = self.node(id)?;
-        let p = n
-            .ports
-            .iter()
-            .find(|p| p.id == port)
-            .ok_or("missing variable port")?;
-        if p.kind == "InputVariable" {
-            return if let Some((n, p)) = p.links.first() {
-                self.number(*n, *p, depth + 1)
-            } else {
-                atom(&n.params, &p.name)
-                    .unwrap_or("0")
-                    .parse()
-                    .map_err(|_| format!("invalid number {}", p.name))
-            };
-        }
-        match n.class.as_str() {
-            "arkKisculeNodeRandomFloat" => self
-                .random
-                .get(&id)
-                .copied()
-                .ok_or("random node not initialized".into()),
-            "arkKisculeNodeFloat" | "arkKisculeNodeInt" | "arkKisculeNodeTime" => {
-                atom(&n.params, "m_value")
-                    .unwrap_or("0")
-                    .parse()
-                    .map_err(|_| "invalid constant".into())
-            }
-            "arkKisculeNodeMultiplyFloat" => Ok(self.number_input(n, "m_a", 0., depth + 1)?
-                * self.number_input(n, "m_b", 0., depth + 1)?),
-            "arkKisculeNodeNamedVariableFloat" => Ok(*self
-                .variables
-                .get(atom(&n.params, "m_variableName").unwrap_or(""))
-                .unwrap_or(&0.)),
-            "arkKisculeNodeNamedVariableBool" => Ok(*self
-                .variables
-                .get(atom(&n.params, "m_variableName").unwrap_or(""))
-                .unwrap_or(&0.)),
-            "arkKisculeNodeBool" => Ok(f32::from(atom(&n.params, "m_value") == Some("true"))),
-            _ => Err(format!("unsupported variable node {}", n.class)),
-        }
-    }
-    fn number_input(
-        &self,
-        n: &Node,
-        name: &str,
-        default: f32,
-        depth: usize,
-    ) -> Result<f32, String> {
-        if let Some((n, p)) = self.input(n, name) {
-            self.number(n, p, depth + 1)
-        } else {
-            atom(&n.params, name).map_or(Ok(default), |v| {
-                v.parse().map_err(|_| format!("invalid {name}"))
-            })
-        }
-    }
-    fn entities(&self, id: u32, port: u32) -> Result<Vec<String>, String> {
-        let n = self.node(id)?;
-        match n.class.as_str() {
-            "arkKisculeNodeEntityReference" => Ok(atom(&n.params, "m_value")
-                .filter(|v| !v.is_empty())
-                .map(|v| vec![v.to_owned()])
-                .unwrap_or_default()),
-            "arkKisculeNodeOwner" => Ok(vec![self.graph.owner.clone()]),
-            other => Err(format!("unsupported entity binding {other}, port {port}")),
-        }
-    }
     fn bindings(&self, n: &Node, clip: &MotionClip) -> Result<Vec<(usize, String)>, String> {
         let (id, _) = self
             .input(n, "m_midnightParams")
