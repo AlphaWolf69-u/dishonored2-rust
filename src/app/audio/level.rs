@@ -81,6 +81,16 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                     source_occlusion_scale: binding.settings.source_occlusion_scale(),
                 }, query.range, false, 1, &mut object.audible_mask)?;
             }
+            // Resolve host inputs before consuming the component's pending
+            // start; an unsupported path must not lose its startup request.
+            let propagated = if object.audible_mask != 0 {
+                let results = &object.listener.results;
+                let closest = results.closest.and_then(|index| results.paths.get(index));
+                let positions = positions::for_mixing(&[results], closest, query.range, front)?
+                    .into_iter().map(|position| Position { position: position.position, front: Some(position.front) }).collect();
+                let levels = object.listener.levels(scene.minimum(), binding.settings.level_scale()).into();
+                Some(Propagated { positions, levels })
+            } else { None };
             // A zero owner clock freezes the component update (8abb10).
             if rates[1] != 0.0 {
                 match audio.startup.update(audio.allocated, object.audible_mask == 0, origin == Admission::Inaudible) {
@@ -101,15 +111,11 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                     StartupAction::None => {}
                 }
             }
-            if audio.allocated && object.audible_mask != 0 {
-                let results = &object.listener.results;
-                let closest = results.closest.and_then(|index| results.paths.get(index));
-                let positions = positions::for_mixing(&[results], closest, query.range, front)?
-                    .into_iter().map(|position| Position { position: position.position, front: Some(position.front) }).collect();
-                let levels = object.listener.levels(scene.minimum(), binding.settings.level_scale()).into();
-                scene.publish(emitter, Position { position, front: Some(front) }, Propagated {
-                    positions, levels,
-                }, binding.settings.rate(rates[1]), rates[1] == 0.0);
+            if audio.allocated {
+                if let Some(propagated) = propagated {
+                    scene.publish(emitter, Position { position, front: Some(front) }, propagated,
+                        binding.settings.rate(rates[1]), rates[1] == 0.0);
+                }
             }
             Ok(())
         })();

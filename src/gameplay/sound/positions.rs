@@ -34,6 +34,9 @@ fn append(output: &mut Vec<Position>, results: &Results, front: Vec3, mixing: bo
             // 141104200). An optional duplicate of an already selected
             // position cannot change that maximum or the filter minima.
             // Keep exact submission capture separate: its count is unknown.
+            // Live Edge of the World capture at 1400c2cc8 also observes this:
+            // one closest direct ray plus eight identical portal-slot rays,
+            // mode 2; the direct record's untouched score contained 00440006.
             None if mixing && output.iter().any(|selected| selected.position == path.position && selected.front == front) => continue,
             None => return Err("position projection reads an unset direct-path score".into()),
         };
