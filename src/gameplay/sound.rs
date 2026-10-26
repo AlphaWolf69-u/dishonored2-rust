@@ -1,6 +1,11 @@
 //! Event controls issued to an audio component (PostEvent / StopEvent).
 pub mod mix;
 pub mod containers;
+pub mod spatial;
+pub mod panning;
+pub mod filters;
+pub mod properties;
+pub mod resampler;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Emitter {
