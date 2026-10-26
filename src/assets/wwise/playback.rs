@@ -160,7 +160,7 @@ impl<'a> PlaybackBanks<'a> {
             for (child, weight) in playlist.items {
                 if let Some(node) = self.resolve_node(child, media, visited)? { children.push((node, weight)); }
             }
-            PlaybackNode::Container(PlaybackContainer { node: id, global: playlist.global,
+            PlaybackNode::Container(PlaybackContainer { node: id, properties: self.media_properties(id)?, global: playlist.global,
                 avoid_repeat: playlist.avoid_repeat, mode: playlist.mode, reset_each_play: playlist.reset_each_play,
                 playback: playlist.playback, children })
         } else {
@@ -168,7 +168,7 @@ impl<'a> PlaybackBanks<'a> {
             for child in children {
                 if let Some(node) = self.resolve_node(child, media, visited)? { layers.push(node); }
             }
-            PlaybackNode::Layer { node: id, children: layers }
+            PlaybackNode::Layer { node: id, properties: self.media_properties(id)?, children: layers }
         };
         visited.remove(&id);
         Ok(Some(node))
