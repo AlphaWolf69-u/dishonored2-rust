@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, Default)]
 pub struct PlayerDeclarations {
     pub physics: Vec<(String, Value)>,
+    pub audio: Vec<(String, Value)>,
     pub camera: Vec<(String, Value)>,
     pub controller: Vec<(String, Value)>,
     pub attributes: Vec<(String, Value)>,
@@ -29,9 +30,42 @@ pub struct PlayerDeclarations {
     pub body_model: String,
 }
 
+fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
+    let mut entries: Vec<(String, Fields)> = Vec::new();
+    for fields in chain {
+        let Some(components) = scope(field(fields, "edit")).and_then(|edit| scope(field(edit, "m_componentDecls"))) else { continue };
+        for (key, value) in components {
+            let (Some(key), Some(entry)) = (component_key(key), scope(Some(value))) else { continue };
+            match entries.iter_mut().find(|(existing, _)| existing == key) {
+                Some((_, existing)) => overlay(existing, entry),
+                None => entries.push((key.to_owned(), entry.to_vec())),
+            }
+        }
+    }
+    entries
+}
+
+/// Resolve one optional component through entity and component inheritance.
+/// Audio owners use this for body and bound arm declarations alike.
+pub fn entity_component(entity: &str, kind: &str,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String>
+{
+    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let mut result = None;
+    let mut cache = HashMap::new();
+    for (_, entry) in entries {
+        let Some(name) = atom(&entry, "inheritedDecl").filter(|name| kind_of(name) == Some(kind)) else { continue };
+        let mut fields = component_fields(kind, name, 0, &mut cache, &mut read)?;
+        if let Some(inline) = scope(field(&entry, "inlineDecl")) { overlay(&mut fields, inline); }
+        result = Some(fields);
+    }
+    Ok(result)
+}
+
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 10] = [
+const PLAYER_COMPONENTS: [&str; 11] = [
     "cpntplayerphysics",
+    "cpntaudio",
     "cpntplayercamera",
     "cpntplayercontroller",
     "cpntattributesplayer",
@@ -97,20 +131,12 @@ pub fn player_declarations(
 ) -> Result<PlayerDeclarations, String> {
     let entity = format!("models/characters/player/{character}/body.def");
     let chain = entity_chain(&entity, &mut read)?;
-    let mut entries: Vec<(String, Fields)> = Vec::new();
+    let entries = component_entries(&chain);
     let mut body_model = String::new();
     for fields in &chain {
         let Some(edit) = scope(field(fields, "edit")) else { continue };
         if let Some(model) = scope(field(edit, "renderModelInfo")).and_then(|info| atom(info, "model")) {
             body_model = model.to_owned();
-        }
-        let Some(components) = scope(field(edit, "m_componentDecls")) else { continue };
-        for (key, value) in components {
-            let (Some(key), Some(entry)) = (component_key(key), scope(Some(value))) else { continue };
-            match entries.iter_mut().find(|(k, _)| k == key) {
-                Some((_, existing)) => overlay(existing, entry),
-                None => entries.push((key.to_owned(), entry.to_vec())),
-            }
         }
     }
     let mut cache = HashMap::new();
@@ -126,6 +152,7 @@ pub fn player_declarations(
     }
     let mut take = |kind: &str| resolved.remove(kind).ok_or_else(|| format!("{entity} has no {kind} component"));
     let physics = take("cpntplayerphysics")?;
+    let audio = take("cpntaudio")?;
     let camera = take("cpntplayercamera")?;
     let controller = take("cpntplayercontroller")?;
     let attributes = take("cpntattributesplayer")?;
@@ -158,7 +185,7 @@ pub fn player_declarations(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, body, mode,
+    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, body, mode,
  states, locomotion, additives, body_model })
 
 }

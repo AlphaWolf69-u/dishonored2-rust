@@ -159,6 +159,7 @@ impl Playing {
         self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((target, milliseconds, curve));
     }
     pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
+        let parameters = scene.parameters(self.emitter, self.parameter);
         for (sound, targets) in self.definition.sounds.iter().zip(&self.control.spatial) {
             if let Some(spatial) = &sound.spatial {
                 let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)))?;
@@ -168,15 +169,15 @@ impl Playing {
             }
         }
         for (sound, volume) in self.definition.sounds.iter().zip(&self.control.volumes_db) {
-            volume.store(mixer.volume_db_with_parameter(&sound.properties, self.parameter)?.to_bits(), Ordering::Relaxed);
+            volume.store(mixer.volume_db_with_parameters(&sound.properties, &parameters)?.to_bits(), Ordering::Relaxed);
         }
         for (sound, filters) in self.definition.sounds.iter().zip(&self.control.filters) {
             for (target, property) in filters.iter().zip([3, 4]) {
-                target.store(mixer.source_property(&sound.properties, property, self.parameter)?.to_bits(), Ordering::Relaxed);
+                target.store(mixer.source_property_with_parameters(&sound.properties, property, &parameters)?.to_bits(), Ordering::Relaxed);
             }
         }
         for (sound, pitch) in self.definition.sounds.iter().zip(&self.control.pitches) {
-            let cents = mixer.source_property(&sound.properties, 2, self.parameter)?;
+            let cents = mixer.source_property_with_parameters(&sound.properties, 2, &parameters)?;
             // Validate the complete authored random range before the worker
             // starts a voice; malformed pitch must remain a host-side error.
             let mut bounds = [cents; 2];

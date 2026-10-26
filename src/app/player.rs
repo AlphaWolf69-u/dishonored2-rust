@@ -258,7 +258,10 @@ fn load_arm(
         shoulder: rig.joint(&camera.arm_joints[side])?,
     };
     let animations = clips.animations;
-    Ok(Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items))
+    let mut arm = Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items);
+    arm.sound_settings = crate::entities::player::entity_component(def, "cpntaudio", read)?
+        .map(|fields| crate::gameplay::sound::component::Settings::read(&fields)).transpose()?;
+    Ok(arm)
 }
 
 /// The body skeleton, its animsets' aliases and the stance clips
@@ -374,8 +377,9 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
     let scene_paths = scene_paths(&states);
-    let (body, scenes) =
+    let (mut body, scenes) =
         load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths)?;
+    body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)? + attributes.get("ARK_ATTRIBUTE_HEALTH_MAX");
     Ok(PlayerSetup {

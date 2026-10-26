@@ -27,6 +27,7 @@ struct AudioMix {
     generation: u64,
     mixer: Option<crate::gameplay::sound::mix::Mixer>,
     bindings: Vec<(u32, &'static str)>,
+    time_dilation: Option<u32>,
 }
 
 impl AudioMix {
@@ -95,6 +96,7 @@ struct AudioTarget {
     properties: Arc<crate::assets::wwise::MediaProperties>,
     random_db: f32,
     parameter: Option<(u32, f32)>,
+    clock_paused: bool,
 }
 
 pub struct SoundPlugin;
@@ -163,10 +165,14 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
             let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("volume RTPC declaration is absent")?;
             bindings.push((crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?, cvar));
         }
-        Ok((banks, attenuations, event_banks, output_mix.ok_or("Wwise initialization mix is absent")?, bindings))
+        let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
+        let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
+        let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
+        Ok((banks, attenuations, event_banks, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
     })();
     match result {
-        Ok((banks, attenuations, event_banks, output_mix, bindings)) => {
+        Ok((banks, attenuations, event_banks, output_mix, bindings, time_dilation)) => {
+            mix.time_dilation = Some(time_dilation);
             registry.attenuations = attenuations;
             info!("Indexed {} installed Wwise banks and {} event IDs", banks.len(), event_banks.len());
             registry.banks = banks;
@@ -209,6 +215,9 @@ fn play_events(
                 continue;
             }
         };
+        // 1408abb10 pauses components on a zero owner clock; 140709110
+        // forbids posting into a frozen component. Stop requests above still run.
+        if scene.frozen(emitter) { continue; }
         if !registry.sources.contains_key(&event) {
             let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
                 let indexes = registry.event_banks.get(&event).ok_or("no installed bank contains this event")?;
@@ -319,11 +328,11 @@ fn play_events(
                                     if range.min == range.max { range.min } else { rand::random_range(range.min..=range.max) }
                                 }).sum::<f32>()
                             })).sum::<f32>();
-                            let gain = match mixer.gain_with_parameter(&variant.properties, random_db, parameter) {
+                            let gain = match mixer.gain_with_parameters(&variant.properties, random_db, &scene.parameters(emitter, parameter)) {
                                 Ok(gain) => gain,
                                 Err(error) => { warn!("Wwise event {event:#010x} mix unavailable: {error}"); continue; }
                             };
-                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter };
+                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, clock_paused: false };
                             let Some(source) = sources.get(&variant.source) else { continue };
                             let (source, control) = source.controlled();
                             let control = PlaybackControl::Flat(control);
@@ -339,7 +348,7 @@ fn play_events(
                     SourceAction::Scheduled { target, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position) {
                             Ok((source, scheduled)) => {
-                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter };
+                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, clock_paused: false };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);
                                 let entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
                                     audio_target.clone(), scheduled.clone())).id();
@@ -359,20 +368,25 @@ fn play_events(
 fn update_playing_volume(
     mut mix: ResMut<AudioMix>,
     scene: Res<spatial::Scene>,
-    mut playing: Query<(&mut AudioSink, &AudioTarget, Option<&PlaybackControl>)>,
+    mut playing: Query<(&mut AudioSink, &mut AudioTarget, Option<&PlaybackControl>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
     let mix_changed = mix.generation != generation;
     if mix_changed { mix.apply_settings(); }
     let Some(mixer) = &mix.mixer else { return };
-    for (mut sink, target, scheduled) in &mut playing {
+    for (mut sink, mut target, scheduled) in &mut playing {
+        let frozen = scene.frozen(target.emitter);
+        if frozen != target.clock_paused {
+            if frozen { sink.pause(); } else { sink.play(); }
+            target.clock_paused = frozen;
+        }
+        if frozen { continue; }
         if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
             if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
             continue;
         }
-        if !mix_changed { continue; }
-        match mixer.gain_with_parameter(&target.properties, target.random_db, target.parameter) {
+        match mixer.gain_with_parameters(&target.properties, target.random_db, &scene.parameters(target.emitter, target.parameter)) {
             Ok(gain) => sink.set_volume(Volume::Linear(gain)),
             Err(error) => warn!("Wwise mix update unavailable: {error}"),
         }

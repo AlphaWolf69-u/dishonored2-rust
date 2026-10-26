@@ -15,21 +15,44 @@ pub(super) struct Scene {
     rule: Rule,
     panner: Stereo,
     emitters: HashMap<Emitter, Position>,
+    rates: HashMap<Emitter, (f32, bool)>,
+    time_dilation: Option<u32>,
 }
 impl Default for Scene {
-    fn default() -> Self { Self { listener: None, rule: Rule::Speakers, panner: Stereo::default(), emitters: HashMap::new() } }
+    fn default() -> Self { Self { listener: None, rule: Rule::Speakers, panner: Stereo::default(),
+        emitters: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
 }
 impl Scene {
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
+    pub fn frozen(&self, emitter: Emitter) -> bool { self.rates.get(&emitter).is_some_and(|(_, frozen)| *frozen) }
+    pub fn parameters(&self, emitter: Emitter, parameter: Option<(u32, f32)>) -> Vec<(u32, f32)> {
+        let mut parameters = parameter.into_iter().collect::<Vec<_>>();
+        if let (Some(id), Some(&(rate, _))) = (self.time_dilation, self.rates.get(&emitter)) {
+            // The component's time parameter is written after posting the
+            // event (140708b00), and replaces any prior value of the same ID.
+            parameters.retain(|(parameter, _)| *parameter != id);
+            parameters.push((id, rate));
+        }
+        parameters
+    }
 }
 
 pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<Camera3d>>,
-    player: Option<Res<super::super::player::PlayerState>>) {
+    player: Option<Res<super::super::player::PlayerState>>, mix: Res<super::AudioMix>,
+    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>) {
     scene.emitters.clear();
+    scene.rates.clear();
+    scene.time_dilation = mix.time_dilation;
+    let rate = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| clock.rates(3)).map(|rates| rates[1]);
     if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
         for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
             if let Some((position, axis)) = player.sound_transform(emitter) {
                 scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
+                if let Some(rate) = rate {
+                    if let Some(value) = player.sound_rate(emitter, rate) {
+                        scene.rates.insert(emitter, (value, rate == 0.0));
+                    }
+                }
             }
         }
     }

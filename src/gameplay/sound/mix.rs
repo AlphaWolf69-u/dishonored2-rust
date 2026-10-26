@@ -108,13 +108,19 @@ impl Mixer {
     pub fn source_property(&self, source: &MediaProperties, property: u8,
         parameter: Option<(u32, f32)>) -> Result<f32, String>
     {
+        self.source_property_with_parameters(source, property, parameter.as_slice())
+    }
+
+    pub fn source_property_with_parameters(&self, source: &MediaProperties, property: u8,
+        parameters: &[(u32, f32)]) -> Result<f32, String>
+    {
         if !matches!(property, 2 | 3 | 4) { return Err("unsupported Wwise source property".into()); }
         let mut result = 0.0;
         for node in &source.nodes {
             let mut value = node.float(property);
             for curve in node.curves.iter().filter(|curve| curve.property == property) {
                 if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter source curve", node.id)); }
-                let input = parameter.filter(|(id, _)| *id == curve.parameter).map(|(_, value)| value)
+                let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
                     .or_else(|| self.parameters.get(&curve.parameter).copied())
                     .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
                 let next = curve_value(curve, input).ok_or("empty Wwise source curve")?;
@@ -130,14 +136,14 @@ impl Mixer {
         Ok(result)
     }
 
-    fn node_volume(&self, node: &NodeProperties, parameter: Option<(u32, f32)>) -> Result<f32, String> {
+    fn node_volume(&self, node: &NodeProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
         // RTPC parameter IDs differ from static property IDs for makeup gain
         // and output-bus volume in bank version 113.
         let mut values = [node.float(0), node.float(5), node.float(0x21), node.float(0x17)];
         for curve in &node.curves {
             let slot = match curve.property { 0 => 0, 5 => 1, 0x24 => 2, 0x3c => 3, _ => continue };
             if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter volume curve", node.id)); }
-            let input = parameter.filter(|(id, _)| *id == curve.parameter).map(|(_, value)| value)
+            let input = parameters.iter().find(|(id, _)| *id == curve.parameter).map(|(_, value)| *value)
                 .or_else(|| self.parameters.get(&curve.parameter).copied())
                 .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
             let value = curve_value(curve, input).ok_or("empty Wwise volume curve")?;
@@ -156,14 +162,20 @@ impl Mixer {
     }
 
     pub fn volume_db_with_parameter(&self, source: &MediaProperties, parameter: Option<(u32, f32)>) -> Result<f32, String> {
+        self.volume_db_with_parameters(source, parameter.as_slice())
+    }
+
+    /// Game-object values override global/default values by parameter ID
+    /// (1400c5c60 / 1410ca580). Distinct object RTPCs coexist on one voice.
+    pub fn volume_db_with_parameters(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
         let mut volume = 0.0;
-        for node in &source.nodes { volume += self.node_volume(node, parameter)?; }
+        for node in &source.nodes { volume += self.node_volume(node, parameters)?; }
         let mut bus = source.bus;
         let mut visited = HashSet::new();
         while bus != 0 {
             if !visited.insert(bus) { return Err("cyclic Wwise bus hierarchy".into()); }
             let node = self.buses.get(&bus).ok_or_else(|| format!("missing Wwise output bus {bus:#010x}"))?;
-            volume += self.node_volume(node, parameter)?;
+            volume += self.node_volume(node, parameters)?;
             bus = node.parent;
         }
         Ok(volume)
@@ -174,7 +186,11 @@ impl Mixer {
     }
 
     pub fn gain_with_parameter(&self, source: &MediaProperties, random_db: f32, parameter: Option<(u32, f32)>) -> Result<f32, String> {
-        let volume = self.volume_db_with_parameter(source, parameter)? + random_db;
+        self.gain_with_parameters(source, random_db, parameter.as_slice())
+    }
+
+    pub fn gain_with_parameters(&self, source: &MediaProperties, random_db: f32, parameters: &[(u32, f32)]) -> Result<f32, String> {
+        let volume = self.volume_db_with_parameters(source, parameters)? + random_db;
         Ok(if volume <= self.volume_threshold_db { 0.0 } else { power10(volume * 0.05) })
     }
 }

@@ -329,6 +329,17 @@ impl Player {
         (tag_p + tag_r * arm.bind.0, tag_r * arm.bind.1)
     }
 
+    pub fn sound_rate(&self, emitter: crate::gameplay::sound::Emitter, clock_rate: f32) -> Option<f32> {
+        use crate::gameplay::sound::Emitter;
+        let settings = match emitter {
+            Emitter::PlayerBody => self.body.sound_settings,
+            Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
+            Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
+            Emitter::Menu | Emitter::Effect(_) => return None,
+        };
+        Some(settings.rate(clock_rate))
+    }
+
     /// Audio without a joint attachment uses its entity's origin and axis
     /// (140709ee0 / 1400c5b70). Bound arms use the same frame as their model
     /// (1407506d0), before shoulder controls modify individual joints.
