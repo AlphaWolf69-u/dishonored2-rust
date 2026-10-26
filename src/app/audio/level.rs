@@ -20,6 +20,7 @@ pub(in crate::app) struct LevelAudio {
     objects: HashMap<Emitter, Object>,
     listener_position: Option<Vec3>,
     listener_zone: Option<usize>,
+    auxiliary_buses: crate::gameplay::sound::auxiliary::Buses,
 }
 impl LevelAudio {
     pub(in crate::app) fn load(catalog: &crate::archive::Catalog, entities: &str, base: &std::path::Path) -> Result<Self, String> {
@@ -27,8 +28,11 @@ impl LevelAudio {
         let bytes = catalog.read(&path).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("missing acoustic resource {path}"))?;
         let graph = crate::assets::sound_propagation::Propagation::parse(&bytes).map_err(|error| error.to_string())?;
+        let auxiliary_buses = crate::gameplay::sound::auxiliary::Buses::load(&graph, |path|
+            catalog.read(path).map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                .map_err(|error| error.to_string()))?;
         Ok(Self { world: AcousticWorld::new(graph, base)?, objects: HashMap::new(),
-            listener_position: None, listener_zone: None })
+            listener_position: None, listener_zone: None, auxiliary_buses })
     }
 }
 
@@ -43,6 +47,8 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
     let Ok(clock) = clock.clock() else { return };
     // Default world entity timespace 0 maps to group 3 (877eb0, 8abb10).
     let Some(rates) = clock.rates(3) else { return };
+    let detail = crate::platform::console::shared().read().cvars.int("s_environmentalDetailLevel");
+    let Some(detail) = detail else { error!("Environmental audio detail cvar is absent"); return };
     let level = &mut *level;
     if level.listener_position != Some(listener.position) {
         match level.world.zone_at(listener.position.to_array()) {
@@ -90,7 +96,10 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                 let positions = positions::for_mixing(&[results], closest, query.range, front)?
                     .into_iter().map(|position| Position { position: position.position, front: Some(position.front) }).collect();
                 let levels = object.listener.levels(scene.minimum(), binding.settings.level_scale()).into();
-                Some(Propagated { positions, levels })
+                let auxiliary = crate::gameplay::sound::auxiliary::project(&level.world.graph,
+                    closest, binding.settings.auxiliary_sends && scene.collects_environment(), detail,
+                    |name| level.auxiliary_buses.resolve(name))?;
+                Some(Propagated { positions, levels, auxiliary })
             } else { None };
             // A zero owner clock freezes the component update (8abb10).
             if rates[1] != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {

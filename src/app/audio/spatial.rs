@@ -13,6 +13,7 @@ pub(super) struct Position {
 pub(super) struct Propagated {
     pub positions: Vec<Position>,
     pub levels: ControlLevels,
+    pub auxiliary: Vec<crate::gameplay::sound::auxiliary::Send>,
 }
 
 pub(super) struct Targets {
@@ -26,6 +27,7 @@ pub(super) struct Scene {
     listener: Option<spatial::Listener>,
     minimum: environment::Levels,
     reflection: bool,
+    collects_environment: bool,
     rule: Rule,
     panner: Stereo,
     emitters: HashMap<Emitter, Position>,
@@ -34,7 +36,7 @@ pub(super) struct Scene {
     time_dilation: Option<u32>,
 }
 impl Default for Scene {
-    fn default() -> Self { Self { listener: None, minimum: environment::Levels::default(), reflection: false,
+    fn default() -> Self { Self { listener: None, minimum: environment::Levels::default(), reflection: false, collects_environment: false,
         rule: Rule::Speakers, panner: Stereo::default(),
         emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
 }
@@ -43,6 +45,7 @@ impl Scene {
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
     pub fn minimum(&self) -> environment::Levels { self.minimum }
+    pub fn collects_environment(&self) -> bool { self.collects_environment }
     pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) { self.rates.insert(emitter, (rate, frozen)); }
     pub fn reflection_normal(&self) -> Option<Vec3> { self.listener.filter(|_| self.reflection).map(|listener| listener.axis.z_axis) }
     pub fn publish(&mut self, emitter: Emitter, position: Position, propagated: Propagated, rate: f32, frozen: bool) {
@@ -73,12 +76,14 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
     scene.listener = None;
     scene.minimum = environment::Levels::default();
     scene.reflection = false;
+    scene.collects_environment = false;
     let rate = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| clock.rates(3)).map(|rates| rates[1]);
     if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
         if let Some((listener, settings)) = player.sound_listener() {
             scene.listener = Some(listener);
             scene.minimum = settings.minimum;
             scene.reflection = settings.swap_back_to_front;
+            scene.collects_environment = settings.collects_environment;
         }
         for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
             if let Some((position, axis)) = player.sound_transform(emitter) {

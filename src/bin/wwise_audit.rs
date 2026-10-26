@@ -39,6 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("authored player start {:?}: acoustic zone {:?}", player.position, listener_zone);
             if inspect_audio {
                 use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
+                use dishonored2_rust::gameplay::sound::auxiliary;
+                let auxiliary_buses = auxiliary::Buses::load(&world.graph, |path| {
+                    catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+                })?;
+                let detail = dishonored2_rust::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
+                    .ok_or("environmental audio detail cvar is absent")?;
                 let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
                     catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
                 })?;
@@ -67,6 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
                         binding.entity_id, binding.slot, result.paths.len(), result.closest, result.score);
                     let closest = result.closest.and_then(|index| result.paths.get(index));
+                    let sends = auxiliary::project(&world.graph, closest, binding.settings.auxiliary_sends,
+                        detail, |name| auxiliary_buses.resolve(name))?;
+                    println!("  environmental sends: {sends:?}");
                     match dishonored2_rust::gameplay::sound::positions::project(
                         &[&result], closest, query.range, binding.frame.basis[0].into(),
                     ) {
@@ -140,6 +149,32 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            let mut reflection_indices = std::collections::BTreeSet::new();
+            for effect in &mix.effects {
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    if parameters.early_reflections { reflection_indices.insert(parameters.early_pattern); }
+                }
+            }
+            let reflection_patterns = if reflection_indices.is_empty() { None } else {
+                Some(dishonored2_rust::assets::sound_effects::ReflectionPatterns::load(
+                    &dishonored2_rust::assets::installation::game_base()?, reflection_indices)?)
+            };
+            mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
+            for effect in &mix.effects {
+                println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
+                    effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  room reverb: {parameters:?}");
+                    if parameters.early_reflections {
+                        let pattern = reflection_patterns.as_ref().ok_or("room reflection patterns were not loaded")?.get(parameters.early_pattern)?;
+                        println!("  early pattern={} left_taps={} right_taps={} first_ms={:?}",
+                            parameters.early_pattern, pattern.left.len(), pattern.right.len(),
+                            [pattern.left[0].milliseconds, pattern.right[0].milliseconds]);
+                    }
+                }
+            }
             for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
                 for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
                     println!("  {group} {property}: enabled={} scaling={} points={:?}", curve.enabled, curve.scaling, curve.points);
@@ -151,6 +186,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                if !bus.effects.slots.is_empty() { println!("  effects: {:?}", bus.effects); }
                 for curve in &bus.curves {
                     println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
                         curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
@@ -332,7 +368,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
                             PlaybackCommand::Play { target, node } => {
                                 println!("  Play target={target:#010x}");
-                                print_playback(&node, 2)?;
+                                print_playback(&node, 2, &mixer)?;
                             },
                         }
                     }
@@ -436,7 +472,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize) -> Result<(), Box<dyn Error>> {
+fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
+    mixer: &dishonored2_rust::gameplay::sound::mix::Mixer) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
@@ -445,7 +482,12 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
                 audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+            let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
+            println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
+                dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
             for properties in &variant.properties.nodes {
+                println!("{indent}  Node {:#010x} auxiliary_flags={:#x} buses={:x?}",
+                    properties.id, properties.auxiliary_flags, properties.auxiliary_buses);
                 for curve in &properties.curves {
                     println!("{indent}  Node {:#010x} RTPC={:#010x} property={} kind={} accumulation={} scaling={} points={:?}",
                         properties.id, curve.parameter, curve.property, curve.kind, curve.accumulation, curve.scaling, curve.points);
@@ -467,14 +509,14 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         },
         PlaybackNode::Layer { node, children } => {
             println!("{indent}Layer {node:#010x}");
-            for child in children { print_playback(child, depth + 1)?; }
+            for child in children { print_playback(child, depth + 1, mixer)?; }
         },
         PlaybackNode::Container(container) => {
             println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
                 container.node, container.mode, container.global, container.reset_each_play, container.avoid_repeat, container.playback);
             for (child, weight) in &container.children {
                 println!("{indent}  weight={weight}");
-                print_playback(child, depth + 2)?;
+                print_playback(child, depth + 2, mixer)?;
             }
         },
     }
