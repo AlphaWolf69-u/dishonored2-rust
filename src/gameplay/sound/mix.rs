@@ -107,6 +107,22 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    /// Bank mask plus live bypass subscriptions (1410dcc40/1410dcd70).
+    /// Slot bypass is RTPC 0x18..0x1b; bypass-all is 0x1c. A subscribed
+    /// value replaces its corresponding static bit, using float != 0.
+    pub fn bus_bypass(&self, bus: &NodeProperties, parameters: &[(u32, f32)]) -> Result<u8, String> {
+        let mut mask = bus.effects.bypass;
+        for slot in 0..=4u8 {
+            if slot < 4 && !bus.effects.slots.iter().any(|effect| effect.slot == slot && effect.id != 0) { continue; }
+            let property = slot + 0x18;
+            if bus.curves.iter().any(|curve| curve.property == property) {
+                let value = self.rtpc_contribution(bus, property, parameters)?;
+                mask = (mask & !(1 << slot)) | (u8::from(value != 0.0) << slot);
+            }
+        }
+        Ok(mask)
+    }
+
     /// The nearest game/user override owns that category's complete settings
     /// (1410dbb30). The root supplies either category when no child overrides.
     pub fn auxiliary_controls(&self, source: &MediaProperties,

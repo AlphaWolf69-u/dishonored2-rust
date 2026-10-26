@@ -35,14 +35,13 @@ enum Processor {
 }
 pub struct BusEffects {
     slots: Vec<(u8, Processor)>,
+    bypass: u8,
+    previous_bypass: u8,
 }
 impl BusEffects {
     pub fn new(bus: &NodeProperties, mixer: &Mixer, tables: &EffectTables,
         rate: u32, mask: u32, send: bool) -> Result<Self, String>
     {
-        if bus.effects.bypass != 0 {
-            return Err(format!("bus {:#010x} requires effect bypass transitions", bus.id));
-        }
         // 141114910 assigns one definition to each of four slots. A later
         // serialized assignment replaces an earlier assignment to that slot.
         let mut references = BTreeMap::new();
@@ -71,8 +70,10 @@ impl BusEffects {
             };
             slots.push((slot, processor));
         }
-        Ok(Self { slots })
+        Ok(Self { slots, bypass: mixer.bus_bypass(bus, &[])?, previous_bypass: 0 })
     }
+
+    pub fn set_bypass(&mut self, mask: u8) { self.bypass = mask; }
 
     pub fn set_parameter(&mut self, slot: u8, id: u16, bytes: &[u8]) -> Result<(), String> {
         let (_, processor) = self.slots.iter_mut().find(|(index, _)| *index == slot)
@@ -90,12 +91,22 @@ impl BusEffects {
     }
 
     pub fn process_buffer(&mut self, channels: &mut [&mut [f32]], mut status: BufferStatus) -> Result<BufferStatus, String> {
-        for (_, processor) in &mut self.slots {
+        for (slot, processor) in &mut self.slots {
+            let mask = 0x10 | (1u8 << *slot);
+            if self.bypass & mask != 0 {
+                // 14112ddd0 resets only on entry to bypass, preserving its
+                // cleared state throughout the bypassed interval.
+                if self.previous_bypass & mask == 0 {
+                    match processor { Processor::Room(effect) => effect.reset(), Processor::Matrix(effect) => effect.reset() }
+                }
+                continue;
+            }
             status = match processor {
                 Processor::Room(effect) => effect.process_buffer(channels, status)?,
                 Processor::Matrix(effect) => effect.process_buffer(channels, status)?,
             };
         }
+        self.previous_bypass = self.bypass;
         Ok(status)
     }
 }
