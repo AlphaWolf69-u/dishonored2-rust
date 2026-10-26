@@ -44,7 +44,12 @@ impl Delay {
     /// Combine allocation/cursor initialization with the effect's initial
     /// reset. Storage rounds to four samples; wrap uses the authored length.
     pub fn new(length: u32) -> Result<Self, String> {
-        let length = length.max(4);
+        Self::exact(length.max(4))
+    }
+
+    /// Matrix Reverb's rings allow single-frame delays (14117ed20).
+    pub(super) fn exact(length: u32) -> Result<Self, String> {
+        let length = length.max(1);
         let allocated = length.checked_add(3).ok_or("audio delay length overflow")? & !3;
         let mut samples = Vec::new();
         samples.try_reserve_exact(allocated as usize).map_err(|error| format!("audio delay allocation: {error}"))?;

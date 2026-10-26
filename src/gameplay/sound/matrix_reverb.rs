@@ -1,6 +1,8 @@
 //! Parameters of effect 0x00730003 (1400c9bb0). Reader/defaults/live edits:
 //! 14117e580 / 14117e4b0 / 14117e660. Its DSP is distinct from Room Reverb.
 pub const PLUGIN: u32 = 0x00730003;
+mod processor;
+pub use processor::MatrixReverb;
 
 #[derive(Clone, Debug)]
 pub struct Parameters {
