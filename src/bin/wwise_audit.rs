@@ -203,6 +203,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                         curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
                 }
             }
+            let mixer = dishonored2_rust::gameplay::sound::mix::Mixer::from(mix);
+            let tables = dishonored2_rust::gameplay::sound::bus_effects::EffectTables::load(
+                &mixer, &dishonored2_rust::assets::installation::game_base()?)?;
+            for &id in &mixer.bus_order {
+                if !mixer.bus_mixes(id)? { continue; }
+                let bus = mixer.buses.get(&id).ok_or("missing mixing bus")?;
+                let effects = dishonored2_rust::gameplay::sound::bus_effects::BusEffects::new(bus, &mixer, &tables, 48000, 3,
+                    bus.bus_settings.as_ref().ok_or("missing bus settings")?.auxiliary)?;
+                println!("prepared stereo mixing bus {id:#010x}: {} effect slots, output_db={}", effects.slot_count(), mixer.bus_output_db(id)?);
+            }
         }
         return Ok(());
     }

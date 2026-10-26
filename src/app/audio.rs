@@ -193,6 +193,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
                     Ok((initialized, output)) => {
                         *engine = initialized;
                         commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE));
+                        info!("Shared stereo audio output initialized with installed bus effects");
                     },
                     Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
                 }

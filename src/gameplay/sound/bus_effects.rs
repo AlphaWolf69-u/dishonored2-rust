@@ -39,6 +39,7 @@ pub struct BusEffects {
     previous_bypass: u8,
 }
 impl BusEffects {
+    pub fn slot_count(&self) -> usize { self.slots.len() }
     pub fn new(bus: &NodeProperties, mixer: &Mixer, tables: &EffectTables,
         rate: u32, mask: u32, send: bool) -> Result<Self, String>
     {
