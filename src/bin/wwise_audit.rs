@@ -450,6 +450,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for action in actions {
                 use dishonored2_rust::assets::wwise::PlaybackCommand;
                 match action {
+                    PlaybackCommand::Failed { action, target, reason } => println!("  Failed action={action:#010x} target={target:#010x}: {reason}"),
                     PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
                     PlaybackCommand::Play { target, settings, node } => {
                         println!("  Play target={target:#010x}, {settings:?}");

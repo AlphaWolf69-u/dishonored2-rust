@@ -254,25 +254,24 @@ fn play_events(
                     bank.package.read_entry(file, media).map(Some)
                 })?.ok_or("event has no supported Wwise actions")?;
                 use crate::assets::wwise::PlaybackCommand;
-                let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
-                    match action {
-                        PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
-                            || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
-                        _ => Ok(required),
-                    }
-                })?;
-                if scheduled {
-                    return graph_actions.into_iter().map(|action| match action {
-                        PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                        PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
-                            target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
-                        }),
-                    }).collect();
-                }
-                let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
-                actions.into_iter().map(|action| match action {
-                    crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                    crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
+                let mut actions = Vec::new();
+                for action in graph_actions {
+                    // Each action is dispatched independently in 1410e5600 /
+                    // 1410e8260. A host decoder or unsupported actor must not
+                    // discard the event's other Play and Stop actions.
+                    let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
+                    PlaybackCommand::Failed { action, target, reason } => Err(format!(
+                        "action {action:#010x}, target {target:#010x}: {reason}").into()),
+                    PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                    PlaybackCommand::Play { target, settings, node } => {
+                        if settings.requires_scheduling() || graph::Definition::required(&node)
+                            || graph::Definition::requires_buses(&node, mixer)? {
+                            return Ok(SourceAction::Scheduled { target, settings,
+                                definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?) });
+                        }
+                        let mut flat = crate::assets::wwise::flatten_playback_actions(vec![PlaybackCommand::Play { target, settings, node }])?;
+                        let Some(crate::assets::wwise::EventCommand::Play { groups, .. }) = flat.pop()
+                            else { return Err("Wwise Play action did not resolve to Play groups".into()); };
                         let groups = groups.into_iter().map(|group| {
                             let variants = group.variants.into_iter().map(|variant| {
                                 let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
@@ -292,7 +291,13 @@ fn play_events(
                         }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
                         Ok(SourceAction::Play { target, settings, groups })
                     }
-                }).collect()
+                    } })();
+                    match decoded {
+                        Ok(action) => actions.push(action),
+                        Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
+                    }
+                }
+                Ok(actions)
             })();
             match decoded {
                 Ok(actions) => { registry.sources.insert(event, actions); }
