@@ -360,6 +360,23 @@ impl Player {
         Some((origin + axis * position, axis * rotation))
     }
 
+    /// 14070a7b0: the listener uses camera_jnt for orientation and its
+    /// declared main/peeking joint for position. This precedes render-camera
+    /// collision corrections and retains the entity fallback for absent tags.
+    pub fn sound_listener(&self) -> Option<(crate::gameplay::sound::spatial::Listener, &crate::gameplay::sound::listener::Settings)> {
+        let binding = self.body.sound_listener.as_ref()?;
+        let origin = self.physics.position();
+        let axis = self.physics.axis();
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let listener = binding.transform(origin, axis, self.machine.is_active(StateId(0x18)), |index| {
+            self.pose.positions.get(index)?;
+            self.pose.rotations.get(index)?;
+            let (position, rotation) = self.pose.joint_with_controls(index, &controls);
+            Some((origin + axis * position, axis * rotation))
+        })?;
+        Some((listener, &binding.settings))
+    }
+
     pub fn teleport(&mut self, feet: Vec3, yaw: f32) {
         self.physics.teleport(feet, yaw);
     }

@@ -60,7 +60,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     admitted += 1;
                     let result = paths::evaluate(&world.graph, &paths::Query {
                         source: query.source, listener: query.listener, source_zone, listener_zone,
-                        range: query.range, propagation: query.propagation, reflection_normal: None, source_occlusion_scale: 1.0,
+                        range: query.range, propagation: query.propagation, reflection_normal: None,
+                        source_occlusion_scale: binding.settings.source_occlusion_scale(),
                     })?;
                     active += usize::from(result.closest.is_some());
                     println!("emitter={} slot={} source_zone={source_zone:?} admission={admission:?} paths={} closest={:?} score={}",
@@ -105,9 +106,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?;
         println!("{}: {} audio components", level.entities, bindings.len());
         for binding in bindings {
-            println!("entity={} slot={} spawn={} phases={:#x} propagation={} dilation={} startup={:?}",
+            println!("entity={} slot={} spawn={} phases={:#x} propagation={} settings={:?} startup={:?}",
                 binding.entity_id, binding.slot, binding.scheduling.starts_on_spawn(), binding.scheduling.start_phases,
-                binding.propagation, binding.settings.dilation_factor, binding.startup());
+                binding.propagation, binding.settings, binding.startup());
             for event in binding.events.iter().flatten() {
                 println!("  event={:#010x} loop={} spatial={} range={} duration={:?} game_properties={:?}",
                     event.id, event.persistent_loop(), event.spatialized, event.max_distance, event.duration, event.game_properties);

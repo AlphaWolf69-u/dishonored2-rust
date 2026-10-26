@@ -147,7 +147,7 @@ impl Definition {
     }
 }
 
-struct Control { spatial: Vec<[AtomicU32; 6]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { spatial: Vec<[AtomicU32; 8]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>> }
 
 #[derive(Component, Clone)]
@@ -170,9 +170,19 @@ impl Playing {
         let parameters = scene.parameters(self.emitter, self.parameter);
         for (sound, targets) in self.definition.sounds.iter().zip(&self.control.spatial) {
             if let Some(spatial) = &sound.spatial {
-                let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?;
-                for (target, value) in targets.iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
+                let values = if let Some(propagated) = scene.propagated(self.emitter) {
+                    spatial.propagated_targets(scene, propagated, sound.pcm.channels.get(), &mixer.environment)?
+                } else {
+                    let (gains, filters) = spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?;
+                    super::spatial::Targets { gains, voice_filters: filters, output_filters: [None; 2] }
+                };
+                let gains = values.gains;
+                let filters = values.voice_filters;
+                for (target, value) in targets[..6].iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
                     target.store(value.to_bits(), Ordering::Relaxed);
+                }
+                for (target, value) in targets[6..].iter().zip(values.output_filters) {
+                    if let Some(value) = value { target.store(value.to_bits(), Ordering::Relaxed); }
                 }
             }
         }
@@ -213,7 +223,7 @@ pub(super) struct ScheduledAudio {
 
 enum State {
     Sound { frame: u64, random: RandomProperties, looping: crate::gameplay::sound::looping::SourceLoop,
-        resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]> },
+        resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, selection: Selection, loops: Loops, next: Option<u64>, initialized: bool, exhausted: bool },
     Done,
@@ -231,6 +241,10 @@ impl Runtime {
                 resampler: None,
                 gain: GainRamp::default(),
                 filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
+                    VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
+                    VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
+                ]).collect(),
+                output_filters: (0..definition.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
                 ]).collect() },
@@ -283,7 +297,7 @@ impl Runtime {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, looping, resampler, gain: ramp, filters }, Kind::Sound(index)) => {
+            (State::Sound { frame, random, looping, resampler, gain: ramp, filters, output_filters }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
@@ -329,9 +343,17 @@ impl Runtime {
                 if sound.spatial.is_some() {
                     let output_channels = output.len();
                     for (channel, out) in output.iter_mut().enumerate() {
+                        let mut mixed = 0.0;
                         for (input, sample) in samples[..channels].iter().enumerate() {
-                            *out += sample * gains[input * output_channels + channel];
+                            mixed += sample * gains[input * output_channels + channel];
                         }
+                        let filters = &mut output_filters[channel];
+                        if *frame % 1024 == 0 {
+                            filters[0].set_target(f32::from_bits(audio.control.spatial[*index][6].load(Ordering::Relaxed)));
+                            filters[1].set_target(f32::from_bits(audio.control.spatial[*index][7].load(Ordering::Relaxed)));
+                        }
+                        let mixed = filters[0].process(mixed);
+                        *out += filters[1].process(mixed);
                     }
                 } else {
                     for ((out, sample), gain) in output.iter_mut().zip(samples).zip(gains) { *out += sample * gain; }

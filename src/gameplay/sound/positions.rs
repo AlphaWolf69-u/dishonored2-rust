@@ -7,6 +7,11 @@ pub struct Position {
     pub position: Vec3,
     pub front: Vec3,
 }
+impl Position {
+    pub fn wwise(self) -> Self {
+        Self { position: super::spatial::wwise_vector(self.position), front: super::spatial::wwise_vector(self.front) }
+    }
+}
 
 /// 1400c3a00 appends the closest path, then every listener-side portal entry
 /// below five times the query's best score. Entries retain their native order

@@ -274,6 +274,7 @@ fn load_body(
     body_decl: &[(String, crate::entities::Value)],
     additives: &[(String, crate::entities::Value)],
     scene_paths: &[String],
+    listener: Option<crate::gameplay::sound::listener::Settings>,
 ) -> Result<(Body, Scenes), String> {
     let text = |path: &str| text_of(catalog, path);
     let rig = load_rig(catalog, body_model)?;
@@ -361,6 +362,7 @@ fn load_body(
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.sound_listener = listener.map(|settings| crate::gameplay::sound::listener::Binding::resolve(settings, &rig.skeleton.joint_names));
     body.footstep_settings = decls::footstep_settings(body_decl)?;
     body.arms = arms;
 
@@ -377,8 +379,12 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
     let scene_paths = scene_paths(&states);
+    let listener = crate::entities::player::entity_component(
+        &format!("models/characters/player/{}/body.def", character_name(character)), "cpntaudiolistener",
+        |path| text_of(catalog, path),
+    )?.map(|fields| crate::gameplay::sound::listener::Settings::read(&fields)).transpose()?;
     let (mut body, scenes) =
-        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths)?;
+        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener)?;
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)? + attributes.get("ARK_ATTRIBUTE_HEALTH_MAX");

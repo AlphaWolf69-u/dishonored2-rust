@@ -14,6 +14,7 @@ pub mod acoustic_world;
 pub mod paths;
 pub mod positions;
 pub mod environment;
+pub mod listener;
 pub mod looping;
 
 /// The material pair and physical inputs submitted to the contact FX manager
