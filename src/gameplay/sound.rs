@@ -37,13 +37,14 @@ pub enum Emitter {
     PlayerLeftArm,
     PlayerRightArm,
     Effect(u64),
+    Component { handle: u64, generation: u32 },
 }
 
 impl Emitter {
     /// Casting bits used by arkPlayerState::AddPlayerCasting (1408542b0).
     pub fn player_part(self) -> u8 {
         match self {
-            Self::Menu | Self::Effect(_) => 0,
+            Self::Menu | Self::Effect(_) | Self::Component { .. } => 0,
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,

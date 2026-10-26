@@ -7,6 +7,7 @@ mod graph;
 mod fade;
 mod contacts;
 mod spatial;
+pub(super) mod level;
 pub(super) use contacts::ContactSound;
 use pcm::PcmAudio;
 
@@ -112,7 +113,9 @@ impl Plugin for SoundPlugin {
             .init_resource::<AudioMix>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
-            .add_systems(Update, (contacts::update, spatial::update, update_playing_volume, play_events).chain().after(super::player::update_player));
+            .add_systems(Update, contacts::update.after(super::player::update_player))
+            .add_systems(PostUpdate, (spatial::update, level::update, update_playing_volume, play_events)
+                .chain().after(super::model_motion::publish_model_poses));
     }
 }
 

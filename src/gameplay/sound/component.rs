@@ -38,6 +38,25 @@ impl Startup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupAction { None, Stop, Post }
 
+/// Common ownership and default-slot state of arkCpntAudio. The host audio
+/// backend owns voice storage; this component retains the sound object after
+/// its voices stop, until the component's shutdown releases it (140708620).
+pub struct AudioComponent {
+    pub owner: crate::gameplay::component_state::ComponentOwner,
+    pub startup: Startup,
+    pub allocated: bool,
+    pub started: bool,
+}
+impl Default for AudioComponent {
+    fn default() -> Self {
+        Self { owner: Default::default(), startup: Startup::default(), allocated: false, started: false }
+    }
+}
+impl crate::gameplay::component_state::ComponentInstance for AudioComponent {
+    fn owner(&self) -> &crate::gameplay::component_state::ComponentOwner { &self.owner }
+    fn owner_mut(&mut self) -> &mut crate::gameplay::component_state::ComponentOwner { &mut self.owner }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
     pub dilation_factor: f32,

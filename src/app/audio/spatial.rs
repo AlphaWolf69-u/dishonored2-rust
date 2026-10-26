@@ -43,6 +43,7 @@ impl Scene {
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
     pub fn minimum(&self) -> environment::Levels { self.minimum }
+    pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) { self.rates.insert(emitter, (rate, frozen)); }
     pub fn reflection_normal(&self) -> Option<Vec3> { self.listener.filter(|_| self.reflection).map(|listener| listener.axis.z_axis) }
     pub fn publish(&mut self, emitter: Emitter, position: Position, propagated: Propagated, rate: f32, frozen: bool) {
         self.emitters.insert(emitter, position);

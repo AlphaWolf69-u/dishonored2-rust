@@ -336,7 +336,7 @@ impl Player {
             Emitter::PlayerBody => self.body.sound_settings,
             Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
             Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
     }
@@ -352,7 +352,7 @@ impl Player {
             Emitter::PlayerBody => return Some((origin, axis)),
             Emitter::PlayerLeftArm => 0,
             Emitter::PlayerRightArm => 1,
-            Emitter::Menu | Emitter::Effect(_) => return None,
+            Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
         let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
