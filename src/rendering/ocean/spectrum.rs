@@ -1,4 +1,5 @@
 //! Initial H0/Omega data from 1402fa690; no GPU resources or global CRT state.
+use crate::float::pack_half_truncated as spectrum_half;
 
 #[derive(Clone, Copy, Debug)]
 pub struct WaveSpectrumParameters {
@@ -9,19 +10,6 @@ pub struct WaveSpectrumParameters {
     pub domain_length: f32,
     /// Owner+1c divides speed²/gravity to obtain the short-wave damping length.
     pub short_wave_divisor: f32,
-}
-
-fn spectrum_half(value: f32) -> u16 {
-    let bits = value.to_bits();
-    let sign = ((bits >> 16) & 0x8000) as u16;
-    let exponent = ((bits >> 23) & 255) as i32 - 112;
-    if exponent <= 0 {
-        0
-    } else if exponent > 30 {
-        sign | 0x7bff
-    } else {
-        sign | ((exponent as u16) << 10) | ((bits & 0x7fffff) >> 13) as u16
-    }
 }
 
 fn random(state: &mut u32) -> u32 {

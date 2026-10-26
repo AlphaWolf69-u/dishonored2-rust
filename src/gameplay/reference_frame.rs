@@ -252,6 +252,21 @@ pub fn quaternion_basis(q: [f32; 4]) -> [[f32; 3]; 3] {
     ]
 }
 
+/// 10e5e0 forms a binding quaternion from the supplied axis and half-angle,
+/// then uses 111410. The axis is already prepared by its owner; it is not
+/// normalized here. This is separate from Havok's SIMD rotation approximation.
+pub fn axis_angle_basis(axis: [f32; 3], angle: f32) -> [[f32; 3]; 3] {
+    let half = multiply(angle, 0.5);
+    let sine = (half as f64).sin() as f32;
+    let cosine = (half as f64).cos() as f32;
+    quaternion_basis([
+        multiply(sine, axis[0]),
+        multiply(sine, axis[1]),
+        multiply(sine, axis[2]),
+        cosine,
+    ])
+}
+
 /// 110c70 uses shortest-arc normalized linear interpolation. Its endpoint
 /// branches copy stored quaternions directly, without normalizing them.
 pub fn interpolate_quaternion(first: [f32; 4], second: [f32; 4], mut fraction: f32) -> [f32; 4] {

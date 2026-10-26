@@ -2,6 +2,159 @@
 //! particle-instance producers remain separate from these shader helpers.
 use bevy_math::{Vec2, Vec4};
 
+/// 1ee880's twelve-byte instance record, consumed by particles_instancing.
+/// The upper half of size is unused by GetParticleRadius and starts at zero.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct PackedParticleParameters {
+    pub colour: u32,
+    pub flipbook_seed_uv: u32,
+    pub size: u32,
+}
+impl PackedParticleParameters {
+    /// An unanimated sprite passes its normalized particle age as phase; an
+    /// animated sprite supplies its retained animation phase instead.
+    pub fn new(colour: u32, particle_seed: u32, flip_bits: u8, phase: f32, radius: f32) -> Self {
+        Self {
+            colour,
+            flipbook_seed_uv: u32::from(crate::float::pack_half_truncated(phase))
+                | (((particle_seed >> 1) & 0x3fff) << 16)
+                | (u32::from(flip_bits & 3) << 30),
+            size: u32::from(crate::float::pack_half_truncated(radius)),
+        }
+    }
+}
+
+/// View inputs for a single sprite after 1f2c50 has transformed its particle
+/// into world space. Custom orientation and emitter axes have distinct owners.
+pub struct SpriteView {
+    pub camera_position: [f32; 3],
+    pub camera_axes: [[f32; 3]; 3],
+    pub custom_basis: [[f32; 3]; 3],
+    pub emitter_basis: [[f32; 3]; 3],
+    pub owner_colour: [f32; 4],
+    pub owner_scale: f32,
+}
+
+pub struct SpriteInstance {
+    pub position: [f32; 3],
+    /// The normal remains unscaled; the two billboard axes include size.
+    pub axes: [[f32; 3]; 3],
+    pub parameters: PackedParticleParameters,
+}
+
+impl SpriteInstance {
+    /// 1edb20's publication order: velocity offset, lifetime and velocity size,
+    /// rotation, orientation, pivot, angular fade, colour and packed UV state.
+    /// All samples use one fresh copy of the particle's stored seed per frame.
+    pub fn new(
+        descriptor: &crate::assets::fx::particle_sprite::ParticleSpriteAsset,
+        initial: &crate::gameplay::particles::sprite::SpriteInitialState,
+        particle: &crate::gameplay::particles::ParticleState,
+        particle_seed: u32,
+        view: &SpriteView,
+    ) -> Result<Self, String> {
+        use crate::{
+            float::{add, multiply, subtract},
+            gameplay::{particles::orientation::normalize, reference_frame::axis_angle_basis},
+        };
+        let appearance = &descriptor.appearance;
+        let age = particle.age;
+        let mut seed = particle_seed;
+        let mut velocity = particle.velocity;
+        // The source computes Y*Y + X*X + Z*Z before normalization.
+        let squared = add(
+            add(
+                multiply(velocity[1], velocity[1]),
+                multiply(velocity[0], velocity[0]),
+            ),
+            multiply(velocity[2], velocity[2]),
+        );
+        let reciprocal = crate::float::divide(1., squared.max(f32::MIN_POSITIVE).sqrt());
+        velocity = velocity.map(|value| multiply(value, reciprocal));
+        let speed = multiply(reciprocal, squared);
+        let offset = appearance
+            .velocity_offset_over_life
+            .sample(age, &mut seed)?;
+        let mut position =
+            std::array::from_fn(|i| add(particle.position[i], multiply(velocity[i], offset)));
+        let life_size = appearance.size_over_life.sample(age, &mut seed)?;
+        let velocity_size = appearance.size_over_velocity.sample(speed, &mut seed)?;
+        let size: [f32; 3] = std::array::from_fn(|i| {
+            multiply(
+                multiply(multiply(initial.size[i], life_size[i]), view.owner_scale),
+                velocity_size[i],
+            )
+        });
+        let angle = add(
+            appearance.rotation_over_life.sample(age, &mut seed)?,
+            initial.rotation,
+        );
+        let mut to_camera = std::array::from_fn(|i| subtract(view.camera_position[i], position[i]));
+        normalize(&mut to_camera);
+        let mut axes = descriptor.orientation.sample(
+            age,
+            &mut seed,
+            view.custom_basis,
+            view.emitter_basis,
+            to_camera,
+            velocity,
+            view.camera_axes,
+        )?;
+        if axes[0].iter().any(|v| v.to_bits() & 0x7fff_ffff != 0) {
+            let angle = f32::from_bits(
+                multiply(f32::from_bits(0x3c8e_fa35), angle).to_bits() ^ 0x8000_0000,
+            );
+            let rotation = axis_angle_basis(axes[0], angle);
+            for axis in &mut axes[1..] {
+                *axis = std::array::from_fn(|i| {
+                    add(
+                        add(
+                            multiply(axis[1], rotation[1][i]),
+                            multiply(axis[0], rotation[0][i]),
+                        ),
+                        multiply(axis[2], rotation[2][i]),
+                    )
+                });
+            }
+        }
+        axes[1] = axes[1].map(|v| multiply(v, size[0]));
+        axes[2] = axes[2].map(|v| multiply(v, size[1]));
+        let pivot = appearance.pivot_offset_over_life.sample(age, &mut seed)?;
+        let pivot = [
+            add(pivot[0], initial.pivot[0]),
+            add(pivot[1], initial.pivot[1]),
+        ];
+        position = std::array::from_fn(|i| {
+            add(
+                add(
+                    multiply(axes[1][i], pivot[0]),
+                    multiply(axes[2][i], pivot[1]),
+                ),
+                position[i],
+            )
+        });
+        let fade = descriptor.angular_fade.sample(axes[0], to_camera);
+        let colour = initial.colour_at(appearance, age, view.owner_colour, fade, &mut seed)?;
+        let radius = add(
+            add(multiply(size[1], size[1]), multiply(size[0], size[0])),
+            multiply(size[2], size[2]),
+        )
+        .sqrt();
+        Ok(Self {
+            position,
+            axes,
+            parameters: PackedParticleParameters::new(
+                colour,
+                particle_seed,
+                initial.flip_bits,
+                initial.animation_frame.unwrap_or(age),
+                radius,
+            ),
+        })
+    }
+}
+
 fn saturate(value: f32) -> f32 {
     if value > 0.0 {
         value.min(1.0)

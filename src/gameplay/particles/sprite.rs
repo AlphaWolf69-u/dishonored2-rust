@@ -97,6 +97,62 @@ pub struct InitialAnimationFrame {
     pub range: [f32; 2],
     pub divisions: i32,
 }
+
+/// The descriptor's flipbook controls, independent of the material's sheet.
+/// 1f8900 zeroes its first 24 bytes and initializes the rate to one.
+pub struct SpriteFlipbook {
+    pub flips: [TextureFlip; 2],
+    pub cycle_rate: bool,
+    pub initial: InitialAnimationFrame,
+    pub rate: ScalarParameter,
+}
+impl Default for SpriteFlipbook {
+    fn default() -> Self {
+        Self {
+            flips: [TextureFlip::None; 2],
+            cycle_rate: false,
+            initial: InitialAnimationFrame {
+                range: [0.; 2],
+                divisions: 0,
+            },
+            rate: ScalarParameter::constant(1.),
+        }
+    }
+}
+
+/// 1ecc60 converts the two editable degree angles into 1ec0e0's dot-space
+/// offset and slope. Retain the source's cosine and angle wrapping order.
+pub struct AngularFade {
+    pub angles: [f32; 2],
+    pub slope: f32,
+    pub minimum: f32,
+}
+impl AngularFade {
+    pub fn new(angles: [f32; 2]) -> Self {
+        let cosine = |degrees| {
+            let mut angle = subtract(
+                f32::from_bits(0x3fc9_0fdb),
+                multiply(f32::from_bits(0x3c8e_fa35), degrees),
+            );
+            let period = f32::from_bits(0x40c9_0fdb);
+            if angle < 0. || period <= angle {
+                let turns = multiply(angle, f32::from_bits(0x3e22_f983)).floor();
+                angle = subtract(angle, multiply(turns, period));
+            }
+            (angle as f64).cos() as f32
+        };
+        let first = cosine(angles[0]);
+        let minimum = cosine(angles[1]);
+        Self {
+            angles,
+            slope: crate::float::divide(1., subtract(first, minimum)),
+            minimum,
+        }
+    }
+    pub fn sample(&self, normal: [f32; 3], view: [f32; 3]) -> f32 {
+        angular_fade(normal, view, self.slope, self.minimum)
+    }
+}
 impl InitialAnimationFrame {
     /// 1f93f0 keeps the fractional part, optionally after discrete-frame
     /// quantization. Its single random draw belongs after all sprite samples.

@@ -20,8 +20,11 @@ pub struct GroupDefinition {
     pub quads: Vec<QuadDefinition>,
     /// Particle readiness is independent of screen-distortion readiness.
     /// Retain descriptor errors for the particle owner without disabling quads.
-    pub particles:
-        Vec<Result<Arc<crate::assets::fx::particle_system::ParticleSystemAsset>, String>>,
+    pub particles: Vec<Result<ParticleDefinition, String>>,
+}
+pub struct ParticleDefinition {
+    pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
+    pub declarations: Vec<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>,
 }
 pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
@@ -119,8 +122,26 @@ impl ScreenEffectSources {
                         })
                         .map(|value| match value {
                             crate::entities::Value::Scope(fields) => {
-                                crate::assets::fx::particle_system::particle_system(fields)
-                                    .map(Arc::new)
+                                let owner =
+                                    crate::assets::fx::particle_system::particle_system(fields)?;
+                                let declarations = owner
+                                    .declarations
+                                    .iter()
+                                    .flatten()
+                                    .map(|path| {
+                                        let mut read = |p: &str| catalog.read(p).ok().flatten();
+                                        let fields = read_edit(&mut read, "particledt", path)?;
+                                        crate::assets::fx::particle_declaration::declaration(
+                                            &fields,
+                                        )
+                                        .map(Arc::new)
+                                        .map_err(|error| format!("{path}: {error}"))
+                                    })
+                                    .collect::<Result<Vec<_>, String>>()?;
+                                Ok(ParticleDefinition {
+                                    owner: Arc::new(owner),
+                                    declarations,
+                                })
                             }
                             _ => Err("particle FX descriptor requires a scope".into()),
                         })
