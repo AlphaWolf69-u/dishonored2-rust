@@ -1,7 +1,23 @@
-//! Installed RoomVerb early-reflection tables, referenced by 14116f220.
-//! Pattern samples remain in the user's executable rather than this repository.
+//! Installed reverb tables (14116f220/14117ed20). Authored tables remain
+//! in the user's executable rather than this repository.
 use super::executable::{word, Image};
 use std::{collections::HashMap, path::Path};
+
+pub fn matrix_delays(game_base: &Path) -> Result<[f32; 16], String> {
+    let executable = game_base.parent().ok_or("game asset folder has no parent")?.join("Dishonored2.exe");
+    let bytes = std::fs::read(&executable).map_err(|error| format!("{}: {error}", executable.display()))?;
+    let image = Image::parse(&bytes)?;
+    if image.base != 0x140000000 || word(image.read(0x1f4ba90, 8)?, 0, 8)? != image.base + 0x117e580 {
+        return Err("unsupported matrix reverb executable layout".into());
+    }
+    let bytes = image.read(0x1f4baa0, 64)?;
+    let mut times = [0.0; 16];
+    for (index, time) in times.iter_mut().enumerate() {
+        *time = f32::from_bits(word(bytes, index * 4, 4)? as u32);
+        if !time.is_finite() || *time <= 0.0 { return Err("invalid installed matrix reverb delay".into()); }
+    }
+    Ok(times)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ReflectionTap {

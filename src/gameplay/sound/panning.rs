@@ -17,6 +17,26 @@ pub fn directions(matrices: impl IntoIterator<Item = [f32; 4]>) -> [f32; 4] {
     output
 }
 
+/// 1410cbbb0 selects ray+10/+14/+18 for dry/game/user connections before
+/// its per-coefficient maximum. Attenuating the already merged dry matrix
+/// would lose rays whose game or user attenuation differs from the dry ray.
+pub fn send_matrices(pan: [[f32; 2]; 2], gains: super::spatial::Gains) -> [[f32; 4]; 3] {
+    [gains.dry, gains.game_auxiliary, gains.user_auxiliary].map(|gain|
+        [gain * pan[0][0], gain * pan[0][1], gain * pan[1][0], gain * pan[1][1]])
+}
+
+pub fn send_directions(matrices: impl IntoIterator<Item = [[f32; 4]; 3]>) -> [[f32; 4]; 3] {
+    let mut output = [[0.0; 4]; 3];
+    for matrices in matrices {
+        for (output, matrix) in output.iter_mut().zip(matrices) {
+            for (target, value) in output.iter_mut().zip(matrix) {
+                if *target <= value { *target = value; }
+            }
+        }
+    }
+    output
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SpeakerAngles {
     pub horizontal: [f32; 3],

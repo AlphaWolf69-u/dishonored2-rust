@@ -10,7 +10,7 @@ mod bank;
 mod declaration;
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionTransition, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
-    CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
+    BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -640,6 +640,8 @@ pub struct BankMix {
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
     pub environment: EnvironmentSettings,
+    /// 141120750 marks the first root as the primary device's master bus.
+    pub primary_bus: Option<u32>,
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
@@ -660,16 +662,22 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     let Some(settings) = chunks.get(b"STMG") else { return Ok(None) };
     let feedback = bank_feedback(&chunks)?;
     let (volume_threshold_db, parameters) = bank::global_parameters(settings)?;
-    let objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?;
+    let mut objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?
+        .into_iter().collect::<Vec<_>>();
+    // Object slices share the HIRC allocation. Restore their serialized order
+    // after the lookup map's duplicate-ID validation; root selection depends
+    // on that order, not on the hash table's randomized iteration order.
+    objects.sort_by_key(|(_, object)| object.as_ptr());
     let mut buses = Vec::new();
     let mut effects = Vec::new();
     for ((kind, _), object) in objects {
-        if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback)?); }
+        if matches!(kind, 8 | 20) { buses.push(bank::bus_properties(object, feedback, kind == 20)?); }
         if matches!(kind, 18 | 19) { effects.push(bank::effect_definition(object, kind == 18)?); }
     }
     // 1410f85a0 disables all six environment tables before ENVS is loaded.
     let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
-    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment }))
+    let primary_bus = buses.iter().find(|bus| bus.parent == 0).map(|bus| bus.id);
+    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment, primary_bus }))
 }
 
 fn media_from_sound(

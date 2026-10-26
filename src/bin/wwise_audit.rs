@@ -149,6 +149,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            println!("primary output bus: {:x?}", mix.primary_bus);
             let mut reflection_indices = std::collections::BTreeSet::new();
             for effect in &mix.effects {
                 if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
@@ -160,10 +161,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Some(dishonored2_rust::assets::sound_effects::ReflectionPatterns::load(
                     &dishonored2_rust::assets::installation::game_base()?, reflection_indices)?)
             };
+            let matrix_delays = if mix.effects.iter().any(|effect| effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN) {
+                Some(dishonored2_rust::assets::sound_effects::matrix_delays(&dishonored2_rust::assets::installation::game_base()?)?)
+            } else { None };
             mix.effects.sort_by_key(|effect| (effect.shared, effect.id));
             for effect in &mix.effects {
                 println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
                     effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
+                if effect.plugin == dishonored2_rust::gameplay::sound::matrix_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::matrix_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  matrix reverb: {parameters:?}");
+                    let lengths = parameters.delay_lengths(48000, matrix_delays.as_ref().ok_or("matrix reverb delay table was not loaded")?)?;
+                    println!("  matrix delay lengths at 48 kHz: {lengths:?}, damping={:?}", parameters.damping(&lengths, 48000)?);
+                }
                 if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
                     let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
                     println!("  room reverb: {parameters:?}");
@@ -186,11 +196,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             mix.buses.sort_by_key(|bus| bus.id);
             for bus in &mix.buses {
                 println!("bus={:#010x} parent={:#010x} volume={} bus_volume={}", bus.id, bus.parent, bus.float(0), bus.float(5));
+                println!("  settings: {:?}", bus.bus_settings);
                 if !bus.effects.slots.is_empty() { println!("  effects: {:?}", bus.effects); }
                 for curve in &bus.curves {
                     println!("  RTPC={:#010x} default={:?} property={} scaling={} accumulation={} points={:?}",
                         curve.parameter, mix.parameters.get(&curve.parameter), curve.property, curve.scaling, curve.accumulation, curve.points);
                 }
+            }
+            let mixer = dishonored2_rust::gameplay::sound::mix::Mixer::from(mix);
+            let tables = dishonored2_rust::gameplay::sound::bus_effects::EffectTables::load(
+                &mixer, &dishonored2_rust::assets::installation::game_base()?)?;
+            for &id in &mixer.bus_order {
+                if !mixer.bus_mixes(id)? { continue; }
+                let bus = mixer.buses.get(&id).ok_or("missing mixing bus")?;
+                let effects = dishonored2_rust::gameplay::sound::bus_effects::BusEffects::new(bus, &mixer, &tables, 48000, 3,
+                    bus.bus_settings.as_ref().ok_or("missing bus settings")?.auxiliary)?;
+                println!("prepared stereo mixing bus {id:#010x}: {} effect slots, output_db={}", effects.slot_count(), mixer.bus_output_db(id)?);
             }
         }
         return Ok(());

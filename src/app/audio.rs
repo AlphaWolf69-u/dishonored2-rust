@@ -4,6 +4,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use crate::gameplay::sound::{Emitter, Request};
 mod pcm;
 mod graph;
+mod bevy_backend;
 mod fade;
 mod contacts;
 mod spatial;
@@ -107,20 +108,23 @@ impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<PcmAudio>()
             .add_audio_source::<graph::ScheduledAudio>()
+            .add_audio_source::<bevy_backend::OutputAudio>()
             .add_message::<SoundEvent>()
             .add_message::<ContactSound>()
             .init_resource::<contacts::ContactSounds>()
             .init_resource::<WwiseRegistry>()
             .init_resource::<AudioMix>()
+            .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (spatial::update, level::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
 
-fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
+fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
+    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
         let mut paths = std::fs::read_dir(base.join("pck"))?
@@ -184,6 +188,16 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>) {
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
+            if let Some(mixer) = &mix.mixer {
+                match bevy_backend::Engine::new(mixer) {
+                    Ok((initialized, output)) => {
+                        *engine = initialized;
+                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE));
+                        info!("Shared stereo audio output initialized with installed bus effects");
+                    },
+                    Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
+                }
+            }
         }
         Err(error) => warn!("Installed Wwise banks unavailable: {error}"),
     }
@@ -197,6 +211,7 @@ fn play_events(
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
+    engine: Res<bevy_backend::Engine>,
     playing: Query<(Entity, &AudioTarget, Option<&PlaybackControl>)>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
@@ -354,8 +369,15 @@ fn play_events(
                             Ok((source, scheduled)) => {
                                 let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, paused: false, world_paused: false };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);
-                                let entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
-                                    audio_target.clone(), scheduled.clone())).id();
+                                let entity = if source.can_route() {
+                                    match engine.submit(source) {
+                                        Ok(voice) => commands.spawn((voice, audio_target.clone(), scheduled.clone())).id(),
+                                        Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
+                                    }
+                                } else {
+                                    commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
+                                        audio_target.clone(), scheduled.clone())).id()
+                                };
                                 spawned.push((entity, audio_target, Some(scheduled)));
                             },
                             Err(error) => warn!("Wwise event {event:#010x} scheduled mix unavailable: {error}"),
@@ -374,23 +396,35 @@ fn update_playing_volume(
     scene: Res<spatial::Scene>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     mut previous_pause: Local<bool>,
-    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, Option<&PlaybackControl>)>,
+    engine: Res<bevy_backend::Engine>,
+    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, Option<&PlaybackControl>, Option<&bevy_backend::VoiceHandle>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
     let mix_changed = mix.generation != generation;
     if mix_changed { mix.apply_settings(); }
     let Some(mixer) = &mix.mixer else { return };
+    if let Err(error) = engine.update(mixer) { error!("Shared Wwise audio mix update failed: {error}"); }
     let world_paused = paused.is_some_and(|paused| paused.0);
     let pause_changed = world_paused != *previous_pause;
-    for (mut target, sink, scheduled) in &mut playing {
+    for (mut target, sink, scheduled, voice) in &mut playing {
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same
         // world's global object, and c4550 posts new IDs while paused.
         // Resume (788d70 -> c8070/c8080 -> c59c0) releases that pause.
         if pause_changed { target.world_paused = world_paused; }
-        let Some(mut sink) = sink else { continue };
         let frozen = scene.frozen(target.emitter) || target.world_paused;
+        if let Some(voice) = voice {
+            voice.pause(frozen);
+            target.paused = frozen;
+            if !frozen {
+                if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
+                    if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
+                }
+            }
+            continue;
+        }
+        let Some(mut sink) = sink else { continue };
         if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
             target.paused = frozen;
