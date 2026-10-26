@@ -1,7 +1,9 @@
 //! Wwise events from pause UI and player gameplay.
-use bevy::{audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume}, prelude::*};
+use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume}, prelude::*};
 use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf, sync::Arc};
 use crate::gameplay::sound::{Emitter, Request};
+mod pcm;
+use pcm::PcmAudio;
 
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
@@ -52,7 +54,7 @@ struct AudioGroup {
 
 #[derive(Clone)]
 struct AudioVariant {
-    source: Handle<AudioSource>,
+    source: Handle<PcmAudio>,
     weight: u32,
     properties: Arc<crate::assets::wwise::MediaProperties>,
 }
@@ -118,7 +120,8 @@ pub struct SoundPlugin;
 
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<SoundEvent>()
+        app.add_audio_source::<PcmAudio>()
+            .add_message::<SoundEvent>()
             .init_resource::<WwiseRegistry>()
             .init_resource::<AudioMix>()
             .add_systems(Startup, index_banks)
@@ -192,7 +195,7 @@ fn play_events(
     mut commands: Commands,
     mut events: MessageReader<SoundEvent>,
     mut registry: ResMut<WwiseRegistry>,
-    mut sources: ResMut<Assets<AudioSource>>,
+    mut sources: ResMut<Assets<PcmAudio>>,
     mix: Res<AudioMix>,
     playing: Query<(Entity, &AudioTarget)>,
 ) {
@@ -233,9 +236,12 @@ fn play_events(
                     crate::assets::wwise::EventCommand::Play { target, groups } => {
                         let groups = groups.into_iter().map(|group| {
                             let variants = group.variants.into_iter().map(|variant| {
-                                let bytes = crate::assets::wwise::decode_wem(&variant.media)?;
+                                let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
+                                    "event {event:#010x}, source {:#010x}: {error}",
+                                    variant.properties.nodes.first().map_or(0, |node| node.id)
+                                ))?;
                                 Ok(AudioVariant {
-                                    source: sources.add(AudioSource { bytes: Arc::from(bytes) }),
+                                    source: sources.add(source),
                                     weight: variant.weight, properties: Arc::new(variant.properties),
                                 })
                             }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
@@ -251,7 +257,7 @@ fn play_events(
             match decoded {
                 Ok(actions) => { registry.sources.insert(event, actions); }
                 Err(error) => {
-                    debug!("Wwise event {event:#010x} has no supported route: {error}");
+                    warn!("Wwise event {event:#010x} has no supported route: {error}");
                     continue;
                 }
             }

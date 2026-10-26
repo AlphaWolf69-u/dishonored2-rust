@@ -201,9 +201,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     for (variant_index, variant) in group.variants.iter().enumerate() {
                                         println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
                                             variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
-                                        match dishonored2_rust::assets::wwise::decode_wem(&variant.media) {
-                                            Ok(audio) => println!("      decoded {} bytes {}", audio.len(), String::from_utf8_lossy(&audio[..audio.len().min(4)])),
-                                            Err(error) => println!("      decoding error: {error}"),
+                                        match dishonored2_rust::assets::wwise::decode_wem_pcm(&variant.media) {
+                                            Ok(audio) => println!("      decoded {} samples, {} channels at {} Hz", audio.samples.len(), audio.channels, audio.sample_rate),
+                                            Err(error) => {
+                                                println!("      decoding error: {error}");
+                                                if let Ok(encoded) = dishonored2_rust::assets::wwise::decode_wem(&variant.media) {
+                                                    println!("      converted header: {:02x?}", &encoded[..encoded.len().min(64)]);
+                                                }
+                                                println!("      WEM header: {:02x?}", &variant.media[..variant.media.len().min(96)]);
+                                            },
                                         }
                                     }
                                 }
