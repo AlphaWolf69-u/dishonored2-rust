@@ -67,6 +67,8 @@ struct MaterialParameters {
     surface_map_options: UVec4,
     surface_ranges: Vec4,
     lighting_uv: Vec4,
+    normal_options: UVec4,
+    detail_normal: Vec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -119,6 +121,11 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         Ok(Self {
+            normal_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                UVec4::new(u32::from(light.bump), u32::from(light.detail_bump.is_some()), 0, 0)
+            }),
+            detail_normal: source.lighting.as_ref().and_then(|light| light.detail_bump)
+                .map_or(Vec4::ZERO, |detail| Vec4::new(detail[0], detail[1], 0., 0.)),
             surface_map_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
                 UVec4::new(
                     u32::from(light.maps[0]),
@@ -404,6 +411,7 @@ impl ParticlePass {
                     (1..=5)
                         .chain(10..=13)
                         .chain(15..=17)
+                        .chain(19..=20)
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
                 .chain((6..=8).chain([14, 18]).map(sampler_entry))
@@ -834,6 +842,14 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 18,
                     resource: BindingResource::Sampler(anisotropic_sampler),
+                },
+                BindGroupEntry {
+                    binding: 19,
+                    resource: BindingResource::TextureView(views.get("bumpmap").unwrap_or(opacity)),
+                },
+                BindGroupEntry {
+                    binding: 20,
+                    resource: BindingResource::TextureView(views.get("detailbumpmap").unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 14,

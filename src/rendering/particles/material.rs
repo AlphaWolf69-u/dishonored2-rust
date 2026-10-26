@@ -63,6 +63,9 @@ pub struct ParticleLightingMaterial {
     pub metallic: [f32; 2],
     /// Active gloss, metallic and specular texture reads, in that order.
     pub maps: [bool; 3],
+    pub bump: bool,
+    /// Detail normals are read only inside the base bump-map branch.
+    pub detail_bump: Option<[f32; 2]>,
     pub uv: [f32; 4],
     pub gloss_in_alpha: bool,
     pub dielectric: [f32; 4],
@@ -236,10 +239,8 @@ impl ParticleMaterial {
             // These owners still need the shared surface-map evaluator. Never
             // admit them as untextured lighting or silently drop a map/layer.
             for name in [
-                "hasBumpMap",
                 "extraLayer",
                 "useParallaxMapping",
-                "hasDetailBumpMap",
                 "twoSidedLighting",
                 "staticDecalCount",
                 "hasAnimatedEmissive",
@@ -254,6 +255,15 @@ impl ParticleMaterial {
             let gloss = scopes.vector("wardRoughness")?;
             let metallic = scopes.vector("metallicMinMax")?;
             let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
+            let bump = read_option("hasBumpMap")? != 0;
+            let detail_bump = if bump && read_option("hasDetailBumpMap")? != 0 {
+                Some([
+                    scopes.vector("detailBumpmapTiling")?[0],
+                    scopes.vector("detailBumpmapIntensity")?[0],
+                ])
+            } else {
+                None
+            };
             let maps = [
                 read_option("hasGlossMap")? != 0 && !gloss_in_alpha,
                 read_option("hasMetallicMap")? != 0,
@@ -273,9 +283,22 @@ impl ParticleMaterial {
                     );
                 }
             }
+            for (name, enabled) in [("bumpmap", bump), ("detailBumpmap", detail_bump.is_some())] {
+                if enabled {
+                    images.insert(
+                        name.to_ascii_lowercase(),
+                        Arc::new(crate::material::load_2d_image(
+                            catalog,
+                            &scopes.image_source(name)?,
+                        )?),
+                    );
+                }
+            }
             Some(ParticleLightingMaterial {
                 maps,
-                uv: if maps.into_iter().any(|enabled| enabled) {
+                bump,
+                detail_bump,
+                uv: if bump || maps.into_iter().any(|enabled| enabled) {
                     scopes.vector("Layer0_ScaleBias")?
                 } else {
                     [0.; 4]

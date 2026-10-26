@@ -49,6 +49,8 @@ struct ParticleMaterialParameters {
     surface_map_options:vec4<u32>,
     surface_ranges:vec4<f32>,
     lighting_uv:vec4<f32>,
+    normal_options:vec4<u32>,
+    detail_normal:vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -68,6 +70,8 @@ struct ParticleMaterialParameters {
 @group(1) @binding(15) var particle_gloss:texture_2d<f32>;
 @group(1) @binding(16) var particle_metallic:texture_2d<f32>;
 @group(1) @binding(17) var particle_specular:texture_2d<f32>;
+@group(1) @binding(19) var particle_bump:texture_2d<f32>;
+@group(1) @binding(20) var particle_detail_bump:texture_2d<f32>;
 @group(1) @binding(18) var particle_surface_anisotropic:sampler;
 
 struct ParticleFragment {
@@ -217,8 +221,23 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
         colour.a*=clamp(difference/material.depth_fade_lookup.x,0.0,1.0);
     }
+    var lighting_normal=normal;
+    if material.normal_options.x!=0u {
+        let uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
+        var xy=textureSample(particle_bump,particle_surface_anisotropic,uv).xy;
+        if material.normal_options.y!=0u {
+            xy+=textureSample(particle_detail_bump,particle_surface_anisotropic,
+                uv*material.detail_normal.x).xy*material.detail_normal.y;
+        }
+        let ts=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
+        let tangent=normalize(input.world_tangent);
+        // 1fbfd0/1fc0d0 publish identity render-root matrices and clear
+        // +1c31 bit1. 319560 therefore supplies modelMtxInverted=+1;
+        // emitter/billboard determinant is not this shader parameter.
+        lighting_normal=normalize(ts.x*tangent+ts.y*cross(normal,tangent)+ts.z*normal);
+    }
     if material.surface_options.y!=0u {
-        var fresnel_normal=normal;
+        var fresnel_normal=lighting_normal;
         if material.surface_options.z!=0u {
             let uv=coordinates.xy*material.fresnel_uv.xy+material.fresnel_uv.zw;
             let xy=textureSample(particle_fresnel_normal,particle_trilinear,uv).xy;
@@ -266,14 +285,14 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let mapped=material_lighting_values(colour.rgb,roughness,metallic,
             specular,material.surface_map_options.z==0u,material.lighting_dielectric.rgb,material.lighting_metal_diffuse.rgb);
         let root=particle_root_lighting[input.lighting_record];
-        let reflection=particle_lq_reflection(input.world_position,normal,view_direction,
+        let reflection=particle_lq_reflection(input.world_position,lighting_normal,view_direction,
             roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);
         albedo*=1.0/3.14159265358979323846;
         lit_colour=albedo*input.indirect_irradiance+min(vec3(250.0),reflection);
         if material.animation_options.w>=3u {
             let tangent=normalize(input.world_tangent);
             let basis=particle_hl2_basis(tangent,cross(normal,tangent),normal);
-            let weights=particle_basis_weights(basis,normal);
+            let weights=particle_basis_weights(basis,mix(lighting_normal,normal,0.5));
             lit_colour+=albedo*(input.light_basis_x*weights.x+input.light_basis_y*weights.y+input.light_basis_z*weights.z);
         }
     } else {
