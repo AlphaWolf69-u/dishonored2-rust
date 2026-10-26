@@ -108,6 +108,30 @@ impl Parameters {
         if frames == 0 { Ok(None) } else { super::delay::Delay::new(frames).map(Some) }
     }
 
+    /// Four input diffusion stages, allocated by 14116ef80. The milliseconds
+    /// distribution and odd-length search are 14116dbf0/14116de60.
+    pub fn input_diffusers(&self, sample_rate: u32) -> Result<[super::delay::AllPass; 4], String> {
+        let mut seed = 0x002e_e007u32;
+        let mut base = self.tuning[6];
+        let mut times = [0.0; 4];
+        for time in &mut times {
+            seed = seed.wrapping_mul(0x0bb3_8435).wrapping_add(0x3619_636b);
+            *time = self.tuning[7] * 0.01 * base * seed as f32 * f32::from_bits(0x2f800000) + base;
+            base = base * self.tuning[5] * 0.01;
+        }
+        if times.iter().any(|time| !time.is_finite()) { return Err("non-finite reverb diffusion delay distribution".into()); }
+        times.sort_by(|a, b| if a < b { std::cmp::Ordering::Less } else if b < a { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Equal });
+        let lengths = odd_lengths(&times, sample_rate);
+        let maximum = f32::from_bits(0x3f1e3737);
+        let mut stages = Vec::new();
+        for (index, length) in lengths.into_iter().enumerate() {
+            let coefficient = self.diffusion * 0.01 * maximum * 4.0 - (3 - index) as f32 * maximum;
+            let coefficient = if coefficient <= 0.0 { 0.0 } else if maximum <= coefficient { maximum } else { coefficient };
+            stages.push(super::delay::AllPass::new(length, coefficient)?);
+        }
+        stages.try_into().map_err(|_| "reverb input diffusion stage count differs from four".into())
+    }
+
     pub fn read(bytes: &[u8]) -> Result<Self, String> {
         if bytes.is_empty() { return Ok(Self::default()); }
         if bytes.len() != 186 { return Err(format!("room reverb parameters require 186 bytes, got {}", bytes.len())); }
@@ -173,4 +197,29 @@ impl Parameters {
         else { self.rtpc_dirty = true; }
         Ok(())
     }
+}
+
+/// The divisor bound is computed once from the initial odd candidate and
+/// stays fixed during retries. Only the immediately previous length is
+/// excluded. In particular the original accepts one; a generic next-prime
+/// routine would change these low-length cases.
+fn odd_lengths(times: &[f32], sample_rate: u32) -> Vec<u32> {
+    let mut output = Vec::with_capacity(times.len());
+    for &time in times {
+        let mut candidate = crate::float::truncate_i64(time * 0.001 * sample_rate as f32) as u32;
+        if candidate & 1 == 0 { candidate = candidate.wrapping_add(1); }
+        let limit = (f64::from(candidate).sqrt() as i32) + 1;
+        loop {
+            let mut divisor = 3u32;
+            let mut divisible = false;
+            while (divisor as i32) < limit {
+                if candidate % divisor == 0 { divisible = true; break; }
+                divisor += 2;
+            }
+            if !divisible && output.last().copied() != Some(candidate) { break; }
+            candidate = candidate.wrapping_add(2);
+        }
+        output.push(candidate);
+    }
+    output
 }
