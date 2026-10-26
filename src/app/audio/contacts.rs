@@ -15,6 +15,7 @@ struct Sound {
     start: TimedEvent,
 }
 struct Group {
+    location: fx::EffectGroupLocation,
     timing: EffectTimingRanges,
     sounds: Vec<Sound>,
 }
@@ -71,9 +72,6 @@ impl Definitions {
             let Value::Scope(fields) = item else { return Err(format!("{effect}: invalid FX group")) };
             let group = fx::effect_group(fields)?;
             if !group.enabled { continue; }
-            if group.location != fx::EffectGroupLocation::Everywhere {
-                return Err(format!("{effect}: contact FX requires water-location evaluation"));
-            }
             let mut sounds = Vec::new();
             for sound in group.sounds {
                 if !sound.enabled || (sound.start.event.is_none() && sound.stop.event.is_none()) { continue; }
@@ -82,7 +80,7 @@ impl Definitions {
                 }
                 sounds.push(Sound { position: sound.position, start: self.event(&sound.start)? });
             }
-            groups.push(Group { timing: group.timings, sounds });
+            groups.push(Group { location: group.location, timing: group.timings, sounds });
         }
         let groups = Arc::new(groups);
         self.effects.insert(effect, groups.clone());
@@ -114,7 +112,8 @@ impl FromWorld for ContactSounds {
 }
 
 pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageReader<ContactSound>,
-    mut output: MessageWriter<SoundEvent>, clock: Res<ClockRuntime>, paused: Res<GamePaused>, playing: Query<&AudioTarget>)
+    mut output: MessageWriter<SoundEvent>, clock: Res<ClockRuntime>, paused: Res<GamePaused>, playing: Query<&AudioTarget>,
+    mut physics: Option<ResMut<crate::app::physics_scene::PhysicsScene>>)
 {
     if paused.0 || !clock.advanced() { return; }
     let Ok(clock) = clock.clock() else { return };
@@ -132,7 +131,21 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
         })();
         match prepared {
             Ok((groups, parameter)) => {
+                let mut in_water = None;
                 for group in groups.iter() {
+                    if group.location != fx::EffectGroupLocation::Everywhere {
+                        let water = in_water.get_or_insert_with(|| physics.as_mut()
+                            .ok_or_else(|| "contact FX water query has no physics world".to_owned())
+                            .and_then(|physics| physics.water_at(contact.position.to_array())));
+                        match water {
+                            Ok(water) if crate::gameplay::effects::groups::location_allowed(group.location, *water) => {},
+                            Ok(_) => continue,
+                            Err(error) => {
+                                if state.reported.insert(error.clone()) { warn!("Contact sound unavailable: {error}"); }
+                                continue;
+                            }
+                        }
+                    }
                     let offsets = sample_offsets(&group.timing, 0.0, &mut state.seed);
                     for sound in &group.sounds {
                         let position = sample_position(sound.position, &mut state.seed);

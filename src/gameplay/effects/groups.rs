@@ -4,6 +4,17 @@ use super::{
     timing::EffectTimingRanges,
 };
 
+/// 1408a7d30: the FX origin is classified by the game world's water-volume
+/// query. Timing and child random samples are consumed only after admission.
+pub fn location_allowed(location: crate::assets::fx::EffectGroupLocation, in_water: bool) -> bool {
+    use crate::assets::fx::EffectGroupLocation;
+    match location {
+        EffectGroupLocation::Everywhere => true,
+        EffectGroupLocation::OutOfWater => !in_water,
+        EffectGroupLocation::Underwater => in_water,
+    }
+}
+
 /// Group ranges are sampled in declaration order even if no child is admitted.
 /// 222f80 then adds the parent's start age to the delay offset alone.
 pub fn sample_offsets(ranges: &EffectTimingRanges, start: f32, seed: &mut u32) -> [f32; 4] {

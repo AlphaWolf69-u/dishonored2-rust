@@ -197,6 +197,20 @@ impl WorldStorage {
         })
     }
 
+    /// Execute an immediate query against the canonical published bodies/trees.
+    pub fn point_query<'a>(
+        &self,
+        executor: &mut WorldPointQuery,
+        request: &WorldPointRequest,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        contacts: &mut Vec<ShapePointContact>,
+    ) -> Result<(), String> {
+        executor.all_hits(&self.bodies, &self.broadphase.query_trees(), PointQuantization {
+            offset: self.quantization.offset[..3].try_into().unwrap(),
+            scale: self.quantization.inverse_scale[..3].try_into().unwrap(),
+        }, request.point, request.hit, request.filter, resolve, contacts)
+    }
+
     /// Resolve queued requests against these actual published bodies/trees.
     /// The resource callback resolves shape handles, never supplies contacts.
     pub fn resolve_point_queries<'a>(

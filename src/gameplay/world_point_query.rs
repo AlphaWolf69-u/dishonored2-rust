@@ -33,6 +33,13 @@ pub struct WorldPointRequest {
 }
 
 impl WorldPointRequest {
+    /// 852ff0's immediate water-volume query, also used by FX group admission.
+    pub fn water(point: [f32; 3]) -> Self {
+        let mut request = Self::environment(point);
+        request.filter = Some(CollisionQueryFilter { layers: 0x0040_0000, required_flags: 0 });
+        request
+    }
+
     /// 806c30 submits the active render view's camera point with only ordinary
     /// and water-trigger layers (410000), no required body flags, zero distance
     /// and the all-hits collector. 963b0 supplies the filter to shape traversal.
