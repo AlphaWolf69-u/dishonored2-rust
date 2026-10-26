@@ -59,6 +59,10 @@ struct ParticleMaterialParameters {
     pixel_parameters:vec4<f32>,
     emissive:vec4<f32>,
     emissive_clip:vec4<f32>,
+    pixel_effects:vec4<u32>,
+    fuzz:vec4<f32>,
+    translucency_phase:vec4<f32>,
+    translucency_ramp:array<vec4<f32>,3>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -84,6 +88,9 @@ struct ParticleMaterialParameters {
 @group(1) @binding(22) var particle_sheen:texture_2d<f32>;
 @group(1) @binding(23) var particle_emissive:texture_2d<f32>;
 @group(1) @binding(24) var particle_emissive_mask:texture_2d<f32>;
+@group(1) @binding(25) var particle_fuzz_mask:texture_2d<f32>;
+@group(1) @binding(26) var particle_translucency:texture_2d<f32>;
+@group(1) @binding(27) var particle_self_shadowed_bump:texture_2d<f32>;
 @group(1) @binding(18) var particle_surface_anisotropic:sampler;
 
 struct ParticleFragment {
@@ -335,10 +342,27 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
             if material.pixel_options.y!=0u {sheen=textureSample(particle_sheen,particle_trilinear,lighting_uv).x*2.0-1.0;}
             let surface=ward_surface(lighting_normal,view_direction,roughness,mapped.diffuse,
                 mapped.ior,sheen,material.pixel_parameters.y,mapped.fresnel_strength);
-            let lighting=particle_pixel_lights(surface,input.world_position,normal,input.position);
+            var fuzz_mask=1.0;
+            if material.pixel_effects.y!=0u {fuzz_mask=textureSample(particle_fuzz_mask,particle_bilinear,lighting_uv).x;}
+            var translucency=0.0;
+            if material.pixel_effects.z!=0u {
+                // INIT_PIXELCONTEXT's vertex colour is the legacy_color
+                // export from GetParticleColor, before fragment opacity fades.
+                translucency=input.colour.a;
+                if material.pixel_effects.w==0u {translucency=textureSample(particle_translucency,particle_surface_anisotropic,lighting_uv).x;}
+            }
+            var occlusion=vec4(1.0);
+            if material.pixel_parameters.z!=0.0 {
+                occlusion=textureSample(particle_self_shadowed_bump,particle_surface_anisotropic,lighting_uv).wxyz;
+            }
+            let self_shadow=ParticleSelfShadow(occlusion,particle_hl2_basis(tangent,cross(normal,tangent),normal),normal);
+            let lighting=particle_pixel_lights(surface,input.world_position,normal,input.position,translucency,fuzz_mask,self_shadow);
             var specular_colour=lighting.specular+particle_hq_reflection(input.world_position,lighting_normal,
-                view_direction,roughness*roughness,mapped.reflectance,root[0].w,input.reflection_gain);
-            if colour.a>0.01569 {specular_colour/=colour.a;}
+                view_direction,roughness*roughness,mapped.reflectance,root[0].w,input.reflection_gain,self_shadow);
+            // HQ_FetchGloss sets pixelCtx.diffuseAlbedo.a to1 after reading
+            // gloss from it. The outer add_default opacity remains separate.
+            let specular_alpha=select(colour.a,1.0,material.lighting_parameters.w!=0.0);
+            if specular_alpha>0.01569 {specular_colour/=specular_alpha;}
             var emissive=material.emissive.rgb;
             if material.pixel_options.z!=0u {emissive=textureSample(particle_emissive,particle_surface_anisotropic,lighting_uv).rgb;}
             if material.pixel_options.w!=0u {

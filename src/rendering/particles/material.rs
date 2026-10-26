@@ -76,12 +76,24 @@ pub struct ParticleLightingMaterial {
 }
 
 pub struct ParticlePixelMaterial {
+    pub self_shadowed_bump: bool,
+    pub fuzz: Option<[f32; 2]>,
+    pub fuzz_mask: bool,
+    pub translucency: Option<ParticleTranslucencyMaterial>,
     pub sheen: [f32; 2],
     /// Diffuse lookup, sheen, emissive and emissive-mask texture reads.
     pub maps: [bool; 4],
     pub emissive: [f32; 4],
     pub emissive_clip: [f32; 2],
     pub exposure_emissive: bool,
+}
+
+pub struct ParticleTranslucencyMaterial {
+    pub vertex_alpha: bool,
+    /// Distortion, power, intensity and minimum ramp position.
+    pub phase: [f32; 4],
+    /// Inner, medium and outer colours; inner.w carries the ramp scale.
+    pub ramp: [[f32; 4]; 3],
 }
 
 pub struct ParticleMaterial {
@@ -272,16 +284,54 @@ impl ParticleMaterial {
                 ) {
                     return Err("opaque particle pixel-lighting inputs are not connected".into());
                 }
-                for name in [
-                    "fuzz/enable",
-                    "translucency/enable",
-                    "translucency_hq/enable",
-                    "useSelfShadowedBumpMap",
+                let self_shadowed_bump = read_option("useSelfShadowedBumpMap")? != 0;
+                let fuzz = if read_option("fuzz/enable")? != 0 {
+                    Some([
+                        scopes.vector("fuzz/fresnel")?[0],
+                        scopes.vector("fuzz/intensity")?[0],
+                    ])
+                } else {
+                    None
+                };
+                let fuzz_mask = fuzz.is_some() && read_option("fuzz/hasMask")? != 0;
+                let translucency = if read_option("translucency/enable")? != 0 {
+                    let mut ramp = [
+                        scopes.vector("translucency/ramp/innerColor")?,
+                        scopes.vector("translucency/ramp/mediumColor")?,
+                        scopes.vector("translucency/ramp/outerColor")?,
+                    ];
+                    ramp[0][3] = scopes.vector("translucency/scale")?[0];
+                    Some(ParticleTranslucencyMaterial {
+                        vertex_alpha: read_option("translucencyUseVertexColor")? != 0,
+                        phase: [
+                            scopes.vector("translucency/distortion")?[0],
+                            scopes.vector("translucency/power")?[0],
+                            scopes.vector("translucency/intensity")?[0],
+                            scopes.vector("translucency/min")?[0],
+                        ],
+                        ramp,
+                    })
+                } else {
+                    None
+                };
+                // BRDF_particles includes standard Ward; translucency_hq only
+                // executes in BRDF_skin, independently of this material flag.
+                for (image, enabled) in [
+                    ("selfShadowedBumpMap", self_shadowed_bump),
+                    ("fuzz/mask", fuzz_mask),
+                    (
+                        "translucencyMap",
+                        translucency.as_ref().is_some_and(|t| !t.vertex_alpha),
+                    ),
                 ] {
-                    if read_option(name)? != 0 {
-                        return Err(format!(
-                            "particle pixel-lighting input {name} is not connected"
-                        ));
+                    if enabled {
+                        images.insert(
+                            image.to_ascii_lowercase(),
+                            Arc::new(crate::material::load_2d_image(
+                                catalog,
+                                &scopes.image_source(image)?,
+                            )?),
+                        );
                     }
                 }
                 let maps = [
@@ -312,6 +362,10 @@ impl ParticleMaterial {
                 let colour = scopes.vector("emissiveColorConstant")?;
                 let clip = scopes.vector("emissiveClipParms")?;
                 Some(ParticlePixelMaterial {
+                    self_shadowed_bump,
+                    fuzz,
+                    fuzz_mask,
+                    translucency,
                     sheen: [
                         scopes.vector("sheen")?[0],
                         scopes.vector("sheenImportance")?[0],

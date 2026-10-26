@@ -75,6 +75,10 @@ struct MaterialParameters {
     pixel_parameters: Vec4,
     emissive: Vec4,
     emissive_clip: Vec4,
+    pixel_effects: UVec4,
+    fuzz: Vec4,
+    translucency_phase: Vec4,
+    translucency_ramp: [Vec4; 3],
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -128,8 +132,14 @@ impl MaterialParameters {
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
         Ok(Self {
+            pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
+                u32::from(p.fuzz.is_some()), u32::from(p.fuzz_mask), u32::from(p.translucency.is_some()),
+                u32::from(p.translucency.as_ref().is_some_and(|t| t.vertex_alpha)))),
+            fuzz: pixel.and_then(|p| p.fuzz).map_or(Vec4::ZERO, |f| Vec4::new(f[0], f[1], 0., 0.)),
+            translucency_phase: pixel.and_then(|p| p.translucency.as_ref()).map_or(Vec4::ZERO, |t| Vec4::from_array(t.phase)),
+            translucency_ramp: pixel.and_then(|p| p.translucency.as_ref()).map_or([Vec4::ZERO; 3], |t| t.ramp.map(Vec4::from_array)),
             pixel_options: pixel.map_or(UVec4::ZERO, |p| UVec4::from_array(p.maps.map(u32::from))),
-            pixel_parameters: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.sheen[0], p.sheen[1], 0., 0.)),
+            pixel_parameters: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.sheen[0], p.sheen[1], u32::from(p.self_shadowed_bump) as f32, 0.)),
             emissive: pixel.map_or(Vec4::ZERO, |p| Vec4::from_array(p.emissive)),
             emissive_clip: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.emissive_clip[0], p.emissive_clip[1], u32::from(p.exposure_emissive) as f32, 0.)),
             alpha_test: scalar("particleAlphaTest")?,
@@ -157,7 +167,8 @@ impl MaterialParameters {
             shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
                 // Supported pixel particles are isAlpha, hence direct parallel
                 // receiving and neutral AO (2d5210 / lightContext).
-                UVec4::new(light.shadow_flags | 16, light.shadow_filtering as u32, 1, 0)
+                let clouds = light.pixel.as_ref().is_none_or(|p| p.translucency.is_none());
+                UVec4::new(light.shadow_flags | (u32::from(clouds) << 4), light.shadow_filtering as u32, 1, 0)
             }),
             lighting_parameters: source.lighting.as_ref().map_or(Vec4::ZERO, |light| {
                 Vec4::new(
@@ -433,7 +444,7 @@ impl ParticlePass {
                         .chain(10..=13)
                         .chain(15..=17)
                         .chain(19..=20)
-                        .chain(21..=24)
+                        .chain(21..=27)
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
                 .chain((6..=8).chain([14, 18]).map(sampler_entry))
@@ -884,6 +895,9 @@ impl ParticlePass {
                 BindGroupEntry { binding: 22, resource: BindingResource::TextureView(views.get("sheenmap").unwrap_or(opacity)) },
                 BindGroupEntry { binding: 23, resource: BindingResource::TextureView(views.get("emissivemap").unwrap_or(opacity)) },
                 BindGroupEntry { binding: 24, resource: BindingResource::TextureView(views.get("emissivemaskmap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 25, resource: BindingResource::TextureView(views.get("fuzz/mask").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 26, resource: BindingResource::TextureView(views.get("translucencymap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 27, resource: BindingResource::TextureView(views.get("selfshadowedbumpmap").unwrap_or(opacity)) },
                 BindGroupEntry {
                     binding: 14,
                     resource: BindingResource::Sampler(&self.bilinear),
@@ -1035,7 +1049,8 @@ impl ParticlePass {
                     .lighting
                     .as_ref()
                     .is_some_and(|light| light.bump || light.maps[1] || light.maps[2]
-                        || light.pixel.as_ref().is_some_and(|p| p.maps[2] || p.maps[3]))
+                        || light.pixel.as_ref().is_some_and(|p| p.self_shadowed_bump || p.maps[2] || p.maps[3]
+                            || p.translucency.as_ref().is_some_and(|t| !t.vertex_alpha)))
             })
         {
             return Err("particle surface maps await the canonical anisotropic sampler".into());

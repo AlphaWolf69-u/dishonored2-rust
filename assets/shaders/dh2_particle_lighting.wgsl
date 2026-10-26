@@ -91,8 +91,22 @@ fn particle_vertex_lights(position:vec3<f32>,normal:vec3<f32>,basis:mat3x3<f32>,
     return colours;
 }
 
+struct ParticleSelfShadow {
+    // Native HQ_ComputeAO swizzles the texture's alpha before its RGB weights.
+    occlusion:vec4<f32>,
+    basis:mat3x3<f32>,
+    normal:vec3<f32>,
+}
+fn particle_directional_occlusion(direction:vec3<f32>,surface:ParticleSelfShadow)->f32 {
+    if particle_material.pixel_parameters.z==0.0 {return 1.0;}
+    let weights=particle_basis_weights(surface.basis,direction);
+    let occlusion=dot(surface.occlusion.yzw,weights);
+    let verticality=pow(shadow_saturate(dot(direction,surface.normal)),mix(1.0,8.0,surface.occlusion.x*surface.occlusion.x));
+    // ComputeDirectionalOcclusion deliberately does not saturate this sum.
+    return mix(occlusion,1.0,verticality);
+}
 fn particle_hq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec3<f32>,
-    roughness:f32,f0:vec3<f32>,cube:f32,gain:f32)->vec3<f32> {
+    roughness:f32,f0:vec3<f32>,cube:f32,gain:f32,self_shadow:ParticleSelfShadow)->vec3<f32> {
     let light=normalize(mix(reflect(-view_direction,normal),normal,roughness));
     let aperture=0.0003474660443456835+roughness*(1.3331290497744692-roughness*0.5040552688878546);
     let mip=6.0*sqrt(aperture/0.834);
@@ -100,17 +114,51 @@ fn particle_hq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec
     let index=select(count-1u,u32(max(0.0,cube)),cube>=0.0 && cube<f32(count));
     let brdf=integrated_ward(shadow_saturate(dot(view_direction,normal)),roughness);
     let bounce=mix(gain,1.0,dot(vec3(0.2126,0.7152,0.0722),f0));
-    return reflection_radiance(position,light,index,mip)*bounce*(f0*brdf.x+brdf.y*(1.0-roughness*roughness));
+    return reflection_radiance(position,light,index,mip)*particle_directional_occlusion(light,self_shadow)*bounce*(f0*brdf.x+brdf.y*(1.0-roughness*roughness));
 }
-fn particle_pixel_ward(surface:WardSurface,light:WardLight)->DirectLighting {
+fn particle_translucency_term(weight:f32,irradiance:vec3<f32>,normal:vec3<f32>,light:vec3<f32>,view:vec3<f32>)->vec3<f32> {
+    let parameters=particle_material.translucency_phase;
+    let bent=light+parameters.x*normal;
+    let phase=exp2(shadow_saturate(-dot(view,bent))*parameters.y-parameters.y);
+    let intensity=parameters.z*weight*irradiance;
+    let maximum=max(max(intensity.x,intensity.y),intensity.z);
+    let t=parameters.w+particle_material.translucency_ramp[0].w*maximum*phase;
+    let outer=mix(particle_material.translucency_ramp[2].rgb,vec3(1.0),shadow_saturate((t-0.9)/0.1));
+    let medium=mix(particle_material.translucency_ramp[1].rgb,outer,shadow_saturate((t-0.7)/0.2));
+    let inner=mix(particle_material.translucency_ramp[0].rgb,medium,shadow_saturate((t-0.4)/0.3));
+    return intensity*mix(vec3(0.0),inner,shadow_saturate(t/0.4));
+}
+fn particle_pixel_ward(surface:WardSurface,light:WardLight,geometric_normal:vec3<f32>,translucency:f32,fuzz_mask:f32)->DirectLighting {
+    var result:DirectLighting;
     if particle_material.pixel_options.x!=0u {
         let lookup=textureSampleLevel(particle_diffuse_lookup,linear_clamp,
             vec2(shadow_saturate(dot(light.direction,surface.normal)),0.0),0.0).rgb;
-        return ward_direct_lookup(surface,light,lookup);
+        result=ward_direct_lookup(surface,light,lookup);
+    } else {result=ward_direct(surface,light);}
+    if light.attenuation>0.0 {
+        let irradiance=light.shadow*(light.attenuation*light.color);
+        if particle_material.pixel_effects.x!=0u {
+            let vn=shadow_saturate(dot(surface.view,surface.normal));
+            let ln=shadow_saturate(dot(light.direction,surface.normal));
+            let fuzz=pow(1.0-vn,particle_material.fuzz.x)*particle_material.fuzz.y*fuzz_mask;
+            result.specular+=irradiance*fuzz*ln;
+        }
+        if particle_material.pixel_effects.z!=0u {
+            let cosine=-dot(light.direction,geometric_normal);
+            let weight=smoothstep(-0.2,0.1,cosine)*translucency;
+            let transmitted=ward_fresnel(surface.ior,shadow_saturate(cosine),surface.fresnel_strength);
+            let halfway=normalize(surface.view+light.direction);
+            let hn=shadow_saturate(dot(halfway,surface.normal));
+            let m=shadow_saturate(1.0-hn);let m2=m*m;
+            let diffuse=mix(surface.diffuse,surface.sheen_color,surface.roughness*pow(m2*m2*m,surface.sheen_importance));
+            let rho=vec3(1.0)-(vec3(1.0)-transmitted)*diffuse;
+            result.diffuse+=(1.0/3.14159265358979323846)*rho*
+                particle_translucency_term(weight,irradiance,geometric_normal,light.direction,surface.view);
+        }
     }
-    return ward_direct(surface,light);
+    return result;
 }
-fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal:vec3<f32>,pixel:vec4<f32>)->DirectLighting {
+fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal:vec3<f32>,pixel:vec4<f32>,translucency:f32,fuzz_mask:f32,self_shadow:ParticleSelfShadow)->DirectLighting {
     // Reconstruct wsPositionHacked from the actual projected fragment, as
     // particles::Lighting does before IntegrateLighting(HIGH_QUALITY).
     let ndc=vec2(2.0*pixel.x/particle_view.exposure_extent.z-1.0,
@@ -123,7 +171,7 @@ fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal
         particle_material.shadow_options.y,2u);
     let directional=parallel_depth_visibility(host_hacked,host_normal,pixel.xy,route);
     var result=particle_pixel_ward(surface,WardLight(particle_view.sun_direction.xyz,1.0,
-        particle_view.sun_colour.rgb,directional,1.0));
+        particle_view.sun_colour.rgb,directional,1.0),geometric_normal,translucency,fuzz_mask);
     let kinds=array(1u,0u,2u,3u);
     for(var type_index=0u;type_index<4u;type_index++) {
         let kind=kinds[type_index];
@@ -135,8 +183,18 @@ fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal
             if kind==3u {
                 // The world-view collector331cc0 excludes area shadow sides.
                 // Its prepared packets carry the unshadowed FFFFFFFF setup.
-                let area=area_ward(surface,position,record,1.0,particle_area_pool,particle_trilinear);
-                result.diffuse+=area.diffuse;result.specular+=area.specular;
+                let visibility=particle_directional_occlusion(normalize(record.position-position),self_shadow);
+                let area=area_ward(surface,position,record,visibility,particle_area_pool,particle_trilinear);
+                result.diffuse+=area.lighting.diffuse;result.specular+=area.lighting.specular;
+                // BRDF_Ward's area method adds translucency, but no fuzz lobe.
+                if particle_material.pixel_effects.z!=0u {
+                    let cosine=-dot(area.direction,geometric_normal);
+                    let weight=smoothstep(-0.2,0.1,cosine)*translucency;
+                    let transmitted=ward_fresnel(surface.ior,shadow_saturate(cosine),surface.fresnel_strength);
+                    let rho=vec3(1.0)-(vec3(1.0)-transmitted)*surface.diffuse;
+                    result.diffuse+=(1.0/3.14159265358979323846)*rho*
+                        particle_translucency_term(weight,area.irradiance,geometric_normal,area.direction,surface.view);
+                }
             } else {
                 let delta=record.position-position;
                 let distance=length(delta);
@@ -149,8 +207,10 @@ fn particle_pixel_lights(surface:WardSurface,position:vec3<f32>,geometric_normal
                     if angle<=0.0 {attenuation=0.0;}
                     else {attenuation*=1.0-shadow_saturate(angle*record.spot.x+record.spot.y);}
                 }
-                let visibility=particle_local_shadow(record,kind,hacked,surface.normal,to_light,attenuation,2);
-                let lighting=particle_pixel_ward(surface,WardLight(to_light,attenuation,record.color,visibility,record.specular));
+                let visibility=particle_local_shadow(record,kind,hacked,surface.normal,to_light,attenuation,2)*
+                    particle_directional_occlusion(to_light,self_shadow);
+                let lighting=particle_pixel_ward(surface,WardLight(to_light,attenuation,record.color,visibility,record.specular),
+                    geometric_normal,translucency,fuzz_mask);
                 result.diffuse+=lighting.diffuse;result.specular+=lighting.specular;
             }
         }

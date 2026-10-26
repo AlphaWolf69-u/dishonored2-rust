@@ -1,6 +1,7 @@
 // areaLight's rectangular portal clipping, projected lobes and Ward integral.
 // Coordinates and TiledLightRecord fields remain in game world units.
 struct AreaLobe { bounds:vec4<f32>, solid_angle:f32, }
+struct AreaLighting { lighting:DirectLighting, direction:vec3<f32>, irradiance:vec3<f32>, }
 
 fn area_rectangle_solid_angle(position:vec3<f32>,bounds:vec4<f32>)->f32 {
     let closest=clamp(position.xy,bounds.xy,bounds.zw);
@@ -78,10 +79,10 @@ fn area_sample(pool:texture_2d_array<f32>,trilinear:sampler,bounds:vec4<f32>,siz
     return attenuation*colour;
 }
 fn area_ward(surface:WardSurface,position:vec3<f32>,record:TiledLightRecord,visibility:f32,
-    pool:texture_2d_array<f32>,trilinear:sampler)->DirectLighting {
+    pool:texture_2d_array<f32>,trilinear:sampler)->AreaLighting {
     var result=DirectLighting(vec3(0.0),vec3(0.0));
     let delta=position-record.position;
-    if !(dot(delta,record.direction)>0.0 && visibility>0.0) {return result;}
+    if !(dot(delta,record.direction)>0.0 && visibility>0.0) {return AreaLighting(result,vec3(0.0),vec3(0.0));}
     let x=record.axis;let z=record.direction;let y=cross(z,x);
     let local=vec3(dot(delta,x),dot(delta,y),dot(delta,z));
     let n=vec3(dot(surface.normal,x),dot(surface.normal,y),dot(surface.normal,z));
@@ -89,7 +90,7 @@ fn area_ward(surface:WardSurface,position:vec3<f32>,record:TiledLightRecord,visi
     let v=vec3(dot(reflection,x),dot(reflection,y),dot(reflection,z));
     let size=vec2(record.decay,record.origin_offset);
     let bounds=area_clip_bounds(local,n,size);
-    if !all(bounds.zw-bounds.xy>vec2(1e-4)) {return result;}
+    if !all(bounds.zw-bounds.xy>vec2(1e-4)) {return AreaLighting(result,vec3(0.0),vec3(0.0));}
     let solid=area_rectangle_solid_angle(local,bounds);
     let center=0.5*(bounds.xy+bounds.zw);
     let light=normalize(center.x*x+center.y*y-delta);
@@ -107,5 +108,5 @@ fn area_ward(surface:WardSurface,position:vec3<f32>,record:TiledLightRecord,visi
     let brdf=integrated_ward(shadow_saturate(dot(surface.view,surface.normal)),roughness);
     let integral=ratio*ratio*brdf.x*specular.solid_angle+(1.0-roughness*roughness)*brdf.y;
     result.specular=colour*specular_irradiance*integral*0.08;
-    return result;
+    return AreaLighting(result,light,colour*diffuse_irradiance);
 }
