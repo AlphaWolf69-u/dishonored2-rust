@@ -120,12 +120,44 @@ impl ParticleClipping {
     }
 }
 
+pub struct ParticleDistance {
+    pub alpha: crate::gameplay::effects::curve::EffectFloatCurve,
+    pub size: crate::gameplay::effects::curve::EffectFloatCurve,
+}
+impl Default for ParticleDistance {
+    /// 1c1720 -> 1c4050, after00d0b0 initializes tangent mode4.
+    fn default() -> Self {
+        let unit = || crate::gameplay::effects::curve::EffectFloatCurve {
+            times: vec![0.],
+            values: vec![0., 1., 0.],
+        };
+        Self {
+            alpha: unit(),
+            size: unit(),
+        }
+    }
+}
+impl ParticleDistance {
+    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            let target = match name.as_str() {
+                "m_alpha" => &mut self.alpha,
+                "m_size" => &mut self.size,
+                _ => return Err(format!("unknown particle distance field {name}")),
+            };
+            curve(target, scope(value)?)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
     pub visibility: ParticleVisibility,
     pub underwater: bool,
     pub handle_seen_from_underwater: bool,
     pub clipping: ParticleClipping,
+    pub distance: ParticleDistance,
     pub stages: Vec<ParticleStageAsset>,
 }
 
@@ -137,6 +169,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_underwater" => result.underwater = boolean(value)?,
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
+            "m_distance" => result.distance.edit(scope(value)?)?,
             "m_stages" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

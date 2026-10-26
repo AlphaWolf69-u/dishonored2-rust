@@ -24,6 +24,17 @@ pub struct WorldEffectDefinition {
     pub groups: Vec<WorldEffectGroup>,
 }
 
+/// FX arrays retain constructor defaults for slots omitted by partial edits.
+/// Reuse the shared descriptor-array decoder rather than enumerate only the
+/// serialized item records and lose default groups or enabled descriptors.
+pub(crate) fn descriptor_fields(
+    fields: &[(String, Value)],
+) -> Result<Vec<Vec<(String, Value)>>, String> {
+    let mut items = Vec::new();
+    crate::assets::fx::descriptor_list(&mut items, fields, |fields| Ok(fields.to_vec()))?;
+    Ok(items)
+}
+
 #[derive(Default)]
 pub struct WorldFxSources {
     pub effects: HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
@@ -58,29 +69,20 @@ impl WorldFxSources {
                     }
                     let fields = fields?;
                     let mut groups = Vec::new();
-                    for group in scope(&fields, "m_groups").into_iter().flat_map(list_items) {
-                        let Value::Scope(fields) = group else {
-                            return Err(format!("{name}: FX group requires a scope"));
-                        };
+                    let group_fields =
+                        descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
+                    for fields in &group_fields {
                         let asset = crate::assets::fx::effect_group(fields)?;
                         if !asset.enabled {
                             continue;
                         }
-                        let particles = scope(fields, "m_particleSystems")
-                            .into_iter()
-                            .flat_map(list_items)
-                            .filter(|entry| match entry {
-                                Value::Scope(fields) => atom(fields, "m_enabled") != Some("false"),
-                                _ => true,
-                            })
-                            .map(|entry| match entry {
-                                Value::Scope(fields) => ParticleDefinition::load(
-                                    fields,
-                                    catalog,
-                                    library,
-                                    &mut materials,
-                                ),
-                                _ => Err("particle descriptor requires a scope".into()),
+                        let particle_fields =
+                            descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
+                        let particles = particle_fields
+                            .iter()
+                            .filter(|fields| atom(fields, "m_enabled") != Some("false"))
+                            .map(|fields| {
+                                ParticleDefinition::load(fields, catalog, library, &mut materials)
                             })
                             .collect();
                         let other_families = fields
@@ -88,8 +90,11 @@ impl WorldFxSources {
                             .filter(|(field, value)| {
                                 field != "m_particleSystems"
                                     && matches!(value, Value::Scope(_))
-                                    && scope(fields, field)
-                                        .is_some_and(|entries| !list_items(entries).is_empty())
+                                    && scope(fields, field).is_some_and(|entries| {
+                                        !list_items(entries).is_empty()
+                                            || atom(entries, "num")
+                                                .is_some_and(|count| count != "0")
+                                    })
                             })
                             .cloned()
                             .collect();

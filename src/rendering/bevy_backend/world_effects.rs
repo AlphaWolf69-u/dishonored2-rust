@@ -6,15 +6,17 @@ use bevy::{prelude::Resource, render::extract_resource::ExtractResource};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[derive(Resource)]
-pub struct WorldEffectGraphs(pub Vec<crate::assets::entities::effects::FxGraph>);
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct WorldEffectGraphs(
+    pub Arc<Vec<crate::assets::entities::effects::FxGraph>>,
+    pub u64,
+);
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectSources(pub Arc<WorldFxSources>);
 
 struct EntityFrame {
     spawn: ReferenceFrame,
-    published: Option<ReferenceFrame>,
     parent: Option<FrameBinding>,
 }
 
@@ -26,9 +28,18 @@ struct FrameBinding {
 
 /// Pose publication includes non-rendered FX targets. This is not a second
 /// physics world: moving owners publish the same pose used by their geometry.
-#[derive(Resource, Default)]
+#[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectFrames {
-    entities: HashMap<String, EntityFrame>,
+    entities: Arc<HashMap<String, EntityFrame>>,
+    published: HashMap<String, ReferenceFrame>,
+    pub clock: Option<WorldFxClock>,
+}
+
+#[derive(Clone, Copy)]
+pub struct WorldFxClock {
+    pub time: f64,
+    pub delta: f32,
+    pub scale: f32,
 }
 
 impl WorldEffectFrames {
@@ -45,7 +56,6 @@ impl WorldEffectFrames {
                     entity.id.clone(),
                     EntityFrame {
                         spawn: crate::assets::entities::spawn_frame(entity)?,
-                        published: None,
                         parent: None,
                     },
                 ))
@@ -62,12 +72,28 @@ impl WorldEffectFrames {
                 });
             }
         }
-        Ok(Self { entities })
+        Ok(Self {
+            entities: Arc::new(entities),
+            published: HashMap::new(),
+            clock: None,
+        })
     }
 
-    pub fn publish(&mut self, entity: &str, frame: ReferenceFrame) {
-        if let Some(entry) = self.entities.get_mut(entity) {
-            entry.published = Some(frame);
+    pub fn publish_delta(&mut self, entity: &str, delta: [[f32; 4]; 3]) {
+        if let Some(entry) = self.entities.get(entity) {
+            // A blueprint mesh can have an authored offset from its entity.
+            // Apply the body's rigid delta to the ENTITY spawn frame, not to
+            // whichever render placement last published this entity name.
+            let delta = ReferenceFrame {
+                position: std::array::from_fn(|axis| delta[axis][3]),
+                basis: std::array::from_fn(|axis| {
+                    std::array::from_fn(|component| delta[component][axis])
+                }),
+            };
+            self.published.insert(
+                entity.to_owned(),
+                reference_frame::compose(delta, entry.spawn),
+            );
         }
     }
 
@@ -82,8 +108,8 @@ impl WorldEffectFrames {
             if !visited.insert(current) {
                 return Err(format!("FX reference-frame cycle at {current}"));
             }
-            if let Some(frame) = entry.published {
-                break frame;
+            if let Some(frame) = self.published.get(current) {
+                break *frame;
             }
             let Some(binding) = &entry.parent else {
                 break entry.spawn;

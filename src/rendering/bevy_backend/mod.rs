@@ -247,4 +247,8 @@ pub mod particle_pass;
 #[cfg(feature = "game")]
 pub(crate) mod particle_system;
 #[cfg(feature = "game")]
+pub(crate) mod particle_systems;
+#[cfg(feature = "game")]
 pub mod world_effects;
+#[cfg(feature = "game")]
+pub(crate) mod world_particle_state;

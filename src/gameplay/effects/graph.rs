@@ -105,6 +105,11 @@ impl FxGraphRuntime {
     pub fn set_named_value(&mut self, name: String, value: f32) {
         self.named.insert(name, value);
     }
+    /// The shared manager owns inter-graph ordering. Export append order so it
+    /// can process the resulting global stack, rather than drain each graph.
+    pub fn take_pending(&mut self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.pending)
+    }
     fn emit(&mut self, id: u32, name: &str) -> Result<(), String> {
         let node = self.node(id)?;
         let links = node

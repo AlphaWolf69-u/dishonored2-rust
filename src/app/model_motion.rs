@@ -133,7 +133,15 @@ pub(super) fn publish_model_poses(
     mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
     bound: Option<ResMut<BoundModels>>,
     mut effect_frames: Option<ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
+    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
 ) {
+    if let Some(frames) = effect_frames.as_mut() {
+        frames.clock = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| {
+            Some(crate::rendering::bevy_backend::world_effects::WorldFxClock {
+                time: clock.time(3)?, delta: clock.delta(2)?, scale: clock.rates(3)?[1],
+            })
+        });
+    }
     if let Some(mut bound) = bound {
         bound.propagate(&mut pending.0, &placements.0);
     }
@@ -200,10 +208,7 @@ pub(super) fn publish_model_poses(
             })
         });
         if let Some(frames) = effect_frames.as_mut() {
-            frames.publish(&placement.id, crate::gameplay::reference_frame::ReferenceFrame {
-                position: placement.position,
-                basis: placement.rotation,
-            });
+            frames.publish_delta(&placement.id, pose.delta);
         }
         let source = &mut models.0[binding.source];
         source.bounds = render_model::transformed_bounds(

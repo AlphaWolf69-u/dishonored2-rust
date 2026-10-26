@@ -1,6 +1,6 @@
 //! CPU player FX lifecycle, separate from the retained GPU distortion passes.
 //! The view owner supplies its actual underwater state and camera publication.
-use super::super::particle_system::ParticleSystem;
+use super::super::particle_systems::ParticleSystems;
 use super::{sources, PlayingQuad, QuadDraw, ScreenEffectSources};
 use crate::{
     assets::fx::screen_quad::ScreenQuadStage,
@@ -8,103 +8,36 @@ use crate::{
 };
 use bevy::prelude::{info, warn};
 
-struct ScreenParticle {
-    leaving: bool,
-    system: ParticleSystem,
-}
-
-#[derive(Default)]
 pub(crate) struct ScreenEffectState {
     underwater: bool,
     age: f32,
-    seed: u32,
     frame: Option<u32>,
     quads: Vec<PlayingQuad>,
-    particles: Vec<ScreenParticle>,
-    query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
-    ray: crate::gameplay::world_ray_query::WorldRayQuery,
+    particle_heads: [u16; 2],
+}
+impl Default for ScreenEffectState {
+    fn default() -> Self {
+        Self {
+            underwater: false,
+            age: 0.,
+            frame: None,
+            quads: Vec::new(),
+            particle_heads: [u16::MAX; 2],
+        }
+    }
 }
 impl ScreenEffectState {
-    pub(crate) fn particle_capacity(&self) -> (usize, usize) {
-        let mut instances = 0;
-        let mut draws = 0;
-        for ScreenParticle {
-            system: particle, ..
-        } in &self.particles
-        {
-            for stage in &particle.stages {
-                let sprites = stage.declaration.stages[stage.index]
-                    .sprites
-                    .iter()
-                    .filter(|sprite| sprite.enabled && sprite.material.is_some())
-                    .count();
-                instances += stage.particles.capacity() * sprites;
-                draws += sprites;
-            }
-        }
-        (instances, draws)
-    }
-
-    pub(crate) fn publish_particle_draws<'a>(
-        &self,
-        frame: u32,
-        mut context: impl FnMut(
-            crate::gameplay::reference_frame::ReferenceFrame,
-        ) -> Result<super::ParticleDrawContext<'a>, String>,
-    ) -> Result<Vec<super::super::particle_pass::ParticleDraw>, String> {
-        let mut draws = Vec::new();
-        for ScreenParticle {
-            system: particle, ..
-        } in &self.particles
-        {
-            if let Some(pose) = particle.draw_pose(frame) {
-                particle.publish_draws(frame, context(pose)?, &mut draws)?;
-            }
-        }
-        Ok(draws)
-    }
-
-    /// Execute against the physics publication for this exact view/frame.
-    /// Query failures remain explicit errors, never fabricated dry hits.
-    pub(crate) fn simulate_particles(
-        &mut self,
-        frame: u32,
-        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
-        ocean_height: Option<f32>,
-    ) -> Result<(), String> {
-        if self.particles.is_empty() {
-            return Ok(());
-        }
-        if self.query.is_none() {
-            self.query = Some(crate::gameplay::world_point_query::WorldPointQuery::new(
-                u32::MAX,
-            )?);
-        }
-        let query = self.query.as_mut().unwrap();
-        let ray = &mut self.ray;
-        let mut error = None;
-        for ScreenParticle {
-            system: particle, ..
-        } in &mut self.particles
-        {
-            let result = particle.simulate_in_world(frame, world, query, ray, ocean_height);
-            if let Err(failure) = result {
-                error.get_or_insert(failure);
-            }
-        }
-        error.map_or(Ok(()), Err)
-    }
-
     fn start(
         &mut self,
         definition: &sources::EffectDefinition,
         leaving: bool,
+        systems: &mut ParticleSystems,
     ) -> Result<(), String> {
         for group in &definition.groups {
             let offsets = crate::gameplay::effects::groups::sample_offsets(
                 &group.timing,
                 self.age,
-                &mut self.seed,
+                &mut systems.seed,
             );
             // 222f80 starts particle systems before the group's other families.
             for particle in &group.particles {
@@ -112,12 +45,14 @@ impl ScreenEffectState {
                     .as_ref()
                     .map_err(Clone::clone)
                     .and_then(|definition| {
-                        ParticleSystem::start(definition, offsets, &mut self.seed)
+                        systems.start(
+                            &mut self.particle_heads[usize::from(leaving)],
+                            definition,
+                            offsets,
+                        )
                     });
-                match result {
-                    Ok(Some(system)) => self.particles.push(ScreenParticle { leaving, system }),
-                    Ok(None) => {}
-                    Err(error) => warn!("Player particle FX unavailable: {error}"),
+                if let Err(error) = result {
+                    warn!("Player particle FX unavailable: {error}");
                 }
             }
             for quad in &group.quads {
@@ -129,7 +64,7 @@ impl ScreenEffectState {
                         quad.blend.clone(),
                         offsets,
                         1,
-                        &mut self.seed,
+                        &mut systems.seed,
                     )?,
                 });
             }
@@ -140,6 +75,7 @@ impl ScreenEffectState {
     pub(crate) fn advance(
         &mut self,
         sources: &ScreenEffectSources,
+        systems: &mut ParticleSystems,
         frame: u32,
         delta: f32,
         underwater: bool,
@@ -148,7 +84,6 @@ impl ScreenEffectState {
         if self.frame != Some(frame) {
             self.age += delta;
             self.quads.retain(|q| q.blend.active);
-            self.particles.retain(|p| p.system.effect.active);
             if underwater != self.underwater {
                 // Stop the opposite FX instance before starting its replacement.
                 for quad in &mut self.quads {
@@ -156,11 +91,7 @@ impl ScreenEffectState {
                         quad.blend.stop(self.age);
                     }
                 }
-                for particle in &mut self.particles {
-                    if particle.leaving == underwater {
-                        particle.system.effect.stop(self.age);
-                    }
-                }
+                systems.stop(self.particle_heads[usize::from(underwater)], self.age);
                 self.start(
                     if underwater {
                         &sources.underwater
@@ -168,24 +99,23 @@ impl ScreenEffectState {
                         &sources.leave_water
                     },
                     !underwater,
+                    systems,
                 )?;
                 self.underwater = underwater;
                 info!("Player screen distortion transition: underwater={underwater}");
             }
             for quad in &mut self.quads {
-                quad.blend.update(self.age, 1, &mut self.seed)?;
+                quad.blend.update(self.age, 1, &mut systems.seed)?;
             }
-            if !self.particles.is_empty() {
+            if self.particle_heads.iter().any(|head| *head != u16::MAX) {
                 let offset = crate::platform::console::shared()
                     .read()
                     .cvars
                     .float("pm_screenParticleOffset")
                     .ok_or("pm_screenParticleOffset is not registered")?;
-                for ScreenParticle {
-                    system: particle, ..
-                } in &mut self.particles
-                {
-                    particle.update(
+                for head in &mut self.particle_heads {
+                    systems.update(
+                        head,
                         self.age,
                         &crate::gameplay::effects::particle::ParticleEffectFrame {
                             owner: camera,
@@ -197,7 +127,6 @@ impl ScreenEffectState {
                             delta,
                         },
                         underwater,
-                        &mut self.seed,
                     )?;
                 }
             }

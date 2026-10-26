@@ -24,3 +24,4 @@ pub mod world_mesh;
 
 pub(crate) mod executable;
 pub(crate) mod physics_material;
+pub mod particle_model;

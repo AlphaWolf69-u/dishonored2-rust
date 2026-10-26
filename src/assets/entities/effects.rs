@@ -74,6 +74,7 @@ impl FxNodeParameters {
     }
 }
 
+#[derive(Clone)]
 pub struct FxGraph {
     pub owner: String,
     pub nodes: Vec<Node>,

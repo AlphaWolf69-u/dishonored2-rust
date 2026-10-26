@@ -32,6 +32,8 @@ pub(super) struct CameraGpu {
     completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
     screen_state: super::screen_effects::ScreenEffectState,
+    particle_systems: super::particle_systems::ParticleSystems,
+    world_particles: super::world_particle_state::WorldParticleState,
     screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
     particles: Option<ParticleGpu>,
     screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
@@ -73,6 +75,14 @@ pub(super) fn register(app: &mut App) {
     >::default());
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
     app.init_resource::<super::world_effects::WorldEffectSources>();
+    app.init_resource::<super::world_effects::WorldEffectGraphs>();
+    app.init_resource::<super::world_effects::WorldEffectFrames>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_effects::WorldEffectGraphs,
+    >::default());
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_effects::WorldEffectFrames,
+    >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectSources,
     >::default());
@@ -143,7 +153,7 @@ fn render_particles(
         gpu.particles = None;
     }
     let result = (|| -> Result<(), String> {
-        let (instances, draw_capacity) = gpu.screen_state.particle_capacity();
+        let (instances, draw_capacity) = gpu.particle_systems.capacity();
         if instances == 0 || draw_capacity == 0 {
             return Ok(());
         }
@@ -181,8 +191,8 @@ fn render_particles(
         };
         let console = crate::platform::console::shared().read();
         let draws = gpu
-            .screen_state
-            .publish_particle_draws(water.matrices.frame, |pose| {
+            .particle_systems
+            .publish_draws(water.matrices.frame, |pose| {
                 Ok(super::screen_effects::ParticleDrawContext {
                     view: &sprite_view,
                     // This backend publishes a single logical gameplay origin.
@@ -283,7 +293,7 @@ fn render_particles(
             info!(
                 draws = draws.len(),
                 instances = draws.iter().map(|d| d.instances.len()).sum::<usize>(),
-                "Player particle colour submission active"
+                "Particle colour submission active"
             );
             *reported = true;
         }
@@ -292,7 +302,7 @@ fn render_particles(
     match result {
         Ok(()) => *last_error = None,
         Err(error) if last_error.as_ref() != Some(&error) => {
-            warn!("Player particle colour pending: {error}");
+            warn!("Particle colour pending: {error}");
             *last_error = Some(error);
         }
         Err(_) => {}
@@ -302,6 +312,9 @@ fn render_particles(
 /// Camera postprocessing consumes these commands without advancing it again.
 fn prepare_screen_effects(
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
+    world_sources: Res<super::world_effects::WorldEffectSources>,
+    world_graphs: Res<super::world_effects::WorldEffectGraphs>,
+    world_frames: Res<super::world_effects::WorldEffectFrames>,
     water: Res<WaterSceneFrame>,
     fog: Res<FogGpu>,
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
@@ -309,10 +322,13 @@ fn prepare_screen_effects(
     view: ViewQuery<&MainEntity>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
+    mut world_error: Local<Option<String>>,
 ) {
     let Some(water) = water.0.as_ref() else {
         gpu.screen_draws = None;
         gpu.screen_state = Default::default();
+        gpu.particle_systems = Default::default();
+        gpu.world_particles = Default::default();
         gpu.screen_sources = None;
         gpu.particles = None;
         return;
@@ -329,6 +345,8 @@ fn prepare_screen_effects(
     }
     let Some(sources) = sources.0.as_ref() else {
         gpu.screen_state = Default::default();
+        gpu.particle_systems = Default::default();
+        gpu.world_particles = Default::default();
         gpu.screen_sources = None;
         gpu.particles = None;
         return;
@@ -339,26 +357,43 @@ fn prepare_screen_effects(
         .is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources))
     {
         gpu.screen_state = Default::default();
+        gpu.particle_systems = Default::default();
+        gpu.world_particles = Default::default();
         gpu.particles = None;
         gpu.screen_sources = Some(sources.clone());
     }
     let underwater = fog
         .head_water_surface(water.camera, water.matrices.frame, water.head_water_surface)
         .is_some_and(|height| water.matrices.current.position[2] <= height);
-    let result = gpu.screen_state.advance(
+    let camera_frame = crate::gameplay::reference_frame::ReferenceFrame {
+        position: water.matrices.current.position,
+        basis: [
+            std::array::from_fn(|i| -water.matrices.current.view[2][i]),
+            std::array::from_fn(|i| -water.matrices.current.view[0][i]),
+            std::array::from_fn(|i| water.matrices.current.view[1][i]),
+        ],
+    };
+    let CameraGpu { screen_state, particle_systems, .. } = &mut *gpu;
+    let result = screen_state.advance(
         sources,
+        particle_systems,
         water.matrices.frame,
         water.delta_seconds,
         underwater,
-        crate::gameplay::reference_frame::ReferenceFrame {
-            position: water.matrices.current.position,
-            basis: [
-                std::array::from_fn(|i| -water.matrices.current.view[2][i]),
-                std::array::from_fn(|i| -water.matrices.current.view[0][i]),
-                std::array::from_fn(|i| water.matrices.current.view[1][i]),
-            ],
-        },
+        camera_frame,
     );
+    if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
+        let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
+        match world_particles.advance(&world_graphs,&world_sources.0,&world_frames,
+            particle_systems,water.matrices.frame,camera_frame,underwater,&inputs.world) {
+            Ok(()) => *world_error = None,
+            Err(error) if world_error.as_ref() != Some(&error) => {
+                warn!("World particle preparation pending: {error}");
+                *world_error = Some(error);
+            }
+            Err(_) => {},
+        }
+    }
     match result {
         Ok(draws) => {
             let simulation = queries
@@ -377,7 +412,7 @@ fn prepare_screen_effects(
                         })
                         .transpose()?
                         .flatten();
-                    gpu.screen_state.simulate_particles(
+                    gpu.particle_systems.simulate(
                         water.matrices.frame,
                         &q.world,
                         ocean_height,

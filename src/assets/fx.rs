@@ -102,7 +102,7 @@ fn bounds(pair: &mut [f32; 2], fields: &Fields) -> Result<(), String> {
     Ok(())
 }
 
-fn descriptor_list<T>(list: &mut Vec<T>, fields: &Fields, read: fn(&Fields) -> Result<T, String>) -> Result<(), String> {
+pub(crate) fn descriptor_list<T>(list: &mut Vec<T>, fields: &Fields, read: fn(&Fields) -> Result<T, String>) -> Result<(), String> {
     for (position, (name, value)) in fields.iter().enumerate() {
         if name == "num" {
             if position != 0 { return Err("FX descriptor count must precede its elements".into()); }

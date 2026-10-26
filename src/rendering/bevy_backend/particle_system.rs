@@ -69,11 +69,27 @@ impl ParticleSystem {
         let Some(first) = self.stages.first() else {
             return Ok(());
         };
+        let owner_scale = crate::float::multiply(
+            context.view.owner_scale,
+            first
+                .declaration
+                .distance
+                .size
+                .sample_visibility(context.camera.emitter_distance)?,
+        );
+        let alpha_scale = crate::float::multiply(
+            context.alpha_scale,
+            first
+                .declaration
+                .distance
+                .alpha
+                .sample_visibility(context.camera.emitter_distance)?,
+        );
         let receiver_bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
             &first.declaration.visibility,
             publication.pose,
-            context.view.owner_scale,
+            owner_scale,
         )?;
         let volumes = context
             .areas
@@ -105,6 +121,9 @@ impl ParticleSystem {
             camera_axes: context.camera.axes,
             custom_basis: publication.pose.basis,
             owner_colour: publication.colour,
+            // 1fda30 samples both curves at emitter-to-camera distance;
+            // 1ee9b0 consumes these as context+d0/d4 (system+1de0/1de4).
+            owner_scale,
             ..*context.view
         };
         for stage in &self.stages {
@@ -132,7 +151,7 @@ impl ParticleSystem {
                     transform,
                     &view,
                     context.query_visibility,
-                    context.alpha_scale,
+                    alpha_scale,
                     context.camera.admission_plane,
                     sprite.minimal_distance,
                     &mut instances,
@@ -176,16 +195,12 @@ impl ParticleSystem {
         Ok(())
     }
 
-    pub fn start(
+    pub fn start_selected(
         definition: &ParticleDefinition,
+        index: usize,
         offsets: [f32; 4],
         seed: &mut u32,
-    ) -> Result<Option<Self>, String> {
-        let Some(index) =
-            crate::gameplay::effects::parameters::reference_index(&definition.declarations, seed)
-        else {
-            return Ok(None);
-        };
+    ) -> Result<Self, String> {
         let declaration = definition.declarations[index].as_ref().unwrap();
         let visibility = &declaration.visibility;
         if visibility.always_visible
@@ -237,7 +252,7 @@ impl ParticleSystem {
                 }
             }
         }
-        Ok(Some(Self {
+        Ok(Self {
             effect,
             stages,
             materials: definition.materials.clone(),
@@ -248,7 +263,7 @@ impl ParticleSystem {
             source_velocity: [0.; 3],
             water_flags: 0,
             simulated_frame: None,
-        }))
+        })
     }
 
     /// 1fc170 considers both remaining emission and live particle storage.

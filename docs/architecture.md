@@ -698,8 +698,10 @@ following the installed dispatcher. The graph owner supplies random samples,
 named-variable bindings, actual entity clocks and effect allocation; missing
 bindings remain explicit errors. `effects/world_node.rs` handles instance-ID
 observers, start/stop ordering, timed expiry and saved remaining duration.
-These world graph pieces still need the application owner and renderer handoff;
-their presence does not imply world flames or smoke are already drawn.
+`world_particle_state.rs` connects these graphs to deferred component creation,
+FX instance ownership, group startup, completion observers and the common
+particle renderer. Ordinary events append in authored link order and execute
+newest-first, matching the installed event queue.
 
 Level startup parses world FX graphs into `WorldEffectGraphs` and prepares
 their installed declarations through `particles::world_sources`, sharing
@@ -711,8 +713,23 @@ receives shared declaration resources through ordinary resource extraction.
 actual allocation, target pose, velocity and completion callbacks remain host
 operations. `WorldEffectFrames` reuses the common entity spawn-frame reader
 and moving-model pose publication, including non-rendered bound targets.
-Unresolved tags and parents stay explicit errors. World FX manager activation
-and particle submission still need connecting before flames or smoke are visible.
+Unresolved tags and parents stay explicit errors. Main-world publication retains
+the actual group3 double time, group2 delta and group3 scale: the FX manager
+advances age by delta times scale rather than Bevy elapsed time.
+
+`ParticleSystems` owns the shared 1,024-slot particle-family pool for player and
+world instances, its random stream and canonical world query executors. Parents
+retain their linked-list heads; declaration selection precedes allocation and
+active chains update newest-first. Inactive systems retire before their next
+update. Both domains submit through the same `ParticlePass` and transparency
+targets. Prepared level graphs and authored entity frames share immutable
+storage across extraction; only actual moved-frame overrides are copied.
+The connected world path currently admits particle-only groups without an
+unavailable target/tag, spawn-occlusion or physics-velocity dependency. Other
+enabled FX families, parameter blocks, animated/lit particle material inputs and
+unsupported graph producers remain explicit errors. These are outstanding
+feature coverage, not replaced with another effect. Runtime and human appearance
+validation are still required; compilation alone does not establish parity.
 Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
 partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
 three components, independent pivot/rotation parameters and spawn-time RGBA8
