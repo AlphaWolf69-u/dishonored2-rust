@@ -12,6 +12,7 @@ pub mod controller;
 pub mod decls;
 pub mod midnight;
 pub mod physics;
+pub mod swimming;
 pub mod sensors;
 pub mod shape;
 pub mod simplex_solver;

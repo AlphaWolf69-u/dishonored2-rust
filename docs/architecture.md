@@ -2079,10 +2079,14 @@ exposure/bloom, independently of the camera motion-blur setting. It reuses the
 scalar FX envelope and the HDR storage bridge, with separate immutable uniforms
 for the two distortion resolves. No distortion passes run without active quads.
 The configured character supplies submerged and leave-water FX declarations.
-The debug camera consumes started water-component planes from its canonical
-head-position physics query; the swimming controller's five-point asynchronous
-wave query remains a separate, unconnected producer. F8 includes the actual
-distortion vector field and head-water surface for numeric diagnosis.
+Water contact is queried at the player's body independently of the render-view
+query. The debug camera reuses its established feet probe. Ocean contacts admit
+the swimming controller's five-point wave query, using the real displacement,
+collision-height, foam and authored masks. Four persistent readback slots map
+after queue submission; the controller consumes its retained handles in order.
+The head sample controls submersion; the five-point maximum is a distinct body
+surface value. `ark_player_follow_waves` gates submission. F8 includes both
+surfaces, the five samples and the actual distortion vector field.
 
 F8 numerical display captures include same-frame ocean displacement, gradients,
 persistent foam, shoreline foam depth, immutable refraction source and water

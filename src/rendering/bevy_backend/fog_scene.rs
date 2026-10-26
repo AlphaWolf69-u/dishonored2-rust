@@ -29,7 +29,7 @@ use bevy::{
         sync_world::MainEntity,
         texture::GpuImage,
         view::{ExtractedView, ViewDepthTexture, ViewTarget},
-        RenderApp,
+        RenderApp, Render, RenderSystems,
     },
 };
 
@@ -44,6 +44,7 @@ pub(super) fn register(app: &mut App) {
                     .in_set(Core3dSystems::MainPass).before(main_transparent_pass_3d),
             ),
         );
+        render.add_systems(Render,map_ocean_head_queries.in_set(RenderSystems::Cleanup));
     }
 }
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -89,6 +90,9 @@ pub(super) struct FogGpu {
     prepared_revision: Option<(Entity, u64)>,
 }
 impl FogGpu {
+    pub(super) fn head_water_surface(&self,camera:Entity,frame:u32,baseline:Option<f32>)->Option<f32> {
+        self.ocean_capture(camera,frame).and_then(|o|o.head_water_snapshot(frame)).map_or(baseline,|s|s.surface)
+    }
     pub(super) fn ocean_capture(&self, camera: Entity, frame: u32) -> Option<&super::ocean_scene::OceanScene> {
         if self.completed != Some((camera, frame)) { return None; }
         self.current.as_ref()?.ocean.as_ref()
@@ -103,6 +107,11 @@ impl FogGpu {
         if self.completed != Some((camera, frame)) { return None; }
         let view = self.current.as_ref()?;
         Some((view.water_depth.as_ref()?, &view.fog.targets.depth))
+    }
+}
+fn map_ocean_head_queries(mut gpu:ResMut<FogGpu>) {
+    if let Some(ocean)=gpu.current.as_mut().and_then(|v|v.ocean.as_mut()) {
+        if let Err(error)=ocean.map_head_queries() {warn!("Ocean head query readback failed: {error}");}
     }
 }
 #[derive(Default)]

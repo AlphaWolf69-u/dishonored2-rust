@@ -362,6 +362,8 @@ fn render_display(
                     if let Some(water) = &water_frame.0 {
                         details.push_str(&format!("ocean_settings={:?}\nwater_delta={} water_local_time={:?}\n", water.ocean_environment, water.delta_seconds, water.local_time));
                         details.push_str(&format!("head_water_surface={:?}\n", water.head_water_surface));
+                        details.push_str(&format!("head_wave_points={:?}\nhead_wave_query={:?}\n",water.head_wave_points,
+                            fog_gpu.ocean_capture(frame.camera,water.matrices.frame).and_then(|o|o.head_water_snapshot(water.matrices.frame))));
                     }
                     if let Err(error) = capture.record(
                         &capture_request,

@@ -23,6 +23,7 @@ pub struct EffectDefinition {
     pub groups: Vec<GroupDefinition>,
 }
 pub struct ScreenEffectSources {
+    pub swimming: crate::gameplay::player::swimming::SwimmingSettings,
     pub underwater: EffectDefinition,
     pub leave_water: EffectDefinition,
     pub materials: Vec<ScreenDistortionMaterial>,
@@ -125,6 +126,7 @@ impl ScreenEffectSources {
         // 326930's full-screen overwrite, distinct from the material's blend.
         resolve_state[0] = (resolve_state[0] & 0xffe0_0803) | 0x802;
         Ok(Self {
+            swimming:crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
             underwater,
             leave_water,
             materials,

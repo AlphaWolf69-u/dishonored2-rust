@@ -224,8 +224,7 @@ fn render_camera(
             .as_ref()
             .map_or_else(|| target.main_texture_view(), |w| w.destination);
         if let Some(sources) = screen_sources.0.as_deref() {
-            let underwater = water
-                .head_water_surface
+            let underwater = fog.head_water_surface(frame.camera,water.matrices.frame,water.head_water_surface)
                 .is_some_and(|height| water.matrices.current.position[2] <= height);
             gpu.screen_effects.record(
                 &device,

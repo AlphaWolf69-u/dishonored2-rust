@@ -324,7 +324,7 @@ pub(super) fn collision_report(
     let walker = player.player.as_ref().filter(|_| !player.debug_free_fly);
     let probe_feet = match walker {
         Some(walker) => super::game_to_view(walker.feet().to_array()),
-        None => camera.translation - Vec3::Y * 1.7,
+        None => camera.translation - Vec3::Y * super::controls::DEBUG_CAMERA_EYE_HEIGHT,
     };
     let collision_text = if let Some(world) = collision.as_ref() {
         use crate::gameplay::collision_filter::QueryFilter;
