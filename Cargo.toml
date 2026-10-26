@@ -28,7 +28,7 @@ swf = { version = "0.3.0", default-features = false }
 # Reuse Bevy/wgpu's existing logging facade to set its fast runtime level cap.
 log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }
-bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio"] }
+bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio", "wav"] }
 ww2ogg = "0.1.0"
 rand = "0.10.3"
 
