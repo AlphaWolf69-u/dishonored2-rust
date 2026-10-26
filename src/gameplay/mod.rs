@@ -1,6 +1,7 @@
 pub mod game_clock;
 pub mod effects;
 pub mod particles;
+pub mod sound;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
 pub mod navigation;

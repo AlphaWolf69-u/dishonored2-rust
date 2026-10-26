@@ -98,7 +98,14 @@ bodies each frame (per-placement meshes and shadow palettes).
 Entities with `bindInfo` follow their bind parent (140752900 attach,
 1407506d0 per frame): `app/model_motion.rs` gives bound children, transitively,
 the world delta of their nearest moved ancestor (machinery bodies, scene
-motion). Unrendered children (FX, sounds) have no consumer yet. A bound dynamic rigid body
+motion). Unrendered FX children have no consumer yet. Pause UI, jump, lean,
+and player Midnight SFX tracks use the installed language-neutral Wwise
+banks and Bevy audio. Midnight cues retain their body/arm owner, authored
+key times and interruption-stop flag. Barks and timed-event tracks remain
+unsupported. Wwise node and bus properties retain the authored mix and
+volume RTPC curves; global settings come from the initialization bank.
+Random/sequence selection retains each container's repetition limit and
+global or per-emitter scope. A bound dynamic rigid body
 also joins its parent's machinery motion (14080ac90 -> attachBodies, then the
 c90a90 mass rebuild), so e.g. a speaker's 10 kg hangs on its turnbuckle.
 
@@ -299,8 +306,8 @@ A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
 Not ported: hit-reaction camera additives, footsteps, hand
 equipment (the player moves unequipped), health, damage and death (falls
 never kill), arm and weapon midnight groups, breakable and NPC vault damage,
-window vaults, blink/grapple mantles, moving platforms, lean sounds and HUD
-labels, swimming, powers, impulses and moving or dynamic bodies.
+window vaults, blink/grapple mantles, moving platforms, HUD labels, swimming,
+powers, impulses and moving or dynamic bodies.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):

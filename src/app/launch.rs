@@ -934,6 +934,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
     app.add_plugins(auto_exposure::ExposurePlugin)
+        .add_plugins(super::audio::SoundPlugin)
         .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
         .add_plugins(super::alpha_depth_pass::AlphaDepthPassPlugin)
         .add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)

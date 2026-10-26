@@ -43,6 +43,9 @@ or a binding advances `Shared::generation`.
   `r_skipPostProcess` 0.
 - **Pause key:** the PAUSE binding is read from the shared bindings on each
   key press, so rebinding it applies at once.
+- **Audio:** installed Wwise source/ancestor gains, output-bus routing and
+  volume RTPC curves determine playback gain. Master, effects, speech,
+  music and video settings update the declared RTPCs and active playback.
 
 ## Not live yet
 
@@ -52,4 +55,4 @@ or a binding advances `Shared::generation`.
 - The tone-mapping colour cube's gating by `r_skipAutoExposure`,
   `r_skipPostProcess` and black-and-white mode (`r_BlackAndWhiteMode`
   selects the BWMode1 shader variant, not rendered yet).
-- Audio settings (no audio system yet), subtitles.
+- Subtitles are not rendered yet.

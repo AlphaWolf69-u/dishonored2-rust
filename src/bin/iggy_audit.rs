@@ -68,6 +68,36 @@ fn main() -> Result<(), String> {
     let resource = args.first().ok_or("usage: iggy-audit <resource> [--classes] [--ops] [--disassemble <class>]")?;
     let catalog = Catalog::open(&installation::game_base().map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
+    if resource == "--all-sounds" {
+        use dishonored2_rust::assets::iggy::timeline::Command;
+        let mut movies = 0usize;
+        let mut sounds = 0usize;
+        for path in catalog.paths_with_suffix(".iggy") {
+            let Some(bytes) = catalog.read(&path).map_err(|e| e.to_string())? else { continue };
+            let Ok(file) = IggyFile::parse(bytes) else { continue };
+            let Ok(movie) = file.movie() else { continue };
+            let mut timelines = vec![file.main_timeline().map_err(|e| e.to_string())?];
+            for id in 0..movie.character_count as usize {
+                if let Ok(Some(timeline)) = file.sprite(id) { timelines.push(timeline); }
+            }
+            let mut found = BTreeMap::<(u16, bool), usize>::new();
+            for timeline in &timelines {
+                for commands in timeline.frames() {
+                    for command in commands {
+                        if let Command::StartSound { character, stop, .. } = command {
+                            *found.entry((*character, *stop)).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            if found.is_empty() { continue; }
+            movies += 1;
+            sounds += found.values().sum::<usize>();
+            println!("{path}: {found:?}");
+        }
+        println!("{movies} movies, {sounds} StartSound timeline commands");
+        return Ok(());
+    }
     let bytes = catalog
         .read(resource)
         .map_err(|e| e.to_string())?
@@ -124,6 +154,23 @@ fn main() -> Result<(), String> {
         }
         println!("placement blends: {blends:?}");
         println!("placement filters: {filters:?}");
+    }
+    if args.iter().any(|a| a == "--sounds") {
+        use dishonored2_rust::assets::iggy::timeline::Command;
+        let mut timelines = vec![(None, file.main_timeline().map_err(|e| e.to_string())?)];
+        for i in 0..movie.character_count as usize {
+            if let Ok(Some(t)) = file.sprite(i) { timelines.push((Some(i), t)); }
+        }
+        for (sprite, timeline) in &timelines {
+            for (frame, commands) in timeline.frames().iter().enumerate() {
+                for command in commands.iter() {
+                    if let Command::StartSound { character, stop, no_multiple } = command {
+                        let kind = file.character_kind(*character as usize).map_err(|error| error.to_string())?;
+                        println!("sprite={sprite:?} frame={frame} character={character} kind={kind:?} stop={stop} no_multiple={no_multiple}");
+                    }
+                }
+            }
+        }
     }
     let Some(abc) = file.abc().map_err(|e| e.to_string())? else {
         return Ok(());
