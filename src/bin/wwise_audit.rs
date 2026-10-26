@@ -149,6 +149,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bytes = package.read_entry(&mut file, *entry)?;
             let Some(mut mix) = dishonored2_rust::assets::wwise::bank_mix(&bytes)? else { continue };
             println!("volume threshold={} dB, {} parameter defaults, {} buses", mix.volume_threshold_db, mix.parameters.len(), mix.buses.len());
+            println!("primary output bus: {:x?}", mix.primary_bus);
             let mut reflection_indices = std::collections::BTreeSet::new();
             for effect in &mix.effects {
                 if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {

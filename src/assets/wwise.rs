@@ -640,6 +640,8 @@ pub struct BankMix {
     pub parameters: std::collections::HashMap<u32, f32>,
     pub volume_threshold_db: f32,
     pub environment: EnvironmentSettings,
+    /// 141120750 marks the first root as the primary device's master bus.
+    pub primary_bus: Option<u32>,
 }
 
 pub fn bank_attenuations(bytes: &[u8]) -> io::Result<Vec<Attenuation>> {
@@ -660,7 +662,12 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     let Some(settings) = chunks.get(b"STMG") else { return Ok(None) };
     let feedback = bank_feedback(&chunks)?;
     let (volume_threshold_db, parameters) = bank::global_parameters(settings)?;
-    let objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?;
+    let mut objects = bank_objects(chunks.get(b"HIRC").ok_or_else(|| invalid("Wwise initialization bank has no hierarchy"))?)?
+        .into_iter().collect::<Vec<_>>();
+    // Object slices share the HIRC allocation. Restore their serialized order
+    // after the lookup map's duplicate-ID validation; root selection depends
+    // on that order, not on the hash table's randomized iteration order.
+    objects.sort_by_key(|(_, object)| object.as_ptr());
     let mut buses = Vec::new();
     let mut effects = Vec::new();
     for ((kind, _), object) in objects {
@@ -669,7 +676,8 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     }
     // 1410f85a0 disables all six environment tables before ENVS is loaded.
     let environment = chunks.get(b"ENVS").map(|bytes| bank::environment_settings(bytes)).transpose()?.unwrap_or_default();
-    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment }))
+    let primary_bus = buses.iter().find(|bus| bus.parent == 0).map(|bus| bus.id);
+    Ok(Some(BankMix { buses, effects, parameters, volume_threshold_db, environment, primary_bus }))
 }
 
 fn media_from_sound(

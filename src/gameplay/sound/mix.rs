@@ -96,6 +96,7 @@ pub struct Mixer {
     pub parameters: HashMap<u32, f32>,
     pub volume_threshold_db: f32,
     pub environment: crate::assets::wwise::EnvironmentSettings,
+    pub primary_bus: Option<u32>,
 }
 
 /// Voice properties before a mixing bus (141104c30/1410dbb30). Makeup
@@ -112,7 +113,7 @@ impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
         Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
             effects: bank.effects.into_iter().map(|effect| ((effect.shared, effect.id), effect)).collect(),
-            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment }
+            volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus }
     }
 }
 
