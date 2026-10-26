@@ -98,6 +98,16 @@ pub struct Mixer {
     pub environment: crate::assets::wwise::EnvironmentSettings,
 }
 
+/// Voice properties before a mixing bus (141104c30/1410dbb30). Makeup
+/// gain is kept separate because 1410fcd00 applies it to the source stage.
+pub struct VoiceRouting {
+    pub volume_db: f32,
+    pub makeup_db: f32,
+    pub dry_db: f32,
+    pub output_filters: [f32; 2],
+    pub bus: u32,
+}
+
 impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
         Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
@@ -107,6 +117,66 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    fn bus_chain(&self, mut id: u32) -> Result<Vec<&NodeProperties>, String> {
+        let mut chain = Vec::new();
+        let mut visited = HashSet::new();
+        while id != 0 {
+            if !visited.insert(id) { return Err("cyclic Wwise bus hierarchy".into()); }
+            let bus = self.buses.get(&id).ok_or_else(|| format!("missing Wwise output bus {id:#010x}"))?;
+            chain.push(bus);
+            id = bus.parent;
+        }
+        Ok(chain)
+    }
+
+    /// 14111e660, param2=0: stop before a parent that mixes. The machine
+    /// code at 14111e82d passes the parent to 14111f200 for this decision.
+    pub fn bus_output_db(&self, id: u32) -> Result<f32, String> {
+        let mut result = 0.0;
+        for (index, bus) in self.bus_chain(id)?.into_iter().enumerate() {
+            if index != 0 && self.bus_mixes(bus.id)? { break; }
+            result += bus.float(5);
+            result += self.rtpc_contribution(bus, 5, &[])?;
+        }
+        Ok(result)
+    }
+
+    /// Resolve a logical bus to its next mixing ancestor. Its volume is
+    /// folded into the incoming connection rather than processed twice.
+    pub fn mixing_bus(&self, id: u32) -> Result<u32, String> {
+        for bus in self.bus_chain(id)? { if self.bus_mixes(bus.id)? { return Ok(bus.id); } }
+        Ok(0)
+    }
+
+    pub fn voice_routing(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<VoiceRouting, String> {
+        let mut volume_db = 0.0;
+        let mut makeup_db = 0.0;
+        for node in &source.nodes {
+            volume_db += node.float(0);
+            volume_db = self.rtpc_contribution(node, 0, parameters)? + volume_db;
+            makeup_db += node.float(0x21);
+            makeup_db = self.rtpc_contribution(node, 0x24, parameters)? + makeup_db;
+        }
+        // 14111e0d0 uses a global context for output-bus voice parameters;
+        // a game-object override belongs only to the actor/container chain.
+        for bus in self.bus_chain(source.bus)? {
+            volume_db += bus.float(0);
+            volume_db = self.rtpc_contribution(bus, 0, &[])? + volume_db;
+        }
+        let mut dry_db = 0.0;
+        let mut output_filters = [0.0; 2];
+        // param8 in 1410dbb30 selects only the first explicit output bus.
+        if let Some(node) = source.nodes.iter().find(|node| node.bus != 0) {
+            dry_db = node.float(0x17) + self.rtpc_contribution(node, 0x3c, parameters)?;
+            output_filters = [node.float(0x19) + self.rtpc_contribution(node, 0x3e, parameters)?,
+                node.float(0x18) + self.rtpc_contribution(node, 0x3d, parameters)?];
+        }
+        if source.bus != 0 && !self.bus_mixes(source.bus)? {
+            dry_db = self.bus_output_db(source.bus)? + dry_db; // 141104e38
+        }
+        Ok(VoiceRouting { volume_db, makeup_db, dry_db, output_filters, bus: self.mixing_bus(source.bus)? })
+    }
+
     /// 14111f200. Auxiliary buses have native type 0x0c (141131fe0,
     /// 140075bb0) and always mix. Ordinary buses may only group routing.
     pub fn bus_mixes(&self, id: u32) -> Result<bool, String> {
@@ -203,19 +273,11 @@ impl Mixer {
             result += node.float(property);
             result = self.rtpc_contribution(node, property, parameters)? + result;
         }
-        Ok(result)
-    }
-
-    fn node_volume(&self, node: &NodeProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
-        // RTPC parameter IDs differ from static property IDs for makeup gain
-        // and output-bus volume in bank version 113.
-        // Source values: 1410dbb30; bus values: 14111e0d0/14111e660.
-        let mut value = 0.0;
-        for (property, rtpc) in [(0, 0), (5, 5), (0x21, 0x24), (0x17, 0x3c)] {
-            value += node.float(property);
-            value = self.rtpc_contribution(node, rtpc, parameters)? + value;
+        for bus in self.bus_chain(source.bus)? {
+            result += bus.float(property);
+            result = self.rtpc_contribution(bus, property, &[])? + result;
         }
-        Ok(value)
+        Ok(result)
     }
 
     pub fn volume_db(&self, source: &MediaProperties) -> Result<f32, String> {
@@ -229,15 +291,10 @@ impl Mixer {
     /// Game-object values override global/default values by parameter ID
     /// (1400c5c60 / 1410ca580). Distinct object RTPCs coexist on one voice.
     pub fn volume_db_with_parameters(&self, source: &MediaProperties, parameters: &[(u32, f32)]) -> Result<f32, String> {
-        let mut volume = 0.0;
-        for node in &source.nodes { volume += self.node_volume(node, parameters)?; }
-        let mut bus = source.bus;
-        let mut visited = HashSet::new();
-        while bus != 0 {
-            if !visited.insert(bus) { return Err("cyclic Wwise bus hierarchy".into()); }
-            let node = self.buses.get(&bus).ok_or_else(|| format!("missing Wwise output bus {bus:#010x}"))?;
-            volume += self.node_volume(node, parameters)?;
-            bus = node.parent;
+        let routing = self.voice_routing(source, parameters)?;
+        let mut volume = routing.volume_db + routing.makeup_db + routing.dry_db;
+        for bus in self.bus_chain(routing.bus)? {
+            if self.bus_mixes(bus.id)? { volume += self.bus_output_db(bus.id)?; }
         }
         Ok(volume)
     }
