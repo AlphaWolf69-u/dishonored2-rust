@@ -243,11 +243,12 @@ impl Player {
             return Ok(());
         }
         let list = self.member(&handler, "soundsList")?;
-        let data = self.member(&list, "data")?;
-        let length = self.member(&data, "length")?;
+        // SoundHandler.soundsList already returns SoundList.instance.data
+        // (Vector.<SoundDefinition>), as consumed by FUN_14002c220.
+        let length = self.member(&list, "length")?;
         let length = self.vm.to_uint(&length)?;
         for index in 0..length {
-            let entry = self.member(&data, &index.to_string())?;
+            let entry = self.member(&list, &index.to_string())?;
             let name = self.member(&entry, "name")?;
             let name = self.vm.to_string(&name)?;
             if !name.is_empty() {
