@@ -402,67 +402,66 @@ fn main() -> Result<(), Box<dyn Error>> {
             .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
             .collect::<Vec<_>>();
         paths.sort();
-        let mut found = false;
+        let mut library = dishonored2_rust::assets::wwise::PlaybackBanks::default();
+        let mut owners = Vec::new();
         for path in paths {
-            let Ok(package) = Package::open(&path) else { continue };
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
             for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
-                let mut file = File::open(&path)?;
-                let bank = package.read_entry(&mut file, entry)?;
-                if !dishonored2_rust::assets::wwise::bank_event_ids(&bank)?.contains(&id) { continue; }
-                found = true;
-                if playback {
-                    let actions = dishonored2_rust::assets::wwise::event_playback_with(&bank, id, |media_id| {
-                        let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
-                        package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    println!("{} bank={:#x}", path.display(), entry.id);
-                    for action in actions.into_iter().flatten() {
-                        use dishonored2_rust::assets::wwise::PlaybackCommand;
-                        match action {
-                            PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            PlaybackCommand::Play { target, settings, node } => {
-                                println!("  Play target={target:#010x}, {settings:?}");
-                                print_playback(&node, 2, &mixer, None)?;
-                            },
-                        }
-                    }
-                    continue;
+                library.insert(package.read_entry(&mut file, entry)?.into())?;
+                owners.push((path.clone(), package.clone(), entry));
+            }
+        }
+        println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
+        if library.event_ids().binary_search(&id).is_err() {
+            println!("event {id:#010x} is not present in installed language-neutral banks");
+            return Ok(());
+        }
+        let mut files = std::collections::HashMap::<usize, File>::new();
+        let actions = library.event_playback(id, |owner, media_id| {
+            let (path, package, entry) = &owners[owner];
+            let Some(media) = package.media_file(u64::from(media_id), entry.language_id) else { return Ok(None); };
+            let file = match files.entry(owner) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(File::open(path)?),
+            };
+            println!("media {media_id:#010x}: {} bank={:#010x}", path.display(), entry.id);
+            package.read_entry(file, media).map(Some)
+        })?;
+        let Some(actions) = actions else {
+            println!("event {id:#010x} has no supported Wwise actions");
+            return Ok(());
+        };
+        if playback {
+            for action in actions {
+                use dishonored2_rust::assets::wwise::PlaybackCommand;
+                match action {
+                    PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    PlaybackCommand::Play { target, settings, node } => {
+                        println!("  Play target={target:#010x}, {settings:?}");
+                        print_playback(&node, 2, &mixer, None)?;
+                    },
                 }
-                let actions = dishonored2_rust::assets::wwise::event_commands_with(&bank, id, |media_id| {
-                    let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
-                    package.read_entry(&mut file, media).map(Some)
-                })?;
-                println!("{} bank={:#x}", path.display(), entry.id);
-                match actions {
-                    Some(actions) => for action in actions {
-                        match action {
-                            dishonored2_rust::assets::wwise::EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
-                            dishonored2_rust::assets::wwise::EventCommand::Play { target, settings, groups } => {
-                                println!("  Play target={target:#010x}, {settings:?}");
-                                for (group_index, group) in groups.iter().enumerate() {
-                                    for (variant_index, variant) in group.variants.iter().enumerate() {
-                                        println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes", group.mode,
-                                            variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
-                                        match dishonored2_rust::assets::wwise::decode_wem_pcm(&variant.media) {
-                                            Ok(audio) => println!("      decoded {} samples, {} channels at {} Hz", audio.samples.len(), audio.channels, audio.sample_rate),
-                                            Err(error) => {
-                                                println!("      decoding error: {error}");
-                                                if let Ok(encoded) = dishonored2_rust::assets::wwise::decode_wem(&variant.media) {
-                                                    println!("      converted header: {:02x?}", &encoded[..encoded.len().min(64)]);
-                                                }
-                                                println!("      WEM header: {:02x?}", &variant.media[..variant.media.len().min(96)]);
-                                            },
-                                        }
-                                    }
-                                }
+            }
+        } else {
+            for action in dishonored2_rust::assets::wwise::flatten_playback_actions(actions)? {
+                use dishonored2_rust::assets::wwise::EventCommand;
+                match action {
+                    EventCommand::Stop(stop) => println!("  Stop target={:#010x}, game_object={}, {:?}", stop.target, stop.game_object, stop.transition),
+                    EventCommand::Play { target, settings, groups } => {
+                        println!("  Play target={target:#010x}, {settings:?}");
+                        for (group_index, group) in groups.iter().enumerate() {
+                            for (variant_index, variant) in group.variants.iter().enumerate() {
+                                println!("    group {group_index} {:?} variant {variant_index} weight {} bus={:#010x} default_mix_db={} WEM {} bytes",
+                                    group.mode, variant.weight, variant.properties.bus, mixer.volume_db(&variant.properties)?, variant.media.len());
+                                let audio = dishonored2_rust::assets::wwise::decode_wem_pcm(&variant.media)?;
+                                println!("      decoded {} samples, {} channels at {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
                             }
                         }
                     },
-                    None => println!("  event has no supported Wwise actions"),
                 }
             }
         }
-        if !found { println!("event {id:#010x} is not present in installed language-neutral banks"); }
         return Ok(());
     }
     let (summary_only, object_filter, resolve_events, path) = match first.to_string_lossy().as_ref() {

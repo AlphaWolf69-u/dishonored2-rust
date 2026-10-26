@@ -19,7 +19,7 @@ pub struct SoundEvent(pub Request);
 struct WwiseRegistry {
     banks: Vec<Bank>,
     attenuations: HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-    event_banks: HashMap<u32, Vec<usize>>,
+    library: crate::assets::wwise::PlaybackBanks<'static>,
     sources: HashMap<u32, Vec<SourceAction>>,
     scheduled_selections: graph::Selections,
 }
@@ -137,22 +137,21 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let mut banks = Vec::new();
         let mut attenuations = HashMap::new();
         let mut output_mix = None;
-        let mut event_banks = HashMap::<u32, Vec<usize>>::new();
+        let mut library = crate::assets::wwise::PlaybackBanks::default();
         for path in paths {
             let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
             for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
-                    Ok((crate::assets::wwise::bank_event_ids(&bytes)?, crate::assets::wwise::bank_mix(&bytes)?, crate::assets::wwise::bank_attenuations(&bytes)?))
+                    Ok((crate::assets::wwise::bank_mix(&bytes)?, crate::assets::wwise::bank_attenuations(&bytes)?, bytes))
                 })();
                 match indexed {
-                    Ok((events, bank_mix, bank_attenuations)) => {
-                        for attenuation in bank_attenuations { attenuations.insert(attenuation.id, Arc::new(attenuation)); }
+                    Ok((bank_mix, bank_attenuations, bytes)) => {
+                        for attenuation in bank_attenuations { attenuations.entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        let index = banks.len();
+                        library.insert(bytes.into())?;
                         banks.push(Bank { path: path.clone(), package: package.clone(), entry });
-                        for event in events { event_banks.entry(event).or_default().push(index); }
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
                 }
@@ -176,15 +175,15 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
         let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
         let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
-        Ok((banks, attenuations, event_banks, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
+        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
     })();
     match result {
-        Ok((banks, attenuations, event_banks, output_mix, bindings, time_dilation)) => {
+        Ok((banks, attenuations, library, output_mix, bindings, time_dilation)) => {
             mix.time_dilation = Some(time_dilation);
             registry.attenuations = attenuations;
-            info!("Indexed {} installed Wwise banks and {} event IDs", banks.len(), event_banks.len());
+            info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
             registry.banks = banks;
-            registry.event_banks = event_banks;
+            registry.library = library;
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
@@ -240,41 +239,34 @@ fn play_events(
         if scene.frozen(emitter) { continue; }
         if !registry.sources.contains_key(&event) {
             let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
-                let indexes = registry.event_banks.get(&event).ok_or("no installed bank contains this event")?;
-                let mut actions = None;
-                for &index in indexes {
-                    let bank = &registry.banks[index];
-                    let mut file = std::fs::File::open(&bank.path)?;
-                    let bytes = bank.package.read_entry(&mut file, bank.entry)?;
-                    let graph_actions = crate::assets::wwise::event_playback_with(&bytes, event, |media_id| {
-                        let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None) };
-                        bank.package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    if let Some(graph_actions) = graph_actions {
-                        use crate::assets::wwise::PlaybackCommand;
-                        let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
-                            match action {
-                                PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling() || graph::Definition::required(node)
-                                    || graph::Definition::requires_buses(node, mixer)?),
-                                _ => Ok(required),
-                            }
-                        })?;
-                        if scheduled {
-                            return graph_actions.into_iter().map(|action| match action {
-                                PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                                PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
-                                    target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
-                                }),
-                            }).collect();
-                        }
+                let mut files = HashMap::<usize, std::fs::File>::new();
+                let graph_actions = registry.library.event_playback(event, |owner, media_id| {
+                    let bank = registry.banks.get(owner).ok_or_else(|| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
+                    let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+                    let file = match files.entry(owner) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
+                    };
+                    bank.package.read_entry(file, media).map(Some)
+                })?.ok_or("event has no supported Wwise actions")?;
+                use crate::assets::wwise::PlaybackCommand;
+                let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
+                    match action {
+                        PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
+                            || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
+                        _ => Ok(required),
                     }
-                    let resolved = crate::assets::wwise::event_commands_with(&bytes, event, |media_id| {
-                        let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None) };
-                        bank.package.read_entry(&mut file, media).map(Some)
-                    })?;
-                    if resolved.is_some() { actions = resolved; break; }
+                })?;
+                if scheduled {
+                    return graph_actions.into_iter().map(|action| match action {
+                        PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                        PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
+                            target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
+                        }),
+                    }).collect();
                 }
-                let actions = actions.ok_or("event has no supported Wwise actions")?;
+                let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
                 actions.into_iter().map(|action| match action {
                     crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
                     crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
