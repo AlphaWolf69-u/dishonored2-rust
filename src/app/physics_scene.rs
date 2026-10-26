@@ -335,7 +335,8 @@ impl PhysicsScene {
             .submit(&mut self.queries, true, true, position)
             .map_err(|e| e.to_string())?;
         let hierarchy = self.types.classes().hierarchy();
-        view.resolve(
+        let mut head_water_surface: Option<f32> = None;
+        let completed = view.resolve(
             &self.world,
             &mut self.executor,
             &mut self.queries,
@@ -384,6 +385,12 @@ impl PhysicsScene {
                         )
                     },
                 )?;
+                if let Some(component)=water.and_then(|h|self.waters.get(h.slot)) {
+                    if component.owner.flags & 0xc >= 8 {
+                        let height=0.-component.plane().ok_or("head water component has no plane")?[3];
+                        head_water_surface=Some(head_water_surface.map_or(height,|prior|if prior<=height {height} else {prior}));
+                    }
+                }
                 Ok(ContactEntity {
                     trigger_derived: (self.trigger_range[0]..=self.trigger_range[1])
                         .contains(&class),
@@ -397,7 +404,9 @@ impl PhysicsScene {
                     },
                 })
             },
-        )
+        )?;
+        view.head_water_surface=completed.then_some(head_water_surface).flatten();
+        Ok(completed)
     }
 
     fn reference_actor(

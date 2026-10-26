@@ -323,6 +323,7 @@ pub(super) fn publish_water_frame(
         if completed {selection.0=Some(publication);}
         Ok(WaterFrame {
             camera,
+            head_water_surface: completed.then_some(water.contacts.head_water_surface).flatten(),
             delta_seconds: delta,
             near_far: [projection.near, projection.far],
             parallel: scene.environment_lighting.and_then(|environment| {

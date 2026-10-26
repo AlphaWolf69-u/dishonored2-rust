@@ -2071,6 +2071,19 @@ the depth prepass, so backend shader optimization must preserve their shared
 displacement and projection arithmetic. Otherwise the colour pass can reject
 water pixels and expose the pre-water scene through waves.
 
+`assets/fx/screen_quad.rs` reads authored fullscreen-quad timing and stage
+descriptors. `rendering/screen_distortion.rs` resolves the selected materials,
+registered defaults and shipped compiled noise images. The gameplay camera's
+`bevy_backend/screen_effects` owner runs these after camera effects and before
+exposure/bloom, independently of the camera motion-blur setting. It reuses the
+scalar FX envelope and the HDR storage bridge, with separate immutable uniforms
+for the two distortion resolves. No distortion passes run without active quads.
+The configured character supplies submerged and leave-water FX declarations.
+The debug camera consumes started water-component planes from its canonical
+head-position physics query; the swimming controller's five-point asynchronous
+wave query remains a separate, unconnected producer. F8 includes the actual
+distortion vector field and head-water surface for numeric diagnosis.
+
 F8 numerical display captures include same-frame ocean displacement, gradients,
 persistent foam, shoreline foam depth, immutable refraction source and water
 colour, together with the resolved ocean environment and clocks. These copies

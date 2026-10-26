@@ -45,3 +45,4 @@ pub mod water;
 pub mod ocean;
 
 pub mod camera_effects;
+pub mod screen_distortion;

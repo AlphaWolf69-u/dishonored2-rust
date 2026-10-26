@@ -361,6 +361,7 @@ fn render_display(
                     let mut details = format!("camera={:?} camera_exposure={} settings={:?}\nveil_size={} veil_strength={} dirt_strength={} dirt_blend={} use_default_dirt={} white_level={} camera_axis={}\ntone_bytes={:?}\ncamera_effects={:?}\n", frame.camera,camera.exposure,lens.settings,lens.veil_size,lens.veil_strength,lens.dirt_strength,lens.dirt.weight,lens.use_default_dirt,lens.white_level,lens.camera_axis,parameters.uniform_bytes(),frame.camera_effects);
                     if let Some(water) = &water_frame.0 {
                         details.push_str(&format!("ocean_settings={:?}\nwater_delta={} water_local_time={:?}\n", water.ocean_environment, water.delta_seconds, water.local_time));
+                        details.push_str(&format!("head_water_surface={:?}\n", water.head_water_surface));
                     }
                     if let Err(error) = capture.record(
                         &capture_request,
