@@ -718,13 +718,23 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
             let tiled=current.tiled.get_or_insert_with(||
                 super::tiled_lighting_pass::TiledLightingPass::new(&resources.device,programs,grid));
             tiled.resize(&resources.device,programs,grid);
+            let mut mapped_lights = None;
+            if resources.local_fog.area_images.iter().any(Option::is_some) {
+                let pool = tiled.area_pool.get_or_insert_with(||
+                    super::area_light_pool::AreaLightPool::new(&resources.device, &programs.area_copy));
+                let mut packets = resources.local_fog.lights.as_ref().clone();
+                pool.prepare(&resources.device, &resources.queue, context.command_encoder(),
+                    &resources.images, &resources.local_fog.area_images, &mut packets)?;
+                mapped_lights = Some(packets);
+            }
+            let lights = mapped_lights.as_deref().unwrap_or(resources.local_fog.lights.as_slice());
             let matrices=water_frame.matrices.current;
             tiled.prepare(&resources.device,&resources.queue,programs,
                 super::tiled_lighting_pass::TiledLightView {
                     uv_to_ray:Vec4::new(0.,0.,fog_view.ray_scale.x,fog_view.ray_scale.y),
                     view:matrices.view.map(Vec4::from_array),
                     projection:matrices.projection.map(Vec4::from_array),..default()
-                },&current.depth_view,&water.alpha.full_sample,&resources.local_fog.lights,
+                },&current.depth_view,&water.alpha.full_sample,lights,
                 receiver.map_or(&[],|r| r.shadows.as_slice()))?;
             tiled.record(context.command_encoder(),programs)?;
         }

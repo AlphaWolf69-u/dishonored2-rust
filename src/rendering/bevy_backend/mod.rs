@@ -55,6 +55,8 @@ pub mod camera_projection;
 #[cfg(feature = "game")]
 pub mod coarse_depth;
 #[cfg(feature = "game")]
+pub mod area_light_pool;
+#[cfg(feature = "game")]
 pub mod fog;
 #[cfg(feature = "game")]
 pub mod fog_lookup;

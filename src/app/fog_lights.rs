@@ -17,6 +17,7 @@ pub(super) fn publish(
     )>,
     cameras: Query<Entity, With<Camera3d>>,
     shadows: Res<shadow_pass::LocalShadowSceneFrame>,
+    area_sources: Res<super::area_lights::AreaLightSources>,
     mut output: ResMut<LocalFogFrame>,
     mut last_error: Local<Option<String>>,
 ) {
@@ -34,6 +35,8 @@ pub(super) fn publish(
             .transpose()
             .map_err(Clone::clone)?;
         let mut packets = Vec::new();
+        let sources = area_sources.0.as_ref().map_err(Clone::clone)?;
+        let mut area_images = Vec::new();
         for (entity, source, cull, _, transform) in ordered {
             let light = &scene.placed_lights[source.0];
             let kind = match light.kind {
@@ -102,22 +105,25 @@ pub(super) fn publish(
                 &mut packet,
             );
             packets.push(packet);
+            area_images.push(sources[source.0].clone());
         }
         if packets.len() >= crate::tiled_lighting::LIGHT_BUFFER_CAPACITY {
             return Err("too many admitted scattering lights".into());
         }
-        Ok((camera, packets))
+        Ok((camera, packets, area_images))
     })();
     match result {
-        Ok((camera, lights)) => {
+        Ok((camera, lights, area_images)) => {
             output.camera = Some(camera);
             output.shadow_revision = shadows.0.as_ref().map(|s| s.revision);
             output.lights = std::sync::Arc::new(lights);
+            output.area_images = std::sync::Arc::new(area_images);
             *last_error = None;
         }
         Err(error) => {
             output.camera = None;
             output.lights = Default::default();
+            output.area_images = Default::default();
             if last_error.as_ref() != Some(&error) {
                 warn!("Local fog lights pending: {error}");
                 *last_error = Some(error);
