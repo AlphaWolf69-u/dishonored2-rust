@@ -3,7 +3,12 @@
 use super::{bounds::OrientedBox, shadows::local_caster_query::LocalWorldQuery};
 
 mod pool;
+mod world_draws;
 pub use pool::{DecalPool, DecalSlot};
+pub use world_draws::{
+    gather_world_draws, ProjectedWorldDraw, ProjectedWorldDraws, ProjectionData,
+    ProjectionMaterial, WorldReceiver,
+};
 
 pub struct WorldProjection {
     pub bounds: [[f32; 3]; 2],
@@ -110,6 +115,34 @@ impl<M: Clone> CommittedDecal<M> {
 }
 
 impl<M: Clone> DecalPool<DecalDescription<M>, CommittedDecal<M>> {
+    ///1c02e0 registers each live slot once, in physical order. The render-world
+    ///owner supplies 094a00's registration service; publish its ID only after
+    ///that service succeeds. Eviction deliberately retains this registration.
+    pub fn register_world(
+        &mut self,
+        mut register: impl FnMut(u32, [[f32; 3]; 2], u32) -> Result<u32, String>,
+    ) -> Result<(), String> {
+        for index in 0..self.limit() as u32 {
+            let slot = self.slot_mut(index).unwrap();
+            if slot.owner().is_none() || slot.registered {
+                continue;
+            }
+            let description = slot
+                .description
+                .as_ref()
+                .ok_or("live decal has no authored description")?;
+            let bounds = super::render_model::transformed_bounds(
+                [[-1., -1., -1.], [1., 1., 0.]],
+                description.position,
+                description.axes,
+                description.scale,
+            );
+            slot.registration = register(index, bounds, 2)?;
+            slot.registered = true;
+        }
+        Ok(())
+    }
+
     ///1c00d0 publishes in physical slot order, not allocation-age order. Reuse
     ///committed objects when a full pool replaces the oldest FX owner.
     pub fn prepare_world(&mut self, tree: &LocalWorldQuery) -> Result<Vec<u32>, String> {

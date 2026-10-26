@@ -2404,7 +2404,14 @@ switch and fixed 0.5 cutoff; simple sprite meshes have no depth-stage discard;
 mesh filling containers reuse their existing fill/plane clipping. Default and
 vegetation glass supply packed distortion. The prepass and alpha-depth wrapper
 share this clipping code, including anisotropic Z sampling and the shadow path's
-fixed cutoff. Program overrides with different parameter/geometry requirements,
+fixed cutoff. Ordinary mesh decals also resolve their slot-six alpha-depth
+programs. Their colour and alpha-depth stages share the installed decal diffuse
+rule: anisotropic diffuse sampling, layer-zero LQ mask/tint, cloth mask handling
+and vertex colour, with the depth cutoff applied before HQ/gloss conversion.
+Projected, FX and editor-unlit variants require their corresponding producers.
+The ordinary decal-list partition precedes alpha-depth batch preparation, so
+opaque-interval decals cannot enter the later transparent-depth list depending
+on host system scheduling. Program overrides with different parameter/geometry requirements,
 late projected decals, active material-effect banks and special model depth
 variants still need their actual source producers; they are not generic glass.
 
@@ -2441,7 +2448,7 @@ names are ArkDecal or ArkSSSRender using ArkDefault for full Z. None are current
 Probe alpha-depth MAIN families, and no explicit reduced-alpha overrides were
 found. This verifies source identities, rather than runtime appearance or the
 unimplemented SSS/runtime-decal primary renderers. Glass appearance remains
-pending the existing human check.
+unconfirmed; implementation does not wait for that appearance check.
 
 Dynamic-decal lifetime now lives in `rendering::decals::DecalPool`. Its admitted
 limit is 4..128; free allocation, oldest eviction and duplicate-owner lookup
@@ -2455,3 +2462,21 @@ geometry in physical slot order. Position, axes or scale changes invalidate
 intersection data; colour/material changes copy independently. The initial
 projection cannot publish an undefined inverse. FX event creation and GPU draw
 submission remain separate unfinished integration work.
+
+`assets::decal::DecalMaterials` reads the four material references from installed
+decal declarations and preserves their receiver/instancing identity. Suffixed
+and suffixless material names resolve only against resources actually present
+in the catalog. The app uses the existing material cache, probe and texture
+streaming owner for these variants. No extracted data or material-name heuristic
+selects an opaque/alpha substitute.
+
+`decals::gather_world_draws` prepares the projected WORLD draw packets from
+committed projections, receiver ranges and actual instance visibility. It reuses
+one 64-byte matrix/colour record per projection, retains WORLD IDs in the low
+24 bits of each remap, and preserves the source's 256-record limit and target
+cursor order. Depth-box receivers retain their separate admission path.
+Projection-bounds visibility does not add a new WORLD geometry cull. The pool's
+`register_world` supplies transformed bounds and registration flags through the
+render-world service, publishing an ID only on success. These CPU producers are
+implemented; the gameplay FX spawn owner and projected GPU draws remain to be
+connected before projected decals are a visible gameplay feature.
