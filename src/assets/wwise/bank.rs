@@ -50,6 +50,32 @@ pub(super) struct Playlist {
     pub reset_each_play: bool,
     pub global: bool,
     pub avoid_repeat: u16,
+    pub playback: ContainerPlayback,
+}
+
+/// Random/sequence playback fields loaded by `FUN_14111aed0`.
+#[derive(Clone, Debug, Default)]
+pub struct ContainerPlayback {
+    /// Zero loops forever. A zero count also discards the loop modifiers.
+    pub loop_count: u16,
+    pub loop_modifiers: [i16; 2],
+    /// Authored milliseconds and additive random modifiers.
+    pub transition_ms: f32,
+    pub transition_modifiers_ms: [f32; 2],
+    pub transition: TransitionMode,
+    pub continuous: bool,
+    pub restart_backward: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransitionMode {
+    #[default]
+    Disabled,
+    CrossfadeAmplitude,
+    CrossfadePower,
+    Delay,
+    SampleAccurate,
+    TriggerRate,
 }
 
 struct Reader<'a> {
@@ -232,11 +258,26 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
     reader.node_base(feedback)?;
     let mut playlist = Playlist {
         items: Vec::new(), mode: SelectionMode::Single, reset_each_play: true, global: true, avoid_repeat: 0,
+        playback: ContainerPlayback::default(),
     };
     if kind == 5 {
-        reader.take(18)?; // Loop/modifiers and transition/modifiers.
+        playlist.playback.loop_count = reader.u16()?;
+        let modifiers = [reader.u16()? as i16, reader.u16()? as i16];
+        if playlist.playback.loop_count != 0 {
+            playlist.playback.loop_modifiers = modifiers;
+        }
+        playlist.playback.transition_ms = reader.f32()?;
+        playlist.playback.transition_modifiers_ms = [reader.f32()?, reader.f32()?];
         playlist.avoid_repeat = reader.u16()?;
-        reader.u8()?; // Transition mode.
+        playlist.playback.transition = match reader.u8()? {
+            0 => TransitionMode::Disabled,
+            1 => TransitionMode::CrossfadeAmplitude,
+            2 => TransitionMode::CrossfadePower,
+            3 => TransitionMode::Delay,
+            4 => TransitionMode::SampleAccurate,
+            5 => TransitionMode::TriggerRate,
+            _ => return Err(invalid("invalid Wwise transition mode")),
+        };
         let random_mode = reader.u8()?;
         playlist.mode = match reader.u8()? {
             0 => match random_mode {
@@ -250,10 +291,8 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
         let flags = reader.u8()?;
         playlist.reset_each_play = flags & 2 != 0;
         playlist.global = flags & 16 != 0;
-        if flags & 8 != 0 { return Err(invalid("continuous Wwise containers are not supported yet")); }
-        if playlist.mode == SelectionMode::Sequence && flags & 4 != 0 {
-            return Err(invalid("reverse Wwise playlists are not supported yet"));
-        }
+        playlist.playback.continuous = flags & 8 != 0;
+        playlist.playback.restart_backward = flags & 4 != 0;
     }
     let children = reader.children()?;
     if kind == 5 {

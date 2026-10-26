@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
-pub use bank::{CurvePoint, NodeProperties, PropertyRange, RtpcCurve};
+pub use bank::{ContainerPlayback, CurvePoint, NodeProperties, PropertyRange, RtpcCurve, TransitionMode};
 
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
@@ -354,8 +354,60 @@ pub fn event_media_with(
 pub fn event_commands_with(
     bank: &[u8],
     event: u32,
-    mut package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
+    package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<EventCommand>>> {
+    fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
+        match node {
+            PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
+                node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
+                reset_each_play: true, variants: vec![variant],
+            }]),
+            PlaybackNode::Layer(children) => {
+                let mut groups = Vec::new();
+                for child in children { groups.extend(flatten(child)?); }
+                Ok(groups)
+            },
+            PlaybackNode::Container(container) => {
+                if container.playback.continuous {
+                    return Err(invalid_owned(format!("continuous Wwise container {:#010x} requires scheduled playback: {:?}", container.node, container.playback)));
+                }
+                if container.mode == SelectionMode::Sequence && container.playback.restart_backward {
+                    return Err(invalid("reverse Wwise playlists require scheduled playback"));
+                }
+                let mut variants = Vec::new();
+                for (child, weight) in container.children {
+                    let resolved = flatten(child)?;
+                    if resolved.len() > 1 || resolved.iter().any(|group| group.mode != SelectionMode::Single) {
+                        return Err(invalid("nested Wwise selection containers require scheduled playback"));
+                    }
+                    for group in resolved {
+                        for mut variant in group.variants {
+                            variant.weight = weight;
+                            variants.push(variant);
+                        }
+                    }
+                }
+                Ok(if variants.is_empty() { Vec::new() } else { vec![MediaGroup {
+                    node: container.node, global: container.global, avoid_repeat: container.avoid_repeat,
+                    mode: container.mode, reset_each_play: container.reset_each_play, variants,
+                }] })
+            },
+        }
+    }
+    event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
+        PlaybackCommand::Stop { target } => Ok(EventCommand::Stop { target }),
+        PlaybackCommand::Play { target, node } => Ok(EventCommand::Play { target, groups: flatten(node)? }),
+    }).collect()).transpose()
+}
+
+/// Preserve the authored HIRC graph, including nested containers and their
+/// continuous playback fields (`FUN_14111aed0`). Selection and scheduling
+/// belong to the playback runtime, rather than flattening nested alternatives.
+pub fn event_playback_with(
+    bank: &[u8],
+    event: u32,
+    mut package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
+) -> io::Result<Option<Vec<PlaybackCommand>>> {
     let chunks = bank_chunks(bank)?;
     let feedback = bank_feedback(&chunks)?;
     let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(None) };
@@ -371,48 +423,38 @@ pub fn event_commands_with(
         package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
         visited: &mut std::collections::HashSet<u32>,
         feedback: bool,
-    ) -> io::Result<Vec<MediaGroup>> {
-        if !visited.insert(id) { return Ok(Vec::new()); }
-        let Some((kind, object)) = audio_node(objects, id) else { return Ok(Vec::new()) };
+    ) -> io::Result<Option<PlaybackNode>> {
+        if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
+        let Some((kind, object)) = audio_node(objects, id) else { visited.remove(&id); return Ok(None) };
         if kind == 2 {
             let media = media_from_sound(object, chunks, package_media)?;
             let properties = media_properties(id, objects, feedback)?;
             visited.remove(&id);
-            return Ok(media.map_or_else(Vec::new, |media| vec![MediaGroup {
-                node: id, global: true, avoid_repeat: 0,
-                mode: SelectionMode::Single,
-                reset_each_play: true,
-                variants: vec![MediaVariant { media, weight: 1, properties }],
-            }]));
+            return Ok(media.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
         }
-        if kind != 5 && kind != 9 { visited.remove(&id); return Ok(Vec::new()); }
+        if kind != 5 && kind != 9 { visited.remove(&id); return Ok(None); }
         let (children, playlist) = bank::node_children(object, kind, feedback)?;
-        let mut groups = Vec::new();
-        if kind == 5 {
-            let mut variants = Vec::new();
+        let node = if kind == 5 {
+            let mut children = Vec::new();
             for (child, weight) in playlist.items {
-                let resolved = resolve_node(child, objects, chunks, package_media, visited, feedback)?;
-                if resolved.len() > 1 || resolved.iter().any(|group| group.mode != SelectionMode::Single) {
-                    return Err(invalid("nested Wwise selection containers are not supported yet"));
-                }
-                for mut group in resolved {
-                    for variant in &mut group.variants { variant.weight = weight; }
-                    variants.append(&mut group.variants);
+                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? {
+                    children.push((node, weight));
                 }
             }
-            if !variants.is_empty() {
-                groups.push(MediaGroup {
-                    node: id, global: playlist.global, avoid_repeat: playlist.avoid_repeat,
-                    mode: playlist.mode, reset_each_play: playlist.reset_each_play, variants,
-                });
-            }
+            PlaybackNode::Container(PlaybackContainer {
+                node: id, global: playlist.global, avoid_repeat: playlist.avoid_repeat,
+                mode: playlist.mode, reset_each_play: playlist.reset_each_play,
+                playback: playlist.playback, children,
+            })
         } else {
+            let mut layers = Vec::new();
             for child in children {
-                groups.extend(resolve_node(child, objects, chunks, package_media, visited, feedback)?);
+                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? { layers.push(node); }
             }
-        }
+            PlaybackNode::Layer(layers)
+        };
         visited.remove(&id);
-        Ok(groups)
+        Ok(Some(node))
     }
     let mut commands = Vec::new();
     for index in 0..action_count {
@@ -421,15 +463,40 @@ pub fn event_commands_with(
         if action.len() < 10 { continue; }
         let target = read_u32_slice(action, 6)?;
         if action[5] == 0x01 { // Wwise action type 0x01 is Stop.
-            commands.push(EventCommand::Stop { target });
+            commands.push(PlaybackCommand::Stop { target });
             continue;
         }
         if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
         let mut visited = std::collections::HashSet::new();
-        let groups = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)?;
-        if !groups.is_empty() { commands.push(EventCommand::Play { target, groups }); }
+        if let Some(node) = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)? {
+            commands.push(PlaybackCommand::Play { target, node });
+        }
     }
     Ok((!commands.is_empty()).then_some(commands))
+}
+
+#[derive(Clone, Debug)]
+pub enum PlaybackCommand {
+    Stop { target: u32 },
+    Play { target: u32, node: PlaybackNode },
+}
+
+#[derive(Clone, Debug)]
+pub enum PlaybackNode {
+    Sound { node: u32, variant: MediaVariant },
+    Layer(Vec<PlaybackNode>),
+    Container(PlaybackContainer),
+}
+
+#[derive(Clone, Debug)]
+pub struct PlaybackContainer {
+    pub node: u32,
+    pub global: bool,
+    pub avoid_repeat: u16,
+    pub mode: SelectionMode,
+    pub reset_each_play: bool,
+    pub playback: ContainerPlayback,
+    pub children: Vec<(PlaybackNode, u32)>,
 }
 
 #[derive(Clone, Debug)]

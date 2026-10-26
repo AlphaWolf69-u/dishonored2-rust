@@ -157,7 +157,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    if first.to_string_lossy() == "--resolve-event" {
+    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event") {
+        let playback = first.to_string_lossy() == "--playback-event";
         let id = arguments.next().ok_or("missing event ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
         let id = u32::from_str_radix(&id, 16)?;
         let directory = match arguments.next() {
@@ -186,6 +187,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let bank = package.read_entry(&mut file, entry)?;
                 if !dishonored2_rust::assets::wwise::bank_event_ids(&bank)?.contains(&id) { continue; }
                 found = true;
+                if playback {
+                    let actions = dishonored2_rust::assets::wwise::event_playback_with(&bank, id, |media_id| {
+                        let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
+                        package.read_entry(&mut file, media).map(Some)
+                    })?;
+                    println!("{} bank={:#x}", path.display(), entry.id);
+                    for action in actions.into_iter().flatten() {
+                        use dishonored2_rust::assets::wwise::PlaybackCommand;
+                        match action {
+                            PlaybackCommand::Stop { target } => println!("  Stop target={target:#010x}"),
+                            PlaybackCommand::Play { target, node } => {
+                                println!("  Play target={target:#010x}");
+                                print_playback(&node, 2)?;
+                            },
+                        }
+                    }
+                    continue;
+                }
                 let actions = dishonored2_rust::assets::wwise::event_commands_with(&bank, id, |media_id| {
                     let Some(media) = package.media_file(media_id as u64, entry.language_id) else { return Ok(None) };
                     package.read_entry(&mut file, media).map(Some)
@@ -280,6 +299,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         }
         inspect_bank(&bank, object_filter)?;
+    }
+    Ok(())
+}
+
+fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize) -> Result<(), Box<dyn Error>> {
+    use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
+    let indent = "  ".repeat(depth);
+    match node {
+        PlaybackNode::Sound { node, variant } => {
+            let audio = decode_wem_pcm(&variant.media)?;
+            println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
+        },
+        PlaybackNode::Layer(children) => {
+            println!("{indent}Layer");
+            for child in children { print_playback(child, depth + 1)?; }
+        },
+        PlaybackNode::Container(container) => {
+            println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
+                container.node, container.mode, container.global, container.reset_each_play, container.avoid_repeat, container.playback);
+            for (child, weight) in &container.children {
+                println!("{indent}  weight={weight}");
+                print_playback(child, depth + 2)?;
+            }
+        },
     }
     Ok(())
 }
