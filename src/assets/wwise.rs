@@ -8,6 +8,8 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
 mod declaration;
+mod playback;
+pub use playback::{PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
@@ -443,6 +445,11 @@ pub fn event_commands_with(
     event: u32,
     package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<EventCommand>>> {
+    event_playback_with(bank, event, package_media)?.map(flatten_playback_actions).transpose()
+}
+
+/// Convert already resolved global references for the flat playback path.
+pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
@@ -479,10 +486,10 @@ pub fn event_commands_with(
             },
         }
     }
-    event_playback_with(bank, event, package_media)?.map(|actions| actions.into_iter().map(|action| match action {
+    actions.into_iter().map(|action| match action {
         PlaybackCommand::Stop(stop) => Ok(EventCommand::Stop(stop)),
         PlaybackCommand::Play { target, settings, node } => Ok(EventCommand::Play { target, settings, groups: flatten(node)? }),
-    }).collect()).transpose()
+    }).collect()
 }
 
 /// Preserve the authored HIRC graph, including nested containers and their
@@ -493,71 +500,9 @@ pub fn event_playback_with(
     event: u32,
     mut package_media: impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<Option<Vec<PlaybackCommand>>> {
-    let chunks = bank_chunks(bank)?;
-    let feedback = bank_feedback(&chunks)?;
-    let Some(hierarchy) = chunks.get(b"HIRC") else { return Ok(None) };
-    let objects = bank_objects(hierarchy)?;
-
-    let Some(event_object) = objects.get(&(4, event)).copied() else { return Ok(None) };
-    if event_object.len() < 8 { return Err(invalid("truncated Wwise event")); }
-    let action_count = read_u32_slice(event_object, 4)? as usize;
-    fn resolve_node(
-        id: u32,
-        objects: &BankObjects<'_>,
-        chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
-        package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
-        visited: &mut std::collections::HashSet<u32>,
-        feedback: bool,
-    ) -> io::Result<Option<PlaybackNode>> {
-        if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
-        let Some((kind, object)) = audio_node(objects, id) else { visited.remove(&id); return Ok(None) };
-        if kind == 2 {
-            let media = media_from_sound(object, chunks, package_media)?;
-            let properties = media_properties(id, objects, feedback)?;
-            visited.remove(&id);
-            return Ok(media.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
-        }
-        if kind != 5 && kind != 9 { visited.remove(&id); return Ok(None); }
-        let (children, playlist) = bank::node_children(object, kind, feedback)?;
-        let node = if kind == 5 {
-            let mut children = Vec::new();
-            for (child, weight) in playlist.items {
-                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? {
-                    children.push((node, weight));
-                }
-            }
-            PlaybackNode::Container(PlaybackContainer {
-                node: id, global: playlist.global, avoid_repeat: playlist.avoid_repeat,
-                mode: playlist.mode, reset_each_play: playlist.reset_each_play,
-                playback: playlist.playback, children,
-            })
-        } else {
-            let mut layers = Vec::new();
-            for child in children {
-                if let Some(node) = resolve_node(child, objects, chunks, package_media, visited, feedback)? { layers.push(node); }
-            }
-            PlaybackNode::Layer { node: id, children: layers }
-        };
-        visited.remove(&id);
-        Ok(Some(node))
-    }
-    let mut commands = Vec::new();
-    for index in 0..action_count {
-        let action_id = read_u32_slice(event_object, 8 + index * 4)?;
-        let Some(action) = objects.get(&(3, action_id)).copied() else { continue };
-        if action.len() < 10 { continue; }
-        let target = read_u32_slice(action, 6)?;
-        if action[5] == 0x01 { // Wwise action type 0x01 is Stop.
-            commands.push(PlaybackCommand::Stop(bank::stop_action(action)?));
-            continue;
-        }
-        if action[5] != 0x04 { continue; } // Wwise action type 0x04 is Play.
-        let mut visited = std::collections::HashSet::new();
-        if let Some(node) = resolve_node(target, &objects, &chunks, &mut package_media, &mut visited, feedback)? {
-            commands.push(PlaybackCommand::Play { target, settings: bank::play_settings(action)?, node });
-        }
-    }
-    Ok((!commands.is_empty()).then_some(commands))
+    let mut banks = PlaybackBanks::default();
+    banks.insert(std::borrow::Cow::Borrowed(bank))?;
+    banks.event_playback(event, |_, id| package_media(id))
 }
 
 #[derive(Clone, Debug)]
@@ -616,21 +561,6 @@ pub struct MediaProperties {
     /// Sound and actor/container ancestors, from the sound to the root.
     pub nodes: Vec<NodeProperties>,
     pub bus: u32,
-}
-
-fn media_properties(mut id: u32, objects: &BankObjects<'_>, feedback: bool) -> io::Result<MediaProperties> {
-    let mut properties = MediaProperties::default();
-    let mut visited = std::collections::HashSet::new();
-    while id != 0 {
-        if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
-        let Some((kind, object)) = audio_node(objects, id) else { return Err(invalid_owned(format!("missing Wwise parent {id:#010x}"))); };
-        if !matches!(kind, 2 | 5 | 6 | 7 | 9) { return Err(invalid("unsupported Wwise parent type")); }
-        let node = bank::node_properties(object, kind, feedback)?;
-        if properties.bus == 0 { properties.bus = node.bus; }
-        id = node.parent;
-        properties.nodes.push(node);
-    }
-    Ok(properties)
 }
 
 #[derive(Clone, Debug)]
@@ -743,10 +673,6 @@ pub fn bank_event_ids(bank: &[u8]) -> io::Result<Vec<u32>> {
 
 type BankChunks<'a> = std::collections::HashMap<[u8; 4], &'a [u8]>;
 type BankObjects<'a> = std::collections::HashMap<(u8, u32), &'a [u8]>;
-
-fn audio_node<'a>(objects: &BankObjects<'a>, id: u32) -> Option<(u8, &'a [u8])> {
-    [2, 5, 6, 7, 9].into_iter().find_map(|kind| objects.get(&(kind, id)).map(|object| (kind, *object)))
-}
 
 fn bank_feedback(chunks: &BankChunks<'_>) -> io::Result<bool> {
     let header = chunks.get(b"BKHD").ok_or_else(|| invalid("Wwise bank has no BKHD"))?;
