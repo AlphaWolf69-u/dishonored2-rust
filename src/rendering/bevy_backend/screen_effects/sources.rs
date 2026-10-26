@@ -22,9 +22,10 @@ pub struct GroupDefinition {
     /// Retain descriptor errors for the particle owner without disabling quads.
     pub particles: Vec<Result<ParticleDefinition, String>>,
 }
+#[derive(Clone)]
 pub struct ParticleDefinition {
     pub owner: Arc<crate::assets::fx::particle_system::ParticleSystemAsset>,
-    pub declarations: Vec<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>,
+    pub declarations: Vec<Option<Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>>>,
     pub materials: HashMap<String, Arc<crate::rendering::particles::material::ParticleMaterial>>,
 }
 pub struct EffectDefinition {
@@ -129,19 +130,19 @@ impl ScreenEffectSources {
                                 let declarations = owner
                                     .declarations
                                     .iter()
-                                    .flatten()
                                     .map(|path| {
+                                        let Some(path) = path else { return Ok(None) };
                                         let mut read = |p: &str| catalog.read(p).ok().flatten();
                                         let fields = read_edit(&mut read, "particledt", path)?;
                                         crate::assets::fx::particle_declaration::declaration(
                                             &fields,
                                         )
-                                        .map(Arc::new)
+                                        .map(|declaration| Some(Arc::new(declaration)))
                                         .map_err(|error| format!("{path}: {error}"))
                                     })
                                     .collect::<Result<Vec<_>, String>>()?;
                                 let mut materials = HashMap::new();
-                                for declaration in &declarations {
+                                for declaration in declarations.iter().flatten() {
                                     for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
                                         for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
                                             let Some(name) = &sprite.material else { continue };

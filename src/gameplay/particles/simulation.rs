@@ -15,8 +15,8 @@ use crate::{
 };
 use std::sync::Arc;
 
-/// Inputs already expressed in the stage's simulation space. The system owner
-/// prepares clipping planes and source velocity from its world/view context.
+/// Clipping inputs are in simulation space. Source velocity comes from the
+/// system's world-space source (+1d50), before the stage's cycle modulation.
 pub struct StageFrame<'a> {
     pub pose: ReferenceFrame,
     pub bounds: [[f32; 3]; 2],
@@ -240,6 +240,7 @@ impl StageSimulation {
             [0.; 3]
         });
         self.emitter.pose.set_duration(delta);
+        let source_velocity = self.source_velocity(frame)?;
         let mut remaining = delta;
         while remaining > 0. {
             let duration = self.emitter.cycle.duration;
@@ -253,7 +254,7 @@ impl StageSimulation {
             if !step.is_finite() || step <= 0. {
                 return Err("particle cycle produces an invalid outer time slice".into());
             }
-            self.advance_chunk(step, frame)?;
+            self.advance_chunk(step, frame, source_velocity)?;
             remaining = subtract(remaining, step);
         }
         self.emitter.pose.set_position(if worldspace {
@@ -265,9 +266,38 @@ impl StageSimulation {
         Ok(())
     }
 
+    /// 1f62a0 samples source-over-cycle once before all outer frame slices.
+    /// Local stages apply the owner's inverse basis after component products.
+    fn source_velocity(&self, frame: &StageFrame<'_>) -> Result<[f32; 3], String> {
+        let definition = &self.declaration.stages[self.index];
+        let mut seed = self.emitter.cycle_seed();
+        let scale = definition
+            .source_velocity_over_cycle
+            .sample(self.emitter.cycle.fraction, &mut seed)?;
+        let value = std::array::from_fn(|i| multiply(frame.source_velocity[i], scale[i]));
+        if definition.worldspace {
+            return Ok(value);
+        }
+        let basis = ParticleSpace::new(frame.pose.basis, false).basis(true);
+        Ok(std::array::from_fn(|i| {
+            add(
+                add(
+                    multiply(value[1], basis[1][i]),
+                    multiply(value[0], basis[0][i]),
+                ),
+                multiply(value[2], basis[2][i]),
+            )
+        }))
+    }
+
     /// Existing particles advance before newly emitted particles integrate the
     /// remaining slice immediately in 1f4e00.
-    fn advance_chunk(&mut self, delta: f32, frame: &StageFrame<'_>) -> Result<(), String> {
+    fn advance_chunk(
+        &mut self,
+        delta: f32,
+        frame: &StageFrame<'_>,
+        source_velocity: [f32; 3],
+    ) -> Result<(), String> {
         let declaration = self.declaration.clone();
         let definition = &declaration.stages[self.index];
         let space = ParticleSpace::new(frame.pose.basis, definition.worldspace);
@@ -287,7 +317,7 @@ impl StageSimulation {
                     .source_velocity_over_life
                     .sample(particle.age, seed)?;
                 Ok(std::array::from_fn(|i| {
-                    multiply(source[i], frame.source_velocity[i])
+                    multiply(source[i], source_velocity[i])
                 }))
             },
             |_, age, seed| definition.motion.sample(age, seed, &space, None),

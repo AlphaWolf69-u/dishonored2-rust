@@ -1,5 +1,6 @@
 //! Authored player screen quads, after camera effects and before exposure.
 mod passes;
+mod particles;
 mod sources;
 use crate::{
     assets::fx::screen_quad::ScreenQuadStage,
@@ -36,6 +37,7 @@ pub(super) struct ScreenEffects {
     seed: u32,
     frame: Option<u32>,
     quads: Vec<PlayingQuad>,
+    particles: Vec<particles::PlayingParticle>,
     gpu: Option<(
         ScreenConfig,
         passes::DistortionPasses,
@@ -62,6 +64,17 @@ impl ScreenEffects {
                 self.age,
                 &mut self.seed,
             );
+            // 222f80 starts particle systems before the group's other families.
+            for particle in &group.particles {
+                let result = particle.as_ref().map_err(Clone::clone).and_then(|definition| {
+                    particles::PlayingParticle::start(definition, offsets, leaving, &mut self.seed)
+                });
+                match result {
+                    Ok(Some(particle)) => self.particles.push(particle),
+                    Ok(None) => {},
+                    Err(error) => warn!("Player particle FX unavailable: {error}"),
+                }
+            }
             for quad in &group.quads {
                 self.quads.push(PlayingQuad {
                     material: quad.material,
@@ -85,15 +98,22 @@ impl ScreenEffects {
         frame: u32,
         delta: f32,
         underwater: bool,
+        camera: crate::gameplay::reference_frame::ReferenceFrame,
     ) -> Result<Vec<QuadDraw>, String> {
         if self.frame != Some(frame) {
             self.age += delta;
             self.quads.retain(|q| q.blend.active);
+            self.particles.retain(|p| p.effect.active);
             if underwater != self.underwater {
                 // Stop the opposite FX instance before starting its replacement.
                 for quad in &mut self.quads {
                     if quad.leaving == underwater {
                         quad.blend.stop(self.age);
+                    }
+                }
+                for particle in &mut self.particles {
+                    if particle.leaving == underwater {
+                        particle.effect.stop(self.age);
                     }
                 }
                 self.start(
@@ -109,6 +129,14 @@ impl ScreenEffects {
             }
             for quad in &mut self.quads {
                 quad.blend.update(self.age, 1, &mut self.seed)?;
+            }
+            if !self.particles.is_empty() {
+                let offset = crate::platform::console::shared().read().cvars
+                    .float("pm_screenParticleOffset")
+                    .ok_or("pm_screenParticleOffset is not registered")?;
+                for particle in &mut self.particles {
+                    particle.update(self.age, camera, offset, delta, &mut self.seed)?;
+                }
             }
             self.frame = Some(frame);
         }
@@ -157,6 +185,14 @@ impl ScreenEffects {
             water.matrices.frame,
             water.delta_seconds,
             underwater,
+            crate::gameplay::reference_frame::ReferenceFrame {
+                position: water.matrices.current.position,
+                basis: [
+                    std::array::from_fn(|i| -water.matrices.current.view[2][i]),
+                    std::array::from_fn(|i| -water.matrices.current.view[0][i]),
+                    std::array::from_fn(|i| water.matrices.current.view[1][i]),
+                ],
+            },
         )?;
         if draws.is_empty() {
             return Ok(());

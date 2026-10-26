@@ -3,6 +3,17 @@ pub struct EffectParameterSample {
     pub scale: f32,
     pub curve_mix: f32,
 }
+/// 22dce0 selects from the serialized slots, then searches forward (wrapping)
+/// for a non-null reference. Even a single slot consumes one random draw.
+pub fn reference_index<T>(references: &[Option<T>], seed: &mut u32) -> Option<usize> {
+    if references.is_empty() {
+        return None;
+    }
+    let first = ((crate::random::lcg_step(seed) >> 10) & 0x7fff) as usize % references.len();
+    (0..references.len())
+        .map(|offset| (first + offset) % references.len())
+        .find(|&index| references[index].is_some())
+}
 /// 2178c0 and the first sample in 226b10 share this range evaluation.
 pub fn sample_range(range: [f32; 2], seed: &mut u32) -> f32 {
     let fraction = crate::random::lcg_unit(seed);

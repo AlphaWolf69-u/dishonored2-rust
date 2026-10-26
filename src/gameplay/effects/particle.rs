@@ -113,6 +113,10 @@ impl ParticleEffect {
             .begin_fade_out(self.definition.finish_loop_on_stop, now);
     }
 
+    pub fn published_rate(&self) -> f32 {
+        self.published_rate
+    }
+
     /// 227a90 resamples only the requested offset/rate parameters on a loop.
     /// Colour/alpha and the pending automatic-stop flag retain their state.
     fn restart_loop(&mut self, seed: &mut u32) -> Result<(), String> {

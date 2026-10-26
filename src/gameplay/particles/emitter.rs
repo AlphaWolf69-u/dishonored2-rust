@@ -134,6 +134,12 @@ impl ParticleEmitter {
         self.delay.consume(delta)
     }
 
+    /// Parameter preparation reads a copy of this seed; it does not consume
+    /// the mutable spawn generator or change the cycle's retained seed.
+    pub fn cycle_seed(&self) -> u32 {
+        self.cycle_seed
+    }
+
     /// 1f6160 updates cycle state/fields before the animated spawn shape. Pose
     /// history is advanced afterward by the calling emission path.
     fn advance_clock(
