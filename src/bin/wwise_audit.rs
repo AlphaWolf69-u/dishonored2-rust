@@ -153,6 +153,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             for effect in &mix.effects {
                 println!("effect={:#010x} shared={} plugin={:#010x} parameter_bytes={} media={:?} curves={} values={:?}",
                     effect.id, effect.shared, effect.plugin, effect.parameters.len(), effect.media, effect.curves.len(), effect.values);
+                if effect.plugin == dishonored2_rust::gameplay::sound::room_reverb::PLUGIN {
+                    let parameters = dishonored2_rust::gameplay::sound::room_reverb::Parameters::read(&effect.parameters)?;
+                    println!("  room reverb: {parameters:?}");
+                }
             }
             for (group, curves) in ["obstruction", "occlusion"].into_iter().zip(&mix.environment.curves) {
                 for (property, curve) in ["volume", "LPF", "HPF"].into_iter().zip(curves) {
