@@ -14,6 +14,13 @@ pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StopAction, TransitionMode};
 
+/// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).
+pub fn language_name(game_language: &str) -> Option<&'static str> {
+    let id = super::lang::LANGUAGES.iter().position(|(name, _)| name.eq_ignore_ascii_case(game_language))?;
+    Some(["English(US)", "French(France)", "Italian", "German", "Spanish(Spain)", "Russian",
+        "Polish", "Spanish(Mexico)", "Portuguese(Brazil)", "Chinese(Taiwan)", "Japanese"][id])
+}
+
 /// The authoritative Wwise ID stored in an installed arkDeclSoundEvent.
 pub fn declared_event_id(source: &str) -> io::Result<u32> {
     declared_engine_id(source, "m_EngineID")
@@ -385,6 +392,12 @@ impl Package {
 
     pub fn bank(&self, id: u64, language_id: u32) -> Option<Entry> {
         self.banks.iter().copied().find(|entry| entry.id == id && entry.language_id == language_id)
+    }
+
+    /// Package language IDs are local to each AKPK file. English and Russian
+    /// packages can both use ID 1; select by the middleware language name.
+    pub fn language_id(&self, name: &str) -> Option<u32> {
+        self.languages.iter().find(|language| language.name.eq_ignore_ascii_case(name)).map(|language| language.id)
     }
 
     pub fn media_file(&self, id: u64, language_id: u32) -> Option<Entry> {

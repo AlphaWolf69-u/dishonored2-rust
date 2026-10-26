@@ -131,6 +131,25 @@ pub fn read_text_language(base: &Path) -> Result<&'static str, String> {
     Ok(text_language(&sku, steam.as_deref(), text, audio))
 }
 
+/// Audio selection at startup (1400a3da0: 1400a3e41..1400a3eb5), then
+/// SKU validation (1400a3790). Outside Steam's Mexican-Spanish selection,
+/// only a saved English override survives; other saved values revert to
+/// Steam. Mexican Spanish permits the saved Spain/Mexico choice.
+pub fn audio_language(sku: &Sku, steam: Option<&str>, saved_audio: u32) -> &'static str {
+    let steam = steam_language_id(if sku.ignores_steam() { Some("english") } else { steam });
+    let audio = if steam == MEXICAN && saved_audio != NOT_SET { saved_audio }
+        else if saved_audio == 0 { 0 } else { steam };
+    let audio = if sku.audio.contains(&audio) { audio } else { sku.audio[0] };
+    LANGUAGES[audio as usize].0
+}
+
+pub fn read_audio_language(base: &Path) -> Result<&'static str, String> {
+    let sku = Sku::read(base)?;
+    let steam = super::installation::steam_language(base).ok();
+    let (_, audio) = crate::platform::game_settings::read_saved_languages()?;
+    Ok(audio_language(&sku, steam.as_deref(), audio))
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StringTable {
     entries: HashMap<String, String>,

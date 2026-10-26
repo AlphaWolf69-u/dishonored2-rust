@@ -404,10 +404,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         paths.sort();
         let mut library = dishonored2_rust::assets::wwise::PlaybackBanks::default();
         let mut owners = Vec::new();
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        let audio_language = dishonored2_rust::assets::lang::read_audio_language(&base)?;
+        let package_language = dishonored2_rust::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
+        println!("Audio language: {audio_language} ({package_language})");
         for path in paths {
             let package = Package::open(&path)?;
             let mut file = File::open(&path)?;
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0) {
+            let language = package.language_id(package_language);
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
                 library.insert(package.read_entry(&mut file, entry)?.into())?;
                 owners.push((path.clone(), package.clone(), entry));
             }
@@ -415,7 +420,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
         println!("Loaded reference ownership: {:?}", library.references()?);
         if library.event_ids().binary_search(&id).is_err() {
-            println!("event {id:#010x} is not present in installed language-neutral banks");
+            println!("event {id:#010x} is not present in the selected installed banks");
             return Ok(());
         }
         let mut files = std::collections::HashMap::<usize, File>::new();
