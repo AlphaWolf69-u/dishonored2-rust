@@ -517,12 +517,12 @@ impl WorldFxComponentHost for ComponentHost<'_> {
                     ));
                 }
                 if particle.declarations.iter().flatten().any(|decl| {
-                    decl.stages
+                    decl.velocity_inheritance.enabled && decl.stages
                         .iter()
                         .any(|stage| stage.enabled && stage.enable_velocity_inheritance)
                 }) {
                     return Err(format!(
-                        "{name}: particle source velocity awaits its physics adapter"
+                        "{name}: particle velocity inheritance awaits the owning entity's published motion"
                     ));
                 }
             }

@@ -291,11 +291,33 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         wind: [f32; 3],
     ) -> Result<(), String> {
+        self.advance_frame_with_sources(delta, frame, wind, None)
+    }
+
+    pub fn advance_frame_with_sources(
+        &mut self,
+        delta: f32,
+        frame: &StageFrame<'_>,
+        wind: [f32; 3],
+        source: Option<&super::spawn::SpawnVelocity>,
+    ) -> Result<(), String> {
         use crate::float::subtract;
         let delta = self.emitter.consume_delay(delta);
         self.prepare_pose(delta, frame.pose);
         let wind = self.wind(frame, wind)?;
         let source_velocity = self.source_velocity(frame)?;
+        if self.declaration.velocity_inheritance.enabled
+            && self.declaration.stages[self.index].enable_velocity_inheritance {
+            let source = source.ok_or("particle velocity inheritance awaits the owning entity's published motion")?;
+            // 1f6220 takes a fresh copy, independently of wind/source curves.
+            let mut seed = self.emitter.cycle_seed();
+            self.inherited_velocity = super::spawn::SpawnVelocity::sample(
+                source, &self.declaration.velocity_inheritance, self.emitter.cycle.fraction, &mut seed,
+            )?;
+            if !self.declaration.stages[self.index].worldspace {
+                self.inherited_velocity.make_local(frame.pose);
+            }
+        }
         let mut remaining = delta;
         while remaining > 0. {
             let duration = self.emitter.cycle.duration;

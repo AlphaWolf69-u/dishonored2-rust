@@ -184,6 +184,36 @@ impl ParticleWind {
     }
 }
 
+/// 1f9060 initializes the same two scalar records as wind; 15794c0 names
+/// them independently for linear and angular inherited velocity.
+pub struct ParticleVelocityInheritance {
+    pub enabled: bool,
+    pub linear: crate::gameplay::particles::parameters::ScalarParameter,
+    pub angular: crate::gameplay::particles::parameters::ScalarParameter,
+}
+impl Default for ParticleVelocityInheritance {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            linear: crate::gameplay::particles::parameters::ScalarParameter::constant(1.),
+            angular: crate::gameplay::particles::parameters::ScalarParameter::constant(1.),
+        }
+    }
+}
+impl ParticleVelocityInheritance {
+    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_enabled" => self.enabled = boolean(value)?,
+                "m_linearVelocityOverCycle" => particles::scalar_parameter(&mut self.linear, scope(value)?)?,
+                "m_angularVelocityOverCycle" => particles::scalar_parameter(&mut self.angular, scope(value)?)?,
+                _ => return Err(format!("unknown particle velocity inheritance field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
     pub visibility: ParticleVisibility,
@@ -192,6 +222,7 @@ pub struct ParticleDeclaration {
     pub clipping: ParticleClipping,
     pub distance: ParticleDistance,
     pub wind: ParticleWind,
+    pub velocity_inheritance: ParticleVelocityInheritance,
     pub stages: Vec<ParticleStageAsset>,
 }
 
@@ -205,6 +236,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_clipping" => result.clipping.edit(scope(value)?)?,
             "m_distance" => result.distance.edit(scope(value)?)?,
             "m_wind" => result.wind.edit(scope(value)?)?,
+            "m_velocityInheritance" => result.velocity_inheritance.edit(scope(value)?)?,
             "m_stages" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

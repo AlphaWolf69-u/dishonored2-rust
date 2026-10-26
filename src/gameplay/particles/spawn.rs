@@ -7,7 +7,7 @@ use crate::{
 
 /// The cached linear/center/angular record at stage+160 (1db610/1db630).
 /// The owner must publish its real velocity before enabling inheritance.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct SpawnVelocity {
     pub linear: [f32; 3],
     pub center: [f32; 3],
@@ -15,6 +15,42 @@ pub struct SpawnVelocity {
     pub angular_enabled: bool,
 }
 impl SpawnVelocity {
+    /// 1db7b0 samples linear before angular using the caller's cycle-seed copy.
+    pub fn sample(
+        source: &Self,
+        definition: &crate::assets::fx::particle_declaration::ParticleVelocityInheritance,
+        fraction: f32,
+        seed: &mut u32,
+    ) -> Result<Self, String> {
+        let linear = definition.linear.sample(fraction, seed)?;
+        let linear = source.linear.map(|value| multiply(linear, value));
+        let angular = definition.angular.sample(fraction, seed)?;
+        let angular = source.angular.map(|value| multiply(angular, value));
+        Ok(Self {
+            linear,
+            center: source.center,
+            angular,
+            angular_enabled: angular.iter().fold(0, |bits, value| bits | value.to_bits()) & 0x7fff_ffff != 0,
+        })
+    }
+
+    /// 1db6e0 uses geometric axis dot products for angular velocity, subtracts
+    /// the system origin from the center, and explicitly clears linear motion.
+    pub fn make_local(&mut self, pose: crate::gameplay::reference_frame::ReferenceFrame) {
+        self.center = std::array::from_fn(|i| subtract(self.center[i], pose.position[i]));
+        let angular = self.angular;
+        self.angular = std::array::from_fn(|i| {
+            let axis = pose.basis[i];
+            let pair = if i == 0 {
+                add(multiply(angular[1], axis[1]), multiply(angular[0], axis[0]))
+            } else {
+                add(multiply(angular[0], axis[0]), multiply(angular[1], axis[1]))
+            };
+            add(pair, multiply(angular[2], axis[2]))
+        });
+        self.linear = [0.; 3];
+    }
+
     pub fn at_point(&self, position: [f32; 3]) -> [f32; 3] {
         if !self.angular_enabled {
             return self.linear;
