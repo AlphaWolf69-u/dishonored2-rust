@@ -413,6 +413,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
+        println!("Loaded reference ownership: {:?}", library.references()?);
         if library.event_ids().binary_search(&id).is_err() {
             println!("event {id:#010x} is not present in installed language-neutral banks");
             return Ok(());

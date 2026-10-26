@@ -10,6 +10,18 @@ struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
 #[derive(Clone, Copy)]
 struct Object { kind: u8, bank: usize, start: usize, length: usize }
 
+#[derive(Debug, Default)]
+pub struct References {
+    pub parents_in_other_banks: usize,
+    pub playlist_items_in_other_banks: usize,
+    pub actions_in_other_banks: usize,
+    pub play_targets_in_other_banks: usize,
+    pub missing_parents: usize,
+    pub missing_playlist_items: usize,
+    pub missing_actions: usize,
+    pub missing_play_targets: usize,
+}
+
 #[derive(Default)]
 pub struct PlaybackBanks<'a> {
     banks: Vec<LoadedBank<'a>>,
@@ -49,6 +61,50 @@ impl<'a> PlaybackBanks<'a> {
         let mut ids = self.events.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
         ids
+    }
+
+    /// Inspect reference ownership without decoding media or running playback.
+    pub fn references(&self) -> io::Result<References> {
+        let mut result = References::default();
+        for &actor in self.actors.values() {
+            let bytes = self.bytes(actor);
+            let feedback = self.banks[actor.bank].feedback;
+            let properties = bank::node_properties(bytes, actor.kind, feedback)?;
+            if properties.parent != 0 {
+                match self.actors.get(&properties.parent) {
+                    Some(parent) => result.parents_in_other_banks += usize::from(parent.bank != actor.bank),
+                    None => result.missing_parents += 1,
+                }
+            }
+            if actor.kind == 5 {
+                for (id, _) in bank::node_children(bytes, actor.kind, feedback)?.1.items {
+                    match self.actors.get(&id) {
+                        Some(child) => result.playlist_items_in_other_banks += usize::from(child.bank != actor.bank),
+                        None => result.missing_playlist_items += 1,
+                    }
+                }
+            }
+        }
+        for &event in self.events.values() {
+            let bytes = self.bytes(event);
+            for index in 0..read_u32_slice(bytes, 4)? as usize {
+                let id = read_u32_slice(bytes, 8 + index * 4)?;
+                match self.actions.get(&id) {
+                    Some(action) => result.actions_in_other_banks += usize::from(action.bank != event.bank),
+                    None => result.missing_actions += 1,
+                }
+            }
+        }
+        for &action in self.actions.values() {
+            let bytes = self.bytes(action);
+            if bytes.get(5) != Some(&4) { continue; }
+            let id = read_u32_slice(bytes, 6)?;
+            match self.actors.get(&id) {
+                Some(target) => result.play_targets_in_other_banks += usize::from(target.bank != action.bank),
+                None => result.missing_play_targets += 1,
+            }
+        }
+        Ok(result)
     }
 
     fn bytes(&self, object: Object) -> &[u8] {
