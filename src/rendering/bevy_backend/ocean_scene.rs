@@ -399,6 +399,18 @@ impl OceanScene {
     pub fn draw_count(&self) -> usize {
         self.records.len()
     }
+    /// 302d20 admits the actual owner only when the global disable is clear
+    /// and owner+78 is enabled. Particle fallback reads owner+84 directly;
+    /// the wave-displaced head-contact surface is a different input.
+    pub fn prepared_water_level(&self, frame: u32, disabled: bool) -> Result<Option<f32>, String> {
+        if disabled {
+            return Ok(None);
+        }
+        if self.last_frame != Some(frame) {
+            return Err("ocean water level awaits the current view frame".into());
+        }
+        Ok(self.state.view.enabled.then_some(self.state.view.water_level))
+    }
     pub fn record_depth(
         &mut self,
         device: &RenderDevice,

@@ -338,8 +338,21 @@ fn prepare_screen_effects(
                 .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
                 .ok_or_else(|| "particle physics inputs await the current camera frame".to_owned())
                 .and_then(|q| {
-                    gpu.screen_state
-                        .simulate_particles(water.matrices.frame, &q.world)
+                    let ocean_height = fog
+                        .ocean_capture(water.camera, water.matrices.frame)
+                        .map(|ocean| {
+                            ocean.prepared_water_level(
+                                water.matrices.frame,
+                                water.ocean_render_settings.skip,
+                            )
+                        })
+                        .transpose()?
+                        .flatten();
+                    gpu.screen_state.simulate_particles(
+                        water.matrices.frame,
+                        &q.world,
+                        ocean_height,
+                    )
                 });
             match simulation {
                 Ok(()) => *particle_error = None,

@@ -57,6 +57,7 @@ impl ScreenEffectState {
         &mut self,
         frame: u32,
         world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+        ocean_height: Option<f32>,
     ) -> Result<(), String> {
         if self.particles.is_empty() {
             return Ok(());
@@ -88,11 +89,9 @@ impl ScreenEffectState {
                             return Err("particle water query requires the downward-ray fallback"
                                 .to_owned());
                         }
-                        None => {
-                            return Err(
-                                "particle water query awaits the active ocean context".to_owned()
-                            )
-                        }
+                        None => ocean_height.map(
+                            crate::rendering::particles::clipping::ParticleWaterSurface::Ocean,
+                        ),
                     }
                 } else {
                     None

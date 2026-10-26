@@ -20,6 +20,7 @@ pub mod constraint_solver;
 pub mod rigid_body;
 pub mod aerodynamics;
 pub mod point_query;
+pub mod ray_query;
 pub mod broadphase;
 pub mod bit_field;
 pub mod collision_queries;

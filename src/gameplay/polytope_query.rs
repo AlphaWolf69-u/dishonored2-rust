@@ -1,5 +1,6 @@
 //! Polytope closest-point helpers. Broadphase candidates are not query hits.
 use crate::assets::physworld::polytope::{ConvexPolytope, PolytopeEdge};
+pub mod ray;
 
 /// The finite, unscaled, zero-radius/zero-distance point case of 140d11cb0 ->
 /// 1412b7aa0, used by render-view environment queries. With no radius, the
