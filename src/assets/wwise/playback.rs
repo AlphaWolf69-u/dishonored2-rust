@@ -178,6 +178,12 @@ impl<'a> PlaybackBanks<'a> {
 
     /// The media callback receives the loaded-bank index of each Sound,
     /// including when its event, action or actor parent came from another bank.
+    pub fn actor_playback(&self, actor: u32,
+        mut media: impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>) -> io::Result<Option<PlaybackNode>> {
+        self.resolve_node(actor, &mut media, &mut HashSet::new())
+    }
+
+    /// Resolve event actions through the same loaded actor registry.
     pub fn event_playback(&self, event: u32,
         mut media: impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>) -> io::Result<Option<Vec<PlaybackCommand>>> {
         let Some(&event) = self.events.get(&event) else { return Ok(None); };
@@ -193,7 +199,7 @@ impl<'a> PlaybackBanks<'a> {
                 1 => commands.push(PlaybackCommand::Stop(bank::stop_action(action)?)),
                 4 => {
                     let target = read_u32_slice(action, 6)?;
-                    if let Some(node) = self.resolve_node(target, &mut media, &mut HashSet::new())? {
+                    if let Some(node) = self.actor_playback(target, &mut media)? {
                         commands.push(PlaybackCommand::Play { target, settings: bank::play_settings(action)?, node });
                     }
                 },
