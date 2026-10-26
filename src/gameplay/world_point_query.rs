@@ -33,6 +33,12 @@ pub struct WorldPointRequest {
 }
 
 impl WorldPointRequest {
+    /// 1fc710's particle water-volume query, excluding ordinary trigger layers.
+    pub fn particle_water(point: [f32; 3]) -> Self {
+        let mut request = Self::environment(point);
+        request.filter.as_mut().unwrap().layers = 0x0040_0000;
+        request
+    }
     /// 806c30 submits the active render view's camera point with only ordinary
     /// and water-trigger layers (410000), no required body flags, zero distance
     /// and the all-hits collector. 963b0 supplies the filter to shape traversal.
@@ -55,6 +61,36 @@ impl WorldPointRequest {
 }
 
 impl WorldPointQuery {
+    /// ca53a0's ordinary closest collector retains only a strictly smaller
+    /// signed distance. Equal distances keep the earlier traversal hit.
+    pub fn closest_hit<'a>(
+        &mut self,
+        bodies: &BodyStorage,
+        trees: &[PointQueryTree<'_>],
+        quantization: PointQuantization,
+        request: &WorldPointRequest,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+    ) -> Result<Option<(ShapePointContact, f32)>, String> {
+        // 099d50 initializes the four distance lanes from1423cce20.
+        let mut distance = f32::from_bits(0x5f7f_fff0);
+        let mut selected = None;
+        self.hits_with_distance(
+            bodies,
+            trees,
+            quantization,
+            request.point,
+            request.hit,
+            request.filter,
+            resolve,
+            &mut |contact, candidate| {
+                if candidate < distance {
+                    distance = candidate;
+                    selected = Some((contact, candidate));
+                }
+            },
+        )?;
+        Ok(selected)
+    }
     /// Execute the real geometry path for queued point queries. No callback
     /// supplies hits or substitutes a dry result when an asset cannot be read.
     pub fn resolve_pending<'a>(
@@ -108,6 +144,35 @@ impl WorldPointQuery {
         contacts: &mut Vec<ShapePointContact>,
     ) -> Result<(), String> {
         let start = contacts.len();
+        let result = self.hits_with_distance(
+            bodies,
+            trees,
+            quantization,
+            point,
+            query,
+            filter,
+            resolve,
+            &mut |contact, _| contacts.push(contact),
+        );
+        if result.is_err() {
+            contacts.truncate(start);
+        }
+        result
+    }
+
+    /// Retain signed narrowphase distances without changing body/leaf order.
+    /// The caller owns its collector policy and discards results on failure.
+    pub fn hits_with_distance<'a>(
+        &mut self,
+        bodies: &BodyStorage,
+        trees: &[PointQueryTree<'_>],
+        quantization: PointQuantization,
+        point: [f32; 3],
+        query: ShapeHitInfo,
+        filter: Option<CollisionQueryFilter>,
+        resolve: impl FnMut(usize) -> Result<WorldQueryShape<'a>, String>,
+        submit: &mut dyn FnMut(ShapePointContact, f32),
+    ) -> Result<(), String> {
         let mut visitor = Bodies {
             bodies,
             shapes: &mut self.shapes,
@@ -115,11 +180,10 @@ impl WorldPointQuery {
             query,
             filter,
             resolve,
-            contacts,
+            submit,
             error: None,
         };
-        let result = self
-            .broadphase
+        self.broadphase
             .visit(
                 trees,
                 quantization,
@@ -131,11 +195,7 @@ impl WorldPointQuery {
                 },
                 &mut visitor,
             )
-            .and_then(|()| visitor.error.take().map_or(Ok(()), Err));
-        if result.is_err() {
-            visitor.contacts.truncate(start);
-        }
-        result
+            .and_then(|()| visitor.error.take().map_or(Ok(()), Err))
     }
 }
 
@@ -146,7 +206,7 @@ struct Bodies<'a, F> {
     query: ShapeHitInfo,
     filter: Option<CollisionQueryFilter>,
     resolve: F,
-    contacts: &'a mut Vec<ShapePointContact>,
+    submit: &'a mut dyn FnMut(ShapePointContact, f32),
     error: Option<String>,
 }
 
@@ -175,7 +235,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> PointQueryVisit
                 .get_by_index(index & 0xffffff)
                 .ok_or("point query body disappeared")?;
             let resource = (self.resolve)(body.shape)?;
-            self.shapes.all_hits(
+            self.shapes.hits_with_distance(
                 PointQueryTarget {
                     shapes: resource.shapes,
                     state: CompoundShapeState {
@@ -200,7 +260,7 @@ impl<'g, F: FnMut(usize) -> Result<WorldQueryShape<'g>, String>> PointQueryVisit
                 self.point,
                 self.query,
                 self.filter,
-                self.contacts,
+                self.submit,
             )
         })();
         if let Err(error) = result {

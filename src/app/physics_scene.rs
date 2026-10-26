@@ -74,6 +74,34 @@ pub(super) struct PhysicsScene {
 }
 
 impl PhysicsScene {
+    /// The point-query half of1fc710. This returns the selected body's packed
+    /// AABB top (c85490), independently of the view's water component plane.
+    /// The caller still owns the downward-ray fallback when this returns None.
+    pub(super) fn particle_water_body_height(
+        &mut self,
+        position: [f32; 3],
+    ) -> Result<Option<f32>, String> {
+        let hit = self.executor.closest_hit(
+            &self.world.bodies,
+            &self.world.broadphase.query_trees(),
+            crate::gameplay::point_query::PointQuantization {
+                offset: self.world.quantization.offset[..3].try_into().unwrap(),
+                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
+            },
+            &WorldPointRequest::particle_water(position),
+            |shape| Ok(WorldQueryShape {
+                shapes: &self.geometry.shapes.get(shape)
+                    .ok_or("particle water-query shape absent")?.query_shapes,
+                materials: None,
+            }),
+        )?;
+        let Some((contact, _)) = hit else { return Ok(None) };
+        let body = self.world.bodies.get(contact.target.body_id
+            .ok_or("particle water-query hit has no body")?)
+            .ok_or("particle water-query body absent")?;
+        Ok(Some(self.world.quantization.packed.unpack_bounds(body.bounds)[1][2]))
+    }
+
     pub(super) fn load(
         catalog: &archive::Catalog,
         document: &entities::Document,

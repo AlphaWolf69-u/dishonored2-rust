@@ -4,10 +4,16 @@ use super::sources::ParticleDefinition;
 use crate::{
     gameplay::{
         effects::particle::{ParticleEffect, ParticleEffectFrame, ParticlePublication},
-        particles::simulation::StageSimulation,
+        particles::{
+            pose::EmitterPose,
+            simulation::{StageFrame, StageSimulation},
+        },
         reference_frame::ReferenceFrame,
     },
-    rendering::particles::material::ParticleMaterial,
+    rendering::particles::{
+        clipping::{ParticleClipPlanes, ParticleWaterSurface},
+        material::ParticleMaterial,
+    },
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -19,6 +25,8 @@ pub(super) struct PlayingParticle {
     pub system_seed: u32,
     pub first_simulation: bool,
     pub publication: Option<ParticlePublication>,
+    pub clipping: Option<ParticleClipPlanes>,
+    simulated_frame: Option<u32>,
 }
 impl PlayingParticle {
     pub fn start(
@@ -80,6 +88,8 @@ impl PlayingParticle {
             system_seed,
             first_simulation: true,
             publication: None,
+            clipping: None,
+            simulated_frame: None,
         }))
     }
 
@@ -119,6 +129,77 @@ impl PlayingParticle {
             self.finished(),
             seed,
         )?;
+        Ok(())
+    }
+
+    /// Consume a completed physics/ocean lookup at the published FX origin.
+    /// None means neither a queried water body nor an active ocean was found;
+    /// an unavailable query must be resolved before invoking this method.
+    pub fn simulate(
+        &mut self,
+        frame: u32,
+        surface: Option<ParticleWaterSurface>,
+        source_velocity: [f32; 3],
+    ) -> Result<(), String> {
+        if self.simulated_frame == Some(frame) {
+            return Ok(());
+        }
+        let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
+            return Ok(());
+        };
+        let Some(first) = self.stages.first() else {
+            self.simulated_frame = Some(frame);
+            return Ok(());
+        };
+        self.clipping = surface.and_then(|surface| {
+            ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface)
+        });
+        for stage in &mut self.stages {
+            let definition = &stage.declaration.stages[stage.index];
+            let worldspace = definition.worldspace;
+            let mut delta = publication.simulation_delta;
+            if self.first_simulation {
+                stage.emitter.pose = EmitterPose::new(if worldspace {
+                    publication.pose
+                } else {
+                    ReferenceFrame::default()
+                });
+                delta = crate::gameplay::particles::emitter::warmup_delta(
+                    delta,
+                    definition.warmup,
+                    &mut self.system_seed,
+                );
+            }
+            // 1fe2b0 keeps the descriptor box in local space and translates
+            // its world-space counterpart by the system origin, without rotation.
+            let bounds = stage.declaration.clipping.bounding_box;
+            let bounds = [bounds[1], bounds[0]].map(|bound| {
+                if worldspace {
+                    std::array::from_fn(|i| {
+                        crate::float::add(bound[i], publication.pose.position[i])
+                    })
+                } else {
+                    bound
+                }
+            });
+            let plane = self
+                .clipping
+                .as_ref()
+                .map(|p| if worldspace { p.world } else { p.local });
+            stage.advance_frame(
+                delta,
+                &StageFrame {
+                    pose: publication.pose,
+                    bounds,
+                    planes: plane.as_slice(),
+                    source_velocity,
+                    rate: publication.rate,
+                    lod: 0,
+                },
+            )?;
+        }
+        self.first_simulation = false;
+        self.simulated_frame = Some(frame);
         Ok(())
     }
 }

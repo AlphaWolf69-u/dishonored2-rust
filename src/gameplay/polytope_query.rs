@@ -13,13 +13,24 @@ pub fn zero_distance_point_query(
     shape: &ConvexPolytope,
     point: [f32; 3],
 ) -> Result<Option<bool>, String> {
+    Ok(zero_distance_point_depth(shape, point)?.map(|distance| distance < 0.))
+}
+
+/// 12b7aa0's finite, unscaled, zero-radius plane reduction. A negative result
+/// is the signed inside-face distance published to a closest-hit collector.
+/// Nonnegative results suffice to reject a zero-distance query; they are not
+/// the general Euclidean distance to an outside edge or vertex.
+pub fn zero_distance_point_depth(
+    shape: &ConvexPolytope,
+    point: [f32; 3],
+) -> Result<Option<f32>, String> {
     if shape.radius != 0. || shape.connectivity.is_none() || !point.iter().all(|v| v.is_finite()) {
         return Ok(None);
     }
     if shape.planes.len() < 4 {
         return Err("polytope point query requires at least four source planes".into());
     }
-    let mut inside = true;
+    let mut maximum = -f32::MAX;
     for plane in &shape.planes {
         if !plane.iter().all(|v| v.is_finite()) {
             return Ok(None);
@@ -30,9 +41,11 @@ pub fn zero_distance_point_query(
         if !distance.is_finite() {
             return Ok(None);
         }
-        inside &= distance < 0.;
+        if maximum < distance {
+            maximum = distance;
+        }
     }
-    Ok(Some(inside))
+    Ok(Some(maximum))
 }
 
 fn min(a: f32, b: f32) -> f32 {
