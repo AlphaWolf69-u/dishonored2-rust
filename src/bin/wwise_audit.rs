@@ -324,6 +324,15 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let audio = decode_wem_pcm(&variant.media)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz", audio.samples.len(), audio.channels, audio.sample_rate);
             for properties in &variant.properties.nodes {
+                if !properties.ranges.is_empty() {
+                    println!("{indent}  Node {:#010x} ranges={:?}", properties.id, properties.ranges);
+                }
+                if properties.float(2) != 0.0 || properties.float(3) != 0.0 || properties.float(4) != 0.0 {
+                    println!("{indent}  Node {:#010x} pitch={} LPF={} HPF={}", properties.id,
+                        properties.float(2), properties.float(3), properties.float(4));
+                }
+            }
+            for properties in &variant.properties.nodes {
                 if properties.positioning_flags & 1 != 0 {
                     println!("{indent}  Positioning node={:#010x} flags={:#x} {:?}", properties.id, properties.positioning_flags, properties.positioning_3d);
                     break;

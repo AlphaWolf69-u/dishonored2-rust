@@ -5,6 +5,7 @@ pub mod environment;
 pub mod groups;
 pub mod parameters;
 pub mod pool;
+pub mod sound;
 pub mod timing;
 
 use crate::float::add;

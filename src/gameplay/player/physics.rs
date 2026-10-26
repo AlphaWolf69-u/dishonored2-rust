@@ -172,6 +172,9 @@ pub struct PlayerPhysics {
     ground_collision_mask: u32,
     ceil_collision_mask: u32,
     pub ground_distance: f32,
+    /// The dedicated physics-material probe, distinct from PLAYER collision
+    /// queries (FUN_1408002e0 / FUN_1407ff230). Its material feeds body+0xc60.
+    pub ground_material_hit: Option<WorldHit>,
     pub ceil_distance: f32,
     pub penetrating: bool,
     pub ground_ray_distance: [f32; 5],
@@ -282,6 +285,7 @@ impl PlayerPhysics {
             ground_collision_mask: decl.ground_collision_mask,
             ceil_collision_mask: decl.ceil_collision_mask,
             ground_distance: f32::MAX,
+            ground_material_hit: None,
             ceil_distance: f32::MAX,
             penetrating: false,
             ground_ray_distance: [decl.ground_ray_query_length; 5],
@@ -547,6 +551,22 @@ impl PlayerPhysics {
             if let Some(fraction) = hits.iter().map(|h| h.value).min_by(f32::total_cmp) {
                 self.ground_distance = ground_length * fraction - cast_offset;
             }
+        }
+        self.ground_material_hit = None;
+        if self.ground_distance < f32::MAX || self.proxy.contact_count() != 0 {
+            // The native physmat queries retain the ground layers and require
+            // flag 0x100, while the collision queries above require 0x40.
+            let material_filter = QueryFilter::layers(layer_layers & self.ground_collision_mask, 0x100);
+            self.ground_material_hit = if self.penetrating {
+                world.cast_ray(material_filter, start, -Vec3::Z, ground_length).map(|hit| WorldHit {
+                    position: hit.position, normal: hit.normal, value: hit.distance / ground_length,
+                    body: hit.body, key: hit.key,
+                })
+            } else {
+                hits.clear();
+                world.cast_shape(material_filter, ceil_floor, axis, start, Vec3::new(0.0, 0.0, -ground_length), 0.0, &mut hits, None);
+                hits.iter().min_by(|a, b| a.value.total_cmp(&b.value)).copied()
+            };
         }
         self.ceil_distance = f32::MAX;
         if self.penetrating {

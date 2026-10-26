@@ -134,7 +134,7 @@ impl Player {
     /// One simulated frame. `events` are the bound input events accumulated
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
-    pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, base_fov: f32) {
+    pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
         match self.body.midnight.advance(dt, &self.body.animations) {
@@ -167,6 +167,9 @@ impl Player {
                     controller: &mut self.controller,
                     physics: &mut self.physics,
                     body: &mut self.stances,
+                    footstep: &mut self.body.footstep,
+                    footstep_clock: &mut self.body.footsteps,
+                    body_speed: self.body.speed,
                     camera: &mut self.camera,
                     follow_slope: &mut self.body.follow_slope,
                     requests: &mut self.requests,
@@ -214,6 +217,7 @@ impl Player {
         let supported = self.controller.support_state != SupportState::Unsupported;
         let ground_normal = self.physics.ground_ray_normal_average;
         self.body.update(dt, &self.stances, input_velocity, self.physics.axis(), self.body_settings, ground_normal, supported);
+        self.body.update_footsteps(world, &self.physics, &self.attributes, dt, now);
         self.physics.lean_offset = self.body.apply_lean(dt, &mut self.lean_sensor, self.physics.axis());
         // ANIMATION (arkCpntAnimEvolved FUN_14054f500): the midnight root
         // motion as priority-1 velocities.

@@ -18,7 +18,7 @@ pub struct EffectTimings {
     pub fade_out_rate: f32,
     pub fading_out: bool,
 }
-fn sample(range: [f32; 2], seed: &mut u32) -> f32 {
+pub(super) fn sample(range: [f32; 2], seed: &mut u32) -> f32 {
     let fraction = crate::random::lcg_unit(seed);
     let first = super::normalize_small(range[0]);
     let second = super::normalize_small(range[1]);

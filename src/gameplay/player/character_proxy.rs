@@ -53,6 +53,9 @@ pub trait PlayerWorld {
     /// The physics material flags of a hit's body and shape key
     /// (FUN_1400922d0 + FUN_140092c10 → arkPhysicsMaterial +0x80).
     fn surface(&self, hit: &WorldHit) -> SurfaceFlags;
+    /// Resolved arkPhysicsMaterial declaration name for a shape hit. Worlds
+    /// without material metadata leave the native material pointer unresolved.
+    fn material(&self, _hit: &WorldHit) -> Option<&str> { None }
 }
 
 /// arkPhysicsMaterial flag byte +0x80 bits the player sensors read.

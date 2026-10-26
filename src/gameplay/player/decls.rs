@@ -378,6 +378,15 @@ fn footstep(fields: &Fields, key: &str, default: super::footsteps::Footstep) -> 
     })
 }
 
+pub fn footstep_settings(fields: &Fields) -> Result<super::footsteps::FootstepSettings, String> {
+    let defaults = super::footsteps::FootstepSettings::default();
+    Ok(super::footsteps::FootstepSettings {
+        min_speed: number(fields, "m_minSpeedforFootSteps", defaults.min_speed)?,
+        min_interval: number(fields, "m_minIntervalBetweenFootSteps", defaults.min_interval)?,
+        silent_events: [sound_event_id(fields, "m_silentFootStepOffSoundEvent"), sound_event_id(fields, "m_silentFootStepOnSoundEvent")],
+    })
+}
+
 fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, String> {
     if let Some(name) = atom(fields, "m_posture") {
         d.posture = shape::posture(name).ok_or_else(|| format!("unknown posture {name}"))?;
