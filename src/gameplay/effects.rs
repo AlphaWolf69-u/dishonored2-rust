@@ -1,11 +1,13 @@
 //! Shared FX timing and scalar-parameter evaluation. Definitions remain owned
 //! by their asset loader; running effects consume the caller's shared RNG seed.
 pub mod curve;
+pub mod decal;
 pub mod environment;
 pub mod groups;
 pub mod parameters;
 pub mod pool;
 pub mod timing;
+pub mod vector_curve;
 
 use crate::float::add;
 

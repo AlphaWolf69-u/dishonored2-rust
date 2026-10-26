@@ -10,6 +10,36 @@ pub struct EffectFloatCurvePair {
     pub maximum: EffectFloatCurve,
     pub minimum: EffectFloatCurve,
 }
+
+///1d1ae0 supplies a vector curve's enclosing times, extrapolating the first
+///or last interval for indices outside the key list. Empty/single-key lists
+///have their own source branches; no synthetic interval width is inserted.
+pub fn curve_key_times(times: &[f32], index: i32) -> [f32; 2] {
+    use crate::float::{add, multiply, subtract};
+    match times.len() {
+        0 => [0.; 2],
+        1 => [times[0]; 2],
+        count => {
+            let key = |index: i32| {
+                if index < 0 {
+                    add(
+                        multiply(subtract(times[1], times[0]), index as f32),
+                        times[0],
+                    )
+                } else if (index as usize) < count {
+                    times[index as usize]
+                } else {
+                    let steps = index.wrapping_sub(count as i32).wrapping_add(1);
+                    add(
+                        multiply(subtract(times[count - 1], times[count - 2]), steps as f32),
+                        times[count - 1],
+                    )
+                }
+            };
+            [key(index), key(index.wrapping_add(1))]
+        }
+    }
+}
 impl EffectFloatCurve {
     fn value(&self, index: usize) -> Result<f32, String> {
         self.values.get(index).copied().ok_or_else(|| {

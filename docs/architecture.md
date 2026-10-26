@@ -2488,3 +2488,12 @@ computes the source's asymmetric-box pivot offset in its local and parent frames
 orientation reuses the shared reference-frame basis product. Eviction retires
 the old FX binding without removing the new pool owner. Scheduler activation,
 curve sampling and parent selection remain with the gameplay FX owner.
+
+Decal phase sampling now lives in `gameplay::effects::decal`, sharing declaration
+curves through an `Arc`. Its timing update preserves delay, single loop restart,
+independent phase bases and retained fade-out values. The scalar depth/opacity
+curves reuse the existing sampler; size/colour use `effects::vector_curve`'s
+distinct two/three-channel cubic rules and per-channel minimum/maximum mixing.
+The render binding consumes the resulting sample, including expiry before pool
+updates. Asset defaults and scheduler activation still require the FX owner;
+these helpers do not spawn an effect merely because its declaration exists.

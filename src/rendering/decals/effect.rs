@@ -2,7 +2,10 @@
 use super::{DecalDescription, DecalPool};
 use crate::{
     float::{add, multiply, subtract},
-    gameplay::reference_frame::{basis_product, ReferenceFrame},
+    gameplay::{
+        effects::decal::DecalPhaseSample,
+        reference_frame::{basis_product, ReferenceFrame},
+    },
 };
 use std::num::NonZeroU64;
 
@@ -68,14 +71,21 @@ impl DecalEffectBinding {
         pool: &mut DecalPool<DecalDescription<M>, R>,
         attachment: &DecalAttachment,
         parent: ReferenceFrame,
-        scale: [f32; 3],
-        colour: [f32; 4],
+        sample: DecalPhaseSample,
         load_material: impl FnOnce() -> Result<M, String>,
         evict: impl FnMut(NonZeroU64),
     ) -> Result<(), String> {
+        //218d10 expires the FX before218620's activation check. The old pool
+        //record remains until the scheduler retires it; do not apply another
+        //fade sample or remove a slot that might already belong to a new FX.
+        if sample.expired {
+            self.active = false;
+        }
         if !self.active {
             return Ok(());
         }
+        let scale = sample.value.scale;
+        let colour = sample.value.colour;
         if self.slot.is_none() {
             let description = DecalDescription {
                 position: attachment.world_position(scale, parent),
