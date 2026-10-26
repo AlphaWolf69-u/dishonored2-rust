@@ -42,7 +42,7 @@ struct TextureLayer {
 }
 #[derive(Clone, Copy, ShaderType)]
 struct MaterialParameters {
-    layers: [TextureLayer; 3],
+    layers: [TextureLayer; 4],
     colour_adjust: Vec4,
     depth_fade_lookup: Vec4,
     radial_exposure_fog: Vec4,
@@ -57,7 +57,6 @@ impl MaterialParameters {
             "fx/opt/use_lighting",
             "fx/opt/fresnel",
             "fx/opt/use_macroUV",
-            "fx/opt/opacity_scroll_mask",
         ] {
             if source.option(name)? != 0 {
                 return Err(format!("particle {name} draw producer is not connected"));
@@ -69,7 +68,7 @@ impl MaterialParameters {
             tiling_pan: Vec4::ZERO,
             strength: Vec4::ZERO,
             rotation_seed: Vec4::ZERO,
-        }; 3];
+        }; 4];
         for (layer, prefix) in layers.iter_mut().zip(["disto1", "disto2", "opacity"]) {
             let tile = source.uniform(&format!("{prefix}_Tilling"))?;
             let pan = source.uniform(&format!("{prefix}_PanningSpeed"))?;
@@ -83,6 +82,17 @@ impl MaterialParameters {
             if prefix != "opacity" {
                 layer.strength = Vec4::from_array(source.uniform(&format!("{prefix}_Strength"))?);
             }
+        }
+        if source.option("fx/opt/opacity_scroll_mask")? != 0 {
+            let tile = source.uniform("opacity_Scroll_Mask_Tilling")?;
+            let pan = source.uniform("opacity_Scroll_Mask_PanningSpeed")?;
+            layers[3].tiling_pan = Vec4::new(tile[0], tile[1], pan[0], pan[1]);
+            layers[3].rotation_seed = Vec4::new(
+                scalar("opacity_Scroll_Mask_RotationSpeed")?,
+                scalar("material_seed")?,
+                0.,
+                0.,
+            );
         }
         let soft = option("fx/opt/use_softcontact")?;
         if soft > 2 {
@@ -124,7 +134,7 @@ impl MaterialParameters {
             animation_options: UVec4::new(
                 option("fx/opt/use_flipbook")?,
                 option("fx/opt/flipbook_is_mask")?,
-                0,
+                option("fx/opt/opacity_scroll_mask")?,
                 0,
             ),
         })
@@ -277,7 +287,11 @@ impl ParticlePass {
         let material_layout = device.create_bind_group_layout(
             Some("particle material"),
             &std::iter::once(buffer_entry(0, true))
-                .chain((1..=5).map(|b| texture_entry(b, TextureViewDimension::D2, false)))
+                .chain(
+                    (1..=5)
+                        .chain(std::iter::once(10))
+                        .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
+                )
                 .chain((6..=8).map(sampler_entry))
                 .chain(std::iter::once(texture_entry(
                     9,
@@ -570,6 +584,12 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 8,
                     resource: BindingResource::Sampler(&self.clamp),
+                },
+                BindGroupEntry {
+                    binding: 10,
+                    resource: BindingResource::TextureView(
+                        views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
+                    ),
                 },
                 BindGroupEntry {
                     binding: 9,

@@ -160,8 +160,18 @@ impl ParticleMaterial {
             view: &reader,
             blocks: &[&defaults, &material],
         };
+        let scroll_uniforms: &[&str] = if options["fx/opt/opacity_scroll_mask"] != 0 {
+            &[
+                "opacity_Scroll_Mask_Tilling",
+                "opacity_Scroll_Mask_PanningSpeed",
+                "opacity_Scroll_Mask_RotationSpeed",
+            ]
+        } else {
+            &[]
+        };
         let uniforms = UNIFORMS
             .iter()
+            .chain(scroll_uniforms.iter())
             .map(|name| {
                 scopes
                     .vector(name)
@@ -175,6 +185,7 @@ impl ParticleMaterial {
             ("fx/disto2", Some("fx/opt/uv_disto2")),
             ("fx/diffuse", Some("fx/opt/use_diffuse")),
             ("fx/lookup", Some("fx/opt/use_lookup")),
+            ("fx/opacity_scroll_mask", Some("fx/opt/opacity_scroll_mask")),
         ] {
             if option.is_some_and(|name| options[name] == 0) {
                 continue;

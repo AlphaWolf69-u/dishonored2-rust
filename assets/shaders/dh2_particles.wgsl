@@ -27,7 +27,7 @@ struct ParticleTransparencyParameters {weights:vec4<f32>,parameters:vec4<f32>,mo
 
 struct ParticleTextureLayer {tiling_pan:vec4<f32>,strength:vec4<f32>,rotation_seed:vec4<f32>,}
 struct ParticleMaterialParameters {
-    layers:array<ParticleTextureLayer,3>,
+    layers:array<ParticleTextureLayer,4>,
     colour_adjust:vec4<f32>,
     depth_fade_lookup:vec4<f32>,
     radial_exposure_fog:vec4<f32>,
@@ -46,6 +46,7 @@ struct ParticleMaterialParameters {
 @group(1) @binding(7) var particle_surface_sampler:sampler;
 @group(1) @binding(8) var linear_clamp:sampler;
 @group(1) @binding(9) var particle_animation:texture_3d<f32>;
+@group(1) @binding(10) var particle_scroll_mask:texture_2d<f32>;
 
 struct ParticleFragment {
     @builtin(position) position:vec4<f32>,
@@ -141,6 +142,12 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
             colour=vec4(colour.rgb*textureSample(particle_lookup,linear_clamp,lookup).rgb,colour.a);
         }
         if colour.a<0.5/255.0 {discard;}
+        // add_default applies this after TextureColor's own low-alpha clip,
+        // only in the branch that modulates lookup by the particle alpha.
+        if material.fade_options.w==0u && material.animation_options.z!=0u {
+            colour.a*=textureSample(particle_scroll_mask,particle_trilinear,
+                particle_pan(coordinates,material.layers[3])).x;
+        }
     }
     colour=vec4(colour.rgb*input.colour.rgb*material.colour_adjust.rgb*material.colour_adjust.a,colour.a*input.colour.a);
     let distance=1.0/input.position.w;
