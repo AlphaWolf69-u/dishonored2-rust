@@ -25,6 +25,7 @@ pub struct ArmSkeleton {
 }
 
 pub struct Arm {
+    pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     /// The arm entity's render model (md6 decl path).
     pub model: String,
     /// m_visible (decl arkBodyPart +0x10).
@@ -55,7 +56,7 @@ impl Arm {
         additives: AnimBasicNode,
         jump_items: [Option<usize>; 6],
     ) -> Self {
-        Self { model, visible, bind_joint, bind, skeleton, animations, loco, additives, jump_items, speed_interpolation: 0.0 }
+        Self { sound_settings: None, model, visible, bind_joint, bind, skeleton, animations, loco, additives, jump_items, speed_interpolation: 0.0 }
     }
 
     /// FUN_140777180 / FUN_140776f40 for this part (`midnight`: a full-body
