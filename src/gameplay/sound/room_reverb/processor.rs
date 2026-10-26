@@ -2,6 +2,7 @@
 use super::{tone::ToneControls, Block, EarlyReflections, InputMix, LateReverb, Parameters};
 use crate::assets::sound_effects::ReflectionPatterns;
 use std::sync::Arc;
+use crate::gameplay::sound::tail::{BufferState, BufferStatus, Tail};
 
 pub struct RoomReverb {
     parameters: Parameters,
@@ -15,6 +16,7 @@ pub struct RoomReverb {
     early: Option<EarlyReflections>,
     late: LateReverb,
     tone: ToneControls,
+    tail: Tail,
 }
 impl RoomReverb {
     pub fn new(mut parameters: Parameters, patterns: Arc<ReflectionPatterns>, rate: u32,
@@ -32,7 +34,7 @@ impl RoomReverb {
         parameters.rtpc_dirty = false;
         parameters.room_dirty = false;
         Ok(Self { structural: parameters.clone(), previous: parameters.clone(), parameters,
-            rate, mask: speaker_mask, send, patterns, input, early, late, tone })
+            rate, mask: speaker_mask, send, patterns, input, early, late, tone, tail: Tail::default() })
     }
 
     pub fn parameters(&self) -> &Parameters { &self.parameters }
@@ -70,12 +72,22 @@ impl RoomReverb {
     /// Wwise planar channel order: non-LFE mask bits ascending, then LFE.
     /// The effect owner supplies valid audio/tail frames in multiples of four.
     pub fn process(&mut self, channels: &mut [&mut [f32]]) -> Result<(), String> {
+        let count = channels.first().ok_or("room reverb has no channels")?.len();
+        let valid_frames = u16::try_from(count).map_err(|_| "room reverb frame count exceeds the buffer field")?;
+        self.process_buffer(channels, BufferStatus { state: BufferState::DataReady, valid_frames }).map(|_| ())
+    }
+
+    pub fn process_buffer(&mut self, channels: &mut [&mut [f32]], status: BufferStatus) -> Result<BufferStatus, String> {
         if channels.len() != self.mask.count_ones() as usize { return Err("room reverb channels do not match the speaker mask".into()); }
-        let count = channels[0].len();
-        if count % 4 != 0 || channels.iter().any(|channel| channel.len() != count) {
+        let capacity = channels[0].len();
+        if capacity % 4 != 0 || channels.iter().any(|channel| channel.len() != capacity) {
             return Err("room reverb requires equal channel lengths divisible by four".into());
         }
         self.prepare()?;
+        let duration = crate::float::truncate_i64((self.parameters.pre_delay * 0.001 + self.parameters.decay_time) * self.rate as f32) as u32;
+        let status = self.tail.prepare(channels, status, duration)?;
+        let count = usize::from(status.valid_frames);
+        if count % 4 != 0 { return Err("room reverb valid frame count must be divisible by four".into()); }
         let mut mono = Block([0.0; 256]);
         let mut late_left = Block([0.0; 256]);
         let mut late_right = Block([0.0; 256]);
@@ -128,7 +140,7 @@ impl RoomReverb {
         }
         // 141169450 leaves its audio snapshot untouched on zero valid frames.
         if count != 0 { self.previous = self.parameters.clone(); }
-        Ok(())
+        Ok(status)
     }
 }
 

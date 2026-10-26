@@ -17,6 +17,7 @@ pub mod environment;
 pub mod auxiliary;
 pub mod room_reverb;
 pub mod delay;
+pub mod tail;
 pub mod listener;
 pub mod looping;
 
