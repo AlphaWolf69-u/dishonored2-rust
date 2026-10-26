@@ -15,6 +15,10 @@ fn ln(value: f32) -> f32 {
 pub fn power10(value: f32) -> f32 {
     if value < -37.0 { return 0.0; }
     let bits = (value * 27_866_352.0 + 1_065_353_216.0) as i64 as u32;
+    power_from_bits(bits)
+}
+
+pub(crate) fn power_from_bits(bits: u32) -> f32 {
     let mantissa = f32::from_bits((bits & 0x7fffff) + 0x3f800000);
     ((mantissa * 0.32518977 + 0.020805772) * mantissa + 0.65304345) * f32::from_bits(bits & 0xff800000)
 }
@@ -99,6 +103,33 @@ impl From<BankMix> for Mixer {
 }
 
 impl Mixer {
+    /// Source pitch (2), LPF (3), and HPF (4), accumulated through the
+    /// source hierarchy by 1410dbb30. Output-bus filters are a separate stage.
+    pub fn source_property(&self, source: &MediaProperties, property: u8,
+        parameter: Option<(u32, f32)>) -> Result<f32, String>
+    {
+        if !matches!(property, 2 | 3 | 4) { return Err("unsupported Wwise source property".into()); }
+        let mut result = 0.0;
+        for node in &source.nodes {
+            let mut value = node.float(property);
+            for curve in node.curves.iter().filter(|curve| curve.property == property) {
+                if curve.kind != 0 { return Err(format!("node {:#010x} has a non-game-parameter source curve", node.id)); }
+                let input = parameter.filter(|(id, _)| *id == curve.parameter).map(|(_, value)| value)
+                    .or_else(|| self.parameters.get(&curve.parameter).copied())
+                    .ok_or_else(|| format!("missing Wwise parameter default {:#010x}", curve.parameter))?;
+                let next = curve_value(curve, input).ok_or("empty Wwise source curve")?;
+                match curve.accumulation {
+                    0 => value = next,
+                    1 => value += next,
+                    2 => value *= next,
+                    _ => return Err("unsupported Wwise source accumulation".into()),
+                }
+            }
+            result += value;
+        }
+        Ok(result)
+    }
+
     fn node_volume(&self, node: &NodeProperties, parameter: Option<(u32, f32)>) -> Result<f32, String> {
         // RTPC parameter IDs differ from static property IDs for makeup gain
         // and output-bus volume in bank version 113.
