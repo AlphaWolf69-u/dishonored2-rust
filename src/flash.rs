@@ -229,8 +229,32 @@ impl Player {
             resources.push((index, path));
         }
         player.load_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
+        player.initialize_sound_events().map_err(|e| format!("{movie_path} sound events: {}", player.describe(&e)))?;
         resources.push((player.state.borrow().libraries.len() - 1, movie_path.to_string()));
         Ok((player, resources))
+    }
+
+    /// File ready (`FUN_14002c220`): bind every authored sound name to its
+    /// Wwise ID before the host shows the movie. This also covers global
+    /// message-box movies, which have their own sound list.
+    fn initialize_sound_events(&mut self) -> Result<()> {
+        let handler = self.get_value("_soundHandler")?;
+        if handler.is_nullish() {
+            return Ok(());
+        }
+        let list = self.member(&handler, "soundsList")?;
+        let length = self.member(&list, "length")?;
+        let length = self.vm.to_uint(&length)?;
+        let data = self.member(&list, "data")?;
+        for index in 0..length {
+            let entry = self.member(&data, &index.to_string())?;
+            let name = self.member(&entry, "name")?;
+            let name = self.vm.to_string(&name)?;
+            if !name.is_empty() {
+                self.set_member(&entry, "ID", crate::assets::wwise::event_id(&name).into())?;
+            }
+        }
+        Ok(())
     }
 
     /// `FUN_1410249b0` / tick step 10: frame scripts pre-order, repeated

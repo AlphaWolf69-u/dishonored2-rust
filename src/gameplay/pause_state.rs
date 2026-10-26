@@ -210,7 +210,7 @@ impl Pause {
                 "PostSoundEvent" => match args.first() {
                     // FUN_14002ca20 converts this numeric callback argument
                     // to uint32 before posting it to Wwise.
-                    Some(Value::Number(id)) => requests.push(Request::SoundEvent(*id as i32 as u32)),
+                    Some(Value::Number(id)) => requests.push(Request::SoundEvent(crate::flash::avm2::value::to_uint32(*id))),
                     _ => unhandled.push(name.clone()),
                 },
                 // Global `SetFlashFocus` -> `FUN_140035020`.
