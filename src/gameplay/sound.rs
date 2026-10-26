@@ -8,6 +8,7 @@ pub mod properties;
 pub mod resampler;
 pub mod gain;
 pub mod component;
+pub mod admission;
 
 /// The material pair and physical inputs submitted to the contact FX manager
 /// (14060a480). Sound selection is owned by the installed contact database.

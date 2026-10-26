@@ -4,6 +4,28 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--level-audio" {
+        use dishonored2_rust::{archive::Catalog, assets::{installation, level::{LevelResources, DEFAULT_LEVEL}}, entities};
+        let requested = arguments.next().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| DEFAULT_LEVEL.to_owned());
+        let catalog = Catalog::open(&installation::game_base()?)?;
+        let level = LevelResources::resolve(&catalog, &requested)?;
+        let bytes = level.read_entities(&catalog)?.ok_or("level has no entity resource")?;
+        let document = entities::parse(&String::from_utf8_lossy(&bytes))?;
+        let bindings = entities::audio::audio_bindings(&document, |path| {
+            catalog.read(path).map(|value| value.map(|bytes| entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
+        })?;
+        println!("{}: {} audio components", level.entities, bindings.len());
+        for binding in bindings {
+            println!("entity={} slot={} spawn={} phases={:#x} propagation={} dilation={} startup={:?}",
+                binding.entity_id, binding.slot, binding.scheduling.starts_on_spawn(), binding.scheduling.start_phases,
+                binding.propagation, binding.settings.dilation_factor, binding.startup());
+            for event in binding.events.iter().flatten() {
+                println!("  event={:#010x} loop={} spatial={} range={} duration={:?} game_properties={:?}",
+                    event.id, event.persistent_loop(), event.spatialized, event.max_distance, event.duration, event.game_properties);
+            }
+        }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--attenuations" {
         let path = arguments.next().map(PathBuf::from).ok_or("missing package path")?;
         let wanted = arguments.next().map(|id| u32::from_str_radix(id.to_string_lossy().trim_start_matches("0x"), 16)).transpose()?;

@@ -1,5 +1,42 @@
 //! arkCpntAudio time scaling (140708960 / 140708250 / 140708b00).
 use crate::assets::entities::Value;
+use crate::assets::wwise::SoundEventDeclaration;
+
+/// 140708540: null list slots are ignored. Maximum range is accumulated even
+/// when one event prevents deferred startup of the whole list.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Startup {
+    pub deferred: bool,
+    pub pending: bool,
+    pub max_distance: f32,
+}
+impl Startup {
+    pub fn from_events(events: &[Option<SoundEventDeclaration>]) -> Self {
+        let mut state = Self { deferred: !events.is_empty(), ..Self::default() };
+        for event in events.iter().flatten() {
+            if state.max_distance < event.max_distance { state.max_distance = event.max_distance; }
+            state.deferred &= event.persistent_loop() && event.spatialized && event.game_properties.is_none();
+        }
+        state.pending = state.deferred;
+        state
+    }
+
+    /// 1407088b0 returns the required operation. The owner performs the
+    /// original listener/propagation query before requesting a pending start.
+    pub fn update(&mut self, allocated: bool, object_inaudible: bool, origin_inaudible: bool) -> StartupAction {
+        if !self.deferred { return StartupAction::None; }
+        if !self.pending {
+            if !allocated { self.pending = true; }
+            else if object_inaudible { self.pending = true; return StartupAction::Stop; }
+        } else if !origin_inaudible { return StartupAction::Post; }
+        StartupAction::None
+    }
+
+    pub fn posted(&mut self, allocated: bool) { self.pending = !allocated; }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupAction { None, Stop, Post }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
