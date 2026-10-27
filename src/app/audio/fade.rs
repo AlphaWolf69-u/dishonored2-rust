@@ -49,17 +49,6 @@ impl Transition {
     }
 }
 
-#[derive(Clone, Default)]
-pub(super) struct Control(Arc<Mutex<Option<(i32, u8)>>>);
-impl Control {
-    pub fn stop(&self, milliseconds: i32, curve: u8) {
-        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some((milliseconds, curve));
-    }
-    pub fn take(&self) -> Option<(i32, u8)> {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).take()
-    }
-}
-
 pub(super) fn frames(milliseconds: i32, rate: u32) -> u64 {
     if milliseconds == 0 { return 0; }
     // 142427c20/c24/c30: 21-ms transition ticks, 48 kHz, 1024 output

@@ -69,53 +69,6 @@ impl Definition {
     }
     fn has_switch(&self) -> bool { self.nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) }
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
-    pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
-        match node {
-            PlaybackNode::Unsupported { .. } => Ok(false),
-            PlaybackNode::Switch(switch) => {
-                for (_, child) in &switch.children {
-                    if let Some(child) = child { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                }
-                Ok(false)
-            },
-            PlaybackNode::Missing { .. } | PlaybackNode::NoSource { .. } => Ok(false),
-            PlaybackNode::Generator { properties, .. } => mixer.source_has_ducking(properties),
-            PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
-            PlaybackNode::Layer { children, .. } => {
-                for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                Ok(false)
-            },
-            PlaybackNode::Container(container) => {
-                for (child, _) in &container.children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                Ok(false)
-            },
-        }
-    }
-    pub fn required(node: &PlaybackNode) -> bool {
-        match node {
-            PlaybackNode::Unsupported { .. } | PlaybackNode::Generator { .. } => true,
-            PlaybackNode::Switch(_) => true,
-            PlaybackNode::Missing { .. } | PlaybackNode::NoSource { .. } => true,
-            PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
-                node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
-                    || node.ranges.iter().any(|range| range.property == 0x3a))
-                || crate::gameplay::sound::auxiliary::enabled(&variant.properties)
-                || variant.properties.nodes.iter().find(|node| node.positioning_flags & 1 != 0 || node.parent == 0)
-                    .is_some_and(|node| node.positioning_flags & 7 == 7)
-                || variant.properties.nodes.iter()
-                .find(|node| node.positioning_flags & 1 != 0).is_some_and(|node| node.positioning_3d.is_some())
-                || variant.properties.nodes.iter().any(|node| {
-                    [2, 3, 4].iter().any(|property| node.float(*property) != 0.0)
-                        || node.curves.iter().any(|curve| matches!(curve.property, 2 | 3 | 4))
-                        || node.ranges.iter().any(|range| matches!(range.property, 0 | 2 | 3 | 4 | 0x21)
-                            && (range.min != 0.0 || range.max != 0.0))
-                }),
-            PlaybackNode::Layer { children, .. } => children.is_empty() || children.iter().any(Self::required),
-            PlaybackNode::Container(container) => container.children.is_empty() || container.playback.continuous
-                || container.children.iter().any(|(child, _)| !matches!(child, PlaybackNode::Sound { .. }) || Self::required(child)),
-        }
-    }
-
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<Self> {
         // The Play target owns its properties even when no source is selected
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
