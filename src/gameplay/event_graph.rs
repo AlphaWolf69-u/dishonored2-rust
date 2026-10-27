@@ -5,13 +5,26 @@ use crate::assets::entities::event_graph::{atom, Node};
 /// Runtime entity identity, separate from serialized map names. Player resolves
 /// through the active player owner (7a8500), never a fabricated map entity name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EntityReference { Named(String), Player }
+pub enum EntityReference {
+    Named(String),
+    Player,
+}
 
 pub trait GraphInputs {
     fn graph_nodes(&self) -> &[Node];
     fn graph_owner(&self) -> &str;
     fn random_sample(&self, node: u32) -> Option<f32>;
     fn named_value(&self, name: &str) -> Result<Option<f32>, String>;
+    /// Instance owners expose typed named and declaration outputs here. Other
+    /// graph domains retain their existing variable readers.
+    fn variable_value(
+        &self,
+        _node: &Node,
+        _port: u32,
+        _depth: usize,
+    ) -> Result<Option<super::effects::variables::GraphValue>, String> {
+        Ok(None)
+    }
     fn node(&self, id: u32) -> Result<&Node, String> {
         self.graph_nodes()
             .iter()
@@ -44,6 +57,9 @@ pub trait GraphInputs {
                     .parse()
                     .map_err(|_| format!("invalid number {}", p.name))
             };
+        }
+        if let Some(value) = self.variable_value(n, port, depth)? {
+            return value.number();
         }
         match n.class.as_str() {
             "arkKisculeNodeRandomFloat" => self
@@ -83,15 +99,43 @@ pub trait GraphInputs {
         }
     }
     fn entity_references(&self, id: u32, port: u32) -> Result<Vec<EntityReference>, String> {
+        self.entity_references_inner(id, port, 0)
+    }
+    fn entity_references_inner(
+        &self,
+        id: u32,
+        port: u32,
+        depth: usize,
+    ) -> Result<Vec<EntityReference>, String> {
+        if depth > 64 {
+            return Err("cyclic variable graph".into());
+        }
         let node = self.node(id)?;
+        let input = node
+            .ports
+            .iter()
+            .find(|point| point.id == port)
+            .ok_or("missing entity variable port")?;
+        if input.kind == "InputVariable" {
+            if let Some((id, port)) = input.links.first() {
+                return self.entity_references_inner(*id, *port, depth + 1);
+            }
+        }
+        if let Some(value) = self.variable_value(node, port, depth)? {
+            return value.entities();
+        }
         if node.class == "arkKisculeNodePlayer" {
             return Ok(vec![EntityReference::Player]);
         }
-        self.entities(id, port).map(|names| names.into_iter().map(EntityReference::Named).collect())
+        self.entities(id, port)
+            .map(|names| names.into_iter().map(EntityReference::Named).collect())
     }
     fn entities(&self, id: u32, port: u32) -> Result<Vec<String>, String> {
         let n = self.node(id)?;
         match n.class.as_str() {
+            "arkKisculeNodeListEntityReference" => {
+                crate::assets::entities::event_graph::entity_names(&n.params, "m_value")
+            }
             "arkKisculeNodeEntityReference" => Ok(atom(&n.params, "m_value")
                 .filter(|v| !v.is_empty())
                 .map(|v| vec![v.to_owned()])
@@ -153,6 +197,9 @@ pub trait GraphInputs {
                 .ok_or("integer input default is not prepared")?
                 .parse()
                 .map_err(|_| format!("invalid integer {}", port.name));
+        }
+        if let Some(value) = self.variable_value(node, port.id, depth)? {
+            return value.integer();
         }
         match node.class.as_str() {
             "arkKisculeNodeInt" | "arkKisculeNodeTime" => atom(&node.params, "m_value")

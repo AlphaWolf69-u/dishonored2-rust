@@ -2763,5 +2763,15 @@ Nested Kiscule assets are acquired by `assets::entities::effects::declarations`
 through the installed declaration reader and a cache in first-reference order.
 Root and nested graphs use one node parser, retaining typed variable records and
 all authored links. `WorldFxSources` prepares their referenced FX through the
-same particle/material/sound caches. This is declaration preparation; child
-instance execution, entry/exit forwarding and variable refresh remain unfinished.
+same particle/material/sound caches.
+
+`gameplay::effects::instances` owns separate root/child runtime scopes keyed by
+instance and authored node ID. Declaration entry/exit routing occurs during event
+insertion into the shared action stack. Matching entry nodes all run in authored
+order; optional refresh updates connected parent variables before entry outputs,
+and auto-exit forwards the matching parent output afterward. `effects::variables`
+retains typed defaults/current values; child variable outputs reference the same
+variable owner rather than copying snapshots. The FX domain samples random-value
+producers on each read using the shared manager RNG. Unknown variable/action
+families remain explicit errors. Authored FX actors controlled by `NodeEntityFx`
+and remaining list/control-flow actions are separate unfinished connections.

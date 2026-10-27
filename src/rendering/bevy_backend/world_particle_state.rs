@@ -8,7 +8,8 @@ use crate::{
     assets::entities::event_graph::atom,
     gameplay::event_graph::EntityReference,
     gameplay::effects::{
-        graph::{FxGraphRuntime, FxGraphWorld, FxRuntimeParameters, GraphStep},
+        graph::{FxGraphWorld, FxRuntimeParameters, GraphStep},
+        instances::FxGraphInstances,
         pool::EffectPoolLinks,
         world_component::{ReferenceReadiness, WorldFxComponent, WorldFxComponentHost},
         world_node::{CreatedEffect, FxNode},
@@ -46,8 +47,7 @@ pub(crate) struct WorldParticleState {
     sounds: Option<super::world_sounds::WorldSounds>,
     sound_systems: crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter, crate::gameplay::sound::playing::PlayingId>,
-    graphs: Vec<Option<FxGraphRuntime>>,
-    events: Vec<(usize, u32, u32)>,
+    graphs: FxGraphInstances,
     timers: Vec<(usize, u32)>,
     entities: HashMap<u32, FxEntity>,
     entity_order: Vec<u32>,
@@ -70,8 +70,7 @@ impl Default for WorldParticleState {
             source: None,
             sounds: None,
             sound_systems: Default::default(),
-            graphs: Vec::new(),
-            events: Vec::new(),
+            graphs: FxGraphInstances::default(),
             timers: Vec::new(),
             entities: HashMap::new(),
             entity_order: Vec::new(),
@@ -107,47 +106,17 @@ impl WorldParticleState {
         }
     }
     fn collect(&mut self, graph: usize) {
-        if let Some(runtime) = self.graphs[graph].as_mut() {
-            self.events.extend(
-                runtime
-                    .take_pending()
-                    .into_iter()
-                    .map(|(node, port)| (graph, node, port)),
-            );
-        }
+        for error in self.graphs.collect(graph) { self.report(error); }
     }
-    fn initialize(&mut self, sources: &WorldEffectGraphs) -> Result<(), String> {
-        if self
-            .source
-            .as_ref()
-            .is_some_and(|old| Arc::ptr_eq(old, &sources.0))
-        {
+    fn initialize(&mut self, sources: &WorldEffectGraphs, assets: &WorldFxSources) -> Result<(), String> {
+        if self.source.as_ref().is_some_and(|old| Arc::ptr_eq(old, &sources.0)) {
             return Ok(());
         }
         if self.source.is_some() {
             return Err("world FX level changed before the shared pool was reset".into());
         }
-        let mut random = crate::random::MwcRandom::event_manager(sources.1);
-        for graph in sources.0.iter() {
-            let mut samples = HashMap::new();
-            for node in &graph.nodes {
-                if node.class == "arkKisculeNodeRandomFloat" {
-                    let min = atom(&node.params, "m_min")
-                        .unwrap_or("0")
-                        .parse::<f32>()
-                        .map_err(|_| "invalid graph random minimum")?;
-                    let max = atom(&node.params, "m_max")
-                        .unwrap_or("1")
-                        .parse::<f32>()
-                        .map_err(|_| "invalid graph random maximum")?;
-                    samples.insert(node.id, random.between(min, max));
-                }
-            }
-            let mut runtime = FxGraphRuntime::new(graph.clone(), samples);
-            runtime.loading_end()?;
-            self.graphs.push(Some(runtime));
-            self.collect(self.graphs.len() - 1);
-        }
+        self.graphs = FxGraphInstances::new(&sources.0, &assets.declarations, sources.1);
+        for error in self.graphs.loading_end() { self.report(error); }
         self.source = Some(sources.0.clone());
         Ok(())
     }
@@ -241,7 +210,7 @@ impl WorldParticleState {
                 }
             }
         }
-        self.initialize(graphs)?;
+        self.initialize(graphs, sources)?;
         let clock = frames
             .clock
             .ok_or("world FX awaits actual gameplay clocks")?;
@@ -265,11 +234,11 @@ impl WorldParticleState {
             match result {
                 Ok(true) => self.timers.push((index, node)),
                 Ok(false) => {}
-                Err(error) => self.report(format!("{} node {node}: {error}", graphs.0[index].owner)),
+                Err(error) => self.report(format!("{} node {node}: {error}", self.graphs.owner(index))),
             }
             self.collect(index);
         }
-        while let Some((index, node, port)) = self.events.pop() {
+        while let Some((index, node, port)) = self.graphs.events.pop() {
             let mut runtime = self.graphs[index].take().ok_or("FX graph busy")?;
             runtime.notify(node, port);
             let result = runtime.step(&mut GraphHost {
@@ -290,7 +259,7 @@ impl WorldParticleState {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => self.report(format!("{} node {node}: {error}", graphs.0[index].owner)),
+                Err(error) => self.report(format!("{} node {node}: {error}", self.graphs.owner(index))),
             }
             self.collect(index);
         }
@@ -502,6 +471,10 @@ struct GraphHost<'a> {
     graph: usize,
 }
 impl FxGraphWorld for GraphHost<'_> {
+    fn parent_value(&self, name: &str, kind: &crate::gameplay::effects::variables::GraphValue)
+        -> Result<Option<crate::gameplay::effects::variables::GraphValue>, String> {
+        self.state.graphs.parent_value(self.graph, name, kind)
+    }
     fn effect_ready(&self, effect: &str) -> Result<bool, String> {
         self.sources
             .effects

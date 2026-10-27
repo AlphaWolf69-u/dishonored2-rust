@@ -1,6 +1,7 @@
 //! World particle FX graph execution. Links append in authored order and
 //! ordinary actions pop newest-first (7beee0/7c10b0). The world owner supplies
 //! real effect allocation, entity clocks and inter-graph queue phases.
+use super::variables::{GraphValue, GraphVariables, SharedVariables};
 use super::world_node::{CreatedEffect, FxNode, FxNodeWorld};
 use crate::{
     assets::entities::{
@@ -10,14 +11,20 @@ use crate::{
     },
     gameplay::{
         event_gate::{GateContext, GateOutput, GateState},
-        event_graph::{GraphInputs, EntityReference},
+        event_graph::{EntityReference, GraphInputs},
     },
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, RwLock},
+};
 
 pub type FxRuntimeParameters = FxNodeParameters<EntityReference>;
 
 pub trait FxGraphWorld {
+    fn parent_value(&self, _name: &str, _kind: &GraphValue) -> Result<Option<GraphValue>, String> {
+        Ok(None)
+    }
     fn effect_ready(&self, effect: &str) -> Result<bool, String>;
     fn entity_exists(&self, entity: &EntityReference) -> Result<bool, String>;
     fn spawn_effect(
@@ -41,7 +48,9 @@ pub struct FxGraphRuntime {
     relevant: HashSet<u32>,
     pending: Vec<(u32, u32)>,
     random: HashMap<u32, f32>,
-    named: HashMap<String, f32>,
+    pub(super) random_owner: Option<Arc<Mutex<crate::random::MwcRandom>>>,
+    pub(super) variables: SharedVariables,
+    pub(super) children: HashMap<u32, SharedVariables>,
     gates: HashMap<u32, GateState>,
     effects: HashMap<u32, FxNode>,
 }
@@ -56,18 +65,77 @@ impl GraphInputs for FxGraphRuntime {
         self.random.get(&node).copied()
     }
     fn named_value(&self, name: &str) -> Result<Option<f32>, String> {
-        self.named
+        self.variables
+            .read()
+            .map_err(|_| "graph variable owner poisoned")?
+            .get(name)?
+            .map(|value| value.number())
+            .transpose()
+    }
+    fn variable_value(
+        &self,
+        node: &Node,
+        port: u32,
+        depth: usize,
+    ) -> Result<Option<GraphValue>, String> {
+        if node.class == "arkKisculeNodeRandomFloat" {
+            if let Some(random) = &self.random_owner {
+                // 522a10 invokes the producer's +c0 getter on every read;
+                // 8bcce0 then advances the shared event-manager generator.
+                let min = self.number_input(node, "m_min", 0., depth + 1)?;
+                let max = self.number_input(node, "m_max", 1., depth + 1)?;
+                return Ok(Some(GraphValue::Float(
+                    random
+                        .lock()
+                        .map_err(|_| "graph random owner poisoned")?
+                        .between(min, max),
+                )));
+            }
+        }
+        let (variables, name) = if node.class.starts_with("arkKisculeNodeNamedVariable") {
+            (
+                &self.variables,
+                atom(&node.params, "m_variableName").unwrap_or(""),
+            )
+        } else if node.class == "arkKisculeNodeDeclInstance" {
+            let variables = self
+                .children
+                .get(&node.id)
+                .ok_or("declaration variable instance is not available")?;
+            let port = node
+                .ports
+                .iter()
+                .find(|point| point.id == port)
+                .ok_or("declaration variable port is absent")?;
+            (variables, port.name.as_str())
+        } else {
+            return Ok(None);
+        };
+        variables
+            .read()
+            .map_err(|_| "graph variable owner poisoned")?
             .get(name)
-            .copied()
-            .map(Some)
-            .ok_or_else(|| format!("world FX named variable {name} awaits its actual binding"))
     }
 }
 impl FxGraphRuntime {
     /// Random inputs come from the graph manager's existing RNG preparation.
     /// Constructing this domain owner does not seed another random generator.
     pub fn new(graph: FxGraph, random: HashMap<u32, f32>) -> Self {
-        let mut relevant = graph.effects.keys().copied().collect::<HashSet<_>>();
+        let relevant = Self::relevant_nodes(&graph, graph.effects.keys().copied().collect());
+        let variables = Arc::new(RwLock::new(GraphVariables::new(&graph.variables)));
+        Self {
+            graph,
+            relevant,
+            random,
+            random_owner: None,
+            variables,
+            children: HashMap::new(),
+            pending: Vec::new(),
+            gates: HashMap::new(),
+            effects: HashMap::new(),
+        }
+    }
+    fn relevant_nodes(graph: &FxGraph, mut relevant: HashSet<u32>) -> HashSet<u32> {
         loop {
             let previous = relevant.len();
             for node in &graph.nodes {
@@ -75,10 +143,7 @@ impl FxGraphRuntime {
                     for port in node.ports.iter().filter(|p| p.kind.starts_with("Input")) {
                         relevant.extend(port.links.iter().map(|(node, _)| *node));
                     }
-                    if matches!(
-                        node.class.as_str(),
-                        "arkKisculeNodeNamedVariableFloat" | "arkKisculeNodeNamedVariableBool"
-                    ) {
+                    if node.class.starts_with("arkKisculeNodeNamedVariable") {
                         for writer in &graph.nodes {
                             if writer.class == node.class
                                 && atom(&writer.params, "m_variableName")
@@ -94,25 +159,66 @@ impl FxGraphRuntime {
                 break;
             }
         }
-        Self {
-            graph,
-            relevant,
-            random,
-            named: HashMap::new(),
-            pending: Vec::new(),
-            gates: HashMap::new(),
-            effects: HashMap::new(),
-        }
+        relevant
+    }
+    pub(super) fn include_targets(&mut self, targets: impl IntoIterator<Item = u32>) {
+        self.relevant.extend(targets);
+        self.relevant = Self::relevant_nodes(&self.graph, std::mem::take(&mut self.relevant));
     }
     pub fn set_named_value(&mut self, name: String, value: f32) {
-        self.named.insert(name, value);
+        self.variables
+            .write()
+            .expect("graph variable owner poisoned")
+            .set(name, GraphValue::Float(value));
+    }
+    pub(super) fn definition(&self) -> &FxGraph {
+        &self.graph
+    }
+    pub(super) fn refresh_variable(
+        &mut self,
+        parent: &Self,
+        instance: u32,
+        definition: &crate::assets::entities::effects::declarations::GraphVariable,
+    ) -> Result<(), String> {
+        let node = parent.node(instance)?;
+        let name = atom(&definition.parameters, "m_name").unwrap_or("");
+        if let Some((id, port)) = parent.input(node, name) {
+            let current = self
+                .variables
+                .read()
+                .map_err(|_| "graph variable owner poisoned")?
+                .get(name)?
+                .ok_or("graph variable absent")?;
+            let value = current.read(parent, id, port)?;
+            self.variables
+                .write()
+                .map_err(|_| "graph variable owner poisoned")?
+                .set(name.to_owned(), value);
+        }
+        Ok(())
+    }
+    pub(super) fn variable_updated(&mut self, name: &str) -> Result<(), String> {
+        let listeners = self
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.class.starts_with("arkKisculeNodeNamedVariable")
+                    && atom(&node.params, "m_variableName") == Some(name)
+            })
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        for listener in listeners {
+            self.emit(listener, "Updated")?;
+        }
+        Ok(())
     }
     /// The shared manager owns inter-graph ordering. Export append order so it
     /// can process the resulting global stack, rather than drain each graph.
     pub fn take_pending(&mut self) -> Vec<(u32, u32)> {
         std::mem::take(&mut self.pending)
     }
-    fn emit(&mut self, id: u32, name: &str) -> Result<(), String> {
+    pub(super) fn emit(&mut self, id: u32, name: &str) -> Result<(), String> {
         let node = self.node(id)?;
         let links = node
             .ports
@@ -202,26 +308,49 @@ impl FxGraphRuntime {
                 self.emit(id, if value { "True" } else { "False" })?;
                 false
             }
-            "arkKisculeNodeNamedVariableFloat" if port.name == "Set" => {
-                let value = self.number_input(&node, "m_value", 0., 0)?;
+            "arkKisculeNodeNamedVariableFloat" | "arkKisculeNodeNamedVariableBool"
+                if port.name == "Set" =>
+            {
                 let name = atom(&node.params, "m_variableName")
                     .unwrap_or("")
                     .to_owned();
-                self.named.insert(name.clone(), value);
-                let listeners = self
-                    .graph
-                    .nodes
-                    .iter()
-                    .filter(|n| {
-                        n.class == node.class
-                            && atom(&n.params, "m_variableName") == Some(name.as_str())
-                    })
-                    .map(|n| n.id)
-                    .collect::<Vec<_>>();
-                for listener in listeners {
-                    self.emit(listener, "Updated")?;
+                let kind = if node.class == "arkKisculeNodeNamedVariableBool" {
+                    GraphValue::Bool(false)
+                } else {
+                    GraphValue::Float(0.)
+                };
+                // 926e60 reads an explicit Value link first, then the parent
+                // declaration input with the variable's own name. An absent
+                // link leaves the current value untouched.
+                let value = if let Some((id, port)) = self.input(&node, "m_value") {
+                    Some(kind.read(self, id, port)?)
+                } else {
+                    world.parent_value(&name, &kind)?
+                };
+                if let Some(value) = value {
+                    let bound = self
+                        .variables
+                        .read()
+                        .map_err(|_| "graph variable owner poisoned")?
+                        .get(&name)?
+                        .is_some();
+                    if !bound {
+                        self.emit(id, "Set")?;
+                        self.emit(id, "Out")?;
+                        return Err(format!("named variable {name} is not bound"));
+                    }
+                    self.variables
+                        .write()
+                        .map_err(|_| "graph variable owner poisoned")?
+                        .set(name.clone(), value);
+                    self.variable_updated(&name)?;
+                } else {
+                    // The native warning does not suppress regular forwarding.
+                    self.emit(id, "Set")?;
+                    self.emit(id, "Out")?;
+                    return Err(format!("named variable {name}: Set has no Value link"));
                 }
-                false
+                true
             }
             _ => {
                 return Err(format!(
@@ -371,7 +500,8 @@ impl<W: FxGraphWorld> FxNodeWorld for FxInvocation<'_, W> {
             .effects
             .get(&self.id)
             .ok_or("FX parameters absent")?
-            .clone().map_entities(EntityReference::Named);
+            .clone()
+            .map_entities(EntityReference::Named);
         if self.graph.input(node, "m_fx").is_some() {
             return Err("connected FX declaration producer is not prepared".into());
         }
