@@ -1,5 +1,5 @@
 //! Authored player screen quads, after camera effects and before exposure.
-mod passes;
+pub(super) mod passes;
 mod sources;
 mod state;
 pub(super) use super::particle_system::ParticleDrawContext;

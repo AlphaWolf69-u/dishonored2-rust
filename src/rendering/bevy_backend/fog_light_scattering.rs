@@ -13,6 +13,7 @@ pub struct LocalFogFrame {
     pub camera: Option<Entity>,
     pub shadow_revision: Option<u64>,
     pub lights: std::sync::Arc<Vec<[u32; 28]>>,
+    pub source_indices: std::sync::Arc<Vec<u32>>,
     /// Authored texture identity for each packet, before the shared pool assigns slices.
     pub area_images: std::sync::Arc<Vec<Option<Handle<Image>>>>,
 }

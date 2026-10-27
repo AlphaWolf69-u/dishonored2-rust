@@ -35,6 +35,7 @@ pub(super) fn publish(
             .transpose()
             .map_err(Clone::clone)?;
         let mut packets = Vec::new();
+        let mut source_indices = Vec::new();
         let sources = area_sources.0.as_ref().map_err(Clone::clone)?;
         let mut area_images = Vec::new();
         for (entity, source, cull, _, transform) in ordered {
@@ -105,24 +106,27 @@ pub(super) fn publish(
                 &mut packet,
             );
             packets.push(packet);
+            source_indices.push(source.0 as u32);
             area_images.push(sources[source.0].clone());
         }
         if packets.len() >= crate::tiled_lighting::LIGHT_BUFFER_CAPACITY {
             return Err("too many admitted scattering lights".into());
         }
-        Ok((camera, packets, area_images))
+        Ok((camera, packets, area_images, source_indices))
     })();
     match result {
-        Ok((camera, lights, area_images)) => {
+        Ok((camera, lights, area_images, source_indices)) => {
             output.camera = Some(camera);
             output.shadow_revision = shadows.0.as_ref().map(|s| s.revision);
             output.lights = std::sync::Arc::new(lights);
+            output.source_indices = std::sync::Arc::new(source_indices);
             output.area_images = std::sync::Arc::new(area_images);
             *last_error = None;
         }
         Err(error) => {
             output.camera = None;
             output.lights = Default::default();
+            output.source_indices = Default::default();
             output.area_images = Default::default();
             if last_error.as_ref() != Some(&error) {
                 warn!("Local fog lights pending: {error}");

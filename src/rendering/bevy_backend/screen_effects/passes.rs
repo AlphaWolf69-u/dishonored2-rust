@@ -17,7 +17,7 @@ struct MaterialGpu {
 }
 pub struct DistortionPasses {
     pub vectors: Texture,
-    vector_view: TextureView,
+    pub vector_view: TextureView,
     vector_extent: [u32; 2],
     uniform: Buffer,
     stride: usize,

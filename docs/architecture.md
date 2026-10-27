@@ -706,7 +706,12 @@ newest-first, matching the installed event queue.
 Level startup parses world FX graphs into `WorldEffectGraphs` and prepares
 their installed declarations through `particles::world_sources`, sharing
 particle definitions and material storage across references. Preparation does
-not activate effects. Group location, timing, other effect families and local
+not activate effects. `particle/dist_blur` is a separate vector-writing
+program using the same sprite geometry, clip planes, soft contact and Fresnel
+helpers as colour particles. It supports authored 2D and flipbook normal maps,
+constant-offset reconstruction and separate blur/distortion strengths. Its
+vectors accumulate in a depth-tested target before the shared motion-distortion
+resolve; they do not enter colour or weighted-transparency accumulation. Group location, timing, other effect families and local
 descriptor failures remain available to the playback owner. The renderer
 receives shared declaration resources through ordinary resource extraction.
 `WorldFxComponent` owns the source's deferred creation and removal state;
@@ -1775,8 +1780,20 @@ and directional loops. Shadow visibility retains its existing owner.
 
 The current integration covers default/decal/filling material variants without
 sheen maps, diffuse lookups, fuzz or translucency. Those feature variants,
-vegetation transmittance and area-light solid-angle integration still require
-their own complete producers; their existing host paths remain in use.
+vegetation transmittance still requires its own complete producer; its existing
+host path remains in use.
+
+Area lights use the installed Ward solid-angle evaluator, clipping and projected
+texture profile through `dh2_area_light.wgsl`. `AreaLightScene` prepares one
+32-slice texture pool before opaque draws and publishes the same mapped packets
+to forward surfaces, fog and particles. Rect components carry the stable scene
+record index through the unused GPU colour W lane; their RGB photometric fields
+are retained for host materials. The view bindings carry the shared packet buffer
+and pool, so materials do not own separate texture caches. Source image copies
+are submitted only when pool contents change. This supplies the authored profiles
+of non-shadowed area lights; the separate paraboloid exponential-shadow producer
+for shadowed area lights remains unconnected. The reported EotW room's authored
+area sources explicitly set `m_NoShadows=true`.
 
 The authored `m_specularAttn` survives inherited entity parameters and maps to
 host light components independently of shadow readiness. The typed clustered

@@ -297,9 +297,10 @@ fn render_particles(
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {
+                distortion_sources: sources,
                 surface_sampler: lighting_scene.sampler.as_ref().and_then(|sampler|
                     images.get(&sampler.0)).map(|image| &image.sampler),
-                direct: if draws.iter().any(|d| d.material.option("fx/opt/use_lighting").is_ok_and(|v| v==1 || v>=3)) {
+                direct: if draws.iter().any(|d| !d.material.distortion && d.material.option("fx/opt/use_lighting").is_ok_and(|v| v==1 || v>=3)) {
                     let tiled=fog.tiled_lighting(water.camera,water.matrices.frame)
                         .ok_or("particle tiled lighting awaits the current view")?;
                     let sampling=lighting_scene.parallel.as_ref().ok_or("particle directional sampling owner unavailable")?;
@@ -337,7 +338,7 @@ fn render_particles(
                             Some(super::particle_pass::ParticlePixelLightingInputs {
                                 screen: &images.get(&screen.output).ok_or("particle screen binding awaits GPU preparation")?.texture_view,
                                 cloud: &cloud.texture_view, cloud_sampler: &cloud.sampler,
-                                area: tiled.area_pool.as_ref().map(|pool| &pool.view),
+                                area: tiled.area_pool.as_ref(),
                             })
                         } else { None },
                         lights:&tiled.lights,pool:&tiled.buffers.pool,heads:&tiled.normal_heads,shadows:&tiled.shadows,

@@ -65,7 +65,6 @@ fn reflected_light(tag:u32,position:vec3<f32>,normal:vec3<f32>,view:vec3<f32>,su
         // HQ_ComputeIBL clamps an unassigned signed index to zero.
         index=min(u32(max(encoded,0.0)),count-1u);
     }
-    if gain<=0.0 {return vec3(0.0);}
     let P=game_vector(position);let N=game_vector(normal);let V=game_vector(view);
     // ComputeIBL squares the artist-facing roughness before its HQ evaluator.
     let roughness=surface_roughness*surface_roughness;

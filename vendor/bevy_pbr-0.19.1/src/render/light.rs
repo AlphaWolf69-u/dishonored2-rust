@@ -102,6 +102,7 @@ pub struct ExtractedPointLight {
 
 #[derive(Component, Debug)]
 pub struct ExtractedRectLight {
+    pub source_index: Option<u32>,
     pub color: LinearRgba,
     pub intensity: f32,
     pub range: f32,
@@ -196,6 +197,31 @@ pub struct GpuRectLight {
     height: f32,
     up: Vec3,
     range: f32,
+}
+
+/// Optional shared area-light records and texture pool for external renderers.
+#[derive(Resource)]
+pub struct AreaLightBindings {
+    pub records: Buffer,
+    pub texture: Option<TextureView>,
+    pub sampler: Sampler,
+}
+impl FromWorld for AreaLightBindings {
+    fn from_world(world: &mut World) -> Self {
+        let device = world.resource::<RenderDevice>();
+        Self {
+            records: device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("empty area-light records"), contents: &[0; 112],
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            }),
+            texture: None,
+            sampler: device.create_sampler(&SamplerDescriptor {
+                address_mode_u: AddressMode::Repeat, address_mode_v: AddressMode::Repeat,
+                mag_filter: FilterMode::Linear, min_filter: FilterMode::Linear,
+                mipmap_filter: MipmapFilterMode::Linear, ..default()
+            }),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, ShaderType)]
@@ -889,6 +915,7 @@ pub fn extract_lights(
             .expect("RectLight entity wasn't synced.");
         entity_commands.insert((
             ExtractedRectLight {
+                source_index: rect_light.source_index,
                 color: rect_light.color.into(),
                 intensity: rect_light.intensity
                     / (effective_width * effective_height * core::f32::consts::PI),
@@ -2019,8 +2046,12 @@ pub fn prepare_lights(
         for (index, (_, _, rect_light, _)) in rect_lights.iter().enumerate().take(MAX_RECT_LIGHTS) {
             let right = rect_light.transform.right().into();
             let up = rect_light.transform.up().into();
+            let mut color = Vec4::from_slice(&rect_light.color.to_f32_array()) * rect_light.intensity;
+            color.w = rect_light.source_index.map_or(0., |index| -(index as f32 + 1.));
             gpu_lights.rect_lights[index] = GpuRectLight {
-                color: Vec4::from_slice(&rect_light.color.to_f32_array()) * rect_light.intensity,
+                // W is unused by the stock rect evaluator. A negative numeric
+                // tag identifies the external scene record without growing Lights.
+                color,
                 position: rect_light.transform.translation(),
                 right,
                 up,

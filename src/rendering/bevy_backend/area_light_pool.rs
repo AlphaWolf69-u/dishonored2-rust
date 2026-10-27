@@ -18,6 +18,7 @@ pub struct AreaLightPool {
     pub view: TextureView,
     slots: [Option<Handle<Image>>; SLOTS],
     copy: ComputePipeline,
+    copy_revision: u64,
 }
 
 impl AreaLightPool {
@@ -49,8 +50,11 @@ impl AreaLightPool {
             view,
             slots: std::array::from_fn(|_| None),
             copy: copy.clone(),
+            copy_revision: 0,
         }
     }
+
+    pub fn copy_revision(&self) -> u64 { self.copy_revision }
 
     pub fn prepare(
         &mut self,
@@ -156,6 +160,7 @@ impl AreaLightPool {
                 pass.dispatch_workgroups(groups, groups, 1);
             }
             self.slots[slot] = Some(image);
+            self.copy_revision = self.copy_revision.wrapping_add(1);
         }
         for (packet, image) in packets.iter_mut().zip(requested) {
             if (packet[25] >> 4) & 7 != 3 {

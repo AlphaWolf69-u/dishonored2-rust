@@ -78,6 +78,7 @@ struct Resources<'w> {
     coarse: Option<Res<'w, super::coarse_depth::CoarseDepthGpu>>,
     depth_programs: Option<Res<'w, super::tiled_lighting_gpu::TlfPipelines>>,
     local_fog: Res<'w, super::fog_light_scattering::LocalFogFrame>,
+    area_lights: Res<'w, super::area_light_scene::AreaLightScene>,
     local_shadows: Option<Res<'w, super::shadow_pass::LocalShadowSceneFrame>>,
     local_completion: Option<Res<'w, super::shadow_pass::LocalShadowCompletion>>,
 }
@@ -718,16 +719,11 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
             let tiled=current.tiled.get_or_insert_with(||
                 super::tiled_lighting_pass::TiledLightingPass::new(&resources.device,programs,grid));
             tiled.resize(&resources.device,programs,grid);
-            let mut mapped_lights = None;
-            if resources.local_fog.area_images.iter().any(Option::is_some) {
-                let pool = tiled.area_pool.get_or_insert_with(||
-                    super::area_light_pool::AreaLightPool::new(&resources.device, &programs.area_copy));
-                let mut packets = resources.local_fog.lights.as_ref().clone();
-                pool.prepare(&resources.device, &resources.queue, context.command_encoder(),
-                    &resources.images, &resources.local_fog.area_images, &mut packets)?;
-                mapped_lights = Some(packets);
+            if !resources.area_lights.matches(&resources.local_fog) {
+                return Err("scene area-light pool awaits current frame preparation".into());
             }
-            let lights = mapped_lights.as_deref().unwrap_or(resources.local_fog.lights.as_slice());
+            tiled.area_pool=resources.area_lights.pool.as_ref().map(|pool|pool.view.clone());
+            let lights=resources.area_lights.packets.as_slice();
             let matrices=water_frame.matrices.current;
             tiled.prepare(&resources.device,&resources.queue,programs,
                 super::tiled_lighting_pass::TiledLightView {

@@ -31,7 +31,7 @@ struct DepthView {
 }
 
 pub struct TiledLightingPass {
-    pub area_pool: Option<super::area_light_pool::AreaLightPool>,
+    pub area_pool: Option<TextureView>,
     pub buffers: TlfBuffers,
     pub lights: Buffer,
     pub shadows: Buffer,

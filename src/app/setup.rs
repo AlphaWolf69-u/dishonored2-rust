@@ -1562,10 +1562,8 @@ pub(super) fn setup(
                         spawned += 1;
                     }
                     entities::LightType::Area => {
-                        // LIGHT_AREA uses the separate paraboloid path in
-                        // renderprog/lighting.decl; Bevy RectLight has no matching
-                        // shadow path. The authored area profile/projection and
-                        // area-specific shadow controls remain unported.
+                        // The rect carries the stable scene-record index; the
+                        // forward evaluator uses its authored area profile and pool.
                         let Some(transform) =
                             authored_area_light_transform(position, light.rotation)
                         else {
@@ -1574,6 +1572,7 @@ pub(super) fn setup(
                         };
                         commands.spawn((
                             RectLight {
+                                source_index: Some(light_index as u32),
                                 color,
                                 intensity,
                                 range,

@@ -466,6 +466,11 @@ fn layout_entries(
             texture_2d_array(TextureSampleType::Float { filterable: false }),
         ),));
     }
+    entries = entries.extend_with_indices((
+        (64, storage_buffer_read_only_sized(false, None)),
+        (65, texture_2d_array(TextureSampleType::Float { filterable: true })),
+        (66, sampler(SamplerBindingType::Filtering)),
+    ));
     // LTC LUTs for area lights
     if cfg!(feature = "area_light_luts") {
         entries = entries.extend_with_indices((
@@ -630,7 +635,7 @@ pub fn prepare_mesh_view_bind_groups(
         Res<PipelineCache>,
         Res<RenderAdapter>,
     ),
-    mesh_pipeline: Res<MeshPipeline>,
+    (mesh_pipeline, area_lights): (Res<MeshPipeline>, Res<crate::AreaLightBindings>),
     shadow_samplers: Res<ShadowSamplers>,
     (light_meta, global_clusterable_object_meta, fog_meta, view_uniforms): (
         Res<LightMeta>,
@@ -891,6 +896,11 @@ pub fn prepare_mesh_view_bind_groups(
                 }
             };
 
+            entries = entries.extend_with_indices((
+                (64, area_lights.records.as_entire_binding()),
+                (65, area_lights.texture.as_ref().unwrap_or(&fallback_image.d2_array.texture_view)),
+                (66, &area_lights.sampler),
+            ));
             // LTC LUTs for area lights
             if cfg!(feature = "area_light_luts") {
                 let (ltc_view, ltc_sampler) = images

@@ -70,6 +70,7 @@ struct MaterialParameters {
     lighting_uv: Vec4,
     normal_options: UVec4,
     detail_normal: Vec4,
+    distortion_fog: Vec4,
     alpha_test: f32,
     pixel_options: UVec4,
     pixel_parameters: Vec4,
@@ -132,6 +133,7 @@ impl MaterialParameters {
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
         Ok(Self {
+            distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)} else {Vec4::ZERO},
             pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
                 u32::from(p.fuzz.is_some()), u32::from(p.fuzz_mask), u32::from(p.translucency.is_some()),
                 u32::from(p.translucency.as_ref().is_some_and(|t| t.vertex_alpha)))),
@@ -223,7 +225,7 @@ impl MaterialParameters {
                 scalar("radial_RampPow")?,
                 scalar("fx/auto_exposure_amount")?,
                 scalar("particleFogScatterPower")?,
-                0.,
+                if source.distortion { option("fx/opt/distblur_constant_offset")? as f32 } else { 0. },
             ),
             distort_options: UVec4::new(
                 option("fx/opt/uv_disto1")?,
@@ -300,6 +302,7 @@ pub struct ParticlePixelLightingInputs<'a> {
     pub area: Option<&'a TextureView>,
 }
 pub struct ParticleViewInputs<'a> {
+    pub distortion_sources: &'a super::screen_effects::ScreenEffectSources,
     pub surface_sampler: Option<&'a Sampler>,
     pub direct: Option<ParticleDirectLightingInputs<'a>>,
     pub lighting: Option<ParticleLightingInputs<'a>>,
@@ -339,6 +342,7 @@ pub struct ParticlePass {
     transparency_parameters: Buffer,
     root_lighting: Buffer,
     transparency: Option<transparency::TransparencyPass>,
+    distortion: Option<([u32; 2], bool, super::screen_effects::passes::DistortionPasses, super::water_hdr::WaterHdr)>,
     max_instances: usize,
     max_draws: usize,
     grids: Vec<GridGpu>,
@@ -448,6 +452,7 @@ impl ParticlePass {
                         .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
                 )
                 .chain((6..=8).chain([14, 18]).map(sampler_entry))
+                .chain(std::iter::once(texture_entry(28, TextureViewDimension::D3, false)))
                 .chain(std::iter::once(texture_entry(
                     9,
                     TextureViewDimension::D3,
@@ -708,6 +713,7 @@ impl ParticlePass {
             transparency_parameters,
             root_lighting,
             transparency: None,
+            distortion: None,
             max_instances,
             max_draws,
             grids,
@@ -748,6 +754,7 @@ impl ParticlePass {
         accumulation: bool,
         anisotropic_sampler: &Sampler,
     ) -> Result<MaterialGpu, String> {
+        let accumulation = accumulation && !source.distortion;
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
         let mut images = Vec::new();
@@ -779,6 +786,32 @@ impl ParticlePass {
             .get("fx/opacity")
             .ok_or("particle opacity image absent")?;
         let volume_view = if let Some(volume) = &source.volume {
+            let texture = device.create_texture_with_data(
+                queue,
+                &TextureDescriptor {
+                    label: Some(&source.name),
+                    size: Extent3d {
+                        width: volume.info.width,
+                        height: volume.info.height,
+                        depth_or_array_layers: volume.depth,
+                    },
+                    mip_level_count: volume.info.mip_count,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: super::image_formats::gpu_image_format(volume.info.format),
+                    usage: TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                TextureDataOrder::MipMajor,
+                &volume.payload,
+            );
+            let view = texture.create_view(&default());
+            images.push(texture);
+            Some(view)
+        } else {
+            None
+        };
+        let distortion_volume_view = if let Some(volume) = &source.distortion_volume {
             let texture = device.create_texture_with_data(
                 queue,
                 &TextureDescriptor {
@@ -926,6 +959,8 @@ impl ParticlePass {
                         views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
                     ),
                 },
+                BindGroupEntry { binding: 28, resource: BindingResource::TextureView(
+                    distortion_volume_view.as_ref().unwrap_or(&self.unused_volume_view)) },
                 BindGroupEntry {
                     binding: 9,
                     resource: BindingResource::TextureView(
@@ -936,7 +971,7 @@ impl ParticlePass {
         );
         let blends = crate::render_state::blend_state(&state);
         let formats = [
-            if accumulation {
+            if accumulation || source.distortion {
                 TextureFormat::Rgba16Float
             } else {
                 self.colour_format
@@ -963,7 +998,8 @@ impl ParticlePass {
             );
         }
         let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
-        let constants = [("particle_lighting_mode", f64::from(source.option("fx/opt/use_lighting")?))];
+        let constants = [("particle_lighting_mode", f64::from(if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? })),
+            ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("particle sprite colour"),
             layout: Some(&self.pipeline_layout),
@@ -975,7 +1011,9 @@ impl ParticlePass {
             },
             fragment: Some(RawFragmentState {
                 module: &self.shader,
-                entry_point: Some(if accumulation {
+                entry_point: Some(if source.distortion {
+                    "particle_distortion_fragment"
+                } else if accumulation {
                     "particle_accumulation_fragment"
                 } else {
                     "particle_fragment"
@@ -1016,10 +1054,11 @@ impl ParticlePass {
         if draws.is_empty() {
             return Ok(());
         }
-        let accumulation = draws[0].transparency.mode != 0;
+        let accumulation = draws.iter().find(|draw| !draw.material.distortion)
+            .is_some_and(|draw| draw.transparency.mode != 0);
         if draws
             .iter()
-            .any(|draw| (draw.transparency.mode != 0) != accumulation)
+            .any(|draw| !draw.material.distortion && (draw.transparency.mode != 0) != accumulation)
         {
             return Err("particle transparency mode changed within a frame".into());
         }
@@ -1083,7 +1122,7 @@ impl ParticlePass {
             .and_then(|v| v.sun)
             .unwrap_or(([0.; 3], [0.; 3]));
         let mut inverse_game = Mat4::IDENTITY.to_cols_array_2d();
-        if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
+        if draws.iter().any(|draw| draw.material.distortion || draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
             && !crate::render_shadow::invert_rows(&input.matrices.view_projection, &mut inverse_game) {
             return Err("particle pixel lighting requires an invertible view projection".into());
         }
@@ -1477,6 +1516,7 @@ impl ParticlePass {
         pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
         let mut first = 0u32;
         for draw in draws {
+            if draw.material.distortion { first += draw.instances.len() as u32; continue; }
             let level = draw.grid_level.min(5) as usize;
             let material = &self.materials[&(draw.material.name.clone(), draw.state)];
             pass.set_pipeline(&material.pipeline);
@@ -1494,6 +1534,51 @@ impl ParticlePass {
                 .as_mut()
                 .unwrap()
                 .record_resolve(device, queue, encoder, &input)?;
+        }
+        if draws.iter().any(|draw| draw.material.distortion) {
+            if self.distortion.as_ref().is_none_or(|(extent, compressed, _, _)|
+                *extent != input.extent || *compressed != input.compressed_hdr) {
+                let format = if input.compressed_hdr { TextureFormat::Rg11b10Ufloat } else { TextureFormat::Rgba16Float };
+                self.distortion = Some((input.extent, input.compressed_hdr,
+                    super::screen_effects::passes::DistortionPasses::new(device, queue, input.distortion_sources, input.extent, 0, format)?,
+                    super::water_hdr::WaterHdr::new(device, queue, input.extent, input.compressed_hdr, self.colour_format)?));
+            }
+            let (_, _, vectors, hdr) = self.distortion.as_mut().unwrap();
+            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], input.local_time, input.depth, input.inverse_z)?;
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("particle distortion vectors"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &vectors.vector_view, depth_slice: None, resolve_target: None,
+                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: input.depth, depth_ops: None,
+                    stencil_ops: self.depth_format.has_stencil_aspect().then_some(Operations {load: LoadOp::Load, store: StoreOp::Store}),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            });
+            pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
+            pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
+            let mut first = 0;
+            for draw in draws {
+                let count = draw.instances.len() as u32;
+                if draw.material.distortion {
+                    let level = draw.grid_level.min(5) as usize;
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state)];
+                    pass.set_pipeline(&material.pipeline);
+                    pass.set_stencil_reference(draw.stencil_reference);
+                    pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[level], &[]);
+                    pass.set_bind_group(1, &material.binding, &[]);
+                    pass.set_index_buffer(*self.grids[level].indices.slice(..), IndexFormat::Uint16);
+                    pass.draw_indexed(0..self.grids[level].count, 0, first..first+count);
+                }
+                first += count;
+            }
+            drop(pass);
+            let prepared = hdr.prepare(device, queue, encoder, input.colour, input.extent,
+                input.camera_exposure, input.white_level, input.adaptation)?;
+            vectors.record_resolve(device, encoder, prepared.source(), prepared.colour());
+            prepared.finish_source(encoder);
         }
         Ok(())
     }

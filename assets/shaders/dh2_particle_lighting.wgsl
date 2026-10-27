@@ -8,7 +8,7 @@ fn particle_lq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec
     let aperture=0.0003474660443456835+roughness*(1.3331290497744692-roughness*0.5040552688878546);
     let mip=6.0*sqrt(aperture/0.834);
     let count=reflection_planes[0];
-    let index=select(count-1u,u32(max(0.0,cube)),cube>=0.0 && cube<f32(count));
+    let index=min(u32(max(0.0,cube)),count-1u);
     let luminance_ior=dot(vec3(0.2126,0.7152,0.0722),ior);
     let ratio=(luminance_ior-1.0)/(luminance_ior+1.0);
     let bounce=mix(gain,1.0,ratio*ratio);
@@ -111,7 +111,7 @@ fn particle_hq_reflection(position:vec3<f32>,normal:vec3<f32>,view_direction:vec
     let aperture=0.0003474660443456835+roughness*(1.3331290497744692-roughness*0.5040552688878546);
     let mip=6.0*sqrt(aperture/0.834);
     let count=reflection_planes[0];
-    let index=select(count-1u,u32(max(0.0,cube)),cube>=0.0 && cube<f32(count));
+    let index=min(u32(max(0.0,cube)),count-1u);
     let brdf=integrated_ward(shadow_saturate(dot(view_direction,normal)),roughness);
     let bounce=mix(gain,1.0,dot(vec3(0.2126,0.7152,0.0722),f0));
     return reflection_radiance(position,light,index,mip)*particle_directional_occlusion(light,self_shadow)*bounce*(f0*brdf.x+brdf.y*(1.0-roughness*roughness));

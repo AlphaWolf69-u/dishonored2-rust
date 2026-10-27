@@ -409,6 +409,7 @@ impl Plugin for PbrPlugin {
                 ),
             )
             .init_gpu_resource::<LightMeta>()
+            .init_gpu_resource::<AreaLightBindings>()
             .init_gpu_resource::<RenderMaterialBindings>()
             .init_resource::<RenderShadowLodOrigin>()
             .allow_ambiguous_resource::<RenderMaterialBindings>();

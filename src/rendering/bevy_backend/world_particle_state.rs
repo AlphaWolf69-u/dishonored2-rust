@@ -264,7 +264,7 @@ impl WorldParticleState {
             match result {
                 Ok(true) => self.timers.push((index, node)),
                 Ok(false) => {}
-                Err(error) => self.report(error),
+                Err(error) => self.report(format!("{} node {node}: {error}", graphs.0[index].owner)),
             }
             self.collect(index);
         }
@@ -289,7 +289,7 @@ impl WorldParticleState {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => self.report(error),
+                Err(error) => self.report(format!("{} node {node}: {error}", graphs.0[index].owner)),
             }
             self.collect(index);
         }
@@ -656,6 +656,9 @@ impl WorldFxComponentHost for ComponentHost<'_> {
         self.state
             .started
             .push((self.entity.graph, self.entity.node, id));
+        if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+            bevy::log::info!(effect = name, instance = id, position = ?pose.position, "World FX instance acquired");
+        }
         bevy::log::debug!(
             effect = name,
             instance = id,

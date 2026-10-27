@@ -98,6 +98,7 @@ pub struct ParticleTranslucencyMaterial {
 
 pub struct ParticleMaterial {
     pub name: String,
+    pub distortion: bool,
     pub state: crate::render_state::RenderState,
     /// Material+4a high three bits, consumed by declaration analysis1c4460.
     pub darkvision_layer: u8,
@@ -105,6 +106,7 @@ pub struct ParticleMaterial {
     pub uniforms: BTreeMap<String, [f32; 4]>,
     pub images: BTreeMap<String, Arc<crate::texture::InlineCompressedChain>>,
     pub volume: Option<Arc<crate::texture::InlineVolumeChain>>,
+    pub distortion_volume: Option<Arc<crate::texture::InlineVolumeChain>>,
     pub lighting: Option<ParticleLightingMaterial>,
 }
 impl ParticleMaterial {
@@ -135,7 +137,8 @@ impl ParticleMaterial {
             .ok_or_else(|| format!("particle material absent: {path}"))?;
         let program = crate::material::authored_program_override(&bytes, "mainProgram")
             .ok_or_else(|| format!("particle main program absent: {name}"))?;
-        if !program.eq_ignore_ascii_case("particle/add_default") {
+        let distortion = program.eq_ignore_ascii_case("particle/dist_blur");
+        if !distortion && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
         let definition = library
@@ -182,7 +185,7 @@ impl ParticleMaterial {
             })
             .collect(),
         };
-        let options = OPTIONS
+        let mut options = OPTIONS
             .iter()
             .map(|name| {
                 library
@@ -190,6 +193,10 @@ impl ParticleMaterial {
                     .map(|value| (name.to_ascii_lowercase(), value))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
+        if distortion {
+            options.insert("fx/opt/distblur_constant_offset".into(), library.option_value(
+                program.as_bytes(), &overrides, b"fx/opt/distblur_constant_offset")?);
+        }
         let empty = EnvironmentRenderParameters::default();
         let darkvision_layer =
             library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8 & 7;
@@ -211,6 +218,7 @@ impl ParticleMaterial {
             &[]
         };
         let mut extra_uniforms = scroll_uniforms.to_vec();
+        if distortion { extra_uniforms.extend(["fogStart", "fogEnd", "fogScale"]); }
         if options["fx/opt/use_macrouv"] != 0 {
             extra_uniforms.push("macroUvAmount");
         }
@@ -255,7 +263,7 @@ impl ParticleMaterial {
                 Arc::new(crate::material::load_2d_image(catalog, &source)?),
             );
         }
-        let lighting = if options["fx/opt/use_lighting"] != 0 {
+        let lighting = if !distortion && options["fx/opt/use_lighting"] != 0 {
             let mut read_option =
                 |name: &str| library.option_value(program.as_bytes(), &overrides, name.as_bytes());
             // These owners still need the shared surface-map evaluator. Never
@@ -457,14 +465,19 @@ impl ParticleMaterial {
         } else {
             None
         };
+        let distortion_volume = if distortion && options["fx/opt/use_flipbook"] != 0 {
+            Some(Arc::new(crate::material::load_3d_image(catalog, &scopes.image_source("fx/flipbooknormals")?)?))
+        } else { None };
         Ok(Self {
             name: name.to_owned(),
+            distortion,
             state,
             darkvision_layer,
             options,
             uniforms,
             images,
             volume,
+            distortion_volume,
             lighting,
         })
     }

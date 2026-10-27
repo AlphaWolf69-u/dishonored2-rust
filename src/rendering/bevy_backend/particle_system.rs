@@ -143,7 +143,7 @@ impl ParticleSystem {
                     .materials
                     .get(name)
                     .ok_or_else(|| format!("particle draw material absent: {name}"))?;
-                Ok(needed || material.option("fx/opt/use_lighting")? != 0)
+                Ok(needed || material.lighting.is_some())
             })?;
         let lighting = if needs_lighting {
             Some(
@@ -200,12 +200,13 @@ impl ParticleSystem {
                 if bounds.is_none() {
                     continue;
                 }
-                let transparency =
+                let mut transparency =
                     crate::rendering::particles::transparency::TransparencyParameters::read(
                         context.cvars,
                         material.state,
                         true,
                     )?;
+                if material.distortion { transparency.mode = 0; }
                 let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
                     material.state,
                     transparency.mode != 0,
