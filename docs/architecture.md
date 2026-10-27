@@ -1251,6 +1251,19 @@ no longer use runtime offsets for these fields. The installed compound audit
 covers 152,215 shapes and 1,488,370 reachable instances across all 36 worlds,
 including the invariant that every instance fits its compound key width.
 
+Placed static-body acquisition (`app/view_geometry.rs`) loads the primary
+HKX using its declared shape kind. When `m_materialForExtraHDcollision` is set,
+it also acquires the scaled `_hd` HKT resource, independently of the primary
+kind, following 140808ea0. The two children share one body transform and entity
+owner. The HD child's material fills every HD slot; 140807c80 supplies the
+primary override. The flattened navigation triangles retain separate material
+indices and material-filtered collision words, so simple movement geometry
+cannot obscure the detailed weapon/visibility geometry. Geometry and material
+declarations are cached during acquisition, including aliases and inheritance.
+Missing optional HD resources retain the primary and report acquisition failures.
+This startup index covers static bodies; dynamic/keyframed simulation geometry
+belongs to its moving-body owner and is not frozen into this index.
+
 `gameplay::collision_filter` shares the body's five-bit layer and required-flag
 predicate with shape-pair filtering. `collision_dispatch` constructs the
 closest-point handler table with the original shape inheritance, feature masks,
