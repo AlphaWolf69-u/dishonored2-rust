@@ -10,6 +10,14 @@ struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
 #[derive(Clone, Copy)]
 struct Object { kind: u8, bank: usize, start: usize, length: usize }
 
+#[derive(Default)]
+pub struct Controls {
+    pub containers: Vec<(u32, super::ContainerPlayback)>,
+    pub switches: Vec<u32>,
+    pub music: Vec<u32>,
+    pub missing: Vec<u32>,
+}
+
 #[derive(Debug, Default)]
 pub struct References {
     pub music_actors: usize,
@@ -69,6 +77,38 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    /// Follow the actual Play references without reading or decoding media.
+    /// Playlist/case membership is independent of serialized hierarchy lists.
+    pub fn controls(&self, root: u32) -> io::Result<Controls> {
+        let mut result = Controls::default();
+        let mut pending = vec![root];
+        let mut visited = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) { continue; }
+            let Some(&object) = self.actors.get(&id) else { result.missing.push(id); continue; };
+            let bytes = self.bytes(object);
+            let feedback = self.banks[object.bank].feedback;
+            match object.kind {
+                5 => {
+                    let (_, playlist) = bank::node_children(bytes, object.kind, feedback)?;
+                    pending.extend(playlist.items.iter().map(|&(id, _)| id));
+                    result.containers.push((id, playlist.playback));
+                },
+                6 => {
+                    result.switches.push(id);
+                    pending.extend(bank::switch_playback(bytes, feedback)?.cases.into_iter().flat_map(|case| case.children));
+                },
+                9 => pending.extend(bank::node_children(bytes, object.kind, feedback)?.0),
+                10..=13 => result.music.push(id),
+                _ => {},
+            }
+        }
+        result.containers.sort_by_key(|&(id, _)| id);
+        result.switches.sort_unstable();
+        result.music.sort_unstable();
+        result.missing.sort_unstable();
+        Ok(result)
+    }
     pub fn generator_ids(&self) -> io::Result<Vec<u32>> {
         let mut ids = Vec::new();
         for (&id, &object) in &self.actors {

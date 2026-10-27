@@ -14,12 +14,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else { vec![path] };
         paths.sort();
         let mut totals = BTreeMap::<String, usize>::new();
+        let mut library = dishonored2_rust::assets::wwise::PlaybackBanks::default();
+        let mut switches = std::collections::BTreeSet::new();
+        let language = if inspect_switches {
+            let base = installation::game_base()?;
+            Some(dishonored2_rust::assets::wwise::language_name(
+                dishonored2_rust::assets::lang::read_audio_language(&base)?).ok_or("unsupported audio language")?)
+        } else { None };
         for path in paths {
             let package = Package::open(&path)?;
             let mut file = File::open(&path)?;
-            for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
+            for entry in &package.banks {
+                if entry.language_id != 0 {
+                    if inspect_switches && Some(entry.language_id) == language.and_then(|language| package.language_id(language)) {
+                        library.insert(package.read_entry(&mut file, *entry)?.into())?;
+                    }
+                    continue;
+                }
                 let bytes = package.read_entry(&mut file, *entry)?;
                 for (id, settings) in bank_switch_playback(&bytes)? {
+                    switches.insert(id);
                     if inspect_switches { println!("{} bank={:#010x} switch={id:#010x}: {settings:?}", path.display(), entry.id); }
                     *totals.entry(format!("Switch containers: global_state={}, continuous={}", settings.group_kind == 1, settings.continuous)).or_default() += 1;
                 }
@@ -43,9 +57,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                         println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
                     }
                 }
+                if inspect_switches { library.insert(bytes.into())?; }
             }
         }
         for (kind, count) in totals { println!("{kind}: {count}"); }
+        if inspect_switches {
+            for id in switches {
+                let controls = library.controls(id)?;
+                let mut modes = BTreeMap::<String, usize>::new();
+                for (_, container) in controls.containers {
+                    *modes.entry(format!("continuous={}, {:?}", container.continuous, container.transition)).or_default() += 1;
+                }
+                println!("Switch graph {id:#010x}: {modes:?}; nested_switches={:x?}, music={:x?}, missing={:x?}",
+                    controls.switches, controls.music, controls.missing);
+            }
+        }
         return Ok(());
     }
     if first.to_string_lossy() == "--level-acoustics" {
