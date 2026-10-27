@@ -25,8 +25,28 @@ pub struct WorldSoundDefinition {
     pub position: [bevy_math::Vec3; 2],
     pub start_delay: [f32; 2],
     pub stop_delay: [f32; 2],
-    pub start: Option<crate::assets::wwise::SoundEventDeclaration>,
-    pub stop: Option<crate::assets::wwise::SoundEventDeclaration>,
+    pub start: Option<Arc<WorldSoundEvent>>,
+    pub stop: Option<Arc<WorldSoundEvent>>,
+}
+
+/// A declaration reference is distinct from the middleware event it posts.
+/// Several authored declarations may share an engine ID but have different
+/// game-side range, looping, and virtualization settings (1400c4460).
+pub struct WorldSoundEvent {
+    pub name: String,
+    pub declaration: crate::assets::wwise::SoundEventDeclaration,
+}
+
+impl WorldSoundEvent {
+    fn resolve(asset: &crate::assets::fx::SoundEventAsset, catalog: &Catalog,
+        cache: &mut HashMap<String, Result<Arc<Self>, String>>) -> Result<Option<Arc<Self>>, String>
+    {
+        let Some(name) = asset.event.as_ref() else { return Ok(None) };
+        cache.entry(name.clone()).or_insert_with(|| {
+            let declaration = asset.resolve(catalog)?.ok_or("sound event reference lost its declaration")?;
+            Ok(Arc::new(Self { name: name.clone(), declaration }))
+        }).clone().map(Some)
+    }
 }
 
 pub struct WorldEffectDefinition {
@@ -53,6 +73,7 @@ impl WorldFxSources {
     pub fn load(graphs: &[FxGraph], catalog: &Catalog, library: &mut ProgramLibrary) -> Self {
         let mut result = Self::default();
         let mut materials = HashMap::new();
+        let mut sound_events = HashMap::new();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
         for graph in graphs {
@@ -91,8 +112,8 @@ impl WorldFxSources {
                                 position: sound.position,
                                 start_delay: sound.start.delay,
                                 stop_delay: sound.stop.delay,
-                                start: sound.start.resolve(catalog)?,
-                                stop: sound.stop.resolve(catalog)?,
+                                start: WorldSoundEvent::resolve(&sound.start, catalog, &mut sound_events)?,
+                                stop: WorldSoundEvent::resolve(&sound.stop, catalog, &mut sound_events)?,
                             }))
                             .collect::<Result<Vec<_>, String>>()?;
                         let particle_fields =

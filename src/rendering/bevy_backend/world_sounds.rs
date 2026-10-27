@@ -22,8 +22,9 @@ pub(crate) struct SoundGroup {
 pub(crate) struct SoundState {
     pub systems: SoundSystems<Emitter, Entity>,
     pub groups: HashMap<u32, SoundGroup>,
-    /// Readiness is published only after the installed event has decoded.
-    pub events: HashMap<u32, Result<(), String>>,
+    /// A ready declaration maps to its retained audio-side reference. These
+    /// references identify declarations, not middleware IDs or playing IDs.
+    pub events: HashMap<String, Result<u32, String>>,
 }
 
 #[derive(Resource, Clone, Default, ExtractResource)]

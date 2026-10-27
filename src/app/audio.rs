@@ -9,6 +9,7 @@ mod fade;
 mod contacts;
 mod objects;
 mod effects;
+mod playing;
 mod spatial;
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
