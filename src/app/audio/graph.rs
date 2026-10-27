@@ -408,7 +408,7 @@ impl ScheduledAudio {
 enum State {
     Sound { frame: u64, random: RandomProperties, looping: Option<crate::gameplay::sound::looping::SourceLoop>,
         silence: Option<crate::gameplay::sound::silence::Voice>,
-        resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
+        resampler: Option<Resampler>, gain: GainRamp, gain_tick: Option<u64>, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
         _activity: Option<crate::gameplay::sound::activity::Token> },
     Layer(Vec<Runtime>),
@@ -448,7 +448,7 @@ impl Runtime {
                 State::Sound { frame: 0, random, silence,
                 looping: sound.looping.map(|looping| looping.with_count(count)),
                 resampler: None,
-                gain: GainRamp::default(),
+                gain: GainRamp::default(), gain_tick: None,
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false,
                 _activity: registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].channels.get()).map(|_| [
@@ -581,33 +581,50 @@ impl Runtime {
         }
     }
 
-    fn fade_value(&mut self, now: u64) -> Option<f32> {
-        let Some(fade) = &self.fade else { return Some(1.0); };
+    fn fade_envelope(&mut self, now: u64) -> Option<super::fade::Envelope> {
+        let fade = self.fade.as_ref()?;
         let tick = now / 1024;
         if self.fade_cache.is_none_or(|(cached, _)| cached != tick) { self.fade_cache = Some((tick, fade.snapshot())); }
-        self.fade_cache.and_then(|(_, envelope)| envelope.value(now))
+        self.fade_cache.map(|(_, envelope)| envelope)
+    }
+
+    fn fade_value(&mut self, now: u64) -> Option<f32> {
+        let Some(envelope) = self.fade_envelope(now) else { return Some(1.0); };
+        if !matches!(self.state, State::Sound { .. }) { return envelope.value(now); }
+        // 1410e6800 advances transitions to tick+1 before rendering. The
+        // completed stop still renders its final zero-target block; 1410ebae0
+        // retires the PBI afterward. The mixer ramps the gain product.
+        let start = now / 1024 * 1024;
+        envelope.value(start + 1024).or_else(|| envelope.value(start).map(|_| 0.0))
+    }
+
+    fn fade_stopping(&mut self, now: u64) -> bool {
+        self.fade_envelope(now).is_some_and(|envelope| envelope.value(now / 1024 * 1024 + 1024).is_none())
     }
 
     fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32], mut routing: Option<&mut RouteContext<'_>>) -> bool {
         let Some(gain) = self.fade_value(now) else { return false; };
+        if matches!(self.state, State::Sound { .. }) {
+            return self.frame_inner(now, audio, output, routing, gain);
+        }
         let mut local = [0.0; 8];
         let alive = if let Some(routing) = routing.as_mut() {
             let previous = routing.gain;
             routing.gain *= gain;
-            let alive = self.frame_inner(now, audio, &mut local[..output.len()], Some(&mut **routing));
+            let alive = self.frame_inner(now, audio, &mut local[..output.len()], Some(&mut **routing), 1.0);
             routing.gain = previous;
             alive
-        } else { self.frame_inner(now, audio, &mut local[..output.len()], None) };
+        } else { self.frame_inner(now, audio, &mut local[..output.len()], None, 1.0) };
         for (out, sample) in output.iter_mut().zip(local) { *out += sample * gain; }
         alive
     }
 
-    fn frame_inner(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32], mut routing: Option<&mut RouteContext<'_>>) -> bool {
+    fn frame_inner(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32], mut routing: Option<&mut RouteContext<'_>>, source_gain: f32) -> bool {
         self.start(now, audio);
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, looping, silence, resampler, gain: ramp, filters, output_filters,
+            (State::Sound { frame, random, looping, silence, resampler, gain: ramp, gain_tick, filters, output_filters,
                 routes, auxiliary, auxiliary_initialized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
@@ -628,7 +645,8 @@ impl Runtime {
                 let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
                     + random.volume_db + random.makeup_db;
                 let threshold = f32::from_bits(audio.control.threshold_db.load(Ordering::Relaxed));
-                if routing.is_some() && *frame % 1024 == 0 {
+                let update_gain = *gain_tick != Some(now / 1024);
+                if routing.is_some() && update_gain {
                     *routes = Some(audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).clone());
                 }
                 let route = if routing.is_some() { routes.as_ref().and_then(|routes| routes.get(*index)) } else { None };
@@ -636,7 +654,11 @@ impl Runtime {
                     power10(route.map_or(volume, |route| route.routing.volume_db + random.volume_db
                         + audio.control.activity.as_ref().map_or(0.0, |activity| activity.voice_ducking(sound.properties.bus))) * 0.05)
                 };
-                if *frame % 1024 == 0 {
+                if update_gain {
+                    *gain_tick = Some(now / 1024);
+                    // 1410fc5c0 includes the transition amplitude in voice
+                    // gain before 14113ef50 interpolates its speaker product.
+                    let gain = gain * source_gain;
                     let dry = gain * route.map_or(1.0, |route| power10((route.routing.dry_db
                         + audio.control.activity.as_ref().map_or(0.0, |activity| activity.output_ducking(sound.properties.bus, true))) * 0.05));
                     let mut target = [dry; 8];
@@ -672,6 +694,12 @@ impl Runtime {
                             connection.gain.begin(targets, 1024);
                         }
                         if route.auxiliary_enabled { *auxiliary_initialized = true; }
+                    }
+                    // Source offsets occupy the beginning of the output
+                    // block. Start its matrix ramp at that block position.
+                    for _ in 0..now % 1024 {
+                        ramp.next_frame();
+                        for connection in auxiliary.iter_mut() { connection.gain.next_frame(); }
                     }
                 }
                 let gains = ramp.next_frame();
