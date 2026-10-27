@@ -49,9 +49,27 @@ impl Transition {
         let envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
         frame.saturating_sub(envelope.start) < envelope.duration
     }
+    /// Actions run before the transition update (1410e6800). Modifying a
+    /// retained transition to zero ms (1410effb0) leaves its listeners alive
+    /// until that update, including continuations due in the same block.
+    pub fn action_value(&self, frame: u64) -> Option<f32> {
+        let envelope = self.snapshot();
+        if envelope.duration == 0 && frame == envelope.start { Some(envelope.from) }
+        else { envelope.value(frame) }
+    }
+    pub fn action_active(&self, frame: u64) -> bool {
+        let envelope = self.snapshot();
+        frame.saturating_sub(envelope.start) < envelope.duration
+            || (envelope.duration == 0 && frame == envelope.start)
+    }
     pub fn stop(&self, frame: u64, duration: u64, curve: u8) {
         let mut envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let from = envelope.value(frame).unwrap_or(0.0);
+        // Repeating the same Stop transition may shorten its remaining
+        // interval, but cannot extend it (1410effb0).
+        let duration = if envelope.to == 0.0 {
+            duration.min(envelope.duration.saturating_sub(frame.saturating_sub(envelope.start)))
+        } else { duration };
         *envelope = Envelope::new(frame, duration, from, curve);
     }
 }

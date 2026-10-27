@@ -156,8 +156,8 @@ impl Flow {
             // 1410ea040 cancels a continuation when its retained stop-gain
             // transition completes; a completed fade-in only unlinks it.
             if let Some(gain) = &pending.inherited {
-                if gain.value(now).is_none() { continue; }
-                if !gain.active(now) { pending.inherited = None; }
+                if gain.action_value(now).is_none() { continue; }
+                if !gain.action_active(now) { pending.inherited = None; }
             }
             if pending.deadline.saturating_sub(now) < 1024 {
                 if let Some(fade) = &mut pending.fade { fade.start = now; }
