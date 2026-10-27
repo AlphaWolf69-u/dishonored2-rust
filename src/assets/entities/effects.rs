@@ -6,6 +6,7 @@ use super::{
 };
 use std::collections::HashMap;
 pub mod declarations;
+pub mod actors;
 
 /// 79e100/17debb0: arkKisculeNodeFxParameters, before graph-input overrides.
 #[derive(Clone, Debug)]

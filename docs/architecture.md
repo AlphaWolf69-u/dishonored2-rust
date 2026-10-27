@@ -2784,3 +2784,21 @@ selection; integers remain 32-bit values throughout. Named bool, float, integer
 and entity-reference setters use explicit Value links or the parent declaration
 input, then publish Updated and regular continuations. Invalid list indices are
 rejected by the host; the executable's typed handler failure path is not connected.
+
+
+`assets::entities::effects::actors` loads placed `idEntityFx` actors, resolving
+installed entity-definition inheritance before applying map fields. Runtime class
+comes from the entity's `class` field; the declaration wrapper remains `entityDef`.
+`WorldEffectDefinitions` retains graphs, actor declarations and manager seed.
+Their FX dependencies share the existing material, particle and sound caches.
+
+Placed actors with `startOff=false` reserve playback through the common instance
+pool before loading-end graph actions execute. Their startup queue drains once;
+static actor effects do not run attached-component pose work every frame.
+`updateFxPosition` actors consume the scene's existing pose publication. Actor
+completion retains the scene actor, while NodeFx-created entity completion removes
+that transient entity. NodeEntityFx start/stop binds a single completion observer
+per manager instance, maintains its authored actor lists, and forwards Finished.
+Target/tag producers and removal of the scene actor on completion still require
+entity-lifecycle integration and remain explicit unavailable paths. Other enabled
+FX families are admitted only when their actual producers are implemented.

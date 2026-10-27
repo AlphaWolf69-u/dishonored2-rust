@@ -793,11 +793,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .insert_resource(DirectionalLightShadowMap { size: 512 })
         .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectFrames::load(
             entity_document.as_ref()).map_err(std::io::Error::other)?)
-        .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectGraphs(
-            std::sync::Arc::new(entity_document.as_ref().map(crate::assets::entities::effects::load)
-                .transpose().map_err(std::io::Error::other)?.unwrap_or_default()
-            ), crate::platform::performance_counter::counter().map_err(std::io::Error::other)? as u64
-        ))
+        .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions {
+            graphs: std::sync::Arc::new(entity_document.as_ref().map(crate::assets::entities::effects::load)
+                .transpose().map_err(std::io::Error::other)?.unwrap_or_default()),
+            actors: std::sync::Arc::new(entity_document.as_ref().map(|document|
+                crate::assets::entities::effects::actors::load(document, catalog.as_ref().unwrap()))
+                .unwrap_or_default()),
+            seed: crate::platform::performance_counter::counter().map_err(std::io::Error::other)? as u64,
+        })
         .insert_resource(SceneData {
             source_path: path.clone(),
             world,

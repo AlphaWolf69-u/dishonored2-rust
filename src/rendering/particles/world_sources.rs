@@ -38,14 +38,27 @@ pub struct WorldSoundEvent {
 }
 
 impl WorldSoundEvent {
-    fn resolve(asset: &crate::assets::fx::SoundEventAsset, catalog: &Catalog,
-        cache: &mut HashMap<String, Result<Arc<Self>, String>>) -> Result<Option<Arc<Self>>, String>
-    {
-        let Some(name) = asset.event.as_ref() else { return Ok(None) };
-        cache.entry(name.clone()).or_insert_with(|| {
-            let declaration = asset.resolve(catalog)?.ok_or("sound event reference lost its declaration")?;
-            Ok(Arc::new(Self { name: name.clone(), declaration }))
-        }).clone().map(Some)
+    fn resolve(
+        asset: &crate::assets::fx::SoundEventAsset,
+        catalog: &Catalog,
+        cache: &mut HashMap<String, Result<Arc<Self>, String>>,
+    ) -> Result<Option<Arc<Self>>, String> {
+        let Some(name) = asset.event.as_ref() else {
+            return Ok(None);
+        };
+        cache
+            .entry(name.clone())
+            .or_insert_with(|| {
+                let declaration = asset
+                    .resolve(catalog)?
+                    .ok_or("sound event reference lost its declaration")?;
+                Ok(Arc::new(Self {
+                    name: name.clone(),
+                    declaration,
+                }))
+            })
+            .clone()
+            .map(Some)
     }
 }
 
@@ -71,16 +84,28 @@ pub struct WorldFxSources {
 }
 
 impl WorldFxSources {
-    pub fn load(graphs: &[FxGraph], catalog: &Catalog, library: &mut ProgramLibrary) -> Self {
+    pub fn load(
+        graphs: &[FxGraph],
+        actors: &[crate::assets::entities::effects::actors::ActorDefinition],
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+    ) -> Self {
         let mut result = Self {
-            declarations: crate::assets::entities::effects::declarations::FxDeclarations::load(graphs, catalog),
+            declarations: crate::assets::entities::effects::declarations::FxDeclarations::load(
+                graphs, catalog,
+            ),
             ..Default::default()
         };
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
             for declaration in &result.declarations.declarations {
                 match declaration {
-                    Ok(graph) => eprintln!("World FX graph prepared: {} nodes={} variables={} effects={}",
-                        graph.owner, graph.nodes.len(), graph.variables.len(), graph.effects.len()),
+                    Ok(graph) => eprintln!(
+                        "World FX graph prepared: {} nodes={} variables={} effects={}",
+                        graph.owner,
+                        graph.nodes.len(),
+                        graph.variables.len(),
+                        graph.effects.len()
+                    ),
                     Err(error) => eprintln!("World FX graph preparation failed: {error}"),
                 }
             }
@@ -89,83 +114,122 @@ impl WorldFxSources {
         let mut sound_events = HashMap::new();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
-        for graph in graphs.iter().chain(result.declarations.declarations.iter()
-            .filter_map(|declaration| declaration.as_ref().ok())) {
-            for node in &graph.nodes {
-                let Some(name) = graph.effects.get(&node.id).and_then(|p| p.effect.as_ref()) else {
-                    continue;
-                };
-                if result.effects.contains_key(name) {
-                    continue;
-                }
-                let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
-                    let mut read_error = None;
-                    let mut read = |path: &str| match catalog.read(path) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            read_error = Some(format!("{path}: {error}"));
-                            None
-                        }
-                    };
-                    let fields = read_edit(&mut read, "fx", name);
-                    if let Some(error) = read_error {
-                        return Err(error);
+        let mut names = Vec::new();
+        for graph in graphs.iter().chain(
+            result
+                .declarations
+                .declarations
+                .iter()
+                .filter_map(|declaration| declaration.as_ref().ok()),
+        ) {
+            names.extend(graph.nodes.iter().filter_map(|node| {
+                graph
+                    .effects
+                    .get(&node.id)
+                    .and_then(|parameters| parameters.effect.clone())
+            }));
+        }
+        for actor in actors {
+            match &actor.parameters {
+                Ok(parameters) => {
+                    if let Some(effect) = &parameters.effect {
+                        names.push(effect.clone());
                     }
-                    let fields = fields?;
-                    let mut groups = Vec::new();
-                    let group_fields =
-                        descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
-                    for fields in &group_fields {
-                        let asset = crate::assets::fx::effect_group(fields)?;
-                        if !asset.enabled {
-                            continue;
-                        }
-                        let sounds = asset.sounds.iter()
-                            .filter(|sound| sound.enabled && (sound.start.event.is_some() || sound.stop.event.is_some()))
-                            .map(|sound| Ok(WorldSoundDefinition {
+                    if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+                        eprintln!(
+                            "World FX actor prepared: {} effect={:?} start_off={}",
+                            actor.owner, parameters.effect, parameters.start_off
+                        );
+                    }
+                }
+                Err(error) => eprintln!("World FX actor preparation failed: {error}"),
+            }
+        }
+        for name in &names {
+            if result.effects.contains_key(name) {
+                continue;
+            }
+            let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
+                let mut read_error = None;
+                let mut read = |path: &str| match catalog.read(path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        read_error = Some(format!("{path}: {error}"));
+                        None
+                    }
+                };
+                let fields = read_edit(&mut read, "fx", name);
+                if let Some(error) = read_error {
+                    return Err(error);
+                }
+                let fields = fields?;
+                let mut groups = Vec::new();
+                let group_fields = descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
+                for fields in &group_fields {
+                    let asset = crate::assets::fx::effect_group(fields)?;
+                    if !asset.enabled {
+                        continue;
+                    }
+                    let sounds = asset
+                        .sounds
+                        .iter()
+                        .filter(|sound| {
+                            sound.enabled
+                                && (sound.start.event.is_some() || sound.stop.event.is_some())
+                        })
+                        .map(|sound| {
+                            Ok(WorldSoundDefinition {
                                 position: sound.position,
                                 start_delay: sound.start.delay,
                                 stop_delay: sound.stop.delay,
-                                start: WorldSoundEvent::resolve(&sound.start, catalog, &mut sound_events)?,
-                                stop: WorldSoundEvent::resolve(&sound.stop, catalog, &mut sound_events)?,
-                            }))
-                            .collect::<Result<Vec<_>, String>>()?;
-                        let particle_fields =
-                            descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
-                        let particles = particle_fields
-                            .iter()
-                            .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                            .map(|fields| {
-                                ParticleDefinition::load(fields, catalog, library, &mut materials)
+                                start: WorldSoundEvent::resolve(
+                                    &sound.start,
+                                    catalog,
+                                    &mut sound_events,
+                                )?,
+                                stop: WorldSoundEvent::resolve(
+                                    &sound.stop,
+                                    catalog,
+                                    &mut sound_events,
+                                )?,
                             })
-                            .collect();
-                        let other_families = fields
-                            .iter()
-                            .filter(|(field, value)| {
-                                field != "m_particleSystems" && field != "m_sounds"
-                                    && matches!(value, Value::Scope(_))
-                                    && scope(fields, field).is_some_and(|entries| {
-                                        !list_items(entries).is_empty()
-                                            || atom(entries, "num")
-                                                .is_some_and(|count| count != "0")
-                                    })
-                            })
-                            .cloned()
-                            .collect();
-                        groups.push(WorldEffectGroup {
-                            asset,
-                            particles,
-                            sounds,
-                            other_families,
-                        });
-                    }
-                    Ok(Arc::new(WorldEffectDefinition { groups }))
-                };
-                result.effects.insert(
-                    name.clone(),
-                    load().map_err(|error| format!("{name}: {error}")),
-                );
-            }
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let particle_fields =
+                        descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
+                    let particles = particle_fields
+                        .iter()
+                        .filter(|fields| atom(fields, "m_enabled") != Some("false"))
+                        .map(|fields| {
+                            ParticleDefinition::load(fields, catalog, library, &mut materials)
+                        })
+                        .collect();
+                    let other_families = fields
+                        .iter()
+                        .filter(|(field, value)| {
+                            field != "m_particleSystems"
+                                && field != "m_sounds"
+                                && matches!(value, Value::Scope(_))
+                                && scope(fields, field).is_some_and(|entries| {
+                                    !list_items(entries).is_empty()
+                                        || atom(entries, "num").is_some_and(|count| count != "0")
+                                })
+                        })
+                        .cloned()
+                        .collect();
+                    groups.push(WorldEffectGroup {
+                        asset,
+                        particles,
+                        sounds,
+                        other_families,
+                    });
+                }
+                Ok(Arc::new(WorldEffectDefinition { groups }))
+            };
+            result.effects.insert(
+                name.clone(),
+                load().map_err(|error| format!("{name}: {error}")),
+            );
         }
         result
     }

@@ -22,6 +22,25 @@ use std::{
 pub type FxRuntimeParameters = FxNodeParameters<EntityReference>;
 
 pub trait FxGraphWorld {
+    fn entity_effect_ready(&self, _entity: &EntityReference) -> Result<bool, String> {
+        Err("scene FX actor playback is not connected".into())
+    }
+    fn start_entity_effect(
+        &mut self,
+        _node: u32,
+        _entity: &EntityReference,
+        _target: Option<&EntityReference>,
+        _target_tag: &str,
+    ) -> Result<Option<u32>, String> {
+        Err("scene FX actor playback is not connected".into())
+    }
+    fn stop_entity_effect(
+        &mut self,
+        _node: u32,
+        _entity: &EntityReference,
+    ) -> Result<Option<u32>, String> {
+        Err("scene FX actor playback is not connected".into())
+    }
     fn parent_value(&self, _name: &str, _kind: &GraphValue) -> Result<Option<GraphValue>, String> {
         Ok(None)
     }
@@ -53,6 +72,7 @@ pub struct FxGraphRuntime {
     pub(super) children: HashMap<u32, SharedVariables>,
     gates: HashMap<u32, GateState>,
     effects: HashMap<u32, FxNode>,
+    entity_effects: HashMap<u32, super::entity_node::EntityFxNode>,
 }
 impl GraphInputs for FxGraphRuntime {
     fn graph_nodes(&self) -> &[Node] {
@@ -65,12 +85,12 @@ impl GraphInputs for FxGraphRuntime {
         self.random.get(&node).copied()
     }
     fn named_value(&self, name: &str) -> Result<Option<f32>, String> {
-        self.variables
+        let value = self.variables
             .read()
             .map_err(|_| "graph variable owner poisoned")?
             .get(name)?
-            .map(|value| value.number())
-            .transpose()
+            .ok_or_else(|| format!("world FX named variable {name} awaits its actual binding"))?;
+        value.number().map(Some)
     }
     fn variable_value(
         &self,
@@ -141,6 +161,7 @@ impl FxGraphRuntime {
             pending: Vec::new(),
             gates: HashMap::new(),
             effects: HashMap::new(),
+            entity_effects: HashMap::new(),
         }
     }
     fn relevant_nodes(graph: &FxGraph, mut relevant: HashSet<u32>) -> HashSet<u32> {
@@ -280,6 +301,43 @@ impl FxGraphRuntime {
             .ok_or("missing event port")?;
         let mut schedule = None;
         let paired_outputs = match node.class.as_str() {
+            "arkKisculeNodeEntityFx" => {
+                let reference = |name| {
+                    atom(&node.params, name)
+                        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+                        .map(|name| EntityReference::Named(name.to_owned()))
+                };
+                let entity = self.entity_input(&node, "m_entity", reference("m_entity"))?;
+                if let Some(entity) = entity {
+                    match port.name.as_str() {
+                        "Start" => {
+                            if world.entity_effect_ready(&entity)? {
+                                let target =
+                                    self.entity_input(&node, "m_target", reference("m_target"))?;
+                                if self.input(&node, "m_targetTagName").is_some() {
+                                    return Err(
+                                        "connected scene FX target tag producer is not prepared"
+                                            .into(),
+                                    );
+                                }
+                                let tag = atom(&node.params, "m_targetTagName").unwrap_or("");
+                                if let Some(actor) =
+                                    world.start_entity_effect(id, &entity, target.as_ref(), tag)?
+                                {
+                                    self.entity_effects.entry(id).or_default().started(actor);
+                                }
+                            }
+                        }
+                        "Stop" => {
+                            if let Some(actor) = world.stop_entity_effect(id, &entity)? {
+                                self.entity_effects.entry(id).or_default().stopped(actor);
+                            }
+                        }
+                        _ => return Err(format!("unsupported scene FX input {}", port.name)),
+                    }
+                }
+                true
+            }
             "arkKisculeNodeFx" => {
                 let operation = match port.name.as_str() {
                     "Start" => FxOperation::Start,
@@ -427,6 +485,10 @@ impl FxGraphRuntime {
         }
         self.effects.entry(node).or_default().effect_started(handle);
         Ok(())
+    }
+    pub fn entity_effect_completed(&mut self, node: u32, actor: u32) -> Result<(), String> {
+        self.entity_effects.entry(node).or_default().finished(actor);
+        self.emit(node, "Finished")
     }
     fn entity_input(
         &self,

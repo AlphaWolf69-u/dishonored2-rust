@@ -7,10 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Resource, Clone, Default, ExtractResource)]
-pub struct WorldEffectGraphs(
-    pub Arc<Vec<crate::assets::entities::effects::FxGraph>>,
-    pub u64,
-);
+pub struct WorldEffectDefinitions {
+    pub graphs: Arc<Vec<crate::assets::entities::effects::FxGraph>>,
+    pub actors: Arc<Vec<crate::assets::entities::effects::actors::ActorDefinition>>,
+    pub seed: u64,
+}
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectSources(pub Arc<WorldFxSources>);

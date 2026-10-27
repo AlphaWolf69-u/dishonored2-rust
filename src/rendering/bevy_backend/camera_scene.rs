@@ -86,14 +86,14 @@ pub(super) fn register(app: &mut App) {
     >::default());
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
     app.init_resource::<super::world_effects::WorldEffectSources>();
-    app.init_resource::<super::world_effects::WorldEffectGraphs>();
+    app.init_resource::<super::world_effects::WorldEffectDefinitions>();
     app.init_resource::<super::world_effects::WorldEffectFrames>();
     app.init_resource::<super::world_sounds::WorldSounds>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_sounds::WorldSounds,
     >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::world_effects::WorldEffectGraphs,
+        super::world_effects::WorldEffectDefinitions,
     >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectFrames,
@@ -427,7 +427,7 @@ fn render_particles(
 fn prepare_screen_effects(
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     world_sources: Res<super::world_effects::WorldEffectSources>,
-    world_graphs: Res<super::world_effects::WorldEffectGraphs>,
+    world_graphs: Res<super::world_effects::WorldEffectDefinitions>,
     world_frames: Res<super::world_effects::WorldEffectFrames>,
     world_sounds: Res<super::world_sounds::WorldSounds>,
     water: Res<WaterSceneFrame>,
