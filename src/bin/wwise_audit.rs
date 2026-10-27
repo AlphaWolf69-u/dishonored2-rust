@@ -392,11 +392,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node") {
+    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node" | "--source-generators") {
         let playback = first.to_string_lossy() == "--playback-event";
         let actor = first.to_string_lossy() == "--playback-node";
-        let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
-        let id = u32::from_str_radix(&id, 16)?;
+        let generators = first.to_string_lossy() == "--source-generators";
+        let id = if generators { 0 } else {
+            let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+            u32::from_str_radix(&id, 16)?
+        };
         let directory = match arguments.next() {
             Some(path) => PathBuf::from(path),
             None => dishonored2_rust::assets::installation::game_base()?.join("pck"),
@@ -432,6 +435,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
         println!("Loaded reference ownership: {:?}", library.references()?);
+        if generators {
+            let ids = library.generator_ids()?;
+            println!("{} source generators", ids.len());
+            let mut metadata = HashMap::new();
+            for id in ids {
+                if let Some(node) = library.actor_playback(id, |_, _| Err(std::io::Error::other("generator unexpectedly requested media")))? {
+                    print_playback(&node, 0, &mixer, None, &mut metadata)?;
+                }
+            }
+            return Ok(());
+        }
         if !actor && library.event_ids().binary_search(&id).is_err() {
             println!("event {id:#010x} is not present in the selected installed banks");
             return Ok(());

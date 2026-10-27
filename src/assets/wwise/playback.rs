@@ -69,6 +69,14 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    pub fn generator_ids(&self) -> io::Result<Vec<u32>> {
+        let mut ids = Vec::new();
+        for (&id, &object) in &self.actors {
+            if object.kind == 2 && matches!(read_u32_slice(self.bytes(object), 4)? & 0xf, 2 | 5) { ids.push(id); }
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
     pub fn event_ids(&self) -> Vec<u32> {
         let mut ids = self.events.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
