@@ -110,7 +110,7 @@ impl ParticleStage {
             &ParticleState,
             &mut u32,
         ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
-        motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
+        mut motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
         after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
     ) -> Result<(), String> {
         self.advance_with_events(
@@ -120,7 +120,7 @@ impl ParticleStage {
             bounds,
             planes,
             source_velocity,
-            motion,
+            |index, _, age, seed, force| motion(index, age, seed, force),
             after_advance,
             |_, _, _| Ok(()),
         )
@@ -138,7 +138,13 @@ impl ParticleStage {
             &ParticleState,
             &mut u32,
         ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
-        mut motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
+        mut motion: impl FnMut(
+            usize,
+            [f32; 3],
+            f32,
+            &mut u32,
+            Option<[f32; 3]>,
+        ) -> Result<MotionSample, String>,
         mut after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
         mut particle_event: impl FnMut(&ParticleState, f32, bool) -> Result<(), String>,
     ) -> Result<(), String> {
@@ -155,13 +161,14 @@ impl ParticleStage {
                 let mut seed = particle.seed;
                 let (source_velocity, forces) = source_velocity(index, &particle.state, &mut seed)?;
                 let step = remaining.min(maximum_step);
+                let position = particle.state.position;
                 let alive = particle.state.advance(
                     step,
                     loop_life,
                     particle.base_velocity,
                     source_velocity,
                     &mut particle.accumulated_velocity,
-                    |age| motion(index, age, &mut seed, forces),
+                    |age| motion(index, position, age, &mut seed, forces),
                 )?;
                 remaining = crate::float::subtract(remaining, step);
                 if !alive || !contains(particle.state.position, bounds, planes) {

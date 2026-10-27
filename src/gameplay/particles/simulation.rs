@@ -39,11 +39,17 @@ pub struct StageSimulation {
     pub events: super::events::StageEvents,
     /// Last frame supplied to this stage (1f4a00), also used by incoming events.
     pub owner_pose: ReferenceFrame,
+    /// 1fa780 initializes the source/target point to world zero.
+    pub target_position: [f32; 3],
+    fields: [Vec<super::field::FieldState>; 3],
+    field_velocity: Vec<[f32; 3]>,
 }
 
 struct Bindings<'a> {
     definition: &'a ParticleStageAsset,
     events: &'a mut super::events::StageEvents,
+    fields: &'a mut [Vec<super::field::FieldState>; 3],
+    field_velocity: &'a mut [[f32; 3]],
     owner_position: [f32; 3],
     particles: &'a mut ParticleStage,
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
@@ -54,9 +60,16 @@ struct Bindings<'a> {
 }
 
 impl EmitterBindings for Bindings<'_> {
-    fn reset_fields(&mut self, _seed: &mut u32) -> Result<(), String> {
-        // The stage reader rejects authored vector-field producers. Its
-        // default empty lists consume no random values in 1f4ae0.
+    fn reset_fields(&mut self, seed: &mut u32) -> Result<(), String> {
+        for (states, definitions) in self.fields.iter_mut().zip([
+            &self.definition.spawn_fields,
+            &self.definition.vector_fields,
+            &self.definition.acceleration_fields,
+        ]) {
+            for (state, definition) in states.iter_mut().zip(definitions) {
+                state.reset(definition, seed);
+            }
+        }
         Ok(())
     }
     fn advance_shape(
@@ -135,8 +148,18 @@ impl EmitterBindings for Bindings<'_> {
         );
         velocity = super::spawn::spray(velocity, cone, seed);
         let position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
-        let particle_seed = crate::random::lcg_step(seed);
+        let mut particle_seed = crate::random::lcg_step(seed);
         let mut motion_seed = particle_seed;
+        if let Some(field) = super::field::sample(
+            &self.fields[0],
+            &definition.spawn_fields,
+            position,
+            0.,
+            &mut motion_seed,
+        )? {
+            velocity = std::array::from_fn(|i| add(field[i], velocity[i]));
+        }
+        particle_seed = motion_seed;
         let inherited = self.inherited_velocity.at_point(position);
         let base_velocity = std::array::from_fn(|i| add(inherited[i], velocity[i]));
         let mut particle = Particle {
@@ -145,16 +168,34 @@ impl EmitterBindings for Bindings<'_> {
             accumulated_velocity: [0.; 3],
             seed: particle_seed,
         };
+        let mut field_velocity = [0.; 3];
+        if let Some(field) = super::field::sample(
+            &self.fields[1],
+            &definition.vector_fields,
+            position,
+            particle.state.age,
+            &mut motion_seed,
+        )? {
+            field_velocity = field;
+        }
         if !particle.state.advance(
             context.remaining_delta,
             definition.infinite_life,
             particle.base_velocity,
-            [0.; 3],
+            field_velocity,
             &mut particle.accumulated_velocity,
             |age| {
                 definition
                     .motion
-                    .sample(age, &mut motion_seed, &space, None)
+                    .sample_with_field(age, &mut motion_seed, &space, None, |seed| {
+                        super::field::sample(
+                            &self.fields[2],
+                            &definition.acceleration_fields,
+                            position,
+                            age,
+                            seed,
+                        )
+                    })
             },
         )? {
             return Ok(self.particles.capacity() - self.particles.len());
@@ -164,6 +205,7 @@ impl EmitterBindings for Bindings<'_> {
         let Some(slot) = self.particles.insert(particle) else {
             return Ok(0);
         };
+        self.field_velocity[slot] = field_velocity;
         let mut sprite_seed = particle_seed;
         for (definition, slots) in definition.sprites.iter().zip(self.sprites.iter_mut()) {
             if !definition.enabled {
@@ -227,6 +269,8 @@ impl StageSimulation {
         let mut bindings = Bindings {
             definition: &self.declaration.stages[self.index],
             events: &mut self.events,
+            fields: &mut self.fields,
+            field_velocity: &mut self.field_velocity,
             owner_position: pose.position,
             particles: &mut self.particles,
             sprites: &mut self.sprites,
@@ -262,12 +306,26 @@ impl StageSimulation {
         // 1efcc0 retains the first draw as its cycle seed and the second as
         // its mutable spawn seed. Field/shape defaults consume neither.
         let _cycle_seed = crate::random::lcg_step(system_seed);
-        let spawn_seed = crate::random::lcg_step(system_seed);
+        let mut spawn_seed = crate::random::lcg_step(system_seed);
+        let mut fields = [
+            &definition.spawn_fields,
+            &definition.vector_fields,
+            &definition.acceleration_fields,
+        ]
+        .map(|definitions| {
+            definitions
+                .iter()
+                .map(|definition| super::field::FieldState::new(definition, &mut spawn_seed))
+                .collect()
+        });
+        let mut field_velocity = vec![[0.; 3]; capacity];
         let mut events = super::events::StageEvents::new(&declaration, index);
         let mut mesh_cursor = 0;
         let inherited_velocity = super::spawn::SpawnVelocity::default();
         let mut bindings = Bindings {
             events: &mut events,
+            fields: &mut fields,
+            field_velocity: &mut field_velocity,
             owner_position: pose.position,
             definition,
             particles: &mut particles,
@@ -297,6 +355,9 @@ impl StageSimulation {
             inherited_velocity,
             events,
             owner_pose: pose,
+            target_position: [0.; 3],
+            fields,
+            field_velocity,
         })
     }
 
@@ -457,6 +518,45 @@ impl StageSimulation {
         let declaration = self.declaration.clone();
         let definition = &declaration.stages[self.index];
         let space = ParticleSpace::new(frame.pose.basis, definition.worldspace);
+        let origin = if definition.worldspace {
+            frame.pose.position
+        } else {
+            [0.; 3]
+        };
+        let target = if definition.worldspace {
+            self.target_position
+        } else {
+            space.transform(
+                std::array::from_fn(|i| {
+                    crate::float::subtract(self.target_position[i], frame.pose.position[i])
+                }),
+                true,
+            )
+        };
+        let mut cycle_seed = self.emitter.cycle_seed();
+        for (states, definitions) in self.fields.iter_mut().zip([
+            &definition.spawn_fields,
+            &definition.vector_fields,
+            &definition.acceleration_fields,
+        ]) {
+            for (state, definition) in states.iter_mut().zip(definitions) {
+                state.prepare(
+                    definition,
+                    self.emitter.elapsed,
+                    self.emitter.cycle.fraction,
+                    delta,
+                    if definition.target_position {
+                        target
+                    } else {
+                        origin
+                    },
+                    &space,
+                    &mut cycle_seed,
+                )?;
+            }
+        }
+        let field_velocity = &mut self.field_velocity;
+        let fields = &self.fields;
         let sprites = &mut self.sprites;
         let events = &mut self.events;
         let event_seed = &mut self.emitter.seed;
@@ -466,7 +566,16 @@ impl StageSimulation {
             definition.infinite_life,
             frame.bounds,
             frame.planes,
-            |_, particle, seed| {
+            |index, particle, seed| {
+                if let Some(value) = super::field::sample(
+                    &fields[1],
+                    &definition.vector_fields,
+                    particle.position,
+                    particle.age,
+                    seed,
+                )? {
+                    field_velocity[index] = value;
+                }
                 // 1f5620 samples wind-over-life even for a zero wind vector,
                 // before the existing source-over-life parameter samples.
                 let strength = declaration.wind.over_life.sample(particle.age, seed)?;
@@ -475,11 +584,28 @@ impl StageSimulation {
                     .source_velocity_over_life
                     .sample(particle.age, seed)?;
                 Ok((
-                    std::array::from_fn(|i| multiply(source[i], source_velocity[i])),
-                    Some(force),
+                    std::array::from_fn(|i| {
+                        add(
+                            add(field_velocity[index][i], force[i]),
+                            multiply(source[i], source_velocity[i]),
+                        )
+                    }),
+                    None,
                 ))
             },
-            |_, age, seed, forces| definition.motion.sample(age, seed, &space, forces),
+            |_, position, age, seed, forces| {
+                definition
+                    .motion
+                    .sample_with_field(age, seed, &space, forces, |seed| {
+                        super::field::sample(
+                            &fields[2],
+                            &definition.acceleration_fields,
+                            position,
+                            age,
+                            seed,
+                        )
+                    })
+            },
             |index, particle, seed| {
                 for (sprite, slots) in definition.sprites.iter().zip(sprites.iter_mut()) {
                     if let Some(state) = &mut slots[index] {
@@ -508,6 +634,8 @@ impl StageSimulation {
         )?;
         let mut bindings = Bindings {
             events: &mut self.events,
+            fields: &mut self.fields,
+            field_velocity: &mut self.field_velocity,
             owner_position: frame.pose.position,
             definition,
             particles: &mut self.particles,

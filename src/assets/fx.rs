@@ -7,6 +7,7 @@ pub mod particle_declaration;
 mod particle_mesh;
 pub mod particle_sprite;
 pub mod particle_stage;
+pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;
 

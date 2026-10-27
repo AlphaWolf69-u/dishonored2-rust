@@ -131,6 +131,9 @@ pub struct ParticleStageAsset {
     pub constant_seed: bool,
     pub sprites: Vec<ParticleSpriteAsset>,
     pub events: ParticleEvents,
+    pub spawn_fields: Vec<super::particle_field::ParticleField>,
+    pub vector_fields: Vec<super::particle_field::ParticleField>,
+    pub acceleration_fields: Vec<super::particle_field::ParticleField>,
 }
 impl Default for ParticleStageAsset {
     fn default() -> Self {
@@ -174,6 +177,9 @@ impl Default for ParticleStageAsset {
             constant_seed: false,
             sprites: vec![ParticleSpriteAsset::default()],
             events: ParticleEvents::default(),
+            spawn_fields: Vec::new(),
+            vector_fields: Vec::new(),
+            acceleration_fields: Vec::new(),
         }
     }
 }
@@ -250,6 +256,11 @@ impl ParticleStageAsset {
                 "m_duration" => bounds(&mut self.emitter.duration, scope(value)?)?,
                 "m_initialLocation" => self.location.edit(scope(value)?)?,
                 "m_initialVelocity" => self.velocity.edit(scope(value)?)?,
+                "m_velocityVectorFields" => descriptor_list(
+                    &mut self.spawn_fields,
+                    scope(value)?,
+                    super::particle_field::field,
+                )?,
                 "m_spawnMesh" => particle_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
                 "m_velocitySprayCone" => {
                     particles::scalar_parameter(&mut self.velocity_spray, scope(value)?)?
@@ -309,6 +320,16 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
             }
             "m_constantSeed" => result.constant_seed = boolean(value)?,
             "m_events" => result.events.edit(scope(value)?)?,
+            "m_vectorFields" => descriptor_list(
+                &mut result.vector_fields,
+                scope(value)?,
+                super::particle_field::field,
+            )?,
+            "m_accelerationVectorFields" => descriptor_list(
+                &mut result.acceleration_fields,
+                scope(value)?,
+                super::particle_field::field,
+            )?,
             "m_sprites" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

@@ -27,6 +27,7 @@ impl ParticleDefinition {
     ) -> Result<Self, String> {
         let owner = particle_system::particle_system(fields)?;
         let mut models = HashMap::new();
+        let mut field_images = HashMap::new();
         let declarations = owner
             .declarations
             .iter()
@@ -39,6 +40,37 @@ impl ParticleDefinition {
                 // Emission meshes are dedicated PMODEL archive resources,
                 // independent of the ordinary rendered-prop mesh loader.
                 for stage in &mut declaration.stages {
+                    for field in stage
+                        .spawn_fields
+                        .iter_mut()
+                        .chain(&mut stage.vector_fields)
+                        .chain(&mut stage.acceleration_fields)
+                    {
+                        for texture in &mut field.textures {
+                            let Some(source) = &texture.source else {
+                                continue;
+                            };
+                            let resource = catalog
+                                .image_resource(source)
+                                .ok_or_else(|| format!("missing field image alias {source}"))?;
+                            if !field_images.contains_key(resource) {
+                                let bytes = catalog
+                                    .read(resource)
+                                    .map_err(|error| format!("{resource}: {error}"))?
+                                    .ok_or_else(|| format!("missing field image {resource}"))?;
+                                field_images.insert(
+                                    resource.to_owned(),
+                                    Arc::new(
+                                        crate::assets::fx::particle_field::FieldPixels::read(
+                                            &bytes,
+                                        )
+                                        .map_err(|error| format!("{resource}: {error}"))?,
+                                    ),
+                                );
+                            }
+                            texture.pixels = Some(field_images[resource].clone());
+                        }
+                    }
                     let mesh = &mut stage.spawn_mesh;
                     let Some(source) = &mesh.source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
