@@ -212,7 +212,17 @@ impl Flow {
     pub(super) fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32],
         mut routing: Option<&mut RouteContext<'_>>) -> bool {
         for voice in &mut self.voices {
-            if voice.ended.is_some() || now < voice.start { continue; }
+            if voice.ended.is_some() { continue; }
+            if voice.runtime.fade_stopping(now) {
+                // 141105850 -> 14112fd20 clears the continuation before the
+                // zero-target block is mixed; 1410ebae0 retires it afterward.
+                voice.actual_stop = true;
+                voice.continuation.clear();
+            }
+            if now < voice.start {
+                if voice.actual_stop && now % 1024 == 1023 { voice.ended = Some(now); }
+                continue;
+            }
             if voice.runtime.fade_value(now).is_none() {
                 voice.actual_stop = true;
                 voice.continuation.clear();
@@ -220,6 +230,7 @@ impl Flow {
                 continue;
             }
             if !voice.runtime.frame(now, audio, output, routing.as_deref_mut()) { voice.ended = Some(now); }
+            if voice.actual_stop && now % 1024 == 1023 { voice.ended = Some(now); }
         }
         if now % 1024 == 1023 { self.notifications(now, audio); }
         !self.voices.is_empty() || !self.pending.is_empty()
