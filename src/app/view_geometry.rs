@@ -453,17 +453,33 @@ pub(super) fn apply_placed_model_queries(
     camera: [f32; 3],
     viewport: [u32; 2],
 ) -> Result<usize, String> {
+    query_placed_models(visible.len(), groups, state, camera, viewport, |indices, _| {
+        visible[indices].fill(true);
+        Ok(())
+    })
+}
+
+/// Keep visibility and image demand on the same accepted model query, so
+/// placed BML/MD6 surfaces use their current bounds without a second query.
+pub(super) fn query_placed_models(
+    instance_count: usize,
+    groups: &[PlacedModelQueryGroup],
+    state: &tome::RenderQueryState,
+    camera: [f32; 3],
+    viewport: [u32; 2],
+    mut accept: impl FnMut(std::ops::Range<usize>, f32) -> Result<(), String>,
+) -> Result<usize, String> {
     if groups
         .iter()
-        .any(|group| group.indices.start > group.indices.end || group.indices.end > visible.len())
+        .any(|group| group.indices.start > group.indices.end || group.indices.end > instance_count)
     {
         return Err("placed model query indices exceed render instances".into());
     }
     let query = tome::RenderAabbQuery::from_state(state)?;
     let mut accepted = 0;
     for group in groups {
-        if render_model::model_visible(&query, camera, viewport, group.input)? {
-            visible[group.indices.clone()].fill(true);
+        if let Some(area) = render_model::model_visible_area(&query, camera, viewport, group.input)? {
+            accept(group.indices.clone(), area)?;
             accepted += 1;
         }
     }

@@ -3959,8 +3959,19 @@ pub fn model_visible(
     viewport: [u32; 2],
     model: ModelQueryInput,
 ) -> Result<bool, String> {
+    Ok(model_visible_area(query, camera, viewport, model)?.is_some())
+}
+
+/// FUN_14031ad30 retains the flag-0 bounds-query area for every accepted
+/// model and forwards it to each surface material's images via 14031a510.
+pub fn model_visible_area(
+    query: &NoDepthAabbQuery,
+    camera: [f32; 3],
+    viewport: [u32; 2],
+    model: ModelQueryInput,
+) -> Result<Option<f32>, String> {
     if !model_eligible(model.frame_flags, model.shape_flags) {
-        return Ok(false);
+        return Ok(None);
     }
     if viewport.contains(&0)
         || camera
@@ -3971,12 +3982,13 @@ pub fn model_visible(
         return Err("unsupported nonfinite model region or empty viewport".to_owned());
     }
     if !in_model_region(camera, model.region) {
-        return Ok(false);
+        return Ok(None);
     }
     let (visible, area) = query.visibility_and_area(model.bounds)?;
-    Ok(visible
+    Ok((visible
         && (model.frame_flags & 0x40 != 0
             || !(area < 25.0 / (viewport[0] as f32 * viewport[1] as f32))))
+        .then_some(area))
 }
 
 /// FUN_140399620: the base render-model virtual callback has no side effects.

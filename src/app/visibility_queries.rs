@@ -1,6 +1,6 @@
 //! Visibility queries.
 use super::{
-    apply_placed_model_queries, bwm_lod_visibility_counts, game_pose_from_view_transform,
+    bwm_lod_visibility_counts, game_pose_from_view_transform,
     game_settings, view_distance_scale, reference_fov_from_projection, tome, view_to_game,
     Instant, MaterialHandle, MeshTag, ViewSettings, PickupState, PickupVisual,
     PlacedModelQueries, Projection, RenderSuppressionGroup, SceneRenderQueue, StreamingDiagnostics,
@@ -406,12 +406,26 @@ pub(super) fn stream_visible_models(
                             if let (Some(groups), Some(state)) =
                                 (placed_model_queries.as_ref(), output.state.as_ref())
                             {
-                                apply_placed_model_queries(
-                                    &mut visible,
+                                super::view_geometry::query_placed_models(
+                                    visible.len(),
                                     &groups.0,
                                     state,
                                     view_to_game(transform.translation),
                                     [viewport.x, viewport.y],
+                                    |indices, area| {
+                                        visible[indices.clone()].fill(true);
+                                        for instance in &scene.instances[indices] {
+                                            let slots = scene.material_images.get(&instance.material)
+                                                .map(Vec::as_slice)
+                                                .unwrap_or_else(|| instance.diffuse_image_slot.as_slice());
+                                            for &slot in slots {
+                                                scene.diffuse_image_demands.get(slot)
+                                                    .ok_or("placed model material references an unknown image")?
+                                                    .submit(area);
+                                            }
+                                        }
+                                        Ok(())
+                                    },
                                 )?;
                             }
                             Ok(())

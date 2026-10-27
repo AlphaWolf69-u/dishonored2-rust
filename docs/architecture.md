@@ -963,6 +963,11 @@ masks are updated in place when their rectangles already contain the incoming
 tile; growth retains transactional replacement so a failed update leaves the
 previous coverage intact.
 
+Placed BML/MD6 models retain their accepted bounds-query area and submit it
+for every resolved surface material image, including custom material overrides.
+Visibility and demand share the same query and the current motion-updated bounds;
+the ordinary archive streamer owns mip eligibility, uploads and eviction.
+
 The forward texture-demand producer folds repeated image-area contributions
 before publishing through the existing atomic maximum. This is a host scheduling
 optimization of the area-only helper; packed streamer metadata has its own
