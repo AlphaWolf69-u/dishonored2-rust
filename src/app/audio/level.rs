@@ -14,6 +14,12 @@ struct Object {
     error: Option<String>,
 }
 
+pub(super) struct Evaluation {
+    pub origin: Admission,
+    pub inaudible: bool,
+    pub propagated: Option<Propagated>,
+}
+
 #[derive(Resource)]
 pub(in crate::app) struct LevelAudio {
     world: AcousticWorld,
@@ -34,6 +40,53 @@ impl LevelAudio {
         Ok(Self { world: AcousticWorld::new(graph, base)?, objects: HashMap::new(),
             listener_position: None, listener_zone: None, auxiliary_buses })
     }
+    /// Shared c2b60/c3a00 publication for retained component and FX objects.
+    /// The caller supplies the object's actual range and settings; this owner
+    /// retains the single acoustic world, zone cache and listener path state.
+    pub(super) fn evaluate(&mut self, emitter: Emitter, position: Vec3, front: Vec3,
+        range: f32, propagation: bool, settings: crate::gameplay::sound::component::Settings,
+        allocated: bool, scene: &Scene, detail: i32) -> Result<Evaluation, String>
+    {
+        let listener = scene.listener().ok_or("sound object has no active listener")?;
+        if self.listener_position != Some(listener.position) {
+            self.listener_zone = self.world.zone_at(listener.position.to_array())?;
+            self.listener_position = Some(listener.position);
+        }
+        let object = self.objects.entry(emitter).or_default();
+        if object.source != Some(position) {
+            object.zone = self.world.zone_at(position.to_array())?;
+            object.source = Some(position);
+        }
+        let query = AdmissionQuery { source: position, listener: listener.position, range: range,
+            vertical_scale: 1.0, propagation: propagation,
+            source_zone: object.zone, listener_zone: self.listener_zone };
+        let origin = propagation::admission(&self.world.graph, &query, 1.0)?;
+        // Retained allocated objects update their listener mask even while
+        // their startup list is stopped, so reentry can restart that list.
+        if allocated || origin != Admission::Inaudible {
+            object.listener.update(&self.world.graph, &paths::Query {
+                source: position, listener: listener.position, source_zone: object.zone,
+                listener_zone: self.listener_zone, range: query.range, propagation: propagation,
+                reflection_normal: scene.reflection_normal(),
+                source_occlusion_scale: settings.source_occlusion_scale(),
+            }, query.range, false, 1, &mut object.audible_mask)?;
+        }
+        // Resolve host inputs before consuming the component's pending
+        // start; an unsupported path must not lose its startup request.
+        let propagated = if object.audible_mask != 0 {
+            let results = &object.listener.results;
+            let closest = results.closest.and_then(|index| results.paths.get(index));
+            let positions = positions::for_mixing(&[results], closest, query.range, front)?
+                .into_iter().map(|position| Position { position: position.position, front: Some(position.front) }).collect();
+            let levels = object.listener.levels(scene.minimum(), settings.level_scale()).into();
+            let auxiliary = crate::gameplay::sound::auxiliary::project(&self.world.graph,
+                closest, settings.auxiliary_sends && scene.collects_environment(), detail,
+                |name| self.auxiliary_buses.resolve(name))?;
+            Some(Propagated { positions, levels, auxiliary })
+        } else { None };
+        Ok(Evaluation { origin, inaudible: object.audible_mask == 0, propagated })
+    }
+
 }
 
 pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
@@ -60,7 +113,6 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
         if !audio.started || !audio.startup.deferred { return Ok(()); }
         let emitter = Emitter::Component { handle: handle.packed(), generation: audio.owner.generation };
         scene.set_rate(emitter, binding.settings.rate(rates[1]), rates[1] == 0.0);
-        let object = level.objects.entry(emitter).or_default();
         let mut position = Vec3::from_array(binding.frame.position);
         let mut front = Vec3::from_array(binding.frame.basis[0]);
         if let Some(delta) = bound.entity_delta(&binding.entity_id) {
@@ -70,40 +122,11 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
             front = rotate(front);
         }
         let result = (|| -> Result<(), String> {
-            if object.source != Some(position) {
-                object.zone = level.world.zone_at(position.to_array())?;
-                object.source = Some(position);
-            }
-            let query = AdmissionQuery { source: position, listener: listener.position, range: audio.startup.max_distance,
-                vertical_scale: 1.0, propagation: binding.propagation,
-                source_zone: object.zone, listener_zone: level.listener_zone };
-            let origin = propagation::admission(&level.world.graph, &query, 1.0)?;
-            // Retained allocated objects update their listener mask even while
-            // their startup list is stopped, so reentry can restart that list.
-            if audio.allocated || origin != Admission::Inaudible {
-                object.listener.update(&level.world.graph, &paths::Query {
-                    source: position, listener: listener.position, source_zone: object.zone,
-                    listener_zone: level.listener_zone, range: query.range, propagation: binding.propagation,
-                    reflection_normal: scene.reflection_normal(),
-                    source_occlusion_scale: binding.settings.source_occlusion_scale(),
-                }, query.range, false, 1, &mut object.audible_mask)?;
-            }
-            // Resolve host inputs before consuming the component's pending
-            // start; an unsupported path must not lose its startup request.
-            let propagated = if object.audible_mask != 0 {
-                let results = &object.listener.results;
-                let closest = results.closest.and_then(|index| results.paths.get(index));
-                let positions = positions::for_mixing(&[results], closest, query.range, front)?
-                    .into_iter().map(|position| Position { position: position.position, front: Some(position.front) }).collect();
-                let levels = object.listener.levels(scene.minimum(), binding.settings.level_scale()).into();
-                let auxiliary = crate::gameplay::sound::auxiliary::project(&level.world.graph,
-                    closest, binding.settings.auxiliary_sends && scene.collects_environment(), detail,
-                    |name| level.auxiliary_buses.resolve(name))?;
-                Some(Propagated { positions, levels, auxiliary })
-            } else { None };
+            let evaluation = level.evaluate(emitter, position, front, audio.startup.max_distance,
+                binding.propagation, binding.settings, audio.allocated, &scene, detail)?;
             // A zero owner clock freezes the component update (8abb10).
             if rates[1] != 0.0 && !paused.as_ref().is_some_and(|paused| paused.0) {
-                match audio.startup.update(audio.allocated, object.audible_mask == 0, origin == Admission::Inaudible) {
+                match audio.startup.update(audio.allocated, evaluation.inaudible, evaluation.origin == Admission::Inaudible) {
                     StartupAction::Stop => {
                         // 1400c5d80 stops every playing ID, zero milliseconds,
                         // while preserving the allocated default object slot.
@@ -122,13 +145,14 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                 }
             }
             if audio.allocated {
-                if let Some(propagated) = propagated {
+                if let Some(propagated) = evaluation.propagated {
                     scene.publish(emitter, Position { position, front: Some(front) }, propagated,
                         binding.settings.rate(rates[1]), rates[1] == 0.0);
                 }
             }
             Ok(())
         })();
+        let object = level.objects.entry(emitter).or_default();
         match result {
             Ok(()) => object.error = None,
             Err(error) => {

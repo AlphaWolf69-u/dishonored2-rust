@@ -84,6 +84,10 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<super::world_effects::WorldEffectSources>();
     app.init_resource::<super::world_effects::WorldEffectGraphs>();
     app.init_resource::<super::world_effects::WorldEffectFrames>();
+    app.init_resource::<super::world_sounds::WorldSounds>();
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_sounds::WorldSounds,
+    >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectGraphs,
     >::default());

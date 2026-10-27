@@ -254,3 +254,5 @@ pub(crate) mod particle_systems;
 pub mod world_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_particle_state;
+#[cfg(feature = "game")]
+pub(crate) mod world_sounds;

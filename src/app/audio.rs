@@ -7,6 +7,8 @@ mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
+mod objects;
+mod effects;
 mod spatial;
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
@@ -24,12 +26,84 @@ struct WwiseRegistry {
     scheduled_selections: graph::Selections,
 }
 
+impl WwiseRegistry {
+    fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
+        let mut files = HashMap::<usize, std::fs::File>::new();
+        self.library.event_playback(event, |owner, media_id| {
+            let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
+            let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+            let file = match files.entry(owner) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
+            };
+            bank.package.read_entry(file, media).map(Some)
+        })?.ok_or_else(|| "event has no supported Wwise actions".into())
+    }
+    fn prepare(&mut self, event: u32, sources: &mut Assets<PcmAudio>,
+        mixer: &crate::gameplay::sound::mix::Mixer, force_scheduling: bool)
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        if self.sources.get(&event).is_some_and(|actions| !force_scheduling
+            || actions.iter().all(|action| !matches!(action, SourceAction::Play { .. }))) {
+            return Ok(());
+        }
+        let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
+            let graph_actions = self.playback(event)?;
+            use crate::assets::wwise::PlaybackCommand;
+            let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
+                match action {
+                    PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
+                        || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
+                    _ => Ok(required),
+                }
+            })?;
+            if scheduled || force_scheduling {
+                return graph_actions.into_iter().map(|action| match action {
+                    PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                    PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
+                        target, settings, definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?),
+                    }),
+                }).collect();
+            }
+            let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
+            actions.into_iter().map(|action| match action {
+                crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
+                    let groups = groups.into_iter().map(|group| {
+                        let variants = group.variants.into_iter().map(|variant| {
+                            let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
+                                "event {event:#010x}, source {:#010x}: {error}",
+                                variant.properties.nodes.first().map_or(0, |node| node.id)
+                            ))?;
+                            Ok(AudioVariant {
+                                source: sources.add(source),
+                                weight: variant.weight, properties: Arc::new(variant.properties),
+                            })
+                        }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                        Ok(AudioGroup {
+                            node: group.node, global: group.global, avoid_repeat: group.avoid_repeat,
+                            mode: group.mode, reset_each_play: group.reset_each_play, variants,
+                            restart_backward: group.restart_backward,
+                        })
+                    }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+                    Ok(SourceAction::Play { target, settings, groups })
+                }
+            }).collect()
+        })();
+        self.sources.insert(event, decoded?);
+        Ok(())
+    }
+
+}
+
 #[derive(Resource, Default)]
 struct AudioMix {
     generation: u64,
     mixer: Option<crate::gameplay::sound::mix::Mixer>,
     bindings: Vec<(u32, &'static str)>,
     time_dilation: Option<u32>,
+    physics_scale: Option<crate::assets::wwise::RtpcDeclaration>,
 }
 
 impl AudioMix {
@@ -112,13 +186,15 @@ impl Plugin for SoundPlugin {
             .add_message::<SoundEvent>()
             .add_message::<ContactSound>()
             .init_resource::<contacts::ContactSounds>()
+            .init_resource::<objects::EffectObjects>()
+            .init_resource::<effects::EffectAudio>()
             .init_resource::<WwiseRegistry>()
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::prepare, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -178,11 +254,15 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
         let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
         let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
-        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
+        let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
+        let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("physics sound RTPC declaration is absent")?;
+        let physics_scale = crate::assets::wwise::RtpcDeclaration::parse(&crate::entities::declaration_text(&source))?;
+        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale))
     })();
     match result {
-        Ok((banks, attenuations, library, output_mix, bindings, time_dilation)) => {
+        Ok((banks, attenuations, library, output_mix, bindings, time_dilation, physics_scale)) => {
             mix.time_dilation = Some(time_dilation);
+            mix.physics_scale = Some(physics_scale);
             registry.attenuations = attenuations;
             info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
             registry.banks = banks;
@@ -240,67 +320,9 @@ fn play_events(
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
-        if !registry.sources.contains_key(&event) {
-            let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
-                let mut files = HashMap::<usize, std::fs::File>::new();
-                let graph_actions = registry.library.event_playback(event, |owner, media_id| {
-                    let bank = registry.banks.get(owner).ok_or_else(|| std::io::Error::new(
-                        std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
-                    let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
-                    let file = match files.entry(owner) {
-                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
-                    };
-                    bank.package.read_entry(file, media).map(Some)
-                })?.ok_or("event has no supported Wwise actions")?;
-                use crate::assets::wwise::PlaybackCommand;
-                let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
-                    match action {
-                        PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
-                            || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
-                        _ => Ok(required),
-                    }
-                })?;
-                if scheduled {
-                    return graph_actions.into_iter().map(|action| match action {
-                        PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                        PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
-                            target, settings, definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?),
-                        }),
-                    }).collect();
-                }
-                let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
-                actions.into_iter().map(|action| match action {
-                    crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                    crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
-                        let groups = groups.into_iter().map(|group| {
-                            let variants = group.variants.into_iter().map(|variant| {
-                                let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
-                                    "event {event:#010x}, source {:#010x}: {error}",
-                                    variant.properties.nodes.first().map_or(0, |node| node.id)
-                                ))?;
-                                Ok(AudioVariant {
-                                    source: sources.add(source),
-                                    weight: variant.weight, properties: Arc::new(variant.properties),
-                                })
-                            }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                            Ok(AudioGroup {
-                                node: group.node, global: group.global, avoid_repeat: group.avoid_repeat,
-                                mode: group.mode, reset_each_play: group.reset_each_play, variants,
-                                restart_backward: group.restart_backward,
-                            })
-                        }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                        Ok(SourceAction::Play { target, settings, groups })
-                    }
-                }).collect()
-            })();
-            match decoded {
-                Ok(actions) => { registry.sources.insert(event, actions); }
-                Err(error) => {
-                    warn!("Wwise event {event:#010x} has no supported route: {error}");
-                    continue;
-                }
-            }
+        if let Err(error) = registry.prepare(event, &mut sources, mixer, false) {
+            warn!("Wwise event {event:#010x} has no supported route: {error}");
+            continue;
         }
         if let Some(actions) = registry.sources.get(&event).cloned() {
             for action in actions {

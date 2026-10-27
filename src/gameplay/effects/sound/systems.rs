@@ -58,6 +58,14 @@ impl<O: Copy, P: Copy + PartialEq> SoundSystems<O, P> {
             .map(|slot| &mut slot.handle)
     }
 
+    /// Host completion IDs remain unique while retained by the audio owner.
+    /// Resolve against the live handles before the next liveness traversal.
+    pub fn finished(&mut self, playing: P) {
+        for sound in self.slots.iter_mut().flatten() {
+            sound.handle.finished(playing);
+        }
+    }
+
     /// 220340 checks liveness before update. A slot finishing during update
     /// remains counted until the next traversal, as with the particle family.
     pub fn update<W: SoundObjectWorld<Object = O, Playing = P>>(
