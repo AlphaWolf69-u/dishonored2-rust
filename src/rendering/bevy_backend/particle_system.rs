@@ -51,6 +51,7 @@ pub(crate) struct ParticleSystem {
     force_simulate: bool,
     force_visible: bool,
     probe_query: crate::probe_lighting::ProbeQuery,
+    debug_reported_child_draw: bool,
 }
 impl ParticleSystem {
     pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
@@ -210,6 +211,20 @@ impl ParticleSystem {
                     transparency.mode != 0,
                     self.water_flags & 8 != 0,
                 );
+                if !self.debug_reported_child_draw
+                    && definition.burst
+                    && !definition.burst_event.is_empty()
+                    && !instances.is_empty()
+                {
+                    bevy::log::info!(
+                        stage = definition.name,
+                        event = definition.burst_event,
+                        material = name,
+                        particles = instances.len(),
+                        "Particle child-stage draw published"
+                    );
+                    self.debug_reported_child_draw = true;
+                }
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
                     lighting: if material.option("fx/opt/use_lighting")? != 0 {
@@ -302,6 +317,7 @@ impl ParticleSystem {
             force_simulate,
             force_visible,
             probe_query: Default::default(),
+            debug_reported_child_draw: false,
         })
     }
 

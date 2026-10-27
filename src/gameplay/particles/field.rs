@@ -165,8 +165,20 @@ impl FieldState {
         if !definition.enabled {
             return Ok(None);
         }
-        let point = transform(position, self.inverse);
-        let point: [f32; 3] = std::array::from_fn(|i| add(point[i], self.offset[i]));
+        // 214d20 sums translation, Y, Z, then X. In large world coordinates
+        // changing that association can select a different nearest texel.
+        let point: [f32; 3] = std::array::from_fn(|i| {
+            add(
+                add(
+                    add(
+                        multiply(1., self.offset[i]),
+                        multiply(position[1], self.inverse[1][i]),
+                    ),
+                    multiply(position[2], self.inverse[2][i]),
+                ),
+                multiply(position[0], self.inverse[0][i]),
+            )
+        });
         if !self.unbounded && !point.iter().all(|&v| 0. <= v && v <= 1.) {
             return Ok(None);
         }
