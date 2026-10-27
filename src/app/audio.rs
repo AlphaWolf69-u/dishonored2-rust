@@ -41,35 +41,36 @@ impl WwiseRegistry {
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
         if self.sources.contains_key(&event) { return Ok(()); }
+        use crate::assets::wwise::PlaybackCommand;
         let graph_actions = self.playback(event)?;
-                let mut actions = Vec::new();
-                for action in graph_actions {
-                    // Each action is dispatched independently in 1410e5600 /
-                    // 1410e8260. A host decoder or unsupported actor must not
-                    // discard the event's other Play and Stop actions.
-                    let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
-                    PlaybackCommand::Failed { action, target, reason } => Err(format!(
-                        "action {action:#010x}, target {target:#010x}: {reason}").into()),
-                    PlaybackCommand::Stop(action) => {
-                        let target_path = self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from);
-                        Ok(SourceAction::Stop { action, target_path })
-                    },
-                    PlaybackCommand::SetState(action) => {
-                        let target_path = if action.bus { None } else {
-                            self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from)
-                        };
-                        Ok(SourceAction::SetState { action, target_path })
-                    },
-                    // 14113b5c0 sends every Play through the same source
-                    // and bus clock, including plain PCM and UI sounds.
-                    PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                        definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) }),
-                    } })();
-                    match decoded {
-                        Ok(action) => actions.push(action),
-                        Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
-                    }
-                }
+        let mut actions = Vec::new();
+        for action in graph_actions {
+            // Each action is dispatched independently in 1410e5600 /
+            // 1410e8260. A host decoder or unsupported actor must not
+            // discard the event's other Play and Stop actions.
+            let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
+            PlaybackCommand::Failed { action, target, reason } => Err(format!(
+                "action {action:#010x}, target {target:#010x}: {reason}").into()),
+            PlaybackCommand::Stop(action) => {
+                let target_path = self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from);
+                Ok(SourceAction::Stop { action, target_path })
+            },
+            PlaybackCommand::SetState(action) => {
+                let target_path = if action.bus { None } else {
+                    self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from)
+                };
+                Ok(SourceAction::SetState { action, target_path })
+            },
+            // 14113b5c0 sends every Play through the same source
+            // and bus clock, including plain PCM and UI sounds.
+            PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) }),
+            } })();
+            match decoded {
+                Ok(action) => actions.push(action),
+                Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
+            }
+        }
         self.sources.insert(event, actions);
         Ok(())
     }

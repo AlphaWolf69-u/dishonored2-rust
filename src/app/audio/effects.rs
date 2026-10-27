@@ -136,8 +136,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                     Ok(voice) => {
                                         submitted += 1;
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
-                                            emitter: event.object, properties: definition.root_properties(),
-                                            shared: true, paused: false, world_paused: false };
+                                            emitter: event.object, paused: false, world_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone())).id();
                                         spawned.push((entity, target, control));
                                     }
