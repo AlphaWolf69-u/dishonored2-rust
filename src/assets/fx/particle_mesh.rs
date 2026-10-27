@@ -170,6 +170,9 @@ fn spawn(result: &mut MeshSpawnDefinition, fields: &Fields) -> Result<(), String
                 }
             }
             "m_useSpawnMeshVertexColor" => result.use_spawn_mesh_colour = boolean(value)?,
+            "m_initialColor_lod" => particles::vector_lods(&mut result.colour_lods, scope(value)?, [1.; 3])?,
+            "m_initialAlpha_lod" => particles::alpha_lods(&mut result.alpha_lods, scope(value)?)?,
+            "m_initialSize_lod" => particles::vector_lods(&mut result.size_lods, scope(value)?, [1.; 3])?,
             "m_initialColor" => particles::vector_parameter(&mut result.colour, scope(value)?)?,
             "m_initialAlpha" => particles::scalar_parameter(&mut result.alpha, scope(value)?)?,
             "m_initialSize" => particles::vector_parameter(&mut result.size, scope(value)?)?,

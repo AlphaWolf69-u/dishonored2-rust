@@ -224,13 +224,9 @@ pub fn spawn(fields: &Fields) -> Result<SpriteSpawnDefinition, String> {
             "m_initialRotation" => {
                 particles::scalar_parameter(&mut result.rotation, scope(value)?)?
             }
-            // Runtime LOD sampling exists, but newly allocated reflected LOD
-            // entry defaults still require their own constructor evidence.
-            "m_initialColor_lod" | "m_initialAlpha_lod" | "m_initialSize_lod" => {
-                return Err(format!(
-                    "particle sprite {name} entry defaults are unresolved"
-                ));
-            }
+            "m_initialColor_lod" => particles::vector_lods(&mut result.colour_lods, scope(value)?, [1.; 3])?,
+            "m_initialAlpha_lod" => particles::alpha_lods(&mut result.alpha_lods, scope(value)?)?,
+            "m_initialSize_lod" => particles::vector_lods(&mut result.size_lods, scope(value)?, [0.25; 3])?,
             _ => return Err(format!("unknown particle sprite spawn field {name}")),
         }
     }

@@ -39,6 +39,28 @@ pub(super) fn vector_curve<const N: usize>(
     Ok(())
 }
 
+/// Reflected colour/size LOD lists contain only MinMax ranges. New colour
+/// and mesh-size entries are one (1ecbb0); sprite size is .25 (1ecc00).
+pub(super) fn vector_lods(
+    values: &mut Vec<[[f32; 3]; 2]>, fields: &Fields, initial: [f32; 3],
+) -> Result<(), String> {
+    edit_list(values, fields, [initial; 2], |slot, value| {
+        for (name, value) in scope(value)? {
+            let target = match name.as_str() {
+                "m_max" => &mut slot[0],
+                "m_min" => &mut slot[1],
+                _ => return Err(format!("unknown particle LOD range field {name}")),
+            };
+            vector(target, scope(value)?)?;
+        }
+        Ok(())
+    })
+}
+/// 1ec230 initializes both extrema of sprite/mesh alpha LOD entries to one.
+pub(super) fn alpha_lods(values: &mut Vec<[f32; 2]>, fields: &Fields) -> Result<(), String> {
+    edit_list(values, fields, [1.; 2], |slot, value| bounds(slot, scope(value)?))
+}
+
 pub fn scalar_parameter(parameter: &mut ScalarParameter, fields: &Fields) -> Result<(), String> {
     for (name, value) in fields {
         match name.as_str() {
