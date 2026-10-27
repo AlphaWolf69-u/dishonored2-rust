@@ -19,12 +19,17 @@ impl States {
 
     /// Unknown groups are ignored. The current ID changes without waiting
     /// for the node-property fade to finish (1410d87b0's final store).
-    pub fn set(&mut self, group: u32, value: u32) -> Option<u32> {
+    pub fn transition_ms(&self, group: u32, value: u32) -> Option<u32> {
         let definition = self.groups.get(&group)?;
         let previous = self.current(group);
         if previous == value { return None; }
         let milliseconds = definition.transitions.iter().find(|transition| transition.from == previous && transition.to == value)
             .map_or(definition.milliseconds, |transition| transition.milliseconds);
+        Some(milliseconds)
+    }
+
+    pub fn set(&mut self, group: u32, value: u32) -> Option<u32> {
+        let milliseconds = self.transition_ms(group, value)?;
         self.values.insert(group, value);
         Some(milliseconds)
     }

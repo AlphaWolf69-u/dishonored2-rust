@@ -102,6 +102,7 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
     bound: Option<Res<super::super::model_motion::BoundModels>>, mut scene: ResMut<Scene>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    engine: Res<super::bevy_backend::Engine>,
     playing: Query<(Entity, &super::AudioTarget)>, mut events: MessageWriter<super::SoundEvent>)
 {
     let (Some(mut level), Some(mut physics), Some(listener), Some(bound), Some(clock)) = (level, physics, scene.listener(), bound, clock) else { return };
@@ -139,7 +140,10 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                         // 1400c5d80 stops every playing ID, zero milliseconds,
                         // while preserving the allocated default object slot.
                         for (entity, target) in &playing {
-                            if target.emitter == emitter { commands.entity(entity).try_despawn(); }
+                            if target.emitter == emitter {
+                                if target.shared { engine.stop_event(target.event, emitter); }
+                                else { commands.entity(entity).try_despawn(); }
+                            }
                         }
                     }
                     StartupAction::Post => {

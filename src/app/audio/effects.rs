@@ -1,5 +1,5 @@
 //! Installed sound dependencies for world FX, using the ordinary bank registry.
-use super::{AudioMix, PcmAudio, SourceAction, WwiseRegistry};
+use super::{AudioMix, SourceAction, WwiseRegistry};
 use bevy::prelude::*;
 use std::sync::Arc;
 use crate::rendering::{
@@ -23,10 +23,10 @@ pub(super) struct EffectAudio {
 /// accepted commands on the same output engine as ordinary gameplay audio.
 pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEffectSources>>,
     sounds: Option<Res<WorldSounds>>, mut registry: ResMut<WwiseRegistry>,
-    mut pcm: ResMut<Assets<PcmAudio>>, mix: Res<AudioMix>, identities: Res<super::objects::EffectObjects>,
+    mix: Res<AudioMix>, identities: Res<super::objects::EffectObjects>,
     level: Option<ResMut<super::level::LevelAudio>>, mut scene: ResMut<super::spatial::Scene>,
     engine: Res<super::bevy_backend::Engine>, mut commands: Commands,
-    playing: Query<(Entity, &super::AudioTarget, Option<&super::PlaybackControl>)>,
+    playing: Query<(Entity, &super::AudioTarget, &super::graph::Playing)>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>, mut error: Local<Option<String>>)
 {
     let (Some(sources), Some(sounds), Some(mixer), Some(mut level)) = (sources, sounds, &mix.mixer, level) else { return };
@@ -57,12 +57,11 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                             if declaration.game_defined || declaration.game_properties.is_some() {
                                 return Err(format!("FX declaration {} requires its game sound handler", event.name));
                             }
-                            registry.prepare(declaration.id, &mut pcm, mixer, true).map_err(|error| error.to_string())?;
+                            registry.prepare(declaration.id).map_err(|error| error.to_string())?;
                             let actions = registry.sources.get(&declaration.id).ok_or("prepared FX sound event is absent")?;
                             if actions.iter().any(|action| match action {
-                                SourceAction::Scheduled { definition, .. } => !definition.can_route(),
+                                SourceAction::Play { definition, .. } => !definition.can_route(),
                                 SourceAction::Stop(_) | SourceAction::SetState(_) => false,
-                                SourceAction::Play { .. } => true,
                             }) { return Err(format!("{} requires multichannel FX output conversion", event.name)); }
                             let reference = u32::try_from(state.events.len() + events.len()).map_err(|_| "too many FX sound declarations")?;
                             events.push(PreparedEvent { declaration: event.clone(), actions: Arc::new(actions.clone()) });
@@ -112,6 +111,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             let prepared = state.events.get(event.declaration as usize).ok_or("accepted FX event declaration is absent")?;
             let object = bridge.objects.get(&event.object).ok_or("accepted FX event object is absent")?;
             let parameter = object.energy;
+            let playing_id = engine.playing_id();
             for action in prepared.actions.iter() {
                 match action {
                     SourceAction::SetState(state) => {
@@ -121,9 +121,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                     },
                     SourceAction::Stop(stop) => {
                         if stop.all { engine.cancel_state_actions(stop.game_object.then_some(event.object)); }
-                        super::stop_action(&mut commands, stop, event.object, &playing, &mut spawned);
+                        super::stop_action(&mut commands, stop, event.object, &engine, &playing, &mut spawned);
                     },
-                    SourceAction::Scheduled { target, settings, definition } => {
+                    SourceAction::Play { target, settings, definition } => {
                         // The registration already exists. A failed action ends
                         // its ownership; it cannot fabricate another playing ID.
                         match definition.prepare(registry.scheduled_selections.clone(), event.object, mixer,
@@ -131,15 +131,14 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                         {
                             Ok((mut source, control)) => {
                                 source.retain_event(ticket.clone());
-                                match engine.submit(source) {
+                                match engine.submit(source, playing_id, prepared.declaration.declaration.id) {
                                     Ok(voice) => {
                                         submitted += 1;
                                         let target = super::AudioTarget { target: *target, event: prepared.declaration.declaration.id,
-                                            emitter: event.object, properties: definition.root_properties(), random_db: 0.0,
-                                            parameter, paused: false, world_paused: false };
-                                        let control = super::PlaybackControl::Scheduled(control);
+                                            emitter: event.object, properties: definition.root_properties(),
+                                            shared: true, paused: false, world_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone())).id();
-                                        spawned.push((entity, target, Some(control)));
+                                        spawned.push((entity, target, control));
                                     }
                                     Err(message) => warn!("FX event {} output failed: {message}", prepared.declaration.name),
                                 }
@@ -147,7 +146,6 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                             Err(message) => warn!("FX event {} action failed: {message}", prepared.declaration.name),
                         }
                     }
-                    SourceAction::Play { .. } => return Err("FX event was not prepared for the shared scheduler".into()),
                 }
             }
         }

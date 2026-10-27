@@ -26,6 +26,13 @@ impl Envelope {
         if age >= self.duration { return if self.to == 0.0 { None } else { Some(self.to) }; }
         Some(crate::gameplay::sound::mix::interpolate(age as f32 / self.duration as f32, self.from, self.to, self.curve))
     }
+    pub fn block_value(self, frame: u64) -> Option<f32> {
+        let start = frame / 1024 * 1024;
+        self.value(start + 1024).or_else(|| {
+            (self.value(start).is_some() || (self.duration == 0 && start == self.start / 1024 * 1024))
+                .then_some(0.0)
+        })
+    }
 }
 
 /// Continuation actions and their sources can share a live gain transition
@@ -42,21 +49,28 @@ impl Transition {
         let envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
         frame.saturating_sub(envelope.start) < envelope.duration
     }
+    /// Actions run before the transition update (1410e6800). Modifying a
+    /// retained transition to zero ms (1410effb0) leaves its listeners alive
+    /// until that update, including continuations due in the same block.
+    pub fn action_value(&self, frame: u64) -> Option<f32> {
+        let envelope = self.snapshot();
+        if envelope.duration == 0 && frame == envelope.start { Some(envelope.from) }
+        else { envelope.value(frame) }
+    }
+    pub fn action_active(&self, frame: u64) -> bool {
+        let envelope = self.snapshot();
+        frame.saturating_sub(envelope.start) < envelope.duration
+            || (envelope.duration == 0 && frame == envelope.start)
+    }
     pub fn stop(&self, frame: u64, duration: u64, curve: u8) {
         let mut envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let from = envelope.value(frame).unwrap_or(0.0);
+        // Repeating the same Stop transition may shorten its remaining
+        // interval, but cannot extend it (1410effb0).
+        let duration = if envelope.to == 0.0 {
+            duration.min(envelope.duration.saturating_sub(frame.saturating_sub(envelope.start)))
+        } else { duration };
         *envelope = Envelope::new(frame, duration, from, curve);
-    }
-}
-
-#[derive(Clone, Default)]
-pub(super) struct Control(Arc<Mutex<Option<(i32, u8)>>>);
-impl Control {
-    pub fn stop(&self, milliseconds: i32, curve: u8) {
-        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some((milliseconds, curve));
-    }
-    pub fn take(&self) -> Option<(i32, u8)> {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).take()
     }
 }
 

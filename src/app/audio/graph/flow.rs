@@ -33,7 +33,7 @@ pub(super) struct Flow {
 }
 impl Flow {
     pub(super) fn play(&mut self, node: usize, start: u64, now: u64, audio: &ScheduledAudio,
-        stack: Option<Stack<Sequence>>, fade: Option<Fade>, inherited: Option<Transition>) -> bool {
+        stack: Option<Stack<Sequence>>, fade: Option<Fade>, inherited: Option<Transition>, continuous: bool) -> bool {
         match &audio.definition.nodes[node].kind {
             Kind::Missing | Kind::NoSource => false,
             Kind::Sound(_) => {
@@ -59,7 +59,7 @@ impl Flow {
                     Some(stack)
                 } else { stack };
                 match child.filter(|&child| !matches!(audio.definition.nodes[child].kind, Kind::Missing)) {
-                    Some(child) => self.play(child, start, now, audio, stack, fade, inherited),
+                    Some(child) => self.play(child, start, now, audio, stack, fade, inherited, continuous || container.playback.continuous),
                     None => {
                         if container.playback.continuous {
                             if let Some(stack) = &stack { drop(stack.pop()); }
@@ -69,19 +69,71 @@ impl Flow {
                 }
             },
             Kind::Layer(children) => {
-                if children.len() == 1 { return self.play(children[0], start, now, audio, stack, fade, inherited); }
+                if children.len() == 1 { return self.play(children[0], start, now, audio, stack, fade, inherited, continuous); }
+                if continuous && stack.is_none() && children.len() > 1 {
+                    bevy::log::warn!("Parallel continuous playback has no outer stack (original WG-15729 path)");
+                    return false;
+                }
                 if let Some(outer) = stack {
                     let session = self.groups.begin(audio.definition.nodes[node].id, outer, true);
                     let mut accepted = false;
                     for &child in children {
                         let branch = Stack::default();
                         branch.push(Entry::Group(session.branch()));
-                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone());
+                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone(), continuous);
                     }
                     if accepted { true } else { self.failed(session.finish(), now, audio, inherited, fade) }
                 } else {
                     let mut accepted = false;
-                    for &child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone()); }
+                    for &child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone(), continuous); }
+                    accepted
+                }
+            },
+            Kind::Switch(switch) => {
+                let Some(binding) = &audio.switches else {
+                    bevy::log::error!("Switch playback requires the shared audio engine");
+                    return false;
+                };
+                let id = audio.definition.nodes[node].id;
+                let value = binding.states.lock().unwrap_or_else(|error| error.into_inner()).current(switch.playback.group);
+                let initial = {
+                    let mut controls = binding.registry.lock().unwrap_or_else(|error| error.into_inner());
+                    controls.definitions.entry(id).or_insert_with(|| switch.playback.clone());
+                    if switch.playback.continuous {
+                        controls.controllers.register(crate::gameplay::sound::switches::Controller {
+                            node: id, emitter: audio.emitter, playing_id: binding.playing_id, paused: false,
+                            context: super::SwitchContext { owner: audio.control.clone(), node },
+                        });
+                        audio.control.switch_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    controls.controllers.initial(id, &switch.playback, audio.emitter, value)
+                };
+                let children = initial.children.iter().filter_map(|id| switch.children.get(id).copied().flatten()).collect::<Vec<_>>();
+                if initial.authored_count == 1 {
+                    let mut accepted = false;
+                    for child in children {
+                        let child_stack = if switch.playback.continuous { None } else { stack.clone() };
+                        accepted |= self.play(child, start, now, audio, child_stack, fade, inherited.clone(), continuous);
+                    }
+                    return accepted;
+                }
+                if continuous && stack.is_none() && initial.authored_count > 1 {
+                    bevy::log::warn!("Parallel continuous switch playback has no outer stack (original WG-15729 path)");
+                    return false;
+                }
+                if let Some(outer) = stack {
+                    let session = self.groups.begin(id, outer, !switch.playback.continuous);
+                    let mut accepted = false;
+                    for child in children {
+                        let branch = Stack::default();
+                        branch.push(Entry::Group(session.branch()));
+                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone(), continuous);
+                    }
+                    if accepted || switch.playback.continuous { accepted }
+                    else { self.failed(session.finish(), now, audio, inherited, fade) }
+                } else {
+                    let mut accepted = false;
+                    for child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone(), continuous); }
                     accepted
                 }
             },
@@ -104,8 +156,8 @@ impl Flow {
             // 1410ea040 cancels a continuation when its retained stop-gain
             // transition completes; a completed fade-in only unlinks it.
             if let Some(gain) = &pending.inherited {
-                if gain.value(now).is_none() { continue; }
-                if !gain.active(now) { pending.inherited = None; }
+                if gain.action_value(now).is_none() { continue; }
+                if !gain.action_active(now) { pending.inherited = None; }
             }
             if pending.deadline.saturating_sub(now) < 1024 {
                 if let Some(fade) = &mut pending.fade { fade.start = now; }
@@ -114,13 +166,17 @@ impl Flow {
                     // previous PBI has ended (14111ce70 clears that pointer).
                     if let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == crossfade.voice && voice.ended.is_none()) {
                         let id = audio.definition.nodes[voice.runtime.node].id;
-                        voice.runtime.stop(id, crossfade.milliseconds, crossfade.curve, now, &audio.definition);
+                        if crossfade.milliseconds == 0 {
+                            voice.runtime.stop_buffer(now);
+                            voice.actual_stop = true;
+                            voice.continuation.clear();
+                        } else { voice.runtime.stop(id, crossfade.milliseconds, crossfade.curve, now, &audio.definition); }
                         voice.stop_requested = true;
                         pending.fade = (crossfade.milliseconds != 0).then_some(Fade { start: now,
                             milliseconds: crossfade.milliseconds, curve: crossfade.curve });
                     }
                 }
-                self.play(pending.node, pending.deadline, now, audio, pending.stack, pending.fade, pending.inherited);
+                self.play(pending.node, pending.deadline, now, audio, pending.stack, pending.fade, pending.inherited, true);
             } else { self.pending.push(pending); }
         }
         for voice in &mut self.voices {
@@ -128,21 +184,63 @@ impl Flow {
         }
     }
 
-    pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
-        self.pending.retain(|pending| !audio.definition.matches_actor(pending.node, target));
-        for voice in &mut self.voices {
-            if !audio.definition.matches_actor(voice.runtime.node, target) { continue; }
-            let id = audio.definition.nodes[voice.runtime.node].id;
-            voice.runtime.stop(id, milliseconds, curve, now, &audio.definition);
-            voice.stop_requested = true;
-            if milliseconds == 0 { voice.actual_stop = true; voice.continuation.clear(); voice.ended = Some(now); }
+    pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
+        self.stop_scope(Some(target), milliseconds, curve, now, audio, paused);
+    }
+
+    pub(super) fn stop_all(&mut self, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
+        self.stop_scope(None, milliseconds, curve, now, audio, paused);
+    }
+
+    fn stop_scope(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
+        if let Some(binding) = &audio.switches {
+            let removed = binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers.remove_where(|controller|
+                std::sync::Arc::ptr_eq(&controller.context.owner, &audio.control)
+                    && target.is_none_or(|target| audio.definition.matches_actor(controller.context.node, target)));
+            audio.control.switch_count.fetch_sub(removed as u32, std::sync::atomic::Ordering::Relaxed);
         }
+        self.pending.retain(|pending| target.is_some_and(|target| !audio.definition.matches_actor(pending.node, target)));
+        for voice in &mut self.voices {
+            if voice.actual_stop || voice.ended.is_some() { continue; }
+            if target.is_some_and(|target| !audio.definition.matches_actor(voice.runtime.node, target)) { continue; }
+            let id = audio.definition.nodes[voice.runtime.node].id;
+            voice.stop_requested = true;
+            if milliseconds == 0 {
+                voice.actual_stop = true;
+                voice.continuation.clear();
+                // PBI 1f2 bits 3..6 become nonzero on source readiness /
+                // duration (141104550/141104670), and reset on source removal
+                // (141128900). Unstarted and paused PBIs skip the final mix.
+                if !paused && voice.duration_ms.is_some() { voice.runtime.stop_buffer(now); }
+                else { voice.ended = Some(now); }
+            } else { voice.runtime.stop(id, milliseconds, curve, now, &audio.definition); }
+        }
+        self.voices.retain(|voice| voice.ended.is_none());
+    }
+
+    pub(super) fn finished(&self, audio: &ScheduledAudio) -> bool {
+        self.voices.is_empty() && self.pending.is_empty()
+            && audio.control.switch_count.load(std::sync::atomic::Ordering::Relaxed) == 0
+    }
+
+    pub(super) fn cancel_pending(&mut self, target: u32, audio: &ScheduledAudio) {
+        self.pending.retain(|pending| !audio.definition.matches_actor(pending.node, target));
     }
 
     pub(super) fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32],
         mut routing: Option<&mut RouteContext<'_>>) -> bool {
         for voice in &mut self.voices {
-            if voice.ended.is_some() || now < voice.start { continue; }
+            if voice.ended.is_some() { continue; }
+            if voice.runtime.fade_stopping(now) {
+                // 141105850 -> 14112fd20 clears the continuation before the
+                // zero-target block is mixed; 1410ebae0 retires it afterward.
+                voice.actual_stop = true;
+                voice.continuation.clear();
+            }
+            if now < voice.start {
+                if voice.actual_stop && now % 1024 == 1023 { voice.ended = Some(now); }
+                continue;
+            }
             if voice.runtime.fade_value(now).is_none() {
                 voice.actual_stop = true;
                 voice.continuation.clear();
@@ -150,9 +248,11 @@ impl Flow {
                 continue;
             }
             if !voice.runtime.frame(now, audio, output, routing.as_deref_mut()) { voice.ended = Some(now); }
+            if voice.actual_stop && now % 1024 == 1023 { voice.ended = Some(now); }
         }
         if now % 1024 == 1023 { self.notifications(now, audio); }
         !self.voices.is_empty() || !self.pending.is_empty()
+            || audio.control.switch_count.load(std::sync::atomic::Ordering::Relaxed) != 0
     }
 
     /// Duration notifications precede source-end notifications in the first
