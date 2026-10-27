@@ -598,7 +598,7 @@ pub struct MediaGroup {
 
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
-    pub media: Vec<u8>,
+    pub media: std::sync::Arc<[u8]>,
     pub weight: u32,
     pub properties: MediaProperties,
 }
