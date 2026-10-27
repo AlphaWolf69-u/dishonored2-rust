@@ -117,7 +117,17 @@ impl Definition {
             PlaybackNode::Switch(switch) => switch.properties.clone(),
         });
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
+            sources: &mut HashMap<u32, usize>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
+            let source_id = match &source {
+                PlaybackNode::Sound { node, .. } | PlaybackNode::Generator { node, .. } => Some(*node),
+                _ => None,
+            };
+            if let Some((id, sound)) = source_id.and_then(|id| sources.get(&id).map(|&sound| (id, sound))) {
+                let index = nodes.len();
+                nodes.push(Node { id, kind: Kind::Sound(sound) });
+                return Ok(index);
+            }
             let (id, kind) = match source {
                 PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
                 PlaybackNode::Switch(switch) => {
@@ -157,7 +167,7 @@ impl Definition {
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children, .. } => {
-                    let children = children.into_iter().map(|child| node(child, nodes, sounds, attenuations)).collect::<io::Result<_>>()?;
+                    let children = children.into_iter().map(|child| node(child, nodes, sounds, sources, attenuations)).collect::<io::Result<_>>()?;
                     (id, Kind::Layer(children))
                 },
                 PlaybackNode::Container(container) => {
@@ -174,7 +184,7 @@ impl Definition {
                     let mut children = Vec::new();
                     let mut weights = Vec::new();
                     for (child, weight) in container.children {
-                        children.push(node(child, nodes, sounds, attenuations)?);
+                        children.push(node(child, nodes, sounds, sources, attenuations)?);
                         weights.push(weight);
                     }
                     let properties = container.properties.nodes.into_iter().next()
@@ -185,13 +195,17 @@ impl Definition {
                         playback: container.playback }))
                 },
             };
+            // Sources share immutable decoded media/configuration. Each
+            // Runtime still owns its cursor, randomization, filters and PBI
+            // activity, including overlapping plays of the same actor.
+            if let Kind::Sound(sound) = &kind { sources.insert(id, *sound); }
             let index = nodes.len();
             nodes.push(Node { id, kind });
             Ok(index)
         }
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
-        let root = node(root, &mut nodes, &mut sounds, attenuations)?;
+        let root = node(root, &mut nodes, &mut sounds, &mut HashMap::new(), attenuations)?;
         let stereo = sounds.iter().all(|sound| sound.channels.get() <= 2);
         let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? }
             else { sounds[0].channels };
