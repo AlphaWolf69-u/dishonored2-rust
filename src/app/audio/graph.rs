@@ -1,5 +1,5 @@
 //! Sample-clock playback of nested Wwise containers. Media is decoded before
-//! submission; the audio worker only selects nodes and mixes validated PCM.
+//! submission; the audio worker selects nodes and mixes PCM or authored generators.
 use super::pcm::PcmAudio;
 use crate::{assets::wwise::{ContainerPlayback, MediaProperties, PlaybackNode, SelectionMode, TransitionMode},
     gameplay::sound::{containers::{transition_ms, Loops, Selection}, filters::{Kind as FilterKind, VoiceFilter},

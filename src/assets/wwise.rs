@@ -545,6 +545,8 @@ pub enum PlaybackNode {
     /// (141119b70). Removing it would change random and sequence selection.
     Missing { node: u32 },
     Sound { node: u32, variant: MediaVariant },
+    /// Source plug-ins resolve their parameters through the global custom FX
+    /// registry (141143870), independently of their containing bank's media.
     Generator { node: u32, properties: MediaProperties, definition: EffectDefinition },
     Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
