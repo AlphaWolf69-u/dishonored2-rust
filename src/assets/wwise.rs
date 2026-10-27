@@ -9,7 +9,7 @@ use std::path::Path;
 mod bank;
 mod declaration;
 mod playback;
-pub use playback::{PlaybackBanks, References};
+pub use playback::{Controls, PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
