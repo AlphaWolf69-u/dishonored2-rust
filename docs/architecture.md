@@ -2529,8 +2529,9 @@ disc/glow alignment was also confirmed by the user. DoF is the next requested
 rendering feature after this water handoff.
 
 `bevy_backend::camera_view` now composes the existing autofocus, masks, opaque
-colour filters and final camera combine. `camera_scene` submits this after
-transparency and before exposure/bloom, borrows completed same-frame water and
+colour filters and final camera combine. `camera_scene` submits refraction
+preparation/composition before particles and transparent colour, then final DoF
+after transparent colour and before exposure/bloom. It borrows same-frame water and
 alpha depth from the atmosphere owner, and retains focus and scratch images.
 The final combine samples the hardware depth aspect directly. The flare owner
 borrows the pre-DoF colour image instead of reducing the already blurred frame.
@@ -2572,7 +2573,10 @@ image when transparent geometry was submitted. This adds no per-frame readback.
 Atmosphere submission has separate depth preparation and composition phases.
 Opaque decals precede depth preparation; the alpha geometry phase then updates
 its real depth/stencil targets before atmosphere composition. Transparent colour
-continues after atmosphere, followed by camera DoF and exposure. The preparation
+follows atmosphere and refraction-background composition, then final camera DoF
+and exposure follow transparent colour. This preserves the compiled dependency
+DOF_ALPHA -> ALPHA_LIT -> DOF; glass surfaces are not part of their own blurred
+background. The preparation
 phase publishes its own camera/frame marker, independently of completed fog;
 lookup generation, sky, snapshots and water depth are recorded only once.
 Alpha-depth vertices retain the mesh's deformation but omit colour-only fog

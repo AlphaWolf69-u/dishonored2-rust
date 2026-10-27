@@ -1,4 +1,4 @@
-//! Gameplay camera effects run after transparency and before exposure/bloom.
+//! Refraction blur precedes transparent colour; final camera effects follow it.
 use super::{
     auto_exposure::{ExposureParameters, ExposurePass, MaterialExposure},
     camera_view::{CameraAlphaViewInputs, CameraView, CameraViewConfig, CameraViewInputs},
@@ -27,10 +27,14 @@ use bevy::{
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct CameraPass;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct CameraAlphaPass;
+
 #[derive(Resource, Default)]
 pub(super) struct CameraGpu {
     current: Option<(Entity, CameraView)>,
     completed: Option<(Entity, u32)>,
+    alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
     screen_state: super::screen_effects::ScreenEffectState,
     particle_systems: super::particle_systems::ParticleSystems,
@@ -103,11 +107,19 @@ pub(super) fn register(app: &mut App) {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<CameraGpu>().add_systems(
             Core3d,
-            render_camera
+            render_camera::<false>
                 .in_set(Core3dSystems::PostProcess)
                 .in_set(CameraPass)
                 .before(ExposurePass),
         );
+        // 351780: DOF_ALPHA produces the background consumed by ALPHA_LIT;
+        // the final DOF task in turn depends on ALPHA_LIT.
+        render.add_systems(Core3d, render_camera::<true>
+            .in_set(Core3dSystems::MainPass)
+            .in_set(CameraAlphaPass)
+            .after(super::fog_scene::AtmospherePass)
+            .before(render_particles)
+            .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d));
         render.add_systems(
             Core3d,
             (prepare_screen_effects, render_particles)
@@ -547,7 +559,7 @@ fn prepare_screen_effects(
         }
     }
 }
-fn render_camera(
+fn render_camera<const PREPARE_ALPHA: bool>(
     screen_sources: Res<super::screen_effects::ScreenEffectMaterials>,
     display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
@@ -572,6 +584,7 @@ fn render_camera(
     mut last_error: Local<Option<String>>,
 ) {
     gpu.completed = None;
+    if PREPARE_ALPHA {gpu.alpha_completed = None;}
     let Some(frame) = display.0.as_ref() else {
         gpu.current = None;
         return;
@@ -648,16 +661,23 @@ fn render_camera(
             .scattering_color_intensity
             .truncate()
             .to_array();
-        let write = (!lens.settings.skip_depth_of_field).then(|| target.post_process_write());
-        if let Some(write) = &write {
-            let result = gpu.current.as_mut().unwrap().1.record(
+        if !PREPARE_ALPHA && !lens.settings.skip_depth_of_field
+            && gpu.alpha_completed != Some((frame.camera, water.matrices.frame)) {
+            return Err("camera colour awaits current transparent blur preparation".into());
+        }
+        let write = (!PREPARE_ALPHA && !lens.settings.skip_depth_of_field).then(|| target.post_process_write());
+        if !lens.settings.skip_depth_of_field {
+            let source = write.as_ref().map_or_else(|| target.main_texture_view(), |w| w.source);
+            let destination = write.as_ref().map_or(source, |w| w.destination);
+            let record = if PREPARE_ALPHA {CameraView::record_alpha} else {CameraView::record_after_alpha};
+            let result = record(&mut gpu.current.as_mut().unwrap().1,
                 &device,
                 &queue,
                 context.command_encoder(),
                 CameraViewInputs {
                     effects,
                     resources,
-                    colour: write.source,
+                    colour: source,
                     depth: &depth.alpha.full_sample,
                     alpha_depth: &depth.alpha.reduced_sample,
                     alpha_attachment: &depth.alpha.reduced_attachment,
@@ -672,7 +692,7 @@ fn render_camera(
                     inverse_z: [inverse.z_axis.w, inverse.w_axis.w, inverse.w_axis.z],
                     local_time: water.local_time,
                     scattering_colour: scattering,
-                    destination: write.destination,
+                    destination,
                     alpha: alpha.opacity(frame.camera, water.matrices.frame).map(
                         |(opacity, special_alpha)| CameraAlphaViewInputs {
                             refraction: opacity,
@@ -689,7 +709,7 @@ fn render_camera(
                     ),
                 },
             );
-            if result.is_err() {
+            if result.is_err() && write.is_some() {
                 //Recording failed before combine. Restore the readable HDR selector;
                 //partial scratch writes must never become the displayed frame.
                 let _ = target.post_process_write();
@@ -697,6 +717,10 @@ fn render_camera(
             result?;
         } else {
             gpu.current = None;
+        }
+        if PREPARE_ALPHA {
+            gpu.alpha_completed = Some((frame.camera, water.matrices.frame));
+            return Ok(());
         }
         let colour = write
             .as_ref()

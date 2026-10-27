@@ -29,6 +29,7 @@ pub struct CameraViewConfig {
     pub depth_format: TextureFormat,
     pub compressed: bool,
 }
+#[derive(Clone, Copy)]
 pub struct CameraViewInputs<'a> {
     pub effects: &'a CameraEffectsFrame,
     pub resources: &'a BlurResources,
@@ -52,6 +53,7 @@ pub struct CameraViewInputs<'a> {
     pub alpha: Option<CameraAlphaViewInputs<'a>>,
 }
 /// Present only after the scene has submitted real opacity and alpha geometry.
+#[derive(Clone, Copy)]
 pub struct CameraAlphaViewInputs<'a> {
     pub refraction: &'a TextureView,
     pub full_depth_attachment: &'a TextureView,
@@ -170,7 +172,7 @@ impl CameraView {
         }
         planes
     }
-    pub fn record(
+    pub fn record_alpha(
         &mut self,
         device: &RenderDevice,
         queue: &RenderQueue,
@@ -213,8 +215,6 @@ impl CameraView {
         let autofocus = &self.focus_views[self.focus_index];
         let region = |extent: [u32; 2]| [0, 0, extent[0], extent[1]];
         let high = region(self.half_extent);
-        let low = region(self.half_extent.map(|v| v.div_ceil(2).max(2)));
-        let near = region(self.half_extent.map(|v| v.div_ceil(2).max(4)));
         let engine_luminance = 139.26 * input.camera_exposure;
         if let Some(alpha) = input.alpha.as_ref().filter(|alpha|
             alpha.special_alpha || settings.far_sharp_distance() < input.effects.far_clip) {
@@ -354,6 +354,27 @@ impl CameraView {
                 input.adaptation,
             )?;
         }
+        Ok(())
+    }
+    /// Convenience for callers owning the whole colour sequence. Gameplay
+    /// schedules these stages separately around transparent colour rendering.
+    pub fn record(&mut self, device: &RenderDevice, queue: &RenderQueue,
+        encoder: &mut CommandEncoder, input: CameraViewInputs<'_>) -> Result<(), String> {
+        self.record_alpha(device, queue, encoder, input)?;
+        self.record_after_alpha(device, queue, encoder, input)
+    }
+    pub fn record_after_alpha(&mut self, device: &RenderDevice, queue: &RenderQueue,
+        encoder: &mut CommandEncoder, input: CameraViewInputs<'_>) -> Result<(), String> {
+        let mut view_settings = input.effects.settings.clone();
+        if let Some(alpha) = &input.alpha {view_settings.set_special_alpha(alpha.special_alpha);}
+        let settings = &view_settings;
+        let optics = settings.combine(input.effects.far_clip);
+        let autofocus = &self.focus_views[self.focus_index];
+        let region = |extent: [u32; 2]| [0, 0, extent[0], extent[1]];
+        let high = region(self.half_extent);
+        let low = region(self.half_extent.map(|v| v.div_ceil(2).max(2)));
+        let near = region(self.half_extent.map(|v| v.div_ceil(2).max(4)));
+        let engine_luminance = 139.26 * input.camera_exposure;
         self.masks.record(
             device,
             queue,
