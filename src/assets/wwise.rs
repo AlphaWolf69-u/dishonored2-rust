@@ -465,6 +465,8 @@ pub fn event_commands_with(
 pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
+            PlaybackNode::Switch(switch) => Err(invalid_owned(format!(
+                "Wwise switch actor {:#010x} requires live selection and controller playback", switch.node))),
             PlaybackNode::Missing { .. } => Err(invalid("unresolved Wwise playlist entries require scheduled playback")),
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
                 node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
@@ -540,6 +542,17 @@ pub enum PlaybackNode {
     Sound { node: u32, variant: MediaVariant },
     Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
+    Switch(PlaybackSwitch),
+}
+
+#[derive(Clone, Debug)]
+pub struct PlaybackSwitch {
+    pub node: u32,
+    pub properties: MediaProperties,
+    pub playback: SwitchPlayback,
+    /// Case references use the global actor registry independently of the
+    /// hierarchy child list. None retains an unavailable referenced actor.
+    pub children: Vec<(u32, Option<PlaybackNode>)>,
 }
 
 #[derive(Clone, Debug)]

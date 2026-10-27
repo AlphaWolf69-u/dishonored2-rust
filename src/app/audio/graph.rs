@@ -45,6 +45,12 @@ impl Definition {
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
+            PlaybackNode::Switch(switch) => {
+                for (_, child) in &switch.children {
+                    if let Some(child) = child { if Self::requires_buses(child, mixer)? { return Ok(true); } }
+                }
+                Ok(false)
+            },
             PlaybackNode::Missing { .. } => Ok(false),
             PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
             PlaybackNode::Layer { children, .. } => {
@@ -59,6 +65,7 @@ impl Definition {
     }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
+            PlaybackNode::Switch(_) => true,
             PlaybackNode::Missing { .. } => true,
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
                 node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
@@ -89,10 +96,18 @@ impl Definition {
             PlaybackNode::Sound { variant, .. } => variant.properties.clone(),
             PlaybackNode::Layer { properties, .. } => properties.clone(),
             PlaybackNode::Container(container) => container.properties.clone(),
+            PlaybackNode::Switch(switch) => switch.properties.clone(),
         });
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
+                PlaybackNode::Switch(switch) => {
+                    // A continuous switch retains its Play context independently
+                    // of the initial sources and their continuation barrier
+                    // (141133190 / 141132f00 / 14111bd70). Treating it as a
+                    // permanent Layer would block enclosing continuations.
+                    return Err(invalid(format!("Wwise switch actor {:#010x} requires its persistent controller and source continuation lifetimes", switch.node)));
+                },
                 PlaybackNode::Missing { node } => (node, Kind::Missing),
                 PlaybackNode::Sound { node, variant } => {
                     let pcm = PcmAudio::from_wem(&variant.media)?;

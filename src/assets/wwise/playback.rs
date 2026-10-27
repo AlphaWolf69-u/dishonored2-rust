@@ -2,7 +2,7 @@
 //! References are global; media keeps the bank that owns its source object.
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
-    PlaybackContainer, PlaybackNode};
+    PlaybackContainer, PlaybackNode, PlaybackSwitch};
 use std::{borrow::Cow, collections::{HashMap, HashSet}, io};
 
 struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
@@ -153,6 +153,17 @@ impl<'a> PlaybackBanks<'a> {
         let feedback = self.banks[object.bank].feedback;
         if matches!(object.kind, 10..=13) {
             return Err(invalid_owned(format!("Wwise music actor {id:#010x} (HIRC {}) requires music scheduling", object.kind)));
+        }
+        if object.kind == 6 {
+            let playback = bank::switch_playback(bytes, feedback)?;
+            let mut children = Vec::new();
+            let mut seen = HashSet::new();
+            for &child in playback.cases.iter().flat_map(|case| &case.children) {
+                if seen.insert(child) { children.push((child, self.resolve_node(child, media, visited)?)); }
+            }
+            let properties = self.media_properties(id)?;
+            visited.remove(&id);
+            return Ok(Some(PlaybackNode::Switch(PlaybackSwitch { node: id, properties, playback, children })));
         }
         if object.kind == 2 {
             if read_u32_slice(bytes, 4)? & 0xf != 1 { return Err(invalid("Wwise source-plugin playback requires its source processor")); }

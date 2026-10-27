@@ -4,7 +4,8 @@ use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
-    if first.to_string_lossy() == "--container-playback" {
+    if matches!(first.to_string_lossy().as_ref(), "--container-playback" | "--switch-playback") {
+        let inspect_switches = first.to_string_lossy() == "--switch-playback";
         use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, bank_switch_playback, TransitionMode}};
         let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
         let mut paths = if path.is_dir() {
@@ -18,7 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut file = File::open(&path)?;
             for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
                 let bytes = package.read_entry(&mut file, *entry)?;
-                for (_, settings) in bank_switch_playback(&bytes)? {
+                for (id, settings) in bank_switch_playback(&bytes)? {
+                    if inspect_switches { println!("{} bank={:#010x} switch={id:#010x}: {settings:?}", path.display(), entry.id); }
                     *totals.entry(format!("Switch containers: global_state={}, continuous={}", settings.group_kind == 1, settings.continuous)).or_default() += 1;
                 }
                 for (_, state) in bank_state_actions(&bytes)? {
@@ -37,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 for (id, settings) in bank_container_playback(&bytes)? {
                     *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
-                    if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                    if !inspect_switches && settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
                         println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
                     }
                 }
@@ -558,6 +560,19 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Switch(switch) => {
+            println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",
+                switch.node, switch.playback.group_kind, switch.playback.group, switch.playback.default, switch.playback.continuous);
+            for controls in &switch.playback.parameters { println!("{indent}  Child controls: {controls:?}"); }
+            for case in &switch.playback.cases {
+                println!("{indent}  Case {:#010x}", case.value);
+                for child in &case.children {
+                    if let Some((_, Some(node))) = switch.children.iter().find(|(id, _)| id == child) {
+                        print_playback(node, depth + 2, mixer, None)?;
+                    } else { println!("{indent}    Unavailable actor {child:#010x}"); }
+                }
+            }
+        },
         PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             let audio = decode_wem_pcm(&variant.media)?;
