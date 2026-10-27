@@ -81,7 +81,7 @@ impl<'a> PlaybackBanks<'a> {
     /// (141115df0 / 1410e9950), independently of playlist membership.
     pub fn actor_hierarchy(&self, id: u32) -> io::Result<Option<Vec<u32>>> {
         if !self.actors.contains_key(&id) { return Ok(None); }
-        Ok(Some(self.media_properties(id)?.nodes.into_iter().map(|node| node.id).collect()))
+        Ok(Some(self.node_hierarchy(id)?.into_iter().map(|node| node.id).collect()))
     }
     /// Follow the actual Play references without reading or decoding media.
     /// Playlist/case membership is independent of serialized hierarchy lists.
@@ -186,18 +186,28 @@ impl<'a> PlaybackBanks<'a> {
         &self.banks[object.bank].bytes[object.start..object.start + object.length]
     }
 
-    fn media_properties(&self, mut id: u32) -> io::Result<MediaProperties> {
-        let mut properties = MediaProperties::default();
+    fn node_hierarchy(&self, mut id: u32) -> io::Result<Vec<super::NodeProperties>> {
+        let mut nodes = Vec::new();
         let mut visited = HashSet::new();
         while id != 0 {
             if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
             let object = *self.actors.get(&id).ok_or_else(|| invalid_owned(format!("missing Wwise parent {id:#010x}")))?;
             let node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
-            if properties.bus == 0 { properties.bus = node.bus; }
             id = node.parent;
-            properties.nodes.push(node);
+            nodes.push(node);
         }
-        Ok(properties)
+        Ok(nodes)
+    }
+
+    fn media_properties(&self, id: u32) -> io::Result<MediaProperties> {
+        let nodes = self.node_hierarchy(id)?;
+        for node in &nodes {
+            if self.actors.get(&node.id).is_some_and(|object| matches!(object.kind, 10..=13)) {
+                return Err(invalid_owned(format!("Wwise music parent {:#010x} requires music properties", node.id)));
+            }
+        }
+        let bus = nodes.iter().find(|node| node.bus != 0).map_or(0, |node| node.bus);
+        Ok(MediaProperties { nodes, bus })
     }
 
     fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,
