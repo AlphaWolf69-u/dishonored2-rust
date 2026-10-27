@@ -95,10 +95,13 @@ pub struct StopAction {
     pub game_object: bool,
     pub all: bool,
     pub transition: ActionTransition,
+    pub delay: ActionDelay,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct StateAction {
+    pub target: u32,
+    pub bus: bool,
     pub group: u32,
     pub value: u32,
     pub game_object: bool,
@@ -110,7 +113,9 @@ pub struct StateAction {
 pub(super) fn state_action(bytes: &[u8]) -> io::Result<StateAction> {
     let mut reader = Reader { bytes, offset: 4 };
     let game_object = reader.u8()? & 1 != 0;
-    reader.take(6)?; // Action type, unused target and bus flag.
+    reader.u8()?; // Action type.
+    let target = reader.u32()?;
+    let bus = reader.u8()? != 0;
     let properties = reader.properties()?;
     let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
         .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
@@ -123,7 +128,7 @@ pub(super) fn state_action(bytes: &[u8]) -> io::Result<StateAction> {
     let group = reader.u32()?;
     let value = reader.u32()?;
     if reader.offset != bytes.len() { return Err(invalid("Wwise Set State fields did not consume its action")); }
-    Ok(StateAction { group, value, game_object, delay })
+    Ok(StateAction { target, bus, group, value, game_object, delay })
 }
 
 #[derive(Clone, Debug)]
@@ -179,23 +184,22 @@ pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     if bus && !all { return Err(invalid("Wwise bus-targeted Stop actions require bus dispatch")); }
     let properties = reader.properties()?;
     let milliseconds = properties.iter().find(|(id, _)| *id == 0xf).map_or(0, |(_, value)| *value as i32);
-    if properties.iter().any(|(id, value)| *id == 0xe && *value != 0) {
-        return Err(invalid("delayed Wwise Stop actions require action scheduling"));
-    }
+    let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
+        .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
     let count = reader.u8()? as usize;
     let ids = reader.take(count)?.to_vec();
     let mut modifiers = [0; 2];
     for id in ids {
         let values = [reader.u32()? as i32, reader.u32()? as i32];
         if id == 0xf { modifiers = values; }
-        if id == 0xe && values != [0; 2] { return Err(invalid("randomized Wwise action delays require scheduling")); }
+        if id == 0xe { delay.modifiers = values.map(|value| value.wrapping_mul(48)); }
     }
     let curve = reader.u8()? & 0x1f;
     if curve > 8 { return Err(invalid("unsupported Wwise action fade curve")); }
     let exceptions = reader.u32()? as usize;
     reader.records(exceptions, 5)?; // 141141fc0: actor/bus ID and bus flag.
     if reader.offset != bytes.len() { return Err(invalid("Wwise Stop fields did not consume its action")); }
-    Ok(StopAction { target, game_object, all, transition: ActionTransition { milliseconds, modifiers, curve } })
+    Ok(StopAction { target, game_object, all, transition: ActionTransition { milliseconds, modifiers, curve }, delay })
 }
 
 #[derive(Clone, Debug)]
@@ -580,18 +584,43 @@ impl<'a> Reader<'a> {
         let bytes = self.take(count.checked_mul(4).ok_or_else(|| invalid("Wwise child count overflow"))?)?;
         Ok(bytes.chunks_exact(4).map(|id| u32::from_le_bytes(id.try_into().unwrap())).collect())
     }
+
+    /// Serialized source descriptor (1410f3fe0), shared by sounds and tracks.
+    fn source_info(&mut self) -> io::Result<()> {
+        let plugin = self.u32()?;
+        self.take(10)?; // Stream type, media ID, memory size and source flags.
+        if matches!(plugin & 0xf, 2 | 5) {
+            let size = self.u32()? as usize;
+            self.take(size)?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn node_properties(object: &[u8], kind: u8, feedback: bool) -> io::Result<NodeProperties> {
     let mut reader = Reader { bytes: object, offset: 0 };
     let id = reader.u32()?;
     if kind == 2 {
-        let plugin = reader.u32()?;
-        reader.take(10)?; // Stream type, media ID, memory size and source flags.
-        if matches!(plugin & 0xf, 2 | 5) {
-            let size = reader.u32()? as usize;
-            reader.take(size)?;
+        reader.source_info()?;
+    } else if kind == 11 {
+        // 141159840 precedes the common node base with track flags,
+        // sources, 40-byte clip records and automation curves.
+        reader.u8()?;
+        let sources = reader.u32()?;
+        for _ in 0..sources { reader.source_info()?; }
+        let clips = reader.u32()? as usize;
+        reader.records(clips, 40)?;
+        if clips != 0 { reader.u32()?; } // Subtrack count.
+        let curves = reader.u32()?;
+        for _ in 0..curves {
+            reader.take(8)?; // Clip index and automation type.
+            let points = reader.u32()? as usize;
+            reader.records(points, 12)?;
         }
+    } else if matches!(kind, 10 | 12 | 13) {
+        // Segment/switch/sequence loaders share 141154620, which consumes
+        // the music flags before 141114c50's ordinary node base.
+        reader.u8()?;
     }
     let mut node = reader.node_base(feedback)?;
     node.id = id;

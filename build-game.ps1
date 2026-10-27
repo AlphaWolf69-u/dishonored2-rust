@@ -41,11 +41,14 @@ if (!$InstallOnly) {
 if (!(Test-Path -LiteralPath $pendingExecutable)) { throw "No pending release: $pendingExecutable" }
 try {
     if (Test-Path -LiteralPath $gameExecutable) {
-        [IO.File]::Replace($pendingExecutable, $gameExecutable, $null)
+        [IO.File]::Replace($pendingExecutable, $gameExecutable, [NullString]::Value)
     } else {
         [IO.File]::Move($pendingExecutable, $gameExecutable)
     }
 } catch {
+    $installError = $_.Exception.InnerException
+    if (!$installError) { $installError = $_.Exception }
+    if (($installError.HResult -band 0xffff) -notin @(5, 32, 33)) { throw }
     $running = Get-Process -Name dishonored2-rust -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $gameExecutable }
     if (!$running) { throw }
