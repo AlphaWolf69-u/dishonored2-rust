@@ -9,12 +9,25 @@ use std::{collections::HashMap, io, sync::{Arc, Mutex, atomic::{AtomicU32, Order
 
 pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection>>>;
 
+enum Samples { Pcm(PcmAudio), Silence(crate::gameplay::sound::silence::Parameters) }
 struct Sound {
-    pcm: PcmAudio,
+    samples: Samples,
+    channels: ChannelCount,
+    sample_rate: SampleRate,
     properties: Arc<MediaProperties>,
     spatial: Option<super::spatial::Voice>,
-    looping: crate::gameplay::sound::looping::SourceLoop,
+    looping: Option<crate::gameplay::sound::looping::SourceLoop>,
     loop_count: crate::gameplay::sound::looping::LoopCount,
+}
+impl Sound {
+    fn sample(&self, resampler: &Resampler, channel: usize,
+        looping: Option<crate::gameplay::sound::looping::SourceLoop>,
+        silence: Option<&crate::gameplay::sound::silence::Voice>) -> Option<f32> {
+        match &self.samples {
+            Samples::Pcm(pcm) => resampler.sample_looped(&pcm.samples, usize::from(self.channels.get()), channel, looping),
+            Samples::Silence(_) => resampler.sample_with(|frame| silence?.sample(frame as u64)),
+        }
+    }
 }
 struct Container {
     properties: crate::assets::wwise::NodeProperties,
@@ -42,7 +55,7 @@ fn invalid(message: impl Into<String>) -> io::Error { io::Error::new(io::ErrorKi
 fn random15() -> u16 { rand::random_range(0..=32767) }
 
 impl Definition {
-    fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
+    fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
             PlaybackNode::Unsupported { .. } => Ok(false),
@@ -53,6 +66,7 @@ impl Definition {
                 Ok(false)
             },
             PlaybackNode::Missing { .. } => Ok(false),
+            PlaybackNode::Generator { properties, .. } => mixer.source_has_ducking(properties),
             PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
             PlaybackNode::Layer { children, .. } => {
                 for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
@@ -66,7 +80,7 @@ impl Definition {
     }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
-            PlaybackNode::Unsupported { .. } => true,
+            PlaybackNode::Unsupported { .. } | PlaybackNode::Generator { .. } => true,
             PlaybackNode::Switch(_) => true,
             PlaybackNode::Missing { .. } => true,
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
@@ -96,6 +110,7 @@ impl Definition {
         let properties = Arc::new(match &root {
             PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
             PlaybackNode::Missing { .. } => return Err(invalid("missing Wwise Play target")),
+            PlaybackNode::Generator { properties, .. } => properties.clone(),
             PlaybackNode::Sound { variant, .. } => variant.properties.clone(),
             PlaybackNode::Layer { properties, .. } => properties.clone(),
             PlaybackNode::Container(container) => container.properties.clone(),
@@ -121,7 +136,24 @@ impl Definition {
                     let loop_count = crate::gameplay::sound::looping::LoopCount::read(&variant.properties).map_err(invalid)?;
                     let looping = crate::gameplay::sound::looping::SourceLoop::new(
                         pcm.loop_points, pcm.samples.len() / usize::from(pcm.channels.get()), 1).map_err(invalid)?;
-                    sounds.push(Sound { pcm, properties: Arc::new(variant.properties), spatial, looping, loop_count });
+                    sounds.push(Sound { channels: pcm.channels, sample_rate: pcm.sample_rate, samples: Samples::Pcm(pcm),
+                        properties: Arc::new(variant.properties), spatial, looping: Some(looping), loop_count });
+                    (node, Kind::Sound(sound))
+                },
+                PlaybackNode::Generator { node, properties, definition } => {
+                    if definition.plugin != 0x00650002 {
+                        return Err(invalid(format!("source plugin {:#010x} requires its source processor", definition.plugin)));
+                    }
+                    if !definition.curves.is_empty() || !definition.values.is_empty() {
+                        return Err(invalid("silence source parameter automation requires FX subscriptions"));
+                    }
+                    let parameters = crate::gameplay::sound::silence::Parameters::read(&definition.parameters).map_err(invalid)?;
+                    let sound = sounds.len();
+                    let spatial = super::spatial::Voice::read(&properties, attenuations).map_err(invalid)?;
+                    let loop_count = crate::gameplay::sound::looping::LoopCount::read(&properties).map_err(invalid)?;
+                    sounds.push(Sound { samples: Samples::Silence(parameters), channels: ChannelCount::new(1).unwrap(),
+                        sample_rate: SampleRate::new(48000).unwrap(), properties: Arc::new(properties), spatial,
+                        looping: None, loop_count });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children, .. } => {
@@ -160,14 +192,14 @@ impl Definition {
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
         let root = node(root, &mut nodes, &mut sounds, attenuations)?;
-        let stereo = sounds.iter().all(|sound| sound.pcm.channels.get() <= 2);
+        let stereo = sounds.iter().all(|sound| sound.channels.get() <= 2);
         let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? }
-            else { sounds[0].pcm.channels };
+            else { sounds[0].channels };
         if channels.get() > 8 { return Err(invalid("scheduled Wwise graph exceeds eight output channels")); }
         // The original engine's DSP/output clock is 48 kHz (142427c24).
         // Each source's fixed-point resampler converts its own media rate.
         let rate = SampleRate::new(48000).ok_or_else(|| invalid("invalid output sample rate"))?;
-        if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.pcm.channels != channels) {
+        if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.channels != channels) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
         Ok(Self { nodes, sounds, root, properties, channels, rate })
@@ -250,12 +282,12 @@ impl Playing {
         for (index, (sound, targets)) in self.definition.sounds.iter().zip(&self.control.spatial).enumerate() {
             let values = if let Some(spatial) = &sound.spatial {
                 if let Some(propagated) = scene.propagated(self.emitter) {
-                    spatial.propagated_targets(scene, propagated, sound.pcm.channels.get(), &mixer.environment)?
+                    spatial.propagated_targets(scene, propagated, sound.channels.get(), &mixer.environment)?
                 } else {
-                    spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.pcm.channels.get())?
+                    spatial.targets(scene, self.position.or_else(|| scene.emitter(self.emitter)), sound.channels.get())?
                 }
             } else if routes.is_some() {
-                let gains = mixer.panner_2d(&sound.properties, &parameters)?.stereo_matrix(sound.pcm.channels.get())?;
+                let gains = mixer.panner_2d(&sound.properties, &parameters)?.stereo_matrix(sound.channels.get())?;
                 super::spatial::Targets { gains, auxiliary: [gains; 2], voice_filters: [0.0; 2], output_filters: [None; 2] }
             } else { continue };
             let gains = values.gains;
@@ -291,7 +323,7 @@ impl Playing {
                     bounds[1] += range.max;
                 }
             }
-            for bound in bounds { pitch_step(bound, sound.pcm.sample_rate.get(), self.definition.rate.get())?; }
+            for bound in bounds { pitch_step(bound, sound.sample_rate.get(), self.definition.rate.get())?; }
             pitch.store(cents.to_bits(), Ordering::Relaxed);
         }
         self.control.threshold_db.store(mixer.volume_threshold_db.to_bits(), Ordering::Relaxed);
@@ -314,7 +346,8 @@ impl ScheduledAudio {
 }
 
 enum State {
-    Sound { frame: u64, random: RandomProperties, looping: crate::gameplay::sound::looping::SourceLoop,
+    Sound { frame: u64, random: RandomProperties, looping: Option<crate::gameplay::sound::looping::SourceLoop>,
+        silence: Option<crate::gameplay::sound::silence::Voice>,
         resampler: Option<Resampler>, gain: GainRamp, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
         _activity: Option<crate::gameplay::sound::activity::Token> },
@@ -331,21 +364,28 @@ impl Runtime {
             Kind::Missing => State::Done,
             // Random modifiers belong to each newly started source voice,
             // including when the same leaf overlaps itself in a sequence.
-            Kind::Sound(index) => State::Sound { frame: 0,
-                random: RandomProperties::sample(&definition.sounds[*index].properties, random15),
-                looping: definition.sounds[*index].looping.with_count(definition.sounds[*index].loop_count.sample(random15)),
+            Kind::Sound(index) => {
+                let sound = &definition.sounds[*index];
+                let random = RandomProperties::sample(&sound.properties, random15);
+                let count = sound.loop_count.sample(random15);
+                let silence = match sound.samples {
+                    Samples::Silence(parameters) => Some(crate::gameplay::sound::silence::Voice::new(parameters, sound.sample_rate.get(), count, random15)),
+                    Samples::Pcm(_) => None,
+                };
+                State::Sound { frame: 0, random, silence,
+                looping: sound.looping.map(|looping| looping.with_count(count)),
                 resampler: None,
                 gain: GainRamp::default(),
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false,
                 _activity: registrations[*index].as_ref().map(|registration| registration.start()),
-                filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
+                filters: (0..definition.sounds[*index].channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
                 ]).collect(),
                 output_filters: (0..definition.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
-                ]).collect() },
+                ]).collect() } },
             Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition, registrations)).collect()),
             Kind::Container(container) => State::Container { active: Vec::new(), selection: Selection::default(),
                 loops: Loops::new(&container.playback, random15), next: Some(now), pending: None, initialized: false, exhausted: false },
@@ -503,22 +543,22 @@ impl Runtime {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, looping, resampler, gain: ramp, filters, output_filters,
+            (State::Sound { frame, random, looping, silence, resampler, gain: ramp, filters, output_filters,
                 routes, auxiliary, auxiliary_initialized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
-                    let Ok(step) = pitch_step(cents, sound.pcm.sample_rate.get(), definition.rate.get()) else { return false };
+                    let Ok(step) = pitch_step(cents, sound.sample_rate.get(), definition.rate.get()) else { return false };
                     match resampler {
                         Some(resampler) => resampler.set_step(step, true),
                         None => *resampler = Some(Resampler::new(step)),
                     }
                 }
                 let Some(resampler) = resampler else { return false };
-                let channels = usize::from(sound.pcm.channels.get());
+                let channels = usize::from(sound.channels.get());
                 let mut samples = [0.0; 8];
                 for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = resampler.sample_looped(&sound.pcm.samples, channels, channel, Some(*looping)) else { return false };
+                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref()) else { return false };
                     *sample = value;
                 }
                 let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
@@ -607,7 +647,7 @@ impl Runtime {
                     }
                     resampler.advance();
                     *frame += 1;
-                    return resampler.sample_looped(&sound.pcm.samples, channels, 0, Some(*looping)).is_some();
+                    return sound.sample(resampler, 0, *looping, silence.as_ref()).is_some();
                 }
                 if sound.spatial.is_some() {
                     let output_channels = output.len();
@@ -629,7 +669,7 @@ impl Runtime {
                 }
                 resampler.advance();
                 *frame += 1;
-                resampler.sample_looped(&sound.pcm.samples, channels, 0, Some(*looping)).is_some()
+                sound.sample(resampler, 0, *looping, silence.as_ref()).is_some()
             },
             (State::Layer(children), _) => {
                 let mut failed = false;

@@ -469,6 +469,7 @@ pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec
             PlaybackNode::Switch(switch) => Err(invalid_owned(format!(
                 "Wwise switch actor {:#010x} requires live selection and controller playback", switch.node))),
             PlaybackNode::Missing { .. } => Err(invalid("unresolved Wwise playlist entries require scheduled playback")),
+            PlaybackNode::Generator { .. } => Err(invalid("Wwise source generators require scheduled playback")),
             PlaybackNode::Sound { node, variant } => Ok(vec![MediaGroup {
                 node, global: true, avoid_repeat: 0, mode: SelectionMode::Single,
                 reset_each_play: true, restart_backward: false, variants: vec![variant],
@@ -544,6 +545,7 @@ pub enum PlaybackNode {
     /// (141119b70). Removing it would change random and sequence selection.
     Missing { node: u32 },
     Sound { node: u32, variant: MediaVariant },
+    Generator { node: u32, properties: MediaProperties, definition: EffectDefinition },
     Layer { node: u32, properties: MediaProperties, children: Vec<PlaybackNode> },
     Container(PlaybackContainer),
     Switch(PlaybackSwitch),

@@ -579,6 +579,15 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                 }
             }
         },
+        PlaybackNode::Generator { node, definition, .. } => {
+            println!("{indent}Generator {node:#010x}: FX {:#010x}, plugin {:#010x}, {} parameter bytes, {} curves",
+                definition.id, definition.plugin, definition.parameters.len(), definition.curves.len());
+            if definition.plugin == 0x00650002 {
+                let parameters = dishonored2_rust::gameplay::sound::silence::Parameters::read(&definition.parameters)?;
+                println!("{indent}  authored silence: {} s + random [{}, {}] s",
+                    parameters.seconds, parameters.minimum_offset, parameters.maximum_offset);
+            }
+        },
         PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             // The loaded actor registry retains one source per ID. A source
