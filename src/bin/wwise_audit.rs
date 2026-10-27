@@ -603,6 +603,10 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         PlaybackNode::Switch(switch) => {
             println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",
                 switch.node, switch.playback.group_kind, switch.playback.group, switch.playback.default, switch.playback.continuous);
+            if switch.playback.group_kind == 1 {
+                println!("{indent}  Initial global state (0) selects case: {:x?}",
+                    dishonored2_rust::gameplay::sound::switches::case(&switch.playback, 0).map(|case| case.value));
+            }
             for controls in &switch.playback.parameters { println!("{indent}  Child controls: {controls:?}"); }
             for case in &switch.playback.cases {
                 println!("{indent}  Case {:#010x}", case.value);

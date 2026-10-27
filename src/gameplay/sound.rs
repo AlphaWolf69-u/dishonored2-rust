@@ -2,6 +2,7 @@
 pub mod mix;
 pub mod containers;
 pub mod states;
+pub mod switches;
 pub mod spatial;
 pub mod panning;
 pub mod filters;
