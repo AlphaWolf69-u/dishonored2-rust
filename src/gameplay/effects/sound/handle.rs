@@ -91,6 +91,10 @@ impl<O: Copy, P: Copy + PartialEq> SoundHandle<O, P> {
             && requested_callbacks & 4 == 0;
     }
 
+    pub fn event_info_for(&mut self, playing: P, range: f32, callbacks: u32, persistent_loop: bool) {
+        if self.playing.contains(&playing) { self.event_info(range, callbacks, persistent_loop); }
+    }
+
     /// Callback1/22f970 removes the first matching ID and its parallel event
     /// reference with swap removal, preserving the source's later replay order.
     pub fn finished(&mut self, playing: P) {

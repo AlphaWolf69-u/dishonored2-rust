@@ -27,6 +27,7 @@ pub(super) struct Targets {
 #[derive(Resource)]
 pub(super) struct Scene {
     listener: Option<spatial::Listener>,
+    motion: crate::gameplay::sound::admission::ListenerMotion,
     minimum: environment::Levels,
     reflection: bool,
     collects_environment: bool,
@@ -38,7 +39,7 @@ pub(super) struct Scene {
     time_dilation: Option<u32>,
 }
 impl Default for Scene {
-    fn default() -> Self { Self { listener: None, minimum: environment::Levels::default(), reflection: false, collects_environment: false,
+    fn default() -> Self { Self { listener: None, motion: Default::default(), minimum: environment::Levels::default(), reflection: false, collects_environment: false,
         rule: Rule::Speakers, panner: Stereo::default(),
         emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
 }
@@ -46,6 +47,9 @@ impl Scene {
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
+    pub fn listener_motion(&self) -> Option<crate::gameplay::sound::admission::ListenerMotion> {
+        self.listener.map(|_| self.motion)
+    }
     pub fn minimum(&self) -> environment::Levels { self.minimum }
     pub fn collects_environment(&self) -> bool { self.collects_environment }
     pub fn set_rate(&mut self, emitter: Emitter, rate: f32, frozen: bool) { self.rates.insert(emitter, (rate, frozen)); }
@@ -107,6 +111,7 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             axis: Mat3::from_cols(game(*camera.right()), game(*camera.up()), game(*camera.forward())), distance_scale: 1.0 }
         });
     }
+    if let Some(listener) = scene.listener { scene.motion.publish(listener.position); }
     scene.rule = if crate::platform::console::shared().read().cvars.int("s_useHeadphoneMode").unwrap_or(0) != 0 {
         Rule::Headphones
     } else { Rule::Speakers };
@@ -139,6 +144,12 @@ impl Voice {
     pub fn propagated_targets(&self, scene: &Scene, propagated: &Propagated, channels: u16,
         settings: &crate::assets::wwise::EnvironmentSettings) -> Result<Targets, String>
     {
+        // 1410fcf50 leaves the connection matrices and filter outputs zero
+        // when no output rays are admitted; cb3b0's ray reduction is skipped.
+        if propagated.positions.is_empty() {
+            return Ok(Targets { gains: [0.0; 4], auxiliary: [[0.0; 4]; 2],
+                voice_filters: [0.0; 2], output_filters: [None; 2] });
+        }
         let listener = scene.listener.ok_or("propagated Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());

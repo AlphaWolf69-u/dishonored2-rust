@@ -1,11 +1,11 @@
 //! Process-local identity allocation shared by every transient sound producer.
-use bevy::{prelude::Resource, render::extract_resource::ExtractResource};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use crate::gameplay::sound::Emitter;
 
 /// Clones cross the main/render boundary without creating another ID namespace.
-#[derive(Resource, Clone, Default, ExtractResource)]
-pub(crate) struct EffectObjects(Arc<AtomicU64>);
+#[derive(Clone, Default)]
+#[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
+pub struct EffectObjects(Arc<AtomicU64>);
 
 impl EffectObjects {
     pub fn allocate(&self) -> Result<Emitter, String> {

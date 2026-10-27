@@ -38,9 +38,13 @@ struct Instance {
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
+    sound_head: u16,
 }
 pub(crate) struct WorldParticleState {
     source: Option<Arc<Vec<crate::assets::entities::effects::FxGraph>>>,
+    sounds: Option<super::world_sounds::WorldSounds>,
+    sound_systems: crate::gameplay::effects::sound::systems::SoundSystems<
+        crate::gameplay::sound::Emitter, crate::gameplay::sound::playing::PlayingId>,
     graphs: Vec<Option<FxGraphRuntime>>,
     events: Vec<(usize, u32, u32)>,
     timers: Vec<(usize, u32)>,
@@ -63,6 +67,8 @@ impl Default for WorldParticleState {
         let pool = EffectPoolLinks::instances();
         Self {
             source: None,
+            sounds: None,
+            sound_systems: Default::default(),
             graphs: Vec::new(),
             events: Vec::new(),
             timers: Vec::new(),
@@ -79,6 +85,17 @@ impl Default for WorldParticleState {
             warnings: HashSet::new(),
             frame: None,
             query: None,
+        }
+    }
+}
+impl Drop for WorldParticleState {
+    fn drop(&mut self) {
+        if let Some(mut sounds) = self.sounds.clone() {
+            for instance in self.slots.iter_mut().flatten() {
+                if let Err(error) = self.sound_systems.clear(&mut instance.sound_head, &mut sounds) {
+                    bevy::log::error!("World FX sound teardown failed: {error}");
+                }
+            }
         }
     }
 }
@@ -133,10 +150,11 @@ impl WorldParticleState {
         self.source = Some(sources.0.clone());
         Ok(())
     }
-    fn stop(&mut self, handle: u32, systems: &mut ParticleSystems) {
+    fn stop(&mut self, handle: u32, systems: &mut ParticleSystems) -> Result<(), String> {
         if let Some(&slot) = self.handles.get(&handle) {
             if let Some(instance) = self.slots[usize::from(slot)].as_ref() {
                 systems.stop(instance.head, instance.age);
+                self.sound_systems.stop(instance.sound_head, instance.age, &mut systems.seed)?;
             }
             // 1a31f0 -> 1a1880/1a1990 removes the queued start using the
             // source's last-matching swap removal, before the next drain.
@@ -148,12 +166,17 @@ impl WorldParticleState {
                 self.pending_starts.swap_remove(index);
             }
         }
+        Ok(())
     }
     fn retire(&mut self, slot: u16, systems: &mut ParticleSystems) -> Result<(), String> {
         let Some(mut instance) = self.slots[usize::from(slot)].take() else {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
+        if instance.sound_head != u16::MAX {
+            let mut sounds = self.sounds.clone().ok_or("FX sound owner is absent")?;
+            self.sound_systems.clear(&mut instance.sound_head, &mut sounds)?;
+        }
         self.handles.remove(&instance.id);
         if let Some(index) = self
             .pending_starts
@@ -179,6 +202,7 @@ impl WorldParticleState {
         sources: &WorldFxSources,
         frames: &WorldEffectFrames,
         systems: &mut ParticleSystems,
+        sounds: &super::world_sounds::WorldSounds,
         frame: u32,
         camera: ReferenceFrame,
         underwater: bool,
@@ -186,6 +210,35 @@ impl WorldParticleState {
     ) -> Result<(), String> {
         if self.frame == Some(frame) {
             return Ok(());
+        }
+        if self.source.is_none() {
+            let audio = sounds.lock();
+            for effect in sources.effects.values().filter_map(|effect| effect.as_ref().ok()) {
+                for group in &effect.groups {
+                    for event in group.sounds.iter().flat_map(|sound| [&sound.start, &sound.stop]).flatten() {
+                        if !audio.ready || !audio.events.contains_key(&event.name) {
+                            return Err("world FX awaits prepared sound dependencies and listener publication".into());
+                        }
+                    }
+                }
+            }
+        }
+        self.sounds = Some(sounds.clone());
+        {
+            let mut audio = sounds.lock();
+            audio.pump_notifications();
+            for notification in std::mem::take(&mut audio.notifications) {
+                match notification.kind {
+                    crate::gameplay::sound::playing::NotificationKind::End => self.sound_systems.finished(notification.id),
+                    crate::gameplay::sound::playing::NotificationKind::SourceReady
+                    | crate::gameplay::sound::playing::NotificationKind::EventPlaying => {
+                        let event = audio.declarations.get(notification.event.declaration as usize)
+                            .ok_or("FX sound callback declaration is absent")?;
+                        self.sound_systems.event_info(notification.id, event.declaration.max_distance,
+                            notification.event.callbacks, event.declaration.persistent_loop());
+                    }
+                }
+            }
         }
         self.initialize(graphs)?;
         let clock = frames
@@ -336,6 +389,18 @@ impl WorldParticleState {
                             offsets,
                         )?;
                     }
+                    for sound in &group.sounds {
+                        let audio = sounds.lock();
+                        let reference = |event: &Option<Arc<crate::rendering::particles::world_sources::WorldSoundEvent>>| {
+                            event.as_ref().map(|event| audio.events.get(&event.name)
+                                .ok_or_else(|| format!("FX sound {} was not prepared", event.name))?
+                                .as_ref().copied().map_err(Clone::clone)).transpose()
+                        };
+                        let start = crate::gameplay::effects::sound::SoundEvent { delay: sound.start_delay, event: reference(&sound.start)? };
+                        let stop = crate::gameplay::effects::sound::SoundEvent { delay: sound.stop_delay, event: reference(&sound.stop)? };
+                        self.sound_systems.start(&mut instance.sound_head, sound.position, start, stop,
+                            offsets[0], true, &mut systems.seed)?;
+                    }
                 }
                 Ok(())
             })();
@@ -376,7 +441,18 @@ impl WorldParticleState {
                     underwater,
                     Some(&instance.motion),
                 )?;
-                Ok(updated != 0)
+                let mut audio = sounds.clone();
+                let sound_count = self.sound_systems.update(&mut instance.sound_head, &mut audio,
+                    instance.age, bevy::math::Vec3::from_array(instance.pose.position),
+                    bevy::math::Mat3::from_cols(
+                        bevy::math::Vec3::from_array(instance.pose.basis[0]),
+                        bevy::math::Vec3::from_array(instance.pose.basis[1]),
+                        bevy::math::Vec3::from_array(instance.pose.basis[2])),
+                    &super::world_sounds::SoundFrame { axis: bevy::math::Mat3::from_cols(
+                        bevy::math::Vec3::from_array(instance.pose.basis[0]),
+                        bevy::math::Vec3::from_array(instance.pose.basis[1]),
+                        bevy::math::Vec3::from_array(instance.pose.basis[2])), scale: clock.scale })?;
+                Ok(updated != 0 || sound_count != 0)
             })();
             self.slots[slot] = Some(instance);
             match result {
@@ -477,7 +553,7 @@ impl FxGraphWorld for GraphHost<'_> {
         }))
     }
     fn stop_effect(&mut self, _: &str, _: u32, handle: u32) -> Result<bool, String> {
-        self.state.stop(handle, self.systems);
+        self.state.stop(handle, self.systems)?;
         Ok(false)
     }
     fn entity_clock(&mut self, entity: u32) -> Result<Option<f64>, String> {
@@ -538,6 +614,13 @@ impl WorldFxComponentHost for ComponentHost<'_> {
                     }
                 }
             }
+            for sound in &group.sounds {
+                let audio = self.state.sounds.as_ref().ok_or("FX sound owner is absent")?.lock();
+                for event in [&sound.start, &sound.stop].into_iter().flatten() {
+                    audio.events.get(&event.name).ok_or("FX sound dependency is absent")?
+                        .as_ref().map_err(Clone::clone)?;
+                }
+            }
             for particle in &group.particles {
                 let particle = particle.as_ref().map_err(Clone::clone)?;
                 if particle.owner.parameter_block.is_some() {
@@ -566,6 +649,7 @@ impl WorldFxComponentHost for ComponentHost<'_> {
             motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,
+            sound_head: u16::MAX,
         });
         self.state.handles.insert(id, slot);
         self.state.pending_starts.push(slot);
@@ -589,7 +673,7 @@ impl WorldFxComponentHost for ComponentHost<'_> {
         Err("world FX target context is not connected".into())
     }
     fn request_stop(&mut self, handle: u32) -> Result<(), String> {
-        self.state.stop(handle, self.systems);
+        self.state.stop(handle, self.systems)?;
         Ok(())
     }
     fn update_source_velocity(&mut self) -> Result<(), String> {

@@ -1,15 +1,13 @@
 //! Wwise events from pause UI and player gameplay.
 use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume}, prelude::*};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use crate::gameplay::sound::{Emitter, Request};
+use crate::gameplay::sound::{objects, Emitter, Request};
 mod pcm;
 mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
-mod objects;
 mod effects;
-mod playing;
 mod spatial;
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
@@ -195,7 +193,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::prepare, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -287,6 +285,35 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     }
 }
 
+fn stop_action(commands: &mut Commands, stop: &crate::assets::wwise::StopAction, emitter: Emitter,
+    playing: &Query<(Entity, &AudioTarget, Option<&PlaybackControl>)>,
+    spawned: &mut Vec<(Entity, AudioTarget, Option<PlaybackControl>)>)
+{
+    let target = stop.target;
+    let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
+    for (entity, audio_target, scheduled) in playing {
+        if stop.game_object && audio_target.emitter != emitter { continue; }
+        let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+        if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
+        else if let Some(control) = scheduled {
+            if matches || matches!(control, PlaybackControl::Scheduled(_)) {
+                control.stop(target, milliseconds, stop.transition.curve);
+            }
+        }
+    }
+    spawned.retain(|(entity, audio_target, scheduled)| {
+        if stop.game_object && audio_target.emitter != emitter { return true; }
+        let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+        if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
+        if let Some(control) = scheduled {
+            if matches || matches!(control, PlaybackControl::Scheduled(_)) {
+                control.stop(target, milliseconds, stop.transition.curve);
+            }
+        }
+        true
+    });
+}
+
 fn play_events(
     mut commands: Commands,
     mut events: MessageReader<SoundEvent>,
@@ -328,31 +355,7 @@ fn play_events(
         if let Some(actions) = registry.sources.get(&event).cloned() {
             for action in actions {
                 match action {
-                    SourceAction::Stop(stop) => {
-                        let target = stop.target;
-                        let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
-                        for (entity, audio_target, scheduled) in &playing {
-                            if stop.game_object && audio_target.emitter != emitter { continue; }
-                            let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
-                            else if let Some(control) = scheduled {
-                                if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(target, milliseconds, stop.transition.curve);
-                                }
-                            }
-                        }
-                        spawned.retain(|(entity, audio_target, scheduled)| {
-                            if stop.game_object && audio_target.emitter != emitter { return true; }
-                            let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
-                            if let Some(control) = scheduled {
-                                if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(target, milliseconds, stop.transition.curve);
-                                }
-                            }
-                            true
-                        });
-                    }
+                    SourceAction::Stop(stop) => stop_action(&mut commands, &stop, emitter, &playing, &mut spawned),
                     SourceAction::Play { target, settings, groups } => {
                         if !settings.admits(|| rand::random_range(0..=32767)) { continue; }
                         let mut random_values = HashMap::new();

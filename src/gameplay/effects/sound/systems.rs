@@ -66,6 +66,12 @@ impl<O: Copy, P: Copy + PartialEq> SoundSystems<O, P> {
         }
     }
 
+    pub fn event_info(&mut self, playing: P, range: f32, callbacks: u32, persistent_loop: bool) {
+        for sound in self.slots.iter_mut().flatten() {
+            sound.handle.event_info_for(playing, range, callbacks, persistent_loop);
+        }
+    }
+
     /// 220340 checks liveness before update. A slot finishing during update
     /// remains counted until the next traversal, as with the particle family.
     pub fn update<W: SoundObjectWorld<Object = O, Playing = P>>(

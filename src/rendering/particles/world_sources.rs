@@ -128,7 +128,7 @@ impl WorldFxSources {
                         let other_families = fields
                             .iter()
                             .filter(|(field, value)| {
-                                field != "m_particleSystems"
+                                field != "m_particleSystems" && field != "m_sounds"
                                     && matches!(value, Value::Scope(_))
                                     && scope(fields, field).is_some_and(|entries| {
                                         !list_items(entries).is_empty()

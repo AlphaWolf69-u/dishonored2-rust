@@ -416,6 +416,7 @@ fn prepare_screen_effects(
     world_sources: Res<super::world_effects::WorldEffectSources>,
     world_graphs: Res<super::world_effects::WorldEffectGraphs>,
     world_frames: Res<super::world_effects::WorldEffectFrames>,
+    world_sounds: Res<super::world_sounds::WorldSounds>,
     water: Res<WaterSceneFrame>,
     fog: Res<FogGpu>,
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
@@ -487,7 +488,7 @@ fn prepare_screen_effects(
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
         match world_particles.advance(&world_graphs,&world_sources.0,&world_frames,
-            particle_systems,water.matrices.frame,camera_frame,underwater,&inputs.world) {
+            particle_systems,&world_sounds,water.matrices.frame,camera_frame,underwater,&inputs.world) {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");

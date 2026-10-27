@@ -19,11 +19,25 @@ pub struct Query {
 }
 
 /// Motion published by an active listener. Inactive listener slots are None;
-/// unavailable motion must be resolved by the owner rather than set to zero.
+/// c1a10 publishes displacement without dividing by an entity or audio clock.
 #[derive(Clone, Copy)]
 pub struct ListenerMotion {
     pub position: Vec3,
-    pub velocity: Vec3,
+    pub displacement: Vec3,
+}
+
+impl Default for ListenerMotion {
+    fn default() -> Self {
+        // 1400c1af0: initial current and pending listener positions.
+        Self { position: Vec3::splat(f32::from_bits(0x47000000)), displacement: Vec3::ZERO }
+    }
+}
+impl ListenerMotion {
+    /// 1400c1a10 promotes the supplied position and retains its displacement.
+    pub fn publish(&mut self, position: Vec3) {
+        self.displacement = if self.position == position { Vec3::ZERO } else { position - self.position };
+        self.position = position;
+    }
 }
 
 /// 140108ab0's squared point-to-segment distance. The degeneracy threshold at
@@ -47,15 +61,15 @@ fn segment_distance_squared(point: Vec3, start: Vec3, end: Vec3) -> f32 {
 }
 
 /// 1400c1670/1400fd730: the initial short-event admission test uses a source
-/// motion segment and expands its range by each listener's published speed.
+/// motion segment and expands its range by each listener's published displacement length.
 /// This is distinct from c1240's portal query used for virtualized replay.
 pub fn motion_inaudible(source: Vec3, displacement: Vec3, range: f32,
     listeners: &[Option<ListenerMotion>; 8]) -> bool
 {
     let end = source + displacement;
     for listener in listeners.iter().flatten() {
-        let velocity = listener.velocity;
-        let squared = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+        let movement = listener.displacement;
+        let squared = movement.x * movement.x + movement.y * movement.y + movement.z * movement.z;
         let denominator = if squared <= f32::MIN_POSITIVE { f32::MIN_POSITIVE } else { squared };
         let speed = (1.0 / denominator.sqrt()) * squared;
         let radius = range + speed;

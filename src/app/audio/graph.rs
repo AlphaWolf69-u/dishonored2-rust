@@ -42,7 +42,7 @@ fn invalid(message: impl Into<String>) -> io::Error { io::Error::new(io::ErrorKi
 fn random15() -> u16 { rand::random_range(0..=32767) }
 
 impl Definition {
-    fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
+    pub fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
             PlaybackNode::Missing { .. } => Ok(false),
@@ -167,18 +167,18 @@ impl Definition {
             spatial: (0..self.sounds.len()).map(|_| std::array::from_fn(|index| AtomicU32::new(if index < 4 { 1.0f32.to_bits() } else { 0 }))).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
-            threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
+            source_ready: AtomicU32::new(0), threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
             routes: Mutex::new(Arc::new(Vec::new())), activity: mixer.activity.clone(),
             registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
                 .map(|activity| activity.registration(sound.properties.bus)).transpose()).collect::<Result<Vec<_>, String>>()? });
         let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position, emitter };
         playing.update(mixer, scene)?;
         Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter,
-            delay_frames: settings.delay.sample_frames(random15), settings }, playing))
+            delay_frames: settings.delay.sample_frames(random15), settings, event: None }, playing))
     }
 }
 
-struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     transitions: Vec<AtomicU32>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
     activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
@@ -289,8 +289,10 @@ pub(super) struct ScheduledAudio {
     emitter: Emitter,
     delay_frames: u32,
     settings: crate::assets::wwise::PlaySettings,
+    event: Option<crate::gameplay::sound::playing::Ticket>,
 }
 impl ScheduledAudio {
+    pub fn retain_event(&mut self, event: crate::gameplay::sound::playing::Ticket) { self.event = Some(event); }
     pub fn can_route(&self) -> bool { self.definition.can_route() }
 }
 
@@ -307,18 +309,20 @@ struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope>,
 
 impl Runtime {
     fn new(node: usize, now: u64, definition: &Definition,
-        registrations: &[Option<crate::gameplay::sound::activity::Registration>]) -> Self {
+        control: &Control) -> Self {
         let state = match &definition.nodes[node].kind {
             Kind::Missing => State::Done,
             // Random modifiers belong to each newly started source voice,
             // including when the same leaf overlaps itself in a sequence.
-            Kind::Sound(index) => State::Sound { frame: 0,
+            Kind::Sound(index) => {
+                control.source_ready.fetch_add(1, Ordering::Relaxed);
+                State::Sound { frame: 0,
                 random: RandomProperties::sample(&definition.sounds[*index].properties, random15),
                 looping: definition.sounds[*index].looping.with_count(definition.sounds[*index].loop_count.sample(random15)),
                 resampler: None,
                 gain: GainRamp::default(),
                 routes: None, auxiliary: Vec::new(), auxiliary_initialized: false,
-                _activity: registrations[*index].as_ref().map(|registration| registration.start()),
+                _activity: control.registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].pcm.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
@@ -326,8 +330,8 @@ impl Runtime {
                 output_filters: (0..definition.channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
                     VoiceFilter::new(FilterKind::HighPass, definition.rate.get(), 1024, false),
-                ]).collect() },
-            Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition, registrations)).collect()),
+                ]).collect() } },
+            Kind::Layer(children) => State::Layer(children.iter().map(|child| Self::new(*child, now, definition, control)).collect()),
             Kind::Container(container) => State::Container { active: Vec::new(), selection: Selection::default(),
                 loops: Loops::new(&container.playback, random15), next: Some(now), pending: None, initialized: false, exhausted: false },
         };
@@ -428,7 +432,7 @@ impl Runtime {
                 self.failed_start = true;
                 return;
             }
-            let mut child = Self::new(index, now, definition, &audio.control.registrations);
+            let mut child = Self::new(index, now, definition, &audio.control);
             child.prime(now, audio);
             if !container.playback.continuous { *exhausted = true; }
             if child.finished() && child.failed_start {
@@ -698,7 +702,7 @@ impl Playback {
         if deadline.saturating_sub(self.frame) >= 1024 { return; }
         if !self.audio.settings.admits(random15) { self.stopped = true; return; }
         let milliseconds = self.audio.settings.transition.sample_ms(random15);
-        let mut root = Runtime::new(self.audio.definition.root, deadline, &self.audio.definition, &self.audio.control.registrations);
+        let mut root = Runtime::new(self.audio.definition.root, deadline, &self.audio.definition, &self.audio.control);
         root.prime(deadline, &self.audio);
         if milliseconds != 0 {
             root.fade = Some(super::fade::Envelope::fade_in(self.frame,
@@ -713,6 +717,16 @@ impl Playback {
             else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
         }
         self.prepare();
+        self.publish_source_ready();
+    }
+
+    fn publish_source_ready(&self) {
+        // 1410fdd60 ->1411287f0: first actual source-processing pass,
+        // separately from command acceptance or predecoding its media.
+        let count = self.audio.control.source_ready.swap(0, Ordering::Relaxed);
+        if let Some(event) = &self.audio.event {
+            for _ in 0..count { event.source_ready(); }
+        }
     }
 
     fn frame(&mut self, output: &mut [f32], routing: Option<&mut RouteContext<'_>>) -> bool {
@@ -720,7 +734,9 @@ impl Playback {
         let now = self.frame;
         self.frame += 1;
         if now < u64::from(self.audio.delay_frames) { return true; }
-        self.root.as_mut().is_some_and(|root| root.frame(now, &self.audio, output, routing))
+        let alive = self.root.as_mut().is_some_and(|root| root.frame(now, &self.audio, output, routing));
+        self.publish_source_ready();
+        alive
     }
 }
 
