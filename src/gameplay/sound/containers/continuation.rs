@@ -88,6 +88,10 @@ impl<T> Registry<T> {
 /// before the remaining authored children have been visited.
 pub struct Session<T> { sentinel: Branch<T> }
 impl<T> Session<T> {
+    /// If no child Play succeeded, 14111c110 releases the sentinel normally
+    /// and may recover the outer stack for the failed-start continuation.
+    pub fn finish(self) -> Option<Stack<T>> { self.sentinel.finish() }
+
     pub fn branch(&self) -> Branch<T> {
         let key = self.sentinel.key.expect("live group session");
         let mut groups = self.sentinel.groups.lock().unwrap_or_else(|error| error.into_inner());
