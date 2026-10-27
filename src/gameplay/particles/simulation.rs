@@ -37,6 +37,7 @@ pub struct StageSimulation {
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     pub meshes: Vec<Vec<Option<MeshInitialState>>>,
     mesh_cursor: usize,
+    periodic_orientation: super::periodic::PeriodicOrientationState,
     inherited_velocity: super::spawn::SpawnVelocity,
     pub events: super::events::StageEvents,
     /// Last frame supplied to this stage (1f4a00), also used by incoming events.
@@ -59,6 +60,7 @@ struct Bindings<'a> {
     owner_basis: [[f32; 3]; 3],
     lod: usize,
     mesh_cursor: &'a mut usize,
+    periodic_orientation: &'a mut super::periodic::PeriodicOrientationState,
     inherited_velocity: &'a super::spawn::SpawnVelocity,
 }
 
@@ -77,15 +79,13 @@ impl EmitterBindings for Bindings<'_> {
     }
     fn advance_shape(
         &mut self,
-        _fraction: f32,
-        _cycle_seed: u32,
-        _delta: f32,
-        _seed: &mut u32,
+        fraction: f32,
+        cycle_seed: u32,
+        delta: f32,
+        seed: &mut u32,
     ) -> Result<(), String> {
-        // Default periodic orientation has zero frequency and is disabled by
-        // 1f9390. Authored periodic/physics shape descriptors reject. The
-        // PMODEL cursor advances only when an accepted particle is spawned.
-        Ok(())
+        self.periodic_orientation.advance(&self.definition.velocity_periodic_orientation,
+            fraction, cycle_seed, delta, seed)
     }
     fn spawn(&mut self, context: EmissionContext, seed: &mut u32) -> Result<usize, String> {
         let definition = self.definition;
@@ -147,6 +147,7 @@ impl EmitterBindings for Bindings<'_> {
                 multiply(velocity[2], orientation[2][i]),
             )
         });
+        velocity = self.periodic_orientation.apply(velocity);
         let cone = multiply(
             definition
                 .velocity_spray
@@ -297,6 +298,7 @@ impl StageSimulation {
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut self.mesh_cursor,
+            periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
         };
         self.emitter.advance_clock(delta, &mut bindings)?;
@@ -326,9 +328,11 @@ impl StageSimulation {
         let mut meshes = definition.meshes.iter()
             .map(|_| (0..capacity).map(|_| None).collect()).collect::<Vec<Vec<Option<MeshInitialState>>>>();
         // 1efcc0 retains the first draw as its cycle seed and the second as
-        // its mutable spawn seed. Field/shape defaults consume neither.
-        let _cycle_seed = crate::random::lcg_step(system_seed);
+        // its mutable spawn seed. Periodic orientation precedes field setup.
+        let cycle_seed = crate::random::lcg_step(system_seed);
         let mut spawn_seed = crate::random::lcg_step(system_seed);
+        let mut periodic_orientation = super::periodic::PeriodicOrientationState::new(
+            &definition.velocity_periodic_orientation, cycle_seed, &mut spawn_seed)?;
         let mut fields = [
             &definition.spawn_fields,
             &definition.vector_fields,
@@ -356,6 +360,7 @@ impl StageSimulation {
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut mesh_cursor,
+            periodic_orientation: &mut periodic_orientation,
             inherited_velocity: &inherited_velocity,
         };
         let emitter = ParticleEmitter::new(
@@ -376,6 +381,7 @@ impl StageSimulation {
             sprites,
             meshes,
             mesh_cursor,
+            periodic_orientation,
             inherited_velocity,
             events,
             owner_pose: pose,
@@ -674,6 +680,7 @@ impl StageSimulation {
             owner_basis: frame.pose.basis,
             lod: frame.lod,
             mesh_cursor: &mut self.mesh_cursor,
+            periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
         };
         let free = bindings.particles.capacity() - bindings.particles.len();

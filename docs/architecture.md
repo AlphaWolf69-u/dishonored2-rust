@@ -2748,3 +2748,12 @@ distance from the emitter selects the first inclusive threshold, preserving
 list order; each parameter clamps that level to its own alternatives. New
 entries retain their reflected defaults, including emission rate20 and sprite
 size .25. This uses the ordinary simulation and rendering owners.
+
+
+`gameplay::particles::periodic` owns authored periodic initial-velocity direction
+changes. The stage initializes its two sampled endpoints before field setup,
+advances them with the emitter clock, and applies the interpolated rotation
+between initial velocity orientation and spray. Period/angle curves use the
+retained cycle-seed copy; random axes use the mutable spawn seed. No additional
+GPU passes are needed. The host initializes the current rotation to zero until
+its first update, where the executable leaves that storage unwritten.

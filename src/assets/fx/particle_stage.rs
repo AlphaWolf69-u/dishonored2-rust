@@ -125,6 +125,7 @@ pub struct ParticleStageAsset {
     pub spawn_mesh: crate::gameplay::particles::mesh::SpawnMesh,
     pub velocity_mesh: crate::gameplay::particles::mesh::VelocityMesh,
     pub velocity_orientation: crate::gameplay::particles::spawn::SpawnOrientation,
+    pub velocity_periodic_orientation: crate::gameplay::particles::periodic::PeriodicOrientation,
     pub velocity_spray: ScalarParameter,
     pub motion: MotionParameters,
     pub source_velocity_over_cycle: VectorParameter,
@@ -173,6 +174,7 @@ impl Default for ParticleStageAsset {
             spawn_mesh: Default::default(),
             velocity_mesh: Default::default(),
             velocity_orientation: Default::default(),
+            velocity_periodic_orientation: Default::default(),
             velocity_spray: ScalarParameter::constant(0.),
             motion: MotionParameters::default(),
             source_velocity_over_cycle: VectorParameter::constant([0.; 3]),
@@ -273,6 +275,16 @@ impl ParticleStageAsset {
                 )?,
                 "m_spawnMesh" => particle_emission_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
                 "m_velocityMesh" => particle_emission_mesh::velocity_edit(&mut self.velocity_mesh, scope(value)?)?,
+                "m_velocityPeriodicOrientation" => {
+                    for (name, value) in scope(value)? {
+                        let parameter = match name.as_str() {
+                            "m_angle" => &mut self.velocity_periodic_orientation.angle,
+                            "m_period" => &mut self.velocity_periodic_orientation.period,
+                            _ => return Err(format!("unknown periodic orientation field {name}")),
+                        };
+                        particles::scalar_parameter(parameter, scope(value)?)?;
+                    }
+                }
                 "m_velocitySprayCone" => {
                     particles::scalar_parameter(&mut self.velocity_spray, scope(value)?)?
                 }
