@@ -209,7 +209,7 @@ fn particle_pan(coordinates:vec4<f32>,layer:ParticleTextureLayer)->vec2<f32> {
     return uv*layer.tiling_pan.xy+time*layer.tiling_pan.zw;
 }
 struct ParticleColour {colour:vec4<f32>,albedo:vec3<f32>,}
-fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:vec3<f32>,tangent:vec3<f32>,bitangent:vec3<f32>)->f32 {
+fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:vec3<f32>,tangent:vec3<f32>,bitangent:vec3<f32>,vertex_normal:vec3<f32>)->f32 {
     let material=particle_material;
     if material.surface_options.y!=0u {
         var fresnel_normal=normal;
@@ -218,7 +218,7 @@ fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:
             let xy=textureSample(particle_fresnel_normal,particle_trilinear,uv).xy;
             // The same global.hlsl BC5 reconstruction used by dh2_surface.
             let ts=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
-            fresnel_normal=normalize(ts.x*tangent+ts.y*bitangent+ts.z*normal);
+            fresnel_normal=normalize(ts.x*tangent+ts.y*bitangent+ts.z*vertex_normal);
         }
         let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
         let cosine=clamp(dot(view_direction,fresnel_normal),0.0,1.0);
@@ -334,7 +334,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         // emitter/billboard determinant is not this shader parameter.
         lighting_normal=normalize(ts.x*tangent+ts.y*bitangent+ts.z*normal);
     }
-    colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal,tangent,bitangent);
+    colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal,tangent,bitangent,normal);
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}
     if input.fade_radius.x>0.0 {
@@ -531,7 +531,7 @@ struct ParticleAccumulation {@location(0) colour:vec4<f32>,@location(1) opacity:
         }
     }
     if material.fade_options.y!=0u {attenuation*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,input.position.w);}
-    attenuation*=particle_fresnel_opacity(input,coordinates,normal,tangent,bitangent);
+    attenuation*=particle_fresnel_opacity(input,coordinates,normal,tangent,bitangent,normal);
     if input.fade_radius.x>0.0 {attenuation*=smoothstep(0.0,input.fade_radius.x,plane);}
     return attenuation*vec4(blurred*input.colour.zw,raw*input.colour.xy);
 }
