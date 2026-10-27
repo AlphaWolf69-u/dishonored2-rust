@@ -23,6 +23,7 @@ struct WwiseRegistry {
     library: crate::assets::wwise::PlaybackBanks<'static>,
     sources: HashMap<u32, Vec<SourceAction>>,
     scheduled_selections: graph::Selections,
+    states: bevy_backend::StateGroups,
 }
 
 impl WwiseRegistry {
@@ -50,25 +51,25 @@ impl WwiseRegistry {
         let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
             let graph_actions = self.playback(event)?;
             use crate::assets::wwise::PlaybackCommand;
-            let scheduled = graph_actions.iter().try_fold(false, |required, action| -> Result<bool, String> {
-                match action {
-                    PlaybackCommand::Play { node, settings, .. } => Ok(required || settings.requires_scheduling()
-                        || graph::Definition::required(node) || graph::Definition::requires_buses(node, mixer)?),
-                    _ => Ok(required),
-                }
-            })?;
-            if scheduled || force_scheduling {
-                return graph_actions.into_iter().map(|action| match action {
-                    PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                    PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Scheduled {
-                        target, settings, definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?),
-                    }),
-                }).collect();
-            }
-            let actions = crate::assets::wwise::flatten_playback_actions(graph_actions)?;
-            actions.into_iter().map(|action| match action {
-                crate::assets::wwise::EventCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
-                crate::assets::wwise::EventCommand::Play { target, settings, groups } => {
+            let mut actions = Vec::new();
+            for action in graph_actions {
+                // Each action is dispatched independently in 1410e5600 /
+                // 1410e8260. A host decoder or unsupported actor must not
+                // discard the event's other Play and Stop actions.
+                let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
+                PlaybackCommand::Failed { action, target, reason } => Err(format!(
+                    "action {action:#010x}, target {target:#010x}: {reason}").into()),
+                PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
+                PlaybackCommand::SetState(state) => Ok(SourceAction::SetState(state)),
+                PlaybackCommand::Play { target, settings, node } => {
+                    if force_scheduling || settings.requires_scheduling() || graph::Definition::required(&node)
+                        || graph::Definition::requires_buses(&node, mixer)? {
+                        return Ok(SourceAction::Scheduled { target, settings,
+                            definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) });
+                    }
+                    let mut flat = crate::assets::wwise::flatten_playback_actions(vec![PlaybackCommand::Play { target, settings, node }])?;
+                    let Some(crate::assets::wwise::EventCommand::Play { groups, .. }) = flat.pop()
+                        else { return Err("Wwise Play action did not resolve to Play groups".into()); };
                     let groups = groups.into_iter().map(|group| {
                         let variants = group.variants.into_iter().map(|variant| {
                             let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
@@ -88,7 +89,13 @@ impl WwiseRegistry {
                     }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
                     Ok(SourceAction::Play { target, settings, groups })
                 }
-            }).collect()
+                } })();
+                match decoded {
+                    Ok(action) => actions.push(action),
+                    Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
+                }
+            }
+            Ok(actions)
         })();
         self.sources.insert(event, decoded?);
         Ok(())
@@ -145,6 +152,7 @@ struct AudioVariant {
 #[derive(Clone)]
 enum SourceAction {
     Stop(crate::assets::wwise::StopAction),
+    SetState(crate::assets::wwise::StateAction),
     Play { target: u32, settings: crate::assets::wwise::PlaySettings, groups: Vec<AudioGroup> },
     Scheduled { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
 }
@@ -260,6 +268,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     })();
     match result {
         Ok((banks, attenuations, library, output_mix, bindings, time_dilation, physics_scale)) => {
+            registry.states = Arc::new(std::sync::Mutex::new(crate::gameplay::sound::states::States::new(output_mix.state_groups.iter().cloned())));
             mix.time_dilation = Some(time_dilation);
             mix.physics_scale = Some(physics_scale);
             registry.attenuations = attenuations;
@@ -270,7 +279,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
             mix.bindings = bindings;
             mix.apply_settings();
             if let Some(mixer) = &mix.mixer {
-                match bevy_backend::Engine::new(mixer) {
+                match bevy_backend::Engine::new(mixer, registry.states.clone()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
@@ -293,21 +302,21 @@ fn stop_action(commands: &mut Commands, stop: &crate::assets::wwise::StopAction,
     let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
     for (entity, audio_target, scheduled) in playing {
         if stop.game_object && audio_target.emitter != emitter { continue; }
-        let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+        let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
         if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
         else if let Some(control) = scheduled {
             if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                control.stop(target, milliseconds, stop.transition.curve);
+                control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
             }
         }
     }
     spawned.retain(|(entity, audio_target, scheduled)| {
         if stop.game_object && audio_target.emitter != emitter { return true; }
-        let matches = audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
+        let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
         if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
         if let Some(control) = scheduled {
             if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                control.stop(target, milliseconds, stop.transition.curve);
+                control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
             }
         }
         true
@@ -334,6 +343,7 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
+                engine.cancel_state_event(event, emitter);
                 for (entity, target, _) in &playing {
                     if target.event == event && target.emitter == emitter { commands.entity(entity).try_despawn(); }
                 }
@@ -355,7 +365,15 @@ fn play_events(
         if let Some(actions) = registry.sources.get(&event).cloned() {
             for action in actions {
                 match action {
-                    SourceAction::Stop(stop) => stop_action(&mut commands, &stop, emitter, &playing, &mut spawned),
+                    SourceAction::SetState(state) => {
+                        if let Err(error) = engine.post_state(state, event, emitter) {
+                            warn!("Wwise event {event:#010x} Set State unavailable: {error}");
+                        }
+                    },
+                    SourceAction::Stop(stop) => {
+                        if stop.all { engine.cancel_state_actions(stop.game_object.then_some(emitter)); }
+                        stop_action(&mut commands, &stop, emitter, &playing, &mut spawned);
+                    },
                     SourceAction::Play { target, settings, groups } => {
                         if !settings.admits(|| rand::random_range(0..=32767)) { continue; }
                         let mut random_values = HashMap::new();
@@ -437,6 +455,7 @@ fn update_playing_volume(
     if let Err(error) = engine.update(mixer) { error!("Shared Wwise audio mix update failed: {error}"); }
     let world_paused = paused.is_some_and(|paused| paused.0);
     let pause_changed = world_paused != *previous_pause;
+    engine.update_state_pause(pause_changed.then_some(world_paused), |emitter| scene.frozen(emitter));
     for (mut target, sink, scheduled, voice) in &mut playing {
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same

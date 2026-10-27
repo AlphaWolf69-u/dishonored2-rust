@@ -1,6 +1,8 @@
 //! Event controls issued to an audio component (PostEvent / StopEvent).
 pub mod mix;
 pub mod containers;
+pub mod states;
+pub mod switches;
 pub mod spatial;
 pub mod panning;
 pub mod filters;
@@ -26,6 +28,7 @@ pub mod listener;
 pub mod looping;
 pub mod playing;
 pub mod objects;
+pub mod silence;
 
 /// The material pair and physical inputs submitted to the contact FX manager
 /// (14060a480). Sound selection is owned by the installed contact database.

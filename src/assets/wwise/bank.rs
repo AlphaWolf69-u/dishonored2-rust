@@ -93,21 +93,90 @@ pub(super) fn play_settings(bytes: &[u8]) -> io::Result<PlaySettings> {
 pub struct StopAction {
     pub target: u32,
     pub game_object: bool,
+    pub all: bool,
     pub transition: ActionTransition,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct StateAction {
+    pub group: u32,
+    pub value: u32,
+    pub game_object: bool,
+    pub delay: ActionDelay,
+}
+
+/// 14113c730 reads the group and value after CAkAction's common bundles.
+/// Execute (14113c610) changes the global group, independently of its target.
+pub(super) fn state_action(bytes: &[u8]) -> io::Result<StateAction> {
+    let mut reader = Reader { bytes, offset: 4 };
+    let game_object = reader.u8()? & 1 != 0;
+    reader.take(6)?; // Action type, unused target and bus flag.
+    let properties = reader.properties()?;
+    let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
+        .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
+    let count = reader.u8()? as usize;
+    let ids = reader.take(count)?.to_vec();
+    for id in ids {
+        let values = [reader.u32()? as i32, reader.u32()? as i32];
+        if id == 0xe { delay.modifiers = values.map(|value| value.wrapping_mul(48)); }
+    }
+    let group = reader.u32()?;
+    let value = reader.u32()?;
+    if reader.offset != bytes.len() { return Err(invalid("Wwise Set State fields did not consume its action")); }
+    Ok(StateAction { group, value, game_object, delay })
+}
+
+#[derive(Clone, Debug)]
+pub struct StateTransition { pub from: u32, pub to: u32, pub milliseconds: u32 }
+
+#[derive(Clone, Debug)]
+pub struct StateGroup {
+    pub id: u32,
+    pub milliseconds: u32,
+    pub transitions: Vec<StateTransition>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchCase { pub value: u32, pub children: Vec<u32> }
+
+#[derive(Clone, Debug)]
+pub struct SwitchParameters {
+    pub node: u32,
+    pub first_only: bool,
+    pub continue_playback: bool,
+    pub on_switch: u8,
+    pub fade_out_ms: i32,
+    pub fade_in_ms: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchPlayback {
+    /// 141135e70: 1 reads the global state; other values read a switch.
+    pub group_kind: u8,
+    pub group: u32,
+    pub default: u32,
+    pub continuous: bool,
+    pub children: Vec<u32>,
+    pub cases: Vec<SwitchCase>,
+    pub parameters: Vec<SwitchParameters>,
+}
+
 /// CAkAction's property bundles (141116320), active fade curve (1411492c0),
-/// and Stop scopes (141127000). Delay and exception actions need scheduling
-/// and exclusion filtering before they can be submitted to the output backend.
+/// and Stop scopes (141127000). Target/All execution ignores the serialized
+/// exception list (141142380 / 141142190); All Except needs its own filtering.
 pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     let mut reader = Reader { bytes, offset: 4 };
-    let game_object = match reader.u8()? {
-        2 => false, 3 => true,
-        _ => return Err(invalid("Wwise all/exception Stop scopes require exclusion filtering")),
+    let scope = reader.u8()?;
+    let (game_object, all) = match scope {
+        2 => (false, false), 3 => (true, false),
+        4 => (false, true), 5 => (true, true),
+        8 | 9 => return Err(invalid("Wwise All Except Stop actions require exclusion filtering")),
+        _ => return Err(invalid("unsupported Wwise Stop scope")),
     };
     reader.u8()?;
     let target = reader.u32()?;
-    if reader.u8()? != 0 { return Err(invalid("Wwise bus Stop actions are unsupported")); }
+    let bus = reader.u8()? != 0;
+    if bus && !all { return Err(invalid("Wwise bus-targeted Stop actions require bus dispatch")); }
     let properties = reader.properties()?;
     let milliseconds = properties.iter().find(|(id, _)| *id == 0xf).map_or(0, |(_, value)| *value as i32);
     if properties.iter().any(|(id, value)| *id == 0xe && *value != 0) {
@@ -123,9 +192,10 @@ pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     }
     let curve = reader.u8()? & 0x1f;
     if curve > 8 { return Err(invalid("unsupported Wwise action fade curve")); }
-    if reader.u32()? != 0 { return Err(invalid("Wwise Stop exceptions require exclusion filtering")); }
+    let exceptions = reader.u32()? as usize;
+    reader.records(exceptions, 5)?; // 141141fc0: actor/bus ID and bus flag.
     if reader.offset != bytes.len() { return Err(invalid("Wwise Stop fields did not consume its action")); }
-    Ok(StopAction { target, game_object, transition: ActionTransition { milliseconds, modifiers, curve } })
+    Ok(StopAction { target, game_object, all, transition: ActionTransition { milliseconds, modifiers, curve } })
 }
 
 #[derive(Clone, Debug)]
@@ -594,15 +664,21 @@ pub(super) fn effect_definition(object: &[u8], shared: bool) -> io::Result<Effec
     Ok(EffectDefinition { id, shared, plugin, parameters, media, curves, values })
 }
 
-pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>)> {
+pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collections::HashMap<u32, f32>, Vec<StateGroup>)> {
     let mut reader = Reader { bytes, offset: 0 };
     let threshold = reader.f32()?;
     reader.u16()?; // Voice limit.
     let states = reader.u32()?;
+    let mut state_groups = Vec::new();
     for _ in 0..states {
-        reader.take(8)?; // State group and default transition time.
-        let transitions = reader.u32()? as usize;
-        reader.records(transitions, 12)?;
+        let id = reader.u32()?;
+        let milliseconds = reader.u32()?;
+        let count = reader.u32()?;
+        let mut transitions = Vec::new();
+        for _ in 0..count {
+            transitions.push(StateTransition { from: reader.u32()?, to: reader.u32()?, milliseconds: reader.u32()? });
+        }
+        state_groups.push(StateGroup { id, milliseconds, transitions });
     }
     let switches = reader.u32()?;
     for _ in 0..switches {
@@ -618,7 +694,7 @@ pub(super) fn global_parameters(bytes: &[u8]) -> io::Result<(f32, std::collectio
         reader.take(13)?; // Ramp type, up/down times and built-in binding.
     }
     if reader.offset != bytes.len() { return Err(invalid("Wwise global settings did not consume their chunk")); }
-    Ok((threshold, parameters))
+    Ok((threshold, parameters, state_groups))
 }
 
 pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Result<(Vec<u32>, Playlist)> {
@@ -689,4 +765,44 @@ pub(super) fn node_children(object: &[u8], kind: u8, feedback: bool) -> io::Resu
     }
     if reader.offset != object.len() { return Err(invalid("Wwise container fields did not consume its object")); }
     Ok((children, playlist))
+}
+
+/// 141133dd0: group selection, independently serialized child/case lists,
+/// then 14-byte child controls. Retain all branches for selection at playback
+/// time rather than resolving a cached event to one default branch.
+pub(super) fn switch_playback(object: &[u8], feedback: bool) -> io::Result<SwitchPlayback> {
+    let mut reader = Reader { bytes: object, offset: 4 };
+    reader.node_base(feedback)?;
+    let group_kind = reader.u8()?;
+    let group = reader.u32()?;
+    let default = reader.u32()?;
+    let continuous = reader.u8()? != 0;
+    let children = reader.children()?;
+    let count = reader.u32()?;
+    let mut cases = Vec::new();
+    for _ in 0..count {
+        let value = reader.u32()?;
+        let count = reader.u32()?;
+        let mut children = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..count {
+            let child = reader.u32()?;
+            if !seen.insert(child) { return Err(invalid("duplicate Wwise switch case child")); }
+            children.push(child);
+        }
+        cases.push(SwitchCase { value, children });
+    }
+    let count = reader.u32()?;
+    let mut parameters = Vec::new();
+    for _ in 0..count {
+        let node = reader.u32()?;
+        let flags = reader.u8()?;
+        let on_switch = reader.u8()? & 7;
+        parameters.push(SwitchParameters { node, first_only: flags & 1 != 0, continue_playback: flags & 2 != 0,
+            // 141133710 / 1411342e0 pass these words directly as the
+            // signed millisecond field of a voice transition descriptor.
+            on_switch, fade_out_ms: reader.u32()? as i32, fade_in_ms: reader.u32()? as i32 });
+    }
+    if reader.offset != object.len() { return Err(invalid("Wwise switch fields did not consume their object")); }
+    Ok(SwitchPlayback { group_kind, group, default, continuous, children, cases, parameters })
 }

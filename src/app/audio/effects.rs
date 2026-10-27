@@ -61,7 +61,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                             let actions = registry.sources.get(&declaration.id).ok_or("prepared FX sound event is absent")?;
                             if actions.iter().any(|action| match action {
                                 SourceAction::Scheduled { definition, .. } => !definition.can_route(),
-                                SourceAction::Stop(_) => false,
+                                SourceAction::Stop(_) | SourceAction::SetState(_) => false,
                                 SourceAction::Play { .. } => true,
                             }) { return Err(format!("{} requires multichannel FX output conversion", event.name)); }
                             let reference = u32::try_from(state.events.len() + events.len()).map_err(|_| "too many FX sound declarations")?;
@@ -114,7 +114,15 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             let parameter = object.energy;
             for action in prepared.actions.iter() {
                 match action {
-                    SourceAction::Stop(stop) => super::stop_action(&mut commands, stop, event.object, &playing, &mut spawned),
+                    SourceAction::SetState(state) => {
+                        if let Err(error) = engine.post_state(*state, prepared.declaration.declaration.id, event.object) {
+                            warn!("FX event {} Set State unavailable: {error}", prepared.declaration.name);
+                        }
+                    },
+                    SourceAction::Stop(stop) => {
+                        if stop.all { engine.cancel_state_actions(stop.game_object.then_some(event.object)); }
+                        super::stop_action(&mut commands, stop, event.object, &playing, &mut spawned);
+                    },
                     SourceAction::Scheduled { target, settings, definition } => {
                         // The registration already exists. A failed action ends
                         // its ownership; it cannot fabricate another playing ID.
