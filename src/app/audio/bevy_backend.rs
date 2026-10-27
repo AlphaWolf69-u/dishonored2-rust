@@ -7,6 +7,8 @@ use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
 use std::{sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}}, time::Duration};
 use crate::gameplay::sound::{activity::Activity, ducking::Ducking};
 
+pub(super) type ActionTarget = Option<Arc<[u32]>>;
+
 pub(super) type StateGroups = Arc<Mutex<crate::gameplay::sound::states::States>>;
 
 #[derive(Resource, Default)]
@@ -30,20 +32,45 @@ impl Drop for VoiceHandle {
 }
 
 struct Voice { audio: graph::Routed, control: Arc<Control>, event: u32 }
-struct PendingState {
+struct FallbackVoice { playing: graph::Playing, control: Arc<Control>, event: u32, emitter: crate::gameplay::sound::Emitter }
+
+/// Retains action control for the existing multichannel host decoder. Its
+/// channel conversion and bus rendering still require the shared-output port.
+#[derive(Component)]
+pub(super) struct FallbackHandle(Arc<Control>);
+impl FallbackHandle {
+    pub fn pause(&self, paused: bool) { self.0.paused.store(paused, Ordering::Relaxed); }
+}
+impl Drop for FallbackHandle {
+    fn drop(&mut self) { self.0.stopped.store(true, Ordering::Relaxed); }
+}
+
+enum Action { State(crate::assets::wwise::StateAction), Stop(crate::assets::wwise::StopAction) }
+impl Action {
+    fn game_object(&self) -> bool { match self { Self::State(action) => action.game_object, Self::Stop(action) => action.game_object } }
+    fn delay(&self) -> crate::assets::wwise::ActionDelay { match self { Self::State(action) => action.delay, Self::Stop(action) => action.delay } }
+}
+struct PendingAction {
     tick: u64,
     serial: u64,
-    action: crate::assets::wwise::StateAction,
+    action: Action,
+    target_path: ActionTarget,
     event: u32,
     emitter: crate::gameplay::sound::Emitter,
     world_paused: bool,
     paused_at: Option<u64>,
 }
+impl PendingAction {
+    fn matches(&self, target: Option<u32>, emitter: Option<crate::gameplay::sound::Emitter>) -> bool {
+        emitter.is_none_or(|emitter| self.action.game_object() && self.emitter == emitter)
+            && target.is_none_or(|target| self.target_path.as_ref().is_some_and(|path| path.contains(&target)))
+    }
+}
 struct PendingPlay { tick: u64, serial: u64, control: Arc<Control>, paused_at: Option<u64> }
-enum Due { State(PendingState), Play(PendingPlay) }
+enum Due { Action(PendingAction), Play(PendingPlay) }
 impl Due {
     fn order(&self) -> (u64, u64) {
-        match self { Self::State(action) => (action.tick, action.serial), Self::Play(action) => (action.tick, action.serial) }
+        match self { Self::Action(action) => (action.tick, action.serial), Self::Play(action) => (action.tick, action.serial) }
     }
 }
 struct Shared {
@@ -54,7 +81,9 @@ struct Shared {
     voices: Vec<Voice>,
     states: StateGroups,
     switches: graph::SwitchRegistry,
-    pending_states: Vec<PendingState>,
+    pending_actions: Vec<PendingAction>,
+    due: Vec<Due>,
+    fallbacks: Vec<FallbackVoice>,
     pending_plays: Vec<PendingPlay>,
     action_serial: u64,
     failed: bool,
@@ -70,7 +99,7 @@ impl Engine {
         let buses = Buses::new(mixer, &base, activity.clone())?;
         let shared = Arc::new(Mutex::new(Shared { buses, activity: activity.clone(), ducking, tick: 0,
             voices: Vec::new(), states, switches: Arc::new(Mutex::new(graph::SwitchControls::default())),
-            pending_states: Vec::new(), pending_plays: Vec::new(), action_serial: 0, failed: false, error: None }));
+            pending_actions: Vec::new(), due: Vec::new(), fallbacks: Vec::new(), pending_plays: Vec::new(), action_serial: 0, failed: false, error: None }));
         let output = OutputAudio { shared: shared.clone(), channels: ChannelCount::new(2).ok_or("invalid host stereo format")?,
             rate: SampleRate::new(48000).ok_or("invalid host processing rate")? };
         Ok((Self { shared: Some(shared), activity: Some(activity), playing_ids: AtomicU32::new(0) }, output))
@@ -86,29 +115,53 @@ impl Engine {
         }
     }
 
-    pub fn post_state(&self, action: crate::assets::wwise::StateAction, event: u32,
+    pub fn post_state(&self, action: crate::assets::wwise::StateAction, target_path: ActionTarget, event: u32,
+        emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
+        self.post_action(Action::State(action), target_path, event, emitter)
+    }
+
+    pub fn post_stop(&self, action: crate::assets::wwise::StopAction, target_path: ActionTarget, event: u32,
+        emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
+        self.post_action(Action::Stop(action), target_path, event, emitter)
+    }
+
+    fn post_action(&self, action: Action, target_path: ActionTarget, event: u32,
         emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {
         let shared = self.shared.as_ref().ok_or("shared audio action clock is unavailable")?;
         let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
         if shared.failed { return Err("shared audio action clock stopped after a processing error".into()); }
-        let delay = action.delay.sample_frames(|| rand::random_range(0..=32767));
-        // 1410e5600 splits the delay into a tick and sample offset. Set State
-        // (14113c610) does not read that offset, so it changes at the tick.
-        let quanta = u64::from(delay) / FRAMES as u64;
-        if quanta == 0 {
-            shared.set_state(action.group, action.value)?;
-        } else {
-            let tick = shared.tick.wrapping_add(quanta);
-            let serial = shared.next_action();
-            shared.pending_states.push(PendingState { tick, serial, action, event, emitter, world_paused: false, paused_at: None });
-        }
+        let delay = action.delay().sample_frames(|| rand::random_range(0..=32767));
+        // 1410e5600 passes a quotient tick and remainder sample offset. Stop
+        // (141127000) and Set State (14113c610) execute at the quotient tick.
+        let tick = shared.tick.wrapping_add(u64::from(delay) / FRAMES as u64);
+        let serial = shared.next_action();
+        let pending = PendingAction { tick, serial, action, target_path, event, emitter, world_paused: false, paused_at: None };
+        if delay < FRAMES as u32 { shared.execute(pending)?; }
+        else { shared.pending_actions.push(pending); }
         Ok(())
+    }
+
+    pub fn register_fallback(&self, playing: graph::Playing, event: u32,
+        emitter: crate::gameplay::sound::Emitter) -> Result<FallbackHandle, String> {
+        let shared = self.shared.as_ref().ok_or("shared audio action clock is unavailable")?;
+        let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+        if shared.failed { return Err("shared audio action clock stopped after a processing error".into()); }
+        let control = Arc::new(Control { paused: AtomicBool::new(false), stopped: AtomicBool::new(false), finished: AtomicBool::new(false) });
+        shared.fallbacks.push(FallbackVoice { playing, control: control.clone(), event, emitter });
+        Ok(FallbackHandle(control))
     }
 
     pub fn stop_event(&self, event: u32, emitter: crate::gameplay::sound::Emitter) {
         if let Some(shared) = &self.shared {
             let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
-            shared.pending_states.retain(|pending| pending.event != event || pending.emitter != emitter);
+            shared.pending_actions.retain(|pending| pending.event != event || pending.emitter != emitter);
+            shared.due.retain(|due| !matches!(due, Due::Action(pending) if pending.event == event && pending.emitter == emitter));
+            for voice in &shared.fallbacks {
+                if voice.event == event && voice.emitter == emitter {
+                    if voice.control.paused.load(Ordering::Relaxed) { voice.control.finished.store(true, Ordering::Relaxed); }
+                    else { voice.playing.stop_all(0, 4); }
+                }
+            }
             for voice in &mut shared.voices {
                 if voice.event != event || voice.audio.emitter() != emitter { continue; }
                 voice.audio.stop_all(0, 4, voice.control.paused.load(Ordering::Relaxed));
@@ -117,28 +170,11 @@ impl Engine {
         }
     }
 
-    pub fn stop_actor(&self, target: Option<u32>, emitter: Option<crate::gameplay::sound::Emitter>, milliseconds: i32, curve: u8) {
-        if let Some(shared) = &self.shared {
-            let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
-            shared.stop_actor(target, emitter, milliseconds, curve);
-        }
-    }
-
-    /// Stop All also cancels pending non-Play actions (1410e9950). A global
-    /// Set State has no game-object execution scope and survives an emitter's
-    /// Stop All, while stopping its posted event still cancels that action.
-    pub fn cancel_state_actions(&self, emitter: Option<crate::gameplay::sound::Emitter>) {
-        if let Some(shared) = &self.shared {
-            shared.lock().unwrap_or_else(|error| error.into_inner()).pending_states
-                .retain(|pending| emitter.is_some_and(|emitter| !pending.action.game_object || pending.emitter != emitter));
-        }
-    }
-
-    pub fn update_state_pause(&self, world_change: Option<bool>, frozen: impl Fn(crate::gameplay::sound::Emitter) -> bool) {
+    pub fn update_action_pause(&self, world_change: Option<bool>, frozen: impl Fn(crate::gameplay::sound::Emitter) -> bool) {
         if let Some(shared) = &self.shared {
             let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
             let tick = shared.tick;
-            for pending in &mut shared.pending_states {
+            for pending in &mut shared.pending_actions {
                 // Pause snapshots existing playing IDs. Later UI posts keep
                 // running; an owner's stopped clock remains an independent pause.
                 if let Some(paused) = world_change { pending.world_paused = paused; }
@@ -180,7 +216,32 @@ impl Engine {
 
 impl Shared {
     fn next_action(&mut self) -> u64 { let serial = self.action_serial; self.action_serial = serial.wrapping_add(1); serial }
+    fn execute(&mut self, pending: PendingAction) -> Result<(), String> {
+        match pending.action {
+            Action::State(action) => self.set_state(action.group, action.value)?,
+            Action::Stop(action) => {
+                // 141127000 does not execute Target Stop or draw its fade
+                // modifiers when 141115df0 cannot find that target actor.
+                if !action.all && pending.target_path.is_none() { return Ok(()); }
+                let target = (!action.all).then_some(action.target);
+                let emitter = action.game_object.then_some(pending.emitter);
+                let milliseconds = action.transition.sample_ms(|| rand::random_range(0..=32767));
+                self.stop_actor(target, emitter, milliseconds, action.transition.curve);
+                // Stop live contexts first, then cancel both active and paused
+                // pending actions, including later entries due in this block.
+                self.cancel_actions(target, emitter);
+            },
+        }
+        Ok(())
+    }
+
+    fn cancel_actions(&mut self, target: Option<u32>, emitter: Option<crate::gameplay::sound::Emitter>) {
+        self.pending_actions.retain(|pending| !pending.matches(target, emitter));
+        self.due.retain(|due| !matches!(due, Due::Action(pending) if pending.matches(target, emitter)));
+    }
+
     fn synchronize_controls(&mut self) {
+        self.fallbacks.retain(|voice| !voice.control.stopped.load(Ordering::Relaxed) && !voice.control.finished.load(Ordering::Relaxed));
         self.voices.retain(|voice| {
             let stopped = voice.control.stopped.load(Ordering::Relaxed) || voice.control.finished.load(Ordering::Relaxed);
             if stopped { voice.control.finished.store(true, Ordering::Relaxed); }
@@ -193,6 +254,14 @@ impl Shared {
     }
 
     fn stop_actor(&mut self, target: Option<u32>, emitter: Option<crate::gameplay::sound::Emitter>, milliseconds: i32, curve: u8) {
+        for voice in &self.fallbacks {
+            if voice.control.stopped.load(Ordering::Relaxed) || emitter.is_some_and(|emitter| emitter != voice.emitter) { continue; }
+            let paused = voice.control.paused.load(Ordering::Relaxed);
+            if paused && target.is_none() { voice.control.finished.store(true, Ordering::Relaxed); continue; }
+            let milliseconds = if paused { 0 } else { milliseconds };
+            if let Some(target) = target { voice.playing.stop(target, milliseconds, curve); }
+            else { voice.playing.stop_all(milliseconds, curve); }
+        }
         for voice in &mut self.voices {
             if emitter.is_some_and(|emitter| emitter != voice.audio.emitter()) { continue; }
             // 1411068e0 stops a paused PBI immediately instead of waiting for
@@ -257,10 +326,9 @@ impl Shared {
     fn block(&mut self) -> Result<[f32; FRAMES * 2], String> {
         let tick = self.tick;
         // Due actions execute before voice preparation/rendering (1410e6800).
-        let mut due = Vec::new();
-        for pending in std::mem::take(&mut self.pending_states) {
-            if pending.paused_at.is_some() || pending.tick > tick { self.pending_states.push(pending); }
-            else { due.push(Due::State(pending)); }
+        for pending in std::mem::take(&mut self.pending_actions) {
+            if pending.paused_at.is_some() || pending.tick > tick { self.pending_actions.push(pending); }
+            else { self.due.push(Due::Action(pending)); }
         }
         for mut pending in std::mem::take(&mut self.pending_plays) {
             if pending.control.stopped.load(Ordering::Relaxed) || pending.control.finished.load(Ordering::Relaxed) { continue; }
@@ -268,12 +336,12 @@ impl Shared {
                 if pending.paused_at.is_none() { pending.paused_at = Some(tick); }
             } else if let Some(start) = pending.paused_at.take() { pending.tick = pending.tick.wrapping_add(tick.wrapping_sub(start)); }
             if pending.paused_at.is_some() || pending.tick > tick { self.pending_plays.push(pending); }
-            else { due.push(Due::Play(pending)); }
+            else { self.due.push(Due::Play(pending)); }
         }
-        due.sort_by_key(Due::order);
-        for action in due {
+        self.due.sort_by_key(|action| std::cmp::Reverse(action.order()));
+        while let Some(action) = self.due.pop() {
             match action {
-                Due::State(pending) => self.set_state(pending.action.group, pending.action.value)?,
+                Due::Action(pending) => self.execute(pending)?,
                 Due::Play(pending) => {
                     if pending.control.stopped.load(Ordering::Relaxed) || pending.control.finished.load(Ordering::Relaxed) { continue; }
                     if let Some(voice) = self.voices.iter_mut().find(|voice| Arc::ptr_eq(&voice.control, &pending.control)) {
@@ -333,7 +401,8 @@ impl Iterator for Decoder {
                     Err(error) => {
                         for voice in &shared.voices { voice.control.finished.store(true, Ordering::Relaxed); }
                         shared.voices.clear();
-                        shared.pending_states.clear();
+                        shared.pending_actions.clear();
+                        shared.due.clear();
                         shared.pending_plays.clear();
                         shared.error = Some(error);
                         shared.failed = true;
@@ -362,6 +431,7 @@ impl Decodable for OutputAudio {
     }
 }
 
-pub(super) fn retire(mut commands: Commands, voices: Query<(Entity, &VoiceHandle)>) {
+pub(super) fn retire(mut commands: Commands, voices: Query<(Entity, &VoiceHandle)>, fallbacks: Query<(Entity, &FallbackHandle)>) {
     for (entity, voice) in &voices { if voice.finished() { commands.entity(entity).try_despawn(); } }
+    for (entity, voice) in &fallbacks { if voice.0.finished.load(Ordering::Relaxed) { commands.entity(entity).try_despawn(); } }
 }

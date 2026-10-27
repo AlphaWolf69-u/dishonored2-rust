@@ -77,6 +77,12 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    /// The actual parent chain used by pending-action cancellation
+    /// (141115df0 / 1410e9950), independently of playlist membership.
+    pub fn actor_hierarchy(&self, id: u32) -> io::Result<Option<Vec<u32>>> {
+        if !self.actors.contains_key(&id) { return Ok(None); }
+        Ok(Some(self.node_hierarchy(id)?.into_iter().map(|node| node.id).collect()))
+    }
     /// Follow the actual Play references without reading or decoding media.
     /// Playlist/case membership is independent of serialized hierarchy lists.
     pub fn controls(&self, root: u32) -> io::Result<Controls> {
@@ -127,7 +133,7 @@ impl<'a> PlaybackBanks<'a> {
     pub fn references(&self) -> io::Result<References> {
         let mut result = References::default();
         for (&actor_id, &actor) in &self.actors {
-            if matches!(actor.kind, 10..=13) { result.music_actors += 1; continue; }
+            if matches!(actor.kind, 10..=13) { result.music_actors += 1; }
             let bytes = self.bytes(actor);
             let feedback = self.banks[actor.bank].feedback;
             if actor.kind == 6 {
@@ -180,21 +186,28 @@ impl<'a> PlaybackBanks<'a> {
         &self.banks[object.bank].bytes[object.start..object.start + object.length]
     }
 
-    fn media_properties(&self, mut id: u32) -> io::Result<MediaProperties> {
-        let mut properties = MediaProperties::default();
+    fn node_hierarchy(&self, mut id: u32) -> io::Result<Vec<super::NodeProperties>> {
+        let mut nodes = Vec::new();
         let mut visited = HashSet::new();
         while id != 0 {
             if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
             let object = *self.actors.get(&id).ok_or_else(|| invalid_owned(format!("missing Wwise parent {id:#010x}")))?;
-            if matches!(object.kind, 10..=13) {
-                return Err(invalid_owned(format!("Wwise music parent {id:#010x} requires music properties")));
-            }
             let node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
-            if properties.bus == 0 { properties.bus = node.bus; }
             id = node.parent;
-            properties.nodes.push(node);
+            nodes.push(node);
         }
-        Ok(properties)
+        Ok(nodes)
+    }
+
+    fn media_properties(&self, id: u32) -> io::Result<MediaProperties> {
+        let nodes = self.node_hierarchy(id)?;
+        for node in &nodes {
+            if self.actors.get(&node.id).is_some_and(|object| matches!(object.kind, 10..=13)) {
+                return Err(invalid_owned(format!("Wwise music parent {:#010x} requires music properties", node.id)));
+            }
+        }
+        let bus = nodes.iter().find(|node| node.bus != 0).map_or(0, |node| node.bus);
+        Ok(MediaProperties { nodes, bus })
     }
 
     fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,

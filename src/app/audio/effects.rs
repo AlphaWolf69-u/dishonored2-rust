@@ -61,7 +61,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                             let actions = registry.sources.get(&declaration.id).ok_or("prepared FX sound event is absent")?;
                             if actions.iter().any(|action| match action {
                                 SourceAction::Play { definition, .. } => !definition.can_route(),
-                                SourceAction::Stop(_) | SourceAction::SetState(_) => false,
+                                SourceAction::Stop { .. } | SourceAction::SetState { .. } => false,
                             }) { return Err(format!("{} requires multichannel FX output conversion", event.name)); }
                             let reference = u32::try_from(state.events.len() + events.len()).map_err(|_| "too many FX sound declarations")?;
                             events.push(PreparedEvent { declaration: event.clone(), actions: Arc::new(actions.clone()) });
@@ -114,16 +114,17 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             let playing_id = engine.playing_id();
             for action in prepared.actions.iter() {
                 match action {
-                    SourceAction::SetState(state) => {
-                        if let Err(error) = engine.post_state(*state, prepared.declaration.declaration.id, event.object) {
+                    SourceAction::SetState { action, target_path } => {
+                        if let Err(error) = engine.post_state(*action, target_path.clone(), prepared.declaration.declaration.id, event.object) {
                             warn!("FX event {} Set State unavailable: {error}", prepared.declaration.name);
                         }
                     },
-                    SourceAction::Stop(stop) => {
-                        if stop.all { engine.cancel_state_actions(stop.game_object.then_some(event.object)); }
-                        super::stop_action(&mut commands, stop, event.object, &engine, &playing, &mut spawned);
+                    SourceAction::Stop { action, target_path } => {
+                        if let Err(error) = engine.post_stop(*action, target_path.clone(), prepared.declaration.declaration.id, event.object) {
+                            warn!("FX event {} Stop unavailable: {error}", prepared.declaration.name);
+                        }
                     },
-                    SourceAction::Play { target, settings, definition } => {
+                    SourceAction::Play { settings, definition } => {
                         // The registration already exists. A failed action ends
                         // its ownership; it cannot fabricate another playing ID.
                         match definition.prepare(registry.scheduled_selections.clone(), event.object, mixer,
@@ -134,7 +135,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                 match engine.submit(source, playing_id, prepared.declaration.declaration.id) {
                                     Ok(voice) => {
                                         submitted += 1;
-                                        let target = super::AudioTarget { target: *target, event: prepared.declaration.declaration.id,
+                                        let target = super::AudioTarget { event: prepared.declaration.declaration.id,
                                             emitter: event.object, properties: definition.root_properties(),
                                             shared: true, paused: false, world_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone())).id();
