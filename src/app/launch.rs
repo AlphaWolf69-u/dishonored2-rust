@@ -7,7 +7,7 @@ use super::{
     local_shadow_updates, shadow_target_dimensions, navigation, physworld, placed_transform,
     placed_vertex, probe_lighting, publish_initial_whole_view_depth, render_light,
     report_prepared_diffuse_images, screen_shadow_pass, setup, shader_cache, shadow_pass,
-    shadow_sampling, shadow_updates, show_frame_rate, snapshot_once, static_model_collision,
+    shadow_sampling, shadow_updates, show_frame_rate, snapshot_once, acquire_static_model_collision,
     stream_visible_models, stream_visible_textures, sync_shadow_target, tome, transformed,
     update_coordinate_overlay, view_to_game, world_mesh, BenchmarkSeconds, DecalExtension,
     DecalMaterial, DirectionalLightShadowMap, Instant, MaterialPlugin, ProgramCacheSource,
@@ -499,20 +499,20 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             geometry.compressed_decode_failures.len()
         );
         let model_start = std::time::Instant::now();
-        let (model_collision, collider_owners) = if let Some(catalog) = catalog.as_ref() {
+        let model_collision = if let Some(catalog) = catalog.as_ref() {
             let bodies = entity_document
                 .as_ref()
                 .map(entities::rigid_body_settings)
                 .unwrap_or_default();
-            let (triangles, owners, matched, failed) =
-                static_model_collision(catalog, &placed_models, &bodies);
+            let collision = acquire_static_model_collision(catalog, &placed_models, &bodies);
             println!(
-                "Placed static-model collision: {matched} matched authored root HKX bodies, {} triangles, {failed} failures/unsupported recipes",
-                triangles.len()
+                "Placed static-model collision: {} matched authored root HKX bodies, {} triangles, {} failures/unsupported recipes; ExtraHD: {} acquired, {} unresolved",
+                collision.matched, collision.triangles.len(), collision.failed,
+                collision.extra_hd, collision.extra_hd_failed,
             );
-            (triangles, owners)
+            collision
         } else {
-            (Vec::new(), Vec::new())
+            super::view_geometry::ModelCollision::default()
         };
         if profile {
             println!(
@@ -542,7 +542,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !missing_materials.is_empty() {
             println!("Physics materials unresolved: {missing_materials:?}");
         }
-        let resolved: Vec<_> = materials.iter().flatten().cloned().collect();
+        let mut resolved: Vec<_> = materials.iter().flatten().cloned().collect();
         let slot: Vec<u32> = materials
             .iter()
             .scan(0u32, |next, material| {
@@ -594,13 +594,20 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if undecoded_filters > 0 {
             println!("Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path");
         }
+        let model_material_base = resolved.len() as u32;
+        resolved.extend(model_collision.materials);
         let world = navigation::CollisionWorld::with_materials(
             level_triangles.into_iter().chain(
-                model_collision
-                    .into_iter()
-                    .map(|(triangle, owner, filter)| (triangle, owner, navigation::NO_MATERIAL, filter)),
+                model_collision.triangles.into_iter().map(|(triangle, owner, material, filter)| {
+                    let material = if material == navigation::NO_MATERIAL {
+                        material
+                    } else {
+                        model_material_base + material
+                    };
+                    (triangle, owner, material, filter)
+                }),
             ),
-            collider_owners,
+            model_collision.owners,
             resolved,
         );
         if profile {

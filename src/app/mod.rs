@@ -122,8 +122,10 @@ use view_geometry::{
     local_light_clip_to_world, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, reference_fov_from_projection, render_bounds,
     retain_vegetation_channels, retain_world_shadow_channels, source_mesh,
-    static_model_collision, transformed, transformed_direction, view_of, view_to_game, Bounds,
+    acquire_static_model_collision, transformed, transformed_direction, view_of, view_to_game, Bounds,
 };
+#[cfg(test)]
+use view_geometry::static_model_collision;
 mod material_loading;
 use material_loading::{material_option_overrides, MaterialResolver};
 mod setup;

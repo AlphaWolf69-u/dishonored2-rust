@@ -590,11 +590,48 @@ pub(super) fn load_model_havok(
         .collect())
 }
 
-pub(super) fn static_model_collision(
+fn collision_material_slot(
+    catalog: &archive::Catalog,
+    name: &str,
+    slots: &mut HashMap<String, Option<u32>>,
+    materials: &mut Vec<entities::physics_material::PhysicsMaterial>,
+) -> Option<u32> {
+    *slots.entry(name.to_owned()).or_insert_with(|| {
+        match entities::physics_material::physics_material(name, |path| {
+            catalog.read(path)
+                .map(|bytes| bytes.map(|bytes| entities::declaration_text(&bytes).into_owned()))
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(material) => {
+                let slot = materials.len() as u32;
+                materials.push(material);
+                Some(slot)
+            }
+            Err(error) => {
+                eprintln!("Model collision material {name}: {error}");
+                None
+            }
+        }
+    })
+}
+
+/// Flattened static body children, with per-child material/filter retained.
+#[derive(Default)]
+pub(super) struct ModelCollision {
+    pub triangles: Vec<([Vec3; 3], u32, u32, u32)>,
+    pub owners: Vec<String>,
+    pub materials: Vec<entities::physics_material::PhysicsMaterial>,
+    pub matched: usize,
+    pub failed: usize,
+    pub extra_hd: usize,
+    pub extra_hd_failed: usize,
+}
+
+pub(super) fn acquire_static_model_collision(
     catalog: &archive::Catalog,
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
-) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
+) -> ModelCollision {
     let roots: HashMap<_, _> = placements
         .iter()
         .map(|placement| (placement.id.as_str(), placement))
@@ -602,6 +639,10 @@ pub(super) fn static_model_collision(
     let mut cached = HashMap::<String, Option<Vec<[[f32; 3]; 3]>>>::new();
     let mut triangles = Vec::new();
     let mut owners = Vec::new();
+    let mut materials = Vec::new();
+    let mut material_slots = HashMap::<String, Option<u32>>::new();
+    let mut extra_hd = 0usize;
+    let mut extra_hd_failed = 0usize;
     let mut matched = 0usize;
     let mut failed = 0usize;
     for body in bodies {
@@ -645,12 +686,6 @@ pub(super) fn static_model_collision(
             eprintln!("Collision {}: unsupported resource recipe", placement.id);
             continue;
         };
-        if body.extra_hd_material.is_some() {
-            eprintln!(
-                "Collision {}: primary shape only; ExtraHD acquisition still unsupported",
-                placement.id
-            );
-        }
         let local = cached.entry(path.clone()).or_insert_with(|| {
             let parsed = load_model_havok(catalog, &path, 0);
             match parsed {
@@ -675,15 +710,76 @@ pub(super) fn static_model_collision(
             rotation: body_basis.map(|[x, y, z, _]| [x, y, z]),
             ..placement.clone()
         };
-        triangles.extend(local.iter().map(|triangle| {
-            (
-                triangle.map(|vertex| placed_collision_vertex(&body_pose, vertex)),
-                owner,
-                filter,
-            )
-        }));
+        let hd_material = body.extra_hd_material.as_deref()
+            .filter(|name| !name.is_empty() && *name != "NULL");
+        // Combining the children creates a material table even when the
+        // primary resource had none (140808ea0). 140807c80 fills its primary
+        // slots from m_MaterialOverride; its block flags must be applied as
+        // well, or the coarse primary would still block weapon/vision rays.
+        let primary_slot = if hd_material.is_some() {
+            body.material.as_deref().and_then(|name| {
+                collision_material_slot(catalog, name, &mut material_slots, &mut materials)
+            })
+        } else { None };
+        let primary_filter = primary_slot.map_or(filter, |slot| {
+            crate::gameplay::shape_tags::material_filter(filter, materials[slot as usize].collision.flags)
+        });
+        triangles.extend(local.iter().map(|triangle| (
+            triangle.map(|vertex| placed_collision_vertex(&body_pose, vertex)),
+            owner, primary_slot.unwrap_or(super::navigation::NO_MATERIAL), primary_filter,
+        )));
+
+        let Some(material_name) = hd_material else { continue };
+        // 140808ea0 always acquires the HD child as HKT (kind 0), even if
+        // the primary shape uses convex/mesh/box geometry. Both children
+        // retain the same body pose and owner; HD is not a second body.
+        let Some(hd_path) = model_havok_path(placement, "hkt", true) else {
+            extra_hd_failed += 1;
+            continue;
+        };
+        let hd = cached.entry(hd_path.clone()).or_insert_with(|| {
+            match load_model_havok(catalog, &hd_path, 0) {
+                Ok(triangles) => Some(triangles),
+                Err(error) => {
+                    eprintln!("Model collision {hd_path}: {error}");
+                    None
+                }
+            }
+        });
+        let Some(hd) = hd else {
+            // The game's optional HD acquisition leaves the primary intact.
+            extra_hd_failed += 1;
+            continue;
+        };
+        let slot = collision_material_slot(catalog, material_name, &mut material_slots, &mut materials);
+        let Some(slot) = slot else {
+            extra_hd_failed += 1;
+            continue;
+        };
+        // 140808ea0 fills every HD material slot with this declaration.
+        // Flattening that child into triangles therefore has one material
+        // and the same 14081a5f0 filter for every leaf, including aliases.
+        let hd_filter = crate::gameplay::shape_tags::material_filter(
+            filter, materials[slot as usize].collision.flags,
+        );
+        triangles.extend(hd.iter().map(|triangle| (
+            triangle.map(|vertex| placed_collision_vertex(&body_pose, vertex)),
+            owner, slot, hd_filter,
+        )));
+        extra_hd += 1;
     }
-    (triangles, owners, matched, failed)
+    ModelCollision { triangles, owners, materials, matched, failed, extra_hd, extra_hd_failed }
+}
+
+#[cfg(test)]
+pub(super) fn static_model_collision(
+    catalog: &archive::Catalog,
+    placements: &[entities::PlacedModel],
+    bodies: &[entities::RigidBodySettings],
+) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
+    let result = acquire_static_model_collision(catalog, placements, bodies);
+    (result.triangles.into_iter().map(|(vertices, owner, _, filter)| (vertices, owner, filter)).collect(),
+     result.owners, result.matched, result.failed)
 }
 
 pub(super) fn render_indices(indices: &[u16]) -> Indices {
