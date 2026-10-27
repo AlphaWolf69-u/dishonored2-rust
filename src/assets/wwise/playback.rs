@@ -133,7 +133,7 @@ impl<'a> PlaybackBanks<'a> {
     pub fn references(&self) -> io::Result<References> {
         let mut result = References::default();
         for (&actor_id, &actor) in &self.actors {
-            if matches!(actor.kind, 10..=13) { result.music_actors += 1; continue; }
+            if matches!(actor.kind, 10..=13) { result.music_actors += 1; }
             let bytes = self.bytes(actor);
             let feedback = self.banks[actor.bank].feedback;
             if actor.kind == 6 {
