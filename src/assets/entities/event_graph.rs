@@ -32,9 +32,11 @@ pub fn items(fields: &[(String, Value)]) -> impl Iterator<Item = &[(String, Valu
             .flatten()
     })
 }
-/// Serialized managed-entity lists retain index order, including omitted slots.
-/// This consumer cannot turn a null element into a named entity or drop it.
-pub fn entity_names(fields: &[(String, Value)], name: &str) -> Result<Vec<String>, String> {
+/// Serialized managed-entity lists retain index order, including null slots.
+pub fn entity_reference_names(
+    fields: &[(String, Value)],
+    name: &str,
+) -> Result<Vec<Option<String>>, String> {
     let fields = child(fields, name);
     let count = atom(fields, "num")
         .unwrap_or("0")
@@ -60,7 +62,10 @@ pub fn entity_names(fields: &[(String, Value)], name: &str) -> Result<Vec<String
         let value = value.trim_matches('"');
         *slot = (!value.is_empty()).then(|| value.to_owned());
     }
-    values
+    Ok(values)
+}
+pub fn entity_names(fields: &[(String, Value)], name: &str) -> Result<Vec<String>, String> {
+    entity_reference_names(fields, name)?
         .into_iter()
         .map(|value| {
             value.ok_or_else(|| format!("entity list {name} contains a null managed reference"))

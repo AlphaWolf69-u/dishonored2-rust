@@ -90,6 +90,7 @@ impl WorldEffectFrames {
     pub fn resolve(&self, entity: &crate::gameplay::event_graph::EntityReference, tag: &str) -> Result<Option<ReferenceFrame>, String> {
         use crate::gameplay::event_graph::EntityReference;
         match entity {
+            EntityReference::Invalid => Ok(None),
             EntityReference::Player => match &self.player {
                 None => Ok(None),
                 Some((root, _)) if tag.is_empty() => Ok(Some(*root)),

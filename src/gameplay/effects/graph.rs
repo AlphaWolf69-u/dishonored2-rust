@@ -78,6 +78,14 @@ impl GraphInputs for FxGraphRuntime {
         port: u32,
         depth: usize,
     ) -> Result<Option<GraphValue>, String> {
+        let point = node
+            .ports
+            .iter()
+            .find(|point| point.id == port)
+            .ok_or("graph variable port absent")?;
+        if let Some(value) = super::values::evaluate(self, node, &point.name, depth)? {
+            return Ok(Some(value));
+        }
         if node.class == "arkKisculeNodeRandomFloat" {
             if let Some(random) = &self.random_owner {
                 // 522a10 invokes the producer's +c0 getter on every read;
@@ -308,16 +316,20 @@ impl FxGraphRuntime {
                 self.emit(id, if value { "True" } else { "False" })?;
                 false
             }
-            "arkKisculeNodeNamedVariableFloat" | "arkKisculeNodeNamedVariableBool"
+            "arkKisculeNodeNamedVariableFloat"
+            | "arkKisculeNodeNamedVariableBool"
+            | "arkKisculeNodeNamedVariableInt"
+            | "arkKisculeNodeNamedVariableEntityReference"
                 if port.name == "Set" =>
             {
                 let name = atom(&node.params, "m_variableName")
                     .unwrap_or("")
                     .to_owned();
-                let kind = if node.class == "arkKisculeNodeNamedVariableBool" {
-                    GraphValue::Bool(false)
-                } else {
-                    GraphValue::Float(0.)
+                let kind = match node.class.as_str() {
+                    "arkKisculeNodeNamedVariableBool" => GraphValue::Bool(false),
+                    "arkKisculeNodeNamedVariableInt" => GraphValue::Int(0),
+                    "arkKisculeNodeNamedVariableEntityReference" => GraphValue::Entity(None),
+                    _ => GraphValue::Float(0.),
                 };
                 // 926e60 reads an explicit Value link first, then the parent
                 // declaration input with the variable's own name. An absent

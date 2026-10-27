@@ -2775,3 +2775,12 @@ variable owner rather than copying snapshots. The FX domain samples random-value
 producers on each read using the shared manager RNG. Unknown variable/action
 families remain explicit errors. Authored FX actors controlled by `NodeEntityFx`
 and remaining list/control-flow actions are separate unfinished connections.
+
+
+Nested FX inputs retain null managed references as `EntityReference::Invalid`,
+including list slots, so count/index operations do not lose authored positions.
+The value owner supports integer addition/comparison and entity-list count/item
+selection; integers remain 32-bit values throughout. Named bool, float, integer
+and entity-reference setters use explicit Value links or the parent declaration
+input, then publish Updated and regular continuations. Invalid list indices are
+rejected by the host; the executable's typed handler failure path is not connected.

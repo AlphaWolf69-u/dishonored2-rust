@@ -8,6 +8,9 @@ use crate::assets::entities::event_graph::{atom, Node};
 pub enum EntityReference {
     Named(String),
     Player,
+    /// The game's invalid managed-entity handle (0x3fff0010). Lists retain
+    /// these elements; dropping them would change indices and loop counts.
+    Invalid,
 }
 
 pub trait GraphInputs {
@@ -123,6 +126,18 @@ pub trait GraphInputs {
         }
         if let Some(value) = self.variable_value(node, port, depth)? {
             return value.entities();
+        }
+        if node.class == "arkKisculeNodeListEntityReference" {
+            return crate::assets::entities::event_graph::entity_reference_names(
+                &node.params,
+                "m_value",
+            )
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value.map_or(EntityReference::Invalid, EntityReference::Named))
+                    .collect()
+            });
         }
         if node.class == "arkKisculeNodePlayer" {
             return Ok(vec![EntityReference::Player]);

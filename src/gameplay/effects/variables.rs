@@ -56,7 +56,7 @@ impl GraphValue {
     }
     pub fn entities(&self) -> Result<Vec<EntityReference>, String> {
         match self {
-            Self::Entity(value) => Ok(value.iter().cloned().collect()),
+            Self::Entity(value) => Ok(vec![value.clone().unwrap_or(EntityReference::Invalid)]),
             Self::Entities(values) => Ok(values.clone()),
             _ => Err("non-entity graph variable used as an entity".into()),
         }
@@ -120,11 +120,17 @@ fn default_value(definition: &GraphVariable) -> Result<GraphValue, String> {
         "arkKisculeGraphVariableListEntityReference" => {
             // List initialization/reset uses the same installed list layout as
             // literal-node parameters (908fa0/90fb00 and90da00/91a1a0).
-            crate::assets::entities::event_graph::entity_names(fields, "m_defaultValue").map(
-                |values| {
-                    GraphValue::Entities(values.into_iter().map(EntityReference::Named).collect())
-                },
-            )
+            crate::assets::entities::event_graph::entity_reference_names(fields, "m_defaultValue")
+                .map(|values| {
+                    GraphValue::Entities(
+                        values
+                            .into_iter()
+                            .map(|value| {
+                                value.map_or(EntityReference::Invalid, EntityReference::Named)
+                            })
+                            .collect(),
+                    )
+                })
         }
         class => Err(format!("graph variable type {class} is not connected")),
     }

@@ -12,6 +12,7 @@ pub mod world_component;
 pub mod graph;
 pub mod instances;
 pub mod variables;
+pub mod values;
 pub mod pool;
 pub mod sound;
 pub mod timing;
