@@ -156,8 +156,8 @@ impl Flow {
             // 1410ea040 cancels a continuation when its retained stop-gain
             // transition completes; a completed fade-in only unlinks it.
             if let Some(gain) = &pending.inherited {
-                if gain.value(now).is_none() { continue; }
-                if !gain.active(now) { pending.inherited = None; }
+                if gain.action_value(now).is_none() { continue; }
+                if !gain.action_active(now) { pending.inherited = None; }
             }
             if pending.deadline.saturating_sub(now) < 1024 {
                 if let Some(fade) = &mut pending.fade { fade.start = now; }
@@ -166,7 +166,11 @@ impl Flow {
                     // previous PBI has ended (14111ce70 clears that pointer).
                     if let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == crossfade.voice && voice.ended.is_none()) {
                         let id = audio.definition.nodes[voice.runtime.node].id;
-                        voice.runtime.stop(id, crossfade.milliseconds, crossfade.curve, now, &audio.definition);
+                        if crossfade.milliseconds == 0 {
+                            voice.runtime.stop_buffer(now);
+                            voice.actual_stop = true;
+                            voice.continuation.clear();
+                        } else { voice.runtime.stop(id, crossfade.milliseconds, crossfade.curve, now, &audio.definition); }
                         voice.stop_requested = true;
                         pending.fade = (crossfade.milliseconds != 0).then_some(Fade { start: now,
                             milliseconds: crossfade.milliseconds, curve: crossfade.curve });
@@ -180,15 +184,15 @@ impl Flow {
         }
     }
 
-    pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
-        self.stop_scope(Some(target), milliseconds, curve, now, audio);
+    pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
+        self.stop_scope(Some(target), milliseconds, curve, now, audio, paused);
     }
 
-    pub(super) fn stop_all(&mut self, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
-        self.stop_scope(None, milliseconds, curve, now, audio);
+    pub(super) fn stop_all(&mut self, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
+        self.stop_scope(None, milliseconds, curve, now, audio, paused);
     }
 
-    fn stop_scope(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
+    fn stop_scope(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
         if let Some(binding) = &audio.switches {
             let removed = binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers.remove_where(|controller|
                 std::sync::Arc::ptr_eq(&controller.context.owner, &audio.control)
@@ -197,12 +201,26 @@ impl Flow {
         }
         self.pending.retain(|pending| target.is_some_and(|target| !audio.definition.matches_actor(pending.node, target)));
         for voice in &mut self.voices {
+            if voice.actual_stop || voice.ended.is_some() { continue; }
             if target.is_some_and(|target| !audio.definition.matches_actor(voice.runtime.node, target)) { continue; }
             let id = audio.definition.nodes[voice.runtime.node].id;
-            voice.runtime.stop(id, milliseconds, curve, now, &audio.definition);
             voice.stop_requested = true;
-            if milliseconds == 0 { voice.actual_stop = true; voice.continuation.clear(); voice.ended = Some(now); }
+            if milliseconds == 0 {
+                voice.actual_stop = true;
+                voice.continuation.clear();
+                // PBI 1f2 bits 3..6 become nonzero on source readiness /
+                // duration (141104550/141104670), and reset on source removal
+                // (141128900). Unstarted and paused PBIs skip the final mix.
+                if !paused && voice.duration_ms.is_some() { voice.runtime.stop_buffer(now); }
+                else { voice.ended = Some(now); }
+            } else { voice.runtime.stop(id, milliseconds, curve, now, &audio.definition); }
         }
+        self.voices.retain(|voice| voice.ended.is_none());
+    }
+
+    pub(super) fn finished(&self, audio: &ScheduledAudio) -> bool {
+        self.voices.is_empty() && self.pending.is_empty()
+            && audio.control.switch_count.load(std::sync::atomic::Ordering::Relaxed) == 0
     }
 
     pub(super) fn cancel_pending(&mut self, target: u32, audio: &ScheduledAudio) {

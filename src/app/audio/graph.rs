@@ -69,53 +69,6 @@ impl Definition {
     }
     fn has_switch(&self) -> bool { self.nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) }
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
-    pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
-        match node {
-            PlaybackNode::Unsupported { .. } => Ok(false),
-            PlaybackNode::Switch(switch) => {
-                for (_, child) in &switch.children {
-                    if let Some(child) = child { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                }
-                Ok(false)
-            },
-            PlaybackNode::Missing { .. } | PlaybackNode::NoSource { .. } => Ok(false),
-            PlaybackNode::Generator { properties, .. } => mixer.source_has_ducking(properties),
-            PlaybackNode::Sound { variant, .. } => mixer.source_has_ducking(&variant.properties),
-            PlaybackNode::Layer { children, .. } => {
-                for child in children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                Ok(false)
-            },
-            PlaybackNode::Container(container) => {
-                for (child, _) in &container.children { if Self::requires_buses(child, mixer)? { return Ok(true); } }
-                Ok(false)
-            },
-        }
-    }
-    pub fn required(node: &PlaybackNode) -> bool {
-        match node {
-            PlaybackNode::Unsupported { .. } | PlaybackNode::Generator { .. } => true,
-            PlaybackNode::Switch(_) => true,
-            PlaybackNode::Missing { .. } | PlaybackNode::NoSource { .. } => true,
-            PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
-                node.values.iter().any(|(property, value)| *property == 0x3a && *value != 1)
-                    || node.ranges.iter().any(|range| range.property == 0x3a))
-                || crate::gameplay::sound::auxiliary::enabled(&variant.properties)
-                || variant.properties.nodes.iter().find(|node| node.positioning_flags & 1 != 0 || node.parent == 0)
-                    .is_some_and(|node| node.positioning_flags & 7 == 7)
-                || variant.properties.nodes.iter()
-                .find(|node| node.positioning_flags & 1 != 0).is_some_and(|node| node.positioning_3d.is_some())
-                || variant.properties.nodes.iter().any(|node| {
-                    [2, 3, 4].iter().any(|property| node.float(*property) != 0.0)
-                        || node.curves.iter().any(|curve| matches!(curve.property, 2 | 3 | 4))
-                        || node.ranges.iter().any(|range| matches!(range.property, 0 | 2 | 3 | 4 | 0x21)
-                            && (range.min != 0.0 || range.max != 0.0))
-                }),
-            PlaybackNode::Layer { children, .. } => children.is_empty() || children.iter().any(Self::required),
-            PlaybackNode::Container(container) => container.children.is_empty() || container.playback.continuous
-                || container.children.iter().any(|(child, _)| !matches!(child, PlaybackNode::Sound { .. }) || Self::required(child)),
-        }
-    }
-
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<Self> {
         // The Play target owns its properties even when no source is selected
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
@@ -594,8 +547,15 @@ impl Runtime {
         // 1410e6800 advances transitions to tick+1 before rendering. The
         // completed stop still renders its final zero-target block; 1410ebae0
         // retires the PBI afterward. The mixer ramps the gain product.
-        let start = now / 1024 * 1024;
-        envelope.value(start + 1024).or_else(|| envelope.value(start).map(|_| 0.0))
+        envelope.block_value(now)
+    }
+
+    fn stop_buffer(&mut self, now: u64) {
+        // 1411068e0 forces an initialized source to zero (141105410), or
+        // finishes its retained gain transition with the zero-ms curve 4.
+        if let Some(fade) = self.fade.as_ref().filter(|fade| fade.active(now)) { fade.stop(now, 0, 4); }
+        else { self.fade = Some(super::fade::Transition::new(super::fade::Envelope::new(now, 0, 0.0, 4))); }
+        self.fade_cache = None;
     }
 
     fn fade_stopping(&mut self, now: u64) -> bool {
@@ -874,7 +834,7 @@ impl Playback {
     fn flush_stops(&mut self) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
             if let Some(flow) = &mut self.flow {
-                if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio); }
+                if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
                 else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
             }
             else if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
@@ -953,21 +913,23 @@ impl Routed {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow { flow.cancel_pending(target, &playback.audio); }
     }
-    pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8) {
+    pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8, paused: bool) {
         let playback = &mut self.playback;
         if !playback.prepared {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow {
-            flow.stop(target, milliseconds, curve, playback.frame, &playback.audio);
+            flow.stop(target, milliseconds, curve, playback.frame, &playback.audio, paused);
+            if flow.finished(&playback.audio) { playback.stopped = true; }
         } else if let Some(root) = &mut playback.root {
             root.stop(target, milliseconds, curve, playback.frame, &playback.audio.definition);
         }
     }
-    pub fn stop_all(&mut self, milliseconds: i32, curve: u8) {
+    pub fn stop_all(&mut self, milliseconds: i32, curve: u8, paused: bool) {
         let playback = &mut self.playback;
         if !playback.prepared { playback.stopped = true; }
         else if let Some(flow) = &mut playback.flow {
-            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio);
+            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio, paused);
+            if flow.finished(&playback.audio) { playback.stopped = true; }
         } else if let Some(root) = &mut playback.root {
             let id = playback.audio.definition.nodes[root.node].id;
             root.stop(id, milliseconds, curve, playback.frame, &playback.audio.definition);

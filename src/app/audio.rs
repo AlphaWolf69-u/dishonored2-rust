@@ -1,5 +1,5 @@
 //! Wwise events from pause UI and player gameplay.
-use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume}, prelude::*};
+use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings}, prelude::*};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use crate::gameplay::sound::{Emitter, Request};
 mod pcm;
@@ -10,7 +10,6 @@ mod contacts;
 mod spatial;
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
-use pcm::PcmAudio;
 
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
@@ -53,43 +52,10 @@ struct Bank {
 }
 
 #[derive(Clone)]
-struct AudioGroup {
-    node: u32,
-    global: bool,
-    avoid_repeat: u16,
-    mode: crate::assets::wwise::SelectionMode,
-    reset_each_play: bool,
-    restart_backward: bool,
-    variants: Vec<AudioVariant>,
-}
-
-#[derive(Clone)]
-struct AudioVariant {
-    source: Handle<PcmAudio>,
-    weight: u32,
-    properties: Arc<crate::assets::wwise::MediaProperties>,
-}
-
-#[derive(Clone)]
 enum SourceAction {
     Stop(crate::assets::wwise::StopAction),
     SetState(crate::assets::wwise::StateAction),
-    Play { target: u32, settings: crate::assets::wwise::PlaySettings, groups: Vec<AudioGroup> },
-    Scheduled { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
-}
-
-#[derive(Component, Clone)]
-enum PlaybackControl {
-    Flat(fade::Control),
-    Scheduled(graph::Playing),
-}
-impl PlaybackControl {
-    fn stop(&self, target: u32, milliseconds: i32, curve: u8) {
-        match self {
-            Self::Flat(control) => control.stop(milliseconds, curve),
-            Self::Scheduled(control) => control.stop(target, milliseconds, curve),
-        }
-    }
+    Play { target: u32, settings: crate::assets::wwise::PlaySettings, definition: Arc<graph::Definition> },
 }
 
 #[derive(Component, Clone)]
@@ -98,8 +64,6 @@ struct AudioTarget {
     event: u32,
     emitter: Emitter,
     properties: Arc<crate::assets::wwise::MediaProperties>,
-    random_db: f32,
-    parameter: Option<(u32, f32)>,
     paused: bool,
     world_paused: bool,
     shared: bool,
@@ -109,8 +73,7 @@ pub struct SoundPlugin;
 
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
-        app.add_audio_source::<PcmAudio>()
-            .add_audio_source::<graph::ScheduledAudio>()
+        app.add_audio_source::<graph::ScheduledAudio>()
             .add_audio_source::<bevy_backend::OutputAudio>()
             .add_message::<SoundEvent>()
             .add_message::<ContactSound>()
@@ -214,15 +177,14 @@ fn play_events(
     mut commands: Commands,
     mut events: MessageReader<SoundEvent>,
     mut registry: ResMut<WwiseRegistry>,
-    mut sources: ResMut<Assets<PcmAudio>>,
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
     engine: Res<bevy_backend::Engine>,
-    playing: Query<(Entity, &AudioTarget, Option<&PlaybackControl>)>,
+    playing: Query<(Entity, &AudioTarget, &graph::Playing)>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
-    let mut spawned = Vec::<(Entity, AudioTarget, Option<PlaybackControl>)>::new();
+    let mut spawned = Vec::<(Entity, AudioTarget, graph::Playing)>::new();
     for message in events.read() {
         let (event, emitter, parameter, position) = match message.0 {
             Request::Post { event, emitter } => (event, emitter, None, None),
@@ -232,10 +194,10 @@ fn play_events(
             Request::Stop { event, emitter } => {
                 engine.stop_event(event, emitter);
                 for (entity, target, _) in &playing {
-                    if target.event == event && target.emitter == emitter { commands.entity(entity).try_despawn(); }
+                    if target.event == event && target.emitter == emitter && !target.shared { commands.entity(entity).try_despawn(); }
                 }
                 spawned.retain(|(entity, target, _)| {
-                    let stop = target.event == event && target.emitter == emitter;
+                    let stop = target.event == event && target.emitter == emitter && !target.shared;
                     if stop { commands.entity(*entity).try_despawn(); }
                     !stop
                 });
@@ -269,34 +231,10 @@ fn play_events(
                         "action {action:#010x}, target {target:#010x}: {reason}").into()),
                     PlaybackCommand::Stop(stop) => Ok(SourceAction::Stop(stop)),
                     PlaybackCommand::SetState(state) => Ok(SourceAction::SetState(state)),
-                    PlaybackCommand::Play { target, settings, node } => {
-                        if settings.requires_scheduling() || graph::Definition::required(&node)
-                            || graph::Definition::requires_buses(&node, mixer)? {
-                            return Ok(SourceAction::Scheduled { target, settings,
-                                definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?) });
-                        }
-                        let mut flat = crate::assets::wwise::flatten_playback_actions(vec![PlaybackCommand::Play { target, settings, node }])?;
-                        let Some(crate::assets::wwise::EventCommand::Play { groups, .. }) = flat.pop()
-                            else { return Err("Wwise Play action did not resolve to Play groups".into()); };
-                        let groups = groups.into_iter().map(|group| {
-                            let variants = group.variants.into_iter().map(|variant| {
-                                let source = PcmAudio::from_wem(&variant.media).map_err(|error| format!(
-                                    "event {event:#010x}, source {:#010x}: {error}",
-                                    variant.properties.nodes.first().map_or(0, |node| node.id)
-                                ))?;
-                                Ok(AudioVariant {
-                                    source: sources.add(source),
-                                    weight: variant.weight, properties: Arc::new(variant.properties),
-                                })
-                            }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                            Ok(AudioGroup {
-                                node: group.node, global: group.global, avoid_repeat: group.avoid_repeat,
-                                mode: group.mode, reset_each_play: group.reset_each_play, variants,
-                                restart_backward: group.restart_backward,
-                            })
-                        }).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-                        Ok(SourceAction::Play { target, settings, groups })
-                    }
+                    // 14113b5c0 sends every Play through the same source
+                    // and bus clock, including plain PCM and UI sounds.
+                    PlaybackCommand::Play { target, settings, node } => Ok(SourceAction::Play { target, settings,
+                        definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?) }),
                     } })();
                     match decoded {
                         Ok(action) => actions.push(action),
@@ -330,70 +268,26 @@ fn play_events(
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
-                            else if let Some(control) = scheduled.filter(|_| !audio_target.shared) {
-                                if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
-                                }
+                            if matches && milliseconds == 0 && !audio_target.shared { commands.entity(entity).try_despawn(); }
+                            else if !audio_target.shared {
+                                scheduled.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                             }
                         }
                         spawned.retain(|(entity, audio_target, scheduled)| {
                             if stop.game_object && audio_target.emitter != emitter { return true; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
-                            if let Some(control) = scheduled.as_ref().filter(|_| !audio_target.shared) {
-                                if matches || matches!(control, PlaybackControl::Scheduled(_)) {
-                                    control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
-                                }
+                            if matches && milliseconds == 0 && !audio_target.shared { commands.entity(*entity).try_despawn(); return false; }
+                            if !audio_target.shared {
+                                scheduled.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                             }
                             true
                         });
                     }
-                    SourceAction::Play { target, settings, groups } => {
-                        if !settings.admits(|| rand::random_range(0..=32767)) { continue; }
-                        let mut random_values = HashMap::new();
-                        for group in groups {
-                            let owner = if group.global { None } else { Some(emitter) };
-                            let selected = {
-                                use crate::assets::wwise::SelectionMode;
-                                let mut selections = registry.scheduled_selections.lock().unwrap_or_else(|error| error.into_inner());
-                                let state = selections.entry((group.node, owner)).or_default();
-                                if group.mode == SelectionMode::Sequence && group.reset_each_play { state.sequence = Default::default(); }
-                                if group.mode == SelectionMode::Single { (!group.variants.is_empty()).then_some(0) }
-                                else { state.next(group.mode, &group.variants.iter().map(|variant| variant.weight).collect::<Vec<_>>(),
-                                    group.avoid_repeat, group.restart_backward, None) }
-                            };
-                            let Some(selected) = selected else { continue };
-                            let variant = &group.variants[selected];
-                            let random_db = variant.properties.nodes.iter().map(|node| *random_values.entry(node.id).or_insert_with(|| {
-                                node.ranges.iter().filter(|range| matches!(range.property, 0 | 0x21)).map(|range| {
-                                    if range.min == range.max { range.min } else { rand::random_range(range.min..=range.max) }
-                                }).sum::<f32>()
-                            })).sum::<f32>();
-                            let gain = match mixer.gain_with_parameters(&variant.properties, random_db, &scene.parameters(emitter, parameter)) {
-                                Ok(gain) => gain,
-                                Err(error) => { warn!("Wwise event {event:#010x} mix unavailable: {error}"); continue; }
-                            };
-                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db,
-                                parameter, paused: false, world_paused: false, shared: false };
-                            let Some(source) = sources.get(&variant.source) else { continue };
-                            let (source, control) = source.controlled();
-                            let control = PlaybackControl::Flat(control);
-                            let entity = commands.spawn((
-                                AudioPlayer(sources.add(source)),
-                                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)),
-                                audio_target.clone(),
-                                control.clone(),
-                            )).id();
-                            spawned.push((entity, audio_target, Some(control)));
-                        }
-                    }
-                    SourceAction::Scheduled { target, settings, definition } => {
+                    SourceAction::Play { target, settings, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
                             Ok((source, scheduled)) => {
-                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0,
-                                    parameter, paused: false, world_paused: false, shared: source.can_route() };
-                                let scheduled = PlaybackControl::Scheduled(scheduled);
+                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(),
+                                    paused: false, world_paused: false, shared: source.can_route() };
                                 let entity = if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
                                         Ok(voice) => commands.spawn((voice, audio_target.clone(), scheduled.clone())).id(),
@@ -403,7 +297,7 @@ fn play_events(
                                     commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
                                         audio_target.clone(), scheduled.clone())).id()
                                 };
-                                spawned.push((entity, audio_target, Some(scheduled)));
+                                spawned.push((entity, audio_target, scheduled));
                             },
                             Err(error) => warn!("Wwise event {event:#010x} scheduled mix unavailable: {error}"),
                         }
@@ -422,7 +316,7 @@ fn update_playing_volume(
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     mut previous_pause: Local<bool>,
     engine: Res<bevy_backend::Engine>,
-    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, Option<&PlaybackControl>, Option<&bevy_backend::VoiceHandle>)>,
+    mut playing: Query<(&mut AudioTarget, Option<&AudioSink>, &graph::Playing, Option<&bevy_backend::VoiceHandle>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
@@ -444,26 +338,17 @@ fn update_playing_volume(
             voice.pause(frozen);
             target.paused = frozen;
             if !frozen {
-                if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
-                    if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
-                }
+                if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
             }
             continue;
         }
-        let Some(mut sink) = sink else { continue };
+        let Some(sink) = sink else { continue };
         if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
             target.paused = frozen;
         }
         if frozen { continue; }
-        if let Some(PlaybackControl::Scheduled(scheduled)) = scheduled {
-            if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
-            continue;
-        }
-        match mixer.gain_with_parameters(&target.properties, target.random_db, &scene.parameters(target.emitter, target.parameter)) {
-            Ok(gain) => sink.set_volume(Volume::Linear(gain)),
-            Err(error) => warn!("Wwise mix update unavailable: {error}"),
-        }
+        if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
     }
     *previous_pause = world_paused;
     mix.generation = generation;

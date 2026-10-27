@@ -109,11 +109,11 @@ impl Engine {
         if let Some(shared) = &self.shared {
             let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
             shared.pending_states.retain(|pending| pending.event != event || pending.emitter != emitter);
-            shared.voices.retain(|voice| {
-                let stop = voice.event == event && voice.audio.emitter() == emitter;
-                if stop { voice.control.finished.store(true, Ordering::Relaxed); }
-                !stop
-            });
+            for voice in &mut shared.voices {
+                if voice.event != event || voice.audio.emitter() != emitter { continue; }
+                voice.audio.stop_all(0, 4, voice.control.paused.load(Ordering::Relaxed));
+                if voice.audio.cancelled() { voice.control.finished.store(true, Ordering::Relaxed); }
+            }
         }
     }
 
@@ -197,9 +197,10 @@ impl Shared {
             if emitter.is_some_and(|emitter| emitter != voice.audio.emitter()) { continue; }
             // 1411068e0 stops a paused PBI immediately instead of waiting for
             // a fade on its stopped playback clock.
-            let milliseconds = if voice.control.paused.load(Ordering::Relaxed) { 0 } else { milliseconds };
-            if let Some(target) = target { voice.audio.stop_actor(target, milliseconds, curve); }
-            else { voice.audio.stop_all(milliseconds, curve); }
+            let paused = voice.control.paused.load(Ordering::Relaxed);
+            let milliseconds = if paused { 0 } else { milliseconds };
+            if let Some(target) = target { voice.audio.stop_actor(target, milliseconds, curve, paused); }
+            else { voice.audio.stop_all(milliseconds, curve, paused); }
             if voice.audio.cancelled() { voice.control.finished.store(true, Ordering::Relaxed); }
         }
     }
