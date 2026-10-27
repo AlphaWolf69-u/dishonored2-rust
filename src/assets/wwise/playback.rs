@@ -2,7 +2,7 @@
 //! References are global; media keeps the bank that owns its source object.
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
-    PlaybackContainer, PlaybackNode};
+    PlaybackContainer, PlaybackNode, PlaybackSwitch};
 use std::{borrow::Cow, collections::{HashMap, HashSet}, io};
 
 struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
@@ -34,6 +34,7 @@ pub struct PlaybackBanks<'a> {
     actors: HashMap<u32, Object>,
     actions: HashMap<u32, Object>,
     events: HashMap<u32, Object>,
+    custom_effects: HashMap<u32, Object>,
 }
 
 impl<'a> PlaybackBanks<'a> {
@@ -57,6 +58,9 @@ impl<'a> PlaybackBanks<'a> {
                 2 | 5 | 6 | 7 | 9 | 10..=13 => { self.actors.entry(id).or_insert(object); },
                 3 => { self.actions.entry(id).or_insert(object); },
                 4 => { self.events.entry(id).or_insert(object); },
+                // 1410f1f70 retains the first definition in the custom FX
+                // namespace, which source generators also reference.
+                19 => { self.custom_effects.entry(id).or_insert(object); },
                 _ => {},
             }
         }
@@ -65,6 +69,14 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    pub fn generator_ids(&self) -> io::Result<Vec<u32>> {
+        let mut ids = Vec::new();
+        for (&id, &object) in &self.actors {
+            if object.kind == 2 && matches!(read_u32_slice(self.bytes(object), 4)? & 0xf, 2 | 5) { ids.push(id); }
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
     pub fn event_ids(&self) -> Vec<u32> {
         let mut ids = self.events.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
@@ -152,10 +164,35 @@ impl<'a> PlaybackBanks<'a> {
         let bytes = self.bytes(object);
         let feedback = self.banks[object.bank].feedback;
         if matches!(object.kind, 10..=13) {
-            return Err(invalid_owned(format!("Wwise music actor {id:#010x} (HIRC {}) requires music scheduling", object.kind)));
+            visited.remove(&id);
+            return Ok(Some(PlaybackNode::Unsupported { node: id,
+                reason: format!("music actor (HIRC {}) requires music scheduling", object.kind) }));
+        }
+        if object.kind == 6 {
+            let playback = bank::switch_playback(bytes, feedback)?;
+            let mut children = Vec::new();
+            let mut seen = HashSet::new();
+            for &child in playback.cases.iter().flat_map(|case| &case.children) {
+                if seen.insert(child) { children.push((child, self.resolve_node(child, media, visited)?)); }
+            }
+            let properties = self.media_properties(id)?;
+            visited.remove(&id);
+            return Ok(Some(PlaybackNode::Switch(PlaybackSwitch { node: id, properties, playback, children })));
         }
         if object.kind == 2 {
-            if read_u32_slice(bytes, 4)? & 0xf != 1 { return Err(invalid("Wwise source-plugin playback requires its source processor")); }
+            let plugin = read_u32_slice(bytes, 4)?;
+            if plugin & 0xf != 1 {
+                let resource = read_u32_slice(bytes, 9)?;
+                if let Some(&effect) = self.custom_effects.get(&resource) {
+                    let definition = bank::effect_definition(self.bytes(effect), false)?;
+                    let properties = self.media_properties(id)?;
+                    visited.remove(&id);
+                    return Ok(Some(PlaybackNode::Generator { node: id, properties, definition }));
+                }
+                visited.remove(&id);
+                return Ok(Some(PlaybackNode::Unsupported { node: id,
+                    reason: format!("source plugin {plugin:#010x} has no loaded custom FX {resource:#010x}") }));
+            }
             let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
             let media = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?;
             let properties = self.media_properties(id)?;

@@ -56,11 +56,16 @@ impl Resampler {
         looping: Option<super::looping::SourceLoop>) -> Option<f32>
     {
         if channels == 0 || channel >= channels { return None; }
-        let frame = usize::try_from(self.phase >> 16).ok()?;
         let source_frame = |frame: usize| match looping { Some(looping) => looping.frame(frame as u64), None => Some(frame) };
-        let first = *samples.get(source_frame(frame.checked_sub(1)?)?.checked_mul(channels)?.checked_add(channel)?)?;
+        self.sample_with(|frame| samples.get(source_frame(frame)?.checked_mul(channels)?.checked_add(channel)?).copied())
+    }
+
+    /// Use the same interpolation and endpoint rules for procedural sources.
+    pub fn sample_with(&self, mut sample: impl FnMut(usize) -> Option<f32>) -> Option<f32> {
+        let frame = usize::try_from(self.phase >> 16).ok()?;
+        let first = sample(frame.checked_sub(1)?)?;
         if self.step == 65536 && self.step == self.target { return Some(first); }
-        let second = *samples.get(source_frame(frame)?.checked_mul(channels)?.checked_add(channel)?)?;
+        let second = sample(frame)?;
         let fraction = (self.phase & 65535) as f32;
         Some((second - first) * fraction * (1.0 / 65536.0) + first)
     }

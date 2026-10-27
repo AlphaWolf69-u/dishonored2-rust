@@ -1,10 +1,11 @@
 use dishonored2_rust::assets::wwise::Package;
-use std::{collections::BTreeMap, env, error::Error, fs::File, path::PathBuf};
+use std::{collections::{BTreeMap, HashMap}, env, error::Error, fs::File, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
-    if first.to_string_lossy() == "--container-playback" {
+    if matches!(first.to_string_lossy().as_ref(), "--container-playback" | "--switch-playback") {
+        let inspect_switches = first.to_string_lossy() == "--switch-playback";
         use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, bank_switch_playback, TransitionMode}};
         let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
         let mut paths = if path.is_dir() {
@@ -18,7 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut file = File::open(&path)?;
             for entry in package.banks.iter().filter(|entry| entry.language_id == 0) {
                 let bytes = package.read_entry(&mut file, *entry)?;
-                for (_, settings) in bank_switch_playback(&bytes)? {
+                for (id, settings) in bank_switch_playback(&bytes)? {
+                    if inspect_switches { println!("{} bank={:#010x} switch={id:#010x}: {settings:?}", path.display(), entry.id); }
                     *totals.entry(format!("Switch containers: global_state={}, continuous={}", settings.group_kind == 1, settings.continuous)).or_default() += 1;
                 }
                 for (_, state) in bank_state_actions(&bytes)? {
@@ -37,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 for (id, settings) in bank_container_playback(&bytes)? {
                     *totals.entry(format!("continuous={} transition={:?}", settings.continuous, settings.transition)).or_default() += 1;
-                    if settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
+                    if !inspect_switches && settings.continuous && matches!(settings.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
                         println!("{} bank={:#010x} container={id:#010x}: {settings:?}", path.display(), entry.id);
                     }
                 }
@@ -390,11 +392,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node") {
+    if matches!(first.to_string_lossy().as_ref(), "--resolve-event" | "--playback-event" | "--playback-node" | "--source-generators") {
         let playback = first.to_string_lossy() == "--playback-event";
         let actor = first.to_string_lossy() == "--playback-node";
-        let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
-        let id = u32::from_str_radix(&id, 16)?;
+        let generators = first.to_string_lossy() == "--source-generators";
+        let id = if generators { 0 } else {
+            let id = arguments.next().ok_or("missing event or actor ID")?.to_string_lossy().trim_start_matches("0x").to_owned();
+            u32::from_str_radix(&id, 16)?
+        };
         let directory = match arguments.next() {
             Some(path) => PathBuf::from(path),
             None => dishonored2_rust::assets::installation::game_base()?.join("pck"),
@@ -430,6 +435,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("{} loaded banks, {} global actors, {} events", owners.len(), library.actor_count(), library.event_count());
         println!("Loaded reference ownership: {:?}", library.references()?);
+        if generators {
+            let ids = library.generator_ids()?;
+            println!("{} source generators", ids.len());
+            let mut metadata = HashMap::new();
+            for id in ids {
+                if let Some(node) = library.actor_playback(id, |_, _| Err(std::io::Error::other("generator unexpectedly requested media")))? {
+                    print_playback(&node, 0, &mixer, None, &mut metadata)?;
+                }
+            }
+            return Ok(());
+        }
         if !actor && library.event_ids().binary_search(&id).is_err() {
             println!("event {id:#010x} is not present in the selected installed banks");
             return Ok(());
@@ -445,9 +461,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("media {media_id:#010x}: {} bank={:#010x}", path.display(), entry.id);
             package.read_entry(file, media).map(Some)
         };
+        let mut metadata = HashMap::new();
         if actor {
             if let Some(node) = library.actor_playback(id, media)? {
-                print_playback(&node, 0, &mixer, None)?;
+                print_playback(&node, 0, &mixer, None, &mut metadata)?;
             } else { println!("actor {id:#010x} is not available for playback"); }
             return Ok(());
         }
@@ -465,7 +482,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     PlaybackCommand::Stop(stop) => println!("  Stop target={:#010x}, all={}, game_object={}, {:?}", stop.target, stop.all, stop.game_object, stop.transition),
                     PlaybackCommand::Play { target, settings, node } => {
                         println!("  Play target={target:#010x}, {settings:?}");
-                        print_playback(&node, 2, &mixer, None)?;
+                        print_playback(&node, 2, &mixer, None, &mut metadata)?;
                     },
                 }
             }
@@ -552,20 +569,57 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct MediaInfo { samples: usize, channels: u16, sample_rate: u32, loop_points: Option<[u32; 2]> }
+
 fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
     mixer: &dishonored2_rust::gameplay::sound::mix::Mixer,
-    continuation: Option<(u32, &dishonored2_rust::assets::wwise::ContainerPlayback)>) -> Result<(), Box<dyn Error>> {
+    continuation: Option<(u32, &dishonored2_rust::assets::wwise::ContainerPlayback)>,
+    metadata: &mut HashMap<u32, MediaInfo>) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Unsupported { node, reason } => println!("{indent}Unsupported actor {node:#010x}: {reason}"),
+        PlaybackNode::Switch(switch) => {
+            println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",
+                switch.node, switch.playback.group_kind, switch.playback.group, switch.playback.default, switch.playback.continuous);
+            for controls in &switch.playback.parameters { println!("{indent}  Child controls: {controls:?}"); }
+            for case in &switch.playback.cases {
+                println!("{indent}  Case {:#010x}", case.value);
+                for child in &case.children {
+                    if let Some((_, Some(node))) = switch.children.iter().find(|(id, _)| id == child) {
+                        print_playback(node, depth + 2, mixer, None, metadata)?;
+                    } else { println!("{indent}    Unavailable actor {child:#010x}"); }
+                }
+            }
+        },
+        PlaybackNode::Generator { node, definition, .. } => {
+            println!("{indent}Generator {node:#010x}: FX {:#010x}, plugin {:#010x}, {} parameter bytes, {} curves",
+                definition.id, definition.plugin, definition.parameters.len(), definition.curves.len());
+            if definition.plugin == 0x00650002 {
+                let parameters = dishonored2_rust::gameplay::sound::silence::Parameters::read(&definition.parameters)?;
+                println!("{indent}  authored silence: {} s + random [{}, {}] s",
+                    parameters.seconds, parameters.minimum_offset, parameters.maximum_offset);
+            }
+        },
         PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
-            let audio = decode_wem_pcm(&variant.media)?;
+            // The loaded actor registry retains one source per ID. A source
+            // can appear in many cases: validate its actual media once and
+            // retain only metadata, rather than keeping decoded PCM resident.
+            let audio = match metadata.entry(*node) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let audio = decode_wem_pcm(&variant.media)?;
+                    *entry.insert(MediaInfo { samples: audio.samples.len(), channels: audio.channels,
+                        sample_rate: audio.sample_rate, loop_points: audio.loop_points })
+                },
+            };
             let loops = dishonored2_rust::gameplay::sound::looping::LoopCount::read(&variant.properties)?;
             println!("{indent}Sound {node:#010x}: {} samples, {} channels, {} Hz, loops={loops:?}, loop_points={:?}",
-                audio.samples.len(), audio.channels, audio.sample_rate, audio.loop_points);
+                audio.samples, audio.channels, audio.sample_rate, audio.loop_points);
             let source = dishonored2_rust::gameplay::sound::looping::SourceLoop::new(audio.loop_points,
-                audio.samples.len() / usize::from(audio.channels), loops.count as u16)?;
+                audio.samples / usize::from(audio.channels), loops.count as u16)?;
             println!("{indent}  Authored decoder duration before random loop modifiers/pitch: {} ms (0 = infinite)",
                 source.duration_ms(audio.sample_rate));
             if let Some((owner, settings)) = continuation {
@@ -606,7 +660,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             // 14112f0a0 does not schedule an outer early crossfade through
             // a parallel group; its last branch releases that continuation.
             let continuation = if children.len() == 1 { continuation } else { None };
-            for child in children { print_playback(child, depth + 1, mixer, continuation)?; }
+            for child in children { print_playback(child, depth + 1, mixer, continuation, metadata)?; }
         },
         PlaybackNode::Container(container) => {
             println!("{indent}Container {:#010x}: {:?}, global={}, reset={}, avoid_repeat={}, {:?}",
@@ -614,7 +668,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             for (child, weight) in &container.children {
                 println!("{indent}  weight={weight}");
                 let continuation = if container.playback.continuous { Some((container.node, &container.playback)) } else { continuation };
-                print_playback(child, depth + 2, mixer, continuation)?;
+                print_playback(child, depth + 2, mixer, continuation, metadata)?;
             }
         },
     }
