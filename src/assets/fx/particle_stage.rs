@@ -253,6 +253,12 @@ impl ParticleStageAsset {
                     self.emitter.rate.range.range = rate.range;
                     self.emitter.rate.curve = rate.curve;
                 }
+                // StandardCycles rate_lod_t inherits MinMaxFloat; 1f6800
+                // initializes both endpoints to20, independent of base edits.
+                "m_rate_lod" => edit_list(
+                    &mut self.emitter.rate.range.lods, scope(value)?, [20.; 2],
+                    |slot, value| bounds(slot, scope(value)?),
+                )?,
                 "m_life" => particles::scalar_parameter(&mut self.life, scope(value)?)?,
                 "m_infiniteLife" => self.infinite_life = boolean(value)?,
                 "m_warmup" => bounds(&mut self.warmup, scope(value)?)?,

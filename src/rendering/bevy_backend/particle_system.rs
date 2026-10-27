@@ -45,6 +45,8 @@ pub(crate) struct ParticleSystem {
     /// 201400 refreshes system+1d00 before the queued simulation task.
     wind: [f32; 3],
     pub water_flags: u32,
+    /// 1ffb10 publishes the current declaration detail before stage updates.
+    detail_level: usize,
     simulated_frame: Option<u32>,
     visible_frame: Option<u32>,
     visibility: crate::rendering::particles::visibility::ParticleVisibilityState,
@@ -336,6 +338,7 @@ impl ParticleSystem {
             source_motion: None,
             wind: [0.; 3],
             water_flags: 0,
+            detail_level: 0,
             simulated_frame: None,
             visible_frame: None,
             visibility: Default::default(),
@@ -415,6 +418,7 @@ impl ParticleSystem {
                 std::array::from_fn(|i| view.view[1][i]),
             ],
         );
+        self.detail_level = declaration.detail_level(camera.emitter_distance);
         let size = declaration
             .distance
             .size
@@ -565,7 +569,7 @@ impl ParticleSystem {
                     planes: plane.as_slice(),
                     source_velocity,
                     rate: publication.rate,
-                    lod: 0,
+                    lod: self.detail_level,
                 },
                 self.wind,
                 self.source_motion.as_ref(),

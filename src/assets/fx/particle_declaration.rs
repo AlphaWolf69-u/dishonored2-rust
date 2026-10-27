@@ -221,9 +221,20 @@ pub struct ParticleDeclaration {
     pub handle_seen_from_underwater: bool,
     pub clipping: ParticleClipping,
     pub distance: ParticleDistance,
+    /// Authored m_lod distances in list order; empty selects detail zero.
+    pub lod_distances: Vec<f32>,
     pub wind: ParticleWind,
     pub velocity_inheritance: ParticleVelocityInheritance,
     pub stages: Vec<ParticleStageAsset>,
+}
+
+impl ParticleDeclaration {
+    /// 1ffb10 stops at the first distance >= the selected camera's emitter
+    /// distance. Preserve authored order and equality at the boundary.
+    pub fn detail_level(&self, distance: f32) -> usize {
+        self.lod_distances.iter().position(|&threshold| distance <= threshold)
+            .unwrap_or(self.lod_distances.len())
+    }
 }
 
 pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
@@ -235,6 +246,16 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
             "m_distance" => result.distance.edit(scope(value)?)?,
+            "m_lod" => edit_list(&mut result.lod_distances, scope(value)?, 0., |slot, value| {
+                // lod_t contains just m_distance (15590a0); 1c1a30 initializes0.
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_distance" => *slot = number(value)?,
+                        _ => return Err(format!("unknown particle detail field {name}")),
+                    }
+                }
+                Ok(())
+            })?,
             "m_wind" => result.wind.edit(scope(value)?)?,
             "m_velocityInheritance" => result.velocity_inheritance.edit(scope(value)?)?,
             "m_stages" => {

@@ -2740,3 +2740,11 @@ Two-sided particle lighting reverses the geometric tangent basis on back faces,
 retains the vertex basis for packed indirect-light decoding, and applies the
 installed vertex-normal orientation rule before vertex lighting. The flag is
 resolved with the other material specialization options.
+
+
+Particle declarations retain authored `m_lod` distance thresholds and the
+sprite/mesh spawn and emission-rate alternatives. The current selected camera's
+distance from the emitter selects the first inclusive threshold, preserving
+list order; each parameter clamps that level to its own alternatives. New
+entries retain their reflected defaults, including emission rate20 and sprite
+size .25. This uses the ordinary simulation and rendering owners.
