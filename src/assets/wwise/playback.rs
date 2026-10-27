@@ -207,6 +207,11 @@ impl<'a> PlaybackBanks<'a> {
             visited.remove(&id);
             return Ok(source.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
         }
+        if object.kind == 7 {
+            let properties = self.media_properties(id)?;
+            visited.remove(&id);
+            return Ok(Some(PlaybackNode::NoSource { node: id, properties }));
+        }
         if !matches!(object.kind, 5 | 9) { visited.remove(&id); return Ok(None); }
         let (children, playlist) = bank::node_children(bytes, object.kind, feedback)?;
         let node = if object.kind == 5 {

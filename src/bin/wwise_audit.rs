@@ -588,7 +588,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     let id = match node {
         PlaybackNode::Unsupported { node, .. } | PlaybackNode::Missing { node } |
         PlaybackNode::Sound { node, .. } | PlaybackNode::Generator { node, .. } |
-        PlaybackNode::Layer { node, .. } => *node,
+        PlaybackNode::Layer { node, .. } | PlaybackNode::NoSource { node, .. } => *node,
         PlaybackNode::Switch(switch) => switch.node,
         PlaybackNode::Container(container) => container.node,
     };
@@ -626,6 +626,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                     parameters.seconds, parameters.minimum_offset, parameters.maximum_offset);
             }
         },
+        PlaybackNode::NoSource { node, .. } => println!("{indent}Actor mixer {node:#010x}: Play creates no source"),
         PlaybackNode::Missing { node } => println!("{indent}Unresolved playlist actor {node:#010x}"),
         PlaybackNode::Sound { node, variant } => {
             // The loaded actor registry retains one source per ID. A source
