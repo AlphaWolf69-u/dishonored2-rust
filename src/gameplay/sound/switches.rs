@@ -35,7 +35,7 @@ pub enum Command<C> {
     StoreHistory { node: u32, emitter: Emitter, history: History },
 }
 
-pub struct Change<C> { pub commands: Vec<Command<C>> }
+pub struct Change<C> { pub commands: Vec<Command<C>>, pub previous: History }
 
 pub fn case(settings: &SwitchPlayback, value: u32) -> Option<&SwitchCase> {
     settings.cases.iter().find(|case| case.value == value)
@@ -57,6 +57,22 @@ impl<C> Switches<C> {
     /// Register before selecting the initial case, even if no source starts.
     /// The caller uses this only for continuous ordinary Play contexts.
     pub fn register(&mut self, controller: Controller<C>) { self.controllers.push(controller); }
+
+    pub fn any(&self, predicate: impl Fn(&Controller<C>) -> bool) -> bool { self.controllers.iter().any(predicate) }
+
+    pub fn remove_where(&mut self, predicate: impl Fn(&Controller<C>) -> bool) -> usize {
+        let mut removed = Vec::new();
+        self.controllers.retain(|controller| {
+            if predicate(controller) { removed.push((controller.node, controller.emitter)); false } else { true }
+        });
+        let count = removed.len();
+        for key in removed { self.history.remove(&key); }
+        count
+    }
+
+    pub fn pause_where(&mut self, predicate: impl Fn(&Controller<C>) -> bool, paused: bool) {
+        for controller in &mut self.controllers { if predicate(controller) { controller.paused = paused; } }
+    }
 
     /// 141133190 updates history before playing any child. An absent case
     /// leaves history unchanged; an authored empty case still updates it.
@@ -137,6 +153,15 @@ impl<C: Clone> Switches<C> {
             }
         }
         commands.push(Command::ResetHistory { node, emitter });
+        Some(Change { commands, previous })
+    }
+
+    /// Read retained contexts after old-child stops have run: those stops can
+    /// remove controllers. New child Play calls cannot resurrect removed ones.
+    pub fn starts(&self, node: u32, settings: &SwitchPlayback, emitter: Emitter, value: u32, previous: History) -> Vec<Command<C>> {
+        let old = settings.cases.iter().find(|case| case.value == previous.value);
+        let new = case(settings, value);
+        let mut commands = Vec::new();
         let mut history = History::default();
         let selected = new.map_or(settings.default, |case| case.value);
         for controller in self.controllers.iter().filter(|controller| controller.node == node && controller.emitter == emitter) {
@@ -155,6 +180,6 @@ impl<C: Clone> Switches<C> {
             }
         }
         commands.push(Command::StoreHistory { node, emitter, history });
-        Some(Change { commands })
+        commands
     }
 }

@@ -102,6 +102,7 @@ struct AudioTarget {
     parameter: Option<(u32, f32)>,
     paused: bool,
     world_paused: bool,
+    shared: bool,
 }
 
 pub struct SoundPlugin;
@@ -229,7 +230,7 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
-                engine.cancel_state_event(event, emitter);
+                engine.stop_event(event, emitter);
                 for (entity, target, _) in &playing {
                     if target.event == event && target.emitter == emitter { commands.entity(entity).try_despawn(); }
                 }
@@ -313,6 +314,7 @@ fn play_events(
             }
         }
         if let Some(actions) = registry.sources.get(&event).cloned() {
+            let playing_id = engine.playing_id();
             for action in actions {
                 match action {
                     SourceAction::SetState(state) => {
@@ -324,11 +326,12 @@ fn play_events(
                         if stop.all { engine.cancel_state_actions(stop.game_object.then_some(emitter)); }
                         let target = stop.target;
                         let milliseconds = stop.transition.sample_ms(|| rand::random_range(0..=32767));
+                        engine.stop_actor((!stop.all).then_some(target), stop.game_object.then_some(emitter), milliseconds, stop.transition.curve);
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
                             if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
-                            else if let Some(control) = scheduled {
+                            else if let Some(control) = scheduled.filter(|_| !audio_target.shared) {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                                 }
@@ -338,7 +341,7 @@ fn play_events(
                             if stop.game_object && audio_target.emitter != emitter { return true; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
                             if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
-                            if let Some(control) = scheduled {
+                            if let Some(control) = scheduled.as_ref().filter(|_| !audio_target.shared) {
                                 if matches || matches!(control, PlaybackControl::Scheduled(_)) {
                                     control.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                                 }
@@ -371,7 +374,8 @@ fn play_events(
                                 Ok(gain) => gain,
                                 Err(error) => { warn!("Wwise event {event:#010x} mix unavailable: {error}"); continue; }
                             };
-                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db, parameter, paused: false, world_paused: false };
+                            let audio_target = AudioTarget { target, event, emitter, properties: variant.properties.clone(), random_db,
+                                parameter, paused: false, world_paused: false, shared: false };
                             let Some(source) = sources.get(&variant.source) else { continue };
                             let (source, control) = source.controlled();
                             let control = PlaybackControl::Flat(control);
@@ -387,10 +391,11 @@ fn play_events(
                     SourceAction::Scheduled { target, settings, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
                             Ok((source, scheduled)) => {
-                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0, parameter, paused: false, world_paused: false };
+                                let audio_target = AudioTarget { target, event, emitter, properties: definition.root_properties(), random_db: 0.0,
+                                    parameter, paused: false, world_paused: false, shared: source.can_route() };
                                 let scheduled = PlaybackControl::Scheduled(scheduled);
                                 let entity = if source.can_route() {
-                                    match engine.submit(source) {
+                                    match engine.submit(source, playing_id, event) {
                                         Ok(voice) => commands.spawn((voice, audio_target.clone(), scheduled.clone())).id(),
                                         Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
                                     }

@@ -33,7 +33,7 @@ pub(super) struct Flow {
 }
 impl Flow {
     pub(super) fn play(&mut self, node: usize, start: u64, now: u64, audio: &ScheduledAudio,
-        stack: Option<Stack<Sequence>>, fade: Option<Fade>, inherited: Option<Transition>) -> bool {
+        stack: Option<Stack<Sequence>>, fade: Option<Fade>, inherited: Option<Transition>, continuous: bool) -> bool {
         match &audio.definition.nodes[node].kind {
             Kind::Missing | Kind::NoSource => false,
             Kind::Sound(_) => {
@@ -59,7 +59,7 @@ impl Flow {
                     Some(stack)
                 } else { stack };
                 match child.filter(|&child| !matches!(audio.definition.nodes[child].kind, Kind::Missing)) {
-                    Some(child) => self.play(child, start, now, audio, stack, fade, inherited),
+                    Some(child) => self.play(child, start, now, audio, stack, fade, inherited, continuous || container.playback.continuous),
                     None => {
                         if container.playback.continuous {
                             if let Some(stack) = &stack { drop(stack.pop()); }
@@ -69,19 +69,71 @@ impl Flow {
                 }
             },
             Kind::Layer(children) => {
-                if children.len() == 1 { return self.play(children[0], start, now, audio, stack, fade, inherited); }
+                if children.len() == 1 { return self.play(children[0], start, now, audio, stack, fade, inherited, continuous); }
+                if continuous && stack.is_none() && children.len() > 1 {
+                    bevy::log::warn!("Parallel continuous playback has no outer stack (original WG-15729 path)");
+                    return false;
+                }
                 if let Some(outer) = stack {
                     let session = self.groups.begin(audio.definition.nodes[node].id, outer, true);
                     let mut accepted = false;
                     for &child in children {
                         let branch = Stack::default();
                         branch.push(Entry::Group(session.branch()));
-                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone());
+                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone(), continuous);
                     }
                     if accepted { true } else { self.failed(session.finish(), now, audio, inherited, fade) }
                 } else {
                     let mut accepted = false;
-                    for &child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone()); }
+                    for &child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone(), continuous); }
+                    accepted
+                }
+            },
+            Kind::Switch(switch) => {
+                let Some(binding) = &audio.switches else {
+                    bevy::log::error!("Switch playback requires the shared audio engine");
+                    return false;
+                };
+                let id = audio.definition.nodes[node].id;
+                let value = binding.states.lock().unwrap_or_else(|error| error.into_inner()).current(switch.playback.group);
+                let initial = {
+                    let mut controls = binding.registry.lock().unwrap_or_else(|error| error.into_inner());
+                    controls.definitions.entry(id).or_insert_with(|| switch.playback.clone());
+                    if switch.playback.continuous {
+                        controls.controllers.register(crate::gameplay::sound::switches::Controller {
+                            node: id, emitter: audio.emitter, playing_id: binding.playing_id, paused: false,
+                            context: super::SwitchContext { owner: audio.control.clone(), node },
+                        });
+                        audio.control.switch_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    controls.controllers.initial(id, &switch.playback, audio.emitter, value)
+                };
+                let children = initial.children.iter().filter_map(|id| switch.children.get(id).copied().flatten()).collect::<Vec<_>>();
+                if initial.authored_count == 1 {
+                    let mut accepted = false;
+                    for child in children {
+                        let child_stack = if switch.playback.continuous { None } else { stack.clone() };
+                        accepted |= self.play(child, start, now, audio, child_stack, fade, inherited.clone(), continuous);
+                    }
+                    return accepted;
+                }
+                if continuous && stack.is_none() && initial.authored_count > 1 {
+                    bevy::log::warn!("Parallel continuous switch playback has no outer stack (original WG-15729 path)");
+                    return false;
+                }
+                if let Some(outer) = stack {
+                    let session = self.groups.begin(id, outer, !switch.playback.continuous);
+                    let mut accepted = false;
+                    for child in children {
+                        let branch = Stack::default();
+                        branch.push(Entry::Group(session.branch()));
+                        accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone(), continuous);
+                    }
+                    if accepted || switch.playback.continuous { accepted }
+                    else { self.failed(session.finish(), now, audio, inherited, fade) }
+                } else {
+                    let mut accepted = false;
+                    for child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone(), continuous); }
                     accepted
                 }
             },
@@ -120,7 +172,7 @@ impl Flow {
                             milliseconds: crossfade.milliseconds, curve: crossfade.curve });
                     }
                 }
-                self.play(pending.node, pending.deadline, now, audio, pending.stack, pending.fade, pending.inherited);
+                self.play(pending.node, pending.deadline, now, audio, pending.stack, pending.fade, pending.inherited, true);
             } else { self.pending.push(pending); }
         }
         for voice in &mut self.voices {
@@ -129,6 +181,12 @@ impl Flow {
     }
 
     pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
+        if let Some(binding) = &audio.switches {
+            let removed = binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers.remove_where(|controller|
+                std::sync::Arc::ptr_eq(&controller.context.owner, &audio.control)
+                    && audio.definition.matches_actor(controller.context.node, target));
+            audio.control.switch_count.fetch_sub(removed as u32, std::sync::atomic::Ordering::Relaxed);
+        }
         self.pending.retain(|pending| !audio.definition.matches_actor(pending.node, target));
         for voice in &mut self.voices {
             if !audio.definition.matches_actor(voice.runtime.node, target) { continue; }
@@ -137,6 +195,10 @@ impl Flow {
             voice.stop_requested = true;
             if milliseconds == 0 { voice.actual_stop = true; voice.continuation.clear(); voice.ended = Some(now); }
         }
+    }
+
+    pub(super) fn cancel_pending(&mut self, target: u32, audio: &ScheduledAudio) {
+        self.pending.retain(|pending| !audio.definition.matches_actor(pending.node, target));
     }
 
     pub(super) fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32],
@@ -153,6 +215,7 @@ impl Flow {
         }
         if now % 1024 == 1023 { self.notifications(now, audio); }
         !self.voices.is_empty() || !self.pending.is_empty()
+            || audio.control.switch_count.load(std::sync::atomic::Ordering::Relaxed) != 0
     }
 
     /// Duration notifications precede source-end notifications in the first
