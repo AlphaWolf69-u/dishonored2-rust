@@ -5,6 +5,7 @@ use super::{
     field, scope, Document, Value,
 };
 use std::collections::HashMap;
+pub mod declarations;
 
 /// 79e100/17debb0: arkKisculeNodeFxParameters, before graph-input overrides.
 #[derive(Clone, Debug)]
@@ -91,42 +92,37 @@ pub struct FxGraph {
     pub owner: String,
     pub nodes: Vec<Node>,
     pub effects: HashMap<u32, FxNodeParameters>,
+    pub variables: Vec<declarations::GraphVariable>,
 }
 fn child<'a>(fields: &'a [(String, Value)], name: &str) -> &'a [(String, Value)] {
     scope(field(fields, name)).unwrap_or(&[])
 }
+pub(super) fn parse_graph(owner: String, fields: &[(String, Value)]) -> Result<FxGraph, String> {
+    let nodes = child(fields, "m_nodes").iter()
+        .filter(|(name, _)| name.starts_with("item["))
+        .filter_map(|(_, value)| scope(Some(value)))
+        .map(parse_node).collect::<Result<Vec<_>, _>>()?;
+    let effects = nodes.iter().filter(|node| node.class == "arkKisculeNodeFx")
+        .map(|node| FxNodeParameters::parse(&node.params).map(|parameters| (node.id, parameters)))
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let variables = super::event_graph::items(child(fields, "m_variables"))
+        .map(|variable| declarations::GraphVariable {
+            class: super::event_graph::atom(variable, "m_class").unwrap_or("").to_owned(),
+            parameters: child(variable, "m_object").to_vec(),
+        }).collect();
+    Ok(FxGraph { owner, nodes, effects, variables })
+}
+
 pub fn load(document: &Document) -> Result<Vec<FxGraph>, String> {
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
-        let nodes = child(child(child(&entity.fields, "edit"), "m_kiscule"), "m_nodes");
-        let fields = nodes
-            .iter()
-            .filter(|(name, _)| name.starts_with("item["))
-            .filter_map(|(_, value)| scope(Some(value)))
-            .collect::<Vec<_>>();
-        let is_fx = |fields: &&[(String, Value)]| {
-            matches!(field(fields, "m_name"), Some(Value::Atom(name))
-                if name.trim_matches('"') == "arkKisculeNodeFx")
-        };
-        if !fields.iter().any(is_fx) {
-            continue;
+        let fields = child(child(&entity.fields, "edit"), "m_kiscule");
+        let relevant = super::event_graph::items(child(fields, "m_nodes")).any(|node|
+            matches!(super::event_graph::atom(node, "m_name"),
+                Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance")));
+        if relevant {
+            result.push(parse_graph(entity.id.clone(), fields)?);
         }
-        let nodes = fields
-            .into_iter()
-            .map(parse_node)
-            .collect::<Result<Vec<_>, _>>()?;
-        let effects = nodes
-            .iter()
-            .filter(|node| node.class == "arkKisculeNodeFx")
-            .map(|node| {
-                FxNodeParameters::parse(&node.params).map(|parameters| (node.id, parameters))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
-        result.push(FxGraph {
-            owner: entity.id.clone(),
-            nodes,
-            effects,
-        });
     }
     Ok(result)
 }

@@ -2757,3 +2757,11 @@ between initial velocity orientation and spray. Period/angle curves use the
 retained cycle-seed copy; random axes use the mutable spawn seed. No additional
 GPU passes are needed. The host initializes the current rotation to zero until
 its first update, where the executable leaves that storage unwritten.
+
+
+Nested Kiscule assets are acquired by `assets::entities::effects::declarations`
+through the installed declaration reader and a cache in first-reference order.
+Root and nested graphs use one node parser, retaining typed variable records and
+all authored links. `WorldFxSources` prepares their referenced FX through the
+same particle/material/sound caches. This is declaration preparation; child
+instance execution, entry/exit forwarding and variable refresh remain unfinished.

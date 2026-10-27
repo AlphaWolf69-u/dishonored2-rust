@@ -67,16 +67,30 @@ pub(crate) fn descriptor_fields(
 #[derive(Default)]
 pub struct WorldFxSources {
     pub effects: HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
+    pub declarations: crate::assets::entities::effects::declarations::FxDeclarations,
 }
 
 impl WorldFxSources {
     pub fn load(graphs: &[FxGraph], catalog: &Catalog, library: &mut ProgramLibrary) -> Self {
-        let mut result = Self::default();
+        let mut result = Self {
+            declarations: crate::assets::entities::effects::declarations::FxDeclarations::load(graphs, catalog),
+            ..Default::default()
+        };
+        if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+            for declaration in &result.declarations.declarations {
+                match declaration {
+                    Ok(graph) => eprintln!("World FX graph prepared: {} nodes={} variables={} effects={}",
+                        graph.owner, graph.nodes.len(), graph.variables.len(), graph.effects.len()),
+                    Err(error) => eprintln!("World FX graph preparation failed: {error}"),
+                }
+            }
+        }
         let mut materials = HashMap::new();
         let mut sound_events = HashMap::new();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
-        for graph in graphs {
+        for graph in graphs.iter().chain(result.declarations.declarations.iter()
+            .filter_map(|declaration| declaration.as_ref().ok())) {
             for node in &graph.nodes {
                 let Some(name) = graph.effects.get(&node.id).and_then(|p| p.effect.as_ref()) else {
                     continue;
