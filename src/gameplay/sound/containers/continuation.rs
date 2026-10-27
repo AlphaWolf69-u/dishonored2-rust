@@ -132,6 +132,40 @@ pub enum Advance<N> {
     Exhausted,
 }
 
+/// Source-local preparation flags and ownership (14112f0a0 / 14112fd20).
+/// The stack is retained until a continuation-post attempt or actual stop;
+/// requesting a fade-out alone does not perform that actual-stop transition.
+pub struct Source<T, N> {
+    stack: Option<Stack<T>>,
+    next: Option<N>,
+    prepared: bool,
+}
+impl<T, N> Source<T, N> {
+    pub fn new(stack: Option<Stack<T>>) -> Self { Self { stack, next: None, prepared: false } }
+
+    pub fn prepare(&mut self, early: bool, mode: impl FnMut(&T) -> TransitionMode,
+        select: impl FnMut(&mut T) -> Option<N>) {
+        if self.prepared { return; }
+        match advance(&mut self.stack, early, mode, select) {
+            Advance::Ready(next) => { self.next = Some(next); self.prepared = true; },
+            Advance::Exhausted => self.prepared = true,
+            Advance::AtSourceEnd => {},
+        }
+    }
+
+    pub fn next(&self) -> Option<&N> { self.next.as_ref() }
+    pub fn stack(&self) -> Option<Stack<T>> { self.stack.clone() }
+
+    /// Both duration-driven posting and actual stop clear the retained next
+    /// actor and stack (14112f640 / 14112fd20). Pending actions retain their
+    /// own stack reference; clearing a source must not cancel those actions.
+    pub fn clear(&mut self) {
+        self.prepared = true;
+        self.next = None;
+        self.stack = None;
+    }
+}
+
 /// 14112f0a0 advances shared sequence entries until it finds the next actor.
 /// `select` includes the global actor lookup: a missing actor exhausts that
 /// sequence entry, unlike an actor whose subsequent Play fails to make a PBI.

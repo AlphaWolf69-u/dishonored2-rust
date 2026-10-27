@@ -75,8 +75,11 @@ impl<C> Switches<C> {
     /// 141132da0 snapshots every retained game-object entry, including
     /// duplicates. Do not deduplicate: an unmapped raw value differs from the
     /// stored fallback value, so later entries can cause another change.
-    pub fn recipients(&self, node: u32) -> Vec<Emitter> {
-        self.controllers.iter().filter(|controller| controller.node == node).map(|controller| controller.emitter).collect()
+    pub fn recipients(&mut self, node: u32) -> Vec<Emitter> {
+        let recipients = self.controllers.iter().filter(|controller| controller.node == node)
+            .map(|controller| controller.emitter).collect::<Vec<_>>();
+        if recipients.is_empty() { self.history.retain(|&(owner, _), _| owner != node); }
+        recipients
     }
 
     /// 141134190 removes contexts by game object and/or playing ID, then
