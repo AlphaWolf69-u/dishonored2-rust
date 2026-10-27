@@ -47,10 +47,7 @@ impl Definitions {
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.event.as_ref().map(|path| {
-            let source = text(&self.catalog, &format!("generated/decls/soundevent/{path}.decl"))?.ok_or_else(|| format!("missing sound event {path}"))?;
-            crate::assets::wwise::declared_event_id(&source).map_err(|error| error.to_string())
-        }).transpose()?;
+        let event = asset.resolve(&self.catalog)?.map(|event| event.id);
         Ok(TimedEvent { delay: asset.delay, event })
     }
 

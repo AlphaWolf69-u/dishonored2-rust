@@ -15,9 +15,18 @@ use std::{collections::HashMap, sync::Arc};
 pub struct WorldEffectGroup {
     pub asset: EffectGroupAsset,
     pub particles: Vec<Result<ParticleDefinition, String>>,
+    pub sounds: Vec<WorldSoundDefinition>,
     /// Keep every other authored family for the common FX owner. A particle
     /// consumer cannot silently call such a group completely implemented.
     pub other_families: Vec<(String, Value)>,
+}
+
+pub struct WorldSoundDefinition {
+    pub position: [bevy_math::Vec3; 2],
+    pub start_delay: [f32; 2],
+    pub stop_delay: [f32; 2],
+    pub start: Option<crate::assets::wwise::SoundEventDeclaration>,
+    pub stop: Option<crate::assets::wwise::SoundEventDeclaration>,
 }
 
 pub struct WorldEffectDefinition {
@@ -76,6 +85,16 @@ impl WorldFxSources {
                         if !asset.enabled {
                             continue;
                         }
+                        let sounds = asset.sounds.iter()
+                            .filter(|sound| sound.enabled && (sound.start.event.is_some() || sound.stop.event.is_some()))
+                            .map(|sound| Ok(WorldSoundDefinition {
+                                position: sound.position,
+                                start_delay: sound.start.delay,
+                                stop_delay: sound.stop.delay,
+                                start: sound.start.resolve(catalog)?,
+                                stop: sound.stop.resolve(catalog)?,
+                            }))
+                            .collect::<Result<Vec<_>, String>>()?;
                         let particle_fields =
                             descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
                         let particles = particle_fields
@@ -101,6 +120,7 @@ impl WorldFxSources {
                         groups.push(WorldEffectGroup {
                             asset,
                             particles,
+                            sounds,
                             other_families,
                         });
                     }

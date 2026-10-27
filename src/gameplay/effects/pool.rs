@@ -25,6 +25,11 @@ impl EffectPoolLinks {
         Self::ascending(1024)
     }
 
+    /// 19a7e0 ->19fcc0 initializes each ordinary/attached sound family.
+    pub fn sounds() -> Self {
+        Self::ascending(512)
+    }
+
     fn ascending(capacity: u16) -> Self {
         Self {
             next: (1..capacity).chain(std::iter::once(u16::MAX)).collect(),
