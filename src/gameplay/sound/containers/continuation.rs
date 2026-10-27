@@ -1,6 +1,7 @@
 //! Shared continuation stacks and parallel-branch ownership
 //! (14111ba70 / 14111bc60 / 14111bd70 / 14111bea0 / 141116b50).
 use std::{collections::HashMap, sync::{Arc, Mutex}};
+use crate::assets::wwise::TransitionMode;
 
 pub enum Entry<T> {
     Sequence(T),
@@ -123,3 +124,47 @@ impl<T> Branch<T> {
     }
 }
 impl<T> Drop for Branch<T> { fn drop(&mut self) { self.cancel(); } }
+
+pub enum Advance<N> {
+    Ready(N),
+    /// A parallel branch must wait for source end before releasing its group.
+    AtSourceEnd,
+    Exhausted,
+}
+
+/// 14112f0a0 advances shared sequence entries until it finds the next actor.
+/// `select` includes the global actor lookup: a missing actor exhausts that
+/// sequence entry, unlike an actor whose subsequent Play fails to make a PBI.
+/// The returned candidate belongs to the still-retained stack; the pending
+/// continuation action and the previous source may both reference that stack.
+pub fn advance<T, N>(stack: &mut Option<Stack<T>>, early: bool,
+    mut mode: impl FnMut(&T) -> TransitionMode,
+    mut select: impl FnMut(&mut T) -> Option<N>) -> Advance<N> {
+    enum Step<N> { Ready(N), SequenceEnded, Group, Empty }
+    loop {
+        let Some(current) = stack.as_ref() else { return Advance::Exhausted; };
+        let step = current.with_last(|entry| match entry {
+            Some(Entry::Sequence(sequence)) => match select(sequence) {
+                Some(next) => Step::Ready(next), None => Step::SequenceEnded,
+            },
+            Some(Entry::Group(_)) => Step::Group,
+            None => Step::Empty,
+        });
+        match step {
+            Step::Ready(next) => return Advance::Ready(next),
+            Step::Empty => { *stack = None; return Advance::Exhausted; },
+            Step::SequenceEnded => { drop(current.pop()); },
+            Step::Group => {
+                if early && current.outer_sequence(&mut mode) != Some(TransitionMode::TriggerRate) {
+                    return Advance::AtSourceEnd;
+                }
+                let outer = match current.pop() {
+                    Some(Entry::Group(branch)) => branch.finish(),
+                    _ => None,
+                };
+                *stack = outer;
+                if stack.is_none() { return Advance::Exhausted; }
+            },
+        }
+    }
+}
