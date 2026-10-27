@@ -353,6 +353,36 @@ impl Player {
         (tag_p + tag_r * arm.bind.0, tag_r * arm.bind.1)
     }
 
+    /// The player's entity and model-tag frames, before render-camera collision
+    /// adjustments. Uses the body pose/control matrices shared with its arms.
+    pub fn reference_frames(&self) -> (crate::gameplay::reference_frame::ReferenceFrame,
+        std::collections::HashMap<String, crate::gameplay::reference_frame::ReferenceFrame>) {
+        use crate::gameplay::reference_frame::ReferenceFrame;
+        let origin = self.physics.position();
+        let axis = self.physics.axis();
+        let root = ReferenceFrame { position: origin.to_array(), basis: axis.to_cols_array_2d() };
+        let controls = self.camera.controls(&self.pose, self.body.follow_slope.yaw_offset);
+        let mut frames = std::collections::HashMap::new();
+        let joint_frame = |joint| {
+            let (position, rotation) = self.pose.joint_with_controls(joint, &controls);
+            (position, rotation)
+        };
+        let world_frame = |position: Vec3, rotation: Mat3| ReferenceFrame {
+            position: (origin + axis * position).to_array(),
+            basis: (axis * rotation).to_cols_array_2d(),
+        };
+        for (joint, name) in self.body.joint_names.iter().enumerate() {
+            let (position, rotation) = joint_frame(joint);
+            frames.insert(name.clone(), world_frame(position, rotation));
+        }
+        // Tag lookup precedes bare joint lookup in 4b19b0.
+        for (name, &(joint, offset, orientation)) in &self.body.tags {
+            let (position, rotation) = joint_frame(joint);
+            frames.insert(name.clone(), world_frame(position + rotation * offset, rotation * orientation));
+        }
+        (root, frames)
+    }
+
     pub fn sound_rate(&self, emitter: crate::gameplay::sound::Emitter, clock_rate: f32) -> Option<f32> {
         use crate::gameplay::sound::Emitter;
         let settings = match emitter {

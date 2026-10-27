@@ -61,7 +61,7 @@ impl ParticleSpriteAsset {
     }
 }
 
-fn orientation(result: &mut ParticleOrientation, fields: &Fields) -> Result<(), String> {
+pub(super) fn orientation(result: &mut ParticleOrientation, fields: &Fields) -> Result<(), String> {
     for (name, value) in fields {
         match name.as_str() {
             "m_mode" => {
@@ -103,7 +103,7 @@ fn integer(value: &Value) -> Result<i32, String> {
         .map_err(|e| format!("invalid particle integer: {e}"))
 }
 
-fn flipbook(result: &mut SpriteFlipbook, fields: &Fields) -> Result<(), String> {
+pub(super) fn flipbook(result: &mut SpriteFlipbook, fields: &Fields) -> Result<(), String> {
     for (name, value) in fields {
         match name.as_str() {
             "m_textureFlipU" | "m_textureFlipV" => {

@@ -71,8 +71,11 @@ impl ParticleDefinition {
                             texture.pixels = Some(field_images[resource].clone());
                         }
                     }
-                    let mesh = &mut stage.spawn_mesh;
-                    let Some(source) = &mesh.source else { continue };
+                    for (source, model) in [
+                        (&stage.spawn_mesh.source, &mut stage.spawn_mesh.model),
+                        (&stage.velocity_mesh.source, &mut stage.velocity_mesh.model),
+                    ] {
+                    let Some(source) = source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
                     if !models.contains_key(&resource) {
                         let bytes = catalog
@@ -87,7 +90,19 @@ impl ParticleDefinition {
                             ),
                         );
                     }
-                    mesh.model = Some(models[&resource].clone());
+                    *model = Some(models[&resource].clone());
+                    }
+                    for mesh in &mut stage.meshes {
+                        let Some(source) = &mesh.source else { continue };
+                        let resource = crate::assets::particle_model::resource_path(source)?;
+                        if !models.contains_key(&resource) {
+                            let bytes = catalog.read(&resource).map_err(|error| format!("{resource}: {error}"))?
+                                .ok_or_else(|| format!("missing particle render mesh {resource}"))?;
+                            models.insert(resource.clone(), Arc::new(crate::assets::particle_model::parse(&bytes)
+                                .map_err(|error| format!("{resource}: {error}"))?));
+                        }
+                        mesh.model = Some(models[&resource].clone());
+                    }
                 }
                 Ok(Some(Arc::new(declaration)))
             })
@@ -95,8 +110,10 @@ impl ParticleDefinition {
         let mut materials = HashMap::new();
         for declaration in declarations.iter().flatten() {
             for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
-                for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
-                    let Some(name) = &sprite.material else {
+                let names = stage.sprites.iter().filter(|sprite| sprite.enabled).map(|sprite| &sprite.material)
+                    .chain(stage.meshes.iter().filter(|mesh| mesh.enabled).map(|mesh| &mesh.material));
+                for material in names {
+                    let Some(name) = material else {
                         continue;
                     };
                     if !material_cache.contains_key(name) {

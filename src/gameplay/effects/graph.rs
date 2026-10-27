@@ -10,19 +10,21 @@ use crate::{
     },
     gameplay::{
         event_gate::{GateContext, GateOutput, GateState},
-        event_graph::GraphInputs,
+        event_graph::{GraphInputs, EntityReference},
     },
 };
 use std::collections::{HashMap, HashSet};
 
+pub type FxRuntimeParameters = FxNodeParameters<EntityReference>;
+
 pub trait FxGraphWorld {
     fn effect_ready(&self, effect: &str) -> Result<bool, String>;
-    fn entity_exists(&self, entity: &str) -> Result<bool, String>;
+    fn entity_exists(&self, entity: &EntityReference) -> Result<bool, String>;
     fn spawn_effect(
         &mut self,
         owner: &str,
         node: u32,
-        parameters: &FxNodeParameters,
+        parameters: &FxRuntimeParameters,
         state: &mut FxNode,
         duration: f32,
     ) -> Result<Option<CreatedEffect>, String>;
@@ -289,10 +291,10 @@ impl FxGraphRuntime {
         &self,
         node: &Node,
         name: &str,
-        default: Option<String>,
-    ) -> Result<Option<String>, String> {
+        default: Option<EntityReference>,
+    ) -> Result<Option<EntityReference>, String> {
         if let Some((id, port)) = self.input(node, name) {
-            let mut entities = self.entities(id, port)?;
+            let mut entities = self.entity_references(id, port)?;
             if entities.len() > 1 {
                 return Err(format!("FX {name} requires a single entity"));
             }
@@ -369,7 +371,7 @@ impl<W: FxGraphWorld> FxNodeWorld for FxInvocation<'_, W> {
             .effects
             .get(&self.id)
             .ok_or("FX parameters absent")?
-            .clone();
+            .clone().map_entities(EntityReference::Named);
         if self.graph.input(node, "m_fx").is_some() {
             return Err("connected FX declaration producer is not prepared".into());
         }

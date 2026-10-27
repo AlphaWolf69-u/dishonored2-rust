@@ -6,6 +6,8 @@ use bevy::prelude::*;
 
 pub(super) fn publish(
     scene: Res<super::SceneRenderQueue>,
+    player: Res<super::player::PlayerState>,
+    mut effect_frames: ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>,
     data: Res<super::SceneData>,
     water: Res<WaterSceneFrame>,
     mut output: ResMut<ParticleQueryFrame>,
@@ -13,6 +15,7 @@ pub(super) fn publish(
     wind: Option<Res<super::vegetation_wind::VegetationWind>>,
     mut error: Local<Option<String>>,
 ) {
+    effect_frames.publish_player(player.player.as_ref().map(|player| player.reference_frames()));
     let snapshot = crate::gameplay::wind::WindSnapshot::capture(
         world_wind.0.as_ref(),
         wind.as_ref().map(|wind| wind.manager()),

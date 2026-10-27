@@ -133,8 +133,10 @@ impl ParticleSystems {
                     .iter()
                     .filter(|sprite| sprite.enabled && sprite.material.is_some())
                     .count();
-                instances += stage.particles.capacity() * sprites;
-                draws += sprites;
+                let meshes=stage.declaration.stages[stage.index].meshes.iter()
+                    .filter(|mesh|mesh.enabled&&mesh.material.is_some()&&mesh.model.is_some()).count();
+                instances += stage.particles.capacity() * (sprites+meshes);
+                draws += sprites+meshes;
             }
         }
         (instances, draws)

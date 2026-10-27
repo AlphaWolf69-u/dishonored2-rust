@@ -10,6 +10,7 @@ use crate::{
 use std::{collections::BTreeMap, sync::Arc};
 
 const OPTIONS: &[&str] = &[
+    "twoSidedLighting",
     "fx/opt/radial_ramp",
     "fx/opt/use_lookup",
     "fx/opt/use_diffuse",
@@ -271,7 +272,6 @@ impl ParticleMaterial {
             for name in [
                 "extraLayer",
                 "useParallaxMapping",
-                "twoSidedLighting",
                 "staticDecalCount",
                 "hasAnimatedEmissive",
                 "hasDynamicDecals",

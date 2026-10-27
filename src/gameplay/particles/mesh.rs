@@ -226,3 +226,51 @@ impl SpawnMesh {
         Ok(Some(result))
     }
 }
+
+/// 1f90b0/1fa400: a separate PMODEL whose positions provide initial velocity.
+/// Its source is independent of the emission mesh; absent/empty sources do not
+/// sample parameters or advance the shared random sequence (1f93d0).
+pub struct VelocityMesh {
+    pub source: Option<String>,
+    pub model: Option<Arc<ParticleModel>>,
+    pub sampling: MeshSampling,
+    pub normalize: bool,
+    pub scale: VectorParameter,
+    pub rotation: VectorParameter,
+    pub rotation_order: usize,
+    pub worldspace: bool,
+}
+impl Default for VelocityMesh {
+    fn default() -> Self {
+        let mesh = SpawnMesh::default();
+        Self { source: None, model: None, sampling: MeshSampling::Surface,
+            normalize: false, scale: mesh.scale, rotation: mesh.rotation,
+            rotation_order: 0, worldspace: false }
+    }
+}
+impl VelocityMesh {
+    pub fn sample(&self, cycle_seed: u32, seed: &mut u32, fraction: f32) -> Result<Option<[f32; 3]>, String> {
+        let Some(model) = &self.model else {
+            return if self.source.is_none() { Ok(None) }
+                else { Err("particle velocity model was not loaded".into()) };
+        };
+        if model.vertices.is_empty() { return Ok(None); }
+        let mut value = match self.sampling {
+            MeshSampling::Vertex => {
+                let index = (lcg_step(seed) >> 10 & 0x7fff) as usize % model.vertices.len();
+                model.vertices[index].position
+            },
+            MeshSampling::Surface => random_quad(model, seed)?.position,
+            _ => return Err("unsupported particle velocity mesh sampling".into()),
+        };
+        if self.normalize { super::orientation::normalize(&mut value); }
+        let mut local_seed = cycle_seed;
+        let scale = self.scale.sample(fraction, &mut local_seed)?;
+        value = std::array::from_fn(|i| multiply(value[i], scale[i]));
+        let angles = self.rotation.sample(fraction, &mut local_seed)?;
+        let basis = rotation_basis(angles, self.rotation_order,
+            crate::gameplay::reference_frame::ReferenceFrame::default().basis)?;
+        Ok(Some(std::array::from_fn(|i| add(add(multiply(value[1], basis[1][i]),
+            multiply(value[0], basis[0][i])), multiply(value[2], basis[2][i])))))
+    }
+}

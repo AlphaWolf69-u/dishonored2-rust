@@ -5,9 +5,10 @@ use super::{
     world_effects::{WorldEffectFrames, WorldEffectGraphs, WorldFxClock},
 };
 use crate::{
-    assets::entities::{effects::FxNodeParameters, event_graph::atom},
+    assets::entities::event_graph::atom,
+    gameplay::event_graph::EntityReference,
     gameplay::effects::{
-        graph::{FxGraphRuntime, FxGraphWorld, GraphStep},
+        graph::{FxGraphRuntime, FxGraphWorld, FxRuntimeParameters, GraphStep},
         pool::EffectPoolLinks,
         world_component::{ReferenceReadiness, WorldFxComponent, WorldFxComponentHost},
         world_node::{CreatedEffect, FxNode},
@@ -23,7 +24,7 @@ use std::{
 struct FxEntity {
     graph: usize,
     node: u32,
-    parameters: FxNodeParameters,
+    parameters: FxRuntimeParameters,
     component: WorldFxComponent,
     suspended: bool,
     pose: ReferenceFrame,
@@ -33,7 +34,7 @@ struct Instance {
     id: u32,
     entity: u32,
     definition: Arc<WorldEffectDefinition>,
-    parameters: FxNodeParameters,
+    parameters: FxRuntimeParameters,
     pose: ReferenceFrame,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
@@ -309,8 +310,8 @@ impl WorldParticleState {
                 // 7506d0, even when the FX's updatePosition flag is disabled.
                 // Attachment has already published its initial bound pose. With
                 // a stopped entity clock there is no new reference-actor update.
-                if let Some(location) = entity.parameters.location.as_deref().filter(|_| clock.entity_delta > 0.) {
-                    if let Some(pose) = frames.frame(location)? {
+                if let Some(location) = entity.parameters.location.as_ref().filter(|_| clock.entity_delta > 0.) {
+                    if let Some(pose) = frames.resolve(location, &entity.parameters.tag)? {
                         let velocities = crate::gameplay::reference_frame::velocities(entity.pose, pose, clock.entity_delta);
                         entity.pose = pose;
                         entity.motion = crate::gameplay::particles::spawn::SpawnVelocity {
@@ -417,7 +418,7 @@ impl WorldParticleState {
             let result = (|| -> Result<bool, String> {
                 if instance.parameters.update_position {
                     if let Some(location) = instance.parameters.location.as_ref() {
-                        if let Some(pose) = frames.frame(location)? {
+                        if let Some(pose) = frames.resolve(location, &instance.parameters.tag)? {
                             instance.pose = pose;
                         }
                     }
@@ -508,19 +509,18 @@ impl FxGraphWorld for GraphHost<'_> {
             .map(|result| result.as_ref().map(|_| true).map_err(Clone::clone))
             .unwrap_or_else(|| Err(format!("world FX declaration {effect} was not prepared")))
     }
-    fn entity_exists(&self, entity: &str) -> Result<bool, String> {
-        Ok(self.frames.frame(entity)?.is_some())
+    fn entity_exists(&self, entity: &EntityReference) -> Result<bool, String> {
+        Ok(self.frames.resolve(entity, "")?.is_some())
     }
     fn spawn_effect(
         &mut self,
         _: &str,
         node: u32,
-        parameters: &FxNodeParameters,
+        parameters: &FxRuntimeParameters,
         _: &mut FxNode,
         _: f32,
     ) -> Result<Option<CreatedEffect>, String> {
-        if !parameters.tag.is_empty()
-            || !parameters.target_tag.is_empty()
+        if !parameters.target_tag.is_empty()
             || parameters.target.is_some()
         {
             return Err("world particle FX target/tag pose producer is not connected".into());
@@ -528,8 +528,8 @@ impl FxGraphWorld for GraphHost<'_> {
         if parameters.dont_spawn_if_culled {
             return Err("world FX spawn culling awaits its actual view query".into());
         }
-        let location = parameters.location.as_deref().ok_or("FX location absent")?;
-        let Some(pose) = self.frames.frame(location)? else { return Ok(None) };
+        let location = parameters.location.as_ref().ok_or("FX location absent")?;
+        let Some(pose) = self.frames.resolve(location, &parameters.tag)? else { return Ok(None) };
         let id = self.state.next_entity;
         self.state.next_entity = id.wrapping_add(1);
         self.state.entities.insert(
@@ -583,8 +583,8 @@ impl WorldFxComponentHost for ComponentHost<'_> {
             .entity
             .parameters
             .location
-            .as_deref()
-            .is_some_and(|name| self.frames.frame(name).is_ok_and(|frame| frame.is_some()));
+            .as_ref()
+            .is_some_and(|entity| self.frames.resolve(entity, &self.entity.parameters.tag).is_ok_and(|frame| frame.is_some()));
         Some(ReferenceReadiness {
             state: 8,
             pending_binding: !attached,
@@ -632,7 +632,7 @@ impl WorldFxComponentHost for ComponentHost<'_> {
         }
         let pose = self
             .frames
-            .frame(parameters.location.as_deref().ok_or("FX location absent")?)?
+            .resolve(parameters.location.as_ref().ok_or("FX location absent")?, &parameters.tag)?
             .ok_or("FX location was removed")?;
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {

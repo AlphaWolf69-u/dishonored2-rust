@@ -123,6 +123,7 @@ pub struct ParticleStageAsset {
     pub location: SpawnVector,
     pub velocity: SpawnVector,
     pub spawn_mesh: crate::gameplay::particles::mesh::SpawnMesh,
+    pub velocity_mesh: crate::gameplay::particles::mesh::VelocityMesh,
     pub velocity_orientation: crate::gameplay::particles::spawn::SpawnOrientation,
     pub velocity_spray: ScalarParameter,
     pub motion: MotionParameters,
@@ -130,6 +131,7 @@ pub struct ParticleStageAsset {
     pub source_velocity_over_life: VectorParameter,
     pub constant_seed: bool,
     pub sprites: Vec<ParticleSpriteAsset>,
+    pub meshes: Vec<super::particle_mesh::ParticleMeshAsset>,
     pub events: ParticleEvents,
     pub spawn_fields: Vec<super::particle_field::ParticleField>,
     pub vector_fields: Vec<super::particle_field::ParticleField>,
@@ -169,6 +171,7 @@ impl Default for ParticleStageAsset {
             location: SpawnVector::new([0.; 3]),
             velocity: SpawnVector::new([0., 0., 1.]),
             spawn_mesh: Default::default(),
+            velocity_mesh: Default::default(),
             velocity_orientation: Default::default(),
             velocity_spray: ScalarParameter::constant(0.),
             motion: MotionParameters::default(),
@@ -176,6 +179,7 @@ impl Default for ParticleStageAsset {
             source_velocity_over_life: VectorParameter::constant([1.; 3]),
             constant_seed: false,
             sprites: vec![ParticleSpriteAsset::default()],
+            meshes: Vec::new(),
             events: ParticleEvents::default(),
             spawn_fields: Vec::new(),
             vector_fields: Vec::new(),
@@ -191,8 +195,8 @@ fn unsigned(value: &Value) -> Result<u32, String> {
 }
 
 impl ParticleStageAsset {
-    /// 1f82c0's allocation estimate. The stage owner caps it at 8192 slots;
-    /// mesh renderers use their own lower cap over the same estimate.
+    /// 1f82c0's allocation estimate. The ordinary stage owner (1efcc0) caps
+    /// it at 8192 slots, shared by sprite and mesh renderers.
     pub fn estimated_capacity(&self) -> Result<u64, String> {
         use crate::float::{add, divide, multiply, truncate_i64};
         let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
@@ -261,7 +265,8 @@ impl ParticleStageAsset {
                     scope(value)?,
                     super::particle_field::field,
                 )?,
-                "m_spawnMesh" => particle_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
+                "m_spawnMesh" => particle_emission_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
+                "m_velocityMesh" => particle_emission_mesh::velocity_edit(&mut self.velocity_mesh, scope(value)?)?,
                 "m_velocitySprayCone" => {
                     particles::scalar_parameter(&mut self.velocity_spray, scope(value)?)?
                 }
@@ -330,6 +335,7 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
                 scope(value)?,
                 super::particle_field::field,
             )?,
+            "m_meshes" => descriptor_list(&mut result.meshes, scope(value)?, super::particle_mesh::mesh)?,
             "m_sprites" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

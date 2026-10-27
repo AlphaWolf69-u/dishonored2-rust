@@ -2,7 +2,7 @@
 //! draw state, clipping, selected volume fog and current view resources.
 use super::fog_objects::FogObjectParameters;
 use crate::rendering::particles::{
-    geometry::SpriteGrid, material::ParticleMaterial, SpriteInstance,
+    geometry::SpriteGrid, material::ParticleMaterial, ParticleInstance,
 };
 use bevy::{
     prelude::*,
@@ -145,9 +145,10 @@ impl MaterialParameters {
             emissive: pixel.map_or(Vec4::ZERO, |p| Vec4::from_array(p.emissive)),
             emissive_clip: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.emissive_clip[0], p.emissive_clip[1], u32::from(p.exposure_emissive) as f32, 0.)),
             alpha_test: scalar("particleAlphaTest")?,
-            normal_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
-                UVec4::new(u32::from(light.bump), u32::from(light.detail_bump.is_some()), 0, 0)
-            }),
+            normal_options: UVec4::new(
+                u32::from(source.lighting.as_ref().is_some_and(|light| light.bump)),
+                u32::from(source.lighting.as_ref().is_some_and(|light| light.detail_bump.is_some())),
+                u32::from(source.option("twoSidedLighting")? != 0), 0),
             detail_normal: source.lighting.as_ref().and_then(|light| light.detail_bump)
                 .map_or(Vec4::ZERO, |detail| Vec4::new(detail[0], detail[1], 0., 0.)),
             surface_map_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
@@ -263,7 +264,8 @@ pub struct ParticleDraw {
     pub state: crate::render_state::RenderState,
     pub stencil_reference: u32,
     pub grid_level: u32,
-    pub instances: Vec<SpriteInstance>,
+    pub mesh: Option<(String, Arc<crate::assets::particle_model::ParticleModel>)>,
+    pub instances: Vec<ParticleInstance>,
     pub clip_plane: Vec4,
     pub clip_fade_distance: f32,
     pub fog: FogObjectParameters,
@@ -319,7 +321,7 @@ pub struct ParticleViewInputs<'a> {
     pub white_level: f32,
     pub resolve_state: crate::render_state::RenderState,
 }
-struct GridGpu {
+struct GeometryGpu {
     vertices: Buffer,
     indices: Buffer,
     count: u32,
@@ -343,9 +345,11 @@ pub struct ParticlePass {
     root_lighting: Buffer,
     transparency: Option<transparency::TransparencyPass>,
     distortion: Option<([u32; 2], bool, super::screen_effects::passes::DistortionPasses, super::water_hdr::WaterHdr)>,
+    reported_mesh_submission: bool,
     max_instances: usize,
     max_draws: usize,
-    grids: Vec<GridGpu>,
+    grids: Vec<GeometryGpu>,
+    meshes: HashMap<String, (GeometryGpu, Option<(BufferId, BindGroup)>)>,
     view_layout: BindGroupLayout,
     material_layout: BindGroupLayout,
     fog_layout: BindGroupLayout,
@@ -417,6 +421,17 @@ fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 impl ParticlePass {
+    fn geometry_binding(&self,device:&RenderDevice,vertices:&Buffer,adaptation:&Buffer)->BindGroup {
+        device.create_bind_group(Some("particle geometry view"),&self.view_layout,&[
+            BindGroupEntry{binding:0,resource:self.view.binding().unwrap()},
+            BindGroupEntry{binding:1,resource:self.instances.as_entire_binding()},
+            BindGroupEntry{binding:2,resource:vertices.as_entire_binding()},
+            BindGroupEntry{binding:3,resource:adaptation.as_entire_binding()},
+            BindGroupEntry{binding:4,resource:self.fog_view.binding().unwrap()},
+            BindGroupEntry{binding:5,resource:self.transparency_parameters.as_entire_binding()},
+            BindGroupEntry{binding:6,resource:self.root_lighting.as_entire_binding()},
+        ])
+    }
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,
@@ -588,6 +603,10 @@ impl ParticlePass {
                         .chain([0.])
                         .chain(v.uv)
                         .chain([0., 0.])
+                        .chain([1., 0., 0., 0.])
+                        .chain([0., 1., 0., 0.])
+                        .chain([0., 0., 1., 0.])
+                        .chain([1.; 4])
                 })
                 .flat_map(f32::to_le_bytes)
                 .collect::<Vec<_>>();
@@ -606,7 +625,7 @@ impl ParticlePass {
                 contents: &bytes,
                 usage: BufferUsages::INDEX,
             });
-            grids.push(GridGpu {
+            grids.push(GeometryGpu {
                 vertices,
                 indices,
                 count: grid.indices.len() as u32,
@@ -714,9 +733,11 @@ impl ParticlePass {
             root_lighting,
             transparency: None,
             distortion: None,
+            reported_mesh_submission: false,
             max_instances,
             max_draws,
             grids,
+            meshes: HashMap::new(),
             view_layout,
             material_layout,
             fog_layout,
@@ -1183,7 +1204,7 @@ impl ParticlePass {
                         .flat_map(f32::to_le_bytes),
                 );
                 self.instance_bytes.extend(
-                    [draw.clip_fade_distance, 0., 0., 0.]
+                    [draw.clip_fade_distance, if draw.mesh.is_some() {1.} else {0.}, 0., 0.]
                         .into_iter()
                         .flat_map(f32::to_le_bytes),
                 );
@@ -1375,43 +1396,20 @@ impl ParticlePass {
                 .grids
                 .iter()
                 .map(|grid| {
-                    device.create_bind_group(
-                        Some("particle view"),
-                        &self.view_layout,
-                        &[
-                            BindGroupEntry {
-                                binding: 0,
-                                resource: self.view.binding().unwrap(),
-                            },
-                            BindGroupEntry {
-                                binding: 1,
-                                resource: self.instances.as_entire_binding(),
-                            },
-                            BindGroupEntry {
-                                binding: 2,
-                                resource: grid.vertices.as_entire_binding(),
-                            },
-                            BindGroupEntry {
-                                binding: 3,
-                                resource: input.adaptation.as_entire_binding(),
-                            },
-                            BindGroupEntry {
-                                binding: 4,
-                                resource: self.fog_view.binding().unwrap(),
-                            },
-                            BindGroupEntry {
-                                binding: 6,
-                                resource: self.root_lighting.as_entire_binding(),
-                            },
-                            BindGroupEntry {
-                                binding: 5,
-                                resource: self.transparency_parameters.as_entire_binding(),
-                            },
-                        ],
-                    )
+                    self.geometry_binding(device, &grid.vertices, input.adaptation)
                 })
                 .collect();
             self.view_bindings = Some((input.adaptation.id(), bindings));
+        }
+        for draw in draws {
+            let Some((source,model))=&draw.mesh else {continue};
+            if !self.meshes.contains_key(source) {
+                self.meshes.insert(source.clone(),(mesh_geometry(device,model)?,None));
+            }
+            if self.meshes[source].1.as_ref().is_none_or(|entry|entry.0!=input.adaptation.id()) {
+                let binding=self.geometry_binding(device,&self.meshes[source].0.vertices,input.adaptation);
+                self.meshes.get_mut(source).unwrap().1=Some((input.adaptation.id(),binding));
+            }
         }
         let fog_key = (
             input.fog.parameters.id(),
@@ -1521,14 +1519,25 @@ impl ParticlePass {
             let material = &self.materials[&(draw.material.name.clone(), draw.state)];
             pass.set_pipeline(&material.pipeline);
             pass.set_stencil_reference(draw.stencil_reference);
-            pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[level], &[]);
+            let (geometry,binding)=if let Some((source,_))=&draw.mesh {
+                let cached=&self.meshes[source]; (&cached.0,&cached.1.as_ref().unwrap().1)
+            } else {(&self.grids[level],&self.view_bindings.as_ref().unwrap().1[level])};
+            pass.set_bind_group(0, binding, &[]);
             pass.set_bind_group(1, &material.binding, &[]);
-            pass.set_index_buffer(*self.grids[level].indices.slice(..), IndexFormat::Uint16);
+            pass.set_index_buffer(*geometry.indices.slice(..), IndexFormat::Uint16);
             let count = draw.instances.len() as u32;
-            pass.draw_indexed(0..self.grids[level].count, 0, first..first + count);
+            pass.draw_indexed(0..geometry.count, 0, first..first + count);
             first += count;
         }
         drop(pass);
+        if !self.reported_mesh_submission {
+            let meshes=draws.iter().filter(|draw|draw.mesh.is_some()&&!draw.material.distortion).collect::<Vec<_>>();
+            if !meshes.is_empty() {
+                bevy::log::info!(draws=meshes.len(),instances=meshes.iter().map(|draw|draw.instances.len()).sum::<usize>(),
+                    "Particle mesh colour submission active");
+                self.reported_mesh_submission=true;
+            }
+        }
         if accumulation {
             self.transparency
                 .as_mut()
@@ -1567,10 +1576,13 @@ impl ParticlePass {
                     let material = &self.materials[&(draw.material.name.clone(), draw.state)];
                     pass.set_pipeline(&material.pipeline);
                     pass.set_stencil_reference(draw.stencil_reference);
-                    pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[level], &[]);
+                    let (geometry,binding)=if let Some((source,_))=&draw.mesh {
+                        let cached=&self.meshes[source]; (&cached.0,&cached.1.as_ref().unwrap().1)
+                    } else {(&self.grids[level],&self.view_bindings.as_ref().unwrap().1[level])};
+                    pass.set_bind_group(0, binding, &[]);
                     pass.set_bind_group(1, &material.binding, &[]);
-                    pass.set_index_buffer(*self.grids[level].indices.slice(..), IndexFormat::Uint16);
-                    pass.draw_indexed(0..self.grids[level].count, 0, first..first+count);
+                    pass.set_index_buffer(*geometry.indices.slice(..), IndexFormat::Uint16);
+                    pass.draw_indexed(0..geometry.count, 0, first..first+count);
                 }
                 first += count;
             }
@@ -1582,4 +1594,29 @@ impl ParticlePass {
         }
         Ok(())
     }
+}
+
+/// 232480 uploads PMODEL draw vertices; 2320b0 supplies its shared quad indices.
+fn mesh_geometry(device:&RenderDevice,model:&crate::assets::particle_model::ParticleModel)->Result<GeometryGpu,String> {
+    if model.vertices.len()>65536 || model.vertices.len()%4!=0 || model.vertices.is_empty() {
+        return Err("particle render mesh must contain complete u16-indexed quads".into());
+    }
+    let mut bytes=Vec::with_capacity(model.vertices.len()*96);
+    for vertex in &model.vertices {
+        let half=|at| half::f16::from_bits(u16::from_le_bytes([vertex.attributes[at],vertex.attributes[at+1]])).to_f32();
+        let snorm=|at| ((vertex.attributes[at] as i8 as f32)/127.).max(-1.);
+        let normal=Vec3::new(snorm(8),snorm(9),snorm(10));
+        let tangent=Vec3::new(snorm(12),snorm(13),snorm(14));
+        let bitangent=normal.cross(tangent)*snorm(15);
+        bytes.extend(vertex.position.into_iter().chain([0.]).chain([half(0),half(2),half(4),half(6)])
+            .chain(normal.to_array()).chain([snorm(11)]).chain(tangent.to_array()).chain([snorm(15)])
+            .chain(bitangent.to_array()).chain([0.]).chain(vertex.colour().map(|v|f32::from(v)/255.))
+            .flat_map(f32::to_le_bytes));
+    }
+    let vertices=device.create_buffer_with_data(&BufferInitDescriptor{label:Some("particle mesh vertices"),contents:&bytes,usage:BufferUsages::STORAGE});
+    let indices=(0..model.vertices.len()).step_by(4).flat_map(|base|[0,2,3,0,3,1].map(|i|(base+i) as u16))
+        .flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+    let count=indices.len() as u32/2;
+    let indices=device.create_buffer_with_data(&BufferInitDescriptor{label:Some("particle mesh indices"),contents:&indices,usage:BufferUsages::INDEX});
+    Ok(GeometryGpu{vertices,indices,count})
 }

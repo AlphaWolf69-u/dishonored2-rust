@@ -1,5 +1,5 @@
 //! 1f2e30/1f2c50: publish live stage slots in their retained index order.
-use super::{SpriteInstance, SpriteView};
+use super::{ParticleInstance, SpriteView};
 use crate::{
     float::{add, multiply, subtract},
     gameplay::{particles::simulation::StageSimulation, reference_frame::ReferenceFrame},
@@ -17,7 +17,7 @@ pub fn stage_instances(
     alpha_scale: f32,
     admission_plane: [f32; 4],
     minimum_distance: f32,
-    output: &mut Vec<SpriteInstance>,
+    output: &mut Vec<ParticleInstance>,
 ) -> Result<Option<[[f32; 3]; 2]>, String> {
     let definition = &stage.declaration.stages[stage.index];
     let descriptor = definition
@@ -80,7 +80,7 @@ pub fn stage_instances(
         let initial = states[slot]
             .as_ref()
             .ok_or("live particle has no initialized sprite slot")?;
-        let instance = SpriteInstance::new(descriptor, initial, &state, particle.seed, &view)?;
+        let instance = ParticleInstance::new(descriptor, initial, &state, particle.seed, &view)?;
         for i in 0..3 {
             let position = instance.position[i];
             if !(bounds[0][i] < position) {

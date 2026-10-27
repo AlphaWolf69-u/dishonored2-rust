@@ -5,6 +5,7 @@ use super::{
     emitter::{EmissionContext, EmitterBindings, ParticleEmitter},
     space::ParticleSpace,
     sprite::SpriteInitialState,
+    mesh_appearance::MeshInitialState,
     stage::{Particle, ParticleStage},
     ParticleState,
 };
@@ -34,6 +35,7 @@ pub struct StageSimulation {
     /// Outer index is the descriptor's sprite index; inner indices remain
     /// stable when particles die or the free list reuses a previous slot.
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
+    pub meshes: Vec<Vec<Option<MeshInitialState>>>,
     mesh_cursor: usize,
     inherited_velocity: super::spawn::SpawnVelocity,
     pub events: super::events::StageEvents,
@@ -53,6 +55,7 @@ struct Bindings<'a> {
     owner_position: [f32; 3],
     particles: &'a mut ParticleStage,
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
+    meshes: &'a mut [Vec<Option<MeshInitialState>>],
     owner_basis: [[f32; 3]; 3],
     lod: usize,
     mesh_cursor: &'a mut usize,
@@ -126,6 +129,10 @@ impl EmitterBindings for Bindings<'_> {
             position = std::array::from_fn(|i| add(mesh_position[i], position[i]));
             velocity = std::array::from_fn(|i| add(mesh_velocity[i], velocity[i]));
             mesh_colour = sample.colour;
+        }
+        if let Some(mesh_velocity) = definition.velocity_mesh.sample(context.cycle_seed, seed, context.cycle_fraction)? {
+            let mesh_velocity = space.transform(mesh_velocity, definition.velocity_mesh.worldspace);
+            velocity = std::array::from_fn(|i| add(mesh_velocity[i], velocity[i]));
         }
         let orientation =
             definition
@@ -236,6 +243,17 @@ impl EmitterBindings for Bindings<'_> {
             )?;
             slots[slot] = Some(state);
         }
+        for (descriptor, slots) in definition.meshes.iter().zip(self.meshes.iter_mut()) {
+            if !descriptor.enabled || descriptor.material.is_none() || descriptor.model.is_none() {continue;}
+            if self.definition.constant_seed {sprite_seed=particle_seed;}
+            let mut state=MeshInitialState::new(&descriptor.spawn,context.cycle_fraction,self.lod,
+                mesh_colour,descriptor.flipbook.flips,
+                (descriptor.use_flipbook && descriptor.flipbook.cycle_rate).then_some(&descriptor.flipbook.initial),
+                &mut sprite_seed)?;
+            let mut update_seed=particle_seed;
+            state.advance(&descriptor.appearance,&descriptor.flipbook,age,context.remaining_delta,&mut update_seed)?;
+            slots[slot]=Some(state);
+        }
         self.events.birth(
             &birth_state,
             seed,
@@ -253,6 +271,7 @@ impl StageSimulation {
     pub fn flush(&mut self) {
         self.particles.flush();
         self.events.pending.clear();
+        for meshes in &mut self.meshes { for mesh in meshes { *mesh=None; } }
         for sprites in &mut self.sprites {
             for sprite in sprites {
                 *sprite = None;
@@ -274,6 +293,7 @@ impl StageSimulation {
             owner_position: pose.position,
             particles: &mut self.particles,
             sprites: &mut self.sprites,
+            meshes: &mut self.meshes,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut self.mesh_cursor,
@@ -303,6 +323,8 @@ impl StageSimulation {
             .iter()
             .map(|_| (0..capacity).map(|_| None).collect())
             .collect::<Vec<Vec<Option<SpriteInitialState>>>>();
+        let mut meshes = definition.meshes.iter()
+            .map(|_| (0..capacity).map(|_| None).collect()).collect::<Vec<Vec<Option<MeshInitialState>>>>();
         // 1efcc0 retains the first draw as its cycle seed and the second as
         // its mutable spawn seed. Field/shape defaults consume neither.
         let _cycle_seed = crate::random::lcg_step(system_seed);
@@ -330,6 +352,7 @@ impl StageSimulation {
             definition,
             particles: &mut particles,
             sprites: &mut sprites,
+            meshes: &mut meshes,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut mesh_cursor,
@@ -351,6 +374,7 @@ impl StageSimulation {
             emitter,
             particles,
             sprites,
+            meshes,
             mesh_cursor,
             inherited_velocity,
             events,
@@ -558,6 +582,7 @@ impl StageSimulation {
         let field_velocity = &mut self.field_velocity;
         let fields = &self.fields;
         let sprites = &mut self.sprites;
+        let meshes = &mut self.meshes;
         let events = &mut self.events;
         let event_seed = &mut self.emitter.seed;
         self.particles.advance_with_events(
@@ -618,6 +643,11 @@ impl StageSimulation {
                         )?;
                     }
                 }
+                for (mesh,slots) in definition.meshes.iter().zip(meshes.iter_mut()) {
+                    if let Some(state)=&mut slots[index] {
+                        state.advance(&mesh.appearance,&mesh.flipbook,particle.age,delta,seed)?;
+                    }
+                }
                 Ok(())
             },
             |particle, previous_age, alive| {
@@ -640,6 +670,7 @@ impl StageSimulation {
             definition,
             particles: &mut self.particles,
             sprites: &mut self.sprites,
+            meshes: &mut self.meshes,
             owner_basis: frame.pose.basis,
             lod: frame.lod,
             mesh_cursor: &mut self.mesh_cursor,

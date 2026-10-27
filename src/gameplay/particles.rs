@@ -4,6 +4,7 @@ pub mod emitter;
 pub mod events;
 pub mod field;
 pub mod mesh;
+pub mod mesh_appearance;
 pub mod orientation;
 pub mod parameters;
 pub mod pose;

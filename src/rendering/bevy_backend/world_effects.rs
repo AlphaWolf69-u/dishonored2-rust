@@ -33,6 +33,7 @@ pub struct WorldEffectFrames {
     entities: Arc<HashMap<String, EntityFrame>>,
     published: HashMap<String, ReferenceFrame>,
     pub clock: Option<WorldFxClock>,
+    player: Option<(ReferenceFrame, Arc<HashMap<String, ReferenceFrame>>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -78,7 +79,26 @@ impl WorldEffectFrames {
             entities: Arc::new(entities),
             published: HashMap::new(),
             clock: None,
+            player: None,
         })
+    }
+
+    pub fn publish_player(&mut self, frame: Option<(ReferenceFrame, HashMap<String, ReferenceFrame>)>) {
+        self.player = frame.map(|(root,tags)|(root,Arc::new(tags)));
+    }
+
+    pub fn resolve(&self, entity: &crate::gameplay::event_graph::EntityReference, tag: &str) -> Result<Option<ReferenceFrame>, String> {
+        use crate::gameplay::event_graph::EntityReference;
+        match entity {
+            EntityReference::Player => match &self.player {
+                None => Ok(None),
+                Some((root, _)) if tag.is_empty() => Ok(Some(*root)),
+                Some((_, tags)) => tags.get(tag).copied().map(Some)
+                    .ok_or_else(|| format!("player FX tag/joint {tag} is absent")),
+            },
+            EntityReference::Named(name) if tag.is_empty() => self.frame(name),
+            EntityReference::Named(name) => Err(format!("FX tag/joint {name}/{tag} awaits its animated model pose")),
+        }
     }
 
     pub fn publish_delta(&mut self, entity: &str, delta: [[f32; 4]; 3]) {

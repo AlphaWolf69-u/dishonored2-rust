@@ -2,6 +2,11 @@
 //! retain node state and decide which actions to execute.
 use crate::assets::entities::event_graph::{atom, Node};
 
+/// Runtime entity identity, separate from serialized map names. Player resolves
+/// through the active player owner (7a8500), never a fabricated map entity name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EntityReference { Named(String), Player }
+
 pub trait GraphInputs {
     fn graph_nodes(&self) -> &[Node];
     fn graph_owner(&self) -> &str;
@@ -76,6 +81,13 @@ pub trait GraphInputs {
                 v.parse().map_err(|_| format!("invalid {name}"))
             })
         }
+    }
+    fn entity_references(&self, id: u32, port: u32) -> Result<Vec<EntityReference>, String> {
+        let node = self.node(id)?;
+        if node.class == "arkKisculeNodePlayer" {
+            return Ok(vec![EntityReference::Player]);
+        }
+        self.entities(id, port).map(|names| names.into_iter().map(EntityReference::Named).collect())
     }
     fn entities(&self, id: u32, port: u32) -> Result<Vec<String>, String> {
         let n = self.node(id)?;

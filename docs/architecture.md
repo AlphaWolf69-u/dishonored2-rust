@@ -714,6 +714,16 @@ vectors accumulate in a depth-tested target before the shared motion-distortion
 resolve; they do not enter colour or weighted-transparency accumulation. Group location, timing, other effect families and local
 descriptor failures remain available to the playback owner. The renderer
 receives shared declaration resources through ordinary resource extraction.
+FX graph entity inputs retain typed runtime identities: map names and the active
+player are distinct references. `arkKisculeNodePlayer` resolves the actual player
+owner, matching `7a8500`'s invalid-handle fallback to player slot zero. Player FX
+attachments resolve the installed model's tags first, then bare joint names
+(`4b19b0`). Their offsets and orientations compose with the same controlled body
+pose and entity transform used by attached arms (`53dac0/53d3f0`); render-camera
+collision adjustments do not replace that skeleton pose. The publication includes
+all loaded player tags and joints, independently of leg visibility. Ordinary map
+entities still require their animated tag publisher before tagged FX can attach.
+
 `WorldFxComponent` owns the source's deferred creation and removal state;
 actual allocation, target pose, velocity and completion callbacks remain host
 operations. `WorldEffectFrames` reuses the common entity spawn-frame reader
@@ -2700,3 +2710,24 @@ the next tick. `DecalEffectBinding::detach` checks cached slot and owner without
 resetting the retired record's fields; eviction notification remains a separate
 operation. Installed FX descriptor decoding, gameplay activation and projected
 GPU submission are still required for visible dynamic decals.
+
+
+Particle mesh descriptors live in `assets::fx::particle_mesh`; emission-position
+and velocity meshes use the separate `particle_emission_mesh` parser. All three
+resolve PMODEL resources through the installed archive catalog and share model
+ownership. `gameplay::particles::mesh_appearance` retains initial mesh colour,
+three-axis rotation, size, pivot and flipbook state in stable particle slots.
+Sprite initialization precedes mesh initialization on the shared stage RNG;
+per-slot lifetime updates start from the particle seed.
+
+`rendering::particles::mesh_publication` publishes full mesh transforms using
+the same stage simulation, owner pose, visibility curves and clipping inputs as
+sprites. The backend caches authored PMODEL geometry and uses the existing
+particle material, lighting, fog, transparency and distortion passes. It does
+not create a separate mesh-effects renderer. Installed quad indices, vertex
+colour, tangent handedness and texture coordinates are retained.
+
+Two-sided particle lighting reverses the geometric tangent basis on back faces,
+retains the vertex basis for packed indirect-light decoding, and applies the
+installed vertex-normal orientation rule before vertex lighting. The flag is
+resolved with the other material specialization options.

@@ -137,6 +137,10 @@ pub fn system_bounds(
                 radius = candidate;
             }
         }
+        for mesh in &definition.meshes {
+            let candidate=mesh.bounding_radius()?;
+            if radius<=candidate {radius=candidate;}
+        }
         let radius = multiply(radius, scale);
         let world = transform(
             local,

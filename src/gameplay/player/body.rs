@@ -345,6 +345,10 @@ impl JumpAnim {
 }
 
 pub struct Body {
+    /// Installed model tags and joint names, for the same controlled pose used
+    /// by attached render models (53dac0/53d3f0).
+    pub tags: std::collections::HashMap<String, (usize, Vec3, Mat3)>,
+    pub joint_names: Vec<String>,
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
     pub decl: BodyDecl,
@@ -451,6 +455,8 @@ impl Body {
 
     pub fn new(skeleton: BodySkeleton, animations: Vec<EdgeAnimation>, decl: BodyDecl, body_node: LocoNode, bob_node: LocoNode) -> Self {
         Self {
+            tags: Default::default(),
+            joint_names: Vec::new(),
             skeleton,
             animations,
             decl,

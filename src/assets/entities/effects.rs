@@ -8,11 +8,11 @@ use std::collections::HashMap;
 
 /// 79e100/17debb0: arkKisculeNodeFxParameters, before graph-input overrides.
 #[derive(Clone, Debug)]
-pub struct FxNodeParameters {
+pub struct FxNodeParameters<E = String> {
     pub effect: Option<String>,
-    pub location: Option<String>,
+    pub location: Option<E>,
     pub tag: String,
-    pub target: Option<String>,
+    pub target: Option<E>,
     pub target_tag: String,
     pub duration_ms: i32,
     pub update_position: bool,
@@ -20,7 +20,7 @@ pub struct FxNodeParameters {
     pub stop_on_target_removal: bool,
     pub stop_on_parent_removal: bool,
 }
-impl Default for FxNodeParameters {
+impl<E> Default for FxNodeParameters<E> {
     fn default() -> Self {
         Self {
             effect: None,
@@ -33,6 +33,18 @@ impl Default for FxNodeParameters {
             dont_spawn_if_culled: false,
             stop_on_target_removal: false,
             stop_on_parent_removal: true,
+        }
+    }
+}
+impl<E> FxNodeParameters<E> {
+    pub fn map_entities<U>(self, mut map: impl FnMut(E) -> U) -> FxNodeParameters<U> {
+        FxNodeParameters {
+            effect: self.effect, location: self.location.map(&mut map), tag: self.tag,
+            target: self.target.map(map), target_tag: self.target_tag,
+            duration_ms: self.duration_ms, update_position: self.update_position,
+            dont_spawn_if_culled: self.dont_spawn_if_culled,
+            stop_on_target_removal: self.stop_on_target_removal,
+            stop_on_parent_removal: self.stop_on_parent_removal,
         }
     }
 }

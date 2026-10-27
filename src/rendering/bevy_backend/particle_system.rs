@@ -133,10 +133,13 @@ impl ParticleSystem {
         let needs_lighting = self
             .stages
             .iter()
-            .flat_map(|stage| stage.declaration.stages[stage.index].sprites.iter())
-            .filter(|sprite| sprite.enabled)
-            .try_fold(false, |needed, sprite| {
-                let Some(name) = sprite.material.as_ref() else {
+            .flat_map(|stage| {
+                let definition=&stage.declaration.stages[stage.index];
+                definition.sprites.iter().filter(|sprite|sprite.enabled).map(|sprite|&sprite.material)
+                    .chain(definition.meshes.iter().filter(|mesh|mesh.enabled&&mesh.model.is_some()).map(|mesh|&mesh.material))
+            })
+            .try_fold(false, |needed, material| {
+                let Some(name) = material.as_ref() else {
                     return Ok::<_, String>(needed);
                 };
                 let material = self
@@ -236,6 +239,7 @@ impl ParticleSystem {
                     transparency,
                     state,
                     stencil_reference,
+                    mesh: None,
                     grid_level:
                         crate::rendering::particles::geometry::SpriteGrid::level_for_distance(
                             sprite.tessellation_distance,
@@ -250,6 +254,27 @@ impl ParticleSystem {
                         }),
                     clip_fade_distance: self.clipping.as_ref().map_or(0., |p| p.fade_distance),
                     fog,
+                });
+            }
+            for (index,mesh) in definition.meshes.iter().enumerate() {
+                if !mesh.enabled {continue;}
+                let (Some(name),Some(source),Some(model))=(&mesh.material,&mesh.source,&mesh.model) else {continue};
+                if model.vertices.is_empty(){continue;}
+                let material=self.materials.get(name).ok_or_else(||format!("particle mesh material absent: {name}"))?;
+                let mut instances=Vec::with_capacity(stage.particles.len());
+                crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
+                    &view,context.query_visibility,alpha_scale,&mut instances)?;
+                if instances.is_empty(){continue;}
+                let mut transparency=crate::rendering::particles::transparency::TransparencyParameters::read(context.cvars,material.state,true)?;
+                if material.distortion{transparency.mode=0;}
+                let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
+                    transparency.mode!=0,self.water_flags&8!=0);
+                output.push(super::particle_pass::ParticleDraw {
+                    material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
+                    transparency,state,stencil_reference,grid_level:0,
+                    mesh:Some((source.clone(),model.clone())),instances,
+                    clip_plane:self.clipping.as_ref().map_or(bevy::prelude::Vec4::W,|planes|bevy::prelude::Vec4::from_array(planes.rendering)),
+                    clip_fade_distance:self.clipping.as_ref().map_or(0.,|planes|planes.fade_distance),fog,
                 });
             }
         }
@@ -276,9 +301,8 @@ impl ParticleSystem {
             .stages
             .iter()
             .filter(|stage| stage.enabled)
-            .flat_map(|stage| &stage.sprites)
-            .filter(|sprite| sprite.enabled)
-            .filter_map(|sprite| sprite.material.as_ref())
+            .flat_map(|stage|stage.sprites.iter().filter(|sprite|sprite.enabled).filter_map(|sprite|sprite.material.as_ref())
+                .chain(stage.meshes.iter().filter(|mesh|mesh.enabled&&mesh.model.is_some()).filter_map(|mesh|mesh.material.as_ref())))
             .filter_map(|name| definition.materials.get(name))
             .any(|material| material.darkvision_layer != 0);
         let (effect, (stages, system_seed)) = ParticleEffect::new(

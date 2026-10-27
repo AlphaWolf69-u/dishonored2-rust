@@ -5,6 +5,7 @@ pub mod bounds;
 pub mod clipping;
 pub mod definition;
 pub mod geometry;
+pub mod mesh_publication;
 pub mod material;
 pub mod publication;
 pub mod transparency;
@@ -73,14 +74,14 @@ impl SpriteView {
     }
 }
 
-pub struct SpriteInstance {
+pub struct ParticleInstance {
     pub position: [f32; 3],
-    /// The normal remains unscaled; the two billboard axes include size.
+    /// Full geometry basis. Sprite normals remain unscaled; mesh axes include all three size components.
     pub axes: [[f32; 3]; 3],
     pub parameters: PackedParticleParameters,
 }
 
-impl SpriteInstance {
+impl ParticleInstance {
     /// 1edb20's publication order: velocity offset, lifetime and velocity size,
     /// rotation, orientation, pivot, angular fade, colour and packed UV state.
     /// All samples use one fresh copy of the particle's stored seed per frame.

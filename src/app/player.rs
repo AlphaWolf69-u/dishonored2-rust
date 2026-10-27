@@ -151,11 +151,13 @@ impl Rig {
 
     /// An md6 `tag "<name>" { trans ( x y z ) rot ( x y z w ) parent "<joint>" }`.
     fn tag(&self, name: &str) -> Result<(usize, Vec3, Mat3), String> {
-        let at = self.tokens.windows(2).position(|w| w[0] == "tag" && w[1] == name).ok_or_else(|| format!("md6 has no tag {name}"))?;
-        let body = &self.tokens[at + 2..];
+        let at = self.tokens.windows(2).position(|w| w[0] == "tag" && w[1].trim_matches('"') == name).ok_or_else(|| format!("md6 has no tag {name}"))?;
+        let tail = &self.tokens[at + 2..];
+        let end = tail.iter().position(|token| token == "}").ok_or_else(|| format!("tag {name} is unterminated"))?;
+        let body = &tail[..end];
         let numbers = |key: &str, n: usize| -> Result<Vec<f32>, String> {
             let i = body.iter().position(|t| t == key).ok_or_else(|| format!("tag {name} has no {key}"))?;
-            body[i + 2..i + 2 + n].iter().map(|t| t.parse::<f32>().map_err(|_| format!("tag {name} {key}"))).collect()
+            body.get(i + 2..i + 2 + n).ok_or_else(|| format!("tag {name} truncated {key}"))?.iter().map(|t| t.parse::<f32>().map_err(|_| format!("tag {name} {key}"))).collect()
         };
         let t = numbers("trans", 3)?;
         let r = numbers("rot", 4)?;
@@ -380,6 +382,13 @@ fn load_body(
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.joint_names = rig.skeleton.joint_names.clone();
+    for entry in rig.tokens.windows(2).filter(|entry| entry[0] == "tag") {
+        let name = entry[1].trim_matches('"');
+        if !body.tags.contains_key(name) {
+            body.tags.insert(name.to_owned(), rig.tag(name)?);
+        }
+    }
     body.sound_listener = listener.map(|settings| crate::gameplay::sound::listener::Binding::resolve(settings, &rig.skeleton.joint_names));
     body.footstep_settings = decls::footstep_settings(body_decl)?;
     body.arms = arms;
