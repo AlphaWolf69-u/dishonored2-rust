@@ -181,15 +181,23 @@ impl Flow {
     }
 
     pub(super) fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
+        self.stop_scope(Some(target), milliseconds, curve, now, audio);
+    }
+
+    pub(super) fn stop_all(&mut self, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
+        self.stop_scope(None, milliseconds, curve, now, audio);
+    }
+
+    fn stop_scope(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
         if let Some(binding) = &audio.switches {
             let removed = binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers.remove_where(|controller|
                 std::sync::Arc::ptr_eq(&controller.context.owner, &audio.control)
-                    && audio.definition.matches_actor(controller.context.node, target));
+                    && target.is_none_or(|target| audio.definition.matches_actor(controller.context.node, target)));
             audio.control.switch_count.fetch_sub(removed as u32, std::sync::atomic::Ordering::Relaxed);
         }
-        self.pending.retain(|pending| !audio.definition.matches_actor(pending.node, target));
+        self.pending.retain(|pending| target.is_some_and(|target| !audio.definition.matches_actor(pending.node, target)));
         for voice in &mut self.voices {
-            if !audio.definition.matches_actor(voice.runtime.node, target) { continue; }
+            if target.is_some_and(|target| !audio.definition.matches_actor(voice.runtime.node, target)) { continue; }
             let id = audio.definition.nodes[voice.runtime.node].id;
             voice.runtime.stop(id, milliseconds, curve, now, &audio.definition);
             voice.stop_requested = true;

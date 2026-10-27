@@ -32,11 +32,19 @@ impl Drop for VoiceHandle {
 struct Voice { audio: graph::Routed, control: Arc<Control>, event: u32 }
 struct PendingState {
     tick: u64,
+    serial: u64,
     action: crate::assets::wwise::StateAction,
     event: u32,
     emitter: crate::gameplay::sound::Emitter,
     world_paused: bool,
     paused_at: Option<u64>,
+}
+struct PendingPlay { tick: u64, serial: u64, control: Arc<Control>, paused_at: Option<u64> }
+enum Due { State(PendingState), Play(PendingPlay) }
+impl Due {
+    fn order(&self) -> (u64, u64) {
+        match self { Self::State(action) => (action.tick, action.serial), Self::Play(action) => (action.tick, action.serial) }
+    }
 }
 struct Shared {
     buses: Buses,
@@ -47,6 +55,8 @@ struct Shared {
     states: StateGroups,
     switches: graph::SwitchRegistry,
     pending_states: Vec<PendingState>,
+    pending_plays: Vec<PendingPlay>,
+    action_serial: u64,
     failed: bool,
     error: Option<String>,
 }
@@ -60,7 +70,7 @@ impl Engine {
         let buses = Buses::new(mixer, &base, activity.clone())?;
         let shared = Arc::new(Mutex::new(Shared { buses, activity: activity.clone(), ducking, tick: 0,
             voices: Vec::new(), states, switches: Arc::new(Mutex::new(graph::SwitchControls::default())),
-            pending_states: Vec::new(), failed: false, error: None }));
+            pending_states: Vec::new(), pending_plays: Vec::new(), action_serial: 0, failed: false, error: None }));
         let output = OutputAudio { shared: shared.clone(), channels: ChannelCount::new(2).ok_or("invalid host stereo format")?,
             rate: SampleRate::new(48000).ok_or("invalid host processing rate")? };
         Ok((Self { shared: Some(shared), activity: Some(activity), playing_ids: AtomicU32::new(0) }, output))
@@ -89,7 +99,8 @@ impl Engine {
             shared.set_state(action.group, action.value)?;
         } else {
             let tick = shared.tick.wrapping_add(quanta);
-            shared.pending_states.push(PendingState { tick, action, event, emitter, world_paused: false, paused_at: None });
+            let serial = shared.next_action();
+            shared.pending_states.push(PendingState { tick, serial, action, event, emitter, world_paused: false, paused_at: None });
         }
         Ok(())
     }
@@ -148,7 +159,14 @@ impl Engine {
         if shared.failed { return Err("shared audio output stopped after a processing error".into()); }
         let control = Arc::new(Control { paused: AtomicBool::new(false), stopped: AtomicBool::new(false), finished: AtomicBool::new(false) });
         audio.bind_switches(shared.switches.clone(), shared.states.clone(), playing_id);
-        shared.voices.push(Voice { audio: graph::Routed::new(audio)?, control: control.clone(), event });
+        let audio = graph::Routed::new(audio)?;
+        let quanta = audio.delay_quanta();
+        if quanta != 0 {
+            let tick = shared.tick.wrapping_add(quanta);
+            let serial = shared.next_action();
+            shared.pending_plays.push(PendingPlay { tick, serial, control: control.clone(), paused_at: None });
+        }
+        shared.voices.push(Voice { audio, control: control.clone(), event });
         Ok(VoiceHandle(control))
     }
 
@@ -161,9 +179,10 @@ impl Engine {
 }
 
 impl Shared {
+    fn next_action(&mut self) -> u64 { let serial = self.action_serial; self.action_serial = serial.wrapping_add(1); serial }
     fn synchronize_controls(&mut self) {
         self.voices.retain(|voice| {
-            let stopped = voice.control.stopped.load(Ordering::Relaxed);
+            let stopped = voice.control.stopped.load(Ordering::Relaxed) || voice.control.finished.load(Ordering::Relaxed);
             if stopped { voice.control.finished.store(true, Ordering::Relaxed); }
             !stopped
         });
@@ -181,6 +200,7 @@ impl Shared {
             let milliseconds = if voice.control.paused.load(Ordering::Relaxed) { 0 } else { milliseconds };
             if let Some(target) = target { voice.audio.stop_actor(target, milliseconds, curve); }
             else { voice.audio.stop_all(milliseconds, curve); }
+            if voice.audio.cancelled() { voice.control.finished.store(true, Ordering::Relaxed); }
         }
     }
 
@@ -236,15 +256,36 @@ impl Shared {
     fn block(&mut self) -> Result<[f32; FRAMES * 2], String> {
         let tick = self.tick;
         // Due actions execute before voice preparation/rendering (1410e6800).
+        let mut due = Vec::new();
         for pending in std::mem::take(&mut self.pending_states) {
             if pending.paused_at.is_some() || pending.tick > tick { self.pending_states.push(pending); }
-            else { self.set_state(pending.action.group, pending.action.value)?; }
+            else { due.push(Due::State(pending)); }
+        }
+        for mut pending in std::mem::take(&mut self.pending_plays) {
+            if pending.control.stopped.load(Ordering::Relaxed) || pending.control.finished.load(Ordering::Relaxed) { continue; }
+            if pending.control.paused.load(Ordering::Relaxed) {
+                if pending.paused_at.is_none() { pending.paused_at = Some(tick); }
+            } else if let Some(start) = pending.paused_at.take() { pending.tick = pending.tick.wrapping_add(tick.wrapping_sub(start)); }
+            if pending.paused_at.is_some() || pending.tick > tick { self.pending_plays.push(pending); }
+            else { due.push(Due::Play(pending)); }
+        }
+        due.sort_by_key(Due::order);
+        for action in due {
+            match action {
+                Due::State(pending) => self.set_state(pending.action.group, pending.action.value)?,
+                Due::Play(pending) => {
+                    if pending.control.stopped.load(Ordering::Relaxed) || pending.control.finished.load(Ordering::Relaxed) { continue; }
+                    if let Some(voice) = self.voices.iter_mut().find(|voice| Arc::ptr_eq(&voice.control, &pending.control)) {
+                        voice.audio.release_delayed();
+                    }
+                },
+            }
         }
         self.synchronize_controls();
         self.buses.begin();
         for voice in &mut self.voices {
             if voice.control.stopped.load(Ordering::Relaxed) { voice.control.finished.store(true, Ordering::Relaxed); }
-            else { voice.audio.begin(); }
+            else { voice.audio.begin(voice.control.paused.load(Ordering::Relaxed)); }
         }
         self.voices.retain(|voice| !voice.control.finished.load(Ordering::Relaxed));
         self.ducking.synchronize(&self.activity, self.tick);
@@ -292,6 +333,7 @@ impl Iterator for Decoder {
                         for voice in &shared.voices { voice.control.finished.store(true, Ordering::Relaxed); }
                         shared.voices.clear();
                         shared.pending_states.clear();
+                        shared.pending_plays.clear();
                         shared.error = Some(error);
                         shared.failed = true;
                         self.block.fill(0.0);

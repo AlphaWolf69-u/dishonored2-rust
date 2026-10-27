@@ -804,6 +804,7 @@ struct Playback {
     root: Option<Runtime>,
     flow: Option<flow::Flow>,
     prepared: bool,
+    external_delay: bool,
     frame: u64,
     stopped: bool,
 }
@@ -812,13 +813,13 @@ impl Playback {
         // Sample-accurate VPL handoff retains its existing path while its
         // decoder-buffer transfer is integrated into source continuations.
         let flow = (!audio.definition.sample_accurate()).then(flow::Flow::default);
-        let mut playback = Self { audio, root: None, flow, prepared: false, frame: 0, stopped: false };
+        let mut playback = Self { audio, root: None, flow, prepared: false, external_delay: false, frame: 0, stopped: false };
         playback.prepare();
         playback
     }
 
     fn prepare(&mut self) {
-        if self.stopped || self.prepared { return; }
+        if self.stopped || self.prepared || self.external_delay { return; }
         let deadline = u64::from(self.audio.delay_frames);
         // 1410e5600 executes the action in its quotient quantum and passes
         // the remainder to the PBI as a sample offset. Create the voice in
@@ -853,8 +854,9 @@ impl Playback {
         }
     }
 
-    fn begin(&mut self) {
+    fn begin(&mut self, paused: bool) {
         self.flush_stops();
+        if paused { return; }
         self.prepare();
         if let Some(flow) = &mut self.flow { flow.begin(self.frame, &self.audio); }
     }
@@ -891,12 +893,21 @@ impl Routed {
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
-        Ok(Self { playback: Playback::new(audio) })
+        let mut playback = Playback::new(audio);
+        playback.external_delay = playback.audio.delay_frames >= 1024;
+        Ok(Self { playback })
     }
 
-    pub fn begin(&mut self) {
-        self.playback.begin();
+    pub fn begin(&mut self, paused: bool) {
+        self.playback.begin(paused);
     }
+
+    pub fn delay_quanta(&self) -> u64 { u64::from(self.playback.audio.delay_frames) / 1024 }
+    pub fn release_delayed(&mut self) {
+        self.playback.external_delay = false;
+        self.playback.prepare();
+    }
+    pub fn cancelled(&self) -> bool { self.playback.stopped }
 
     pub fn emitter(&self) -> Emitter { self.playback.audio.emitter }
     pub fn owns(&self, context: &SwitchContext) -> bool { Arc::ptr_eq(&self.playback.audio.control, &context.owner) }
@@ -909,7 +920,10 @@ impl Routed {
         }
     }
     pub fn cancel_pending(&mut self, target: u32) {
-        if let Some(flow) = &mut self.playback.flow { flow.cancel_pending(target, &self.playback.audio); }
+        let playback = &mut self.playback;
+        if !playback.prepared {
+            if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
+        } else if let Some(flow) = &mut playback.flow { flow.cancel_pending(target, &playback.audio); }
     }
     pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8) {
         let playback = &mut self.playback;
@@ -922,8 +936,14 @@ impl Routed {
         }
     }
     pub fn stop_all(&mut self, milliseconds: i32, curve: u8) {
-        let root = self.playback.audio.definition.nodes[self.playback.audio.definition.root].id;
-        self.stop_actor(root, milliseconds, curve);
+        let playback = &mut self.playback;
+        if !playback.prepared { playback.stopped = true; }
+        else if let Some(flow) = &mut playback.flow {
+            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio);
+        } else if let Some(root) = &mut playback.root {
+            let id = playback.audio.definition.nodes[root.node].id;
+            root.stop(id, milliseconds, curve, playback.frame, &playback.audio.definition);
+        }
     }
     pub fn play_switch(&mut self, context: &SwitchContext, child: u32, milliseconds: i32, curve: u8) {
         let playback = &mut self.playback;
@@ -960,7 +980,7 @@ impl Iterator for Decoder {
         if self.channel == channels {
             if !self.alive { return None; }
             self.output.fill(0.0);
-            if self.playback.frame % 1024 == 0 { self.playback.begin(); }
+            if self.playback.frame % 1024 == 0 { self.playback.begin(false); }
             self.alive = self.playback.frame(&mut self.output[..channels], None);
             self.channel = 0;
         }
