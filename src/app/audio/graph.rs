@@ -43,7 +43,8 @@ struct Container {
     avoid: u16,
     playback: ContainerPlayback,
 }
-enum Kind { Missing, NoSource, Sound(usize), Layer(Vec<usize>), Container(Container) }
+struct Switch { playback: Arc<crate::assets::wwise::SwitchPlayback>, children: HashMap<u32, Option<usize>> }
+enum Kind { Missing, NoSource, Sound(usize), Layer(Vec<usize>), Container(Container), Switch(Switch) }
 struct Node { id: u32, ancestors: Vec<u32>, kind: Kind }
 
 pub(super) struct Definition {
@@ -66,6 +67,7 @@ impl Definition {
         self.nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
             if container.playback.continuous && container.playback.transition == TransitionMode::SampleAccurate))
     }
+    fn has_switch(&self) -> bool { self.nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) }
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
@@ -152,11 +154,17 @@ impl Definition {
             let (id, kind) = match source {
                 PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
                 PlaybackNode::Switch(switch) => {
-                    // A continuous switch retains its Play context independently
-                    // of the initial sources and their continuation barrier
-                    // (141133190 / 141132f00 / 14111bd70). Treating it as a
-                    // permanent Layer would block enclosing continuations.
-                    return Err(invalid(format!("Wwise switch actor {:#010x} requires its persistent controller and source continuation lifetimes", switch.node)));
+                    if switch.playback.group_kind != 1 {
+                        return Err(invalid("per-emitter switch-group updates require their game-parameter bindings"));
+                    }
+                    if switch.playback.parameters.iter().any(|controls| controls.on_switch != 1) {
+                        return Err(invalid("switch Play To End requires decoder-loop release"));
+                    }
+                    let mut children = HashMap::new();
+                    for (id, child) in switch.children {
+                        children.insert(id, child.map(|child| node(child, nodes, sounds, sources, attenuations)).transpose()?);
+                    }
+                    (switch.node, Kind::Switch(Switch { playback: Arc::new(switch.playback), children }))
                 },
                 PlaybackNode::Missing { node } => (node, Kind::Missing),
                 PlaybackNode::NoSource { node, .. } => (node, Kind::NoSource),
@@ -220,6 +228,9 @@ impl Definition {
         let root = node(root, &mut nodes, &mut sounds, &mut HashMap::new(), attenuations)?;
         let sample_accurate = nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
             if container.playback.continuous && container.playback.transition == TransitionMode::SampleAccurate));
+        if sample_accurate && nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) {
+            return Err(invalid("switch playback with sample-accurate handoff requires its source-buffer transfer"));
+        }
         if sample_accurate && nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
             if container.playback.continuous && matches!(container.playback.transition,
                 TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower))) {
@@ -246,26 +257,27 @@ impl Definition {
         parameter: Option<(u32, f32)>, scene: &super::spatial::Scene, position: Option<super::spatial::Position>,
         settings: crate::assets::wwise::PlaySettings) -> Result<(ScheduledAudio, Playing), String>
     {
+        if self.has_switch() && !self.can_route() { return Err("switch sources require shared-output channel conversion".into()); }
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             transitions: (0..self.nodes.len()).map(|_| AtomicU32::new(0)).collect(),
             spatial: (0..self.sounds.len()).map(|_| std::array::from_fn(|index| AtomicU32::new(if index < 4 { 1.0f32.to_bits() } else { 0 }))).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
-            routes: Mutex::new(Arc::new(Vec::new())), activity: mixer.activity.clone(),
+            routes: Mutex::new(Arc::new(Vec::new())), switch_count: AtomicU32::new(0), activity: mixer.activity.clone(),
             registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
                 .map(|activity| activity.registration(sound.properties.bus)).transpose()).collect::<Result<Vec<_>, String>>()? });
         let playing = Playing { definition: self.clone(), control: control.clone(), parameter, position, emitter };
         playing.update(mixer, scene)?;
         Ok((ScheduledAudio { definition: self.clone(), control, selections, emitter,
-            delay_frames: settings.delay.sample_frames(random15), settings }, playing))
+            delay_frames: settings.delay.sample_frames(random15), settings, switches: None }, playing))
     }
 }
 
 struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     transitions: Vec<AtomicU32>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
-    activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
+    switch_count: AtomicU32, activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
     registrations: Vec<Option<crate::gameplay::sound::activity::Registration>> }
 
 struct VoiceRoute {
@@ -373,9 +385,24 @@ pub(super) struct ScheduledAudio {
     emitter: Emitter,
     delay_frames: u32,
     settings: crate::assets::wwise::PlaySettings,
+    switches: Option<SwitchBinding>,
 }
+
+#[derive(Clone)]
+pub(super) struct SwitchContext { owner: Arc<Control>, node: usize }
+#[derive(Default)]
+pub(super) struct SwitchControls {
+    pub(super) controllers: crate::gameplay::sound::switches::Switches<SwitchContext>,
+    pub(super) definitions: HashMap<u32, Arc<crate::assets::wwise::SwitchPlayback>>,
+}
+pub(super) type SwitchRegistry = Arc<Mutex<SwitchControls>>;
+#[derive(Clone)]
+struct SwitchBinding { registry: SwitchRegistry, states: super::bevy_backend::StateGroups, playing_id: u32 }
 impl ScheduledAudio {
     pub fn can_route(&self) -> bool { self.definition.can_route() }
+    pub fn bind_switches(&mut self, registry: SwitchRegistry, states: super::bevy_backend::StateGroups, playing_id: u32) {
+        self.switches = Some(SwitchBinding { registry, states, playing_id });
+    }
 }
 
 enum State {
@@ -407,7 +434,7 @@ impl Runtime {
     fn new(node: usize, now: u64, definition: &Definition,
         registrations: &[Option<crate::gameplay::sound::activity::Registration>]) -> Self {
         let state = match &definition.nodes[node].kind {
-            Kind::Missing | Kind::NoSource => State::Done,
+            Kind::Missing | Kind::NoSource | Kind::Switch(_) => State::Done,
             // Random modifiers belong to each newly started source voice,
             // including when the same leaf overlaps itself in a sequence.
             Kind::Sound(index) => {
@@ -777,6 +804,7 @@ struct Playback {
     root: Option<Runtime>,
     flow: Option<flow::Flow>,
     prepared: bool,
+    external_delay: bool,
     frame: u64,
     stopped: bool,
 }
@@ -785,13 +813,13 @@ impl Playback {
         // Sample-accurate VPL handoff retains its existing path while its
         // decoder-buffer transfer is integrated into source continuations.
         let flow = (!audio.definition.sample_accurate()).then(flow::Flow::default);
-        let mut playback = Self { audio, root: None, flow, prepared: false, frame: 0, stopped: false };
+        let mut playback = Self { audio, root: None, flow, prepared: false, external_delay: false, frame: 0, stopped: false };
         playback.prepare();
         playback
     }
 
     fn prepare(&mut self) {
-        if self.stopped || self.prepared { return; }
+        if self.stopped || self.prepared || self.external_delay { return; }
         let deadline = u64::from(self.audio.delay_frames);
         // 1410e5600 executes the action in its quotient quantum and passes
         // the remainder to the PBI as a sample offset. Create the voice in
@@ -803,7 +831,7 @@ impl Playback {
         if let Some(flow) = &mut self.flow {
             let fade = (milliseconds != 0).then_some(flow::Fade { start: self.frame, milliseconds,
                 curve: self.audio.settings.transition.curve });
-            flow.play(self.audio.definition.root, deadline, self.frame, &self.audio, None, fade, None);
+            flow.play(self.audio.definition.root, deadline, self.frame, &self.audio, None, fade, None, false);
             return;
         }
         let mut root = Runtime::new(self.audio.definition.root, deadline, &self.audio.definition, &self.audio.control.registrations);
@@ -815,7 +843,7 @@ impl Playback {
         self.root = Some(root);
     }
 
-    fn begin(&mut self) {
+    fn flush_stops(&mut self) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
             if let Some(flow) = &mut self.flow {
                 if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio); }
@@ -824,6 +852,11 @@ impl Playback {
             else if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
             else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
         }
+    }
+
+    fn begin(&mut self, paused: bool) {
+        self.flush_stops();
+        if paused { return; }
         self.prepare();
         if let Some(flow) = &mut self.flow { flow.begin(self.frame, &self.audio); }
     }
@@ -838,6 +871,16 @@ impl Playback {
     }
 }
 
+impl Drop for Playback {
+    fn drop(&mut self) {
+        if let Some(binding) = &self.audio.switches {
+            let removed = binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers
+                .remove_where(|controller| Arc::ptr_eq(&controller.context.owner, &self.audio.control));
+            self.audio.control.switch_count.fetch_sub(removed as u32, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Scheduled mono/stereo sources on the shared output clock. Multichannel
 /// graphs still require their separate conversion and speaker-layout paths.
 pub(super) struct Routed {
@@ -846,14 +889,70 @@ pub(super) struct Routed {
 impl Routed {
     pub fn new(audio: ScheduledAudio) -> Result<Self, String> {
         if !audio.can_route() { return Err("shared audio graph requires its multichannel format conversion path".into()); }
+        if audio.definition.has_switch() && audio.switches.is_none() { return Err("switch playback has no shared controller registry".into()); }
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
-        Ok(Self { playback: Playback::new(audio) })
+        let mut playback = Playback::new(audio);
+        playback.external_delay = playback.audio.delay_frames >= 1024;
+        Ok(Self { playback })
     }
 
-    pub fn begin(&mut self) {
-        self.playback.begin();
+    pub fn begin(&mut self, paused: bool) {
+        self.playback.begin(paused);
+    }
+
+    pub fn delay_quanta(&self) -> u64 { u64::from(self.playback.audio.delay_frames) / 1024 }
+    pub fn release_delayed(&mut self) {
+        self.playback.external_delay = false;
+        self.playback.prepare();
+    }
+    pub fn cancelled(&self) -> bool { self.playback.stopped }
+
+    pub fn emitter(&self) -> Emitter { self.playback.audio.emitter }
+    pub fn owns(&self, context: &SwitchContext) -> bool { Arc::ptr_eq(&self.playback.audio.control, &context.owner) }
+    pub fn flush_stops(&mut self) { self.playback.flush_stops(); }
+    pub fn pause_controllers(&mut self, paused: bool) {
+        let audio = &self.playback.audio;
+        if let Some(binding) = &audio.switches {
+            binding.registry.lock().unwrap_or_else(|error| error.into_inner()).controllers
+                .pause_where(|controller| Arc::ptr_eq(&controller.context.owner, &audio.control), paused);
+        }
+    }
+    pub fn cancel_pending(&mut self, target: u32) {
+        let playback = &mut self.playback;
+        if !playback.prepared {
+            if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
+        } else if let Some(flow) = &mut playback.flow { flow.cancel_pending(target, &playback.audio); }
+    }
+    pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8) {
+        let playback = &mut self.playback;
+        if !playback.prepared {
+            if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
+        } else if let Some(flow) = &mut playback.flow {
+            flow.stop(target, milliseconds, curve, playback.frame, &playback.audio);
+        } else if let Some(root) = &mut playback.root {
+            root.stop(target, milliseconds, curve, playback.frame, &playback.audio.definition);
+        }
+    }
+    pub fn stop_all(&mut self, milliseconds: i32, curve: u8) {
+        let playback = &mut self.playback;
+        if !playback.prepared { playback.stopped = true; }
+        else if let Some(flow) = &mut playback.flow {
+            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio);
+        } else if let Some(root) = &mut playback.root {
+            let id = playback.audio.definition.nodes[root.node].id;
+            root.stop(id, milliseconds, curve, playback.frame, &playback.audio.definition);
+        }
+    }
+    pub fn play_switch(&mut self, context: &SwitchContext, child: u32, milliseconds: i32, curve: u8) {
+        let playback = &mut self.playback;
+        let Kind::Switch(switch) = &playback.audio.definition.nodes[context.node].kind else { return; };
+        let Some(node) = switch.children.get(&child).copied().flatten() else { return; };
+        if let Some(flow) = &mut playback.flow {
+            let fade = (milliseconds != 0).then_some(flow::Fade { start: playback.frame, milliseconds, curve });
+            flow.play(node, playback.frame, playback.frame, &playback.audio, None, fade, None, false);
+        }
     }
 
     pub fn frame(&mut self, buses: &mut super::bevy_backend::buses::Buses, offset: usize) -> Result<bool, String> {
@@ -881,7 +980,7 @@ impl Iterator for Decoder {
         if self.channel == channels {
             if !self.alive { return None; }
             self.output.fill(0.0);
-            if self.playback.frame % 1024 == 0 { self.playback.begin(); }
+            if self.playback.frame % 1024 == 0 { self.playback.begin(false); }
             self.alive = self.playback.frame(&mut self.output[..channels], None);
             self.channel = 0;
         }
