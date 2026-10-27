@@ -1790,10 +1790,13 @@ to forward surfaces, fog and particles. Rect components carry the stable scene
 record index through the unused GPU colour W lane; their RGB photometric fields
 are retained for host materials. The view bindings carry the shared packet buffer
 and pool, so materials do not own separate texture caches. Source image copies
-are submitted only when pool contents change. This supplies the authored profiles
-of non-shadowed area lights; the separate paraboloid exponential-shadow producer
-for shadowed area lights remains unconnected. The reported EotW room's authored
-area sources explicitly set `m_NoShadows=true`.
+are submitted only when pool contents change. This supplies the authored area-light profiles. The installed light updater
+`140881640` explicitly clears shadow eligibility for type 3 (area), independently
+of `m_NoShadows`; `140331cc0` admits only point, half-point and spot lights.
+Consequently ordinary gameplay area lights do not publish paraboloid shadow maps.
+The installed shader assets retain a paraboloid ESM receiver, but its presence
+does not establish an active producer. The reported EotW room also explicitly
+sets `m_NoShadows=true` on its area sources.
 
 The authored `m_specularAttn` survives inherited entity parameters and maps to
 host light components independently of shadow readiness. The typed clustered
