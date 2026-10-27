@@ -56,11 +56,21 @@ impl Sequence {
     /// 14112f0a0 samples transition time only after a global actor lookup
     /// succeeds. Missing actors pop this sequence entry without a Play call.
     pub(super) fn continuation(&mut self, audio: &ScheduledAudio) -> Option<Next> {
+        self.timed_next(audio, false)
+    }
+
+    /// 1410ddd30 samples transition time in every mode, even when the
+    /// failed-start action ultimately uses only its ten-quantum minimum.
+    pub(super) fn failed_continuation(&mut self, audio: &ScheduledAudio) -> Option<Next> {
+        self.timed_next(audio, true)
+    }
+
+    fn timed_next(&mut self, audio: &ScheduledAudio, all_modes: bool) -> Option<Next> {
         let node = self.next(audio)?;
         if matches!(audio.definition.nodes[node].kind, Kind::Missing) { return None; }
         let Kind::Container(container) = &audio.definition.nodes[self.node].kind else { return None; };
         let mode = container.playback.transition;
-        let milliseconds = if matches!(mode, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower |
+        let milliseconds = if all_modes || matches!(mode, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower |
             TransitionMode::Delay | TransitionMode::TriggerRate) {
             let seconds = f32::from_bits(audio.control.transitions[self.node].load(std::sync::atomic::Ordering::Relaxed));
             super::transition_ms(&container.playback, seconds, super::random15)

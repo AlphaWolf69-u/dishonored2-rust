@@ -64,7 +64,7 @@ impl Flow {
                         if container.playback.continuous {
                             if let Some(stack) = &stack { drop(stack.pop()); }
                         }
-                        self.failed(stack, now, audio, inherited)
+                        self.failed(stack, now, audio, inherited, fade)
                     },
                 }
             },
@@ -78,7 +78,7 @@ impl Flow {
                         branch.push(Entry::Group(session.branch()));
                         accepted |= self.play(child, start, now, audio, Some(branch), fade, inherited.clone());
                     }
-                    if accepted { true } else { self.failed(session.finish(), now, audio, inherited) }
+                    if accepted { true } else { self.failed(session.finish(), now, audio, inherited, fade) }
                 } else {
                     let mut accepted = false;
                     for &child in children { accepted |= self.play(child, start, now, audio, None, fade, inherited.clone()); }
@@ -88,12 +88,13 @@ impl Flow {
         }
     }
 
-    fn failed(&mut self, stack: Option<Stack<Sequence>>, now: u64, audio: &ScheduledAudio, inherited: Option<Transition>) -> bool {
+    fn failed(&mut self, stack: Option<Stack<Sequence>>, now: u64, audio: &ScheduledAudio,
+        inherited: Option<Transition>, fade: Option<Fade>) -> bool {
         let mut source = Continuation::new(stack);
-        source.prepare(false, |sequence| sequence.mode(audio), |sequence| sequence.continuation(audio));
+        source.prepare(false, |sequence| sequence.mode(audio), |sequence| sequence.failed_continuation(audio));
         let Some(next) = source.next().copied() else { return false; };
         let deadline = timing::after_failed_start(now, next.mode, next.milliseconds, audio.definition.rate.get());
-        self.pending.push(Pending { node: next.node, stack: source.stack(), deadline, fade: None, inherited, crossfade: None });
+        self.pending.push(Pending { node: next.node, stack: source.stack(), deadline, fade, inherited, crossfade: None });
         source.clear();
         true
     }
@@ -107,6 +108,7 @@ impl Flow {
                 if !gain.active(now) { pending.inherited = None; }
             }
             if pending.deadline.saturating_sub(now) < 1024 {
+                if let Some(fade) = &mut pending.fade { fade.start = now; }
                 if let Some(crossfade) = pending.crossfade {
                     // 14111c850 falls back to its zero-ms descriptor if the
                     // previous PBI has ended (14111ce70 clears that pointer).
