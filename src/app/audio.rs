@@ -316,7 +316,7 @@ fn update_playing_volume(
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     mut previous_pause: Local<bool>,
     engine: Res<bevy_backend::Engine>,
-    mut playing: Query<(&mut AudioTarget, Option<&mut AudioSink>, &graph::Playing, Option<&bevy_backend::VoiceHandle>)>,
+    mut playing: Query<(&mut AudioTarget, Option<&AudioSink>, &graph::Playing, Option<&bevy_backend::VoiceHandle>)>,
 ) {
     let shared = crate::platform::console::shared();
     let generation = shared.generation();
@@ -342,7 +342,7 @@ fn update_playing_volume(
             }
             continue;
         }
-        let Some(mut sink) = sink else { continue };
+        let Some(sink) = sink else { continue };
         if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
             target.paused = frozen;
