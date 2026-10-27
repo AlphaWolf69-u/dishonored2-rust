@@ -45,6 +45,7 @@ impl Definition {
     fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.pcm.channels.get() <= 2) }
     pub fn requires_buses(node: &PlaybackNode, mixer: &Mixer) -> Result<bool, String> {
         match node {
+            PlaybackNode::Unsupported { .. } => Ok(false),
             PlaybackNode::Switch(switch) => {
                 for (_, child) in &switch.children {
                     if let Some(child) = child { if Self::requires_buses(child, mixer)? { return Ok(true); } }
@@ -65,6 +66,7 @@ impl Definition {
     }
     pub fn required(node: &PlaybackNode) -> bool {
         match node {
+            PlaybackNode::Unsupported { .. } => true,
             PlaybackNode::Switch(_) => true,
             PlaybackNode::Missing { .. } => true,
             PlaybackNode::Sound { variant, .. } => variant.properties.nodes.first().is_some_and(|node|
@@ -92,6 +94,7 @@ impl Definition {
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
         // belong to the target, and empty graphs have no descendant to borrow.
         let properties = Arc::new(match &root {
+            PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
             PlaybackNode::Missing { .. } => return Err(invalid("missing Wwise Play target")),
             PlaybackNode::Sound { variant, .. } => variant.properties.clone(),
             PlaybackNode::Layer { properties, .. } => properties.clone(),
@@ -101,6 +104,7 @@ impl Definition {
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>) -> io::Result<usize> {
             let (id, kind) = match source {
+                PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
                 PlaybackNode::Switch(switch) => {
                     // A continuous switch retains its Play context independently
                     // of the initial sources and their continuation barrier

@@ -152,7 +152,9 @@ impl<'a> PlaybackBanks<'a> {
         let bytes = self.bytes(object);
         let feedback = self.banks[object.bank].feedback;
         if matches!(object.kind, 10..=13) {
-            return Err(invalid_owned(format!("Wwise music actor {id:#010x} (HIRC {}) requires music scheduling", object.kind)));
+            visited.remove(&id);
+            return Ok(Some(PlaybackNode::Unsupported { node: id,
+                reason: format!("music actor (HIRC {}) requires music scheduling", object.kind) }));
         }
         if object.kind == 6 {
             let playback = bank::switch_playback(bytes, feedback)?;
@@ -166,7 +168,12 @@ impl<'a> PlaybackBanks<'a> {
             return Ok(Some(PlaybackNode::Switch(PlaybackSwitch { node: id, properties, playback, children })));
         }
         if object.kind == 2 {
-            if read_u32_slice(bytes, 4)? & 0xf != 1 { return Err(invalid("Wwise source-plugin playback requires its source processor")); }
+            let plugin = read_u32_slice(bytes, 4)?;
+            if plugin & 0xf != 1 {
+                visited.remove(&id);
+                return Ok(Some(PlaybackNode::Unsupported { node: id,
+                    reason: format!("source plugin {plugin:#010x} requires its source processor") }));
+            }
             let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
             let media = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?;
             let properties = self.media_properties(id)?;

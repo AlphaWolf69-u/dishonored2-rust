@@ -565,6 +565,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     match node {
+        PlaybackNode::Unsupported { node, reason } => println!("{indent}Unsupported actor {node:#010x}: {reason}"),
         PlaybackNode::Switch(switch) => {
             println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",
                 switch.node, switch.playback.group_kind, switch.playback.group, switch.playback.default, switch.playback.continuous);
