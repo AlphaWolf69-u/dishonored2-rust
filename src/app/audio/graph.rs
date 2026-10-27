@@ -229,7 +229,7 @@ impl Definition {
 
 struct Control { spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     transitions: Vec<AtomicU32>,
-    threshold_db: AtomicU32, stops: Mutex<Vec<(u32, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
+    threshold_db: AtomicU32, stops: Mutex<Vec<(Option<u32>, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
     switch_count: AtomicU32, activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
     registrations: Vec<Option<crate::gameplay::sound::activity::Registration>> }
 
@@ -260,7 +260,10 @@ impl Playing {
         let target = if self.definition.root_properties().nodes.iter().any(|node| node.id == target) {
             self.definition.nodes[self.definition.root].id
         } else { target };
-        self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((target, milliseconds, curve));
+        self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((Some(target), milliseconds, curve));
+    }
+    pub fn stop_all(&self, milliseconds: i32, curve: u8) {
+        self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((None, milliseconds, curve));
     }
     pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
         let parameters = scene.parameters(self.emitter, self.parameter);
@@ -834,11 +837,16 @@ impl Playback {
     fn flush_stops(&mut self) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
             if let Some(flow) = &mut self.flow {
-                if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
-                else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
+                if self.prepared {
+                    if let Some(target) = target { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
+                    else { flow.stop_all(milliseconds, curve, self.frame, &self.audio, false); }
+                }
+                else if target.is_none_or(|target| self.audio.definition.matches_actor(self.audio.definition.root, target)) { self.stopped = true; }
             }
-            else if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
-            else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
+            else if let Some(root) = &mut self.root {
+                root.stop(target.unwrap_or(self.audio.definition.nodes[self.audio.definition.root].id), milliseconds, curve, self.frame, &self.audio.definition);
+            }
+            else if target.is_none_or(|target| self.audio.definition.matches_actor(self.audio.definition.root, target)) { self.stopped = true; }
         }
     }
 

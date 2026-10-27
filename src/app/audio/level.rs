@@ -36,13 +36,13 @@ impl LevelAudio {
     }
 }
 
-pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
+pub(super) fn update(level: Option<ResMut<LevelAudio>>,
     physics: Option<ResMut<super::super::physics_scene::PhysicsScene>>,
     bound: Option<Res<super::super::model_motion::BoundModels>>, mut scene: ResMut<Scene>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
     engine: Res<super::bevy_backend::Engine>,
-    playing: Query<(Entity, &super::AudioTarget)>, mut events: MessageWriter<super::SoundEvent>)
+    playing: Query<&super::AudioTarget>, mut events: MessageWriter<super::SoundEvent>)
 {
     let (Some(mut level), Some(mut physics), Some(listener), Some(bound), Some(clock)) = (level, physics, scene.listener(), bound, clock) else { return };
     let Ok(clock) = clock.clock() else { return };
@@ -108,10 +108,9 @@ pub(super) fn update(mut commands: Commands, level: Option<ResMut<LevelAudio>>,
                     StartupAction::Stop => {
                         // 1400c5d80 stops every playing ID, zero milliseconds,
                         // while preserving the allocated default object slot.
-                        for (entity, target) in &playing {
+                        for target in &playing {
                             if target.emitter == emitter {
-                                if target.shared { engine.stop_event(target.event, emitter); }
-                                else { commands.entity(entity).try_despawn(); }
+                                engine.stop_event(target.event, emitter);
                             }
                         }
                     }

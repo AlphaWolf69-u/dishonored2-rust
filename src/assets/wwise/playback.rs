@@ -77,6 +77,12 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    /// The actual parent chain used by pending-action cancellation
+    /// (141115df0 / 1410e9950), independently of playlist membership.
+    pub fn actor_hierarchy(&self, id: u32) -> io::Result<Option<Vec<u32>>> {
+        if !self.actors.contains_key(&id) { return Ok(None); }
+        Ok(Some(self.media_properties(id)?.nodes.into_iter().map(|node| node.id).collect()))
+    }
     /// Follow the actual Play references without reading or decoding media.
     /// Playlist/case membership is independent of serialized hierarchy lists.
     pub fn controls(&self, root: u32) -> io::Result<Controls> {
