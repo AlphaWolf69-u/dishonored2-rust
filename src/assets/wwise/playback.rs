@@ -192,9 +192,6 @@ impl<'a> PlaybackBanks<'a> {
         while id != 0 {
             if !visited.insert(id) { return Err(invalid("cyclic Wwise parent hierarchy")); }
             let object = *self.actors.get(&id).ok_or_else(|| invalid_owned(format!("missing Wwise parent {id:#010x}")))?;
-            if matches!(object.kind, 10..=13) {
-                return Err(invalid_owned(format!("Wwise music parent {id:#010x} requires music properties")));
-            }
             let node = bank::node_properties(self.bytes(object), object.kind, self.banks[object.bank].feedback)?;
             if properties.bus == 0 { properties.bus = node.bus; }
             id = node.parent;

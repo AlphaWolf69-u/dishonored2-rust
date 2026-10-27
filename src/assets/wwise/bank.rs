@@ -584,18 +584,43 @@ impl<'a> Reader<'a> {
         let bytes = self.take(count.checked_mul(4).ok_or_else(|| invalid("Wwise child count overflow"))?)?;
         Ok(bytes.chunks_exact(4).map(|id| u32::from_le_bytes(id.try_into().unwrap())).collect())
     }
+
+    /// Serialized source descriptor (1410f3fe0), shared by sounds and tracks.
+    fn source_info(&mut self) -> io::Result<()> {
+        let plugin = self.u32()?;
+        self.take(10)?; // Stream type, media ID, memory size and source flags.
+        if matches!(plugin & 0xf, 2 | 5) {
+            let size = self.u32()? as usize;
+            self.take(size)?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn node_properties(object: &[u8], kind: u8, feedback: bool) -> io::Result<NodeProperties> {
     let mut reader = Reader { bytes: object, offset: 0 };
     let id = reader.u32()?;
     if kind == 2 {
-        let plugin = reader.u32()?;
-        reader.take(10)?; // Stream type, media ID, memory size and source flags.
-        if matches!(plugin & 0xf, 2 | 5) {
-            let size = reader.u32()? as usize;
-            reader.take(size)?;
+        reader.source_info()?;
+    } else if kind == 11 {
+        // 141159840 precedes the common node base with track flags,
+        // sources, 40-byte clip records and automation curves.
+        reader.u8()?;
+        let sources = reader.u32()?;
+        for _ in 0..sources { reader.source_info()?; }
+        let clips = reader.u32()? as usize;
+        reader.records(clips, 40)?;
+        if clips != 0 { reader.u32()?; } // Subtrack count.
+        let curves = reader.u32()?;
+        for _ in 0..curves {
+            reader.take(8)?; // Clip index and automation type.
+            let points = reader.u32()? as usize;
+            reader.records(points, 12)?;
         }
+    } else if matches!(kind, 10 | 12 | 13) {
+        // Segment/switch/sequence loaders share 141154620, which consumes
+        // the music flags before 141114c50's ordinary node base.
+        reader.u8()?;
     }
     let mut node = reader.node_base(feedback)?;
     node.id = id;
