@@ -26,6 +26,13 @@ impl Envelope {
         if age >= self.duration { return if self.to == 0.0 { None } else { Some(self.to) }; }
         Some(crate::gameplay::sound::mix::interpolate(age as f32 / self.duration as f32, self.from, self.to, self.curve))
     }
+    pub fn block_value(self, frame: u64) -> Option<f32> {
+        let start = frame / 1024 * 1024;
+        self.value(start + 1024).or_else(|| {
+            (self.value(start).is_some() || (self.duration == 0 && start == self.start / 1024 * 1024))
+                .then_some(0.0)
+        })
+    }
 }
 
 /// Continuation actions and their sources can share a live gain transition

@@ -547,8 +547,15 @@ impl Runtime {
         // 1410e6800 advances transitions to tick+1 before rendering. The
         // completed stop still renders its final zero-target block; 1410ebae0
         // retires the PBI afterward. The mixer ramps the gain product.
-        let start = now / 1024 * 1024;
-        envelope.value(start + 1024).or_else(|| envelope.value(start).map(|_| 0.0))
+        envelope.block_value(now)
+    }
+
+    fn stop_buffer(&mut self, now: u64) {
+        // 1411068e0 forces an initialized source to zero (141105410), or
+        // finishes its retained gain transition with the zero-ms curve 4.
+        if let Some(fade) = self.fade.as_ref().filter(|fade| fade.active(now)) { fade.stop(now, 0, 4); }
+        else { self.fade = Some(super::fade::Transition::new(super::fade::Envelope::new(now, 0, 0.0, 4))); }
+        self.fade_cache = None;
     }
 
     fn fade_stopping(&mut self, now: u64) -> bool {
@@ -827,7 +834,7 @@ impl Playback {
     fn flush_stops(&mut self) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
             if let Some(flow) = &mut self.flow {
-                if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio); }
+                if self.prepared { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
                 else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
             }
             else if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
@@ -906,21 +913,23 @@ impl Routed {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow { flow.cancel_pending(target, &playback.audio); }
     }
-    pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8) {
+    pub fn stop_actor(&mut self, target: u32, milliseconds: i32, curve: u8, paused: bool) {
         let playback = &mut self.playback;
         if !playback.prepared {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow {
-            flow.stop(target, milliseconds, curve, playback.frame, &playback.audio);
+            flow.stop(target, milliseconds, curve, playback.frame, &playback.audio, paused);
+            if flow.finished(&playback.audio) { playback.stopped = true; }
         } else if let Some(root) = &mut playback.root {
             root.stop(target, milliseconds, curve, playback.frame, &playback.audio.definition);
         }
     }
-    pub fn stop_all(&mut self, milliseconds: i32, curve: u8) {
+    pub fn stop_all(&mut self, milliseconds: i32, curve: u8, paused: bool) {
         let playback = &mut self.playback;
         if !playback.prepared { playback.stopped = true; }
         else if let Some(flow) = &mut playback.flow {
-            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio);
+            flow.stop_all(milliseconds, curve, playback.frame, &playback.audio, paused);
+            if flow.finished(&playback.audio) { playback.stopped = true; }
         } else if let Some(root) = &mut playback.root {
             let id = playback.audio.definition.nodes[root.node].id;
             root.stop(id, milliseconds, curve, playback.frame, &playback.audio.definition);

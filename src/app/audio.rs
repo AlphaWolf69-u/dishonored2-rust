@@ -194,10 +194,10 @@ fn play_events(
             Request::Stop { event, emitter } => {
                 engine.stop_event(event, emitter);
                 for (entity, target, _) in &playing {
-                    if target.event == event && target.emitter == emitter { commands.entity(entity).try_despawn(); }
+                    if target.event == event && target.emitter == emitter && !target.shared { commands.entity(entity).try_despawn(); }
                 }
                 spawned.retain(|(entity, target, _)| {
-                    let stop = target.event == event && target.emitter == emitter;
+                    let stop = target.event == event && target.emitter == emitter && !target.shared;
                     if stop { commands.entity(*entity).try_despawn(); }
                     !stop
                 });
@@ -268,7 +268,7 @@ fn play_events(
                         for (entity, audio_target, scheduled) in &playing {
                             if stop.game_object && audio_target.emitter != emitter { continue; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(entity).try_despawn(); }
+                            if matches && milliseconds == 0 && !audio_target.shared { commands.entity(entity).try_despawn(); }
                             else if !audio_target.shared {
                                 scheduled.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                             }
@@ -276,7 +276,7 @@ fn play_events(
                         spawned.retain(|(entity, audio_target, scheduled)| {
                             if stop.game_object && audio_target.emitter != emitter { return true; }
                             let matches = stop.all || audio_target.target == target || audio_target.properties.nodes.iter().any(|node| node.id == target);
-                            if matches && milliseconds == 0 { commands.entity(*entity).try_despawn(); return false; }
+                            if matches && milliseconds == 0 && !audio_target.shared { commands.entity(*entity).try_despawn(); return false; }
                             if !audio_target.shared {
                                 scheduled.stop(if stop.all { audio_target.target } else { target }, milliseconds, stop.transition.curve);
                             }
