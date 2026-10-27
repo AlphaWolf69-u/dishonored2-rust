@@ -28,6 +28,27 @@ impl Envelope {
     }
 }
 
+/// Continuation actions and their sources can share a live gain transition
+/// (14111cdf0 / 14112ebe0). Updating it must reach every retained listener.
+#[derive(Clone)]
+pub(super) struct Transition(Arc<Mutex<Envelope>>);
+impl Transition {
+    pub fn new(envelope: Envelope) -> Self { Self(Arc::new(Mutex::new(envelope))) }
+    pub fn snapshot(&self) -> Envelope { *self.0.lock().unwrap_or_else(|error| error.into_inner()) }
+    pub fn value(&self, frame: u64) -> Option<f32> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).value(frame)
+    }
+    pub fn active(&self, frame: u64) -> bool {
+        let envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        frame.saturating_sub(envelope.start) < envelope.duration
+    }
+    pub fn stop(&self, frame: u64, duration: u64, curve: u8) {
+        let mut envelope = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let from = envelope.value(frame).unwrap_or(0.0);
+        *envelope = Envelope::new(frame, duration, from, curve);
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Control(Arc<Mutex<Option<(i32, u8)>>>);
 impl Control {

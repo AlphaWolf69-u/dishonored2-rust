@@ -193,16 +193,6 @@ impl Definition {
                     (id, Kind::Layer(children))
                 },
                 PlaybackNode::Container(container) => {
-                    if container.playback.continuous {
-                        if matches!(container.playback.transition, TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower) {
-                            // 1411287f0 -> 141104670 -> 141104ba0 -> 14112f640:
-                            // pitch-adjusted source duration schedules the next
-                            // leaf through 14112f0a0's continuation stack. This
-                            // requires leaf-duration callbacks, not end-of-tree
-                            // fades; 14111c850 starts both transition envelopes.
-                            return Err(invalid("continuous Wwise crossfades require voice envelopes"));
-                        }
-                    }
                     let mut children = Vec::new();
                     let mut weights = Vec::new();
                     for (child, weight) in container.children {
@@ -228,6 +218,13 @@ impl Definition {
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
         let root = node(root, &mut nodes, &mut sounds, &mut HashMap::new(), attenuations)?;
+        let sample_accurate = nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
+            if container.playback.continuous && container.playback.transition == TransitionMode::SampleAccurate));
+        if sample_accurate && nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
+            if container.playback.continuous && matches!(container.playback.transition,
+                TransitionMode::CrossfadeAmplitude | TransitionMode::CrossfadePower))) {
+            return Err(invalid("sample-accurate decoder handoff with crossfades requires its source-buffer transfer"));
+        }
         let stereo = sounds.iter().all(|sound| sound.channels.get() <= 2);
         let channels = if stereo { ChannelCount::new(2).ok_or_else(|| invalid("invalid stereo channel count"))? }
             else { sounds[0].channels };
@@ -393,9 +390,22 @@ enum State {
     Container { active: Vec<Runtime>, sequence: Sequence, next: Option<u64>, pending: Option<usize>, exhausted: bool },
     Done,
 }
-struct Runtime { node: usize, state: State, fade: Option<super::fade::Envelope>, failed_start: bool }
+struct Runtime { node: usize, state: State, fade: Option<super::fade::Transition>,
+    fade_cache: Option<(u64, super::fade::Envelope)>, failed_start: bool }
 
 impl Runtime {
+    fn duration_ms(&self, audio: &ScheduledAudio) -> Option<f32> {
+        let State::Sound { random, looping, silence, .. } = &self.state else { return None; };
+        let Kind::Sound(index) = audio.definition.nodes[self.node].kind else { return None; };
+        let sound = &audio.definition.sounds[index];
+        let duration = match silence {
+            Some(silence) => silence.duration_ms(),
+            None => looping.as_ref()?.duration_ms(sound.sample_rate.get()),
+        };
+        let cents = f32::from_bits(audio.control.pitches[index].load(Ordering::Relaxed)) + random.pitch_cents;
+        Some(duration / crate::gameplay::sound::resampler::pitch_ratio(cents))
+    }
+
     fn new(node: usize, now: u64, definition: &Definition,
         control: &Control) -> Self {
         let state = match &definition.nodes[node].kind {
@@ -429,7 +439,8 @@ impl Runtime {
             Kind::Container(container) => State::Container { active: Vec::new(), sequence: Sequence::new(node, &container.playback),
                 next: Some(now), pending: None, exhausted: false },
         };
-        Self { node, state, fade: None, failed_start: matches!(definition.nodes[node].kind, Kind::Missing | Kind::NoSource) }
+        Self { node, state, fade: None, fade_cache: None,
+            failed_start: matches!(definition.nodes[node].kind, Kind::Missing | Kind::NoSource) }
     }
 
     fn halt_new(&mut self) {
@@ -522,10 +533,18 @@ impl Runtime {
     fn stop(&mut self, target: u32, milliseconds: i32, curve: u8, now: u64, definition: &Definition) {
         if definition.nodes[self.node].id == target {
             self.failed_start = false;
-            if milliseconds == 0 { self.state = State::Done; }
+            self.fade_cache = None;
+            if milliseconds == 0 {
+                if let Some(fade) = self.fade.as_ref().filter(|fade| fade.active(now)) { fade.stop(now, 0, curve); }
+                self.state = State::Done;
+            }
             else {
-                let gain = self.fade.map_or(1.0, |fade| fade.value(now).unwrap_or(0.0));
-                self.fade = Some(super::fade::Envelope::new(now, super::fade::frames(milliseconds, definition.rate.get()), gain, curve));
+                let duration = super::fade::frames(milliseconds, definition.rate.get());
+                if let Some(fade) = self.fade.as_ref().filter(|fade| fade.active(now)) { fade.stop(now, duration, curve); }
+                else {
+                    let gain = self.fade.as_ref().map_or(1.0, |fade| fade.value(now).unwrap_or(0.0));
+                    self.fade = Some(super::fade::Transition::new(super::fade::Envelope::new(now, duration, gain, curve)));
+                }
                 self.halt_new();
             }
             return;
@@ -538,8 +557,15 @@ impl Runtime {
         }
     }
 
+    fn fade_value(&mut self, now: u64) -> Option<f32> {
+        let Some(fade) = &self.fade else { return Some(1.0); };
+        let tick = now / 1024;
+        if self.fade_cache.is_none_or(|(cached, _)| cached != tick) { self.fade_cache = Some((tick, fade.snapshot())); }
+        self.fade_cache.and_then(|(_, envelope)| envelope.value(now))
+    }
+
     fn frame(&mut self, now: u64, audio: &ScheduledAudio, output: &mut [f32], mut routing: Option<&mut RouteContext<'_>>) -> bool {
-        let gain = match self.fade { Some(fade) => match fade.value(now) { Some(gain) => gain, None => return false }, None => 1.0 };
+        let Some(gain) = self.fade_value(now) else { return false; };
         let mut local = [0.0; 8];
         let alive = if let Some(routing) = routing.as_mut() {
             let previous = routing.gain;
@@ -780,14 +806,14 @@ impl Playback {
         if let Some(flow) = &mut self.flow {
             let fade = (milliseconds != 0).then_some(flow::Fade { start: self.frame, milliseconds,
                 curve: self.audio.settings.transition.curve });
-            flow.play(self.audio.definition.root, deadline, self.frame, &self.audio, None, fade);
+            flow.play(self.audio.definition.root, deadline, self.frame, &self.audio, None, fade, None);
             return;
         }
         let mut root = Runtime::new(self.audio.definition.root, deadline, &self.audio.definition, &self.audio.control);
         root.prime(deadline, &self.audio);
         if milliseconds != 0 {
-            root.fade = Some(super::fade::Envelope::fade_in(self.frame,
-                super::fade::frames(milliseconds, self.audio.definition.rate.get()), self.audio.settings.transition.curve));
+            root.fade = Some(super::fade::Transition::new(super::fade::Envelope::fade_in(self.frame,
+                super::fade::frames(milliseconds, self.audio.definition.rate.get()), self.audio.settings.transition.curve)));
         }
         self.root = Some(root);
     }
@@ -801,8 +827,8 @@ impl Playback {
             else if let Some(root) = &mut self.root { root.stop(target, milliseconds, curve, self.frame, &self.audio.definition); }
             else if target == self.audio.definition.nodes[self.audio.definition.root].id { self.stopped = true; }
         }
-        if let Some(flow) = &mut self.flow { flow.begin(self.frame, &self.audio); }
         self.prepare();
+        if let Some(flow) = &mut self.flow { flow.begin(self.frame, &self.audio); }
         self.publish_source_ready();
     }
 
