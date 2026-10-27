@@ -282,32 +282,34 @@ move, fall acceleration 29.43 m/s², eye 1.678 m standing and 1.010 m sneaking
 at 11.5° pitch, matching the port within the camera idle bob (a few mm).
 A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
 
-- `midnight.rs` plays midnight scenes on the player body: integer-ms scene
-  time with a carry, the CONDMD6 choice by body md6, the clip schedule and
-  Bezier weight curves, BREAK_PLAYER_STATE events flushed before the
-  states, the clips folded over the loco pose (BLEND, or ADD for additive
-  clips) with the interrupt snapshot fade, and the origin delta pushed as
-  priority-1 root-motion velocity (`assets/entities/midnight.rs` parses the
-  decls). Only the PlayerBody/PlayerCamera groups play: arms, weapons and
-  the mantle dummy have no trees.
+- `midnight.rs` plays midnight scenes on the player body and both arms:
+  integer-ms scene time with a carry, the CONDMD6 choice by each cast model,
+  clip schedules and Bezier weight curves, BREAK_PLAYER_STATE events flushed
+  before the states, clips folded over each tree's loco pose (BLEND, or ADD
+  for additive clips) with interrupt snapshot fades, and body origin deltas
+  pushed as priority-1 root-motion velocity (`assets/entities/midnight.rs`
+  parses the decls). Catfall's separate body/left/right scenes finish together;
+  weapon and mantle-dummy groups have no trees.
+- `arms.rs` evaluates the two arm trees and their bind frames. The body model
+  uses `m_visibleLegsMaterials` whenever it is published, and all player models
+  submit their material-image demands independently of ordinary Tome visibility.
 - Catfall (falls above `m_catFallHeight`, light or strong by fall damage
   against the full player health), Mantle (`MantleSensor`'s ledge search,
   the scene, and the dummy's arkCpntRetargeting as priority-3 velocities that
   warp the clip's anchor_jnt onto the ledge) and Vault (`VaultSensor`'s
   slope-aligned obstacle casts, a constant run-up velocity over the raised
-  VAULTING hull, the scene for the view) are states with their camera
-  modes.
+  VAULTING hull, the scene for the view) are states with their camera modes.
 - `camera.rs` runs the deferred target modes, the cosine mode blend, the
   free and constrained look integrators and the joint controls of AND_ARMS,
   ANIMATED, CONSTRAINED, CONSTRAINED_WITH_ARMS and CATFALL; leaving a
   yaw-offset mode hands the yaw to the body. The body's FollowSlope turns
   the skeleton to the ground normal while sliding or catfalling.
 
-Not ported: hit-reaction camera additives, footsteps, hand
-equipment (the player moves unequipped), health, damage and death (falls
-never kill), arm and weapon midnight groups, breakable and NPC vault damage,
-window vaults, blink/grapple mantles, moving platforms, HUD labels, swimming,
-powers, impulses and moving or dynamic bodies.
+Not ported: hit-reaction camera additives, hand equipment (the player moves
+unequipped), health, damage and death (falls never kill), weapon and
+mantle-dummy midnight groups, breakable and NPC vault damage, window vaults,
+blink/grapple mantles, moving platforms, HUD labels, swimming, powers,
+impulses and moving or dynamic bodies.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):

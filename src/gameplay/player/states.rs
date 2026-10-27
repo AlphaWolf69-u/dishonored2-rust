@@ -1833,7 +1833,7 @@ impl StateMachine {
                 // FUN_14085b8a0.
                 frame.requests.push_angular(0, Vec3::ZERO);
                 frame.requests.push_linear(0, Vec3::ZERO);
-                if frame.midnight.finished(self.states[index].midnight) {
+                if frame.midnight.all_finished() {
                     self.quit(id);
                 }
             }
@@ -1927,7 +1927,7 @@ impl StateMachine {
             frame.physics.set_posture(POSTURE_AUTOCROUCHING, 0.0);
         }
         let handle = self.states[index].midnight;
-        if !overlap && handle != 0 && !frame.midnight.finished(handle) {
+        if !overlap && handle != 0 && !frame.midnight.all_finished() {
             return;
         }
         if final_state == StateId::AUTOCROUCH {

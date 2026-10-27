@@ -201,6 +201,9 @@ pub struct PlayerViewModels {
     /// (arkDeclCpntPlayerBody m_leftArm / m_rightArm `m_entity`, spawned by
     /// FUN_140770560). None when the part has no entity.
     pub arms: [Option<String>; 2],
+    /// Materials restored on the body model while its legs are visible
+    /// (FUN_140776e60's decl+0x148 list).
+    pub visible_legs_materials: Vec<String>,
     /// `r_playerDepthHack` after FUN_1407724f0: the body decl's m_depthHack
     /// (+0x1f8, ctor 5.0) when positive, otherwise the cvar's default 0.
     pub depth_hack: f32,
@@ -232,7 +235,11 @@ pub fn player_view_models(
         Some(text) => text.parse::<f32>().map_err(|e| format!("body m_depthHack {text}: {e}"))?,
         None => BODY_DEPTH_HACK,
     };
-    Ok(PlayerViewModels { arms, depth_hack: if decl > 0.0 { decl } else { 0.0 } })
+    Ok(PlayerViewModels {
+        arms,
+        visible_legs_materials: list_items(body, "m_visibleLegsMaterials"),
+        depth_hack: if decl > 0.0 { decl } else { 0.0 },
+    })
 }
 
 /// A decl named by the md6 declaration (`locomotionDecl`, `animBasicDecl`),

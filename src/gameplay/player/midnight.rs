@@ -277,6 +277,12 @@ impl Midnight {
         !self.instances.iter().any(|i| i.handle == handle)
     }
 
+    /// MidnightFinished for catfall (FUN_140854920): the body and both arm
+    /// proxies have finished, including separately started arm scenes.
+    pub fn all_finished(&self) -> bool {
+        self.instances.is_empty()
+    }
+
     /// FUN_1407cc650: resolve a graph element; CONDMD6 (FUN_1407ccdc0)
     /// reads the md6 of the entity its node's group is cast to (`md6`:
     /// body, left arm, right arm).

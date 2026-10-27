@@ -207,8 +207,16 @@ pub(super) fn load_player_arms(
             {
                 continue;
             }
-            let Some(resolved) = resolver.get(&surface.material_path, 0, [0.0; 3]) else {
-                eprintln!("Arm material unresolved {model} {}", surface.material_path);
+            let material_path = if model == declarations.body_model {
+                view.visible_legs_materials
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or(&surface.material_path)
+            } else {
+                &surface.material_path
+            };
+            let Some(resolved) = resolver.get(material_path, 0, [0.0; 3]) else {
+                eprintln!("Arm material unresolved {model} {material_path}");
                 continue;
             };
             let MaterialHandle::Probe(handle) = &resolved.handle else {

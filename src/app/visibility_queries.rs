@@ -330,8 +330,10 @@ pub(super) fn stream_visible_models(
                 });
             query_ns = query_started.elapsed().as_nanos();
             let mapping_started = Instant::now();
+            let mut arm_query_state = None;
             match query {
                 Ok(Some(output)) => {
+                    arm_query_state = output.state.clone();
                     // Native shadow preparation consumes the merged ordinary
                     // descriptor, not color-visible BWM IDs or a prior frame.
                     // Forward mapping errors do not invalidate this query.
@@ -387,15 +389,6 @@ pub(super) fn stream_visible_models(
                                     &scene.material_images,
                                 )
                                 .map(|_| ())
-                        })
-                        .and_then(|()| {
-                            arms.as_deref().map_or(Ok(()), |arms| {
-                                arms.submit_texture_demands(
-                                    output.state.as_ref(),
-                                    &scene.material_images,
-                                    &scene.diffuse_image_demands,
-                                )
-                            })
                         })
                         .and_then(|()| {
                             let _span = profile.as_deref().map(|p| p.measure(48));
@@ -502,6 +495,21 @@ pub(super) fn stream_visible_models(
                     status = format!("query_error: {error}");
                     if last_tome_error.as_deref() != Some(&error) {
                         eprintln!("Tome visibility query: {error}");
+                        *last_tome_error = Some(error);
+                    }
+                }
+            }
+            // Player models are addAlways: their material images are gathered
+            // even without an ordinary Tome root, independently of BWM results.
+            if let Some(arms) = arms.as_deref() {
+                if let Err(error) = arms.submit_texture_demands(
+                    arm_query_state.as_ref(),
+                    &scene.material_images,
+                    &scene.diffuse_image_demands,
+                ) {
+                    status = format!("mapping_error: {error}");
+                    if last_tome_error.as_deref() != Some(&error) {
+                        eprintln!("Player texture demand: {error}");
                         *last_tome_error = Some(error);
                     }
                 }
