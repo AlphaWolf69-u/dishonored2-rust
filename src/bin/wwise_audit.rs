@@ -438,7 +438,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if generators {
             let ids = library.generator_ids()?;
             println!("{} source generators", ids.len());
-            let mut metadata = HashMap::new();
+            let mut metadata = Inspection::default();
             for id in ids {
                 if let Some(node) = library.actor_playback(id, |_, _| Err(std::io::Error::other("generator unexpectedly requested media")))? {
                     print_playback(&node, 0, &mixer, None, &mut metadata)?;
@@ -461,7 +461,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("media {media_id:#010x}: {} bank={:#010x}", path.display(), entry.id);
             package.read_entry(file, media).map(Some)
         };
-        let mut metadata = HashMap::new();
+        let mut metadata = Inspection::default();
         if actor {
             if let Some(node) = library.actor_playback(id, media)? {
                 print_playback(&node, 0, &mixer, None, &mut metadata)?;
@@ -572,12 +572,32 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Clone, Copy)]
 struct MediaInfo { samples: usize, channels: u16, sample_rate: u32, loop_points: Option<[u32; 2]> }
 
+#[derive(Default)]
+struct Inspection {
+    media: HashMap<u32, MediaInfo>,
+    described: std::collections::HashSet<(u32, Option<u32>)>,
+    properties: std::collections::HashSet<u32>,
+}
+
 fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: usize,
     mixer: &dishonored2_rust::gameplay::sound::mix::Mixer,
     continuation: Option<(u32, &dishonored2_rust::assets::wwise::ContainerPlayback)>,
-    metadata: &mut HashMap<u32, MediaInfo>) -> Result<(), Box<dyn Error>> {
+    metadata: &mut Inspection) -> Result<(), Box<dyn Error>> {
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
+    let id = match node {
+        PlaybackNode::Unsupported { node, .. } | PlaybackNode::Missing { node } |
+        PlaybackNode::Sound { node, .. } | PlaybackNode::Generator { node, .. } |
+        PlaybackNode::Layer { node, .. } => *node,
+        PlaybackNode::Switch(switch) => switch.node,
+        PlaybackNode::Container(container) => container.node,
+    };
+    // Retain every case/weight reference, while describing each global actor
+    // once per continuation owner (duration diagnostics depend on that owner).
+    if !metadata.described.insert((id, continuation.map(|(owner, _)| owner))) {
+        println!("{indent}Actor {id:#010x} (already described for this continuation)");
+        return Ok(());
+    }
     match node {
         PlaybackNode::Unsupported { node, reason } => println!("{indent}Unsupported actor {node:#010x}: {reason}"),
         PlaybackNode::Switch(switch) => {
@@ -607,7 +627,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             // The loaded actor registry retains one source per ID. A source
             // can appear in many cases: validate its actual media once and
             // retain only metadata, rather than keeping decoded PCM resident.
-            let audio = match metadata.entry(*node) {
+            let audio = match metadata.media.entry(*node) {
                 std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let audio = decode_wem_pcm(&variant.media)?;
@@ -634,6 +654,10 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
                 dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
             for properties in &variant.properties.nodes {
+                if !metadata.properties.insert(properties.id) {
+                    println!("{indent}  Node {:#010x} properties already described", properties.id);
+                    continue;
+                }
                 println!("{indent}  Node {:#010x} auxiliary_flags={:#x} buses={:x?}",
                     properties.id, properties.auxiliary_flags, properties.auxiliary_buses);
                 for curve in &properties.curves {

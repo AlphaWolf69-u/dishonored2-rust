@@ -3,7 +3,7 @@
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
     PlaybackContainer, PlaybackNode, PlaybackSwitch};
-use std::{borrow::Cow, collections::{HashMap, HashSet}, io};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, io, sync::Arc};
 
 struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
 
@@ -158,7 +158,7 @@ impl<'a> PlaybackBanks<'a> {
     }
 
     fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,
-        visited: &mut HashSet<u32>) -> io::Result<Option<PlaybackNode>> {
+        visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<Arc<[u8]>>>) -> io::Result<Option<PlaybackNode>> {
         if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
         let Some(&object) = self.actors.get(&id) else { visited.remove(&id); return Ok(None); };
         let bytes = self.bytes(object);
@@ -173,7 +173,7 @@ impl<'a> PlaybackBanks<'a> {
             let mut children = Vec::new();
             let mut seen = HashSet::new();
             for &child in playback.cases.iter().flat_map(|case| &case.children) {
-                if seen.insert(child) { children.push((child, self.resolve_node(child, media, visited)?)); }
+                if seen.insert(child) { children.push((child, self.resolve_node(child, media, visited, sources)?)); }
             }
             let properties = self.media_properties(id)?;
             visited.remove(&id);
@@ -193,11 +193,19 @@ impl<'a> PlaybackBanks<'a> {
                 return Ok(Some(PlaybackNode::Unsupported { node: id,
                     reason: format!("source plugin {plugin:#010x} has no loaded custom FX {resource:#010x}") }));
             }
-            let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
-            let media = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?;
+            // All references to a loaded Sound share its resident source
+            // (1410f1910 / 141122400). Cases must not duplicate WEM storage.
+            let source = match sources.entry(id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
+                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?.map(Arc::from);
+                    entry.insert(source).clone()
+                },
+            };
             let properties = self.media_properties(id)?;
             visited.remove(&id);
-            return Ok(media.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
+            return Ok(source.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
         }
         if !matches!(object.kind, 5 | 9) { visited.remove(&id); return Ok(None); }
         let (children, playlist) = bank::node_children(bytes, object.kind, feedback)?;
@@ -206,7 +214,7 @@ impl<'a> PlaybackBanks<'a> {
             for (child, weight) in playlist.items {
                 if !self.actors.contains_key(&child) {
                     children.push((PlaybackNode::Missing { node: child }, weight));
-                } else if let Some(node) = self.resolve_node(child, media, visited)? { children.push((node, weight)); }
+                } else if let Some(node) = self.resolve_node(child, media, visited, sources)? { children.push((node, weight)); }
             }
             PlaybackNode::Container(PlaybackContainer { node: id, properties: self.media_properties(id)?, global: playlist.global,
                 avoid_repeat: playlist.avoid_repeat, mode: playlist.mode, reset_each_play: playlist.reset_each_play,
@@ -214,7 +222,7 @@ impl<'a> PlaybackBanks<'a> {
         } else {
             let mut layers = Vec::new();
             for child in children {
-                if let Some(node) = self.resolve_node(child, media, visited)? { layers.push(node); }
+                if let Some(node) = self.resolve_node(child, media, visited, sources)? { layers.push(node); }
             }
             PlaybackNode::Layer { node: id, properties: self.media_properties(id)?, children: layers }
         };
@@ -226,7 +234,7 @@ impl<'a> PlaybackBanks<'a> {
     /// including when its event, action or actor parent came from another bank.
     pub fn actor_playback(&self, actor: u32,
         mut media: impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>) -> io::Result<Option<PlaybackNode>> {
-        self.resolve_node(actor, &mut media, &mut HashSet::new())
+        self.resolve_node(actor, &mut media, &mut HashSet::new(), &mut HashMap::new())
     }
 
     /// Resolve event actions through the same loaded actor registry.
@@ -236,6 +244,7 @@ impl<'a> PlaybackBanks<'a> {
         let bytes = self.bytes(event);
         let count = read_u32_slice(bytes, 4)? as usize;
         let mut commands = Vec::new();
+        let mut sources = HashMap::new();
         for index in 0..count {
             let id = read_u32_slice(bytes, 8 + index * 4)?;
             let Some(&action) = self.actions.get(&id) else { continue; };
@@ -246,7 +255,7 @@ impl<'a> PlaybackBanks<'a> {
                 1 => bank::stop_action(action).map(|stop| Some(PlaybackCommand::Stop(stop))),
                 0x12 => bank::state_action(action).map(|state| Some(PlaybackCommand::SetState(state))),
                 4 => {
-                    self.actor_playback(target, &mut media).and_then(|node| node.map(|node|
+                    self.resolve_node(target, &mut media, &mut HashSet::new(), &mut sources).and_then(|node| node.map(|node|
                         bank::play_settings(action).map(|settings| PlaybackCommand::Play { target, settings, node })).transpose())
                 },
                 _ => continue,
