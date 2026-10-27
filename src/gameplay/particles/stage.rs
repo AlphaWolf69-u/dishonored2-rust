@@ -105,6 +105,34 @@ impl ParticleStage {
         loop_life: bool,
         bounds: [[f32; 3]; 2],
         planes: &[[f32; 4]],
+        source_velocity: impl FnMut(
+            usize,
+            &ParticleState,
+            &mut u32,
+        ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
+        motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
+        after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.advance_with_events(
+            delta,
+            maximum_step,
+            loop_life,
+            bounds,
+            planes,
+            source_velocity,
+            motion,
+            after_advance,
+            |_, _, _| Ok(()),
+        )
+    }
+
+    pub fn advance_with_events(
+        &mut self,
+        delta: f32,
+        maximum_step: f32,
+        loop_life: bool,
+        bounds: [[f32; 3]; 2],
+        planes: &[[f32; 4]],
         mut source_velocity: impl FnMut(
             usize,
             &ParticleState,
@@ -112,12 +140,14 @@ impl ParticleStage {
         ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
         mut motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
         mut after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+        mut particle_event: impl FnMut(&ParticleState, f32, bool) -> Result<(), String>,
     ) -> Result<(), String> {
         if !maximum_step.is_finite() || maximum_step <= 0. {
             return Err("particle integration step must be positive and finite".into());
         }
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let Some(particle) = slot else { continue };
+            let previous_age = particle.state.age;
             let mut remaining = delta;
             loop {
                 // 1f5620 restarts this copy at every substep, including the
@@ -135,6 +165,7 @@ impl ParticleStage {
                 )?;
                 remaining = crate::float::subtract(remaining, step);
                 if !alive || !contains(particle.state.position, bounds, planes) {
+                    particle_event(&particle.state, previous_age, false)?;
                     *slot = None;
                     self.free.push(index);
                     break;
@@ -142,6 +173,7 @@ impl ParticleStage {
                 if remaining <= f32::from_bits(0x3400_0000) {
                     // Sprite updates consume the seed after the final motion
                     // substep, once for the outer delta, before the next slot.
+                    particle_event(&particle.state, previous_age, true)?;
                     after_advance(index, &particle.state, &mut seed)?;
                     break;
                 }

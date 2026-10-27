@@ -36,10 +36,15 @@ pub struct StageSimulation {
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     mesh_cursor: usize,
     inherited_velocity: super::spawn::SpawnVelocity,
+    pub events: super::events::StageEvents,
+    /// Last frame supplied to this stage (1f4a00), also used by incoming events.
+    pub owner_pose: ReferenceFrame,
 }
 
 struct Bindings<'a> {
     definition: &'a ParticleStageAsset,
+    events: &'a mut super::events::StageEvents,
+    owner_position: [f32; 3],
     particles: &'a mut ParticleStage,
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
     owner_basis: [[f32; 3]; 3],
@@ -92,6 +97,10 @@ impl EmitterBindings for Bindings<'_> {
                 .sample(context.cycle_fraction, seed)?,
             definition.velocity.worldspace,
         );
+        if let Some((event_position, event_velocity)) = context.event {
+            position = std::array::from_fn(|i| add(position[i], event_position[i]));
+            velocity = std::array::from_fn(|i| add(velocity[i], event_velocity[i]));
+        }
         let mut mesh_colour = [1.; 4];
         if let Some(sample) = definition.spawn_mesh.sample(
             self.mesh_cursor,
@@ -151,6 +160,7 @@ impl EmitterBindings for Bindings<'_> {
             return Ok(self.particles.capacity() - self.particles.len());
         }
         let age = particle.state.age;
+        let birth_state = particle.state;
         let Some(slot) = self.particles.insert(particle) else {
             return Ok(0);
         };
@@ -184,6 +194,15 @@ impl EmitterBindings for Bindings<'_> {
             )?;
             slots[slot] = Some(state);
         }
+        self.events.birth(
+            &birth_state,
+            seed,
+            ReferenceFrame {
+                position: self.owner_position,
+                basis: self.owner_basis,
+            },
+            definition.worldspace,
+        );
         Ok(self.particles.capacity() - self.particles.len())
     }
 }
@@ -191,6 +210,7 @@ impl EmitterBindings for Bindings<'_> {
 impl StageSimulation {
     pub fn flush(&mut self) {
         self.particles.flush();
+        self.events.pending.clear();
         for sprites in &mut self.sprites {
             for sprite in sprites {
                 *sprite = None;
@@ -201,10 +221,13 @@ impl StageSimulation {
     /// 1ffff0's clock-only branch passes the whole post-delay interval to
     /// 1f6160, without integrating particles or sampling spawn parameters.
     pub fn advance_cycles(&mut self, delta: f32, pose: ReferenceFrame) -> Result<(), String> {
+        self.owner_pose = pose;
         let delta = self.emitter.consume_delay(delta);
         self.prepare_pose(delta, pose);
         let mut bindings = Bindings {
             definition: &self.declaration.stages[self.index],
+            events: &mut self.events,
+            owner_position: pose.position,
             particles: &mut self.particles,
             sprites: &mut self.sprites,
             owner_basis: pose.basis,
@@ -229,12 +252,6 @@ impl StageSimulation {
         if !definition.enabled {
             return Err("disabled particle stage cannot be instantiated".into());
         }
-        if definition.enable_velocity_inheritance {
-            return Err("particle velocity inheritance provider is not connected".into());
-        }
-        if !definition.burst_event.is_empty() {
-            return Err("particle burst-event provider is not connected".into());
-        }
         let capacity = definition.estimated_capacity()?.min(8192) as usize;
         let mut particles = ParticleStage::new(capacity);
         let mut sprites = definition
@@ -246,9 +263,12 @@ impl StageSimulation {
         // its mutable spawn seed. Field/shape defaults consume neither.
         let _cycle_seed = crate::random::lcg_step(system_seed);
         let spawn_seed = crate::random::lcg_step(system_seed);
+        let mut events = super::events::StageEvents::new(&declaration, index);
         let mut mesh_cursor = 0;
         let inherited_velocity = super::spawn::SpawnVelocity::default();
         let mut bindings = Bindings {
+            events: &mut events,
+            owner_position: pose.position,
             definition,
             particles: &mut particles,
             sprites: &mut sprites,
@@ -275,6 +295,8 @@ impl StageSimulation {
             sprites,
             mesh_cursor,
             inherited_velocity,
+            events,
+            owner_pose: pose,
         })
     }
 
@@ -302,17 +324,24 @@ impl StageSimulation {
         source: Option<&super::spawn::SpawnVelocity>,
     ) -> Result<(), String> {
         use crate::float::subtract;
+        self.owner_pose = frame.pose;
         let delta = self.emitter.consume_delay(delta);
         self.prepare_pose(delta, frame.pose);
         let wind = self.wind(frame, wind)?;
         let source_velocity = self.source_velocity(frame)?;
         if self.declaration.velocity_inheritance.enabled
-            && self.declaration.stages[self.index].enable_velocity_inheritance {
-            let source = source.ok_or("particle velocity inheritance awaits the owning entity's published motion")?;
+            && self.declaration.stages[self.index].enable_velocity_inheritance
+        {
+            let source = source.ok_or(
+                "particle velocity inheritance awaits the owning entity's published motion",
+            )?;
             // 1f6220 takes a fresh copy, independently of wind/source curves.
             let mut seed = self.emitter.cycle_seed();
             self.inherited_velocity = super::spawn::SpawnVelocity::sample(
-                source, &self.declaration.velocity_inheritance, self.emitter.cycle.fraction, &mut seed,
+                source,
+                &self.declaration.velocity_inheritance,
+                self.emitter.cycle.fraction,
+                &mut seed,
             )?;
             if !self.declaration.stages[self.index].worldspace {
                 self.inherited_velocity.make_local(frame.pose);
@@ -429,7 +458,9 @@ impl StageSimulation {
         let definition = &declaration.stages[self.index];
         let space = ParticleSpace::new(frame.pose.basis, definition.worldspace);
         let sprites = &mut self.sprites;
-        self.particles.advance_with_forces(
+        let events = &mut self.events;
+        let event_seed = &mut self.emitter.seed;
+        self.particles.advance_with_events(
             delta,
             self.emitter.simulation_step,
             definition.infinite_life,
@@ -463,8 +494,21 @@ impl StageSimulation {
                 }
                 Ok(())
             },
+            |particle, previous_age, alive| {
+                events.integrated(
+                    particle,
+                    previous_age,
+                    alive,
+                    event_seed,
+                    frame.pose,
+                    definition.worldspace,
+                );
+                Ok(())
+            },
         )?;
         let mut bindings = Bindings {
+            events: &mut self.events,
+            owner_position: frame.pose.position,
             definition,
             particles: &mut self.particles,
             sprites: &mut self.sprites,
@@ -478,7 +522,22 @@ impl StageSimulation {
         // spawnOnlyFromStage flag is not a blanket disable for this path:
         // it only participates in linked parent-stage setup. Such links are
         // still rejected by the reader until their producer is connected.
-        if definition.burst {
+        if definition.burst && !definition.burst_event.is_empty() {
+            let mut inputs = std::mem::take(&mut bindings.particles.inputs);
+            self.emitter.event_burst(
+                delta,
+                free,
+                frame.lod,
+                frame.rate,
+                &inputs,
+                definition.use_event_location,
+                &definition.event_velocity,
+                &definition.event_normal,
+                &mut bindings,
+            )?;
+            inputs.clear();
+            bindings.particles.inputs = inputs;
+        } else if definition.burst {
             self.emitter
                 .burst(delta, free, frame.lod, frame.rate, &mut bindings)?;
         } else {

@@ -31,6 +31,78 @@ impl SpawnVector {
     }
 }
 
+/// 141575af0 /141576580: named event, frequency and optional life threshold.
+pub struct ParticleEvent {
+    pub name: String,
+    pub frequency: f32,
+    pub life: Option<f32>,
+}
+impl Default for ParticleEvent {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            frequency: 1.,
+            life: None,
+        }
+    }
+}
+impl ParticleEvent {
+    fn edit(&mut self, fields: &Fields, life_event: bool) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_name" => self.name = atom(value)?.to_owned(),
+                "m_frequency" => self.frequency = number(value)?,
+                "m_life" if life_event => self.life = Some(number(value)?),
+                _ => return Err(format!("unknown particle event field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Default)]
+pub struct ParticleEvents {
+    pub birth: ParticleEvent,
+    pub death: ParticleEvent,
+    pub life: Vec<ParticleEvent>,
+}
+impl ParticleEvents {
+    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+        for (name, value) in fields {
+            match name.as_str() {
+                "m_birth" => self.birth.edit(scope(value)?, false)?,
+                "m_death" => self.death.edit(scope(value)?, false)?,
+                "m_life" => {
+                    for (name, value) in scope(value)? {
+                        if name == "num" {
+                            // 1f66a0 initializes life-list elements at normalized age zero.
+                            self.life
+                                .resize_with(unsigned(value)? as usize, || ParticleEvent {
+                                    life: Some(0.),
+                                    ..Default::default()
+                                });
+                        } else {
+                            let index = name
+                                .strip_prefix("item[")
+                                .and_then(|s| s.strip_suffix(']'))
+                                .ok_or_else(|| {
+                                    format!("unknown particle life-event array field {name}")
+                                })?
+                                .parse::<usize>()
+                                .map_err(|e| format!("particle life-event index: {e}"))?;
+                            self.life
+                                .get_mut(index)
+                                .ok_or("particle life-event index exceeds count")?
+                                .edit(scope(value)?, true)?;
+                        }
+                    }
+                }
+                _ => return Err(format!("unknown particle events field {name}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct ParticleStageAsset {
     pub name: String,
     pub enabled: bool,
@@ -58,6 +130,7 @@ pub struct ParticleStageAsset {
     pub source_velocity_over_life: VectorParameter,
     pub constant_seed: bool,
     pub sprites: Vec<ParticleSpriteAsset>,
+    pub events: ParticleEvents,
 }
 impl Default for ParticleStageAsset {
     fn default() -> Self {
@@ -100,6 +173,7 @@ impl Default for ParticleStageAsset {
             source_velocity_over_life: VectorParameter::constant([1.; 3]),
             constant_seed: false,
             sprites: vec![ParticleSpriteAsset::default()],
+            events: ParticleEvents::default(),
         }
     }
 }
@@ -234,6 +308,7 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
                 particles::vector_parameter(&mut result.source_velocity_over_life, scope(value)?)?
             }
             "m_constantSeed" => result.constant_seed = boolean(value)?,
+            "m_events" => result.events.edit(scope(value)?)?,
             "m_sprites" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

@@ -62,6 +62,8 @@ pub struct EmissionContext {
     pub cycle_fraction: f32,
     pub cycle_seed: u32,
     pub elapsed: f32,
+    /// Initial stage-space position and velocity supplied by 1f1770.
+    pub event: Option<([f32; 3], [f32; 3])>,
 }
 
 pub trait EmitterBindings {
@@ -86,7 +88,7 @@ pub struct ParticleEmitter {
     pub cycle: CycleClock,
     pub delay: StartDelay,
     pub simulation_step: f32,
-    seed: u32,
+    pub(crate) seed: u32,
     cycle_seed: u32,
     emission_step: f32,
     unemitted_time: f32,
@@ -190,6 +192,7 @@ impl ParticleEmitter {
                     cycle_fraction: self.cycle.fraction,
                     cycle_seed: self.cycle_seed,
                     elapsed: self.elapsed,
+                    event: None,
                 };
                 free_slots = bindings.spawn(context, &mut self.seed)?;
             }
@@ -203,6 +206,74 @@ impl ParticleEmitter {
             delta = subtract(delta, step);
             self.pose.advance(step);
         }
+        Ok(free_slots)
+    }
+
+    /// 1f1770 consumes every queued event in order, sampling the two direction
+    /// scales once from a cycle-seed copy. Rate and accepted particles consume
+    /// the mutable spawn generator. This path advances even after cycles end.
+    pub fn event_burst(
+        &mut self,
+        delta: f32,
+        mut free_slots: usize,
+        lod: usize,
+        multiplier: f32,
+        inputs: &[super::SpawnInput],
+        use_location: bool,
+        velocity: &super::parameters::ScalarParameter,
+        normal: &super::parameters::ScalarParameter,
+        bindings: &mut impl EmitterBindings,
+    ) -> Result<usize, String> {
+        if !inputs.is_empty() {
+            let pose = self.pose.sample();
+            let mut parameter_seed = self.cycle_seed;
+            let velocity = velocity.sample(self.cycle.fraction, &mut parameter_seed)?;
+            let normal = normal.sample(self.cycle.fraction, &mut parameter_seed)?;
+            for input in inputs {
+                let count = crate::float::truncate_i32(
+                    add(
+                        multiply(
+                            self.definition.rate.range.sample(lod, &mut self.seed),
+                            multiplier,
+                        ),
+                        0.5,
+                    )
+                    .floor(),
+                );
+                if count <= 0 {
+                    continue;
+                }
+                let position = if use_location {
+                    std::array::from_fn(|i| subtract(input.position[i], pose.position[i]))
+                } else {
+                    [0.; 3]
+                };
+                let direction = std::array::from_fn(|i| {
+                    add(
+                        multiply(velocity, input.directions[0][i]),
+                        multiply(normal, input.directions[1][i]),
+                    )
+                });
+                for _ in 0..count {
+                    if free_slots == 0 {
+                        break;
+                    }
+                    free_slots = bindings.spawn(
+                        EmissionContext {
+                            pose,
+                            remaining_delta: delta,
+                            cycle_fraction: self.cycle.fraction,
+                            cycle_seed: self.cycle_seed,
+                            elapsed: self.elapsed,
+                            event: Some((position, direction)),
+                        },
+                        &mut self.seed,
+                    )?;
+                }
+            }
+        }
+        self.advance_clock(delta, bindings)?;
+        self.pose.advance(delta);
         Ok(free_slots)
     }
 
@@ -241,6 +312,7 @@ impl ParticleEmitter {
                                 cycle_fraction: self.cycle.fraction,
                                 cycle_seed: self.cycle_seed,
                                 elapsed: self.elapsed,
+                                event: None,
                             },
                             &mut self.seed,
                         )?;

@@ -483,7 +483,8 @@ impl ParticleSystem {
         self.clipping = surface.and_then(|surface| {
             ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface)
         });
-        for stage in &mut self.stages {
+        for stage_slot in 0..self.stages.len() {
+            let stage = &mut self.stages[stage_slot];
             let definition = &stage.declaration.stages[stage.index];
             let worldspace = definition.worldspace;
             let mut delta = delta;
@@ -528,6 +529,23 @@ impl ParticleSystem {
                 self.wind,
                 self.source_motion.as_ref(),
             )?;
+            let mut deliveries = std::mem::take(&mut stage.events.pending);
+            for delivery in deliveries.drain(..) {
+                if let Some(receiver) = self
+                    .stages
+                    .iter_mut()
+                    .find(|stage| stage.index == delivery.receiver)
+                {
+                    let worldspace = receiver.declaration.stages[receiver.index].worldspace;
+                    receiver.particles.enqueue(
+                        delivery.input,
+                        worldspace,
+                        receiver.owner_pose.position,
+                        receiver.owner_pose.basis,
+                    );
+                }
+            }
+            self.stages[stage_slot].events.pending = deliveries;
         }
         self.first_simulation = false;
         self.simulated_frame = Some(frame);
