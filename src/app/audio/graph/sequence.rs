@@ -12,12 +12,14 @@ pub(super) struct Next {
 pub(super) struct Sequence {
     pub(super) node: usize,
     selection: Selection,
-    loops: Loops,
+    loops: Option<Loops>,
     pub(super) initialized: bool,
 }
 impl Sequence {
     pub(super) fn new(node: usize, playback: &ContainerPlayback) -> Self {
-        Self { node, selection: Selection::default(), loops: Loops::new(playback, super::random15), initialized: false }
+        // 14111a450 sends step playback directly to 14111b6e0. Only the
+        // continuous path (14111b7b0) samples a playback-local loop limit.
+        Self { node, selection: Selection::default(), loops: playback.continuous.then(|| Loops::new(playback, super::random15)), initialized: false }
     }
     pub(super) fn next(&mut self, audio: &ScheduledAudio) -> Option<usize> {
         let node = &audio.definition.nodes[self.node];
@@ -31,7 +33,7 @@ impl Sequence {
                 }
             }
             let selected = selection.next(container.mode, &container.weights, container.avoid,
-                container.playback.restart_backward, Some(loops));
+                container.playback.restart_backward, loops.as_mut());
             if container.mode == SelectionMode::Sequence && !container.reset {
                 audio.selections.lock().unwrap_or_else(|error| error.into_inner()).entry(key).or_default().sequence = selection.sequence.clone();
             }
