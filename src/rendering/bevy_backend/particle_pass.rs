@@ -15,6 +15,10 @@ use bevy::{
 use std::{collections::HashMap, sync::Arc};
 mod transparency;
 
+/// The existing installed-material sampler image, shared with ordinary surfaces.
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct ParticleMaterialSampler(pub Handle<Image>);
+
 #[derive(Clone, Copy, ShaderType)]
 struct TransparencyParameters {
     weights: Vec4,
@@ -25,9 +29,13 @@ struct TransparencyParameters {
 #[derive(Clone, Copy, ShaderType)]
 struct ViewParameters {
     clip_from_game_world: Mat4,
+    game_world_from_clip: Mat4,
     camera_time: Vec4,
     inverse_z: Vec4,
     exposure_extent: Vec4,
+    scene_grid: UVec4,
+    sun_direction: Vec4,
+    sun_colour: Vec4,
 }
 #[derive(Clone, Copy, ShaderType)]
 struct FogViewParameters {
@@ -42,26 +50,44 @@ struct TextureLayer {
 }
 #[derive(Clone, Copy, ShaderType)]
 struct MaterialParameters {
-    layers: [TextureLayer; 3],
+    layers: [TextureLayer; 4],
     colour_adjust: Vec4,
     depth_fade_lookup: Vec4,
     radial_exposure_fog: Vec4,
     distort_options: UVec4,
     colour_options: UVec4,
     fade_options: UVec4,
+    animation_options: UVec4,
+    surface_options: UVec4,
+    macro_fresnel: Vec4,
+    fresnel_uv: Vec4,
+    lighting_parameters: Vec4,
+    lighting_dielectric: Vec4,
+    lighting_metal_diffuse: Vec4,
+    shadow_options: UVec4,
+    surface_map_options: UVec4,
+    surface_ranges: Vec4,
+    lighting_uv: Vec4,
+    normal_options: UVec4,
+    detail_normal: Vec4,
+    distortion_fog: Vec4,
+    alpha_test: f32,
+    pixel_options: UVec4,
+    pixel_parameters: Vec4,
+    emissive: Vec4,
+    emissive_clip: Vec4,
+    pixel_effects: UVec4,
+    fuzz: Vec4,
+    translucency_phase: Vec4,
+    translucency_ramp: [Vec4; 3],
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
-        for name in [
-            "fx/opt/use_lighting",
-            "fx/opt/fresnel",
-            "fx/opt/use_macroUV",
-            "fx/opt/use_flipbook",
-            "fx/opt/opacity_scroll_mask",
-        ] {
-            if source.option(name)? != 0 {
-                return Err(format!("particle {name} draw producer is not connected"));
-            }
+        let lighting_mode = source.option("fx/opt/use_lighting")?;
+        if lighting_mode < 0 {
+            return Err(format!(
+                "particle lighting mode {lighting_mode} is not connected"
+            ));
         }
         let option = |name: &str| source.option(name).map(|v| v as u32);
         let scalar = |name: &str| source.uniform(name).map(|v| v[0]);
@@ -69,7 +95,7 @@ impl MaterialParameters {
             tiling_pan: Vec4::ZERO,
             strength: Vec4::ZERO,
             rotation_seed: Vec4::ZERO,
-        }; 3];
+        }; 4];
         for (layer, prefix) in layers.iter_mut().zip(["disto1", "disto2", "opacity"]) {
             let tile = source.uniform(&format!("{prefix}_Tilling"))?;
             let pan = source.uniform(&format!("{prefix}_PanningSpeed"))?;
@@ -84,11 +110,109 @@ impl MaterialParameters {
                 layer.strength = Vec4::from_array(source.uniform(&format!("{prefix}_Strength"))?);
             }
         }
-        let soft = option("fx/opt/use_softcontact")?;
-        if soft > 2 {
-            return Err("spherical particle soft contact is not connected".into());
+        if source.option("fx/opt/opacity_scroll_mask")? != 0 {
+            let tile = source.uniform("opacity_Scroll_Mask_Tilling")?;
+            let pan = source.uniform("opacity_Scroll_Mask_PanningSpeed")?;
+            layers[3].tiling_pan = Vec4::new(tile[0], tile[1], pan[0], pan[1]);
+            layers[3].rotation_seed = Vec4::new(
+                scalar("opacity_Scroll_Mask_RotationSpeed")?,
+                scalar("material_seed")?,
+                0.,
+                0.,
+            );
         }
+        let soft = option("fx/opt/use_softcontact")?;
+        if soft > 3 {
+            return Err(format!("unknown particle soft contact mode {soft}"));
+        }
+        let macro_uv = if source.option("fx/opt/use_macroUV")? != 0 {
+            source.uniform("macroUvAmount")?
+        } else {
+            [0.; 4]
+        };
+        let fresnel = source.option("fx/opt/fresnel")? != 0;
+        let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
         Ok(Self {
+            distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)} else {Vec4::ZERO},
+            pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
+                u32::from(p.fuzz.is_some()), u32::from(p.fuzz_mask), u32::from(p.translucency.is_some()),
+                u32::from(p.translucency.as_ref().is_some_and(|t| t.vertex_alpha)))),
+            fuzz: pixel.and_then(|p| p.fuzz).map_or(Vec4::ZERO, |f| Vec4::new(f[0], f[1], 0., 0.)),
+            translucency_phase: pixel.and_then(|p| p.translucency.as_ref()).map_or(Vec4::ZERO, |t| Vec4::from_array(t.phase)),
+            translucency_ramp: pixel.and_then(|p| p.translucency.as_ref()).map_or([Vec4::ZERO; 3], |t| t.ramp.map(Vec4::from_array)),
+            pixel_options: pixel.map_or(UVec4::ZERO, |p| UVec4::from_array(p.maps.map(u32::from))),
+            pixel_parameters: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.sheen[0], p.sheen[1], u32::from(p.self_shadowed_bump) as f32, 0.)),
+            emissive: pixel.map_or(Vec4::ZERO, |p| Vec4::from_array(p.emissive)),
+            emissive_clip: pixel.map_or(Vec4::ZERO, |p| Vec4::new(p.emissive_clip[0], p.emissive_clip[1], u32::from(p.exposure_emissive) as f32, 0.)),
+            alpha_test: scalar("particleAlphaTest")?,
+            normal_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                UVec4::new(u32::from(light.bump), u32::from(light.detail_bump.is_some()), 0, 0)
+            }),
+            detail_normal: source.lighting.as_ref().and_then(|light| light.detail_bump)
+                .map_or(Vec4::ZERO, |detail| Vec4::new(detail[0], detail[1], 0., 0.)),
+            surface_map_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                UVec4::new(
+                    u32::from(light.maps[0]),
+                    u32::from(light.maps[1]),
+                    u32::from(light.maps[2]),
+                    0,
+                )
+            }),
+            surface_ranges: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::new(light.metallic[0], 0., 0., 0.)),
+            lighting_uv: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::from_array(light.uv)),
+            shadow_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
+                // Supported pixel particles are isAlpha, hence direct parallel
+                // receiving and neutral AO (2d5210 / lightContext).
+                let clouds = light.pixel.as_ref().is_none_or(|p| p.translucency.is_none());
+                UVec4::new(light.shadow_flags | (u32::from(clouds) << 4), light.shadow_filtering as u32, 1, 0)
+            }),
+            lighting_parameters: source.lighting.as_ref().map_or(Vec4::ZERO, |light| {
+                Vec4::new(
+                    light.gloss[0],
+                    light.gloss[1],
+                    light.metallic[1],
+                    u32::from(light.gloss_in_alpha) as f32,
+                )
+            }),
+            lighting_dielectric: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::from_array(light.dielectric)),
+            lighting_metal_diffuse: source
+                .lighting
+                .as_ref()
+                .map_or(Vec4::ZERO, |light| Vec4::from_array(light.metal_diffuse)),
+            surface_options: UVec4::new(
+                option("fx/opt/use_macroUV")?,
+                option("fx/opt/fresnel")?,
+                option("fx/opt/fresnel/useNormalMap")?,
+                option("fx/opt/fresnel/useLUT")?,
+            ),
+            macro_fresnel: Vec4::new(
+                macro_uv[0],
+                macro_uv[1],
+                if fresnel {
+                    scalar("particleFresnelThreshold")?
+                } else {
+                    0.
+                },
+                if fresnel {
+                    scalar("particleFresnelStrength")?
+                } else {
+                    0.
+                },
+            ),
+            fresnel_uv: if fresnel && source.option("fx/opt/fresnel/useNormalMap")? != 0 {
+                Vec4::from_array(source.uniform("Layer0_ScaleBias")?)
+            } else {
+                Vec4::ZERO
+            },
             layers,
             colour_adjust: Vec4::from_array(source.uniform("color_Adjust")?),
             depth_fade_lookup: Vec4::new(
@@ -101,7 +225,7 @@ impl MaterialParameters {
                 scalar("radial_RampPow")?,
                 scalar("fx/auto_exposure_amount")?,
                 scalar("particleFogScatterPower")?,
-                0.,
+                if source.distortion { option("fx/opt/distblur_constant_offset")? as f32 } else { 0. },
             ),
             distort_options: UVec4::new(
                 option("fx/opt/uv_disto1")?,
@@ -121,12 +245,20 @@ impl MaterialParameters {
                 soft,
                 option("fx/opt/no_alpha_lookup_modulate")?,
             ),
+            animation_options: UVec4::new(
+                option("fx/opt/use_flipbook")?,
+                option("fx/opt/flipbook_is_mask")?,
+                option("fx/opt/opacity_scroll_mask")?,
+                lighting_mode as u32,
+            ),
         })
     }
 }
 
 pub struct ParticleDraw {
     pub material: Arc<ParticleMaterial>,
+    /// Shared per-object SH/IBL record selected at the particle root's origin.
+    pub lighting: Option<[[f32; 4]; 9]>,
     /// The selected colour-pass state, after the owning cache's overrides.
     pub state: crate::render_state::RenderState,
     pub stencil_reference: u32,
@@ -144,7 +276,36 @@ pub struct ParticleFogInputs<'a> {
     pub curve: &'a TextureView,
     pub depth: &'a TextureView,
 }
+pub struct ParticleLightingInputs<'a> {
+    pub probes: &'a Buffer,
+    pub words: &'a Buffer,
+    pub cubes: &'a TextureView,
+    pub sampler: &'a Sampler,
+    pub planes: &'a Buffer,
+}
+pub struct ParticleDirectLightingInputs<'a> {
+    pub pixel: Option<ParticlePixelLightingInputs<'a>>,
+    pub lights: &'a Buffer,
+    pub pool: &'a Buffer,
+    pub heads: &'a Buffer,
+    pub shadows: &'a Buffer,
+    pub parallel: &'a Buffer,
+    pub parallel_depth: &'a TextureView,
+    pub local: Option<(&'a Buffer, &'a TextureView)>,
+    pub grid: crate::tiled_lighting::TileGrid,
+    pub sun: Option<([f32; 3], [f32; 3])>,
+}
+pub struct ParticlePixelLightingInputs<'a> {
+    pub screen: &'a TextureView,
+    pub cloud: &'a TextureView,
+    pub cloud_sampler: &'a Sampler,
+    pub area: Option<&'a TextureView>,
+}
 pub struct ParticleViewInputs<'a> {
+    pub distortion_sources: &'a super::screen_effects::ScreenEffectSources,
+    pub surface_sampler: Option<&'a Sampler>,
+    pub direct: Option<ParticleDirectLightingInputs<'a>>,
+    pub lighting: Option<ParticleLightingInputs<'a>>,
     pub matrices: &'a crate::rendering::view_history::ViewMatrices,
     pub local_time: f32,
     pub camera_exposure: f32,
@@ -179,22 +340,34 @@ pub struct ParticlePass {
     instances: Buffer,
     objects: Buffer,
     transparency_parameters: Buffer,
+    root_lighting: Buffer,
     transparency: Option<transparency::TransparencyPass>,
+    distortion: Option<([u32; 2], bool, super::screen_effects::passes::DistortionPasses, super::water_hdr::WaterHdr)>,
     max_instances: usize,
     max_draws: usize,
     grids: Vec<GridGpu>,
     view_layout: BindGroupLayout,
     material_layout: BindGroupLayout,
     fog_layout: BindGroupLayout,
+    lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
     wrap: Sampler,
     clamp: Sampler,
     mirror: Sampler,
     bilinear: Sampler,
+    _unused_volume: Texture,
+    unused_volume_view: TextureView,
+    _unused_shadow: Texture,
+    unused_shadow_view: TextureView,
+    comparison: Sampler,
+    _unused_cube: Texture,
+    unused_cube_view: TextureView,
     materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
+    material_sampler: Option<SamplerId>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
+    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 6], [SamplerId; 2]), BindGroup)>,
     colour_format: TextureFormat,
     depth_format: TextureFormat,
     instance_bytes: Vec<u8>,
@@ -264,13 +437,27 @@ impl ParticlePass {
                 buffer_entry(3, false),
                 buffer_entry(4, true),
                 buffer_entry(5, false),
+                buffer_entry(6, false),
             ],
         );
         let material_layout = device.create_bind_group_layout(
             Some("particle material"),
             &std::iter::once(buffer_entry(0, true))
-                .chain((1..=5).map(|b| texture_entry(b, TextureViewDimension::D2, false)))
-                .chain((6..=8).map(sampler_entry))
+                .chain(
+                    (1..=5)
+                        .chain(10..=13)
+                        .chain(15..=17)
+                        .chain(19..=20)
+                        .chain(21..=27)
+                        .map(|b| texture_entry(b, TextureViewDimension::D2, false)),
+                )
+                .chain((6..=8).chain([14, 18]).map(sampler_entry))
+                .chain(std::iter::once(texture_entry(28, TextureViewDimension::D3, false)))
+                .chain(std::iter::once(texture_entry(
+                    9,
+                    TextureViewDimension::D3,
+                    false,
+                )))
                 .collect::<Vec<_>>(),
         );
         let fog_layout = device.create_bind_group_layout(
@@ -285,12 +472,47 @@ impl ParticlePass {
                 buffer_entry(167, false),
             ],
         );
+        let lighting_layout = device.create_bind_group_layout(
+            Some("particle scene lighting"),
+            &[
+                buffer_entry(100, false),
+                buffer_entry(119, false),
+                buffer_entry(158, false),
+                texture_entry(156, TextureViewDimension::CubeArray, false),
+                sampler_entry(157),
+                buffer_entry(120, false),
+                texture_entry(121, TextureViewDimension::D2Array, true),
+                texture_entry(123, TextureViewDimension::D2, false),
+                texture_entry(124, TextureViewDimension::D2, false),
+                sampler_entry(125),
+                texture_entry(133, TextureViewDimension::D2Array, false),
+                BindGroupLayoutEntry {
+                    binding: 122,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                    count: None,
+                },
+                buffer_entry(126, false),
+                texture_entry(127, TextureViewDimension::D2Array, true),
+                BindGroupLayoutEntry {
+                    binding: 128,
+                    visibility: ShaderStages::VERTEX_FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Comparison),
+                    count: None,
+                },
+                buffer_entry(129, false),
+                buffer_entry(130, false),
+                buffer_entry(131, false),
+                buffer_entry(132, false),
+            ],
+        );
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("particle colour"),
             bind_group_layouts: &[
                 Some(&view_layout),
                 Some(&material_layout),
                 Some(&fog_layout),
+                Some(&lighting_layout),
             ],
             immediate_size: 0,
         });
@@ -300,14 +522,43 @@ impl ParticlePass {
             .collect::<Vec<_>>()
             .join("\n")
             .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
+        let shared_source = |source: &str| {
+            source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let lighting_source = [
+            super::probe_weights::SHADER_SOURCE.to_owned(),
+            shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_light_scattering.wgsl"
+            )),
+            shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
+            shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
+            include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_parallel_receiver.wgsl"
+            )),
+            shared_source(include_str!(
+                "../../../assets/shaders/dh2_local_receiver.wgsl"
+            )),
+            include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
+        ]
+        .join("\n")
+        .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
         let source = format!(
-            "{}\n{}\n{}\n{fog}",
+            "{lighting_source}\n{}\n{}\n{}\n{fog}",
             include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
             include_str!("../../../assets/shaders/dh2_fog_alpha.wgsl"),
             include_str!("../../../assets/shaders/dh2_particles.wgsl")
         );
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
-            label: Some("particle unlit colour"),
+            label: Some("particle colour"),
             source: ShaderSource::Wgsl(source.into()),
         });
         let storage = |label, size| {
@@ -375,9 +626,13 @@ impl ParticlePass {
         };
         let mut view = UniformBuffer::from(ViewParameters {
             clip_from_game_world: Mat4::IDENTITY,
+            game_world_from_clip: Mat4::IDENTITY,
             camera_time: Vec4::ZERO,
             inverse_z: Vec4::ZERO,
             exposure_extent: Vec4::ONE,
+            scene_grid: UVec4::ZERO,
+            sun_direction: Vec4::ZERO,
+            sun_colour: Vec4::ZERO,
         });
         view.write_buffer(device, queue);
         let mut fog_view = UniformBuffer::from(FogViewParameters {
@@ -385,28 +640,105 @@ impl ParticlePass {
             exposure: 1.,
         });
         fog_view.write_buffer(device, queue);
+        // Required only by the host's fixed binding layout when no authored
+        // volume is used. The disabled shader branch cannot sample this image.
+        let unused_volume = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("unused particle volume binding"),
+                size: Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D3,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            &[0; 4],
+        );
+        let unused_volume_view = unused_volume.create_view(&default());
+        // Dormant fixed-layout binding for unlit scenes with no probe network.
+        let unused_cube = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("unused particle reflection binding"),
+                size: Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 6,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::LayerMajor,
+            &[0; 24],
+        );
+        let unused_cube_view = unused_cube.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::CubeArray),
+            ..default()
+        });
+        let unused_shadow = device.create_texture(&TextureDescriptor {
+            label: Some("unused particle shadow binding"),
+            size: Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Depth32Float,
+            usage: TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let unused_shadow_view = unused_shadow.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            ..default()
+        });
+        let root_lighting = storage("particle root probe records", (max_draws * 9 * 16) as u64);
         Ok(Self {
             view,
             fog_view,
             instances,
             objects,
             transparency_parameters,
+            root_lighting,
             transparency: None,
+            distortion: None,
             max_instances,
             max_draws,
             grids,
             view_layout,
             material_layout,
             fog_layout,
+            lighting_layout,
             pipeline_layout,
             shader,
             wrap: sampler(AddressMode::Repeat, MipmapFilterMode::Linear),
             clamp: sampler(AddressMode::ClampToEdge, MipmapFilterMode::Nearest),
             mirror: sampler(AddressMode::MirrorRepeat, MipmapFilterMode::Nearest),
             bilinear: sampler(AddressMode::Repeat, MipmapFilterMode::Nearest),
+            _unused_volume: unused_volume,
+            unused_volume_view,
+            _unused_shadow: unused_shadow,
+            unused_shadow_view,
+            comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
+            _unused_cube: unused_cube,
+            unused_cube_view,
             materials: HashMap::new(),
+            material_sampler: None,
             view_bindings: None,
             fog_binding: None,
+            lighting_binding: None,
             colour_format,
             depth_format,
             instance_bytes: Vec::with_capacity(max_instances * 96),
@@ -420,7 +752,9 @@ impl ParticlePass {
         source: Arc<ParticleMaterial>,
         state: crate::render_state::RenderState,
         accumulation: bool,
+        anisotropic_sampler: &Sampler,
     ) -> Result<MaterialGpu, String> {
+        let accumulation = accumulation && !source.distortion;
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
         let mut images = Vec::new();
@@ -451,6 +785,58 @@ impl ParticlePass {
         let opacity = views
             .get("fx/opacity")
             .ok_or("particle opacity image absent")?;
+        let volume_view = if let Some(volume) = &source.volume {
+            let texture = device.create_texture_with_data(
+                queue,
+                &TextureDescriptor {
+                    label: Some(&source.name),
+                    size: Extent3d {
+                        width: volume.info.width,
+                        height: volume.info.height,
+                        depth_or_array_layers: volume.depth,
+                    },
+                    mip_level_count: volume.info.mip_count,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: super::image_formats::gpu_image_format(volume.info.format),
+                    usage: TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                TextureDataOrder::MipMajor,
+                &volume.payload,
+            );
+            let view = texture.create_view(&default());
+            images.push(texture);
+            Some(view)
+        } else {
+            None
+        };
+        let distortion_volume_view = if let Some(volume) = &source.distortion_volume {
+            let texture = device.create_texture_with_data(
+                queue,
+                &TextureDescriptor {
+                    label: Some(&source.name),
+                    size: Extent3d {
+                        width: volume.info.width,
+                        height: volume.info.height,
+                        depth_or_array_layers: volume.depth,
+                    },
+                    mip_level_count: volume.info.mip_count,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: super::image_formats::gpu_image_format(volume.info.format),
+                    usage: TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                TextureDataOrder::MipMajor,
+                &volume.payload,
+            );
+            let view = texture.create_view(&default());
+            images.push(texture);
+            Some(view)
+        } else {
+            None
+        };
         let surface_sampler = if source.option("fx/opt/use_mirror_sampler")? != 0 {
             &self.mirror
         } else if source.option("fx/opt/use_clamp_sampler")? != 0 {
@@ -508,11 +894,84 @@ impl ParticlePass {
                     binding: 8,
                     resource: BindingResource::Sampler(&self.clamp),
                 },
+                BindGroupEntry {
+                    binding: 15,
+                    resource: BindingResource::TextureView(
+                        views.get("glossmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 16,
+                    resource: BindingResource::TextureView(
+                        views.get("metallicmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 17,
+                    resource: BindingResource::TextureView(
+                        views.get("specularmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 18,
+                    resource: BindingResource::Sampler(anisotropic_sampler),
+                },
+                BindGroupEntry {
+                    binding: 19,
+                    resource: BindingResource::TextureView(views.get("bumpmap").unwrap_or(opacity)),
+                },
+                BindGroupEntry {
+                    binding: 20,
+                    resource: BindingResource::TextureView(views.get("detailbumpmap").unwrap_or(opacity)),
+                },
+                BindGroupEntry { binding: 21, resource: BindingResource::TextureView(views.get("diffuselookup").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 22, resource: BindingResource::TextureView(views.get("sheenmap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 23, resource: BindingResource::TextureView(views.get("emissivemap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 24, resource: BindingResource::TextureView(views.get("emissivemaskmap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 25, resource: BindingResource::TextureView(views.get("fuzz/mask").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 26, resource: BindingResource::TextureView(views.get("translucencymap").unwrap_or(opacity)) },
+                BindGroupEntry { binding: 27, resource: BindingResource::TextureView(views.get("selfshadowedbumpmap").unwrap_or(opacity)) },
+                BindGroupEntry {
+                    binding: 14,
+                    resource: BindingResource::Sampler(&self.bilinear),
+                },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: BindingResource::TextureView(
+                        views.get("fx/macrouvmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: BindingResource::TextureView(
+                        views.get("particlefresnelnormalmap").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 13,
+                    resource: BindingResource::TextureView(
+                        views.get("particlefresnellut").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry {
+                    binding: 10,
+                    resource: BindingResource::TextureView(
+                        views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
+                    ),
+                },
+                BindGroupEntry { binding: 28, resource: BindingResource::TextureView(
+                    distortion_volume_view.as_ref().unwrap_or(&self.unused_volume_view)) },
+                BindGroupEntry {
+                    binding: 9,
+                    resource: BindingResource::TextureView(
+                        volume_view.as_ref().unwrap_or(&self.unused_volume_view),
+                    ),
+                },
             ],
         );
         let blends = crate::render_state::blend_state(&state);
         let formats = [
-            if accumulation {
+            if accumulation || source.distortion {
                 TextureFormat::Rgba16Float
             } else {
                 self.colour_format
@@ -539,23 +998,27 @@ impl ParticlePass {
             );
         }
         let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
+        let constants = [("particle_lighting_mode", f64::from(if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? })),
+            ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
         let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
             label: Some("particle sprite colour"),
             layout: Some(&self.pipeline_layout),
             vertex: RawVertexState {
                 module: &self.shader,
                 entry_point: Some("particle_vertex"),
-                compilation_options: default(),
+                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                 buffers: &[],
             },
             fragment: Some(RawFragmentState {
                 module: &self.shader,
-                entry_point: Some(if accumulation {
+                entry_point: Some(if source.distortion {
+                    "particle_distortion_fragment"
+                } else if accumulation {
                     "particle_accumulation_fragment"
                 } else {
                     "particle_fragment"
                 }),
-                compilation_options: default(),
+                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                 targets: &targets,
             }),
             primitive: PrimitiveState {
@@ -591,10 +1054,11 @@ impl ParticlePass {
         if draws.is_empty() {
             return Ok(());
         }
-        let accumulation = draws[0].transparency.mode != 0;
+        let accumulation = draws.iter().find(|draw| !draw.material.distortion)
+            .is_some_and(|draw| draw.transparency.mode != 0);
         if draws
             .iter()
-            .any(|draw| (draw.transparency.mode != 0) != accumulation)
+            .any(|draw| !draw.material.distortion && (draw.transparency.mode != 0) != accumulation)
         {
             return Err("particle transparency mode changed within a frame".into());
         }
@@ -618,6 +1082,23 @@ impl ParticlePass {
         if count > self.max_instances || draws.len() > self.max_draws {
             return Err("particle draw exceeds admitted declaration capacity".into());
         }
+        if input.surface_sampler.is_none()
+            && draws.iter().any(|draw| {
+                draw.material
+                    .lighting
+                    .as_ref()
+                    .is_some_and(|light| light.bump || light.maps[1] || light.maps[2]
+                        || light.pixel.as_ref().is_some_and(|p| p.self_shadowed_bump || p.maps[2] || p.maps[3]
+                            || p.translucency.as_ref().is_some_and(|t| !t.vertex_alpha)))
+            })
+        {
+            return Err("particle surface maps await the canonical anisotropic sampler".into());
+        }
+        let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap);
+        if self.material_sampler != Some(surface_sampler.id()) {
+            self.materials.clear();
+            self.material_sampler = Some(surface_sampler.id());
+        }
         for draw in draws {
             let key = (draw.material.name.clone(), draw.state);
             if !self.materials.contains_key(&key) {
@@ -629,12 +1110,34 @@ impl ParticlePass {
                         draw.material.clone(),
                         draw.state,
                         accumulation,
+                        surface_sampler,
                     )?,
                 );
             }
         }
         let position = input.matrices.position;
+        let sun = input
+            .direct
+            .as_ref()
+            .and_then(|v| v.sun)
+            .unwrap_or(([0.; 3], [0.; 3]));
+        let mut inverse_game = Mat4::IDENTITY.to_cols_array_2d();
+        if draws.iter().any(|draw| draw.material.distortion || draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
+            && !crate::render_shadow::invert_rows(&input.matrices.view_projection, &mut inverse_game) {
+            return Err("particle pixel lighting requires an invertible view projection".into());
+        }
         self.view.set(ViewParameters {
+            game_world_from_clip: Mat4::from_cols_array_2d(&inverse_game).transpose(),
+            scene_grid: input.direct.as_ref().map_or(UVec4::ZERO, |v| {
+                UVec4::new(
+                    v.grid.lighting_shift,
+                    v.grid.dimensions[0],
+                    v.grid.dimensions[1],
+                    0,
+                )
+            }),
+            sun_direction: Vec3::from_array(sun.0).extend(0.),
+            sun_colour: Vec3::from_array(sun.1).extend(0.),
             clip_from_game_world: Mat4::from_cols_array_2d(&input.matrices.view_projection)
                 .transpose(),
             camera_time: Vec3::from_array(position).extend(input.local_time),
@@ -656,9 +1159,9 @@ impl ParticlePass {
         for (tag, draw) in draws.iter().enumerate() {
             for instance in &draw.instances {
                 for v in [
-                    Vec3::from_array(instance.position).extend(0.),
-                    Vec3::from_array(instance.axes[1]).extend(0.),
-                    Vec3::from_array(instance.axes[2]).extend(0.),
+                    Vec3::from_array(instance.position).extend(instance.axes[0][0]),
+                    Vec3::from_array(instance.axes[1]).extend(instance.axes[0][1]),
+                    Vec3::from_array(instance.axes[2]).extend(instance.axes[0][2]),
                 ] {
                     self.instance_bytes
                         .extend(v.to_array().into_iter().flat_map(f32::to_le_bytes));
@@ -708,6 +1211,155 @@ impl ParticlePass {
                 .as_ref()
                 .ok_or("particle transparency records absent")?,
         );
+        let root_lighting = ShaderBuffer::from(
+            draws
+                .iter()
+                .map(|draw| draw.lighting.unwrap_or([[0.; 4]; 9]).map(Vec4::from_array))
+                .collect::<Vec<_>>(),
+        );
+        queue.write_buffer(
+            &self.root_lighting,
+            0,
+            root_lighting
+                .data
+                .as_ref()
+                .ok_or("particle root probe records absent")?,
+        );
+        if draws.iter().any(|d| d.lighting.is_some()) && input.lighting.is_none() {
+            return Err("lit particle scene GPU resources unavailable".into());
+        }
+        let lighting = input.lighting.as_ref();
+        let probes = lighting.map_or(&self.instances, |v| v.probes);
+        let words = lighting.map_or(&self.instances, |v| v.words);
+        let planes = lighting.map_or(&self.instances, |v| v.planes);
+        let cubes = lighting.map_or(&self.unused_cube_view, |v| v.cubes);
+        let reflection_sampler = lighting.map_or(&self.wrap, |v| v.sampler);
+        let direct = input.direct.as_ref();
+        if draws.iter().any(|d| {
+            d.material
+                .option("fx/opt/use_lighting")
+                .is_ok_and(|v| v == 1 || v >= 3)
+        }) && direct.is_none()
+        {
+            return Err("particle local-light inputs unavailable".into());
+        }
+        let directional = direct.map_or(&self.instances, |d| d.parallel);
+        let directional_depth = direct.map_or(&self.unused_shadow_view, |d| d.parallel_depth);
+        let local = direct
+            .and_then(|d| d.local)
+            .map_or(&self.instances, |d| d.0);
+        let local_depth = direct
+            .and_then(|d| d.local)
+            .map_or(&self.unused_shadow_view, |d| d.1);
+        let lights = direct.map_or(&self.instances, |d| d.lights);
+        let pool = direct.map_or(&self.instances, |d| d.pool);
+        let heads = direct.map_or(&self.instances, |d| d.heads);
+        let shadows = direct.map_or(&self.instances, |d| d.shadows);
+        let pixel = direct.and_then(|d| d.pixel.as_ref());
+        if draws.iter().any(|draw| draw.material.lighting.as_ref().is_some_and(|light| light.pixel.is_some()))
+            && pixel.is_none() {
+            return Err("particle pixel-lighting scene inputs unavailable".into());
+        }
+        let screen = pixel.map_or(input.fog.world, |p| p.screen);
+        let cloud = pixel.map_or(input.fog.world, |p| p.cloud);
+        let cloud_sampler = pixel.map_or(&self.clamp, |p| p.cloud_sampler);
+        // A frame with no textured area lights uses the shader's slice255
+        // branch. The fixed layout's array binding is then never sampled.
+        let area = pixel.and_then(|p| p.area).unwrap_or(input.fog.curve);
+        let lighting_key = (
+            [
+                probes.id(),
+                words.id(),
+                planes.id(),
+                directional.id(),
+                local.id(),
+                lights.id(),
+                pool.id(),
+                heads.id(),
+                shadows.id(),
+            ],
+            [cubes.id(), directional_depth.id(), local_depth.id(), screen.id(), cloud.id(), area.id()],
+            [reflection_sampler.id(), cloud_sampler.id()],
+        );
+        if self
+            .lighting_binding
+            .as_ref()
+            .is_none_or(|v| v.0 != lighting_key)
+        {
+            self.lighting_binding = Some((
+                lighting_key,
+                device.create_bind_group(
+                    Some("particle shared scene lighting"),
+                    &self.lighting_layout,
+                    &[
+                        BindGroupEntry {
+                            binding: 100,
+                            resource: probes.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 119,
+                            resource: words.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 158,
+                            resource: planes.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 156,
+                            resource: BindingResource::TextureView(cubes),
+                        },
+                        BindGroupEntry {
+                            binding: 120,
+                            resource: directional.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 121,
+                            resource: BindingResource::TextureView(directional_depth),
+                        },
+                        BindGroupEntry {
+                            binding: 122,
+                            resource: BindingResource::Sampler(&self.comparison),
+                        },
+                        BindGroupEntry { binding: 123, resource: BindingResource::TextureView(screen) },
+                        BindGroupEntry { binding: 124, resource: BindingResource::TextureView(cloud) },
+                        BindGroupEntry { binding: 125, resource: BindingResource::Sampler(cloud_sampler) },
+                        BindGroupEntry { binding: 133, resource: BindingResource::TextureView(area) },
+                        BindGroupEntry {
+                            binding: 126,
+                            resource: local.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 127,
+                            resource: BindingResource::TextureView(local_depth),
+                        },
+                        BindGroupEntry {
+                            binding: 128,
+                            resource: BindingResource::Sampler(&self.comparison),
+                        },
+                        BindGroupEntry {
+                            binding: 129,
+                            resource: lights.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 130,
+                            resource: pool.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 131,
+                            resource: heads.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 132,
+                            resource: shadows.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 157,
+                            resource: BindingResource::Sampler(reflection_sampler),
+                        },
+                    ],
+                ),
+            ));
+        }
         let objects = ShaderBuffer::from(draws.iter().map(|d| d.fog).collect::<Vec<_>>());
         queue.write_buffer(
             &self.objects,
@@ -746,6 +1398,10 @@ impl ParticlePass {
                             BindGroupEntry {
                                 binding: 4,
                                 resource: self.fog_view.binding().unwrap(),
+                            },
+                            BindGroupEntry {
+                                binding: 6,
+                                resource: self.root_lighting.as_entire_binding(),
                             },
                             BindGroupEntry {
                                 binding: 5,
@@ -857,8 +1513,10 @@ impl ParticlePass {
             multiview_mask: None,
         });
         pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
+        pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
         let mut first = 0u32;
         for draw in draws {
+            if draw.material.distortion { first += draw.instances.len() as u32; continue; }
             let level = draw.grid_level.min(5) as usize;
             let material = &self.materials[&(draw.material.name.clone(), draw.state)];
             pass.set_pipeline(&material.pipeline);
@@ -876,6 +1534,51 @@ impl ParticlePass {
                 .as_mut()
                 .unwrap()
                 .record_resolve(device, queue, encoder, &input)?;
+        }
+        if draws.iter().any(|draw| draw.material.distortion) {
+            if self.distortion.as_ref().is_none_or(|(extent, compressed, _, _)|
+                *extent != input.extent || *compressed != input.compressed_hdr) {
+                let format = if input.compressed_hdr { TextureFormat::Rg11b10Ufloat } else { TextureFormat::Rgba16Float };
+                self.distortion = Some((input.extent, input.compressed_hdr,
+                    super::screen_effects::passes::DistortionPasses::new(device, queue, input.distortion_sources, input.extent, 0, format)?,
+                    super::water_hdr::WaterHdr::new(device, queue, input.extent, input.compressed_hdr, self.colour_format)?));
+            }
+            let (_, _, vectors, hdr) = self.distortion.as_mut().unwrap();
+            vectors.record_vectors(device, queue, encoder, input.distortion_sources, &[], input.local_time, input.depth, input.inverse_z)?;
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("particle distortion vectors"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &vectors.vector_view, depth_slice: None, resolve_target: None,
+                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: input.depth, depth_ops: None,
+                    stencil_ops: self.depth_format.has_stencil_aspect().then_some(Operations {load: LoadOp::Load, store: StoreOp::Store}),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            });
+            pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
+            pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
+            let mut first = 0;
+            for draw in draws {
+                let count = draw.instances.len() as u32;
+                if draw.material.distortion {
+                    let level = draw.grid_level.min(5) as usize;
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state)];
+                    pass.set_pipeline(&material.pipeline);
+                    pass.set_stencil_reference(draw.stencil_reference);
+                    pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[level], &[]);
+                    pass.set_bind_group(1, &material.binding, &[]);
+                    pass.set_index_buffer(*self.grids[level].indices.slice(..), IndexFormat::Uint16);
+                    pass.draw_indexed(0..self.grids[level].count, 0, first..first+count);
+                }
+                first += count;
+            }
+            drop(pass);
+            let prepared = hdr.prepare(device, queue, encoder, input.colour, input.extent,
+                input.camera_exposure, input.white_level, input.adaptation)?;
+            vectors.record_resolve(device, encoder, prepared.source(), prepared.colour());
+            prepared.finish_source(encoder);
         }
         Ok(())
     }

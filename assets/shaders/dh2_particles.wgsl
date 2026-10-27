@@ -1,10 +1,17 @@
-// particle/add_default's unlit sprite path. Shared material fog is appended by
+// Installed fx/opt/use_lighting is a material specialization, not a per-pixel branch.
+override particle_lighting_mode:u32=0u;
+override particle_distortion_mode:u32=0u;
+// particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
     clip_from_game_world:mat4x4<f32>,
+    game_world_from_clip:mat4x4<f32>,
     camera_time:vec4<f32>,
     inverse_z:vec4<f32>,
     exposure_extent:vec4<f32>,
+    scene_grid:vec4<u32>,
+    sun_direction:vec4<f32>,
+    sun_colour:vec4<f32>,
 }
 struct ParticleFogView {world_position:vec3<f32>,exposure:f32,}
 struct ParticleInstance {
@@ -24,16 +31,40 @@ struct ParticleGridVertex {position:vec4<f32>,uv:vec4<f32>,}
 @group(0) @binding(4) var<uniform> view:ParticleFogView;
 struct ParticleTransparencyParameters {weights:vec4<f32>,parameters:vec4<f32>,mode:vec4<u32>,}
 @group(0) @binding(5) var<storage,read> particle_transparency:array<ParticleTransparencyParameters>;
+@group(0) @binding(6) var<storage,read> particle_root_lighting:array<array<vec4<f32>,9>>;
 
 struct ParticleTextureLayer {tiling_pan:vec4<f32>,strength:vec4<f32>,rotation_seed:vec4<f32>,}
 struct ParticleMaterialParameters {
-    layers:array<ParticleTextureLayer,3>,
+    layers:array<ParticleTextureLayer,4>,
     colour_adjust:vec4<f32>,
     depth_fade_lookup:vec4<f32>,
     radial_exposure_fog:vec4<f32>,
     distort_options:vec4<u32>,
     colour_options:vec4<u32>,
     fade_options:vec4<u32>,
+    animation_options:vec4<u32>,
+    surface_options:vec4<u32>,
+    macro_fresnel:vec4<f32>,
+    fresnel_uv:vec4<f32>,
+    lighting_parameters:vec4<f32>,
+    lighting_dielectric:vec4<f32>,
+    lighting_metal_diffuse:vec4<f32>,
+    shadow_options:vec4<u32>,
+    surface_map_options:vec4<u32>,
+    surface_ranges:vec4<f32>,
+    lighting_uv:vec4<f32>,
+    normal_options:vec4<u32>,
+    detail_normal:vec4<f32>,
+    distortion_fog:vec4<f32>,
+    alpha_test:f32,
+    pixel_options:vec4<u32>,
+    pixel_parameters:vec4<f32>,
+    emissive:vec4<f32>,
+    emissive_clip:vec4<f32>,
+    pixel_effects:vec4<u32>,
+    fuzz:vec4<f32>,
+    translucency_phase:vec4<f32>,
+    translucency_ramp:array<vec4<f32>,3>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -44,6 +75,26 @@ struct ParticleMaterialParameters {
 @group(1) @binding(6) var particle_trilinear:sampler;
 @group(1) @binding(7) var particle_surface_sampler:sampler;
 @group(1) @binding(8) var linear_clamp:sampler;
+@group(1) @binding(28) var particle_distortion_animation:texture_3d<f32>;
+@group(1) @binding(9) var particle_animation:texture_3d<f32>;
+@group(1) @binding(10) var particle_scroll_mask:texture_2d<f32>;
+@group(1) @binding(11) var particle_macro_uv:texture_2d<f32>;
+@group(1) @binding(12) var particle_fresnel_normal:texture_2d<f32>;
+@group(1) @binding(13) var particle_fresnel_lookup:texture_2d<f32>;
+@group(1) @binding(14) var particle_bilinear:sampler;
+@group(1) @binding(15) var particle_gloss:texture_2d<f32>;
+@group(1) @binding(16) var particle_metallic:texture_2d<f32>;
+@group(1) @binding(17) var particle_specular:texture_2d<f32>;
+@group(1) @binding(19) var particle_bump:texture_2d<f32>;
+@group(1) @binding(20) var particle_detail_bump:texture_2d<f32>;
+@group(1) @binding(21) var particle_diffuse_lookup:texture_2d<f32>;
+@group(1) @binding(22) var particle_sheen:texture_2d<f32>;
+@group(1) @binding(23) var particle_emissive:texture_2d<f32>;
+@group(1) @binding(24) var particle_emissive_mask:texture_2d<f32>;
+@group(1) @binding(25) var particle_fuzz_mask:texture_2d<f32>;
+@group(1) @binding(26) var particle_translucency:texture_2d<f32>;
+@group(1) @binding(27) var particle_self_shadowed_bump:texture_2d<f32>;
+@group(1) @binding(18) var particle_surface_anisotropic:sampler;
 
 struct ParticleFragment {
     @builtin(position) position:vec4<f32>,
@@ -56,6 +107,15 @@ struct ParticleFragment {
     @location(6) @interpolate(flat) transparency_weights:vec4<f32>,
     @location(7) @interpolate(flat) transparency_parameters:vec4<f32>,
     @location(8) @interpolate(flat) transparency_mode:u32,
+    @location(9) world_normal:vec3<f32>,
+    @location(10) world_tangent:vec3<f32>,
+    @location(11) indirect_irradiance:vec3<f32>,
+    @location(12) reflection_gain:f32,
+    @location(13) @interpolate(flat) lighting_record:u32,
+    @location(14) light_basis_x:vec3<f32>,
+    @location(15) light_basis_y:vec3<f32>,
+    @location(16) light_basis_z:vec3<f32>,
+    @location(17) @interpolate(flat) particle_center:vec3<f32>,
 }
 @vertex fn particle_vertex(@builtin(vertex_index) vertex:u32,
     @builtin(instance_index) instance_index:u32)->ParticleFragment {
@@ -71,8 +131,42 @@ struct ParticleFragment {
     output.position=clip;
     output.texture_coordinates=vec4(uv,unpack2x16float(word&0xffffu).x,
         f32((word>>16u)&0x3fffu)*(1.0/16383.0));
+    if particle_distortion_mode!=0u {
+        let f=particle_material.distortion_fog;
+        output.texture_coordinates.w=clamp(exp2(-clamp(clip.w-f.x,0.0,f.y)*f.z),0.0,1.0);
+    }
     output.colour=unpack4x8unorm(instance.parameters.x);
     output.world_position=position;
+    output.particle_center=instance.center.xyz;
+    // Grid1dc200 has local +X normal and +Y tangent. vertex::TransformVertex
+    // applies the instance matrix and normalizes both independently.
+    output.world_normal=normalize(vec3(instance.center.w,instance.axis_y.w,instance.axis_z.w));
+    output.world_tangent=normalize(instance.axis_y.xyz);
+    if particle_lighting_mode==1u {
+        let root=particle_root_lighting[instance.parameters.w];
+        var sh:array<vec3<f32>,9>;
+        for(var coefficient=0u;coefficient<9u;coefficient++) {sh[coefficient]=root[coefficient].rgb;}
+        // Dynamic particle roots use one object tetrahedron/barycentric sample
+        // in WriteIndirectLightingVertexOutput, unlike mode2's position query.
+        let packed=pack_vertex_irradiance_game(sh,output.world_tangent,
+            normalize(instance.axis_z.xyz),output.world_normal,false);
+        output.light_basis_x=packed.chroma_a.xyz;
+        output.light_basis_y=vec3(packed.chroma_a.w,packed.chroma_b.xy);
+        output.light_basis_z=vec3(packed.chroma_b.zw,packed.luminance);
+        output.reflection_gain=root[1].w;
+    }
+    if particle_lighting_mode>=2u {
+        let root=particle_root_lighting[instance.parameters.w];
+        let lighting=tetrahedron_lighting_game(u32(root[6].w),position);
+        let direction=normalize(particle_view.camera_time.xyz-position);
+        output.indirect_irradiance=irradiance(normalize(output.world_normal+direction),lighting.sh);
+        output.reflection_gain=lighting.reflection_gain;
+    }
+    if particle_lighting_mode>=3u {
+        let basis=particle_hl2_basis(output.world_tangent,normalize(instance.axis_z.xyz),output.world_normal);
+        let colours=particle_vertex_lights(position,output.world_normal,basis,clip);
+        output.light_basis_x=colours[0];output.light_basis_y=colours[1];output.light_basis_z=colours[2];
+    }
     output.fog=material_fog_vertex(clip,vec3(position.x,position.z,-position.y),false,instance.parameters.w);
     output.clip_plane=instance.clip_plane;
     output.fade_radius=vec2(instance.clip_fade.x,unpack2x16float(instance.parameters.z).x);
@@ -80,6 +174,7 @@ struct ParticleFragment {
     output.transparency_weights=transparency.weights;
     output.transparency_parameters=transparency.parameters;
     output.transparency_mode=transparency.mode.x;
+    output.lighting_record=instance.parameters.w;
     return output;
 }
 fn particle_pan(coordinates:vec4<f32>,layer:ParticleTextureLayer)->vec2<f32> {
@@ -91,6 +186,29 @@ fn particle_pan(coordinates:vec4<f32>,layer:ParticleTextureLayer)->vec2<f32> {
     return uv*layer.tiling_pan.xy+time*layer.tiling_pan.zw;
 }
 struct ParticleColour {colour:vec4<f32>,albedo:vec3<f32>,}
+fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:vec3<f32>)->f32 {
+    let material=particle_material;
+    if material.surface_options.y!=0u {
+        var fresnel_normal=normal;
+        if material.surface_options.z!=0u {
+            let uv=coordinates.xy*material.fresnel_uv.xy+material.fresnel_uv.zw;
+            let xy=textureSample(particle_fresnel_normal,particle_trilinear,uv).xy;
+            // The same global.hlsl BC5 reconstruction used by dh2_surface.
+            let ts=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
+            let tangent=normalize(input.world_tangent);
+            let bitangent=cross(normal,tangent);
+            fresnel_normal=normalize(ts.x*tangent+ts.y*bitangent+ts.z*normal);
+        }
+        let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
+        let cosine=clamp(dot(view_direction,fresnel_normal),0.0,1.0);
+        var fresnel=min(cosine/material.macro_fresnel.z,1.0);
+        if material.surface_options.w!=0u {
+            fresnel=textureSample(particle_fresnel_lookup,linear_clamp,vec2(cosine)).x;
+        }
+        return pow(fresnel,material.macro_fresnel.w);
+    }
+    return 1.0;
+}
 fn particle_colour(input:ParticleFragment)->ParticleColour {
     let material=particle_material;
     let coordinates=input.texture_coordinates;
@@ -110,6 +228,14 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         }
     }
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
+    let normal=normalize(input.world_normal);
+    if material.surface_options.x!=0u {
+        let tile=material.macro_fresnel.y;
+        let a=textureSample(particle_macro_uv,particle_bilinear,input.world_position.yz*tile).xy*2.0-1.0;
+        let b=textureSample(particle_macro_uv,particle_bilinear,input.world_position.zx*tile).xy*2.0-1.0;
+        let c=textureSample(particle_macro_uv,particle_bilinear,input.world_position.xy*tile).xy*2.0-1.0;
+        distorted=vec3(distorted.xy+(a*normal.x+b*normal.y+c*normal.z)*material.macro_fresnel.x,distorted.z);
+    }
     let opacity_layer=material.layers[2];
     let angle=particle_view.camera_time.w*opacity_layer.rotation_seed.x;
     let c=cos(angle);let s=sin(angle);
@@ -121,7 +247,16 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let delta=coordinates.xy+distorted.xy-vec2(1.0);
         colour=vec4(pow(clamp(1.0-dot(delta,delta),0.0,1.0),material.radial_exposure_fog.x));
     } else {
-        colour.a=textureSample(particle_opacity,particle_surface_sampler,opacity_uv).x;
+        if material.animation_options.x!=0u {
+            // particles::TextureColor uses unrotated distorted XY for the
+            // volume, while ordinary opacity/diffuse retain opacity rotation.
+            let volume_uv=vec3(distorted.xy*opacity_layer.tiling_pan.xy+
+                opacity_layer.tiling_pan.zw*particle_view.camera_time.w,coordinates.z);
+            let animation=textureSample(particle_animation,particle_surface_sampler,volume_uv);
+            colour=select(animation,vec4(1.0,1.0,1.0,animation.x),material.animation_options.y!=0u);
+        } else {
+            colour.a=textureSample(particle_opacity,particle_surface_sampler,opacity_uv).x;
+        }
         if material.fade_options.x!=0u {colour.a*=distorted.z;}
         if material.colour_options.y!=0u {colour=vec4(textureSample(particle_diffuse,particle_surface_sampler,opacity_uv).rgb,colour.a);}
         if material.colour_options.z!=0u {
@@ -130,6 +265,12 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
             colour=vec4(colour.rgb*textureSample(particle_lookup,linear_clamp,lookup).rgb,colour.a);
         }
         if colour.a<0.5/255.0 {discard;}
+        // add_default applies this after TextureColor's own low-alpha clip,
+        // only in the branch that modulates lookup by the particle alpha.
+        if material.fade_options.w==0u && material.animation_options.z!=0u {
+            colour.a*=textureSample(particle_scroll_mask,particle_trilinear,
+                particle_pan(coordinates,material.layers[3])).x;
+        }
     }
     colour=vec4(colour.rgb*input.colour.rgb*material.colour_adjust.rgb*material.colour_adjust.a,colour.a*input.colour.a);
     let distance=1.0/input.position.w;
@@ -140,20 +281,134 @@ fn particle_colour(input:ParticleFragment)->ParticleColour {
         let uv=input.position.xy/particle_view.exposure_extent.zw;
         let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
         let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
-        var difference=max(0.0,linear-distance);
-        if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
-        colour.a*=clamp(difference/material.depth_fade_lookup.x,0.0,1.0);
+        if material.fade_options.z==3u {
+            // particles::Opacity_Spherical halves GetParticleRadius before
+            // integrating the density over the scene-clipped back hemisphere.
+            let radius=input.fade_radius.y*0.5;
+            let radial_distance=length(input.particle_center-input.world_position);
+            let ratio=radial_distance/radius;
+            let back=distance+sqrt(radius*radius-radial_distance*radial_distance);
+            let thickness=min(linear,back)-distance;
+            colour.a*=shadow_saturate(1.0-exp(-material.depth_fade_lookup.x*(1.0-ratio)*thickness));
+        } else {
+            var difference=max(0.0,linear-distance);
+            if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
+            colour.a*=shadow_saturate(difference/material.depth_fade_lookup.x);
+        }
     }
+    var lighting_normal=normal;
+    if material.normal_options.x!=0u {
+        let uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
+        var xy=textureSample(particle_bump,particle_surface_anisotropic,uv).xy;
+        if material.normal_options.y!=0u {
+            xy+=textureSample(particle_detail_bump,particle_surface_anisotropic,
+                uv*material.detail_normal.x).xy*material.detail_normal.y;
+        }
+        let ts=normalize(vec3(xy,1.001-clamp(dot(xy,xy),0.0,1.0)));
+        let tangent=normalize(input.world_tangent);
+        // 1fbfd0/1fc0d0 publish identity render-root matrices and clear
+        // +1c31 bit1. 319560 therefore supplies modelMtxInverted=+1;
+        // emitter/billboard determinant is not this shader parameter.
+        lighting_normal=normalize(ts.x*tangent+ts.y*cross(normal,tangent)+ts.z*normal);
+    }
+    colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal);
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}
     if input.fade_radius.x>0.0 {
         colour.a*=smoothstep(0.0,input.fade_radius.x,plane_dot);
     }
-    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
-    var rgb=colour.rgb*exposure*particle_view.exposure_extent.x;
+    var lit_colour=colour.rgb;
+    var albedo=colour.rgb;
+    if particle_lighting_mode!=0u {
+        // add_default calls particles::ClipAlpha after all opacity fades,
+        // in addition to TextureColor's earlier texture-only alpha clip.
+        if colour.a<max(material.alpha_test,0.0001) {discard;}
+        let view_direction=normalize(particle_view.camera_time.xyz-input.world_position);
+        let lighting_uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
+        var gloss=mix(material.lighting_parameters.y,
+            mix(material.lighting_parameters.x,material.lighting_parameters.y,colour.a),
+            material.lighting_parameters.w);
+        if material.surface_map_options.x!=0u {
+            gloss=mix(material.lighting_parameters.x,material.lighting_parameters.y,
+                textureSample(particle_gloss,particle_trilinear,lighting_uv).x);
+        }
+        let roughness=1.0-gloss;
+        var metallic=material.lighting_parameters.z;
+        if material.surface_map_options.y!=0u {
+            metallic=mix(material.surface_ranges.x,material.lighting_parameters.z,
+                textureSample(particle_metallic,particle_surface_anisotropic,lighting_uv).x);
+        }
+        var specular=vec3(1.0);
+        if material.surface_map_options.z!=0u {
+            specular=textureSample(particle_specular,particle_surface_anisotropic,lighting_uv).rgb;
+        }
+        let mapped=material_lighting_values(colour.rgb,roughness,metallic,
+            specular,material.surface_map_options.z==0u,material.lighting_dielectric.rgb,material.lighting_metal_diffuse.rgb);
+        let root=particle_root_lighting[input.lighting_record];
+        if particle_lighting_mode==1u {
+            let tangent=normalize(input.world_tangent);
+            let packed=PackedIrradiance(input.light_basis_z.z,
+                vec4(input.light_basis_x,input.light_basis_y.x),vec4(input.light_basis_y.yz,input.light_basis_z.xy));
+            let ambient=unpack_diffuse(packed,lighting_normal,tangent,cross(normal,tangent),normal,1.0,false);
+            var sheen=material.pixel_parameters.x;
+            if material.pixel_options.y!=0u {sheen=textureSample(particle_sheen,particle_trilinear,lighting_uv).x*2.0-1.0;}
+            let surface=ward_surface(lighting_normal,view_direction,roughness,mapped.diffuse,
+                mapped.ior,sheen,material.pixel_parameters.y,mapped.fresnel_strength);
+            var fuzz_mask=1.0;
+            if material.pixel_effects.y!=0u {fuzz_mask=textureSample(particle_fuzz_mask,particle_bilinear,lighting_uv).x;}
+            var translucency=0.0;
+            if material.pixel_effects.z!=0u {
+                // INIT_PIXELCONTEXT's vertex colour is the legacy_color
+                // export from GetParticleColor, before fragment opacity fades.
+                translucency=input.colour.a;
+                if material.pixel_effects.w==0u {translucency=textureSample(particle_translucency,particle_surface_anisotropic,lighting_uv).x;}
+            }
+            var occlusion=vec4(1.0);
+            if material.pixel_parameters.z!=0.0 {
+                occlusion=textureSample(particle_self_shadowed_bump,particle_surface_anisotropic,lighting_uv).wxyz;
+            }
+            let self_shadow=ParticleSelfShadow(occlusion,particle_hl2_basis(tangent,cross(normal,tangent),normal),normal);
+            let lighting=particle_pixel_lights(surface,input.world_position,normal,input.position,translucency,fuzz_mask,self_shadow);
+            var specular_colour=lighting.specular+particle_hq_reflection(input.world_position,lighting_normal,
+                view_direction,roughness*roughness,mapped.reflectance,root[0].w,input.reflection_gain,self_shadow);
+            // HQ_FetchGloss sets pixelCtx.diffuseAlbedo.a to1 after reading
+            // gloss from it. The outer add_default opacity remains separate.
+            let specular_alpha=select(colour.a,1.0,material.lighting_parameters.w!=0.0);
+            if specular_alpha>0.01569 {specular_colour/=specular_alpha;}
+            var emissive=material.emissive.rgb;
+            if material.pixel_options.z!=0u {emissive=textureSample(particle_emissive,particle_surface_anisotropic,lighting_uv).rgb;}
+            if material.pixel_options.w!=0u {
+                let mask=textureSample(particle_emissive_mask,particle_surface_anisotropic,lighting_uv).x;
+                emissive*=smoothstep(mask+material.emissive_clip.y,mask-material.emissive_clip.y,material.emissive_clip.x);
+            }
+            emissive*=material.emissive.w;
+            // Both IntegrateLighting and particles::Lighting call Finalize.
+            if material.emissive_clip.z!=0.0 {
+                emissive/=particle_adaptation[0].x;
+                emissive/=particle_adaptation[0].x;
+            }
+            lit_colour=min(vec3(65000.0),lighting.diffuse+min(vec3(250.0),specular_colour)+
+                evaluate_mapped_diffuse_response(mapped,roughness)*ambient+emissive);
+        } else {
+            let reflection=particle_lq_reflection(input.world_position,lighting_normal,view_direction,
+                roughness*roughness,mapped.ior,mapped.fresnel_strength,root[0].w,input.reflection_gain);
+            albedo*=1.0/3.14159265358979323846;
+            lit_colour=albedo*input.indirect_irradiance+min(vec3(250.0),reflection);
+            if particle_lighting_mode>=3u {
+                let tangent=normalize(input.world_tangent);
+                let basis=particle_hl2_basis(tangent,cross(normal,tangent),normal);
+                let weights=particle_basis_weights(basis,mix(lighting_normal,normal,0.5));
+                lit_colour+=albedo*(input.light_basis_x*weights.x+input.light_basis_y*weights.y+input.light_basis_z*weights.z);
+            }
+        }
+    } else {
+        let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+        lit_colour*=exposure;
+    }
+    var rgb=lit_colour*particle_view.exposure_extent.x;
     let fogged=material_fog_composite(rgb,input.fog);
     rgb=mix(rgb,fogged,material.radial_exposure_fog.z);
-    return ParticleColour(vec4(rgb,colour.a),colour.rgb);
+    return ParticleColour(vec4(rgb,colour.a),albedo);
 }
 @fragment fn particle_fragment(input:ParticleFragment)->@location(0) vec4<f32> {
     return particle_colour(input).colour;
@@ -190,4 +445,71 @@ struct ParticleAccumulation {@location(0) colour:vec4<f32>,@location(1) opacity:
     let b=pow(min(0.02245,input.position.z)*weights.y,weights.z);
     let weight=clamp(a*b,1e-2,3e3)*weights.w;
     return ParticleAccumulation(vec4(colour.rgb,opacity)*(weight*colour.a),vec4(colour.a*opacity,0.0,0.0,0.0));
+}
+
+// particle/dist_blur: accumulate tangent-space distortion and blur vectors.
+@fragment fn particle_distortion_fragment(input:ParticleFragment)->@location(0) vec4<f32> {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    var one:vec2<f32>;
+    if material.animation_options.x!=0u {
+        one=textureSample(particle_distortion_animation,linear_clamp,coordinates.xyz).xy;
+    } else {
+        one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
+    }
+    var distortion=one*material.layers[0].strength.xy;
+    var blur=one*material.layers[0].strength.zw;
+    if material.animation_options.x==0u && material.distort_options.y!=0u {
+        let two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(coordinates,material.layers[1])).xy;
+        blur=(blur+two*material.layers[1].strength.zw)*0.5;
+        distortion=(distortion+two*material.layers[1].strength.xy)*0.5;
+    }
+    var opacity:f32;
+    if material.colour_options.w!=0u {
+        let delta=coordinates.xy-vec2(1.0);
+        opacity=pow(clamp(1.0-dot(delta,delta),0.0,1.0),material.radial_exposure_fog.x);
+    } else if material.animation_options.x!=0u {
+        opacity=textureSample(particle_animation,linear_clamp,coordinates.xyz).x;
+    } else {
+        opacity=textureSample(particle_opacity,particle_trilinear,particle_pan(coordinates,material.layers[2])).x;
+    }
+    if opacity<(1.0/255.0) {discard;}
+    let normal=normalize(input.world_normal);
+    let tangent=normalize(input.world_tangent);
+    let bitangent=cross(normal,tangent);
+    var position=input.world_position;
+    if material.radial_exposure_fog.w!=0.0 {
+        let uv=input.position.xy/particle_view.exposure_extent.zw;
+        let depth=textureSampleLevel(material_fog_depth,linear_clamp,uv,0);
+        let clip=vec4(uv*vec2(2.0,-2.0)+vec2(-1.0,1.0),depth,1.0);
+        let world=particle_view.game_world_from_clip*clip;
+        position=world.xyz/world.w;
+    }
+    let projected=particle_view.clip_from_game_world*vec4(position,1.0);
+    let d=particle_view.clip_from_game_world*vec4(position+distortion.x*tangent+distortion.y*bitangent,1.0);
+    let b=particle_view.clip_from_game_world*vec4(position+blur.x*tangent+blur.y*bitangent,1.0);
+    let raw=d.xy/d.w-projected.xy/projected.w;
+    let blurred=b.xy/b.w-projected.xy/projected.w;
+    var attenuation=opacity;
+    let distance=1.0/input.position.w;
+    if material.fade_options.z!=0u {
+        let depth=textureSampleLevel(material_fog_depth,linear_clamp,input.position.xy/particle_view.exposure_extent.zw,0);
+        let linear=-particle_view.inverse_z.z/(particle_view.inverse_z.x*depth+particle_view.inverse_z.y);
+        if material.fade_options.z==3u {
+            let radius=input.fade_radius.y*0.5;
+            let radial=length(input.particle_center-input.world_position);
+            let back=distance+sqrt(radius*radius-radial*radial);
+            attenuation*=shadow_saturate(1.0-exp(-material.depth_fade_lookup.x*(1.0-radial/radius)*(min(linear,back)-distance)));
+        } else {
+            var difference=max(0.0,linear-distance);
+            if material.fade_options.z==2u {difference=(linear-distance)/input.fade_radius.y;}
+            attenuation*=shadow_saturate(difference/material.depth_fade_lookup.x);
+        }
+    }
+    if material.fade_options.y!=0u {attenuation*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,input.position.w);}
+    attenuation*=particle_fresnel_opacity(input,coordinates,normal);
+    if input.fade_radius.x>0.0 {attenuation*=smoothstep(0.0,input.fade_radius.x,plane);}
+    return attenuation*vec4(blurred*input.colour.zw,raw*input.colour.xy);
 }

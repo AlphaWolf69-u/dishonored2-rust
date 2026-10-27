@@ -26,6 +26,8 @@ pub mod delay;
 pub mod tail;
 pub mod listener;
 pub mod looping;
+pub mod playing;
+pub mod objects;
 pub mod silence;
 
 /// The material pair and physical inputs submitted to the contact FX manager

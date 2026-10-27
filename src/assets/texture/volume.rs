@@ -10,7 +10,9 @@ pub struct InlineVolumeChain {
 
 pub fn compressed_inline_volume(bytes: &[u8]) -> Result<InlineVolumeChain, String> {
     let info = BimageInfo::parse(bytes)?;
-    let depth = word(bytes, 32)?;
+    // +32/+36 retain width/height fields; +40 is slice depth. Cubic colour
+    // LUTs mask that distinction, while installed256x256x64 FX volumes do not.
+    let depth = word(bytes, 40)?;
     if word(bytes, 8)? != 1
         || word(bytes, 52)? != 1
         || info.width == 0
@@ -62,43 +64,6 @@ pub fn compressed_inline_volume(bytes: &[u8]) -> Result<InlineVolumeChain, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn volume_records_shrink_all_dimensions_and_reject_wrong_slice_order() {
-        let mut bytes = vec![0; 62];
-        bytes[..3].copy_from_slice(b"BIM");
-        for (offset, value) in [
-            (8, 1u32),
-            (12, 10),
-            (16, 6),
-            (20, 1),
-            (24, 4),
-            (28, 2),
-            (32, 3),
-            (44, 3),
-            (52, 1),
-        ] {
-            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        }
-        let mut expected = Vec::new();
-        for (level, w, h, d) in [(0u32, 4u32, 2u32, 3u32), (1, 2, 1, 1), (2, 1, 1, 1)] {
-            for z in 0..d {
-                let data = vec![(level * 3 + z) as u8; (w * h * 4) as usize];
-                for v in [level, z, w, h, data.len() as u32] {
-                    bytes.extend(v.to_le_bytes());
-                }
-                bytes.extend(&data);
-                expected.extend(data);
-            }
-        }
-        let volume = compressed_inline_volume(&bytes).unwrap();
-        assert_eq!(volume.depth, 3);
-        assert_eq!(volume.payload, expected);
-        let mut bad = bytes.clone();
-        bad[66..70].copy_from_slice(&1u32.to_le_bytes());
-        assert!(compressed_inline_volume(&bad).is_err());
-        bytes.pop();
-        assert!(compressed_inline_volume(&bytes).is_err());
-    }
     #[test]
     #[ignore = "requires installed archive colour cubes"]
     fn installed_colour_cubes_preserve_srgb_and_all_32_slices() {

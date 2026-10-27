@@ -36,6 +36,7 @@ use std::{
 mod startup;
 
 struct PhysicsEntity {
+    name: String,
     components: EntityComponents,
     class: usize,
     environment: Option<(usize, bool)>,
@@ -95,15 +96,56 @@ impl PhysicsScene {
             &self.world.broadphase.query_trees(),
             crate::gameplay::point_query::PointQuantization {
                 offset: self.world.quantization.offset[..3].try_into().unwrap(),
-                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
+                scale: self.world.quantization.inverse_scale[..3]
+                    .try_into()
+                    .unwrap(),
             },
             crate::gameplay::ray_query::RayQuantization {
                 offset: self.world.quantization.offset[..3].try_into().unwrap(),
                 scale: self.world.quantization.scale[..3].try_into().unwrap(),
             },
-            self.geometry.shapes.iter().map(|shape| shape.query_shapes.clone()).collect(),
+            self.geometry
+                .shapes
+                .iter()
+                .map(|shape| shape.query_shapes.clone())
+                .collect(),
             |body| self.world.quantization.packed.unpack_bounds(body.bounds)[1][2],
-        ).map(Arc::new)
+        )?
+        .with_wind_owners(|body| {
+            let data =
+                crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?;
+            let entity = data.entity(|handle| self.owner(handle).ok())?;
+            let entity = self
+                .entities
+                .get(entity)
+                .ok_or("wind collision entity absent")?;
+            let class = self.types.classes().hierarchy().type_id(entity.class)?;
+            if !(self.trigger_range[0]..=self.trigger_range[1]).contains(&class) {
+                return Ok(None);
+            }
+            if data.component.class_id != self.classes[0] {
+                return Err("wind query trigger body has incompatible component owner".into());
+            }
+            let trigger = self
+                .triggers
+                .get(data.component.slot)
+                .ok_or("wind collision trigger component absent")?;
+            let Some(wind) = trigger.wind else {
+                return Ok(None);
+            };
+            let entity = self
+                .owner(wind)?
+                .entity
+                .ok_or("trigger wind has no entity")?;
+            Ok(Some(
+                self.entities
+                    .get(entity)
+                    .ok_or("trigger wind entity absent")?
+                    .name
+                    .clone(),
+            ))
+        })
+        .map(Arc::new)
     }
 
     /// The point-query half of1fc710. This returns the selected body's packed
@@ -300,6 +342,7 @@ impl PhysicsScene {
                 .ok_or_else(|| format!("trigger entity class unsupported: {class}"))?;
             if existing.is_none() {
                 let mut entity = PhysicsEntity {
+                    name: placement.binding.entity_id.clone(),
                     components: EntityComponents::new(entity_index),
                     class,
                     environment: volume_indices
@@ -400,7 +443,7 @@ impl PhysicsScene {
                     }).ok_or("audio entity class name absent")?;
                     let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
                     let index = scene.entities.len();
-                    scene.entities.push(PhysicsEntity { components: EntityComponents::new(index), class,
+                    scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), components: EntityComponents::new(index), class,
                         environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0, priority: 0, pose: binding.frame });
                     entity_indices.insert(binding.entity_id.clone(), index);
                     index

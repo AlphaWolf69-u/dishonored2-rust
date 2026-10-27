@@ -45,10 +45,22 @@ pub struct WorldPointRequest {
 }
 
 impl WorldPointRequest {
+    /// 677ec0's zero-distance all-hit query for trigger-linked wind owners.
+    pub fn wind(point: [f32; 3]) -> Self {
+        let mut request = Self::environment(point);
+        request.filter = Some(CollisionQueryFilter {
+            layers: 0x0001_0000,
+            required_flags: 0,
+        });
+        request
+    }
     /// 852ff0/1fc710 water-volume query, shared by FX admission and particles.
     pub fn water(point: [f32; 3]) -> Self {
         let mut request = Self::environment(point);
-        request.filter = Some(CollisionQueryFilter { layers: 0x0040_0000, required_flags: 0 });
+        request.filter = Some(CollisionQueryFilter {
+            layers: 0x0040_0000,
+            required_flags: 0,
+        });
         request
     }
 

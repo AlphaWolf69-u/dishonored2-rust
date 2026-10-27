@@ -26,24 +26,7 @@ pub struct MotionCurve {
     pub interpolation: Interpolation,
     pub keys: Vec<CurveKey>,
 }
-pub fn atom<'a>(f: &'a [(String, Value)], k: &str) -> Option<&'a str> {
-    match field(f, k)? {
-        Value::Atom(s) => Some(s.trim_matches('"')),
-        _ => None,
-    }
-}
-pub fn child<'a>(f: &'a [(String, Value)], k: &str) -> &'a [(String, Value)] {
-    scope(field(f, k)).unwrap_or(&[])
-}
-pub fn items(f: &[(String, Value)]) -> impl Iterator<Item = &[(String, Value)]> {
-    f.iter().filter_map(|(k, v)| {
-        if k.starts_with("item[") {
-            scope(Some(v))
-        } else {
-            None
-        }
-    })
-}
+pub use super::event_graph::{atom, child, items};
 fn object(f: &[(String, Value)]) -> &[(String, Value)] {
     child(f, "m_object")
 }
@@ -186,20 +169,7 @@ pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
     })
 }
 
-#[derive(Clone, Debug)]
-pub struct Port {
-    pub id: u32,
-    pub name: String,
-    pub kind: String,
-    pub links: Vec<(u32, u32)>,
-}
-#[derive(Clone, Debug)]
-pub struct Node {
-    pub id: u32,
-    pub class: String,
-    pub params: Fields,
-    pub ports: Vec<Port>,
-}
+pub use super::event_graph::{Node, Port};
 #[derive(Clone, Debug)]
 pub struct Graph {
     pub owner: String,
@@ -239,33 +209,7 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
                     clips.insert(path.to_owned(), clip.clone());
                 }
             }
-            let mut ports = Vec::new();
-            for p in items(child(n, "m_connectionPoints")) {
-                let links = items(child(p, "m_connections"))
-                    .filter_map(|c| {
-                        Some((
-                            atom(c, "m_endNodeID")?.parse().ok()?,
-                            atom(c, "m_endConnectionPointID")?.parse().ok()?,
-                        ))
-                    })
-                    .collect();
-                ports.push(Port {
-                    id: atom(p, "m_id")
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("invalid port ID")?,
-                    name: atom(p, "m_name").unwrap_or("").into(),
-                    kind: atom(p, "m_type").unwrap_or("").into(),
-                    links,
-                });
-            }
-            nodes.push(Node {
-                id: atom(n, "m_id")
-                    .and_then(|s| s.parse().ok())
-                    .ok_or("invalid node ID")?,
-                class: atom(n, "m_name").unwrap_or("").into(),
-                params,
-                ports,
-            });
+            nodes.push(super::event_graph::parse_node(n)?);
         }
         if !clips.is_empty()
             || nodes

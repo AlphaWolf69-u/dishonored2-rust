@@ -118,6 +118,31 @@ pub struct ListenerState {
     pub obstruction: f32,
 }
 impl ListenerState {
+    /// 1400b8c90 is selected by c68e0 when the object has no positive-range
+    /// events. It admits a direct source without a range/portal/reflection gate.
+    pub fn update_unranged(&mut self, graph: &Propagation, query: &Query,
+        listener_mask: u32, audible_mask: &mut u32) -> Result<(), String>
+    {
+        let relative = query.source - query.listener;
+        let squared = relative.y * relative.y + relative.x * relative.x + relative.z * relative.z;
+        let denominator = if squared <= f32::MIN_POSITIVE { f32::MIN_POSITIVE } else { squared };
+        let distance = (1.0 / denominator.sqrt()) * squared;
+        let mut path = Path { position: query.source, distance, ..Default::default() };
+        let mut level = occlusion(graph, query.source_zone)? + 0.0;
+        if let Some(zone) = query.source_zone {
+            path.zones[0] = Some(ZoneSegment { zone, distance });
+            path.zone_count = 1;
+        }
+        if query.listener_zone.is_some() { level += occlusion(graph, query.listener_zone)?; }
+        path.occlusion = if 0.0 <= level { if level <= 1.0 { level } else { 1.0 } } else { 0.0 };
+        self.occlusion = path.occlusion;
+        self.obstruction = path.obstruction;
+        self.results = Results { paths: vec![path], closest: Some(0), score: distance, portal_paths: Vec::new() };
+        self.evaluated = None;
+        *audible_mask |= listener_mask;
+        Ok(())
+    }
+
     pub fn levels(&self, minimum: super::environment::Levels, scale: f32) -> super::environment::Levels {
         super::environment::Levels { obstruction: self.obstruction, occlusion: self.occlusion }
             .for_listener(minimum, scale)

@@ -31,6 +31,7 @@ struct DepthView {
 }
 
 pub struct TiledLightingPass {
+    pub area_pool: Option<TextureView>,
     pub buffers: TlfBuffers,
     pub lights: Buffer,
     pub shadows: Buffer,
@@ -49,6 +50,7 @@ pub struct TiledLightingPass {
     prepared: bool,
 }
 impl TiledLightingPass {
+    pub fn grid(&self) -> TileGrid { self.grid }
     fn upload<const N: usize>(queue: &RenderQueue, buffer: &Buffer, records: &[[u32; N]]) {
         if !records.is_empty() {
             let bytes: Vec<u8> = records
@@ -118,6 +120,7 @@ impl TiledLightingPass {
             })
         };
         let mut pass = Self {
+            area_pool: None,
             buffers: TlfBuffers::new(device),
             lights: payload("TLF lighting records", (LIGHT_BUFFER_CAPACITY * 112) as u64),
             shadows: payload("TLF shadow records", (SHADOW_BUFFER_CAPACITY * 144) as u64),

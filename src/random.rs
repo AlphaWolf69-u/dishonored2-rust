@@ -34,14 +34,29 @@ impl MwcRandom {
         }
         r
     }
-    pub fn between(&mut self, a: f32, b: f32) -> f32 {
+    /// 7bf440 warms the event manager independently of other MWC users.
+    /// Its first raw word selects the number of additional discarded words.
+    pub fn event_manager(counter: u64) -> Self {
+        let mut random = Self::new(counter);
+        let discard = random.word() % 15 + 2;
+        for _ in 0..discard {
+            random.word();
+        }
+        random
+    }
+
+    fn word(&mut self) -> u32 {
         self.high = (self.high & 65535)
             .wrapping_mul(36969)
             .wrapping_add(self.high >> 16);
         self.low = (self.low & 65535)
             .wrapping_mul(18000)
             .wrapping_add(self.low >> 16);
-        let v = self.low.wrapping_add(self.high.wrapping_shl(16));
+        self.low.wrapping_add(self.high.wrapping_shl(16))
+    }
+
+    pub fn between(&mut self, a: f32, b: f32) -> f32 {
+        let v = self.word();
         let fraction = (v as f64 * f64::from_bits(0x3df0000000100000)) as f32;
         let lo = a.min(b);
         let hi = a.max(b);

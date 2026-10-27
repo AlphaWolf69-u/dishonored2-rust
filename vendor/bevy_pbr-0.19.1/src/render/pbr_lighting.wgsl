@@ -1,7 +1,9 @@
 #define_import_path bevy_pbr::lighting
 
 #ifdef DH2_SURFACE_ENABLED
-#import dh2_direct::{WardSurface,WardLight,ward_direct,skin_direct,skin_light_diffuse}
+#import dh2_ward::{WardSurface,WardLight,ward_direct}
+#import dh2_direct::{skin_direct,skin_light_diffuse}
+#import dh2_area_light_opaque::opaque_area_lighting
 #endif
 
 #import bevy_pbr::{
@@ -1100,6 +1102,13 @@ fn rect_light(
     let perceptual_roughness = (*input).layers[LAYER_BASE].perceptual_roughness;
 
     let light = &view_bindings::lights.rect_lights[light_id];
+#ifdef DH2_SURFACE_ENABLED
+    if (*light).color.w<0.0 {
+        let result=opaque_area_lighting(u32(-(*light).color.w-1.0),(*input).direct_surface,P);
+        return select(vec3(0.0),result.diffuse,enable_diffuse)+result.specular;
+    }
+#endif
+
     let light_to_frag = (*light).position - P;
     let distance_square = dot(light_to_frag, light_to_frag);
     let inverse_range_squared = 1.0 / max((*light).range * (*light).range, 0.0001);

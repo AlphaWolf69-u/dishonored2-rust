@@ -664,9 +664,11 @@ loaded declarations. `assets/fx/particle_system.rs` reads the parent FX
 descriptor and `gameplay/effects/particle.rs` implements its phase, stop, loop
 and camera/owner placement rules. Player screen-effect sources retain these
 descriptors alongside their quads, with independent readiness errors.
-`bevy_backend/screen_effects/state.rs` owns their lifecycle and simulation;
-its `particles.rs` adapter publishes same-frame sprite instances and material
-state. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
+`bevy_backend/screen_effects/state.rs` owns the player transition lifecycle;
+`bevy_backend/particle_system.rs` owns reusable particle instances, simulation,
+and same-frame sprite/material publication. Its inputs separate the owning
+entity frame from the camera. Enter/leave-water membership stays in the screen
+owner, outside the shared particle system. `bevy_backend/particle_pass.rs` submits their unlit colour draws with
 shared material fog, depth, water clipping and the gameplay stencil attachment.
 `rendering/particles/transparency.rs` resolves the console-controlled direct
 or weighted accumulation mode; `particle_pass/transparency.rs` owns retained
@@ -684,6 +686,82 @@ ray; only a completed miss permits fallback to the active ocean height.
 world tree; `shape_ray_query.rs` handles convex plane clipping and compound
 child traversal/transforms. Query failures propagate instead of becoming dry
 water results. The snapshot owns no second physics simulation.
+
+Serialized event nodes and links live in `assets/entities/event_graph.rs`;
+motion scenes and world FX share this parser. `gameplay/event_graph.rs` supplies
+the common variable/entity input readers used by motion playback.
+`assets/entities/effects.rs` resolves the world FX node schema and preserves
+the surrounding graph instead of treating every FX reference as active.
+`gameplay/effects/graph.rs` executes understood FX/gate actions against a world
+owner. Gate condition outputs precede the matching regular output and `Out`,
+following the installed dispatcher. The graph owner supplies random samples,
+named-variable bindings, actual entity clocks and effect allocation; missing
+bindings remain explicit errors. `effects/world_node.rs` handles instance-ID
+observers, start/stop ordering, timed expiry and saved remaining duration.
+`world_particle_state.rs` connects these graphs to deferred component creation,
+FX instance ownership, group startup, completion observers and the common
+particle renderer. Ordinary events append in authored link order and execute
+newest-first, matching the installed event queue.
+
+Level startup parses world FX graphs into `WorldEffectGraphs` and prepares
+their installed declarations through `particles::world_sources`, sharing
+particle definitions and material storage across references. Preparation does
+not activate effects. `particle/dist_blur` is a separate vector-writing
+program using the same sprite geometry, clip planes, soft contact and Fresnel
+helpers as colour particles. It supports authored 2D and flipbook normal maps,
+constant-offset reconstruction and separate blur/distortion strengths. Its
+vectors accumulate in a depth-tested target before the shared motion-distortion
+resolve; they do not enter colour or weighted-transparency accumulation. Group location, timing, other effect families and local
+descriptor failures remain available to the playback owner. The renderer
+receives shared declaration resources through ordinary resource extraction.
+`WorldFxComponent` owns the source's deferred creation and removal state;
+actual allocation, target pose, velocity and completion callbacks remain host
+operations. `WorldEffectFrames` reuses the common entity spawn-frame reader
+and moving-model pose publication, including non-rendered bound targets.
+Unresolved tags and parents stay explicit errors. Main-world publication retains
+the actual group3 double time, group2 delta and group3 scale: the FX manager
+advances age by delta times scale rather than Bevy elapsed time.
+
+`ParticleSystems` owns the shared 1,024-slot particle-family pool for player and
+world instances, its random stream and canonical world query executors. Parents
+retain their linked-list heads; declaration selection precedes allocation and
+active chains update newest-first. Inactive systems retire before their next
+update. Both domains submit through the same `ParticlePass` and transparency
+targets. Prepared level graphs and authored entity frames share immutable
+storage across extraction; only actual moved-frame overrides are copied.
+Emission meshes resolve directly from installed `staticparticlemodel` PMODEL
+resources, retaining their ordered 32-byte vertices. `particles::mesh` implements
+the seven authored sampling modes, per-emitter sequential cursors, vertex colour
+and normal velocity. Geometry selection consumes the spawn generator while
+scale/rotation/normal-velocity parameters use a copy of the retained cycle seed.
+These samples join ordinary location/velocity before initial orientation and
+spray; player and world particles share this same simulation path.
+`app::particle_view` publishes the current ordinary Tome descriptor after world
+visibility and water-view publication. Extraction shares that immutable frame;
+the renderer builds its AABB query and angular-size threshold once per view.
+`particles::visibility` schedules draws, full simulation, clock-only updates and
+flush-on-occlusion from authored visibility flags and distance curves. Finite
+non-looping stages and dark-vision materials derive the declaration overrides;
+completed fade-out forces simulation until the owner can retire. Culled systems
+discard unused delta, and admitted updates retain the game's 125 ms clamp.
+Clock-only updates still commit the emitter pose. Flushing returns live slots in
+ascending order to the existing free list without resetting its history.
+The same frame publishes immutable snapshots of the existing world and trigger
+wind owners. Particle wind queries use layer16 and canonical collision geometry;
+the physics snapshot retains trigger-to-wind component identities. Selection
+replaces only a strictly lower priority, preserving traversal order on ties,
+then falls back to the registered world wind on a completed absence. Wind is
+acceleration, with independent cycle and lifetime curves. It stays separate
+from inherited source velocity and consumes the original particle RNG sequence.
+Local stages transform wind with the emitter-axis dot products. Spawn-time
+inherited velocity retains the source's linear/angular point-sampling kernel;
+nondefault inheritance still requires its actual producer before admission.
+The connected world path currently admits particle-only groups without an
+unavailable target/tag, spawn-occlusion or physics-velocity dependency. Other
+enabled FX families, parameter blocks, animated/lit particle material inputs and
+unsupported graph producers remain explicit errors. These are outstanding
+feature coverage, not replaced with another effect. Runtime and human appearance
+validation are still required; compilation alone does not establish parity.
 Sprite spawn/lifetime inputs live in `gameplay/particles/sprite.rs`, with their
 partial-edit readers in `assets/fx/particle_sprite.rs`. Initial size retains all
 three components, independent pivot/rotation parameters and spawn-time RGBA8
@@ -1702,8 +1780,20 @@ and directional loops. Shadow visibility retains its existing owner.
 
 The current integration covers default/decal/filling material variants without
 sheen maps, diffuse lookups, fuzz or translucency. Those feature variants,
-vegetation transmittance and area-light solid-angle integration still require
-their own complete producers; their existing host paths remain in use.
+vegetation transmittance still requires its own complete producer; its existing
+host path remains in use.
+
+Area lights use the installed Ward solid-angle evaluator, clipping and projected
+texture profile through `dh2_area_light.wgsl`. `AreaLightScene` prepares one
+32-slice texture pool before opaque draws and publishes the same mapped packets
+to forward surfaces, fog and particles. Rect components carry the stable scene
+record index through the unused GPU colour W lane; their RGB photometric fields
+are retained for host materials. The view bindings carry the shared packet buffer
+and pool, so materials do not own separate texture caches. Source image copies
+are submitted only when pool contents change. This supplies the authored profiles
+of non-shadowed area lights; the separate paraboloid exponential-shadow producer
+for shadowed area lights remains unconnected. The reported EotW room's authored
+area sources explicitly set `m_NoShadows=true`.
 
 The authored `m_specularAttn` survives inherited entity parameters and maps to
 host light components independently of shadow readiness. The typed clustered

@@ -1,12 +1,13 @@
 //! Wwise events from pause UI and player gameplay.
 use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings}, prelude::*};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use crate::gameplay::sound::{Emitter, Request};
+use crate::gameplay::sound::{objects, Emitter, Request};
 mod pcm;
 mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
+mod effects;
 mod spatial;
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
@@ -24,12 +25,65 @@ struct WwiseRegistry {
     states: bevy_backend::StateGroups,
 }
 
+impl WwiseRegistry {
+    fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
+        let mut files = HashMap::<usize, std::fs::File>::new();
+        self.library.event_playback(event, |owner, media_id| {
+            let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
+            let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+            let file = match files.entry(owner) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
+            };
+            bank.package.read_entry(file, media).map(Some)
+        })?.ok_or_else(|| "event has no supported Wwise actions".into())
+    }
+    fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
+        if self.sources.contains_key(&event) { return Ok(()); }
+        use crate::assets::wwise::PlaybackCommand;
+        let graph_actions = self.playback(event)?;
+        let mut actions = Vec::new();
+        for action in graph_actions {
+            // Each action is dispatched independently in 1410e5600 /
+            // 1410e8260. A host decoder or unsupported actor must not
+            // discard the event's other Play and Stop actions.
+            let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
+            PlaybackCommand::Failed { action, target, reason } => Err(format!(
+                "action {action:#010x}, target {target:#010x}: {reason}").into()),
+            PlaybackCommand::Stop(action) => {
+                let target_path = self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from);
+                Ok(SourceAction::Stop { action, target_path })
+            },
+            PlaybackCommand::SetState(action) => {
+                let target_path = if action.bus { None } else {
+                    self.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from)
+                };
+                Ok(SourceAction::SetState { action, target_path })
+            },
+            // 14113b5c0 sends every Play through the same source
+            // and bus clock, including plain PCM and UI sounds.
+            PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) }),
+            } })();
+            match decoded {
+                Ok(action) => actions.push(action),
+                Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
+            }
+        }
+        self.sources.insert(event, actions);
+        Ok(())
+    }
+
+}
+
 #[derive(Resource, Default)]
 struct AudioMix {
     generation: u64,
     mixer: Option<crate::gameplay::sound::mix::Mixer>,
     bindings: Vec<(u32, &'static str)>,
     time_dilation: Option<u32>,
+    physics_scale: Option<crate::assets::wwise::RtpcDeclaration>,
 }
 
 impl AudioMix {
@@ -75,13 +129,15 @@ impl Plugin for SoundPlugin {
             .add_message::<SoundEvent>()
             .add_message::<ContactSound>()
             .init_resource::<contacts::ContactSounds>()
+            .init_resource::<objects::EffectObjects>()
+            .init_resource::<effects::EffectAudio>()
             .init_resource::<WwiseRegistry>()
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, index_banks)
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -141,12 +197,16 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
         let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
         let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
-        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation))
+        let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
+        let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("physics sound RTPC declaration is absent")?;
+        let physics_scale = crate::assets::wwise::RtpcDeclaration::parse(&crate::entities::declaration_text(&source))?;
+        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale))
     })();
     match result {
-        Ok((banks, attenuations, library, output_mix, bindings, time_dilation)) => {
+        Ok((banks, attenuations, library, output_mix, bindings, time_dilation, physics_scale)) => {
             registry.states = Arc::new(std::sync::Mutex::new(crate::gameplay::sound::states::States::new(output_mix.state_groups.iter().cloned())));
             mix.time_dilation = Some(time_dilation);
+            mix.physics_scale = Some(physics_scale);
             registry.attenuations = attenuations;
             info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
             registry.banks = banks;
@@ -169,6 +229,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         Err(error) => warn!("Installed Wwise banks unavailable: {error}"),
     }
 }
+
 
 fn play_events(
     mut commands: Commands,
@@ -194,57 +255,9 @@ fn play_events(
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
-        if !registry.sources.contains_key(&event) {
-            let decoded = (|| -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
-                let mut files = HashMap::<usize, std::fs::File>::new();
-                let graph_actions = registry.library.event_playback(event, |owner, media_id| {
-                    let bank = registry.banks.get(owner).ok_or_else(|| std::io::Error::new(
-                        std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
-                    let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
-                    let file = match files.entry(owner) {
-                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
-                    };
-                    bank.package.read_entry(file, media).map(Some)
-                })?.ok_or("event has no supported Wwise actions")?;
-                use crate::assets::wwise::PlaybackCommand;
-                let mut actions = Vec::new();
-                for action in graph_actions {
-                    // Each action is dispatched independently in 1410e5600 /
-                    // 1410e8260. A host decoder or unsupported actor must not
-                    // discard the event's other Play and Stop actions.
-                    let decoded = (|| -> Result<SourceAction, Box<dyn std::error::Error>> { match action {
-                    PlaybackCommand::Failed { action, target, reason } => Err(format!(
-                        "action {action:#010x}, target {target:#010x}: {reason}").into()),
-                    PlaybackCommand::Stop(action) => {
-                        let target_path = registry.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from);
-                        Ok(SourceAction::Stop { action, target_path })
-                    },
-                    PlaybackCommand::SetState(action) => {
-                        let target_path = if action.bus { None } else {
-                            registry.library.actor_hierarchy(action.target)?.map(Arc::<[u32]>::from)
-                        };
-                        Ok(SourceAction::SetState { action, target_path })
-                    },
-                    // 14113b5c0 sends every Play through the same source
-                    // and bus clock, including plain PCM and UI sounds.
-                    PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                        definition: Arc::new(graph::Definition::decode(node, &registry.attenuations)?) }),
-                    } })();
-                    match decoded {
-                        Ok(action) => actions.push(action),
-                        Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
-                    }
-                }
-                Ok(actions)
-            })();
-            match decoded {
-                Ok(actions) => { registry.sources.insert(event, actions); }
-                Err(error) => {
-                    warn!("Wwise event {event:#010x} has no supported route: {error}");
-                    continue;
-                }
-            }
+        if let Err(error) = registry.prepare(event) {
+            warn!("Wwise event {event:#010x} has no supported route: {error}");
+            continue;
         }
         if let Some(actions) = registry.sources.get(&event).cloned() {
             let playing_id = engine.playing_id();

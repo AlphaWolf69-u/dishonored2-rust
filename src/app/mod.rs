@@ -47,8 +47,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod local_shadow_updates;
 mod fog_lights;
+mod area_lights;
+mod resident_images;
 mod environment_reflection;
 mod model_motion;
+mod particle_view;
 mod machinery;
 mod physics_skinning;
 mod shadow_updates;

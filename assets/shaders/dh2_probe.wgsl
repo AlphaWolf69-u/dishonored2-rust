@@ -1,5 +1,5 @@
 #import bevy_pbr::mesh_view_bindings::view
-#import dh2_direct::ward_surface
+#import dh2_ward::ward_surface
 #ifdef DH2_SKIN
 #import dh2_direct::{SkinSurface,skin_surface,skin_direct_diffuse,ward_inverse_roughness_squared}
 #import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask,translucency_mask}

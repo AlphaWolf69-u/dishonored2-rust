@@ -2,6 +2,42 @@
 //! The output owner supplies a sound object and tracks its playing/queued IDs;
 //! this state owns the authored delayed start/stop event and local position.
 use bevy_math::{Mat3, Vec3};
+pub mod handle;
+pub mod systems;
+use handle::{SoundHandle, SoundObjectWorld};
+
+/// Ordinary sound-family slot: timed events and their audio object share one
+/// lifetime. The family manager supplies the real object/playing-ID callbacks.
+pub struct SoundInstance<O, P> {
+    pub effect: SoundEffect,
+    pub handle: SoundHandle<O, P>,
+}
+impl<O: Copy, P: Copy + PartialEq> SoundInstance<O, P> {
+    pub fn new(local_position: Vec3, start: SoundEvent, stop: SoundEvent,
+        start_age: f32, allow_virtualization: bool, seed: &mut u32) -> Self {
+        let mut handle = SoundHandle::default();
+        handle.allow_virtualization(allow_virtualization);
+        Self { effect: SoundEffect::new(local_position, start, stop, start_age, seed), handle }
+    }
+
+    pub fn is_alive(&self) -> bool { self.effect.is_alive(self.handle.is_alive()) }
+
+    pub fn request_stop(&mut self, age: f32, seed: &mut u32) {
+        let handle = &mut self.handle;
+        self.effect.request_stop(age, seed, || handle.clear_queued());
+    }
+
+    /// 230310 attempts the expired event once, then always publishes position
+    /// and the context clock, including frames with no pending event.
+    pub fn update<W: SoundObjectWorld<Object=O, Playing=P>>(&mut self,
+        world: &mut W, age: f32, origin: Vec3, axis: Mat3, context: &W::Context) -> Result<(), String> {
+        let update = self.effect.update(age, origin, axis);
+        if let Some(event) = update.event {
+            self.handle.post(world, event, update.position, context)?;
+        }
+        self.handle.update(world, update.position, context)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoundEvent {

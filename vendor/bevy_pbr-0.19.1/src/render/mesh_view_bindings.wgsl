@@ -157,3 +157,8 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 @group(1) @binding(6) var clustered_decal_textures: binding_array<texture_2d<f32>, 8u>;
 @group(1) @binding(7) var clustered_decal_sampler: sampler;
 #endif  // CLUSTERED_DECALS_ARE_USABLE
+
+// External area-light scene transport, shared with the scene's texture pool.
+@group(0) @binding(64) var<storage,read> area_light_records:array<vec4<u32>>;
+@group(0) @binding(65) var area_light_textures:texture_2d_array<f32>;
+@group(0) @binding(66) var area_light_sampler:sampler;

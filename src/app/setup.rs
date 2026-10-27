@@ -81,6 +81,7 @@ pub(super) fn setup(
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
+    effect_graphs: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectGraphs>>,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -209,7 +210,7 @@ pub(super) fn setup(
     // are appended after them. World geometry uses its PNW instance offset.
     let mut records = scene
         .environment_probes
-        .as_ref()
+        .as_deref()
         .map(|set| {
             set.probes
                 .iter()
@@ -230,7 +231,7 @@ pub(super) fn setup(
     }
     let words = scene
         .environment_probes
-        .as_ref()
+        .as_deref()
         .map(probe_lighting::ProbeLightingSet::vertex_shader_words)
         .unwrap_or_else(|| vec![0u32; 8]);
     let bytes = words.len() as u64 * 4;
@@ -277,6 +278,8 @@ pub(super) fn setup(
     });
     let anisotropic_sampler_image =
         images.add(surface_sampler_image(catalog).expect("invalid original material sampler"));
+    commands.insert_resource(crate::rendering::bevy_backend::particle_pass::ParticleMaterialSampler(
+        anisotropic_sampler_image.clone()));
     // The original publishes parallelLightDir/Color from the environment
     // even in levels with no placed LIGHT_PRESET_SUN entity (Dust District).
     let vista_sun = scene
@@ -300,13 +303,13 @@ pub(super) fn setup(
     let loaded_reflections =
         super::environment_reflection::load(
             catalog,
-            scene.environment_probes.as_ref(),
+            scene.environment_probes.as_deref(),
             &mut images,
             &mut probe_sh_buffers,
         )
         .expect("installed environment reflections");
     let water_probes = loaded_reflections.water_probes(
-        scene.environment_probes.as_ref(),
+        scene.environment_probes.as_deref(),
         vertex_probe_buffer.clone(),
         &mut probe_sh_buffers,
     );
@@ -338,7 +341,7 @@ pub(super) fn setup(
         local_shadow_buffer,
         shadow_map,
         probe_sh_records: records,
-        probes: scene.environment_probes.as_ref(),
+        probes: scene.environment_probes.as_deref(),
         cache: default(),
         shadow_materials: ShadowMaterials::default(),
         vegetation,
@@ -1559,10 +1562,8 @@ pub(super) fn setup(
                         spawned += 1;
                     }
                     entities::LightType::Area => {
-                        // LIGHT_AREA uses the separate paraboloid path in
-                        // renderprog/lighting.decl; Bevy RectLight has no matching
-                        // shadow path. The authored area profile/projection and
-                        // area-specific shadow controls remain unported.
+                        // The rect carries the stable scene-record index; the
+                        // forward evaluator uses its authored area profile and pool.
                         let Some(transform) =
                             authored_area_light_transform(position, light.rotation)
                         else {
@@ -1571,6 +1572,7 @@ pub(super) fn setup(
                         };
                         commands.spawn((
                             RectLight {
+                                source_index: Some(light_index as u32),
                                 color,
                                 intensity,
                                 range,
@@ -1715,6 +1717,13 @@ pub(super) fn setup(
                 super::player::character_name(super::pause_menu::debug_character()))
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
+    }
+    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
+        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
+            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
+        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(Arc::new(
+            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.0,catalog,programs)
+        )));
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));

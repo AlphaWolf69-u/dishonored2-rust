@@ -20,7 +20,7 @@ pub(super) struct SceneData {
     pub(super) area_environments: Vec<crate::rendering::environment::AreaEnvironment>,
     pub(super) area_fog: Vec<super::fog_volumes::AreaFogSource>,
     pub(super) rewrite_shadow_settings: crate::platform::rewrite_settings::RewriteShadowSettings,
-    pub(super) environment_probes: Option<probe_lighting::ProbeLightingSet>,
+    pub(super) environment_probes: Option<std::sync::Arc<probe_lighting::ProbeLightingSet>>,
     #[allow(dead_code)]
     // Actual startup inputs for the native CPU frame publisher, not captured defaults.
     pub(super) shadow_quality_preset: Option<u32>,

@@ -18,6 +18,66 @@ pub struct Query {
     pub listener_zone: Option<usize>,
 }
 
+/// Motion published by an active listener. Inactive listener slots are None;
+/// c1a10 publishes displacement without dividing by an entity or audio clock.
+#[derive(Clone, Copy)]
+pub struct ListenerMotion {
+    pub position: Vec3,
+    pub displacement: Vec3,
+}
+
+impl Default for ListenerMotion {
+    fn default() -> Self {
+        // 1400c1af0: initial current and pending listener positions.
+        Self { position: Vec3::splat(f32::from_bits(0x47000000)), displacement: Vec3::ZERO }
+    }
+}
+impl ListenerMotion {
+    /// 1400c1a10 promotes the supplied position and retains its displacement.
+    pub fn publish(&mut self, position: Vec3) {
+        self.displacement = if self.position == position { Vec3::ZERO } else { position - self.position };
+        self.position = position;
+    }
+}
+
+/// 140108ab0's squared point-to-segment distance. The degeneracy threshold at
+/// 14228a764 is FLT_MIN; ordered comparisons retain the source's NaN branches.
+fn segment_distance_squared(point: Vec3, start: Vec3, end: Vec3) -> f32 {
+    let segment = end - start;
+    let length = segment.x * segment.x + segment.y * segment.y + segment.z * segment.z;
+    let relative = point - start;
+    if length < f32::MIN_POSITIVE {
+        return relative.y * relative.y + relative.x * relative.x + relative.z * relative.z;
+    }
+    let fraction = (relative.x * segment.x + relative.y * segment.y + relative.z * segment.z) / length;
+    let relative = if 0.0 <= fraction {
+        if 1.0 < fraction {
+            let relative = point - end;
+            return relative.y * relative.y + relative.x * relative.x + relative.z * relative.z;
+        }
+        relative - segment * fraction
+    } else { relative };
+    relative.y * relative.y + relative.x * relative.x + relative.z * relative.z
+}
+
+/// 1400c1670/1400fd730: the initial short-event admission test uses a source
+/// motion segment and expands its range by each listener's published displacement length.
+/// This is distinct from c1240's portal query used for virtualized replay.
+pub fn motion_inaudible(source: Vec3, displacement: Vec3, range: f32,
+    listeners: &[Option<ListenerMotion>; 8]) -> bool
+{
+    let end = source + displacement;
+    for listener in listeners.iter().flatten() {
+        let movement = listener.displacement;
+        let squared = movement.x * movement.x + movement.y * movement.y + movement.z * movement.z;
+        let denominator = if squared <= f32::MIN_POSITIVE { f32::MIN_POSITIVE } else { squared };
+        let speed = (1.0 / denominator.sqrt()) * squared;
+        let radius = range + speed;
+        if segment_distance_squared(listener.position, source, end) <= radius * radius { return false; }
+    }
+    true
+}
+
 pub fn admission(query: &Query, routes: impl FnOnce() -> Result<bool, String>) -> Result<Admission, String> {
     let relative = query.source - query.listener;
     let distance_squared = relative.y * relative.y + relative.x * relative.x + relative.z * relative.z;

@@ -5,6 +5,83 @@ use crate::{
     gameplay::reference_frame::{axis_angle_basis, basis_product},
 };
 
+/// The cached linear/center/angular record at stage+160 (1db610/1db630).
+/// The owner must publish its real velocity before enabling inheritance.
+#[derive(Clone, Copy, Default)]
+pub struct SpawnVelocity {
+    pub linear: [f32; 3],
+    pub center: [f32; 3],
+    pub angular: [f32; 3],
+    pub angular_enabled: bool,
+}
+impl SpawnVelocity {
+    /// 1db7b0 samples linear before angular using the caller's cycle-seed copy.
+    pub fn sample(
+        source: &Self,
+        definition: &crate::assets::fx::particle_declaration::ParticleVelocityInheritance,
+        fraction: f32,
+        seed: &mut u32,
+    ) -> Result<Self, String> {
+        let linear = definition.linear.sample(fraction, seed)?;
+        let linear = source.linear.map(|value| multiply(linear, value));
+        let angular = definition.angular.sample(fraction, seed)?;
+        let angular = source.angular.map(|value| multiply(angular, value));
+        Ok(Self {
+            linear,
+            center: source.center,
+            angular,
+            angular_enabled: angular.iter().fold(0, |bits, value| bits | value.to_bits()) & 0x7fff_ffff != 0,
+        })
+    }
+
+    /// 1db6e0 uses geometric axis dot products for angular velocity, subtracts
+    /// the system origin from the center, and explicitly clears linear motion.
+    pub fn make_local(&mut self, pose: crate::gameplay::reference_frame::ReferenceFrame) {
+        self.center = std::array::from_fn(|i| subtract(self.center[i], pose.position[i]));
+        let angular = self.angular;
+        self.angular = std::array::from_fn(|i| {
+            let axis = pose.basis[i];
+            let pair = if i == 0 {
+                add(multiply(angular[1], axis[1]), multiply(angular[0], axis[0]))
+            } else {
+                add(multiply(angular[0], axis[0]), multiply(angular[1], axis[1]))
+            };
+            add(pair, multiply(angular[2], axis[2]))
+        });
+        self.linear = [0.; 3];
+    }
+
+    pub fn at_point(&self, position: [f32; 3]) -> [f32; 3] {
+        if !self.angular_enabled {
+            return self.linear;
+        }
+        let delta: [f32; 3] = std::array::from_fn(|i| subtract(position[i], self.center[i]));
+        [
+            add(
+                subtract(
+                    multiply(self.angular[1], delta[2]),
+                    multiply(self.angular[2], delta[1]),
+                ),
+                self.linear[0],
+            ),
+            add(
+                subtract(
+                    multiply(self.angular[2], delta[0]),
+                    multiply(self.angular[0], delta[2]),
+                ),
+                self.linear[1],
+            ),
+            add(
+                subtract(
+                    multiply(self.angular[0], delta[1]),
+                    multiply(self.angular[1], delta[0]),
+                ),
+                self.linear[2],
+            ),
+        ]
+    }
+}
+
 pub struct SpawnOrientation {
     pub angles: VectorParameter,
     pub worldspace: bool,
@@ -29,29 +106,39 @@ impl SpawnOrientation {
     ) -> Result<[[f32; 3]; 3], String> {
         let angles = self.angles.sample(age, seed)?;
         let basis = space.basis(self.worldspace);
-        // The source stores the six overlapping triples in a thirteen-int table.
-        let order = [
-            [0, 1, 2],
-            [2, 0, 1],
-            [1, 2, 0],
-            [0, 2, 1],
-            [1, 0, 2],
-            [2, 1, 0],
-        ]
-        .get(self.order)
-        .copied()
-        .ok_or("particle rotation order exceeds six modes")?;
-        let rotation = |axis: usize| {
-            axis_angle_basis(
-                basis[axis],
-                multiply(angles[axis], f32::from_bits(0xbc8e_fa35)),
-            )
-        };
-        Ok(basis_product(
-            basis_product(rotation(order[0]), rotation(order[1])),
-            rotation(order[2]),
-        ))
+        rotation_basis(angles, self.order, basis)
     }
+}
+
+/// Shared six-order Euler composition used by initial velocity and PMODEL
+/// emission. Callers supply their own axes before this common rotation step.
+pub fn rotation_basis(
+    angles: [f32; 3],
+    order: usize,
+    basis: [[f32; 3]; 3],
+) -> Result<[[f32; 3]; 3], String> {
+    // The source stores the six overlapping triples in a thirteen-int table.
+    let order = [
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+    ]
+    .get(order)
+    .copied()
+    .ok_or("particle rotation order exceeds six modes")?;
+    let rotation = |axis: usize| {
+        axis_angle_basis(
+            basis[axis],
+            multiply(angles[axis], f32::from_bits(0xbc8e_fa35)),
+        )
+    };
+    Ok(basis_product(
+        basis_product(rotation(order[0]), rotation(order[1])),
+        rotation(order[2]),
+    ))
 }
 
 fn cross(first: [f32; 3], second: [f32; 3]) -> [f32; 3] {

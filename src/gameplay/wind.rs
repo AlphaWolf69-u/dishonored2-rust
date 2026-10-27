@@ -5,6 +5,7 @@ use bevy_math::Vec3;
 
 pub use crate::assets::entities::wind::WindSettings;
 
+#[derive(Clone)]
 pub struct Wind {
     settings: WindSettings,
     direction: Vec3,
@@ -98,10 +99,70 @@ pub enum WindOwner {
     Trigger(usize),
 }
 
+/// Immutable phases/settings copied from the canonical owners after component
+/// think. This samples the same fields; it never advances another wind clock.
+#[derive(Default)]
+pub struct WindSnapshot {
+    world: Option<Wind>,
+    triggers: std::collections::BTreeMap<String, (i32, Wind)>,
+}
+impl WindSnapshot {
+    pub fn capture(world: Option<&Wind>, manager: Option<&WindManager>) -> Result<Self, String> {
+        let mut triggers = std::collections::BTreeMap::new();
+        if let Some(manager) = manager {
+            if manager.trigger_entities.len() != manager.triggers.len()
+                || manager.trigger_shapes.len() != manager.triggers.len()
+            {
+                return Err("wind owner identities do not match canonical wind payloads".into());
+            }
+            for ((entity, wind), (priority, _, _)) in manager
+                .trigger_entities
+                .iter()
+                .zip(&manager.triggers)
+                .zip(&manager.trigger_shapes)
+            {
+                triggers.insert(entity.clone(), (*priority, wind.clone()));
+            }
+        }
+        Ok(Self {
+            world: world.cloned(),
+            triggers,
+        })
+    }
+
+    /// 677ec0 queries ordinary trigger layer16. 678070 replaces only a strictly
+    /// lower priority; completed absence falls back to the registered world wind.
+    pub fn velocity(
+        &self,
+        geometry: &super::world_point_query::snapshot::PointQuerySnapshot,
+        query: &mut super::world_point_query::WorldPointQuery,
+        point: [f32; 3],
+    ) -> Result<[f32; 3], String> {
+        let mut selected: Option<&(i32, Wind)> = None;
+        for entity in geometry.wind_entities(query, point)? {
+            let wind = self
+                .triggers
+                .get(entity)
+                .ok_or_else(|| format!("wind payload was not published for {entity}"))?;
+            if selected.is_none_or(|previous| previous.0 < wind.0) {
+                selected = Some(wind);
+            }
+        }
+        Ok(selected
+            .map(|(_, wind)| wind)
+            .or(self.world.as_ref())
+            .map_or([0.; 3], |wind| {
+                wind.velocity(Vec3::from_array(point)).to_array()
+            }))
+    }
+}
+
 /// arkWindManager (game+0x30f110) after PostLoadMap 7b7be0: the wind owning
 /// each shared wind center (FUN_140295e40's list, world+0x240/+0x248).
 pub struct WindManager {
     pub triggers: Vec<Wind>,
+    /// Stable entity identities for immutable point-query publications.
+    pub trigger_entities: Vec<String>,
     /// Each trigger wind's 1405ff500 priority, start state and shape, for
     /// rigid bodies that track the triggers they overlap.
     pub trigger_shapes: Vec<(i32, bool, super::trigger_volume::TriggerVolume)>,
@@ -193,12 +254,14 @@ impl WindManager {
                     .or(world_registered.then_some(WindOwner::World))
             })
             .collect();
+        let trigger_entities = triggers.iter().map(|trigger| trigger.entity.clone()).collect();
         let (triggers, trigger_shapes) = triggers
             .into_iter()
             .map(|t| (Wind::new(t.settings), (t.priority, t.started, t.volume)))
             .unzip();
         Self {
             triggers,
+            trigger_entities,
             trigger_shapes,
             assignments,
             ambiguous_centers,

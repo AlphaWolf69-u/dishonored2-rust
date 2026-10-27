@@ -1,10 +1,8 @@
 //! Authored player screen quads, after camera effects and before exposure.
-mod passes;
-mod particles;
+pub(super) mod passes;
 mod sources;
 mod state;
-pub(super) use state::ScreenEffectState;
-pub(super) use particles::ParticleDrawContext;
+pub(super) use super::particle_system::ParticleDrawContext;
 use crate::{
     assets::fx::screen_quad::ScreenQuadStage,
     gameplay::effects::environment::EnvironmentBlendEffect,
@@ -18,6 +16,7 @@ use bevy::{
     },
 };
 pub use sources::ScreenEffectSources;
+pub(super) use state::ScreenEffectState;
 use std::sync::Arc;
 
 #[derive(Resource, Clone, Default, ExtractResource)]
@@ -102,14 +101,7 @@ impl ScreenEffects {
         }
         let (_, passes, hdr) = self.gpu.as_mut().unwrap();
         passes.record_vectors(
-            device,
-            queue,
-            encoder,
-            sources,
-            draws,
-            local_time,
-            depth,
-            inverse_z,
+            device, queue, encoder, sources, draws, local_time, depth, inverse_z,
         )?;
         let hdr = hdr.prepare(
             device,

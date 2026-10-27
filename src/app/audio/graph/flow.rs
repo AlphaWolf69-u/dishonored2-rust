@@ -37,7 +37,7 @@ impl Flow {
         match &audio.definition.nodes[node].kind {
             Kind::Missing | Kind::NoSource => false,
             Kind::Sound(_) => {
-                let mut runtime = Runtime::new(node, start, &audio.definition, &audio.control.registrations);
+                let mut runtime = Runtime::new(node, start, &audio.definition, &audio.control);
                 runtime.fade = inherited;
                 if let Some(fade) = fade {
                     runtime.fade = Some(Transition::new(Envelope::fade_in(fade.start,

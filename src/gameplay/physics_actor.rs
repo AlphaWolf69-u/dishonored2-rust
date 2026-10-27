@@ -2,6 +2,7 @@
 //! Native pointers become stable indices; body poses stay in BodyStorage.
 use super::component_state::{ComponentInstance, ComponentOwner};
 pub mod basic_body;
+pub mod body_frame;
 pub mod post_update;
 pub mod pre_update;
 use super::motion_requests::MotionRequestList;

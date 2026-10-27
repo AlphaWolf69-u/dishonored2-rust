@@ -42,6 +42,16 @@ impl ParticleStage {
         self.free.is_empty()
     }
 
+    /// 1f3350 returns live slots in ascending order to the existing free list.
+    /// Keep its history; rebuilding a descending list changes subsequent slots.
+    pub fn flush(&mut self) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.take().is_some() {
+                self.free.push(index);
+            }
+        }
+    }
+
     /// Slot allocation happens only after the emitter has accepted its sampled
     /// lifetime, spawn geometry and clipping inputs (1f4e00).
     pub fn insert(&mut self, particle: Particle) -> Option<usize> {
@@ -70,30 +80,99 @@ impl ParticleStage {
         planes: &[[f32; 4]],
         mut source_velocity: impl FnMut(usize, &ParticleState, &mut u32) -> Result<[f32; 3], String>,
         mut motion: impl FnMut(usize, f32, &mut u32) -> Result<MotionSample, String>,
+        after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.advance_with_forces(
+            delta,
+            maximum_step,
+            loop_life,
+            bounds,
+            planes,
+            |index, particle, seed| {
+                source_velocity(index, particle, seed).map(|velocity| (velocity, None))
+            },
+            |index, age, seed, _| motion(index, age, seed),
+            after_advance,
+        )
+    }
+
+    /// The acceleration-field input is sampled before source-over-life and
+    /// passed to1dbce0 without consuming the generator a second time.
+    pub fn advance_with_forces(
+        &mut self,
+        delta: f32,
+        maximum_step: f32,
+        loop_life: bool,
+        bounds: [[f32; 3]; 2],
+        planes: &[[f32; 4]],
+        source_velocity: impl FnMut(
+            usize,
+            &ParticleState,
+            &mut u32,
+        ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
+        mut motion: impl FnMut(usize, f32, &mut u32, Option<[f32; 3]>) -> Result<MotionSample, String>,
+        after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.advance_with_events(
+            delta,
+            maximum_step,
+            loop_life,
+            bounds,
+            planes,
+            source_velocity,
+            |index, _, age, seed, force| motion(index, age, seed, force),
+            after_advance,
+            |_, _, _| Ok(()),
+        )
+    }
+
+    pub fn advance_with_events(
+        &mut self,
+        delta: f32,
+        maximum_step: f32,
+        loop_life: bool,
+        bounds: [[f32; 3]; 2],
+        planes: &[[f32; 4]],
+        mut source_velocity: impl FnMut(
+            usize,
+            &ParticleState,
+            &mut u32,
+        ) -> Result<([f32; 3], Option<[f32; 3]>), String>,
+        mut motion: impl FnMut(
+            usize,
+            [f32; 3],
+            f32,
+            &mut u32,
+            Option<[f32; 3]>,
+        ) -> Result<MotionSample, String>,
         mut after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
+        mut particle_event: impl FnMut(&ParticleState, f32, bool) -> Result<(), String>,
     ) -> Result<(), String> {
         if !maximum_step.is_finite() || maximum_step <= 0. {
             return Err("particle integration step must be positive and finite".into());
         }
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let Some(particle) = slot else { continue };
+            let previous_age = particle.state.age;
             let mut remaining = delta;
             loop {
                 // 1f5620 restarts this copy at every substep, including the
                 // source-velocity sampling which precedes motion sampling.
                 let mut seed = particle.seed;
-                let source_velocity = source_velocity(index, &particle.state, &mut seed)?;
+                let (source_velocity, forces) = source_velocity(index, &particle.state, &mut seed)?;
                 let step = remaining.min(maximum_step);
+                let position = particle.state.position;
                 let alive = particle.state.advance(
                     step,
                     loop_life,
                     particle.base_velocity,
                     source_velocity,
                     &mut particle.accumulated_velocity,
-                    |age| motion(index, age, &mut seed),
+                    |age| motion(index, position, age, &mut seed, forces),
                 )?;
                 remaining = crate::float::subtract(remaining, step);
                 if !alive || !contains(particle.state.position, bounds, planes) {
+                    particle_event(&particle.state, previous_age, false)?;
                     *slot = None;
                     self.free.push(index);
                     break;
@@ -101,6 +180,7 @@ impl ParticleStage {
                 if remaining <= f32::from_bits(0x3400_0000) {
                     // Sprite updates consume the seed after the final motion
                     // substep, once for the outer delta, before the next slot.
+                    particle_event(&particle.state, previous_age, true)?;
                     after_advance(index, &particle.state, &mut seed)?;
                     break;
                 }

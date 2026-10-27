@@ -1,5 +1,6 @@
 //! Whole-system receiver bounds used by particle fog selection.
 use crate::{
+    assets::fx::particle_declaration::ParticleVisibility,
     float::{add, multiply, subtract},
     gameplay::{particles::simulation::StageSimulation, reference_frame::ReferenceFrame},
 };
@@ -37,18 +38,77 @@ pub fn transform(local: [[f32; 3]; 2], pose: ReferenceFrame) -> [[f32; 3]; 2] {
     ]
 }
 
-/// 1c3b80/1c3890's default root box plus 1ffff0/201480's generated bounds.
-/// The declaration reader rejects authored visibility overrides; those must
-/// supply their own root bounds before they can use this publication path.
-pub fn default_system_bounds(
+/// 1c3890 unions the two authored boxes and then translates them. The local
+/// box uses the source's identity-frame box transform, not the emitter basis.
+pub fn authored_bounds(visibility: &ParticleVisibility, position: [f32; 3]) -> [[f32; 3]; 2] {
+    let empty = [
+        [f32::from_bits(0x7149_f2ca); 3],
+        [f32::from_bits(0xf149_f2ca); 3],
+    ];
+    let nonzero = |corners: [[f32; 3]; 2]| {
+        corners
+            .into_iter()
+            .flatten()
+            .fold(0u32, |bits, v| bits | v.to_bits())
+            & 0x7fff_ffff
+            != 0
+    };
+    let ordered = |corners: [[f32; 3]; 2]| {
+        [
+            std::array::from_fn(|i| {
+                if corners[1][i] <= corners[0][i] {
+                    corners[1][i]
+                } else {
+                    corners[0][i]
+                }
+            }),
+            std::array::from_fn(|i| {
+                if corners[0][i] <= corners[1][i] {
+                    corners[1][i]
+                } else {
+                    corners[0][i]
+                }
+            }),
+        ]
+    };
+    let mut result = if nonzero(visibility.world_box) {
+        ordered(visibility.world_box)
+    } else {
+        empty
+    };
+    if nonzero(visibility.local_box) {
+        let local = transform(ordered(visibility.local_box), ReferenceFrame::default());
+        for i in 0..3 {
+            if local[0][i] <= result[0][i] {
+                result[0][i] = local[0][i];
+            }
+            if result[1][i] <= local[1][i] {
+                result[1][i] = local[1][i];
+            }
+        }
+    }
+    // The source uses the X interval as its whole-box validity predicate.
+    if result[0][0] <= result[1][0] {
+        for i in 0..3 {
+            result[0][i] = add(result[0][i], position[i]);
+            result[1][i] = add(result[1][i], position[i]);
+        }
+    }
+    result
+}
+
+/// 1c3890's authored root plus 1ffff0/201480's generated bounds. Fixed
+/// declarations retain their authored root independently of live particles.
+pub fn system_bounds(
     stages: &[StageSimulation],
+    visibility: &ParticleVisibility,
     pose: ReferenceFrame,
     scale: f32,
 ) -> Result<[[f32; 3]; 2], String> {
-    let mut result = [
-        pose.position.map(|p| add(-1., p)),
-        pose.position.map(|p| add(1., p)),
-    ];
+    let mut result = authored_bounds(visibility, pose.position);
+    if visibility.fixed_box {
+        return Ok(result);
+    }
     for stage in stages {
         if stage.particles.is_empty() {
             continue;

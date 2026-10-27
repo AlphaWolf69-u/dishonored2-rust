@@ -1,5 +1,5 @@
 #import bevy_pbr::mesh_view_bindings::view
-#import dh2_direct::ward_surface
+#import dh2_ward::ward_surface
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},

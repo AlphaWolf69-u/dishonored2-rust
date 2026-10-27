@@ -1,6 +1,9 @@
 //! CPU particle state shared by the FX emitters. Descriptor loading and sprite
 //! submission have separate owners; these routines never infer missing inputs.
 pub mod emitter;
+pub mod events;
+pub mod field;
+pub mod mesh;
 pub mod orientation;
 pub mod parameters;
 pub mod pose;
@@ -62,12 +65,27 @@ impl MotionParameters {
         space: &space::ParticleSpace,
         acceleration_field: Option<[f32; 3]>,
     ) -> Result<MotionSample, String> {
+        self.sample_with_field(age, seed, space, acceleration_field, |_| Ok(None))
+    }
+
+    /// 1dbce0 evaluates acceleration fields after gravity and before velocity
+    /// scaling, sharing that particle's motion seed with both parameter reads.
+    pub fn sample_with_field(
+        &self, age: f32, seed: &mut u32, space: &space::ParticleSpace,
+        acceleration_field: Option<[f32; 3]>,
+        field: impl FnOnce(&mut u32) -> Result<Option<[f32; 3]>, String>,
+    ) -> Result<MotionSample, String> {
         let linear_acceleration = self.linear_acceleration.sample(age, seed)?;
         let acceleration = space.transform(
             self.acceleration.sample(age, seed)?,
             self.acceleration_worldspace,
         );
         let gravity = space.gravity(self.gravity.sample(age, seed)?);
+        let additional = field(seed)?;
+        let acceleration_field = match (acceleration_field, additional) {
+            (Some(base), Some(field)) => Some(std::array::from_fn(|i| add(base[i], field[i]))),
+            (base, additional) => base.or(additional),
+        };
         let velocity_scale = self.velocity.sample(age, seed)?;
         Ok(MotionSample {
             linear_acceleration,

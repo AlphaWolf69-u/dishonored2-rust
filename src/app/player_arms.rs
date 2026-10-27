@@ -350,7 +350,7 @@ pub(super) fn update_player_arms(
             None => Cow::Borrowed(&[]),
         }
     };
-    let probes = scene.as_ref().and_then(|scene| scene.environment_probes.as_ref());
+    let probes = scene.as_ref().and_then(|scene| scene.environment_probes.as_deref());
     let mut error = None;
     for arm in &mut arms.arms {
         let render = renders

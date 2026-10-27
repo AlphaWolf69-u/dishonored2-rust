@@ -12,8 +12,27 @@ impl EffectPoolLinks {
     /// 19a1d0 -> 19f3d0 initializes this family's 64 slots in ascending order.
     /// Other FX families have their own capacities and must not reuse this limit.
     pub fn environment() -> Self {
+        Self::ascending(64)
+    }
+
+    /// 19a470 -> 19f7e0: shared parent FX-instance storage.
+    pub fn instances() -> Self {
+        Self::ascending(1024)
+    }
+
+    /// 19a5b0 -> 19f980: shared particle-system family storage.
+    pub fn particles() -> Self {
+        Self::ascending(1024)
+    }
+
+    /// 19a7e0 ->19fcc0 initializes each ordinary/attached sound family.
+    pub fn sounds() -> Self {
+        Self::ascending(512)
+    }
+
+    fn ascending(capacity: u16) -> Self {
         Self {
-            next: (1..64).chain(std::iter::once(u16::MAX)).collect(),
+            next: (1..capacity).chain(std::iter::once(u16::MAX)).collect(),
             free_head: 0,
             allocated_count: 0,
         }

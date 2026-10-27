@@ -35,6 +35,15 @@ pub struct AcousticWorld {
     signals: Vec<ShapeSignals>,
 }
 
+/// A live listener's position and its resolved acoustic zone (c19b0/c249160).
+/// None in the listener array represents an inactive listener, not a failed
+/// zone lookup; an active listener outside all zones has `zone: None`.
+#[derive(Clone, Copy)]
+pub struct AdmissionListener {
+    pub position: bevy_math::Vec3,
+    pub zone: Option<usize>,
+}
+
 impl AcousticWorld {
     pub fn new(graph: Propagation, game_base: &Path) -> Result<Self, String> {
         // ca4dc0 defaults with exactly the overrides in 1400b7960. This
@@ -121,6 +130,37 @@ impl AcousticWorld {
                 Ok(index)
             })
             .transpose()
+    }
+
+    /// 1400c1240 checks all eight active listeners with the ordinary portal
+    /// admission query. Both outside-zone return codes count as audible;
+    /// only Admission::Inaudible rejects a listener. No active listener means
+    /// inaudible, including when the source range is zero.
+    pub fn point_inaudible(
+        &mut self,
+        source: bevy_math::Vec3,
+        range: f32,
+        propagation: bool,
+        listeners: &[Option<AdmissionListener>; 8],
+    ) -> Result<bool, String> {
+        for listener in listeners.iter().flatten() {
+            let source_zone = self.zone_at(source.to_array())?;
+            let query = super::admission::Query {
+                source,
+                listener: listener.position,
+                range,
+                vertical_scale: 1.0,
+                propagation,
+                source_zone,
+                listener_zone: listener.zone,
+            };
+            if super::propagation::admission(&self.graph, &query, 1.0)?
+                != super::admission::Admission::Inaudible
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn release(mut self) -> Result<(), String> {

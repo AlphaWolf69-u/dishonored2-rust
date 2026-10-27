@@ -9,6 +9,8 @@ pub mod physics_material;
 pub mod contacts;
 pub mod midnight;
 pub mod scene_motion;
+pub mod event_graph;
+pub mod effects;
 pub mod player;
 pub mod triggers;
 pub mod water;

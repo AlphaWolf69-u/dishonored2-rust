@@ -19,6 +19,8 @@ use crate::light_consts;
 #[reflect(Component, Default, Debug, Clone)]
 #[require(Transform, Visibility, VisibilityClass)]
 pub struct RectLight {
+    /// Scene-record index supplied by an external area-light renderer.
+    pub source_index: Option<u32>,
     /// The color of the light.
     ///
     /// By default, this is white.
@@ -42,6 +44,7 @@ pub struct RectLight {
 impl Default for RectLight {
     fn default() -> Self {
         RectLight {
+            source_index: None,
             color: Color::WHITE,
             intensity: light_consts::lumens::VERY_LARGE_CINEMA_LIGHT,
             width: 1.0,

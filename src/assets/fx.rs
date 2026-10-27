@@ -4,8 +4,10 @@ use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
 pub mod particle_system;
 pub mod particle_declaration;
+mod particle_mesh;
 pub mod particle_sprite;
 pub mod particle_stage;
+pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;
 
@@ -40,6 +42,20 @@ pub struct SoundEventAsset {
     /// Serialized order: maximum followed by minimum.
     pub delay: [f32; 2],
     pub event: Option<String>,
+}
+impl SoundEventAsset {
+    /// Resolve the installed declaration, including inherited edits, once for
+    /// both contact FX and ordinary world FX sound-object preparation.
+    pub fn resolve(&self, catalog: &crate::archive::Catalog) -> Result<Option<crate::assets::wwise::SoundEventDeclaration>, String> {
+        let Some(name) = self.event.as_deref() else { return Ok(None) };
+        let fields = crate::assets::entities::player::resolved_decl("soundevent", name, |path| {
+            catalog.read(path)
+                .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                .map_err(|error| format!("{path}: {error}"))
+        })?;
+        crate::assets::wwise::SoundEventDeclaration::from_fields(&fields)
+            .map(Some).map_err(|error| format!("{name}: {error}"))
+    }
 }
 
 pub struct SoundEffectAsset {
@@ -102,7 +118,7 @@ fn bounds(pair: &mut [f32; 2], fields: &Fields) -> Result<(), String> {
     Ok(())
 }
 
-fn descriptor_list<T>(list: &mut Vec<T>, fields: &Fields, read: fn(&Fields) -> Result<T, String>) -> Result<(), String> {
+pub(crate) fn descriptor_list<T>(list: &mut Vec<T>, fields: &Fields, read: fn(&Fields) -> Result<T, String>) -> Result<(), String> {
     for (position, (name, value)) in fields.iter().enumerate() {
         if name == "num" {
             if position != 0 { return Err("FX descriptor count must precede its elements".into()); }

@@ -1,7 +1,7 @@
 #define_import_path bevy_pbr::pbr_types
 
 #ifdef DH2_SURFACE_ENABLED
-#import dh2_direct::WardSurface
+#import dh2_ward::WardSurface
 #endif
 
 // Since this is a hot path, try to keep the alignment and size of the struct members in mind.

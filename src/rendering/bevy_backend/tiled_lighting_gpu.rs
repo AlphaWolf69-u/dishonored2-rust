@@ -23,6 +23,8 @@ pub struct TlfPipelines {
     pub depth: ComputePipeline,
     pub cull: ComputePipeline,
     pub clear_heads: ComputePipeline,
+    /// areaLights/replaceTexture, shared by the per-view resident image pools.
+    pub area_copy: ComputePipeline,
     /// FUN_1402fc6a0's last-mip reduction/unprojection into the 64×64 CPU grid.
     /// Source mip, viewport scale and inverse projection belong to the caller.
     pub coarse_depth: ComputePipeline,
@@ -179,6 +181,7 @@ impl FromWorld for TlfPipelines {
             })
         };
         Self {
+            area_copy: compile(include_str!("../../../assets/shaders/dh2_area_light_copy.wgsl"), "copy_area_light"),
             clear_heads: compile(include_str!("../../../assets/shaders/dh2_tlf_cull.wgsl"),"clear_heads"),
             depth: compile(
                 include_str!(concat!(

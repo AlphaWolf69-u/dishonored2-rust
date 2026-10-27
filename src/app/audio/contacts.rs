@@ -24,7 +24,6 @@ struct Definitions {
     database: ContactDatabase,
     chains: HashMap<String, Vec<String>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
-    energy: crate::assets::wwise::RtpcDeclaration,
 }
 
 fn text(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
@@ -33,24 +32,15 @@ fn text(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
 
 impl Definitions {
     fn load() -> Result<Self, String> {
-        use crate::entities::scene_motion::{atom, child};
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let catalog = Catalog::open(&base).map_err(|error| error.to_string())?;
         let source = text(&catalog, "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
         let database = ContactDatabase::parse(&source)?;
-        let source = text(&catalog, "generated/decls/soundengineinternals/default.soundengineinternals.decl")?.ok_or("sound engine internals are absent")?;
-        let fields = crate::entities::parse_declaration(&source)?;
-        let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
-        let source = text(&catalog, &format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("physics sound RTPC declaration is absent")?;
-        let energy = crate::assets::wwise::RtpcDeclaration::parse(&source).map_err(|error| error.to_string())?;
-        Ok(Self { catalog, database, chains: HashMap::new(), effects: HashMap::new(), energy })
+        Ok(Self { catalog, database, chains: HashMap::new(), effects: HashMap::new() })
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.event.as_ref().map(|path| {
-            let source = text(&self.catalog, &format!("generated/decls/soundevent/{path}.decl"))?.ok_or_else(|| format!("missing sound event {path}"))?;
-            crate::assets::wwise::declared_event_id(&source).map_err(|error| error.to_string())
-        }).transpose()?;
+        let event = asset.resolve(&self.catalog)?.map(|event| event.id);
         Ok(TimedEvent { delay: asset.delay, event })
     }
 
@@ -101,21 +91,23 @@ struct Active {
 pub(super) struct ContactSounds {
     definitions: Result<Definitions, String>,
     active: Vec<Active>,
-    next_id: u64,
     seed: u32,
     reported: HashSet<String>,
 }
 impl FromWorld for ContactSounds {
     fn from_world(_: &mut World) -> Self {
-        Self { definitions: Definitions::load(), active: Vec::new(), next_id: 0, seed: 0, reported: HashSet::new() }
+        Self { definitions: Definitions::load(), active: Vec::new(), seed: 0, reported: HashSet::new() }
     }
 }
 
 pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageReader<ContactSound>,
+    objects: Res<super::objects::EffectObjects>,
+    mix: Res<super::AudioMix>,
     mut output: MessageWriter<SoundEvent>, clock: Res<ClockRuntime>, paused: Res<GamePaused>, playing: Query<&AudioTarget>,
     mut physics: Option<ResMut<crate::app::physics_scene::PhysicsScene>>)
 {
     if paused.0 || !clock.advanced() { return; }
+    let Some(energy) = mix.physics_scale else { return };
     let Ok(clock) = clock.clock() else { return };
     let dt = clock.delta(3).unwrap_or(0.0);
     let state = &mut *state;
@@ -126,8 +118,8 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
         let prepared = (|| {
             let definitions = state.definitions.as_mut().map_err(|error| error.clone())?;
             let groups = definitions.resolve(contact)?;
-            let energy = definitions.energy.clamp(contact.speed * contact.speed * contact.mass);
-            Ok::<_, String>((groups, (definitions.energy.id, energy)))
+            let value = energy.clamp(contact.speed * contact.speed * contact.mass);
+            Ok::<_, String>((groups, (energy.id, value)))
         })();
         match prepared {
             Ok((groups, parameter)) => {
@@ -150,8 +142,11 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
                     for sound in &group.sounds {
                         let position = sample_position(sound.position, &mut state.seed);
                         let runtime = SoundEffect::new(position, sound.start, TimedEvent { delay: [0.0; 2], event: None }, offsets[0], &mut state.seed);
-                        state.next_id = state.next_id.wrapping_add(1);
-                        state.active.push(Active { sound: runtime, emitter: Emitter::Effect(state.next_id), age: 0.0,
+                        let emitter = match objects.allocate() {
+                            Ok(emitter) => emitter,
+                            Err(error) => { error!("Contact sound allocation failed: {error}"); continue; }
+                        };
+                        state.active.push(Active { sound: runtime, emitter, age: 0.0,
                             origin: contact.position, axis: crate::gameplay::reference_frame::direction_basis(contact.normal), parameter });
                     }
                 }

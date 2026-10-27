@@ -779,6 +779,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     graphics.features |= bevy::render::settings::WgpuFeatures::DEPTH_CLIP_CONTROL
         | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
         | bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE;
+    graphics.features |= bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
+        | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(ProgramCacheSource(program_cache))
@@ -789,6 +791,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Authored shadow flags remain intact.
         .insert_resource(PointLightShadowMap { size: 128 })
         .insert_resource(DirectionalLightShadowMap { size: 512 })
+        .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectFrames::load(
+            entity_document.as_ref()).map_err(std::io::Error::other)?)
+        .insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectGraphs(
+            std::sync::Arc::new(entity_document.as_ref().map(crate::assets::entities::effects::load)
+                .transpose().map_err(std::io::Error::other)?.unwrap_or_default()
+            ), crate::platform::performance_counter::counter().map_err(std::io::Error::other)? as u64
+        ))
         .insert_resource(SceneData {
             source_path: path.clone(),
             world,
@@ -801,7 +810,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             area_environments,
             area_fog,
             rewrite_shadow_settings,
-            environment_probes,
+            environment_probes: environment_probes.map(std::sync::Arc::new),
             shadow_quality_preset,
             shadow_quality,
             shadow_target_dimensions,
@@ -1108,6 +1117,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
+        .add_systems(Startup, super::area_lights::load)
         .add_systems(PostUpdate,super::fog_lights::publish
             .after(local_shadow_updates::publish_local_shadow_draws)
             .after(cull_small_local_lights))
@@ -1127,6 +1137,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, stream_visible_textures)
+        .add_systems(PostUpdate, super::particle_view::publish
+            .after(super::water_scene::publish_water_frame)
+            .after(super::visibility_queries::stream_visible_models))
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
         .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls))
         .add_systems(
