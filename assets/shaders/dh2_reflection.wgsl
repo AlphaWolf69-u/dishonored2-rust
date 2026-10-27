@@ -62,8 +62,8 @@ fn reflected_light(tag:u32,position:vec3<f32>,normal:vec3<f32>,view:vec3<f32>,su
     if !per_vertex {
         gain=probe_sh[tag][1].w;
         let encoded=probe_sh[tag][0].w;
-        let requested=u32(max(encoded,0.0));
-        index=select(count-1u,requested,encoded>=0.0 && requested<count);
+        // HQ_ComputeIBL clamps an unassigned signed index to zero.
+        index=min(u32(max(encoded,0.0)),count-1u);
     }
     if gain<=0.0 {return vec3(0.0);}
     let P=game_vector(position);let N=game_vector(normal);let V=game_vector(view);

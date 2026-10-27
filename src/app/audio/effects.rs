@@ -120,7 +120,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop(*action, target_path.clone(), prepared.declaration.declaration.id, event.object) {
+                        if let Err(error) = engine.post_stop(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object) {
                             warn!("FX event {} Stop unavailable: {error}", prepared.declaration.name);
                         }
                     },
