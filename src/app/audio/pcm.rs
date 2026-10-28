@@ -12,8 +12,7 @@ pub(super) struct PcmAudio {
 }
 
 impl PcmAudio {
-    pub fn from_wem(bytes: &[u8]) -> io::Result<Self> {
-        let audio = crate::assets::wwise::decode_wem_pcm(bytes)?;
+    pub fn from_decoded(audio: crate::assets::wwise::DecodedAudio) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid decoded Wwise sample format");
         let channels = ChannelCount::new(audio.channels).ok_or_else(invalid)?;
         let sample_rate = SampleRate::new(audio.sample_rate).ok_or_else(invalid)?;

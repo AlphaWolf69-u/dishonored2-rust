@@ -13,7 +13,9 @@ use sequence::Sequence;
 
 pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection>>>;
 
-enum Samples { Pcm(PcmAudio), Silence(crate::gameplay::sound::silence::Parameters) }
+/// Vorbis stays encoded and is decoded per voice while playing, as Wwise
+/// does; PCM and IMA media are decoded when the event is prepared.
+enum Samples { Pcm(PcmAudio), Vorbis(Arc<crate::assets::wwise::EncodedVorbis>), Silence(crate::gameplay::sound::silence::Parameters) }
 struct Sound {
     samples: Samples,
     channels: ChannelCount,
@@ -26,9 +28,17 @@ struct Sound {
 impl Sound {
     fn sample(&self, resampler: &Resampler, channel: usize,
         looping: Option<crate::gameplay::sound::looping::SourceLoop>,
-        silence: Option<&crate::gameplay::sound::silence::Voice>) -> Option<f32> {
+        silence: Option<&crate::gameplay::sound::silence::Voice>,
+        stream: Option<&mut crate::assets::wwise::VorbisCursor>) -> Option<f32> {
         match &self.samples {
             Samples::Pcm(pcm) => resampler.sample_looped(&pcm.samples, usize::from(self.channels.get()), channel, looping),
+            Samples::Vorbis(_) => {
+                let stream = stream?;
+                resampler.sample_with(|frame| {
+                    let frame = match looping { Some(looping) => looping.frame(frame as u64)?, None => frame };
+                    stream.sample(frame, channel)
+                })
+            }
             Samples::Silence(_) => resampler.sample_with(|frame| silence?.sample(frame as u64)),
         }
     }
@@ -122,14 +132,26 @@ impl Definition {
                 PlaybackNode::Missing { node } => (node, Kind::Missing),
                 PlaybackNode::NoSource { node, .. } => (node, Kind::NoSource),
                 PlaybackNode::Sound { node, variant } => {
-                    let pcm = PcmAudio::from_wem(&variant.media)?;
-                    if pcm.samples.is_empty() { return Err(invalid("scheduled Wwise sound contains no samples")); }
+                    let (samples, channels, sample_rate, frames, loop_points) = match crate::assets::wwise::prepare_wem(&variant.media)? {
+                        crate::assets::wwise::SourceMedia::Vorbis(media) => {
+                            let channels = ChannelCount::new(media.channels).ok_or_else(|| invalid("invalid Wwise Vorbis channel count"))?;
+                            let rate = SampleRate::new(media.sample_rate).ok_or_else(|| invalid("invalid Wwise Vorbis sample rate"))?;
+                            let (frames, points) = (media.frames, media.loop_points);
+                            (Samples::Vorbis(Arc::new(media)), channels, rate, frames, points)
+                        }
+                        crate::assets::wwise::SourceMedia::Decoded(audio) => {
+                            let pcm = PcmAudio::from_decoded(audio)?;
+                            let frames = pcm.samples.len() / usize::from(pcm.channels.get());
+                            let (channels, rate, points) = (pcm.channels, pcm.sample_rate, pcm.loop_points);
+                            (Samples::Pcm(pcm), channels, rate, frames, points)
+                        }
+                    };
+                    if frames == 0 { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
                     let spatial = super::spatial::Voice::read(&variant.properties, attenuations).map_err(invalid)?;
                     let loop_count = crate::gameplay::sound::looping::LoopCount::read(&variant.properties).map_err(invalid)?;
-                    let looping = crate::gameplay::sound::looping::SourceLoop::new(
-                        pcm.loop_points, pcm.samples.len() / usize::from(pcm.channels.get()), 1).map_err(invalid)?;
-                    sounds.push(Sound { channels: pcm.channels, sample_rate: pcm.sample_rate, samples: Samples::Pcm(pcm),
+                    let looping = crate::gameplay::sound::looping::SourceLoop::new(loop_points, frames, 1).map_err(invalid)?;
+                    sounds.push(Sound { channels, sample_rate, samples,
                         properties: Arc::new(variant.properties), spatial, looping: Some(looping), loop_count });
                     (node, Kind::Sound(sound))
                 },
@@ -366,6 +388,7 @@ impl ScheduledAudio {
 enum State {
     Sound { frame: u64, random: RandomProperties, looping: Option<crate::gameplay::sound::looping::SourceLoop>,
         silence: Option<crate::gameplay::sound::silence::Voice>,
+        stream: Option<crate::assets::wwise::VorbisCursor>,
         resampler: Option<Resampler>, gain: GainRamp, gain_tick: Option<u64>, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
         _activity: Option<crate::gameplay::sound::activity::Token> },
@@ -402,9 +425,13 @@ impl Runtime {
                 let count = sound.loop_count.sample(random15);
                 let silence = match sound.samples {
                     Samples::Silence(parameters) => Some(crate::gameplay::sound::silence::Voice::new(parameters, sound.sample_rate.get(), count, random15)),
-                    Samples::Pcm(_) => None,
+                    Samples::Pcm(_) | Samples::Vorbis(_) => None,
                 };
-                State::Sound { frame: 0, random, silence,
+                let stream = match &sound.samples {
+                    Samples::Vorbis(media) => Some(crate::assets::wwise::VorbisCursor::new(media.clone())),
+                    _ => None,
+                };
+                State::Sound { frame: 0, random, silence, stream,
                 looping: sound.looping.map(|looping| looping.with_count(count)),
                 resampler: None,
                 gain: GainRamp::default(), gain_tick: None,
@@ -590,7 +617,7 @@ impl Runtime {
         let definition = &audio.definition;
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
-            (State::Sound { frame, random, looping, silence, resampler, gain: ramp, gain_tick, filters, output_filters,
+            (State::Sound { frame, random, looping, silence, stream, resampler, gain: ramp, gain_tick, filters, output_filters,
                 routes, auxiliary, auxiliary_initialized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
@@ -605,7 +632,7 @@ impl Runtime {
                 let channels = usize::from(sound.channels.get());
                 let mut samples = [0.0; 8];
                 for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref()) else { return false };
+                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else { return false };
                     *sample = value;
                 }
                 let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
@@ -705,7 +732,7 @@ impl Runtime {
                     }
                     resampler.advance();
                     *frame += 1;
-                    return sound.sample(resampler, 0, *looping, silence.as_ref()).is_some();
+                    return sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some();
                 }
                 if sound.spatial.is_some() {
                     let output_channels = output.len();
@@ -727,7 +754,7 @@ impl Runtime {
                 }
                 resampler.advance();
                 *frame += 1;
-                sound.sample(resampler, 0, *looping, silence.as_ref()).is_some()
+                sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some()
             },
             (State::Layer(children), _) => {
                 let mut failed = false;

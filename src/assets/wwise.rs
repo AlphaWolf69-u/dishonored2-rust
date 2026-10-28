@@ -290,6 +290,79 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
     }
 }
 
+/// Wwise Vorbis media converted to Ogg and kept compressed. Wwise decodes
+/// Vorbis while a source plays; the frame count and loop come from the
+/// header (`1411606d0`, `141149320`), so nothing is decoded until a voice
+/// reads it through a [`VorbisCursor`].
+pub struct EncodedVorbis {
+    pub ogg: std::sync::Arc<[u8]>,
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub frames: usize,
+    /// Source-frame interval with an exclusive end, independent of bank loop count.
+    pub loop_points: Option<[u32; 2]>,
+}
+
+/// A source's media: compressed Vorbis, or PCM/IMA decoded at once.
+pub enum SourceMedia {
+    Vorbis(EncodedVorbis),
+    Decoded(DecodedAudio),
+}
+
+/// Prepare installed media for playback: Vorbis with a header frame count
+/// stays encoded; PCM, IMA ADPCM and Vorbis without one are decoded.
+pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
+    let (frames, points) = wem_source_metadata(bytes)?;
+    if let Some(frames) = frames {
+        let encoded = decode_wem(bytes)?;
+        if encoded.starts_with(b"OggS") {
+            let reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(&encoded[..]))
+                .map_err(|error| invalid_owned(format!("converted Wwise Vorbis headers: {error:?}")))?;
+            let (channels, sample_rate) = (u16::from(reader.ident_hdr.audio_channels), reader.ident_hdr.audio_sample_rate);
+            if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
+            let frames = frames as usize;
+            let loop_points = loop_points(points, frames)?;
+            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: encoded.into(), channels, sample_rate, frames, loop_points }));
+        }
+    }
+    decode_wem_pcm(bytes).map(SourceMedia::Decoded)
+}
+
+/// One voice's decoder over [`EncodedVorbis`]: packets are decoded forward
+/// into a window that keeps the frame before the last request (the
+/// resampler reads frames `n - 1` and `n`). A request before the window
+/// (a loop wrap) restarts the stream.
+pub struct VorbisCursor {
+    media: std::sync::Arc<EncodedVorbis>,
+    reader: Option<lewton::inside_ogg::OggStreamReader<Cursor<std::sync::Arc<[u8]>>>>,
+    window: Vec<f32>,
+    start: usize,
+}
+
+impl VorbisCursor {
+    pub fn new(media: std::sync::Arc<EncodedVorbis>) -> Self {
+        Self { media, reader: None, window: Vec::new(), start: 0 }
+    }
+
+    pub fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
+        let channels = usize::from(self.media.channels);
+        if frame >= self.media.frames || channel >= channels { return None; }
+        if self.reader.is_none() || frame < self.start {
+            self.reader = Some(lewton::inside_ogg::OggStreamReader::new(Cursor::new(self.media.ogg.clone())).ok()?);
+            self.window.clear();
+            self.start = 0;
+        }
+        while frame >= self.start + self.window.len() / channels {
+            let keep = frame.saturating_sub(1).saturating_sub(self.start).min(self.window.len() / channels);
+            self.window.drain(..keep * channels);
+            self.start += keep;
+            let packet = self.reader.as_mut()?.read_dec_packet_generic::<lewton::samples::InterleavedSamples<f32>>().ok()??;
+            self.window.extend(packet.samples);
+        }
+        self.window.get((frame - self.start) * channels + channel).copied()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Language {
     pub id: u32,
@@ -901,4 +974,47 @@ fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    /// Installed Vorbis media read through a cursor give the full decoder's
+    /// samples, read forward and again after a backward jump (a loop wrap).
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn cursor_matches_full_decode() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let mut paths: Vec<_> = std::fs::read_dir(base.join("pck")).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pck"))).collect();
+        paths.sort();
+        let mut checked = 0;
+        'packages: for path in paths {
+            let Ok(package) = Package::open(&path) else { continue };
+            let mut file = File::open(&path).unwrap();
+            for entry in package.media.iter().copied().step_by(97) {
+                let bytes = package.read_entry(&mut file, entry).unwrap();
+                let Ok(SourceMedia::Vorbis(encoded)) = prepare_wem(&bytes) else { continue };
+                let full = decode_wem_pcm(&bytes).unwrap();
+                let channels = usize::from(encoded.channels);
+                assert_eq!(full.samples.len(), encoded.frames * channels, "{}", path.display());
+                assert_eq!(full.loop_points, encoded.loop_points);
+                let encoded = std::sync::Arc::new(encoded);
+                let mut cursor = VorbisCursor::new(encoded.clone());
+                let frames = encoded.frames;
+                let mut order: Vec<usize> = (0..frames).collect();
+                order.extend(frames / 3..frames);
+                for frame in order {
+                    for channel in 0..channels {
+                        assert_eq!(cursor.sample(frame, channel), Some(full.samples[frame * channels + channel]), "frame {frame}");
+                    }
+                }
+                assert_eq!(cursor.sample(frames, 0), None);
+                checked += 1;
+                if checked == 24 { break 'packages; }
+            }
+        }
+        assert_eq!(checked, 24);
+    }
 }

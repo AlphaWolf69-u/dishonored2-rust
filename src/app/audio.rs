@@ -23,6 +23,8 @@ struct WwiseRegistry {
     sources: HashMap<u32, Vec<SourceAction>>,
     scheduled_selections: graph::Selections,
     states: bevy_backend::StateGroups,
+    /// The level's listed sound events were prepared at load.
+    preloaded: bool,
 }
 
 impl WwiseRegistry {
@@ -41,6 +43,16 @@ impl WwiseRegistry {
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
         if self.sources.contains_key(&event) { return Ok(()); }
+        if self.preloaded {
+            super::load_timing::late("sound event", &format!("{event:#010x}"));
+        }
+        let actions = self.decode_event(event)?;
+        self.sources.insert(event, actions);
+        Ok(())
+    }
+
+    /// The event's actions with every Play source decoded.
+    fn decode_event(&self, event: u32) -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
         use crate::assets::wwise::PlaybackCommand;
         let graph_actions = self.playback(event)?;
         let mut actions = Vec::new();
@@ -71,8 +83,7 @@ impl WwiseRegistry {
                 Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
             }
         }
-        self.sources.insert(event, actions);
-        Ok(())
+        Ok(actions)
     }
 
 }
@@ -135,7 +146,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
-            .add_systems(Startup, index_banks)
+            .add_systems(Startup, (index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
             .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
@@ -230,6 +241,58 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     }
 }
 
+
+/// The map load (`FUN_1400661e0`) loads the `soundevent` decls of the
+/// `init`, `common` and map lists before play, with their Wwise media; Vorbis
+/// is then decoded while it plays. Every listed event's media is read and
+/// prepared here, on all cores, instead of on the main thread at its first
+/// post.
+fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
+    let started = std::time::Instant::now();
+    let result = (|| -> Result<Vec<u32>, String> {
+        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
+        let catalog = crate::archive::Catalog::open(&base).map_err(|e| e.to_string())?;
+        let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
+        let map = map.trim_start_matches("maps/").trim_end_matches(".map");
+        let language = crate::assets::lang::read_text_language(&base)?;
+        let list = crate::assets::map_resources::level_load_list(&base, &catalog, map, language)?;
+        let mut events = Vec::new();
+        for resource in list.iter().filter(|r| r.kind == "soundevent") {
+            let Some(name) = resource.path.strip_prefix("generated/decls/soundevent/").and_then(|p| p.strip_suffix(".decl")) else { continue };
+            let asset = crate::assets::fx::SoundEventAsset { delay: [0.0; 2], event: Some(name.to_owned()) };
+            match asset.resolve(&catalog) {
+                Ok(Some(declaration)) => events.push(declaration.id),
+                Ok(None) => {}
+                Err(error) => debug!(target: "dh2::loading", "Listed sound event {name}: {error}"),
+            }
+        }
+        events.sort_unstable();
+        events.dedup();
+        Ok(events)
+    })();
+    let events = match result {
+        Ok(events) => events,
+        Err(error) => return warn!("Level sound events not preloaded: {error}"),
+    };
+    let shared = &*registry;
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let prepared: Vec<(u32, Vec<SourceAction>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = events.chunks(events.len().div_ceil(threads).max(1)).map(|chunk| scope.spawn(move || {
+            chunk.iter().filter_map(|&event| match shared.decode_event(event) {
+                Ok(actions) => Some((event, actions)),
+                Err(error) => {
+                    debug!(target: "dh2::loading", "Listed Wwise event {event:#010x}: {error}");
+                    None
+                }
+            }).collect::<Vec<_>>()
+        })).collect();
+        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
+    });
+    let count = prepared.len();
+    registry.sources.extend(prepared);
+    registry.preloaded = true;
+    super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
+}
 
 fn play_events(
     mut commands: Commands,

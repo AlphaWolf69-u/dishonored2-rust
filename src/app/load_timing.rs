@@ -58,3 +58,12 @@ pub(super) fn compare_images(catalog: &crate::assets::archive::Catalog, scene: &
     let outside: Vec<&String> = scene.iter().filter(|p| !listed.contains(p.as_str())).collect();
     eprintln!("LOAD list {map}: {} resources, {} images; scene images {}, not listed {}: {:?}", list.len(), listed.len(), scene.len(), outside.len(), outside.iter().take(12).collect::<Vec<_>>());
 }
+
+/// Diagnostic: a resource loaded during play rather than at level load.
+pub(super) fn late(kind: &str, what: &str) {
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
+        return;
+    }
+    let at = MARKS.lock().unwrap().map_or(0.0, |(start, _)| start.elapsed().as_secs_f64());
+    eprintln!("LOAD late {kind}: {what} (at {at:.3}s)");
+}
