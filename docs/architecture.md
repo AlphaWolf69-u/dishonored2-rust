@@ -157,6 +157,35 @@ private captures are diagnostic/test inputs only. Never distribute archive
 contents, original shaders, decompiled code or executable bytes. The client's
 own shader sources are embedded, so launch is independent of the working folder.
 
+## Level loading
+
+The original loads a level before play: the map load (`FUN_1400661e0`,
+`ResourceManager.cpp`) loads every entry of the `init`, `common` and map
+`generated/buildGame/<name>.mapResources` lists by index kind, and their
+dependencies (the world's and decls' references) on the slow path of the same
+load. `assets::map_resources` reads those lists. During play only the texture
+streamer reads installed files (`_mipN` levels, `arkTextureStreamer`).
+
+`crate::loading` is where every subsystem plugs into this:
+
+- Read installed resources through `Catalog::read` during startup (Startup
+  systems, `setup`, plugin construction) or behind a gate. Each read is
+  recorded with its kind; nothing needs registering.
+- Work that finishes after startup (GPU creation in the render world,
+  worker threads, first-frame preparation) calls `loading::gate(NAME)` while
+  its plugin is built and `loading::complete(NAME)` when done, also on failure.
+  The level is ready when every gate is complete; the loading screen holds
+  until then, and `loading::play_started` marks the start of play.
+- Never read installed resources lazily during play. Prepare what a system
+  can need from the lists or the scene at load (see the sound events, the
+  contact-system decls and the particle GPU materials).
+
+`DH2_DEBUG_LOAD_TIMING=1` prints the load phases, each gate's completion, a
+per-kind coverage table of the lists against what the rewrite read, and every
+resource first read after play started (`LOAD late ...`). The coverage table
+is the list of loaders still to write: a kind with `0 of N listed` belongs to
+a system the rewrite does not implement yet.
+
 ## Verification
 
 ```powershell

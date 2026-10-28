@@ -1064,6 +1064,43 @@ impl ParticlePass {
         })
     }
 
+    /// The cached materials were built with another surface sampler.
+    pub fn sampler_changed(&self, sampler: &Sampler) -> bool {
+        self.material_sampler != Some(sampler.id())
+    }
+
+    /// Create the GPU material of every (material, draw state) the level's
+    /// particles can use, as the draw path derives the state: the transparency
+    /// mode from the cvars and both water stencil variants. Returns how many
+    /// were created.
+    pub fn prepare_materials<'a>(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        cvars: &crate::platform::cvars::CVars,
+        surface_sampler: &Sampler,
+    ) -> Result<usize, String> {
+        if self.material_sampler != Some(surface_sampler.id()) {
+            self.materials.clear();
+            self.material_sampler = Some(surface_sampler.id());
+        }
+        let mut created = 0;
+        for material in materials {
+            let mut transparency = crate::rendering::particles::transparency::TransparencyParameters::read(cvars, material.state, true)?;
+            if material.distortion { transparency.mode = 0; }
+            for water in [false, true] {
+                let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
+                let key = (material.name.clone(), state);
+                if self.materials.contains_key(&key) { continue; }
+                let gpu = self.material(device, queue, material.clone(), state, transparency.mode != 0, surface_sampler)?;
+                self.materials.insert(key, gpu);
+                created += 1;
+            }
+        }
+        Ok(created)
+    }
+
     pub fn record(
         &mut self,
         device: &RenderDevice,

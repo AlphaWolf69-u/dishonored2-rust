@@ -50,7 +50,12 @@ struct ParticleGpu {
     colour_format: bevy::render::render_resource::TextureFormat,
     depth_format: bevy::render::render_resource::TextureFormat,
     source: std::sync::Arc<super::screen_effects::ScreenEffectSources>,
+    /// Every level particle material has its GPU material (`PARTICLE_GATE`).
+    prepared: bool,
 }
+
+/// Level loading gate: the level's particle GPU materials exist.
+pub const PARTICLE_GATE: &str = "particle materials";
 impl CameraGpu {
     pub(super) fn capture_planes(
         &self,
@@ -84,6 +89,7 @@ pub(super) fn register(app: &mut App) {
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::physics_queries::PhysicsQueryFrame,
     >::default());
+    crate::loading::gate(PARTICLE_GATE);
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
     app.init_resource::<super::world_effects::WorldEffectSources>();
     app.init_resource::<super::world_effects::WorldEffectDefinitions>();
@@ -146,6 +152,7 @@ struct ParticleLightingScene<'w> {
     local_frame: Option<Res<'w,super::shadow_pass::LocalShadowSceneFrame>>,
     local_completion: Option<Res<'w,super::shadow_pass::LocalShadowCompletion>>,
     lights: Res<'w,super::fog_light_scattering::LocalFogFrame>,
+    world_sources: Res<'w,super::world_effects::WorldEffectSources>,
 }
 /// Submit live sprites after atmosphere/depth and before ordinary transparency.
 fn render_particles(
@@ -195,6 +202,8 @@ fn render_particles(
     let result = (|| -> Result<(), String> {
         let (instances, draw_capacity) = gpu.particle_systems.capacity();
         if instances == 0 || draw_capacity == 0 {
+            // A level without particle capacity has no particle materials to prepare.
+            crate::loading::complete(PARTICLE_GATE);
             return Ok(());
         }
         if !camera.hdr
@@ -283,8 +292,24 @@ fn render_particles(
                 colour_format,
                 depth_format,
                 source: sources.clone(),
+                prepared: false,
             });
             info!(instances, draws=draw_capacity, "Particle colour resources prepared");
+        }
+        // The level's particle materials are created before play, not at
+        // their first draw; a sampler change rebuilds them all here.
+        if let Some(sampler) = lighting_scene.sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler) {
+            let particles = gpu.particles.as_mut().unwrap();
+            if !particles.prepared || particles.pass.sampler_changed(sampler) {
+                let console = crate::platform::console::shared().read();
+                let materials = lighting_scene.world_sources.0.particle_materials().chain(sources.particle_materials());
+                let created = particles.pass.prepare_materials(&device, &queue, materials, &console.cvars, sampler)?;
+                if !particles.prepared {
+                    info!(created, "Level particle materials prepared");
+                    crate::loading::complete(PARTICLE_GATE);
+                }
+                particles.prepared = true;
+            }
         }
         // Prepare the shared particle pipeline once the live pool exists,
         // independently of whether this frame sees any of its sprites.

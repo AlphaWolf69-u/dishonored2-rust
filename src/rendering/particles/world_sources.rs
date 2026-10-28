@@ -84,6 +84,20 @@ pub struct WorldFxSources {
 }
 
 impl WorldFxSources {
+    /// Every particle material of the level's world FX.
+    pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
+        self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+            .flat_map(|p| p.materials.values())
+    }
+
+    /// Every sound event the level's world FX post.
+    pub fn sound_events(&self) -> impl Iterator<Item = u32> + '_ {
+        self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.sounds)
+            .flat_map(|s| [&s.start, &s.stop]).filter_map(|e| e.as_ref()).map(|e| e.declaration.id)
+    }
+
     pub fn load(
         graphs: &[FxGraph],
         actors: &[crate::assets::entities::effects::actors::ActorDefinition],

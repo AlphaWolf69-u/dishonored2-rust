@@ -191,6 +191,9 @@ pub(super) fn debug_character() -> Character {
 /// A player built before the open that uses it: the movie and its libraries
 /// loaded at the screen size, and its bitmaps decoded. Nothing in it has
 /// reached the game yet; its clock restarts when it is taken.
+/// Level loading gate: the pause movie is prepared for the window size.
+pub(super) const PAUSE_GATE: &str = "pause menu";
+
 struct Prepared {
     screen: (i32, i32),
     player: Player,
@@ -323,6 +326,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         Err(e) => warn!("Pause movie: {e}"),
                     }
                 }
+                crate::loading::complete(PAUSE_GATE);
             }
             Command::Open { screen } => {
                 generation += 1;

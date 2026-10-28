@@ -160,6 +160,7 @@ pub fn read_entry(base: &Path, entry: &IndexEntry) -> Result<Vec<u8>> {
             size: entry.size,
             stored_size: entry.stored_size,
             slot: entry.archive_slot,
+            kind: 0,
         },
     )
 }

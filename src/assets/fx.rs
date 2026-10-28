@@ -48,12 +48,17 @@ impl SoundEventAsset {
     /// Resolve the installed declaration, including inherited edits, once for
     /// both contact FX and ordinary world FX sound-object preparation.
     pub fn resolve(&self, catalog: &crate::archive::Catalog) -> Result<Option<crate::assets::wwise::SoundEventDeclaration>, String> {
-        let Some(name) = self.event.as_deref() else { return Ok(None) };
-        let fields = crate::assets::entities::player::resolved_decl("soundevent", name, |path| {
+        self.resolve_with(|path| {
             catalog.read(path)
                 .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
                 .map_err(|error| format!("{path}: {error}"))
-        })?;
+        })
+    }
+
+    /// [`Self::resolve`] with declaration text from `read`.
+    pub fn resolve_with(&self, read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<crate::assets::wwise::SoundEventDeclaration>, String> {
+        let Some(name) = self.event.as_deref() else { return Ok(None) };
+        let fields = crate::assets::entities::player::resolved_decl("soundevent", name, read)?;
         crate::assets::wwise::SoundEventDeclaration::from_fields(&fields)
             .map(Some).map_err(|error| format!("{name}: {error}"))
     }

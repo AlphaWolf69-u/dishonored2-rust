@@ -65,6 +65,7 @@ pub use visibility::tome;
 pub mod app;
 pub mod assets;
 pub mod gameplay;
+pub mod loading;
 mod noise;
 pub mod platform;
 pub mod random;

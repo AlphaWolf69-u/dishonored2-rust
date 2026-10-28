@@ -41,22 +41,39 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
 }
 
-/// Diagnostic (with `DH2_DEBUG_LOAD_TIMING=1`): the scene's images against
-/// the original's load lists for the current map (`init`, `common`, map).
-pub(super) fn compare_images(catalog: &crate::assets::archive::Catalog, scene: &[String]) {
+static LIST: std::sync::OnceLock<Vec<crate::assets::map_resources::Resource>> = std::sync::OnceLock::new();
+
+/// Keep the current map's load lists for the coverage report.
+pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
         return;
     }
     let Some(map) = crate::gameplay::map_info::current_map() else { return };
     let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
     let language = crate::assets::lang::read_text_language(catalog.base()).unwrap_or("english");
-    let list = match crate::assets::map_resources::level_load_list(catalog.base(), catalog, &map, language) {
-        Ok(list) => list,
-        Err(e) => return eprintln!("LOAD list {map}: {e}"),
-    };
-    let listed: std::collections::HashSet<&str> = list.iter().filter(|r| r.kind == "image").map(|r| r.path.as_str()).collect();
-    let outside: Vec<&String> = scene.iter().filter(|p| !listed.contains(p.as_str())).collect();
-    eprintln!("LOAD list {map}: {} resources, {} images; scene images {}, not listed {}: {:?}", list.len(), listed.len(), scene.len(), outside.len(), outside.iter().take(12).collect::<Vec<_>>());
+    match crate::assets::map_resources::level_load_list(catalog.base(), catalog, &map, language) {
+        Ok(list) => drop(LIST.set(list)),
+        Err(e) => eprintln!("LOAD list {map}: {e}"),
+    }
+}
+
+/// When every loading gate is complete: play starts, and the coverage of
+/// the original's load lists is reported.
+pub(super) fn level_ready(mut done: bevy::prelude::Local<bool>) {
+    if *done || !crate::loading::ready() {
+        return;
+    }
+    *done = true;
+    crate::loading::play_started();
+    mark("level ready");
+    if let Some(list) = LIST.get() {
+        let report = crate::loading::report(list);
+        let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
+        eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
+        for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {
+            eprintln!("LOAD coverage {}: {} of {} listed, {} unlisted", c.kind, c.loaded, c.listed, c.unlisted);
+        }
+    }
 }
 
 /// Diagnostic: a resource loaded during play rather than at level load.

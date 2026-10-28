@@ -15,9 +15,13 @@ struct Entry {
     size: u32,
     stored_size: u32,
     slot: u16,
+    /// Index into `Catalog::kinds`.
+    kind: u16,
 }
 
 pub struct Catalog {
+    /// The index kinds (`image`, `material`, ...) of the entries.
+    kinds: Vec<String>,
     base: PathBuf,
     entries: Vec<(String, Entry)>,
     // Loose resource files of the rewrite's enabled mods by normalized
@@ -77,6 +81,7 @@ use index::archive_path;
 impl Catalog {
     pub fn open(base: &Path) -> Result<Self> {
         let mut entries = Vec::new();
+        let mut kinds: Vec<String> = Vec::new();
         let mut image_sources = Vec::new();
         for group in 1..=4 {
             index::visit_group(base, group, |record| {
@@ -101,6 +106,13 @@ impl Catalog {
                     }
                     image_sources.push((source, path.clone()));
                 }
+                let kind = match kinds.iter().position(|k| *k == kind) {
+                    Some(i) => i as u16,
+                    None => {
+                        kinds.push(kind);
+                        (kinds.len() - 1) as u16
+                    }
+                };
                 entries.push((
                     path,
                     Entry {
@@ -109,6 +121,7 @@ impl Catalog {
                         size,
                         stored_size,
                         slot: archive_slot,
+                        kind,
                     },
                 ));
             })?;
@@ -149,6 +162,7 @@ impl Catalog {
         image_programs.sort();
         image_programs.dedup();
         Ok(Self {
+            kinds,
             base: base.to_path_buf(),
             entries,
             image_sources,
@@ -242,7 +256,15 @@ impl Catalog {
         &self.base
     }
 
+    /// The index kind of `path`.
+    pub fn kind(&self, path: &str) -> Option<&str> {
+        self.entry(path).map(|e| self.kinds[e.kind as usize].as_str())
+    }
+
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(kind) = self.kind(path) {
+            crate::loading::read(kind, path);
+        }
         if let Some(file) = self.overlay_file(path) {
             return Ok(Some(std::fs::read(file)?));
         }

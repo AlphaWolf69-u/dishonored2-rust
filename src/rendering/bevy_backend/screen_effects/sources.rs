@@ -35,6 +35,12 @@ pub struct ScreenEffectSources {
     pub transparency_resolve_state: Result<crate::render_state::RenderState, String>,
 }
 impl ScreenEffectSources {
+    /// Every particle material of the player screen effects.
+    pub fn particle_materials(&self) -> impl Iterator<Item = &std::sync::Arc<crate::rendering::particles::material::ParticleMaterial>> {
+        [&self.underwater, &self.leave_water].into_iter().flat_map(|e| &e.groups).flat_map(|g| &g.particles)
+            .filter_map(|p| p.as_ref().ok()).flat_map(|p| p.materials.values())
+    }
+
     pub fn load(
         catalog: &Catalog,
         library: &mut ProgramLibrary,

@@ -1118,7 +1118,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
-            (finish_streaming_diagnostics, collision_report, super::load_timing::track_streaming)
+            (finish_streaming_diagnostics, collision_report, super::load_timing::track_streaming, super::load_timing::level_ready)
                 .chain()
                 .after(VisibilitySystems::CheckVisibility)
                 .after(super::fog_scene::publish_fog_frame)
@@ -1128,7 +1128,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))
-        .add_systems(Startup, super::area_lights::load)
+        // It reads the catalog setup takes for the texture worker.
+        .add_systems(Startup, super::area_lights::load.before(super::setup))
         .add_systems(PostUpdate,super::fog_lights::publish
             .after(local_shadow_updates::publish_local_shadow_draws)
             .after(cull_small_local_lights))
@@ -1153,6 +1154,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(super::visibility_queries::stream_visible_models))
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
         .add_systems(Update, super::pause_menu::update_pause_menu.before(camera_controls))
+        .add_systems(Startup, || crate::loading::gate(super::pause_menu::PAUSE_GATE))
         .add_systems(
             Update,
             super::pause_fx::update_pause_screen_fx

@@ -1824,7 +1824,7 @@ pub(super) fn setup(
             }
         }
         info!(target: "dh2::textures", resident_images, resident_bytes, "Scene base mips initialized");
-        super::load_timing::compare_images(catalog, &render_queue.diffuse_image_paths);
+        super::load_timing::keep_load_list(catalog);
         super::load_timing::mark("setup: base mips");
     }
     commands.insert_resource(render_queue);

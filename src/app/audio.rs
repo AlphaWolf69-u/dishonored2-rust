@@ -135,6 +135,8 @@ pub struct SoundPlugin;
 
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
+        crate::loading::gate(LISTED_SOUNDS_GATE);
+        crate::loading::gate(LEVEL_SOUNDS_GATE);
         app.add_audio_source::<graph::ScheduledAudio>()
             .add_audio_source::<bevy_backend::OutputAudio>()
             .add_message::<SoundEvent>()
@@ -148,7 +150,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<spatial::Scene>()
             .add_systems(Startup, (index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, level::update, effects::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -272,8 +274,24 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
     })();
     let events = match result {
         Ok(events) => events,
-        Err(error) => return warn!("Level sound events not preloaded: {error}"),
+        Err(error) => {
+            crate::loading::complete(LISTED_SOUNDS_GATE);
+            return warn!("Level sound events not preloaded: {error}");
+        }
     };
+    let count = prepare_all(&mut registry, &events);
+    registry.preloaded = true;
+    crate::loading::complete(LISTED_SOUNDS_GATE);
+    super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
+}
+
+/// Level loading gates of this plugin.
+const LISTED_SOUNDS_GATE: &str = "listed sound events";
+const LEVEL_SOUNDS_GATE: &str = "level emitter and world FX sound events";
+
+/// Prepare `events` not prepared yet on all cores. Returns how many were.
+fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
+    let events: Vec<u32> = events.iter().copied().filter(|e| !registry.sources.contains_key(e)).collect();
     let shared = &*registry;
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let prepared: Vec<(u32, Vec<SourceAction>)> = std::thread::scope(|scope| {
@@ -281,7 +299,7 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
             chunk.iter().filter_map(|&event| match shared.decode_event(event) {
                 Ok(actions) => Some((event, actions)),
                 Err(error) => {
-                    debug!(target: "dh2::loading", "Listed Wwise event {event:#010x}: {error}");
+                    debug!(target: "dh2::loading", "Level Wwise event {event:#010x}: {error}");
                     None
                 }
             }).collect::<Vec<_>>()
@@ -290,8 +308,31 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
     });
     let count = prepared.len();
     registry.sources.extend(prepared);
-    registry.preloaded = true;
-    super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
+    count
+}
+
+/// The events of the level's audio components and world FX, which the
+/// original loads as dependencies of the map's entities and FX decls during
+/// the map load, once both exist and before they are first evaluated.
+fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
+    sources: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectSources>>,
+    mut registry: ResMut<WwiseRegistry>, mut done: Local<bool>)
+{
+    if *done { return; }
+    let (Some(mut physics), Some(sources)) = (physics, sources) else { return };
+    let mut events: Vec<u32> = sources.0.sound_events().collect();
+    let visited = physics.visit_audio(|_, binding, _| {
+        events.extend(binding.events.iter().flatten().map(|event| event.id));
+        Ok(())
+    });
+    if let Err(error) = visited { warn!("Level audio events not collected: {error}"); }
+    events.sort_unstable();
+    events.dedup();
+    let started = std::time::Instant::now();
+    let count = prepare_all(&mut registry, &events);
+    *done = true;
+    crate::loading::complete(LEVEL_SOUNDS_GATE);
+    super::load_timing::mark(&format!("level sounds: {count} more of {} emitter and FX events prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
 }
 
 fn play_events(
