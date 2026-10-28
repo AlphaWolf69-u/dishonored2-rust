@@ -1,0 +1,88 @@
+# Original Dishonored 2 (Steam AppID 403640, VoidEngine v1.77.9.0) at the start
+# of eotw_p_lowchaos, 1920x1080 borderless, r_renderQualityPresets 5,
+# AMD Radeon RX 6800 XT, D3D11, captured 2026-10-28.
+# Memory tags: analysis/memory_tags.py (allocator counters DAT_1432c4f60 /
+# DAT_1432c5460, names at 0x142288a30). Process and GPU: Windows counters.
+# Frames: PresentMon 2, 10 s, analysis/frame_stats.py.
+process private_mb 8626
+process working_set_mb 3897
+gpu dedicated_mb 3987
+gpu shared_mb 235
+gpu utilization_3d_percent 46.7
+cpu cores_busy 4.46
+frame time_ms_mean 11.17
+frame time_ms_p95 12.38
+frame cpu_busy_ms_mean 10.88
+frame gpu_busy_ms_mean 5.19
+frame gpu_busy_ms_p95 5.51
+tag WWISE bytes 240890571 count 13
+tag ANIMATION bytes 195174788 count 22633
+tag HAVOK bytes 103479168 count 12502
+tag IGGY bytes 86057717 count 595
+tag FACEFX_SYSTEM bytes 84439792 count 34198
+tag UMBRA_TOME bytes 77553524 count 1
+tag RENDERMODEL bytes 72481984 count 19507
+tag INDIRECT_LIGHTING bytes 61751560 count 46614
+tag COMPONENT bytes 55492034 count 26607
+tag RESOURCE bytes 51830920 count 22543
+tag TRIANGLES bytes 50402432 count 26456
+tag ANIMTREE bytes 49835196 count 94206
+tag PARTICLE bytes 46524457 count 13628
+tag SHADERCACHE bytes 43566840 count 93362
+tag PHYSICS bytes 38820534 count 1196
+tag ATOMIC_STRING bytes 34537472 count 527
+tag SKELETON bytes 22829396 count 35410
+tag KISCULE bytes 22018157 count 93089
+tag NAVIGATION bytes 18353100 count 3967
+tag IDCLASS bytes 18194344 count 105314
+tag AI_RULE bytes 18111192 count 73449
+tag HASHTABLE bytes 17252688 count 201966
+tag UMBRA_QUERYSYSTEM bytes 15758216 count 63
+tag DECL bytes 14226448 count 47478
+tag COMPONENT_AI bytes 13773888 count 284
+tag SYSTEM bytes 13461696 count 187902
+tag NEW bytes 12977772 count 43957
+tag SAVEGAMES bytes 12262296 count 115
+tag COMPONENT_ANIM bytes 10656016 count 2877
+tag IDLIST bytes 9976462 count 27473
+tag STATICMODEL bytes 9291620 count 1004
+tag FX bytes 9149240 count 15839
+tag RENDERPARM bytes 8546580 count 18394
+tag STRING bytes 8399977 count 38701
+tag HASHINDEX bytes 8154048 count 2520
+tag ANIMSET bytes 6591156 count 19152
+tag RENDERER bytes 5799177 count 46946
+tag GAME bytes 4951850 count 69146
+tag MIDNIGHT bytes 4551652 count 19627
+tag AI_BT bytes 4344520 count 5595
+tag AI_DSM bytes 3702434 count 20823
+tag DECLTEXT bytes 3654497 count 3857
+tag SKINNED_RENDERMODEL bytes 2505580 count 5145
+tag AUDIO_PROPA bytes 1907886 count 412
+tag CURVE bytes 1758948 count 41700
+tag PAGEFILECACHE bytes 1279016 count 5
+tag AI_USER_VAR bytes 1256504 count 42315
+tag IMAGE bytes 1250104 count 219
+tag GUI_MODEL bytes 980352 count 3
+tag AUDIO bytes 929384 count 2461
+tag LANGDICT bytes 547888 count 1
+tag IDLIB bytes 521065 count 44067
+tag AI_GLOBAL bytes 261800 count 3281
+tag RENDERWORLD bytes 96768 count 2
+tag EVENT_LISTENER bytes 93736 count 3454
+tag FREE1 bytes 53248 count 13
+tag COLLISION bytes 34412 count 4
+tag CVAR bytes 33608 count 142
+tag NETWORKING bytes 27680 count 2
+tag KDTREE bytes 26496 count 1
+tag FILE bytes 22024 count 38
+tag SOUND bytes 19280 count 328
+tag DEBUG bytes 18428 count 76
+tag AUDIO_COOK bytes 9760 count 41
+tag FONTS bytes 9178 count 9
+tag FXPHYSICS bytes 5960 count 3
+tag LEXER bytes 1624 count 10
+tag FUNC_CALLBACK bytes 1128 count 69
+tag TABLE bytes 416 count 4
+tag RESOURCE_BGL bytes 112 count 1
+tag BITARRAY bytes 21 count 17
