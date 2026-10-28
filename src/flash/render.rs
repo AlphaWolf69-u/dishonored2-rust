@@ -665,14 +665,19 @@ impl Builder<'_> {
             // siblings up to its clip depth.
             let clip_slot = if clip_layer && depth < clip_depth as i32 && has_content { self.allocate(Some(o.clone()), clip_depth as i16) } else { None };
             // A script mask is drawn at its own world (its matrices up to the
-            // Stage) into a slot that lasts for this child only.
+            // Stage) into a slot that lasts for this child only. Inside a 3D
+            // subtree (`P+0x22a5`) `FUN_141037930` ignores that chain: the
+            // mask's own matrix goes onto the current 3D world (`P+0x2488`),
+            // the world of this parent.
             let mask_slot = match mask {
                 Some(mask) => {
                     let slot = self.allocate(None, 0x7fff);
                     if let Some(slot) = slot {
-                        let outer = self.world.take();
-                        self.draw(&mask, &concatenated(&mask), &Colour::default());
-                        self.world = outer;
+                        if self.world.is_some() {
+                            self.node(&mask, &Affine::default(), &Colour::default());
+                        } else {
+                            self.draw(&mask, &concatenated(&mask), &Colour::default());
+                        }
                         self.finish_mask(slot);
                     }
                     slot

@@ -426,3 +426,69 @@ fn listener_without_parameters_takes_its_event() {
     let names: Vec<String> = player.take_notifications().into_iter().map(|n| n.0).collect();
     assert!(names.iter().any(|n| n == "OnDifficultyCancel"), "{names:?}");
 }
+
+/// The option description (`OptionDetails.scrollView.container`) gets its
+/// sibling `zone` as script mask when it overflows, inside the 3D-rotated
+/// details panel. The mask is drawn in the same 3D world as the text
+/// (`FUN_141037930` with `P+0x22a5` set), so the description, which the
+/// movie lays out inside the zone, keeps within the mask's left edge however
+/// the panel turns.
+#[test]
+#[ignore = "requires installed game archives"]
+fn masks_inside_3d_follow_the_3d_world() {
+    let base = installation::game_base().unwrap();
+    let catalog = Catalog::open(&base).unwrap();
+    let language = crate::assets::lang::read_text_language(&base).unwrap();
+    let (mut player, _) = Player::load_installed(&catalog, language, "ui/corvo_pause_menu.iggy").unwrap();
+    crate::gameplay::pause_state::file_ready(&mut player, (1366, 768)).unwrap();
+    let state = crate::gameplay::pause_state::current_state(&player, language, &catalog);
+    let mut pause = crate::gameplay::pause_state::Pause::new(&mut player, &catalog, &base, state, None, Box::new(|| Err("no message boxes in this test".into()))).unwrap();
+    pause.on_flash_loaded(&mut player).unwrap();
+    pause.show(&mut player).unwrap();
+    let mut unhandled = Vec::new();
+    let mut run = |player: &mut Player, cursor: Option<(f64, f64)>, frames: u32| {
+        for _ in 0..frames {
+            // As the client moves the cursor: `mouseCursor`, then the Iggy event.
+            if let Some((x, y)) = cursor {
+                player.set_value("mouseCursor.x", x.into()).unwrap();
+                player.set_value("mouseCursor.y", y.into()).unwrap();
+                player.mouse_move(x, y).unwrap();
+            }
+            player.tick(1.0 / 30.0).unwrap();
+            pause.handle_notifications(player, &mut unhandled).unwrap();
+        }
+    };
+    run(&mut player, None, 10);
+    player.state.borrow_mut().notifications.push(("OnOptionSectionSelected".into(), vec![1.0.into()]));
+    run(&mut player, None, 50);
+    // Select the first setting, then mask its description as
+    // `ScrollHandler.initZone` does when it overflows: `container.mask = zone`.
+    run(&mut player, Some((800.0, 380.0)), 15);
+    fn find(o: &Obj, name: &str) -> Option<Obj> {
+        display::children(o).into_iter().find_map(|c| if display::display_ref(&c).is_some_and(|d| &*d.name == name) { Some(c) } else { find(&c, name) })
+    }
+    let stage = player.state.borrow().stage.clone().unwrap();
+    let view = find(&find(&stage, "optionDetail").expect("optionDetail"), "scrollView").expect("scrollView");
+    let (container, zone) = (find(&view, "container").unwrap(), find(&view, "zone").unwrap());
+    player.set_member(&avm2::value::Value::Object(container), "mask", avm2::value::Value::Object(zone)).unwrap();
+    for (cursor, name) in [((1919.0, 1079.0), "right"), ((0.0, 0.0), "left")] {
+        run(&mut player, Some(cursor), 40);
+        let list = render::draw_list(&player.vm);
+        let bounds = |b: &render::Batch| {
+            let v = &list.vertices[b.first as usize..(b.first + b.count) as usize];
+            v.iter().fold([f32::MAX, f32::MIN], |a, v| [a[0].min(v.position[0]), a[1].max(v.position[0])])
+        };
+        // The description: the largest batch some mask clips.
+        let (mask, text) = list
+            .batches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.stencil_set != 0)
+            .flat_map(|(i, m)| list.batches[i + 1..].iter().take_while(|b| b.stencil_test & m.stencil_set != 0).map(move |b| (m, b)))
+            .max_by_key(|(_, b)| b.count)
+            .expect("a masked draw");
+        let (m, t) = (bounds(mask), bounds(text));
+        println!("{name}: mask x {m:?}, description x {t:?}");
+        assert!(t[0] >= m[0] - 0.5, "{name}: the mask's left edge {} cuts the description at {}", m[0], t[0]);
+    }
+}
