@@ -53,6 +53,7 @@ mod environment_reflection;
 mod model_motion;
 mod particle_view;
 mod machinery;
+mod load_timing;
 mod physics_skinning;
 mod shadow_updates;
 mod shadow_diagnostics;

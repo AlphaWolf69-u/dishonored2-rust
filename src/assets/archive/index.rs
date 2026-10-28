@@ -110,11 +110,26 @@ pub fn archive_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
 }
 
 pub fn visit_group(base: &Path, group: u8, visit: impl FnMut(IndexEntry)) -> Result<()> {
-    let path = base.join(format!("game{group}_patch.index"));
-    let mut input = BufReader::new(File::open(&path)?);
+    visit_file(&base.join(format!("game{group}_patch.index")), group, visit)
+}
+
+/// The index file whose records describe archive `slot` of `group`
+/// (`archive_path`'s naming): its ids number that archive's resources.
+pub fn slot_index_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
+    let filename = match slot {
+        0 => format!("game{group}.index"),
+        1..=5 => format!("game{group}_{slot:03}.index"),
+        6 => format!("game{group}_patch.index"),
+        _ => return Err(invalid(format!("no index file for resource slot {slot} of game{group}")).into()),
+    };
+    Ok(base.join(filename))
+}
+
+pub fn visit_file(path: &Path, group: u8, visit: impl FnMut(IndexEntry)) -> Result<()> {
+    let mut input = BufReader::new(File::open(path)?);
     let payload_size = parse_index(&mut input, group, visit)?;
     let consumed = input.stream_position()?;
-    let actual = fs::metadata(&path)?.len();
+    let actual = fs::metadata(path)?.len();
     if consumed != actual || actual.checked_sub(32) != Some(payload_size as u64) {
         return Err(invalid(format!(
             "{}: header says {} payload bytes; file has {actual} and parser read {consumed}",

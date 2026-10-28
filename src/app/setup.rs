@@ -191,6 +191,7 @@ pub(super) fn setup(
     // creates a second set of shadow views and multiplies local attenuation.
     // Profiling switch: leave probe/environment lighting on while isolating scene lights.
     let scene_lights_enabled = env::var("DH2_SCENE_LIGHTS").as_deref() != Ok("0");
+    super::load_timing::mark("setup: start");
     let trace_startup = env::var("DH2_TRACE_STARTUP").as_deref() == Ok("1");
     let trace_bwm_lod = env::var("DH2_TRACE_BWM_LOD").as_deref() == Ok("1");
     if trace_bwm_lod {
@@ -572,6 +573,7 @@ pub(super) fn setup(
             render_instances.push(render_instance);
         }
     }
+    super::load_timing::mark("setup: world geometry and materials");
     if trace_startup {
         eprintln!(
             "Startup trace: BWM setup finished ({} render instances, {} diffuse paths discovered); beginning placed-model setup",
@@ -1093,6 +1095,7 @@ pub(super) fn setup(
     commands.insert_resource(super::model_motion::ModelProbeLighting(
         resolver.probe_sh_buffer.clone(),
     ));
+    super::load_timing::mark("setup: placed models");
     resolver.upload_probe_records();
     println!(
         "Shared geometry: {} world meshes and {} placed-model surfaces; {} world instances baked for shear",
@@ -1692,15 +1695,6 @@ pub(super) fn setup(
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
     commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
-    let mut shadow_image_slots: Vec<_> = resolver
-        .shadow_materials
-        .0
-        .values()
-        .filter_map(|inputs| inputs.as_ref().ok())
-        .filter_map(super::shadow_preparation::ShadowMaterialInputs::cutout_image_slot)
-        .collect();
-    shadow_image_slots.sort_unstable();
-    shadow_image_slots.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
@@ -1805,24 +1799,12 @@ pub(super) fn setup(
     if let Some(catalog) = catalog {
         let mut resident_images = 0;
         let mut resident_bytes = 0;
-        // Sky colour and fog depth are global view inputs. As with cutout
-        // images, publish their actual base mip chains before GPU submission;
-        // finer levels still use the ordinary texture streaming owner.
-        let sky_slots = render_queue
-            .diffuse_image_materials
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, bindings)| {
-                bindings
-                    .iter()
-                    .any(|(material, _)| matches!(material, super::MaterialHandle::Sky(_)))
-                    .then_some(slot)
-            });
-        let resident_slots = shadow_image_slots
-            .into_iter()
-            .chain(sky_slots)
-            .collect::<std::collections::BTreeSet<_>>();
-        for slot in resident_slots {
+        // The map load (`FUN_1400661e0`) loads every resource of the map's
+        // `.mapResources` list before play; an image's LoadResourceInternal
+        // (1402ea140 -> 1402e9ff0) uploads its base mip chain then. Every
+        // image the scene's materials bind gets that chain here; finer
+        // levels still use the ordinary texture streaming owner.
+        for slot in 0..diffuse_image_count {
             match super::texture_streaming::initialize_resident_image(
                 catalog,
                 slot,
@@ -1841,10 +1823,13 @@ pub(super) fn setup(
                 }
             }
         }
-        info!(target: "dh2::textures", resident_images, resident_bytes, "Shadow cutout and sky base mips initialized");
+        info!(target: "dh2::textures", resident_images, resident_bytes, "Scene base mips initialized");
+        super::load_timing::compare_images(catalog, &render_queue.diffuse_image_paths);
+        super::load_timing::mark("setup: base mips");
     }
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
         commands.insert_resource(TextureReadWorker::new(catalog, diffuse_image_count));
     }
+    super::load_timing::mark("setup: end");
 }

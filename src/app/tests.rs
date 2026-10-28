@@ -6079,6 +6079,7 @@ fn area_preset_energy_reaches_actual_bevy_extraction_without_double_normalizatio
                 let render_entity = render_world.spawn_empty().id();
                 main_world.spawn((
                     RectLight {
+                        source_index: None,
                         color: Color::WHITE,
                         intensity: light_backend_intensity(
                             output.normalized_intensity,

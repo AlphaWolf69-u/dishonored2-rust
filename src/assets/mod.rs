@@ -14,6 +14,7 @@ pub mod iggy;
 pub mod installation;
 pub mod lang;
 pub mod level;
+pub mod map_resources;
 pub mod physworld;
 pub mod pnetwork;
 pub mod shader_cache;

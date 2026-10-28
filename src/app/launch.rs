@@ -34,6 +34,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         LOCAL_LIGHT_MIN_AREA_PIXELS,
     );
     let startup = std::time::Instant::now();
+    super::load_timing::mark("start");
     // A first launch without a known installation asks for the game folder.
     let Some(base) = crate::platform::game_folder::game_base_or_ask()? else {
         crate::platform::client_diagnostics::record("No game folder chosen");
@@ -42,6 +43,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     crate::platform::client_diagnostics::record_setup(&base);
     let game_base = Some(base);
     let catalog = Some(archive::Catalog::open(game_base.as_deref().unwrap())?);
+    super::load_timing::mark("catalog");
     let requested = env::args()
         .nth(1)
         .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
@@ -60,6 +62,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = level.read_world(catalog.as_ref().unwrap())?;
     let world =
         world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    super::load_timing::mark("world mesh");
     if profile {
         println!(
             "PERF world mesh parse: {:.3}s",
@@ -161,6 +164,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         ),
         Err(error) => eprintln!("Program cache unavailable: {error}"),
     }
+    super::load_timing::mark("program cache");
     // Resolve the user's ORIGINAL quality cvar and the installed declaration
     // once. No per-frame filesystem/catalog scans and no copied capture values.
     let shadow_settings = game_settings::read_shadow_settings();
@@ -378,6 +382,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("No unambiguous installed probe network matches the world stem.");
     }
+    super::load_timing::mark("probes");
     if let Some(parameters) = &environment_render_parameters {
         let value_count = parameters
             .layers
@@ -481,6 +486,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             tome_path.display()
         );
     }
+    super::load_timing::mark("tome");
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
         let physics_start = std::time::Instant::now();
         let physics = physworld::parse(&physics_bytes)?;
@@ -616,6 +622,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 index_start.elapsed().as_secs_f64()
             );
         }
+        super::load_timing::mark("physics and collision");
         println!(
             "Navigation collision index: {} nondegenerate triangles",
             world.triangle_count()
@@ -769,6 +776,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(catalog.as_ref().unwrap(),entity_document.as_ref()));
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
+    super::load_timing::mark("machinery and wind");
     let presentation = game_settings::read_presentation_settings().map_err(std::io::Error::other)?;
     let mut display_state = None;
     let mut graphics = bevy::render::settings::WgpuSettings::default();
@@ -1110,7 +1118,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
-            (finish_streaming_diagnostics, collision_report)
+            (finish_streaming_diagnostics, collision_report, super::load_timing::track_streaming)
                 .chain()
                 .after(VisibilitySystems::CheckVisibility)
                 .after(super::fog_scene::publish_fog_frame)
@@ -1220,6 +1228,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         app.insert_resource(prepared_images);
     }
+    super::load_timing::mark("app built");
     if let bevy::app::AppExit::Error(code) = app.run() {
         return Err(format!("Game runtime exited with error code {code}").into());
     }

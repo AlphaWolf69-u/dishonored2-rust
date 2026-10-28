@@ -237,6 +237,11 @@ impl Catalog {
         self.all_paths(move |path| path.contains(&needle))
     }
 
+    /// The installed `base` folder the catalog reads.
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         if let Some(file) = self.overlay_file(path) {
             return Ok(Some(std::fs::read(file)?));

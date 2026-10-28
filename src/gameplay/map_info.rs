@@ -69,3 +69,19 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod debug_listing {
+    #[test]
+    #[ignore = "diagnostic listing"]
+    fn debug_list_mapinfo() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let catalog = crate::assets::archive::Catalog::open(&base).unwrap();
+        let edit = super::find(&catalog, "maps/campaign/edge_of_the_world/eotw_p_lowchaos.map").unwrap();
+        for (k, v) in super::scope(&edit, "m_loadingInfo").unwrap() {
+            if k != "m_tips" {
+                println!("info {k} = {v:?}");
+            }
+        }
+    }
+}
