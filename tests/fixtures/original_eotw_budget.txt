@@ -4,6 +4,8 @@
 # Memory tags: analysis/memory_tags.py (allocator counters DAT_1432c4f60 /
 # DAT_1432c5460, names at 0x142288a30). Process and GPU: Windows counters.
 # Frames: PresentMon 2, 10 s, analysis/frame_stats.py.
+# Render: the r_showStats report (analysis/render_stats.py); per-pass GPU
+# times are compiled out of the retail build (always 0) and not recorded.
 process private_mb 8626
 process working_set_mb 3897
 gpu dedicated_mb 3987
@@ -86,3 +88,15 @@ tag FUNC_CALLBACK bytes 1128 count 69
 tag TABLE bytes 416 count 4
 tag RESOURCE_BGL bytes 112 count 1
 tag BITARRAY bytes 21 count 17
+render model_commits_per_frame 552.200
+render light_commits_per_frame 102.000
+render models_total 9374.000
+render lights_total 628.000
+render approx-light_models 0.000
+render trans-sort_quads 0.000
+render trans-add_quads 0.000
+render ms_cpu_render 6.858
+render ms_cpu_wait_gpuSubmits 0.007
+render ms_portal_query 1.501
+render ms_light_query 0.164
+render ms_shadow_casters_query 0.846
