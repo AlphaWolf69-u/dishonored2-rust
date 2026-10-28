@@ -12,7 +12,17 @@ pub(super) fn mark(phase: &str) {
     let now = Instant::now();
     let mut marks = MARKS.lock().unwrap();
     let (start, last) = marks.get_or_insert((now, now));
-    eprintln!("LOAD {phase}: +{:.3}s (at {:.3}s)", (now - *last).as_secs_f64(), (now - *start).as_secs_f64());
+    let memory = crate::platform::process_memory::sample()
+        .map_or(String::new(), |m| format!(" [private {} MB, resident {} MB]", m.private_bytes >> 20, m.resident_bytes >> 20));
+    eprintln!("LOAD {phase}: +{:.3}s (at {:.3}s){memory}", (now - *last).as_secs_f64(), (now - *start).as_secs_f64());
+    let tags: Vec<String> = crate::platform::allocation_tags::report().into_iter().filter(|t| t.1 > 16 << 20).map(|(n, b)| format!("{n} {} MB", b >> 20)).collect();
+    if !tags.is_empty() {
+        eprintln!("LOAD heap: {}", tags.join(", "));
+    }
+    // This thread's later allocations belong to the phase after this mark.
+    if cfg!(feature = "debug_allocations") {
+        std::mem::forget(crate::platform::allocation_tags::tag(Box::leak(format!("after {phase}").into_boxed_str())));
+    }
     *last = now;
 }
 
@@ -83,4 +93,51 @@ pub(super) fn late(kind: &str, what: &str) {
     }
     let at = MARKS.lock().unwrap().map_or(0.0, |(start, _)| start.elapsed().as_secs_f64());
     eprintln!("LOAD late {kind}: {what} (at {at:.3}s)");
+}
+
+/// Diagnostic: CPU bytes held by the mesh and image assets, the largest
+/// meshes, and how many distinct meshes share a vertex count.
+pub(super) fn asset_bytes(meshes: &bevy::prelude::Assets<bevy::prelude::Mesh>, images: &bevy::prelude::Assets<bevy::prelude::Image>) {
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
+        return;
+    }
+    let mut sizes: Vec<(usize, usize, usize)> = meshes
+        .iter()
+        .map(|(_, m)| {
+            let vertices = m.count_vertices();
+            let attributes: usize = m.attributes().map(|(_, values)| values.get_bytes().len()).sum();
+            let indices = m.indices().map_or(0, |i| i.len() * if matches!(i, bevy::mesh::Indices::U16(_)) { 2 } else { 4 });
+            (attributes + indices, vertices, m.attributes().count())
+        })
+        .collect();
+    sizes.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let total: usize = sizes.iter().map(|s| s.0).sum();
+    let image_bytes: usize = images.iter().map(|(_, i)| i.data.as_ref().map_or(0, Vec::len)).sum();
+    eprintln!(
+        "LOAD assets: {} meshes {} MB (largest {:?}), {} images {} MB CPU",
+        sizes.len(),
+        total >> 20,
+        sizes.iter().take(5).map(|s| (s.0 >> 20, s.1, s.2)).collect::<Vec<_>>(),
+        images.len(),
+        image_bytes >> 20
+    );
+}
+
+/// Diagnostic: reports `what` when private memory grew by more than 32 MB
+/// while it was alive.
+pub(super) struct Growth(Option<(String, usize)>);
+impl Growth {
+    pub(super) fn new(what: String) -> Self {
+        let enabled = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+        Self(enabled.then(|| (what, crate::platform::process_memory::sample().map_or(0, |m| m.private_bytes))).filter(|(_, b)| *b > 0))
+    }
+}
+impl Drop for Growth {
+    fn drop(&mut self) {
+        let Some((what, before)) = self.0.take() else { return };
+        let after = crate::platform::process_memory::sample().map_or(0, |m| m.private_bytes);
+        if after > before + (32 << 20) {
+            eprintln!("LOAD growth {} MB: {what}", (after - before) >> 20);
+        }
+    }
 }

@@ -296,6 +296,7 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let prepared: Vec<(u32, Vec<SourceAction>)> = std::thread::scope(|scope| {
         let workers: Vec<_> = events.chunks(events.len().div_ceil(threads).max(1)).map(|chunk| scope.spawn(move || {
+            let _tag = crate::platform::allocation_tags::tag("sound preparation");
             chunk.iter().filter_map(|&event| match shared.decode_event(event) {
                 Ok(actions) => Some((event, actions)),
                 Err(error) => {
@@ -307,6 +308,11 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
         workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
     });
     let count = prepared.len();
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
+        }
+    }
     registry.sources.extend(prepared);
     count
 }

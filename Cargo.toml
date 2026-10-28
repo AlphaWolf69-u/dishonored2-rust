@@ -46,6 +46,8 @@ bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 [features]
 game = ["dep:bevy", "dep:log"]
 launcher = ["dep:slint", "dep:git2", "dep:serde_json"]
+# Diagnostic: live heap bytes per allocation tag (platform::allocation_tags).
+debug_allocations = []
 
 [[bin]]
 name = "dishonored2-rust"

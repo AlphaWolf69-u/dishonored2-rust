@@ -11,6 +11,7 @@ pub mod display_modes;
 pub mod game_settings;
 pub mod local_time;
 pub mod process_memory;
+pub mod allocation_tags;
 #[cfg(all(feature = "game", target_os = "windows"))]
 pub mod host_graphics;
 pub mod rewrite_settings;

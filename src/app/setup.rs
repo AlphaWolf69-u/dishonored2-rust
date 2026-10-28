@@ -317,6 +317,7 @@ pub(super) fn setup(
     commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterLighting(
         water_probes,
     ));
+    super::load_timing::mark("setup: reflections and lighting inputs");
     let reflections = loaded_reflections.image;
     let reflection_planes = loaded_reflections.planes;
     let reflection_brdf_lookup = loaded_reflections.brdf_lookup;
@@ -363,6 +364,7 @@ pub(super) fn setup(
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
     let mut world_shadow_mesh_sources = WorldShadowMeshSources::prepare(&scene.world, &mut meshes);
+    super::load_timing::mark("setup: world shadow mesh sources");
     let mut world_admissions = HashMap::<String, Result<u8, String>>::new();
     let mut vegetation_meshes = VegetationMeshInputs::default();
     let mut baked_shear_instances = 0usize;
@@ -384,6 +386,10 @@ pub(super) fn setup(
     }
     let mut bwm_visibility_render_instances = vec![Vec::new(); scene.world.visibility.len()];
     for (object_number, object) in scene.world.objects.iter().enumerate() {
+        if object_number == scene.world.objects.len() / 2 {
+            super::load_timing::mark("setup: half of the world objects");
+        }
+        let _growth = super::load_timing::Growth::new(format!("BWM object {object_number} material {}", object.material_path));
         *authored_lod_instances.entry(object.lod).or_default() +=
             object.matrix_end - object.matrix_start;
         if trace_startup {
@@ -419,6 +425,7 @@ pub(super) fn setup(
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
+            let _tag = crate::platform::allocation_tags::tag("world material resolution");
             resolver.get_world(
                 &object.material_path,
                 object_number,
@@ -574,6 +581,7 @@ pub(super) fn setup(
         }
     }
     super::load_timing::mark("setup: world geometry and materials");
+    super::load_timing::asset_bytes(&meshes, &images);
     if trace_startup {
         eprintln!(
             "Startup trace: BWM setup finished ({} render instances, {} diffuse paths discovered); beginning placed-model setup",

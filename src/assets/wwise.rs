@@ -78,6 +78,18 @@ fn declared_engine_id(source: &str, member: &str) -> io::Result<u32> {
 /// Decode the Wwise media formats used by the installed game into audio
 /// playable by Bevy. The RIFF codec ID selects Wwise Vorbis (`0xffff`) or
 /// Wwise IMA ADPCM (`0x0002`).
+/// The RIFF format tag of installed media (`0xffff` Wwise Vorbis, `1`/`0xfffe`
+/// PCM, `2` IMA ADPCM).
+pub fn wem_codec(bytes: &[u8]) -> Option<u16> {
+    let mut cursor = 12usize;
+    while cursor + 8 <= bytes.len() {
+        let size = slice_u32(bytes, cursor + 4).ok()? as usize;
+        if &bytes[cursor..cursor + 4] == b"fmt " { return slice_u16(bytes, cursor + 8).ok(); }
+        cursor = cursor + 8 + size + (size & 1);
+    }
+    None
+}
+
 pub fn decode_wem(bytes: &[u8]) -> io::Result<Vec<u8>> {
     if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
         return Err(invalid("Wwise media is not a little-endian RIFF/WAVE file"));
@@ -303,15 +315,95 @@ pub struct EncodedVorbis {
     pub loop_points: Option<[u32; 2]>,
 }
 
-/// A source's media: compressed Vorbis, or PCM/IMA decoded at once.
+/// Wwise IMA ADPCM media kept as installed: 0x24-byte blocks per channel of
+/// 64 samples each, channels interleaved by block. Wwise decodes ADPCM while
+/// a source plays; an [`AdpcmCursor`] decodes one block at a time.
+pub struct EncodedAdpcm {
+    pub data: std::sync::Arc<[u8]>,
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub frames: usize,
+    pub loop_points: Option<[u32; 2]>,
+}
+
+/// A source's media: Vorbis and IMA ADPCM kept encoded, PCM decoded.
 pub enum SourceMedia {
     Vorbis(EncodedVorbis),
+    Adpcm(EncodedAdpcm),
     Decoded(DecodedAudio),
+}
+
+/// The fmt fields and data chunk of an IMA ADPCM WEM, as `decode_wem` checks them.
+fn ima_media(bytes: &[u8]) -> io::Result<Option<EncodedAdpcm>> {
+    let (mut format, mut data) = (None, None);
+    let mut cursor = 12usize;
+    while cursor + 8 <= bytes.len() {
+        let size = slice_u32(bytes, cursor + 4)? as usize;
+        let start = cursor + 8;
+        let chunk = bytes.get(start..start.checked_add(size).ok_or_else(|| invalid("Wwise media chunk size overflow"))?)
+            .ok_or_else(|| invalid("Wwise media chunk exceeds file size"))?;
+        match &bytes[cursor..cursor + 4] {
+            b"fmt " => format = Some(chunk),
+            b"data" => data = Some(chunk),
+            _ => {}
+        }
+        cursor = start + size + (size & 1);
+    }
+    let (Some(format), Some(data)) = (format, data) else { return Ok(None) };
+    if slice_u16(format, 0)? != 2 { return Ok(None); }
+    let channels = slice_u16(format, 2)?;
+    let sample_rate = slice_u32(format, 4)?;
+    if channels == 0 || channels > 8 || sample_rate == 0 || slice_u16(format, 14)? != 4
+        || slice_u16(format, 12)? as usize != 0x24 * channels as usize
+    {
+        return Err(invalid("unsupported Wwise IMA format parameters"));
+    }
+    let block = 0x24 * channels as usize;
+    if data.len() % block != 0 { return Err(invalid("Wwise IMA data ends with a partial block")); }
+    let frames = data.len() / block * 64;
+    let (_, points) = wem_source_metadata(bytes)?;
+    let loop_points = loop_points(points, frames)?;
+    Ok(Some(EncodedAdpcm { data: data.into(), channels, sample_rate, frames, loop_points }))
+}
+
+/// One voice's decoder over [`EncodedAdpcm`]: the block holding the last
+/// requested frame, all channels interleaved.
+pub struct AdpcmCursor {
+    media: std::sync::Arc<EncodedAdpcm>,
+    block: usize,
+    samples: Vec<i16>,
+}
+
+impl AdpcmCursor {
+    pub fn new(media: std::sync::Arc<EncodedAdpcm>) -> Self {
+        Self { media, block: usize::MAX, samples: Vec::new() }
+    }
+
+    pub fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
+        let channels = usize::from(self.media.channels);
+        if frame >= self.media.frames || channel >= channels { return None; }
+        let block = frame / 64;
+        if block != self.block {
+            let start = block * 0x24 * channels;
+            self.samples.clear();
+            self.samples.resize(64 * channels, 0);
+            for c in 0..channels {
+                let at = start + c * 0x24;
+                let decoded = decode_ima_block(self.media.data.get(at..at + 0x24)?).ok()?;
+                for (i, sample) in decoded.into_iter().enumerate() { self.samples[i * channels + c] = sample; }
+            }
+            self.block = block;
+        }
+        Some(f32::from(self.samples[(frame % 64) * channels + channel]) / 32768.0)
+    }
 }
 
 /// Prepare installed media for playback: Vorbis with a header frame count
 /// stays encoded; PCM, IMA ADPCM and Vorbis without one are decoded.
 pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
+    if let Some(adpcm) = ima_media(bytes)? {
+        return Ok(SourceMedia::Adpcm(adpcm));
+    }
     let (frames, points) = wem_source_metadata(bytes)?;
     if let Some(frames) = frames {
         let encoded = decode_wem(bytes)?;
@@ -1011,6 +1103,44 @@ mod stream_tests {
                     }
                 }
                 assert_eq!(cursor.sample(frames, 0), None);
+                checked += 1;
+                if checked == 24 { break 'packages; }
+            }
+        }
+        assert_eq!(checked, 24);
+    }
+
+    /// Installed IMA ADPCM media read through a cursor give the full
+    /// decoder's samples, forward and after a backward jump.
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn adpcm_cursor_matches_full_decode() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let mut paths: Vec<_> = std::fs::read_dir(base.join("pck")).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pck"))).collect();
+        paths.sort();
+        let mut checked = 0;
+        'packages: for path in paths {
+            let Ok(package) = Package::open(&path) else { continue };
+            let mut file = File::open(&path).unwrap();
+            for entry in package.media.iter().copied() {
+                let bytes = package.read_entry(&mut file, entry).unwrap();
+                if wem_codec(&bytes) != Some(2) { continue; }
+                let Ok(SourceMedia::Adpcm(encoded)) = prepare_wem(&bytes) else { continue };
+                let full = decode_wem_pcm(&bytes).unwrap();
+                let channels = usize::from(encoded.channels);
+                assert_eq!(full.samples.len(), encoded.frames * channels);
+                assert_eq!(full.loop_points, encoded.loop_points);
+                let encoded = std::sync::Arc::new(encoded);
+                let mut cursor = AdpcmCursor::new(encoded.clone());
+                let frames = encoded.frames;
+                let mut order: Vec<usize> = (0..frames).collect();
+                order.extend(frames / 3..frames);
+                for frame in order {
+                    for channel in 0..channels {
+                        assert_eq!(cursor.sample(frame, channel), Some(full.samples[frame * channels + channel]), "frame {frame}");
+                    }
+                }
                 checked += 1;
                 if checked == 24 { break 'packages; }
             }

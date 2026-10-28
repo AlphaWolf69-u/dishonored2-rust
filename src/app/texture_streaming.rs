@@ -259,6 +259,7 @@ impl TextureReadWorker {
             mpsc::sync_channel::<(usize, String, TextureReadTarget)>(TEXTURE_READ_QUEUE_CAPACITY);
         let (completed_tx, completed) = mpsc::channel();
         std::thread::spawn(move || {
+            let _tag = crate::platform::allocation_tags::tag("texture worker");
             while let Ok((slot, stem, target)) = request_rx.recv() {
                 let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
                 if completed_tx.send((slot, target, result)).is_err() {
