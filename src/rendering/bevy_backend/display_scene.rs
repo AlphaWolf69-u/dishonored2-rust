@@ -56,6 +56,7 @@ impl Plugin for DisplayPlugin {
         super::camera_scene::register(app);
         super::alpha_depth_scene::register(app);
         super::display_capture::register(app);
+        super::debug_graphics_capture::register(app);
         app.init_resource::<DisplaySceneFrame>()
             .add_plugins(ExtractResourcePlugin::<DisplaySceneFrame>::default());
         if let Some(render) = app.get_sub_app_mut(RenderApp) {

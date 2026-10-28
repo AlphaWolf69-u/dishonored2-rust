@@ -1078,6 +1078,8 @@ fn render_shadow_scene(
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let span = diagnostics.time_span(context.command_encoder(), "directional_shadows");
+    let counted = (super::shadow_pipeline::DRAWS.load(std::sync::atomic::Ordering::Relaxed),
+        super::shadow_pipeline::TRIANGLES.load(std::sync::atomic::Ordering::Relaxed));
     let mut complete = true;
     if std::env::var("DH2_PARALLEL_SHADOW_ENCODING").as_deref() != Ok("0") {
         let encoded = directional::record_layers(
@@ -1131,6 +1133,13 @@ fn render_shadow_scene(
         }
     }
     span.end(context.command_encoder());
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        DIRECTIONAL_DRAWS.fetch_add(super::shadow_pipeline::DRAWS.load(Relaxed) - counted.0, Relaxed);
+        DIRECTIONAL_TRIANGLES.fetch_add(super::shadow_pipeline::TRIANGLES.load(Relaxed) - counted.1, Relaxed);
+        DIRECTIONAL_LAYERS.fetch_add(layers.len() as u64, Relaxed);
+        DIRECTIONAL_FRAMES.fetch_add(1, Relaxed);
+    }
     if matches!(frame.state, ShadowSceneState::WholeViewDepth { .. }) {
         if let Ok(mut done) = completion.0.lock() {
             *done = Some((target_id, *dimensions));
@@ -1150,6 +1159,12 @@ fn render_shadow_scene(
       // Do not cache missing assets or failed submissions; retry that same owner revision.
     gpu.last_revision = Some(frame.revision);
 }
+
+/// Diagnostic: directional shadow work submitted, for the benchmark report.
+pub static DIRECTIONAL_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static DIRECTIONAL_TRIANGLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static DIRECTIONAL_LAYERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static DIRECTIONAL_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum ShadowResourceKey {

@@ -357,6 +357,14 @@ fn apply_pbr_lighting_with_directional_shadow(
         transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u),vec3<f32>(0.0));
 }
 
+// Profiling attribution: DH2_TRACE_LIGHT_COMPONENT 9 omits local shadow queries.
+fn traced_local_visibility(light_id:u32,position:vec3<f32>,normal:vec3<f32>,route:vec4<u32>)->f32 {
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 9u {return 1.0;}
+#endif
+    return local_visibility(light_id,position,normal,route);
+}
+
 fn apply_pbr_lighting_with_shadows(
     in: pbr_types::PbrInput,
     directional_index: u32,
@@ -546,7 +554,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -574,7 +582,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::point_light(light_id, &transmissive_lighting_input, enable_diffuse, true);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -635,7 +643,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -669,7 +677,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::spot_light(light_id, &transmissive_lighting_input, enable_diffuse);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;

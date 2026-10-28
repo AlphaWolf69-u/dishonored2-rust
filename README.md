@@ -143,7 +143,21 @@ shadow cost. A value of `0` also selects the authored ranges.
 - `DH2_BENCHMARK_SECONDS` runs a fixed-camera benchmark; it disables movement
   during that measurement.
 - `DH2_BENCHMARK_SIZE=1920x1080` fixes the physical benchmark viewport independently
-  of desktop size and DPI. Benchmark output records viewport and camera pose.
+  of desktop size and DPI. Benchmark output records viewport and camera pose;
+  a run whose viewport changes (a minimized window) reports INVALID.
+- `DH2_BENCHMARK_CAMERA=px,py,pz,fx,fy,fz` places the benchmark camera at a
+  game-space eye and forward (up +Z), such as an original capture's
+  `cb_wscampos`/`cb_wscamforwarddir` (`analysis/rdc_view_constants.py`).
+  Compare with the original only under its own config
+  (`DH2_HOST_CONFIG_PATH`) and resolution.
+- `DH2_BENCHMARK_SCREENSHOT=<png>` saves the first measured frame.
+- Benchmarks play silently; `DH2_DEBUG_MUTE=1` silences other runs.
+- `DH2_DEBUG_GPU_CAPTURE_SECONDS=<s>` under `renderdoccmd capture` records the
+  first frame after that many seconds through wgpu's graphics-debugger API
+  (RenderDoc's own trigger misses the D3D12 swapchain).
+- `DH2_TRACE_LIGHT_COMPONENT` attributes forward lighting cost: 5 returns
+  base colour, 2 keeps only the sun, 9 omits local shadow queries, 10 omits
+  opaque area lights.
 
 Exact shadow-query reuse, compact world-shadow constants, unchanged local
 atlas reuse, mesh allocation metadata reuse and prepared shadow record reuse

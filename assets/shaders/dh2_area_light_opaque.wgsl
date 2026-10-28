@@ -16,6 +16,10 @@ struct TiledLightRecord {
     shadow_setup:u32, flags:u32, padding:vec2<u32>,
 }
 fn opaque_area_lighting(index:u32,host_surface:WardSurface,host_position:vec3<f32>)->DirectLighting {
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    // Profiling attribution: 10 omits every opaque area light.
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 10u {return DirectLighting(vec3(0.0),vec3(0.0));}
+#endif
     if index>=arrayLength(&area_light_records)/7u {return DirectLighting(vec3(0.0),vec3(0.0));}
     let base=index*7u;
     let a=bitcast<vec4<f32>>(area_light_records[base]);

@@ -843,6 +843,20 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .set(bevy::app::TaskPoolPlugin {
                     task_pool_options: task_pools,
                 })
+                // Host diagnostic: benchmarks and DH2_DEBUG_MUTE=1 play silently.
+                .set(bevy::audio::AudioPlugin {
+                    global_volume: bevy::audio::GlobalVolume::new(
+                        if benchmark_resolution.is_some()
+                            || env::var("DH2_BENCHMARK_SECONDS").is_ok()
+                            || env::var("DH2_DEBUG_MUTE").as_deref() == Ok("1")
+                        {
+                            bevy::audio::Volume::SILENT
+                        } else {
+                            bevy::audio::Volume::Linear(1.0)
+                        },
+                    ),
+                    ..default()
+                })
                 .set(bevy::window::WindowPlugin {
                     primary_window: Some({
                         // The cvars choose the window (display_settings).

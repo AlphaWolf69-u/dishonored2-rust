@@ -187,9 +187,9 @@ pub(super) fn benchmark_frames(
         Res<super::shadow_pass::LocalShadowCompletion>,
         Res<super::ViewSettings>,
     ),
-    mut readiness: Local<(f32, bool)>,
+    mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
-    mut exit: MessageWriter<AppExit>,
+    (mut exit, mut commands): (MessageWriter<AppExit>, Commands),
 ) {
     let Some(target) = target else {
         return;
@@ -239,7 +239,29 @@ pub(super) fn benchmark_frames(
     }
     let previous_elapsed = *elapsed;
     *elapsed += time.delta_secs();
+    // DH2_BENCHMARK_SCREENSHOT=<png>: the first measured frame, for
+    // comparing rendering before and after a change at a fixed view.
+    if previous_elapsed < target.1 && *elapsed >= target.1 {
+        if let Some(path) = std::env::var_os("DH2_BENCHMARK_SCREENSHOT") {
+            commands
+                .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+                .observe(bevy::render::view::screenshot::save_to_disk(std::path::PathBuf::from(path)));
+        }
+    }
     if previous_elapsed >= target.1 {
+        // A minimized or resized window renders a different pixel count;
+        // its GPU times are not comparable with the requested view.
+        let viewport = camera.iter().next().and_then(|(view, _)| view.physical_viewport_size());
+        if let Some(viewport) = viewport {
+            if *readiness.2.get_or_insert(viewport) != viewport {
+                eprintln!(
+                    "BENCHMARK INVALID: viewport changed from {:?} to {viewport:?} during measurement; no FPS result",
+                    readiness.2.unwrap()
+                );
+                exit.write(AppExit::error());
+                return;
+            }
+        }
         measured.0 += 1;
         measured.1 += time.delta_secs_f64();
         frame_times.push(time.delta_secs_f64() * 1000.0);
@@ -364,6 +386,18 @@ pub(super) fn benchmark_frames(
                 quantile(0.99),
                 quantile(1.0),
                 target.1
+            );
+        }
+        {
+            use crate::rendering::bevy_backend::shadow_pass as shadow;
+            use std::sync::atomic::Ordering::Relaxed;
+            let frames = shadow::DIRECTIONAL_FRAMES.load(Relaxed).max(1) as f64;
+            let layers = shadow::DIRECTIONAL_LAYERS.load(Relaxed).max(1) as f64;
+            println!(
+                "BENCHMARK_SHADOW directional submissions={} layers_per_submission={:.2} draws_per_submission={:.1} triangles_per_submission={:.0} draws_per_layer={:.1} triangles_per_layer={:.0}",
+                frames as u64, layers / frames,
+                shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / frames, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / frames,
+                shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / layers, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / layers,
             );
         }
         for (path, (samples, total, maximum)) in render_metrics.iter() {

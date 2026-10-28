@@ -13,6 +13,9 @@ pub(super) struct BenchmarkCameraSweep {
     degrees: Option<f32>,
     base: Option<Quat>,
     elapsed: f32,
+    /// DH2_BENCHMARK_CAMERA=px,py,pz,fx,fy,fz: game-space eye and forward
+    /// (up +Z), applied once, to measure from a captured original view.
+    placement: Option<([f32; 3], [f32; 3])>,
 }
 
 impl Default for BenchmarkCameraSweep {
@@ -24,10 +27,15 @@ impl Default for BenchmarkCameraSweep {
         if let Some(degrees) = degrees {
             println!("BENCHMARK camera_sweep_degrees={degrees}");
         }
+        let placement = std::env::var("DH2_BENCHMARK_CAMERA").ok().and_then(|value| {
+            let v: Vec<f32> = value.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (v.len() == 6).then(|| ([v[0], v[1], v[2]], [v[3], v[4], v[5]]))
+        });
         Self {
             degrees,
             base: None,
             elapsed: 0.0,
+            placement,
         }
     }
 }
@@ -60,6 +68,14 @@ pub(super) fn camera_controls(
     input: Res<PlayerInput>,
 ) {
     if benchmark.is_some() {
+        if let Some((eye, forward)) = sweep.placement.take() {
+            if let Ok(mut camera) = cameras.single_mut() {
+                let eye = super::game_to_view(eye);
+                *camera = Transform::from_translation(eye)
+                    .looking_to(super::game_to_view(forward), Vec3::Y);
+                println!("BENCHMARK camera placed at {eye:?}");
+            }
+        }
         if let Some(degrees) = sweep.degrees {
             if let Ok(mut camera) = cameras.single_mut() {
                 let base = *sweep.base.get_or_insert(camera.rotation);
