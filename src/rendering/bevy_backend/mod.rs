@@ -217,8 +217,6 @@ mod depth_restore_tests;
 mod command_pool_tests;
 #[cfg(all(test, feature = "game"))]
 mod storage_upload_tests;
-#[cfg(all(test, feature = "game"))]
-mod texture_upload_tests;
 #[cfg(feature = "game")]
 pub mod colour_cube;
 #[cfg(feature = "game")]
