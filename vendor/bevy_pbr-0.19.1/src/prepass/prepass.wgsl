@@ -12,6 +12,9 @@
 #ifdef DH2_VEGETATION_WIND
 #import dh2_vegetation_wind::{vegetation_slot, vegetation_world_position}
 #endif
+#ifdef DH2_PARTICLE_INSTANCES
+#import dh2_particle_surface::{particle_surface_draw, particle_surface_instance, particle_surface_world_from_local, particle_surface_colour}
+#endif
 
 #ifdef DEFERRED_PREPASS
 #import bevy_pbr::rgb9e5
@@ -70,14 +73,26 @@ fn morph_prev_vertex(vertex_in: Vertex, instance_index: u32) -> Vertex {
 @vertex
 fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var out: VertexOutput;
+#ifdef DH2_PARTICLE_INSTANCES
+    // Direct instancing (see mesh.wgsl): the entity's mesh uniform comes from
+    // the draw's immediates; instance_index counts this draw's instances.
+    let mesh_index = particle_surface_draw.mesh_index;
+    let particle = particle_surface_instance(vertex_no_morph.instance_index);
+#else
+    let mesh_index = vertex_no_morph.instance_index;
+#endif
 
 #ifdef MORPH_TARGETS
-    var vertex = morph_vertex(vertex_no_morph, vertex_no_morph.instance_index);
+    var vertex = morph_vertex(vertex_no_morph, mesh_index);
 #else
     var vertex = vertex_no_morph;
 #endif
 
-    let mesh_world_from_local = mesh_functions::get_world_from_local(vertex_no_morph.instance_index);
+#ifdef DH2_PARTICLE_INSTANCES
+    let mesh_world_from_local = particle_surface_world_from_local(particle);
+#else
+    let mesh_world_from_local = mesh_functions::get_world_from_local(mesh_index);
+#endif
 
 #ifdef SKINNED
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
@@ -85,7 +100,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var world_from_local = skinning::skin_model(
         vertex.joint_indices,
         vertex.joint_weights,
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #else // SKINNED
     var world_from_local = mesh_world_from_local;
@@ -95,7 +110,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef DH2_VEGETATION_WIND
     // Same placement as the forward pass; this rewrite has no motion-vector
     // prepass, so the HLSL's previous-frame AnimateVegetation is not needed.
-    let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+    let vegetation = vegetation_slot(mesh[mesh_index].tag);
     if vegetation != 0xffffffffu {
         out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
             vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
@@ -125,12 +140,17 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef SKINNED
     out.world_normal = skinning::skin_normals(world_from_local, vertex.normal);
 #else // SKINNED
+#ifdef DH2_PARTICLE_INSTANCES
+    // 1eaa40 publishes a plain instance matrix: model-linear normals.
+    out.world_normal = normalize((world_from_local * vec4(vertex.normal, 0.0)).xyz);
+#else
     out.world_normal = mesh_functions::mesh_normal_local_to_world(
         vertex.normal,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        vertex_no_morph.instance_index
+        mesh_index
     );
+#endif
 #endif // SKINNED
 #endif // VERTEX_NORMALS
 
@@ -140,13 +160,17 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.tangent,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #endif // VERTEX_TANGENTS
 #endif // NORMAL_PREPASS_OR_DEFERRED_PREPASS
 
 #ifdef VERTEX_COLORS
+#ifdef DH2_PARTICLE_INSTANCES
+    out.color = particle_surface_colour(particle, vertex.color);
+#else
     out.color = vertex.color;
+#endif
 #endif
 
     // Compute the motion vector for TAA among other purposes. For this we need
@@ -157,7 +181,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef MORPH_TARGETS
 
 #ifdef HAS_PREVIOUS_MORPH
-    let prev_vertex = morph_prev_vertex(vertex_no_morph, vertex_no_morph.instance_index);
+    let prev_vertex = morph_prev_vertex(vertex_no_morph, mesh_index);
 #else   // HAS_PREVIOUS_MORPH
     let prev_vertex = vertex_no_morph;
 #endif  // HAS_PREVIOUS_MORPH
@@ -173,18 +197,23 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     let prev_model = skinning::skin_prev_model(
         prev_vertex.joint_indices,
         prev_vertex.joint_weights,
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #else   // HAS_PREVIOUS_SKIN
     // Use vertex_no_morph.instance_index instead of prev_vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    let prev_model = mesh_functions::get_previous_world_from_local(vertex_no_morph.instance_index);
+    let prev_model = mesh_functions::get_previous_world_from_local(mesh_index);
 #endif  // HAS_PREVIOUS_SKIN
 
 #else   // SKINNED
     // Use vertex_no_morph.instance_index instead of prev_vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    let prev_model = mesh_functions::get_previous_world_from_local(vertex_no_morph.instance_index);
+#ifdef DH2_PARTICLE_INSTANCES
+    // 1eaa40 writes the previous model rows equal to the current ones.
+    let prev_model = mesh_world_from_local;
+#else
+    let prev_model = mesh_functions::get_previous_world_from_local(mesh_index);
+#endif
 #endif  // SKINNED
 
     out.previous_world_position = mesh_functions::mesh_position_local_to_world(
@@ -196,12 +225,12 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    out.instance_index = vertex_no_morph.instance_index;
+    out.instance_index = mesh_index;
 #endif
 
 #ifdef VISIBILITY_RANGE_DITHER
     out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
-        vertex_no_morph.instance_index, mesh_world_from_local[3]);
+        mesh_index, mesh_world_from_local[3]);
 #endif  // VISIBILITY_RANGE_DITHER
 
     return out;

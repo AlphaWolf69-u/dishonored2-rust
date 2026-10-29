@@ -86,6 +86,10 @@ struct VertexOutput {
     @location(13) reflection_indices_gain: vec4<f32>,
     @location(14) reflection_barycentrics: vec2<f32>,
 #endif
+#ifdef DH2_PARTICLE_INSTANCES
+    // The instance's lighting record index (the mesh tag of ordinary surfaces).
+    @location(15) @interpolate(flat) particle_tag: u32,
+#endif
 }
 
 struct FragmentOutput {

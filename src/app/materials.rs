@@ -251,6 +251,21 @@ pub(super) fn specialize_surface(
             "DH2_FAR_DEPTH".into(), true,
         ));
     }
+    // Particle renderer surfaces (1402bace0): presence flag for the
+    // instancing paths, the renderer's instance group and the draw immediates.
+    if key.0[16] == 1 {
+        descriptor.vertex.shader_defs.push(bevy::shader::ShaderDefVal::Bool(
+            "DH2_PARTICLE_INSTANCES".into(), true,
+        ));
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push(bevy::shader::ShaderDefVal::Bool(
+                "DH2_PARTICLE_INSTANCES".into(), true,
+            ));
+        }
+        assert_eq!(descriptor.layout.len(), 4, "particle surface instances need bind group 4");
+        descriptor.layout.push(crate::rendering::bevy_backend::particle_meshes::instance_layout());
+        descriptor.immediate_size = crate::rendering::bevy_backend::particle_meshes::IMMEDIATE_SIZE;
+    }
     if matches!(key.0[6], 7 | 8) {
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
             depth.depth_write_enabled = Some(false);

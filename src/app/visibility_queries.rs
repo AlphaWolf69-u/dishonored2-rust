@@ -514,6 +514,14 @@ pub(super) fn stream_visible_models(
                     }
                 }
             }
+            // approximate_: the original gathers a particle system's surface
+            // images as a dynamic model at its projected area (14031ad30); its
+            // bounds live in the render-world FX update, so request them whole.
+            for &slot in &scene.particle_surface_images {
+                if let Some(demand) = scene.diffuse_image_demands.get(slot) {
+                    demand.submit(1.0);
+                }
+            }
             mapping_ns = mapping_started.elapsed().as_nanos();
         }
     }

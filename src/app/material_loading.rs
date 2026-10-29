@@ -639,6 +639,14 @@ impl MaterialResolver<'_> {
         Some(slot)
     }
 
+    /// The streamed image slots and roles of a resolved model material.
+    pub(super) fn model_images(&self, path: &str) -> Vec<(usize, surface_gpu::ImageRole)> {
+        self.cache
+            .get_for(path, MaterialGeometry::Model)
+            .and_then(|cached| cached.as_ref())
+            .map_or_else(Vec::new, |cached| cached.images.clone())
+    }
+
     pub(super) fn get(
         &mut self,
         path: &str,

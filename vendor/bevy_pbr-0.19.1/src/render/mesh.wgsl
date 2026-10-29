@@ -16,6 +16,9 @@
 #ifdef DH2_VEGETATION_WIND
 #import dh2_vegetation_wind::{vegetation_slot, vegetation_world_position}
 #endif
+#ifdef DH2_PARTICLE_INSTANCES
+#import dh2_particle_surface::{particle_surface_draw, particle_surface_instance, particle_surface_world_from_local, particle_surface_colour}
+#endif
 
 #ifdef DH2_DECAL
 @group(#{MATERIAL_BIND_GROUP}) @binding(155) var<uniform> decal_zbias: f32;
@@ -50,14 +53,29 @@ fn morph_vertex(vertex_in: Vertex, instance_index: u32) -> Vertex {
 @vertex
 fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var out: VertexOutput;
+#ifdef DH2_PARTICLE_INSTANCES
+    // Direct instancing: instance_index counts this draw's instances; the
+    // entity's own mesh uniform comes from the draw's immediates.
+    let mesh_index = particle_surface_draw.mesh_index;
+    let particle = particle_surface_instance(vertex_no_morph.instance_index);
+    let mesh_tag = particle.parameters.w;
+    out.particle_tag = mesh_tag;
+#else
+    let mesh_index = vertex_no_morph.instance_index;
+    let mesh_tag = mesh[mesh_index].tag;
+#endif
 
 #ifdef MORPH_TARGETS
-    var vertex = morph_vertex(vertex_no_morph, vertex_no_morph.instance_index);
+    var vertex = morph_vertex(vertex_no_morph, mesh_index);
 #else
     var vertex = vertex_no_morph;
 #endif
 
-    let mesh_world_from_local = mesh_functions::get_world_from_local(vertex_no_morph.instance_index);
+#ifdef DH2_PARTICLE_INSTANCES
+    let mesh_world_from_local = particle_surface_world_from_local(particle);
+#else
+    let mesh_world_from_local = mesh_functions::get_world_from_local(mesh_index);
+#endif
 
 #ifdef SKINNED
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
@@ -65,7 +83,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var world_from_local = skinning::skin_model(
         vertex.joint_indices,
         vertex.joint_weights,
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #else
     var world_from_local = mesh_world_from_local;
@@ -84,7 +102,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.normal,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #endif
 #endif
@@ -93,7 +111,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_POSITIONS
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
 #ifdef DH2_VEGETATION_WIND
-    let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+    let vegetation = vegetation_slot(mesh_tag);
     if vegetation != 0xffffffffu {
         out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
             vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
@@ -130,29 +148,33 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.tangent,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        vertex_no_morph.instance_index
+        mesh_index
     );
 #endif
 #endif
 
 #ifdef VERTEX_COLORS
+#ifdef DH2_PARTICLE_INSTANCES
+    out.color = particle_surface_colour(particle, vertex.color);
+#else
     out.color = vertex.color;
+#endif
 #endif
 
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    out.instance_index = vertex_no_morph.instance_index;
+    out.instance_index = mesh_index;
 #endif
 
 #ifdef VISIBILITY_RANGE_DITHER
     out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
-        vertex_no_morph.instance_index, mesh_world_from_local[3]);
+        mesh_index, mesh_world_from_local[3]);
 #endif
 
 #ifdef DH2_VERTEX_PROBE
-    let lighting = vertex_lighting(mesh[vertex_no_morph.instance_index].tag,
-        vertex_no_morph.index - mesh[vertex_no_morph.instance_index].first_vertex_index,
+    let lighting = vertex_lighting(mesh_tag,
+        vertex_no_morph.index - mesh[mesh_index].first_vertex_index,
         out.world_position.xyz);
 #ifdef DH2_AUTHORED_BASIS
     let bitangent = out.world_bitangent;
@@ -175,7 +197,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     out.reflection_barycentrics=bary.xy;
 #endif
 #ifdef DH2_FOG_VERTEX
-    out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,mesh[vertex.instance_index].tag);
+    out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,mesh_tag);
 #endif
     return out;
 }

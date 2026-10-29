@@ -1683,6 +1683,18 @@ pub(super) fn setup(
                 .collect(),
         })
         .collect();
+    // World FX first: particle surface proxies register their material images
+    // before the streaming tables below are sized.
+    let mut particle_surfaces = Vec::new();
+    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
+        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
+            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
+        let sources = Arc::new(
+            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.graphs,&graphs.actors,catalog,programs)
+        );
+        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
+        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
+    }
     let mut diffuse_image_materials = vec![Vec::new(); resolver.diffuse_image_paths.len()];
     let mut material_images = HashMap::new();
     let mut material_stage_sorts = HashMap::new();
@@ -1696,6 +1708,17 @@ pub(super) fn setup(
             diffuse_image_materials[slot].push((cached.handle.clone(), role));
         }
     }
+    // A proxy streams the images of the material it was cloned from.
+    let mut particle_surface_images = Vec::new();
+    for (proxy, images) in particle_surfaces {
+        material_images.insert(proxy.clone(), images.iter().map(|&(slot, _)| slot).collect());
+        for (slot, role) in images {
+            diffuse_image_materials[slot].push((proxy.clone(), role));
+            particle_surface_images.push(slot);
+        }
+    }
+    particle_surface_images.sort_unstable();
+    particle_surface_images.dedup();
     let diffuse_image_count = resolver.diffuse_image_paths.len();
     commands.insert_resource(resolver.alpha_depth_materials());
     tome_render_instances.bind_texture_demands(&render_instances, &material_images);
@@ -1719,13 +1742,6 @@ pub(super) fn setup(
                 super::player::character_name(super::pause_menu::debug_character()))
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
-    }
-    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
-        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
-            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
-        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(Arc::new(
-            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.graphs,&graphs.actors,catalog,programs)
-        )));
     }
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));
@@ -1789,6 +1805,7 @@ pub(super) fn setup(
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
         material_images,
+        particle_surface_images,
         material_stage_sorts,
         diffuse_image_handles: vec![None; diffuse_image_count],
         shadow_diffuse_slots: Vec::new(),
@@ -1840,4 +1857,68 @@ pub(super) fn setup(
         commands.insert_resource(TextureReadWorker::new(catalog, diffuse_image_count));
     }
     super::load_timing::mark("setup: end");
+}
+
+/// 1401fbad0 makes a particle mesh renderer an ordinary model surface of its
+/// world material; one proxy per (PMODEL, material) pair carries that
+/// material's own pipelines, and the FX update supplies its instances.
+fn spawn_particle_surfaces(
+    sources: &crate::rendering::particles::world_sources::WorldFxSources,
+    resolver: &mut MaterialResolver,
+    meshes: &mut Assets<Mesh>,
+    commands: &mut Commands,
+) -> Vec<(super::MaterialHandle, Vec<(usize, crate::rendering::bevy_backend::surface_gpu::ImageRole)>)> {
+    let mut proxies = Vec::new();
+    for (source, material, model) in sources.world_meshes() {
+        let Some(resolved) = resolver.get(&material, 0, [0.0; 3]) else {
+            eprintln!("Particle surface material unresolved {source} {material}");
+            continue;
+        };
+        let super::MaterialHandle::Probe(handle) = &resolved.handle else {
+            eprintln!("Particle surface {source} {material} is not a forward model material");
+            continue;
+        };
+        let Some(mut instanced) = resolver.probe_materials.get(handle).cloned() else {
+            eprintln!("Particle surface {source} {material} has no prepared material");
+            continue;
+        };
+        match resolver.caster_admission(&material) {
+            Ok(admission) if admission & 1 != 0 => eprintln!(
+                "Particle surface {source} {material}: shadow casting of particle surfaces is unported"
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("Particle surface {source} {material}: {error}"),
+        }
+        // 2320b0's shared quad indices over 232480's PMODEL vertices.
+        if model.vertices.is_empty() || model.vertices.len() % 4 != 0 || model.vertices.len() > 65536 {
+            eprintln!("Particle surface {source} must contain complete u16-indexed quads");
+            continue;
+        }
+        let positions: Vec<[f32; 3]> = model.vertices.iter().map(|v| v.position).collect();
+        let half = |v: &crate::assets::particle_model::ParticleModelVertex, at: usize| {
+            half::f16::from_bits(u16::from_le_bytes([v.attributes[at], v.attributes[at + 1]])).to_f32()
+        };
+        let uvs: Vec<[f32; 2]> = model.vertices.iter().map(|v| [half(v, 0), half(v, 2)]).collect();
+        // UV1, packed normal/tangent and colour: the authored 16-byte channels.
+        let packed: Vec<[u8; 16]> = model.vertices.iter()
+            .map(|v| v.attributes[4..20].try_into().unwrap()).collect();
+        let indices: Vec<u16> = (0..model.vertices.len()).step_by(4)
+            .flat_map(|base| [0, 2, 3, 0, 3, 1].map(|i| (base + i) as u16)).collect();
+        instanced.extension.surface.particle_instances.x = 1;
+        let images = resolver.model_images(&material);
+        let mesh = meshes.add(source_mesh(&positions, &uvs, &indices, &packed, false));
+        let instanced = resolver.probe_materials.add(instanced);
+        proxies.push((super::MaterialHandle::Probe(instanced.clone()), images));
+        commands.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(instanced),
+            Transform::IDENTITY,
+            GlobalTransform::IDENTITY,
+            Visibility::Visible,
+            bevy::camera::visibility::NoFrustumCulling,
+            bevy::light::NotShadowCaster,
+            crate::rendering::bevy_backend::particle_meshes::ParticleMeshProxy { source, material },
+        ));
+    }
+    proxies
 }

@@ -183,6 +183,9 @@ pub(super) fn register(app: &mut App) {
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::screen_effects::ScreenEffectMaterials,
     >::default());
+    app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<
+        super::particle_meshes::ParticleMeshProxy,
+    >::default());
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<CameraGpu>().add_systems(
             Core3d,
@@ -215,6 +218,15 @@ pub(super) fn register(app: &mut App) {
                 .before(Core3dSystems::Prepass)
                 .before(render_particles),
         );
+        render
+            .init_resource::<bevy::pbr::DirectInstanceDraws>()
+            .init_resource::<super::particle_meshes::ParticleMeshBuffers>()
+            .add_systems(
+                Core3d,
+                super::particle_meshes::prepare_particle_meshes
+                    .after(FxUpdate)
+                    .before(Core3dSystems::Prepass),
+            );
     }
 }
 

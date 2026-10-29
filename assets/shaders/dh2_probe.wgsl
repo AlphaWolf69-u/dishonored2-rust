@@ -45,6 +45,14 @@ struct ProbeOutput {
 }
 #endif
 
+fn surface_tag(vertex_output: VertexOutput) -> u32 {
+#ifdef DH2_PARTICLE_INSTANCES
+    return vertex_output.particle_tag;
+#else
+    return mesh[vertex_output.instance_index].tag;
+#endif
+}
+
 @fragment
 fn fragment(
     vertex_output: VertexOutput,
@@ -285,7 +293,11 @@ fn fragment(
 
     var skin_ambient_out=vec3<f32>(0.0);
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+#ifdef DH2_PARTICLE_INSTANCES
+        let probe_index = vertex_output.particle_tag;
+#else
         let probe_index = mesh[vertex_output.instance_index].tag;
+#endif
 #ifdef DH2_SKIN
         let ambient_normal=skin_ambient_normal;
 #else
@@ -416,7 +428,7 @@ fn fragment(
     out.color=vec4(material_fog_composite(out.color.rgb,vertex_output.fog_color),out.color.a);
 #else
     if (compiled_misc.w&8u)!=0u {
-        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,mesh[vertex_output.instance_index].tag),out.color.a);
+        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,surface_tag(vertex_output)),out.color.a);
     }
 #endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);

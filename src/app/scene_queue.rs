@@ -126,6 +126,8 @@ pub(super) struct SceneRenderQueue {
     pub(super) diffuse_image_paths: Vec<String>,
     pub(super) diffuse_image_materials: Vec<Vec<(MaterialHandle, surface_gpu::ImageRole)>>,
     pub(super) material_images: HashMap<MaterialHandle, Vec<usize>>,
+    /// Image slots of world-material particle surfaces (see visibility_queries).
+    pub(super) particle_surface_images: Vec<usize>,
     /// Preserve both stageSort and stageSortAdjust for the game's pass lists.
     pub(super) material_stage_sorts: HashMap<MaterialHandle, Result<[u32; 2], String>>,
     pub(super) diffuse_image_handles: Vec<Option<Handle<Image>>>,

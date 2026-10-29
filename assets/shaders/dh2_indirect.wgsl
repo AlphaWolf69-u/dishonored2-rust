@@ -1,7 +1,13 @@
 #define_import_path dh2_indirect
 
+#ifdef DH2_PARTICLE_INSTANCES
+// Particle surfaces: this frame's shared per-system lighting records.
+@group(4) @binding(1)
+var<storage, read> probe_sh: array<array<vec4<f32>, 9>>;
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(100)
 var<storage, read> probe_sh: array<array<vec4<f32>, 9>>;
+#endif
 @group(#{MATERIAL_BIND_GROUP}) @binding(119)
 var<storage, read> probe_words: array<u32>;
 

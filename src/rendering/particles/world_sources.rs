@@ -91,6 +91,29 @@ impl WorldFxSources {
             .flat_map(|p| p.materials.values())
     }
 
+    /// Every (PMODEL resource, world material) pair the level's world FX can
+    /// draw as a material surface, with its model, in a stable order.
+    pub fn world_meshes(&self) -> Vec<(String, String, Arc<crate::assets::particle_model::ParticleModel>)> {
+        let mut pairs = std::collections::BTreeMap::new();
+        for definition in self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+        {
+            for declaration in definition.declarations.iter().flatten() {
+                for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                    for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
+                        let (Some(material), Some(source), Some(model)) = (&mesh.material, &mesh.source, &mesh.model) else {
+                            continue;
+                        };
+                        if definition.world_mesh_materials.contains(material) {
+                            pairs.entry((source.clone(), material.clone())).or_insert_with(|| model.clone());
+                        }
+                    }
+                }
+            }
+        }
+        pairs.into_iter().map(|((source, material), model)| (source, material, model)).collect()
+    }
+
     /// Every sound event the level's world FX post.
     pub fn sound_events(&self) -> impl Iterator<Item = u32> + '_ {
         self.effects.values().filter_map(|e| e.as_ref().ok())

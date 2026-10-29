@@ -568,10 +568,22 @@ impl ParticlePass {
             .collect::<Vec<_>>()
             .join("\n")
             .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
+        // Directives are stripped; only the particle-surface instancing branch
+        // (never defined for the FX pass) is removed with its body.
         let shared_source = |source: &str| {
+            let mut instanced = None;
             source
                 .lines()
-                .filter(|line| !line.trim_start().starts_with('#'))
+                .filter(|line| {
+                    let directive = line.trim_start();
+                    match (directive, instanced) {
+                        ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
+                        ("#else", Some(true)) => instanced = Some(false),
+                        ("#endif", Some(_)) => instanced = None,
+                        _ => return instanced != Some(true) && !directive.starts_with('#'),
+                    }
+                    false
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };

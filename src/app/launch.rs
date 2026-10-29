@@ -792,6 +792,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         | bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE;
     graphics.features |= bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
         | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D;
+    // Direct-instanced particle surfaces pass {mesh_index, first} as immediates.
+    graphics.features |= bevy::render::settings::WgpuFeatures::IMMEDIATES;
+    let mut limits = graphics.limits.clone();
+    limits.max_immediate_size = limits
+        .max_immediate_size
+        .max(crate::rendering::bevy_backend::particle_meshes::IMMEDIATE_SIZE);
+    graphics.limits = limits;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(ProgramCacheSource(program_cache))
@@ -1197,6 +1204,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         crate::rendering::bevy_backend::probe_weights::indirect_shader
     );
     bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
+    bevy::asset::load_internal_asset!(app,super::state::PARTICLE_SURFACE_SHADER_HANDLE,"../../assets/shaders/dh2_particle_surface.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(
         app,
         SKY_SHADER_HANDLE,
