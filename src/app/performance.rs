@@ -379,6 +379,7 @@ pub(super) fn benchmark_frames(
             light_culling.sphere_query_ns as f64 / 1_000_000.0,
             light_culling.zero_preset_rgb,
         );
+        let ordered_frame_times = frame_times.clone();
         frame_times.sort_unstable_by(f64::total_cmp);
         if !frame_times.is_empty() {
             let quantile =
@@ -391,6 +392,17 @@ pub(super) fn benchmark_frames(
                 quantile(1.0),
                 target.1
             );
+            // 2 ms buckets of the unsorted sequence, and how often a slow
+            // frame follows a fast one: separates periodic from random spikes.
+            let mut buckets = std::collections::BTreeMap::new();
+            for time in &ordered_frame_times {
+                *buckets.entry((*time / 2.0) as u32 * 2).or_insert(0u32) += 1;
+            }
+            let slow = quantile(0.5) * 1.5;
+            let alternations = ordered_frame_times.windows(2)
+                .filter(|pair| (pair[0] > slow) != (pair[1] > slow)).count();
+            println!("BENCHMARK frame_ms_histogram={buckets:?} slow_threshold_ms={slow:.1} slow_frames={} slow_fast_transitions={alternations}",
+                ordered_frame_times.iter().filter(|time| **time > slow).count());
         }
         if let Ok(uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             let mut rows: Vec<_> = uploads.iter().flatten().collect();

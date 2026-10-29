@@ -737,9 +737,26 @@ impl Plugin for ShadowScenePlugin {
             )
             .add_systems(
                 Core3d,
-                render_shadow_scene.before(Core3dSystems::MainPass),
+                (
+                    render_shadow_scene.before(Core3dSystems::MainPass),
+                    submit_shadows_and_prepass
+                        .after(render_shadow_scene)
+                        .after(Core3dSystems::Prepass)
+                        .before(Core3dSystems::MainPass),
+                ),
             );
     }
+}
+
+/// Start the GPU on the depth prepass and shadow maps while the CPU still
+/// records the main pass. The original executes each finished command list at
+/// once (the capture's FinishCommandList/ExecuteCommandList pairs); one
+/// end-of-frame submission instead leaves the GPU idle until the CPU finishes,
+/// and under the game's frame latency of 1 (368b80) CPU and GPU time then add
+/// up on alternate frames. Later queue writes in this frame target buffers
+/// that only later passes read.
+fn submit_shadows_and_prepass(mut flush: bevy::render::renderer::FlushCommands) {
+    flush.flush();
 }
 
 fn prepare_shadow_uniform_ring(
