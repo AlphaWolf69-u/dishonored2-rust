@@ -944,8 +944,8 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
     Ok(())
 }
 
-/// `DH2_ANIM_PROBE`: catfall, mantle and vault on synthetic collision
-/// (a floor plus one box), traced headlessly.
+/// `DH2_ANIM_PROBE`: catfall, mantle, stair sliding and vault on synthetic
+/// collision, with arm joint reach and visibility traced headlessly.
 pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
     use crate::gameplay::player::controller::{ACTION_JUMP, ACTION_MOVE_FORWARD, ACTION_SPRINT};
     let quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| [[to_view(a), to_view(b), to_view(c)], [to_view(a), to_view(c), to_view(d)]];
@@ -966,8 +966,12 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
     let key = |action: i32, down: bool| ActionEvent { action, key: 0, value: [0.0; 2], flags: down as u32 };
     let trace = |player: &mut Player, line: &str, t: f32| {
         let eye = player.view().origin;
+        let axis = player.physics.axis();
+        let reach: Vec<_> = player.arms().iter().map(|arm| {
+            arm.joints.iter().map(|joint| (Vec3::new(joint[0][3], joint[1][3], joint[2][3]) - eye).dot(axis.x_axis)).fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), x| (min.min(x), max.max(x)))
+        }).collect();
         println!(
-            "ANIM PROBE {line} t={t:.3}: states={:?} feet={:?} eye-feet={:.3} mode={}/{} pitch={:.3} yaw={:.3} scene={:?} arms={}{} hand={:?} catfall_hits={:?} shown={:?} legs={}",
+            "ANIM PROBE {line} t={t:.3}: states={:?} feet={:?} eye-feet={:.3} mode={}/{} pitch={:.3} yaw={:.3} scene={:?} arms={}{} hand={:?} reach={:?} catfall_hits={:?} shown={:?} legs={}/{} normal={:?}",
             player.machine.active_states(),
             player.feet(),
             eye.z - player.feet().z,
@@ -983,9 +987,12 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
                 let axis = player.physics.axis();
                 (d.dot(axis.x_axis), d.dot(axis.y_axis), d.dot(axis.z_axis))
             }),
+            reach,
             (player.catfall_sensor.enabled, player.catfall_sensor.left_hit, player.catfall_sensor.right_hit),
             player.body.arms_shown,
             player.body.legs_visible,
+            player.body.desired_legs,
+            player.physics.ground_ray_normal_average,
         );
     };
     let scenario = |label: &str, box_triangles: Vec<[Vec3; 3]>, start: Vec3, seconds: f32, input: &dyn Fn(usize, &Player) -> Vec<ActionEvent>| -> Result<(), String> {
@@ -1015,6 +1022,20 @@ pub(super) fn probe_animation(catalog: &Catalog) -> Result<(), String> {
     };
     scenario("mantle high", block(Vec3::new(1.2, -5.0, 0.0), Vec3::new(6.0, 5.0, 1.7)), Vec3::new(0.0, 0.0, 0.0), 2.5, &climb)?;
     scenario("mantle mid", block(Vec3::new(1.2, -5.0, 0.0), Vec3::new(6.0, 5.0, 1.0)), Vec3::new(0.0, 0.0, 0.0), 2.5, &climb)?;
+    let mut stairs = Vec::new();
+    for step in 0..10 {
+        let x = 8.0 + step as f32 * 0.5;
+        stairs.extend(block(Vec3::new(x, -2.0, 0.0), Vec3::new(x + 0.5, 2.0, (step + 1) as f32 * 0.18)));
+    }
+    let slide = |frame: usize, _: &Player| match frame {
+        30 => vec![key(ACTION_MOVE_FORWARD, true)],
+        90 => vec![key(ACTION_SPRINT, true)],
+        91 => vec![key(ACTION_SPRINT, false)],
+        120 => vec![key(crate::gameplay::player::controller::ACTION_CROUCH, true)],
+        121 => vec![key(crate::gameplay::player::controller::ACTION_CROUCH, false)],
+        _ => Vec::new(),
+    };
+    scenario("slide stairs", stairs, Vec3::new(0.0, 0.0, 0.0), 4.0, &slide)?;
     let vault = |frame: usize, player: &Player| {
         let mut events = Vec::new();
         match frame {

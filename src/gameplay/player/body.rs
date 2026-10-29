@@ -606,8 +606,9 @@ impl Body {
     }
 
     /// FUN_140776e60: show the legs as soon as a LEGS owner wants them;
-    /// hiding waits while the body's midnight player is busy (shadow walk,
-    /// the bypass flag +0xc50 and the +0x318 guard are not ported).
+    /// hiding waits while the body's midnight player is busy (shadow walk and
+    /// the bypass flag +0xc50 are not ported). The other guard is the tree's
+    /// optional stairAngle node, which animtree_player_body does not contain.
     fn update_legs(&mut self) {
         let visible = self.desired_legs >= 1;
         if visible == self.legs_visible {
