@@ -125,6 +125,11 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
+# Release code with line tables, for ETW/xperf CPU sampling (target/profiling).
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+
 [[bin]]
 name = "probe-audit"
 path = "src/bin/probe_audit.rs"

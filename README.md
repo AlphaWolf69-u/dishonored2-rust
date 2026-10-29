@@ -158,6 +158,12 @@ shadow cost. A value of `0` also selects the authored ranges.
   casters; `DH2_DEBUG_ADAPTIVE_DUMP=<file>` writes the adaptive depth grid and
   projections. Benchmarks report directional draws per layer and cache reuse.
 - Benchmarks play silently; `DH2_DEBUG_MUTE=1` silences other runs.
+- Benchmarks report shader-buffer uploads per frame by exact size
+  (`BENCHMARK_SHADER_BUFFER`); a large size repeating every frame names an
+  asset re-uploaded in full.
+- CPU profiling: `cargo build --profile profiling --features game` builds
+  release code with line tables (`target/profiling/`), for ETW sampling
+  (Windows Performance Recorder) and symbol-resolved stacks.
 - `DH2_DEBUG_GPU_CAPTURE_SECONDS=<s>` under `renderdoccmd capture` records the
   first frame after that many seconds through wgpu's graphics-debugger API
   (RenderDoc's own trigger misses the D3D12 swapchain).

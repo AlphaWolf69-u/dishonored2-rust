@@ -318,21 +318,6 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
         .collect()
 }
 
-fn write_probe_record(buffer: &mut ShaderBuffer, tag: u32, record: [[f32; 4]; 9]) {
-    if tag & 0x8000_0000 != 0 {
-        return;
-    }
-    let Some(data) = buffer.data.as_mut() else { return };
-    let start = tag as usize * 9 * 16;
-    let Some(bytes) = data.get_mut(start..start + 9 * 16) else { return };
-    for (coefficient, channels) in record.iter().enumerate() {
-        for (channel, value) in channels.iter().enumerate() {
-            let at = coefficient * 16 + channel * 4;
-            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
-}
-
 /// Skin and show the arms `Player::arms()` names (left, then right); hide
 /// arm models it omits or marks invisible.
 pub(super) fn update_player_arms(
@@ -343,6 +328,7 @@ pub(super) fn update_player_arms(
     probe_buffer: Option<Res<model_motion::ModelProbeLighting>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     mut visibility: Query<&mut Visibility>,
     mut last_error: Local<Option<String>>,
 ) {
@@ -403,10 +389,11 @@ pub(super) fn update_player_arms(
             let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
             if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_ref()) {
                 if let Some(lighting) = probes.interpolate_query_sh(center, &mut arm.lighting) {
-                    if let Some(mut buffer) = buffers.get_mut(&handle.0) {
-                        let record = lighting.object_shader_record();
-                        for part in &arm.surfaces {
-                            write_probe_record(&mut buffer, part.probe_index, record);
+                    let record = model_motion::probe_record_bytes(lighting.object_shader_record());
+                    for part in &arm.surfaces {
+                        if part.probe_index & 0x8000_0000 == 0 {
+                            let offset = part.probe_index as usize * record.len();
+                            patches.write(&mut buffers, &handle.0, offset, &record);
                         }
                     }
                 }

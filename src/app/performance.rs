@@ -242,6 +242,10 @@ pub(super) fn benchmark_frames(
     // DH2_BENCHMARK_SCREENSHOT=<png>: the first measured frame, for
     // comparing rendering before and after a change at a fixed view.
     if previous_elapsed < target.1 && *elapsed >= target.1 {
+        // Count shader-buffer uploads of the measured frames only.
+        if let Ok(mut uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
+            *uploads = None;
+        }
         if let Some(path) = std::env::var_os("DH2_BENCHMARK_SCREENSHOT") {
             commands
                 .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
@@ -387,6 +391,19 @@ pub(super) fn benchmark_frames(
                 quantile(1.0),
                 target.1
             );
+        }
+        if let Ok(uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
+            let mut rows: Vec<_> = uploads.iter().flatten().collect();
+            rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+            let frames = measured.0.max(1) as f64;
+            let total: u64 = rows.iter().map(|row| row.1 .1).sum();
+            println!("BENCHMARK_SHADER_BUFFERS bytes_per_frame={:.0}", total as f64 / frames);
+            for ((size, reallocated), (count, bytes)) in rows.into_iter().take(20) {
+                println!(
+                    "BENCHMARK_SHADER_BUFFER size={size} reallocated={reallocated} uploads_per_frame={:.2} bytes_per_frame={:.0}",
+                    *count as f64 / frames, *bytes as f64 / frames,
+                );
+            }
         }
         {
             use crate::rendering::bevy_backend::shadow_pass as shadow;
