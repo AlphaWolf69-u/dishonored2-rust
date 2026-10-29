@@ -19,6 +19,9 @@ would change, so it can be made opt-in without guessing.
   matrix applied to (u, v, mapZ). The measured distance at a leaf was 164.7
   units, so any leaf behind a caster gets `exp(-82) = 0`: a hard on/off test
   instead of the intended soft attenuation with depth into the crown.
+- The same term for shadowed local lights uses each record's real
+  `mShadowToWorldMat` (same shader, instructions 786-814), producing a true
+  distance; only the parallel light loses its inverse.
 - Fix: pass the cascade's real inverse as `mShadowToWorldMat`.
 - Rewrite: `parallel_thickness_visibility` in `assets/shaders/dh2_parallel_receiver.wgsl`.
 
