@@ -133,8 +133,10 @@ impl ParticleSystems {
                     .iter()
                     .filter(|sprite| sprite.enabled && sprite.material.is_some())
                     .count();
+                // World-material meshes are model surfaces, outside the FX pass.
                 let meshes=stage.declaration.stages[stage.index].meshes.iter()
-                    .filter(|mesh|mesh.enabled&&mesh.material.is_some()&&mesh.model.is_some()).count();
+                    .filter(|mesh|mesh.enabled&&mesh.model.is_some()
+                        &&mesh.material.as_ref().is_some_and(|name|!system.world_mesh_materials.contains(name))).count();
                 instances += stage.particles.capacity() * (sprites+meshes);
                 draws += sprites+meshes;
             }

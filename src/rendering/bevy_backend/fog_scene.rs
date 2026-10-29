@@ -109,6 +109,24 @@ impl FogGpu {
     pub(super) fn head_water_surface(&self,camera:Entity,frame:u32,baseline:Option<f32>)->Option<f32> {
         self.ocean_capture(camera,frame).and_then(|o|o.head_water_snapshot(frame)).map_or(baseline,|s|s.surface)
     }
+    /// The FX update's ocean inputs, read before this frame's GPU work: the
+    /// water level the depth stage will prepare and the gameplay head surface.
+    /// Without a retained ocean these are absent and the extracted baseline.
+    pub(super) fn upcoming_ocean_inputs(
+        &mut self,
+        device: &RenderDevice,
+        frame: &super::water_scene::WaterFrame,
+        selection: Option<&crate::rendering::environment_contacts::WaterViewPublication>,
+    ) -> Result<(Option<f32>, Option<f32>), String> {
+        let Some(ocean) = self.current.as_mut().and_then(|view| view.ocean.as_mut()) else {
+            return Ok((None, frame.head_water_surface));
+        };
+        ocean.prepare_head_snapshot(device, frame)?;
+        let head = ocean
+            .head_water_snapshot(frame.matrices.frame)
+            .map_or(frame.head_water_surface, |snapshot| snapshot.surface);
+        Ok((ocean.upcoming_water_level(frame, selection), head))
+    }
     pub(super) fn ocean_capture(&self, camera: Entity, frame: u32) -> Option<&super::ocean_scene::OceanScene> {
         if self.completed != Some((camera, frame)) { return None; }
         self.current.as_ref()?.ocean.as_ref()

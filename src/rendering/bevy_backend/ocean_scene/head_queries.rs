@@ -23,6 +23,7 @@ pub(super) struct HeadQueries {
     ring: usize,
     texture_ids: [TextureViewId; 2],
     pub snapshot: Option<HeadWaterSnapshot>,
+    recorded: Option<u32>,
 }
 impl HeadQueries {
     fn new(device: &RenderDevice, textures: OceanHeightTextures<'_>) -> Self {
@@ -37,18 +38,13 @@ impl HeadQueries {
             cursor: 0,
             ring: 0,
             snapshot: None,
+            recorded: None,
         }
     }
-    fn record(
-        &mut self,
-        device: &RenderDevice,
-        queue: &RenderQueue,
-        encoder: &mut CommandEncoder,
-        frame: &WaterFrame,
-        surface: &OceanSurfaceParameters,
-        water_level: f32,
-        wave_slot: usize,
-    ) -> Result<(), String> {
+    /// Gameplay's view of the completed readbacks plus this frame's new
+    /// registration. CPU only, so the FX update can read the head surface
+    /// before the frame's GPU work, as the original game thread does.
+    fn take_snapshot(&mut self, device: &RenderDevice, frame: &WaterFrame) -> Result<(), String> {
         if self
             .snapshot
             .as_ref()
@@ -95,6 +91,23 @@ impl HeadQueries {
                 }
             }
         }
+        self.snapshot = Some(snapshot);
+        Ok(())
+    }
+    fn record(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        frame: &WaterFrame,
+        surface: &OceanSurfaceParameters,
+        water_level: f32,
+        wave_slot: usize,
+    ) -> Result<(), String> {
+        if self.recorded == Some(frame.matrices.frame) {
+            return Ok(());
+        }
+        self.take_snapshot(device, frame)?;
         self.queries.record_pending(
             queue,
             encoder,
@@ -106,7 +119,7 @@ impl HeadQueries {
             self.ring,
         )?;
         self.ring = (self.ring + 1) & 3;
-        self.snapshot = Some(snapshot);
+        self.recorded = Some(frame.matrices.frame);
         Ok(())
     }
 }
@@ -166,6 +179,13 @@ impl OceanScene {
             queries.readbacks.map_submitted()?;
         }
         Ok(())
+    }
+    /// Take this frame's snapshot ahead of the GPU recording (see take_snapshot).
+    pub(crate) fn prepare_head_snapshot(&mut self, device: &RenderDevice, frame: &WaterFrame) -> Result<(), String> {
+        match self.head_queries.as_mut() {
+            Some(queries) => queries.take_snapshot(device, frame),
+            None => Ok(()),
+        }
     }
     pub(crate) fn head_water_snapshot(&self, frame: u32) -> Option<&HeadWaterSnapshot> {
         self.head_queries
