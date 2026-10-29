@@ -222,6 +222,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
+    // --find-content <prefix> <term>: installed resources under <prefix>
+    // (e.g. generated/decls/) whose bytes contain <term>, case-insensitively.
+    if world_path == "--find-content" {
+        let prefix = args.next().ok_or("--find-content needs a path prefix")?;
+        let term = args.next().ok_or("--find-content needs a term")?.to_ascii_lowercase();
+        for path in catalog.paths_containing(&prefix) {
+            let Some(bytes) = catalog.read(&path)? else { continue };
+            if bytes.to_ascii_lowercase().windows(term.len()).any(|w| w == term.as_bytes()) {
+                println!("{path}");
+            }
+        }
+        return Ok(());
+    }
     // --program-option-census <mainProgram> <option>: each installed material
     // using that main program, with the option as the material declares it.
     if world_path == "--program-option-census" {
