@@ -344,6 +344,7 @@ fn fragment(
         var visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
             vertex_output.position.xy, compiled_shadow);
         if compiled_misc.z == 2u {
+            pbr_input.vegetation_thickness = surface.vegetation.w;
             // BRDF_vegetation: the light proceeds when m_shadow (PCF times
             // cloud shadow) is positive, then irradiance is attenuated by
             // shadow-map thickness and cloud shadow instead of m_shadow.

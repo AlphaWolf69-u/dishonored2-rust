@@ -1,6 +1,6 @@
 #define_import_path bevy_pbr::pbr_functions
 #ifdef DH2_LOCAL_SHADOWS
-#import dh2_local_receiver::local_visibility
+#import dh2_local_receiver::{local_visibility,local_thickness_visibility}
 #endif
 #ifdef DH2_SKIN
 #import dh2_direct::{skin_light_diffuse,skin_direct_diffuse}
@@ -364,11 +364,17 @@ fn apply_pbr_lighting_with_directional_shadow(
 #ifdef DH2_LOCAL_SHADOWS
 // Profiling attribution: DH2_TRACE_LIGHT_COMPONENT 9 omits local shadow queries.
 // Every caller is itself inside DH2_LOCAL_SHADOWS, which imports local_visibility.
-fn traced_local_visibility(light_id:u32,position:vec3<f32>,normal:vec3<f32>,route:vec4<u32>)->f32 {
+// BRDF_vegetation (thickness >= 0): the light proceeds when m_shadow is
+// positive, then a shadowed light is attenuated by its shadow-map thickness.
+fn traced_local_visibility(light_id:u32,position:vec3<f32>,normal:vec3<f32>,route:vec4<u32>,thickness:f32)->f32 {
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     if #{DH2_TRACE_LIGHT_COMPONENT} == 9u {return 1.0;}
 #endif
-    return local_visibility(light_id,position,normal,route);
+    let visibility=local_visibility(light_id,position,normal,route);
+    if thickness >= 0.0 {
+        return select(0.0,local_thickness_visibility(light_id,position,thickness),visibility>0.0);
+    }
+    return visibility;
 }
 #endif
 
@@ -561,7 +567,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -589,7 +595,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::point_light(light_id, &transmissive_lighting_input, enable_diffuse, true);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -650,7 +656,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -684,7 +690,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::spot_light(light_id, &transmissive_lighting_input, enable_diffuse);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
