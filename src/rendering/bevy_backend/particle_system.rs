@@ -17,6 +17,16 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
+/// A mesh renderer whose material has a world MAIN program. The original
+/// draws it as an instanced model surface in that material's own passes
+/// (1401fbad0 -> 140319900 -> 1402bb550), with the system's shared lighting.
+pub(crate) struct WorldMeshDraw {
+    pub source: String,
+    pub material: String,
+    pub lighting: [[f32; 4]; 9],
+    pub instances: Vec<crate::rendering::particles::ParticleInstance>,
+}
+
 /// Inputs supplied by the actual render-view publication.
 pub(crate) struct ParticleDrawContext<'a> {
     pub view: &'a crate::rendering::particles::SpriteView,
@@ -33,6 +43,8 @@ pub(crate) struct ParticleSystem {
     pub effect: ParticleEffect,
     pub stages: Vec<StageSimulation>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
+    /// World-program mesh materials, drawn as material surfaces (1401fbad0).
+    pub world_mesh_materials: Arc<std::collections::HashSet<String>>,
     pub system_seed: u32,
     pub first_simulation: bool,
     pub publication: Option<ParticlePublication>,
@@ -72,6 +84,7 @@ impl ParticleSystem {
         frame: u32,
         context: ParticleDrawContext<'_>,
         output: &mut Vec<super::particle_pass::ParticleDraw>,
+        world_meshes: &mut Vec<WorldMeshDraw>,
     ) -> Result<(), String> {
         if self.visible_frame != Some(frame) {
             return Ok(());
@@ -144,6 +157,11 @@ impl ParticleSystem {
                 let Some(name) = material.as_ref() else {
                     return Ok::<_, String>(needed);
                 };
+                // 1eaa40 copies the system's shared tetrahedron record into
+                // each world-mesh instance (measured non-null for eotw flies).
+                if self.world_mesh_materials.contains(name) {
+                    return Ok(true);
+                }
                 let material = self
                     .materials
                     .get(name)
@@ -262,6 +280,16 @@ impl ParticleSystem {
                 if !mesh.enabled {continue;}
                 let (Some(name),Some(source),Some(model))=(&mesh.material,&mesh.source,&mesh.model) else {continue};
                 if model.vertices.is_empty(){continue;}
+                if self.world_mesh_materials.contains(name) {
+                    let mut instances=Vec::with_capacity(stage.particles.len());
+                    crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
+                        &view,context.query_visibility,alpha_scale,&mut instances)?;
+                    if !instances.is_empty() {
+                        world_meshes.push(WorldMeshDraw{source:source.clone(),material:name.clone(),
+                            lighting:lighting.ok_or("world particle mesh lighting was not selected")?,instances});
+                    }
+                    continue;
+                }
                 let material=self.materials.get(name).ok_or_else(||format!("particle mesh material absent: {name}"))?;
                 let mut instances=Vec::with_capacity(stage.particles.len());
                 crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
@@ -330,6 +358,7 @@ impl ParticleSystem {
             effect,
             stages,
             materials: definition.materials.clone(),
+            world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),
             system_seed,
             first_simulation: true,
             publication: None,

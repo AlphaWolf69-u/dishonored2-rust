@@ -178,6 +178,7 @@ fn render_particles(
     )>,
     mut last_error: Local<Option<String>>,
     mut reported: Local<bool>,
+    mut reported_world_meshes: Local<bool>,
 ) {
     let queries=&lighting_scene.queries;
     let Some(water) = water.0.as_ref() else {
@@ -239,7 +240,7 @@ fn render_particles(
             owner_scale: 1.,
         };
         let console = crate::platform::console::shared().read();
-        let draws = gpu
+        let (draws, world_meshes) = gpu
             .particle_systems
             .publish_draws(water.matrices.frame, |pose| {
                 Ok(super::screen_effects::ParticleDrawContext {
@@ -264,6 +265,13 @@ fn render_particles(
                 })
             })?;
         drop(console);
+        // World-program particle meshes are material surfaces in the original
+        // (1401fbad0); their instanced surface submission is not ported yet.
+        if let Some(draw) = world_meshes.first().filter(|_| !*reported_world_meshes) {
+            warn!(source = draw.source, material = draw.material, instances = draw.instances.len(),
+                "World-material particle mesh is not drawn: instanced material surface submission is unported");
+            *reported_world_meshes = true;
+        }
         let lens = display
             .0
             .as_ref()

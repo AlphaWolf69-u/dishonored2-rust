@@ -145,14 +145,15 @@ impl ParticleSystems {
         &mut self,
         frame: u32,
         mut context: impl FnMut(ReferenceFrame) -> Result<ParticleDrawContext<'a>, String>,
-    ) -> Result<Vec<ParticleDraw>, String> {
+    ) -> Result<(Vec<ParticleDraw>, Vec<super::particle_system::WorldMeshDraw>), String> {
         let mut draws = Vec::new();
+        let mut world_meshes = Vec::new();
         for system in self.slots.iter_mut().flatten() {
             if let Some(pose) = system.draw_pose(frame) {
-                system.publish_draws(frame, context(pose)?, &mut draws)?;
+                system.publish_draws(frame, context(pose)?, &mut draws, &mut world_meshes)?;
             }
         }
-        Ok(draws)
+        Ok((draws, world_meshes))
     }
     pub fn simulate(
         &mut self,
