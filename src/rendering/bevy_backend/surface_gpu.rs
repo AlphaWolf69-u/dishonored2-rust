@@ -54,6 +54,9 @@ pub struct SurfaceUniform {
     /// hasDiffuseLookup, then bit 0 SSS/hasSkinFresnelLookup, bit 1
     /// SSS/hasMask, bit 2 fuzz/hasMask.
     pub skin_flags: UVec4,
+    /// arkVegetation (program 2): vegetation/transmittanceParms; .w scales
+    /// BRDF_vegetation's shadow-map thickness attenuation.
+    pub vegetation: Vec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -224,6 +227,7 @@ impl From<&Surface> for SurfaceUniform {
                     | (u32::from(s.skin.sss_mask.is_some()) << 1)
                     | (u32::from(s.skin.fuzz_mask.is_some()) << 2),
             ),
+            vegetation: Vec4::ZERO,
         }
     }
 }

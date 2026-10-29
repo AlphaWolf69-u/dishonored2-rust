@@ -222,6 +222,38 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
+    // --program-option-census <mainProgram> <option>: each installed material
+    // using that main program, with the option as the material declares it.
+    if world_path == "--program-option-census" {
+        let program = args.next().ok_or("--program-option-census needs a program")?;
+        let option = args.next().ok_or("--program-option-census needs an option")?;
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for path in catalog.paths_containing("generated/decls/material/") {
+            let Some(bytes) = catalog.read(&path)? else { continue };
+            let text = entities::declaration_text(&bytes);
+            let mut main = None;
+            let mut value = None;
+            for line in text.lines() {
+                let mut words = line.split_whitespace();
+                match words.next() {
+                    Some(key) if key.eq_ignore_ascii_case("mainProgram") => {
+                        main = words.next().map(|w| w.trim_matches('"').to_ascii_lowercase())
+                    }
+                    Some(key) if key.eq_ignore_ascii_case(&option) => {
+                        value = words.next().map(str::to_owned)
+                    }
+                    _ => {}
+                }
+            }
+            if main.as_deref() == Some(program.to_ascii_lowercase().as_str()) {
+                let value = value.unwrap_or_else(|| "(program default)".into());
+                println!("{path} {option}={value}");
+                *counts.entry(value).or_default() += 1;
+            }
+        }
+        println!("{counts:?}");
+        return Ok(());
+    }
     if world_path == "--main-program-audit" {
         let mut missing = 0;
         for path in catalog.paths_containing("generated/decls/material/") {

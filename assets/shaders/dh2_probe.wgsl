@@ -1,12 +1,13 @@
-#import bevy_pbr::mesh_view_bindings::view
+#import bevy_pbr::mesh_view_bindings::{view,lights}
 #import dh2_ward::ward_surface
 #ifdef DH2_SKIN
 #import dh2_direct::{SkinSurface,skin_surface,skin_direct_diffuse,ward_inverse_roughness_squared}
 #import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask,translucency_mask}
 #import dh2_indirect::{MaterialLightingValues,evaluate_mapped_diffuse_response}
+#endif
+// Skin and vegetation read wsPositionHacked and the directional cloud factor.
 #import dh2_parallel_receiver::parallel_cloud_shadowing
 #import bevy_pbr::view_transformations::{frag_coord_to_ndc,position_ndc_to_world}
-#endif
 
 #import bevy_pbr::{
     forward_io::VertexOutput,
@@ -21,7 +22,7 @@
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
-#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, ambient_occlusion}
+#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, parallel_thickness_visibility, ambient_occlusion}
 #import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, scaled_uv}
 #import dh2_material_samplers::linear_clamp
 #import dh2_sky::sky_colour
@@ -340,11 +341,27 @@ fn fragment(
         let visibility = parallel_depth_visibility(hacked, vertex_output.world_normal,
             vertex_output.position.xy, compiled_shadow)*parallel_cloud_shadowing(hacked);
 #else
-        let visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
+        var visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
             vertex_output.position.xy, compiled_shadow);
+        if compiled_misc.z == 2u {
+            // BRDF_vegetation: the light proceeds when m_shadow (PCF times
+            // cloud shadow) is positive, then irradiance is attenuated by
+            // shadow-map thickness and cloud shadow instead of m_shadow.
+            let hacked=position_ndc_to_world(frag_coord_to_ndc(vertex_output.position));
+            let cloud = parallel_cloud_shadowing(hacked);
+            visibility = select(0.0, parallel_thickness_visibility(pbr_input.world_position.xyz, hacked,
+                surface.vegetation.w) * cloud, visibility * cloud > 0.0);
+        }
 #endif
         out.color = apply_pbr_lighting_with_shadows(pbr_input,
             parallel_directional_index(), visibility, visibility, compiled_shadow, indirect);
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+        // Numerical attribution: the BRDF's N.L and V.N, and the face flag.
+        if #{DH2_TRACE_LIGHT_COMPONENT} == 12u && parallel_directional_index() != 0xffffffffu {
+            let sun = lights.directional_lights[parallel_directional_index()].direction_to_light;
+            out.color = vec4(dot(pbr_input.N, sun), dot(pbr_input.V, pbr_input.N), select(-1.0, 1.0, is_front), 1.0);
+        }
+#endif
     } else {
         out.color = pbr_input.material.base_color;
         if compiled_misc.z==6u {

@@ -918,7 +918,10 @@ impl MaterialResolver<'_> {
                 // lightContext::ComputeAmbientOcclusion bypasses both map AO
                 // and screen AO for the actual isAlpha specialization.
                 fog_flags |= u32::from(option(b"isAlpha")? != 0) << 6;
-                let standard_brdf = matches!(uniform.misc.z, 1 | 6)
+                // BRDF_vegetation's direct lighting without translucency is
+                // BRDF_ward's (sheen-mixed Oren-Nayar, FresnelAccurate, Ward);
+                // only its shadow term differs (dh2_probe's program-2 branch).
+                let standard_brdf = matches!(uniform.misc.z, 1 | 2 | 6)
                     && option(b"hasSheenMap")? == 0
                     && option(b"hasDiffuseLookup")? == 0
                     && option(b"fuzz/enable")? == 0
@@ -984,6 +987,41 @@ impl MaterialResolver<'_> {
                     eprintln!("Skin program options unavailable {path}: {error}");
                     return None;
                 }
+            }
+        }
+        if surface.program() == material_surface::Program::Vegetation {
+            // BRDF_vegetation reads vegetation/transmittanceParms: the
+            // material's value, else the registered renderParm default.
+            let transmittance = (|| {
+                let catalog = self.catalog.ok_or("vegetation parameter catalog is unavailable")?;
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let name: &[u8] = b"vegetation/transmittanceparms";
+                let values = entities::material_float_parameters(&entities::declaration_text(bytes), |n| {
+                    n.as_bytes() == name
+                })?;
+                let overrides = render_program::SerializedParameterBlock {
+                    flags: 0,
+                    parameters: values
+                        .into_iter()
+                        .map(|(name, words)| render_program::SerializedParameter {
+                            name: name.into_bytes(),
+                            kind: render_program::RenderParameterKind::Uniform,
+                            value: render_program::SerializedParameterValue::Words(words),
+                        })
+                        .collect(),
+                };
+                library
+                    .registered_float_vector(catalog, &overrides, name, None)
+                    .map(|words| Vec4::from_array(words.map(f32::from_bits)))
+            })();
+            match transmittance {
+                Ok(value) => uniform.vegetation = value,
+                Err(error) => eprintln!("Vegetation transmittanceParms unavailable for {path}: {error}"),
             }
         }
         // FUN_1402d5210 encodes inherited `invisible` as material+0x4b's

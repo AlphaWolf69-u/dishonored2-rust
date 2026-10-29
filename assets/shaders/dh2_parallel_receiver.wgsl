@@ -1,5 +1,5 @@
 #define_import_path dh2_parallel_receiver
-#import dh2_shadow::{parallel_shadow_slice, shadow_offset, sample_directional_shadow, fast_cloud_shadowing}
+#import dh2_shadow::{parallel_shadow_slice, shadow_offset, shadow_position, sample_directional_shadow, fast_cloud_shadowing}
 
 // Matches shadow_sampling::ParallelSamplingUniform. This is the
 // rewrite's stable transport, not a copy of an original constant-buffer ABI.
@@ -66,6 +66,40 @@ fn parallel_depth_visibility(viewer_position: vec3<f32>, viewer_vertex_normal: v
             cloud, cloud_sampler);
     }
     return visibility;
+}
+
+// BRDF_vegetation's shadowed irradiance for the parallel light, as the eotw
+// leaf shader compiles it (capture event 54031): lighting.renderprog sets
+// m_ShadowSetup = 0 and never assigns m_shadowInfo, so GetShadowMapZandPos
+// uses the cascade's cb_shadowprojections row set for BOTH transforms; the
+// "caster" is that matrix applied to (uv, mapZ). The cascade comes from the
+// depth-reconstructed position, the fetch and distance from the interpolated
+// world position; the depth is filtered bilinearly with no bias.
+// Returns enableShadow * exp(-w * isBehindCaster * distance).
+fn parallel_thickness_visibility(viewer_position: vec3<f32>, viewer_hacked: vec3<f32>, w: f32) -> f32 {
+    if parallel.config.x == 0u { return 1.0; }
+    let position = vec3(viewer_position.x, -viewer_position.z, viewer_position.y);
+    let hacked = vec3(viewer_hacked.x, -viewer_hacked.z, viewer_hacked.y);
+    let slice = parallel_shadow_slice(hacked, parallel.view_depth_row, parallel.cascade_fars);
+    let matrix = parallel.world_to_shadow[slice];
+    let coordinate = shadow_position(matrix, position, true).xyz;
+    // SampleLevel(bilinearSampler): four texels, standard texel-centre weights.
+    let size = vec2<f32>(textureDimensions(parallel_depth));
+    let texel = coordinate.xy * size - 0.5;
+    let base = floor(texel);
+    let f = texel - base;
+    let last = vec2<i32>(size) - 1;
+    let a = clamp(vec2<i32>(base), vec2(0), last);
+    let b = clamp(vec2<i32>(base) + 1, vec2(0), last);
+    let d00 = textureLoad(parallel_depth, a, i32(slice), 0);
+    let d10 = textureLoad(parallel_depth, vec2(b.x, a.y), i32(slice), 0);
+    let d01 = textureLoad(parallel_depth, vec2(a.x, b.y), i32(slice), 0);
+    let d11 = textureLoad(parallel_depth, b, i32(slice), 0);
+    let map_z = mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+    let caster = shadow_position(matrix, vec3(coordinate.xy, map_z), true).xyz;
+    let enable_shadow = clamp(1e5 * map_z, 0.0, 1.0);
+    let behind = clamp(1e4 * (coordinate.z - map_z), 0.0, 1.0);
+    return enable_shadow * exp(-w * behind * distance(position, caster));
 }
 
 // BRDF_skin's directional `GetFastCloudShadowing( _Surface.wsPositionHacked )`,
