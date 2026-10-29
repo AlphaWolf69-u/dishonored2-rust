@@ -57,6 +57,11 @@ pub struct SurfaceUniform {
     /// arkVegetation (program 2): vegetation/transmittanceParms; .w scales
     /// BRDF_vegetation's shadow-map thickness attenuation.
     pub vegetation: Vec4,
+    /// translucency/intensity, distortion, power, min (ComputeTranslucencyNoRamp).
+    pub vegetation_translucency: Vec4,
+    /// translucency/enable, vegetation/indirectTranslucencyBoost,
+    /// translucencyMap bound (else translucencyUseVertexColor: weight 1).
+    pub vegetation_options: Vec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
@@ -228,6 +233,8 @@ impl From<&Surface> for SurfaceUniform {
                     | (u32::from(s.skin.fuzz_mask.is_some()) << 2),
             ),
             vegetation: Vec4::ZERO,
+            vegetation_translucency: Vec4::ZERO,
+            vegetation_options: Vec4::ZERO,
         }
     }
 }

@@ -1,8 +1,8 @@
 #import bevy_pbr::mesh_view_bindings::{view,lights}
-#import dh2_ward::ward_surface
+#import dh2_ward::{ward_surface,WardTranslucency,ward_translucency,rgb_to_hsv,hsv_to_rgb}
 #ifdef DH2_SKIN
 #import dh2_direct::{SkinSurface,skin_surface,skin_direct_diffuse,ward_inverse_roughness_squared}
-#import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask,translucency_mask}
+#import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask}
 #import dh2_indirect::{MaterialLightingValues,evaluate_mapped_diffuse_response}
 #endif
 // Skin and vegetation read wsPositionHacked and the directional cloud factor.
@@ -18,7 +18,7 @@
     decal::clustered::apply_decals,
 }
 
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow, translucency_mask}
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
@@ -125,6 +125,7 @@ fn fragment(
         return out;
     }
     var diffuse_response=pbr_input.material.base_color.rgb;
+    var vegetation_albedo=vec3<f32>(0.0);
     var indirect=vec3<f32>(0.0);
     var emissive=vec3<f32>(0.0);
     var specular_reflectance=vec3<f32>(0.0);
@@ -177,6 +178,23 @@ fn fragment(
         pbr_input.direct_surface=ward_surface(pbr_input.N,pbr_input.V,authored.roughness,
             authored.direct_diffuse,authored.direct_ior,surface.direct.x,surface.direct.y,
             authored.fresnel_strength);
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            // arkVegetation translucency: surf.translucency from translucencyMap
+            // (else vertex colour, i.e. 1), and the albedo saturated and
+            // brightened in HSV into the transmittance colour.
+            var weight=1.0;
+            if surface.vegetation_options.z != 0.0 {
+                let base_uv=scaled_uv(select(uv,uv1,surface.uv_sets[0].x!=0u),surface.uv[0]);
+                weight=textureSample(translucency_mask,surface_anisotropic_sampler,base_uv).x;
+            }
+            vegetation_albedo=authored.albedo.rgb;
+            var hsv=rgb_to_hsv(authored.albedo.rgb);
+            hsv.x+=surface.vegetation.y;
+            hsv.y=min(hsv.y*surface.vegetation.x,1.0);
+            hsv.z=min(hsv.z+0.25*surface.vegetation.x,1.0);
+            pbr_input.direct_surface.translucency=WardTranslucency(normalize(pbr_input.world_normal),weight,
+                hsv_to_rgb(hsv),1.0,surface.vegetation_translucency,surface.vegetation.z);
+        }
 #ifdef DH2_SKIN
         {
             // arkSSSRender: specularTint 0.028 -> IOR (Fresnel_IORFromF0), diffuse
@@ -284,9 +302,28 @@ fn fragment(
             ambient_normal, vertex_output.world_tangent.xyz, bitangent,
             vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
         indirect = probe_irradiance * diffuse_response;
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            // ComputeVegetationAmbientLighting: back irradiance along -vertexNormal
+            // through Rho_t (specularTintDielectric) and the transmittance colour.
+            let t=pbr_input.direct_surface.translucency;
+            let back=unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
+                vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
+                -t.vertex_normal, vertex_output.world_tangent.xyz, bitangent,
+                vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
+            let rho=vec3(1.0)-(vec3(1.0)-surface.specular_dielectric.rgb)*vegetation_albedo;
+            let amount=ward_translucency(t,t.weight,-t.vertex_normal,pbr_input.V);
+            indirect += surface.vegetation_options.y * rho * t.transmittance * back * amount * diffuse_response;
+        }
 #else
         indirect = probe_diffuse(ambient_normal, probe_index)
             * diffuse_response * pbr_input.diffuse_occlusion;
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            let t=pbr_input.direct_surface.translucency;
+            let rho=vec3(1.0)-(vec3(1.0)-surface.specular_dielectric.rgb)*vegetation_albedo;
+            let amount=ward_translucency(t,t.weight,-t.vertex_normal,pbr_input.V);
+            indirect += surface.vegetation_options.y * rho * t.transmittance
+                * probe_diffuse(-t.vertex_normal, probe_index) * amount * diffuse_response * pbr_input.diffuse_occlusion;
+        }
 #endif
 #ifdef DH2_SKIN
         skin_ambient_out=indirect;
@@ -350,8 +387,9 @@ fn fragment(
             // shadow-map thickness and cloud shadow instead of m_shadow.
             let hacked=position_ndc_to_world(frag_coord_to_ndc(vertex_output.position));
             let cloud = parallel_cloud_shadowing(hacked);
+            // Translucent vegetation proceeds without the m_shadow gate.
             visibility = select(0.0, parallel_thickness_visibility(pbr_input.world_position.xyz, hacked,
-                surface.vegetation.w) * cloud, visibility * cloud > 0.0);
+                surface.vegetation.w) * cloud, visibility * cloud > 0.0 || surface.vegetation_options.x != 0.0);
         }
 #endif
         out.color = apply_pbr_lighting_with_shadows(pbr_input,

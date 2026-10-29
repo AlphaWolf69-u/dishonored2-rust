@@ -33,6 +33,8 @@ struct SurfaceUniform {
     skin:array<vec4<f32>,3>,
     skin_flags:vec4<u32>,
     vegetation:vec4<f32>,
+    vegetation_translucency:vec4<f32>,
+    vegetation_options:vec4<f32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -86,8 +88,9 @@ const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAG
 @group(#{MATERIAL_BIND_GROUP}) @binding(170) var skin_fresnel_lookup:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(172) var sss_mask:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(173) var fuzz_mask:texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;
 #endif
+// translucency/mask (arkSSSRender) or translucencyMap (arkVegetation).
+@group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;
 #ifdef PREPASS_PIPELINE
 #import bevy_render::globals::Globals
 @group(0) @binding(1) var<uniform> globals:Globals;
