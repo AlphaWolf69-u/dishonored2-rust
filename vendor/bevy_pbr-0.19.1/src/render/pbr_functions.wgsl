@@ -357,13 +357,16 @@ fn apply_pbr_lighting_with_directional_shadow(
         transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u),vec3<f32>(0.0));
 }
 
+#ifdef DH2_LOCAL_SHADOWS
 // Profiling attribution: DH2_TRACE_LIGHT_COMPONENT 9 omits local shadow queries.
+// Every caller is itself inside DH2_LOCAL_SHADOWS, which imports local_visibility.
 fn traced_local_visibility(light_id:u32,position:vec3<f32>,normal:vec3<f32>,route:vec4<u32>)->f32 {
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     if #{DH2_TRACE_LIGHT_COMPONENT} == 9u {return 1.0;}
 #endif
     return local_visibility(light_id,position,normal,route);
 }
+#endif
 
 fn apply_pbr_lighting_with_shadows(
     in: pbr_types::PbrInput,

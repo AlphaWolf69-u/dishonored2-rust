@@ -281,7 +281,7 @@ pub(super) fn benchmark_frames(
             for diagnostic in store.iter() {
                 let path = diagnostic.path().as_str();
                 if path.starts_with("render/")
-                    && (path.ends_with("elapsed_gpu") || path.ends_with("shader_invocations"))
+                    && (path.ends_with("elapsed_gpu") || path.ends_with("elapsed_cpu") || path.ends_with("shader_invocations"))
                 {
                     if let Some(value) = diagnostic.value().filter(|value| value.is_finite()) {
                         let metric = render_metrics

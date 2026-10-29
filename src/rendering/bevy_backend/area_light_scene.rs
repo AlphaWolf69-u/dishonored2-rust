@@ -33,7 +33,8 @@ impl AreaLightScene {
                 .is_some_and(|source| Arc::ptr_eq(source, &frame.lights))
     }
 }
-pub(super) fn register(app: &mut App) {
+/// The opaque area-light evaluator the patched PBR lighting imports.
+pub(super) fn register_shaders(app: &mut App) {
     bevy::asset::load_internal_asset!(
         app,
         SHADER,
@@ -46,6 +47,9 @@ pub(super) fn register(app: &mut App) {
             path
         )
     );
+}
+pub(super) fn register(app: &mut App) {
+    register_shaders(app);
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
             .init_resource::<AreaLightScene>()

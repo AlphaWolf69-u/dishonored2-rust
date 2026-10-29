@@ -257,6 +257,7 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
                             &records,
                             &gpu.pipelines,
                             None,
+                            None,
                         )
                         .unwrap();
                         assert!(publication.complete);
