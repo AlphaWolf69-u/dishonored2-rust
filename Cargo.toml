@@ -114,6 +114,12 @@ path = "src/bin/visibility_probe.rs"
 [profile.dev]
 debug = 0
 incremental = false
+opt-level = 1
+
+# Unoptimized Bevy/wgpu ran the dev client at ~5 FPS, too slow for diagnostic
+# runs. Timing comparisons with the original still use release builds.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

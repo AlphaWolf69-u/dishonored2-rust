@@ -399,6 +399,12 @@ pub(super) fn benchmark_frames(
                 shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / frames, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / frames,
                 shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / layers, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / layers,
             );
+            for (index, stats) in shadow::DIRECTIONAL_LAYER_STATS.iter().enumerate() {
+                println!(
+                    "BENCHMARK_SHADOW_LAYER {index} prepared_draws={:.1} restored_static_draws={:.1} cache_rewrites={}",
+                    stats[0].load(Relaxed) as f64 / frames, stats[1].load(Relaxed) as f64 / frames, stats[2].load(Relaxed),
+                );
+            }
         }
         for (path, (samples, total, maximum)) in render_metrics.iter() {
             println!(

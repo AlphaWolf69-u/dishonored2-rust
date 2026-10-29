@@ -34,6 +34,7 @@ pub(super) fn encode_layer(
     records: &[PreparedShadowRecord],
     pipelines: &ShadowPipelineStore,
     receiver: Option<&ParallelReceiverVars>,
+    diagnostics: Option<&bevy::render::diagnostic::DiagnosticsRecorder>,
 ) -> Result<Publication, String> {
     let temporary = &target.temporary[physical_layer];
     let mut remaining = directional_layer_draws(records, pipelines, layer_index);
@@ -63,6 +64,7 @@ pub(super) fn encode_layer(
         emitted: true,
         cache: CacheUpdate::Unchanged,
     };
+    let counted = remaining.len() as u64;
     match layer.cache {
         ShadowCacheOp::None => {
             draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
@@ -85,21 +87,39 @@ pub(super) fn encode_layer(
             let dynamic = remaining.split_off(static_instances);
             let cache = layer_index - 1;
             if target.cache_valid[cache] && target.cache_generation[cache] == Some(generation) {
+                let span = diagnostics.time_span(encoder, "cache_restore");
                 temporary.copy_resource_from(encoder, &target.static_cache[cache])?;
+                span.end(encoder);
+                LAYER_STATS[layer_index.min(4)][1].fetch_add(remaining.len() as u64, std::sync::atomic::Ordering::Relaxed);
             } else {
+                LAYER_STATS[layer_index.min(4)][2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let span = diagnostics.time_span(encoder, "static_draws");
                 draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+                span.end(encoder);
+                let span = diagnostics.time_span(encoder, "cache_store");
                 target.static_cache[cache].copy_resource_from(encoder, temporary)?;
+                span.end(encoder);
                 publication.cache = CacheUpdate::Written(Some(generation));
             }
+            let span = diagnostics.time_span(encoder, "dynamic_draws");
             draw_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
+            span.end(encoder);
         }
     }
+    LAYER_STATS[layer_index.min(4)][0].fetch_add(counted, std::sync::atomic::Ordering::Relaxed);
     // 32db10 full-rectangle copy fast path, AFTER the dynamic pass.
+    let span = diagnostics.time_span(encoder, "array_copy");
     target
         .array
         .copy_layer_from(encoder, physical_layer as u32, temporary, 0)?;
+    span.end(encoder);
     Ok(publication)
 }
+
+/// Diagnostic per directional layer: [prepared draws, static draws restored
+/// from cache instead of drawn, static cache rewrites], for the benchmark report.
+pub static LAYER_STATS: [[std::sync::atomic::AtomicU64; 3]; 5] =
+    [const { [const { std::sync::atomic::AtomicU64::new(0) }; 3] }; 5];
 
 type RecordedLayer = Result<(Publication, Option<CommandEncoder>), String>;
 
@@ -129,6 +149,7 @@ pub(super) fn record_layers(
                         records,
                         pipelines,
                         receiver,
+                        None,
                     )?;
                     let encoder = publication.emitted.then_some(encoder);
                     Ok((publication, encoder))

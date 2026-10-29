@@ -151,6 +151,12 @@ shadow cost. A value of `0` also selects the authored ranges.
   Compare with the original only under its own config
   (`DH2_HOST_CONFIG_PATH`) and resolution.
 - `DH2_BENCHMARK_SCREENSHOT=<png>` saves the first measured frame.
+- The game keeps its cascade far distances while the camera does not translate
+  (`r_tightenParallelShadows`), so a capture of a stationary player reflects
+  where it last moved. `DH2_DEBUG_ADAPTIVE_FAR=<metres>` seeds that value
+  (the capture's last `cb_parallellightslicefars` entry) to compare shadow
+  casters; `DH2_DEBUG_ADAPTIVE_DUMP=<file>` writes the adaptive depth grid and
+  projections. Benchmarks report directional draws per layer and cache reuse.
 - Benchmarks play silently; `DH2_DEBUG_MUTE=1` silences other runs.
 - `DH2_DEBUG_GPU_CAPTURE_SECONDS=<s>` under `renderdoccmd capture` records the
   first frame after that many seconds through wgpu's graphics-debugger API

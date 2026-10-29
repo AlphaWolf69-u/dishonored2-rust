@@ -12,6 +12,7 @@ use crate::shadow_pipeline::{
 };
 use bevy::platform::collections::HashMap;
 mod directional;
+pub use directional::LAYER_STATS as DIRECTIONAL_LAYER_STATS;
 mod pipeline_store;
 use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::{
@@ -1110,7 +1111,10 @@ fn render_shadow_scene(
     } else {
         for (layer_index, layer) in layers.iter().enumerate() {
             let physical = first_layer as usize + layer_index;
-            match directional::encode_layer(
+            const LAYER_SPANS: [&str; 5] = ["directional_layer_0", "directional_layer_1",
+                "directional_layer_2", "directional_layer_3", "directional_layer_4"];
+            let layer_span = diagnostics.time_span(context.command_encoder(), LAYER_SPANS[layer_index.min(4)]);
+            let encoded = directional::encode_layer(
                 context.command_encoder(),
                 target,
                 physical,
@@ -1119,7 +1123,10 @@ fn render_shadow_scene(
                 &records,
                 pipelines,
                 receiver,
-            ) {
+                diagnostics,
+            );
+            layer_span.end(context.command_encoder());
+            match encoded {
                 Ok(publication) => {
                     complete &= publication.complete;
                     publication.publish(target, physical, layer_index);

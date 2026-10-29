@@ -742,6 +742,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         app.insert_resource(BenchmarkSeconds(total, warmup));
+        // Bevy's default caps an unfocused window at 60 Hz; a measurement
+        // must not depend on which window has focus.
+        app.insert_resource(bevy::winit::WinitSettings::continuous());
     }
     // An explicit host benchmark size keeps pixel/LOD work independent of
     // desktop resolution and DPI. Ordinary launches retain borderless mode.
