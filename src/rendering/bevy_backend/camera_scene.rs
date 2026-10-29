@@ -324,6 +324,16 @@ fn render_particles(
             .ok_or("particle HDR settings await the current view")?;
         let colour_format = target.main_texture_format();
         let depth_format = depth.alpha.full.format();
+        // A larger live capacity only grows the instance/draw storage; the
+        // pass and its level materials are rebuilt only for new targets.
+        if let Some(particles) = gpu.particles.as_mut().filter(|p| {
+            p.colour_format == colour_format && p.depth_format == depth_format
+                && (p.instances < instances || p.draws < draw_capacity)
+        }) {
+            particles.pass.grow(&device, instances, draw_capacity);
+            particles.instances = particles.instances.max(instances);
+            particles.draws = particles.draws.max(draw_capacity);
+        }
         if gpu.particles.as_ref().is_none_or(|p| {
             p.instances < instances
                 || p.draws < draw_capacity
