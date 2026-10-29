@@ -59,6 +59,8 @@ pub mod area_light_pool;
 #[cfg(feature = "game")]
 mod area_light_scene;
 #[cfg(feature = "game")]
+mod surface_light_lists;
+#[cfg(feature = "game")]
 pub mod shader_buffer_patches;
 #[cfg(feature = "game")]
 pub mod fog;

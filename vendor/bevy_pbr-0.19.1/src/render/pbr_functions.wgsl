@@ -5,6 +5,10 @@
 #ifdef DH2_SKIN
 #import dh2_direct::{skin_light_diffuse,skin_direct_diffuse}
 #endif
+#ifdef DH2_SURFACE_ENABLED
+#import dh2_tlf_list
+#import dh2_area_light_opaque::opaque_area_lighting
+#endif
 
 #import bevy_pbr::{
     pbr_types,
@@ -767,6 +771,24 @@ fn apply_pbr_lighting_with_shadows(
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     let trace_directional_light = direct_light - trace_local_light;
 #endif
+#ifdef DH2_SURFACE_ENABLED
+    // lighting.renderprog's LIGHT_TYPE_AREA loop: this pixel's tile list, at
+    // most maxLights entries. Every game area light is only in these lists.
+    if view_bindings::area_light_grid.w != 0u {
+        let grid = view_bindings::area_light_grid;
+        let head = dh2_tlf_list::light_head_coordinate(vec2<u32>(in.frag_coord.xy), 3u, grid.y, grid.x);
+        var list = dh2_tlf_list::begin_light_list(view_bindings::area_light_heads[head.y * grid.x * 4u + head.x]);
+        while dh2_tlf_list::has_light(list, grid.z) {
+            let index = dh2_tlf_list::advance_light(&list, view_bindings::area_light_pool[list.head]);
+            let area = opaque_area_lighting(index, lighting_input.direct_surface, lighting_input.P);
+            direct_light += area.diffuse + area.specular;
+    #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
+            let transmitted = opaque_area_lighting(index, transmissive_lighting_input.direct_surface, transmissive_lighting_input.P);
+            transmitted_light += transmitted.diffuse + transmitted.specular;
+    #endif
+        }
+    }
+#else
 #ifdef AREA_LIGHT_LUTS
     // Rect lights
     let n_rect_lights = view_bindings::lights.n_rect_lights;
@@ -782,6 +804,7 @@ fn apply_pbr_lighting_with_shadows(
     #endif
     }
 #endif
+#endif  // DH2_SURFACE_ENABLED
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
     // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
