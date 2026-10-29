@@ -74,16 +74,14 @@ fn morph_prev_vertex(vertex_in: Vertex, instance_index: u32) -> Vertex {
 fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var out: VertexOutput;
 #ifdef DH2_PARTICLE_INSTANCES
-    // Direct instancing (see mesh.wgsl): the entity's mesh uniform comes from
-    // the draw's immediates; instance_index counts this draw's instances.
-    let mesh_index = particle_surface_draw.mesh_index;
+    // Direct instancing (see mesh.wgsl). Ordinary draws keep reading
+    // vertex_no_morph.instance_index directly (naga 2416).
+    let particle_mesh_index = particle_surface_draw.mesh_index;
     let particle = particle_surface_instance(vertex_no_morph.instance_index);
-#else
-    let mesh_index = vertex_no_morph.instance_index;
 #endif
 
 #ifdef MORPH_TARGETS
-    var vertex = morph_vertex(vertex_no_morph, mesh_index);
+    var vertex = morph_vertex(vertex_no_morph, vertex_no_morph.instance_index);
 #else
     var vertex = vertex_no_morph;
 #endif
@@ -91,7 +89,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef DH2_PARTICLE_INSTANCES
     let mesh_world_from_local = particle_surface_world_from_local(particle);
 #else
-    let mesh_world_from_local = mesh_functions::get_world_from_local(mesh_index);
+    let mesh_world_from_local = mesh_functions::get_world_from_local(vertex_no_morph.instance_index);
 #endif
 
 #ifdef SKINNED
@@ -100,7 +98,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var world_from_local = skinning::skin_model(
         vertex.joint_indices,
         vertex.joint_weights,
-        mesh_index
+        vertex_no_morph.instance_index
     );
 #else // SKINNED
     var world_from_local = mesh_world_from_local;
@@ -110,7 +108,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef DH2_VEGETATION_WIND
     // Same placement as the forward pass; this rewrite has no motion-vector
     // prepass, so the HLSL's previous-frame AnimateVegetation is not needed.
-    let vegetation = vegetation_slot(mesh[mesh_index].tag);
+#ifdef DH2_PARTICLE_INSTANCES
+    let vegetation = vegetation_slot(particle.parameters.w);
+#else
+    let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+#endif
     if vegetation != 0xffffffffu {
         out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
             vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
@@ -148,7 +150,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.normal,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        mesh_index
+        vertex_no_morph.instance_index
     );
 #endif
 #endif // SKINNED
@@ -160,7 +162,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.tangent,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
-        mesh_index
+        vertex_no_morph.instance_index
     );
 #endif // VERTEX_TANGENTS
 #endif // NORMAL_PREPASS_OR_DEFERRED_PREPASS
@@ -181,7 +183,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef MORPH_TARGETS
 
 #ifdef HAS_PREVIOUS_MORPH
-    let prev_vertex = morph_prev_vertex(vertex_no_morph, mesh_index);
+    let prev_vertex = morph_prev_vertex(vertex_no_morph, vertex_no_morph.instance_index);
 #else   // HAS_PREVIOUS_MORPH
     let prev_vertex = vertex_no_morph;
 #endif  // HAS_PREVIOUS_MORPH
@@ -197,12 +199,12 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     let prev_model = skinning::skin_prev_model(
         prev_vertex.joint_indices,
         prev_vertex.joint_weights,
-        mesh_index
+        vertex_no_morph.instance_index
     );
 #else   // HAS_PREVIOUS_SKIN
     // Use vertex_no_morph.instance_index instead of prev_vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    let prev_model = mesh_functions::get_previous_world_from_local(mesh_index);
+    let prev_model = mesh_functions::get_previous_world_from_local(vertex_no_morph.instance_index);
 #endif  // HAS_PREVIOUS_SKIN
 
 #else   // SKINNED
@@ -212,7 +214,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     // 1eaa40 writes the previous model rows equal to the current ones.
     let prev_model = mesh_world_from_local;
 #else
-    let prev_model = mesh_functions::get_previous_world_from_local(mesh_index);
+    let prev_model = mesh_functions::get_previous_world_from_local(vertex_no_morph.instance_index);
 #endif
 #endif  // SKINNED
 
@@ -225,12 +227,16 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
-    out.instance_index = mesh_index;
+#ifdef DH2_PARTICLE_INSTANCES
+    out.instance_index = particle_mesh_index;
+#else
+    out.instance_index = vertex_no_morph.instance_index;
+#endif
 #endif
 
 #ifdef VISIBILITY_RANGE_DITHER
     out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
-        mesh_index, mesh_world_from_local[3]);
+        vertex_no_morph.instance_index, mesh_world_from_local[3]);
 #endif  // VISIBILITY_RANGE_DITHER
 
     return out;

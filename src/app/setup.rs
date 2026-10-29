@@ -1683,18 +1683,6 @@ pub(super) fn setup(
                 .collect(),
         })
         .collect();
-    // World FX first: particle surface proxies register their material images
-    // before the streaming tables below are sized.
-    let mut particle_surfaces = Vec::new();
-    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
-        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
-            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
-        let sources = Arc::new(
-            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.graphs,&graphs.actors,catalog,programs)
-        );
-        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
-        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
-    }
     let mut diffuse_image_materials = vec![Vec::new(); resolver.diffuse_image_paths.len()];
     let mut material_images = HashMap::new();
     let mut material_stage_sorts = HashMap::new();
@@ -1708,18 +1696,6 @@ pub(super) fn setup(
             diffuse_image_materials[slot].push((cached.handle.clone(), role));
         }
     }
-    // A proxy streams the images of the material it was cloned from.
-    let mut particle_surface_images = Vec::new();
-    for (proxy, images) in particle_surfaces {
-        material_images.insert(proxy.clone(), images.iter().map(|&(slot, _)| slot).collect());
-        for (slot, role) in images {
-            diffuse_image_materials[slot].push((proxy.clone(), role));
-            particle_surface_images.push(slot);
-        }
-    }
-    particle_surface_images.sort_unstable();
-    particle_surface_images.dedup();
-    let diffuse_image_count = resolver.diffuse_image_paths.len();
     commands.insert_resource(resolver.alpha_depth_materials());
     tome_render_instances.bind_texture_demands(&render_instances, &material_images);
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
@@ -1743,6 +1719,31 @@ pub(super) fn setup(
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
     }
+    // World FX load after the water and ocean programs, as before. Particle
+    // surface proxies may register further images: extend the tables.
+    let mut particle_surfaces = Vec::new();
+    if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
+        let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
+            .unwrap_or_else(|error| panic!("world FX program library: {error}"));
+        let sources = Arc::new(
+            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.graphs,&graphs.actors,catalog,programs)
+        );
+        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
+        commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
+    }
+    diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
+    let diffuse_image_count = resolver.diffuse_image_paths.len();
+    // A proxy streams the images of the material it was cloned from.
+    let mut particle_surface_images = Vec::new();
+    for (proxy, images) in particle_surfaces {
+        material_images.insert(proxy.clone(), images.iter().map(|&(slot, _)| slot).collect());
+        for (slot, role) in images {
+            diffuse_image_materials[slot].push((proxy.clone(), role));
+            particle_surface_images.push(slot);
+        }
+    }
+    particle_surface_images.sort_unstable();
+    particle_surface_images.dedup();
     commands.insert_resource(std::mem::take(&mut resolver.water_materials));
     commands.insert_resource(std::mem::take(&mut resolver.water_model_colours));
     commands.insert_resource(std::mem::take(&mut resolver.water_stencil_materials));
