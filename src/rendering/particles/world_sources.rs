@@ -159,10 +159,17 @@ impl WorldFxSources {
                 Err(error) => eprintln!("World FX actor preparation failed: {error}"),
             }
         }
-        for name in &names {
+        // Sub-FX declarations (m_subFXs) are loaded as further effects, in
+        // reference order after the declarations that name them.
+        let mut next = 0;
+        while next < names.len() {
+            let name = names[next].clone();
+            let name = &name;
+            next += 1;
             if result.effects.contains_key(name) {
                 continue;
             }
+            let mut children = Vec::new();
             let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
                 let mut read_error = None;
                 let mut read = |path: &str| match catalog.read(path) {
@@ -223,6 +230,7 @@ impl WorldFxSources {
                         .filter(|(field, value)| {
                             field != "m_particleSystems"
                                 && field != "m_sounds"
+                                && field != "m_subFXs"
                                 && matches!(value, Value::Scope(_))
                                 && scope(fields, field).is_some_and(|entries| {
                                     !list_items(entries).is_empty()
@@ -231,6 +239,12 @@ impl WorldFxSources {
                         })
                         .cloned()
                         .collect();
+                    children.extend(
+                        asset
+                            .sub_effects
+                            .iter()
+                            .flat_map(|sub| sub.effects.iter().flatten().cloned()),
+                    );
                     groups.push(WorldEffectGroup {
                         asset,
                         particles,
@@ -240,10 +254,9 @@ impl WorldFxSources {
                 }
                 Ok(Arc::new(WorldEffectDefinition { groups }))
             };
-            result.effects.insert(
-                name.clone(),
-                load().map_err(|error| format!("{name}: {error}")),
-            );
+            let loaded = load().map_err(|error| format!("{name}: {error}"));
+            result.effects.insert(name.clone(), loaded);
+            names.extend(children);
         }
         result
     }
