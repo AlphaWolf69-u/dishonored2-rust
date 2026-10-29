@@ -161,6 +161,9 @@ shadow cost. A value of `0` also selects the authored ranges.
 - Benchmarks report shader-buffer uploads per frame by exact size
   (`BENCHMARK_SHADER_BUFFER`); a large size repeating every frame names an
   asset re-uploaded in full.
+- `DH2_GPU_TIMELINE=1` writes a GPU timestamp before and after every render
+  system's commands; benchmarks report each system's GPU busy time and the
+  gaps between systems (queue writes, direct submissions, GPU idle).
 - CPU profiling: `cargo build --profile profiling --features game` builds
   release code with line tables (`target/profiling/`), for ETW sampling
   (Windows Performance Recorder) and symbol-resolved stacks.

@@ -210,12 +210,23 @@ impl SystemBuffer for RenderContextState {
         }
 
         if !inner.command_buffers.is_empty() {
+            let marks = world.get_resource::<super::GpuTimeline>().map(|timeline| {
+                let device = world.resource::<RenderDevice>();
+                let name = _system_meta.name().to_string();
+                (
+                    timeline.mark(device, alloc::borrow::Cow::Owned(format!("{}{name}", super::gpu_timeline::BEGIN))),
+                    timeline.mark(device, alloc::borrow::Cow::Owned(name)),
+                )
+            });
+            let (begin, end) = marks.unwrap_or((None, None));
             let mut pending = world.resource_mut::<PendingCommandBuffers>();
             pending.0.parallel = inner.parallel_finalization;
+            pending.push(begin);
             pending
                 .0
                 .commands
                 .extend(core::mem::take(&mut inner.command_buffers));
+            pending.push(end);
         }
 
         inner.render_device = None;

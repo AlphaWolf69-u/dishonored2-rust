@@ -242,6 +242,7 @@ pub(super) fn benchmark_frames(
     // DH2_BENCHMARK_SCREENSHOT=<png>: the first measured frame, for
     // comparing rendering before and after a change at a fixed view.
     if previous_elapsed < target.1 && *elapsed >= target.1 {
+        bevy::render::renderer::reset_gpu_timeline();
         // Count shader-buffer uploads of the measured frames only.
         if let Ok(mut uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             *uploads = None;
@@ -403,6 +404,20 @@ pub(super) fn benchmark_frames(
                 .filter(|pair| (pair[0] > slow) != (pair[1] > slow)).count();
             println!("BENCHMARK frame_ms_histogram={buckets:?} slow_threshold_ms={slow:.1} slow_frames={} slow_fast_transitions={alternations}",
                 ordered_frame_times.iter().filter(|time| **time > slow).count());
+        }
+        // DH2_GPU_TIMELINE=1: GPU time after each render system, in submission order.
+        if let Some((frames, rows)) = bevy::render::renderer::gpu_timeline_report() {
+            let total: f64 = rows.iter().map(|row| row.1).sum();
+            let gaps: f64 = rows.iter().filter(|row| row.0.starts_with("(gap)")).map(|row| row.1).sum();
+            println!("BENCHMARK_GPU_TIMELINE busy_ms={:.3} gap_ms={gaps:.3}", total - gaps);
+            let counts = &bevy::render::renderer::GPU_TIMELINE_COUNTS;
+            println!("BENCHMARK_GPU_TIMELINE frames={frames} total_ms={total:.3} timestamps={} resolved={} collected={}",
+                counts[0].load(std::sync::atomic::Ordering::Relaxed),
+                counts[1].load(std::sync::atomic::Ordering::Relaxed),
+                counts[2].load(std::sync::atomic::Ordering::Relaxed));
+            for (name, ms) in rows.into_iter().take(50) {
+                println!("BENCHMARK_GPU_TIMELINE ms={ms:.3} {name}");
+            }
         }
         if let Ok(uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             let mut rows: Vec<_> = uploads.iter().flatten().collect();

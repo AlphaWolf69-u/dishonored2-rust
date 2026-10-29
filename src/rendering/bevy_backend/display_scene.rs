@@ -61,6 +61,7 @@ impl Plugin for DisplayPlugin {
         app.init_resource::<DisplaySceneFrame>()
             .add_plugins(ExtractResourcePlugin::<DisplaySceneFrame>::default());
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            bevy::render::renderer::register_gpu_timeline(render);
             render
                 .init_resource::<DisplayGpu>()
                 .add_systems(

@@ -1,6 +1,9 @@
 #[cfg(feature = "raw_vulkan_init")]
 pub mod raw_vulkan_init;
+pub(crate) mod gpu_timeline;
 mod render_context;
+pub use gpu_timeline::{gpu_timeline_report, reset_gpu_timeline, GpuTimeline, GPU_TIMELINE_COUNTS};
+pub use gpu_timeline::register_gpu_timeline;
 mod render_device;
 mod wgpu_wrapper;
 
