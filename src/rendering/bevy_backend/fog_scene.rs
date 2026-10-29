@@ -38,6 +38,12 @@ pub(super) fn register(app: &mut App) {
         render.init_resource::<FogGpu>().add_systems(
             Core3d,
             (
+                prepare_scene_depth.in_set(SceneDepthPass).in_set(Core3dSystems::MainPass)
+                    .after(Core3dSystems::Prepass).after(super::screen_shadow_pass::ScreenShadowPass)
+                    .before(main_opaque_pass_3d),
+                cull_scene_lights.in_set(SceneLightsPass).in_set(Core3dSystems::MainPass)
+                    .after(SceneDepthPass).after(super::screen_shadow_pass::ScreenShadowPass)
+                    .before(main_opaque_pass_3d),
                 prepare_atmosphere_depth.in_set(AtmosphereDepthPass)
                     .in_set(Core3dSystems::MainPass).after(main_opaque_pass_3d).before(AtmospherePass),
                 render_atmosphere.in_set(AtmospherePass)
@@ -51,6 +57,14 @@ pub(super) fn register(app: &mut App) {
 pub(crate) struct AtmospherePass;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct AtmosphereDepthPass;
+/// Water depth and depthAlpha, before the main pass.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SceneDepthPass;
+/// The frame's tile light lists, after alpha geometry and before the main pass.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SceneLightsPass;
+/// lighting.renderprog.decl:81-85: maxLights per light type at HIGH_QUALITY.
+const SURFACE_MAX_LIGHTS: u32 = 32;
 #[derive(SystemParam)]
 struct Resources<'w> {
     device: Res<'w, RenderDevice>,
@@ -81,6 +95,7 @@ struct Resources<'w> {
     area_lights: Res<'w, super::area_light_scene::AreaLightScene>,
     local_shadows: Option<Res<'w, super::shadow_pass::LocalShadowSceneFrame>>,
     local_completion: Option<Res<'w, super::shadow_pass::LocalShadowCompletion>>,
+    screen: Res<'w, super::screen_shadow_pass::ScreenGpu>,
 }
 #[derive(Resource, Default)]
 pub(super) struct FogGpu {
@@ -135,6 +150,7 @@ struct WaterInstances<'w, 's> {
 }
 struct ViewFog {
     tiled: Option<super::tiled_lighting_pass::TiledLightingPass>,
+    unhacked: Option<(bevy::render::render_resource::TextureId, TextureView)>,
     scattering: Option<super::fog_light_scattering::LightScatteringPass>,
     camera: Entity,
     water_depth: Option<super::water_depth_scene::WaterDepthScene>,
@@ -207,6 +223,7 @@ impl ViewFog {
             depth_format: depth.texture.format(),
             depth_id: depth.texture.id(),
             depth_view: sampled_depth(depth),
+            unhacked: None,
             mask: FogAttachment::new(
                 device,
                 "sky and cloud fog mask",
@@ -266,36 +283,59 @@ struct AtmosphereParams<'w, 's> {
     atlas_gpu: Res<'w, super::shadow_pass::ShadowSceneGpu>,
     capture: ResMut<'w, super::fog_capture::FogCaptureGpu>,
     gpu: ResMut<'w, FogGpu>,
+    area_bindings: ResMut<'w, bevy::pbr::AreaLightBindings>,
     context: RenderContext<'w, 's>,
     last_error: Local<'s, Option<String>>,
     water_submission: Local<'s, WaterSubmission>,
 }
+/// The original's order (eotw capture): the unhacked depth copy, depthWater,
+/// depthAlpha with its alpha geometry, then the TLF depth gather and culls,
+/// all before the main pass; sky, fog parameters and composition after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    /// Water and alpha depth, before the main pass.
+    Depth,
+    /// The frame's one set of tile light lists, after alpha geometry and before
+    /// the main pass, which reads them; fog and particles read them later.
+    Lights,
+    /// Sky colour, fog parameters and lookup, after the main pass.
+    Prepare,
+    Render,
+}
+fn prepare_scene_depth(params: AtmosphereParams) {
+    submit_atmosphere(params, Stage::Depth);
+}
+fn cull_scene_lights(params: AtmosphereParams) {
+    submit_atmosphere(params, Stage::Lights);
+}
 fn prepare_atmosphere_depth(params: AtmosphereParams) {
-    submit_atmosphere(params, true);
+    submit_atmosphere(params, Stage::Prepare);
 }
 fn render_atmosphere(params: AtmosphereParams) {
-    submit_atmosphere(params, false);
+    submit_atmosphere(params, Stage::Render);
 }
-fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
-    let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut context,mut last_error,mut water_submission}=params;
+fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
+    let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut area_bindings,mut context,mut last_error,mut water_submission}=params;
     let mut depth_prepared=false;
 
     let material_parameters = shared
         .as_ref()
         .and_then(|shared| resources.buffers.get(&shared.parameters));
-    if let Some(parameters) = material_parameters.filter(|_|preparation) {
+    if let Some(parameters) = material_parameters.filter(|_|stage==Stage::Depth) {
         // Queue readiness only after all same-view texture passes are recorded.
         // A pending/removed atmosphere must not leave yesterday's fog enabled.
         resources
             .queue
             .write_buffer(&parameters.buffer, 0, &[0; 16]);
     }
-    if preparation {gpu.completed=None;gpu.depth_completed=None;gpu.prepared_revision=None;}
+    if stage==Stage::Depth {gpu.completed=None;gpu.depth_completed=None;gpu.prepared_revision=None;}
+    // Without this frame's lists opaque surfaces receive no area light.
+    if stage==Stage::Lights {area_bindings.disable_tiles(&resources.queue);}
     let Some(frame) = &frame.0 else {
         return;
     };
     let depth_frame=resources.water_frame.as_ref().and_then(|f|f.0.as_ref()).map(|water|(frame.camera,water.matrices.frame));
-    if !preparation && gpu.prepared_revision!=Some((frame.camera,frame.revision)) {return;}
+    if stage!=Stage::Depth && gpu.prepared_revision!=Some((frame.camera,frame.revision)) {return;}
     let result = (|| -> Result<(), String> {
         let (main, target, depth, view, camera, material_exposure) =
             views.single().map_err(|error| error.to_string())?;
@@ -404,7 +444,7 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                 TextureFormat::R8Unorm,
             );
         }
-        if preparation {
+        if stage==Stage::Prepare {
         if let Some((world, canvas, _)) = outputs {
             current.fog.update_shared(
                 &resources.device,
@@ -524,7 +564,7 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
         {
             *plan
         } else {
-            if !preparation {return Err("fog curve awaits depth preparation".into());}
+            if stage==Stage::Render {return Err("fog curve awaits depth preparation".into());}
             let plan = lookup.record(
                 &resources.device,
                 &resources.queue,
@@ -557,7 +597,7 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                 (f.ocean_environment.view.enabled && !f.ocean_render_settings.skip)
                 || f.ocean_environment.view.water_volume)
 ;
-        if preparation {
+        if stage==Stage::Depth {
         current.interiors.prepare(
             &resources.device,
             &resources.queue,
@@ -693,9 +733,9 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
             depth_prepared=true;
             return Ok(());
         }
-        // Surface lighting shares this TLF allocation with haze. Its normal
-        // lists must exist independently of skip_light_scattering/world fog.
-        {
+        // Opaque surfaces, haze and particles share this one TLF allocation.
+        // Its normal lists must exist independently of skip_light_scattering/world fog.
+        if stage==Stage::Lights {
             if resources.local_fog.camera != Some(frame.camera) {
                 return Err("scene lights belong to another camera".into());
             }
@@ -723,6 +763,12 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                 return Err("scene area-light pool awaits current frame preparation".into());
             }
             tiled.area_pool=resources.area_lights.pool.as_ref().map(|pool|pool.view.clone());
+            // ro_tlf_depthbufferopaque is the unhacked depth copy (eotw capture:
+            // resource 138, written right after the prepass), not the view depth.
+            let unhacked=resources.screen.unhacked_depth().ok_or("scene lights await the unhacked depth copy")?;
+            if current.unhacked.as_ref().is_none_or(|(id,_)|*id!=unhacked.id()) {
+                current.unhacked=Some((unhacked.id(),unhacked.create_view(&TextureViewDescriptor{aspect:TextureAspect::DepthOnly,..default()})));
+            }
             let lights=resources.area_lights.packets.as_slice();
             let matrices=water_frame.matrices.current;
             tiled.prepare(&resources.device,&resources.queue,programs,
@@ -730,10 +776,14 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
                     uv_to_ray:Vec4::new(0.,0.,fog_view.ray_scale.x,fog_view.ray_scale.y),
                     view:matrices.view.map(Vec4::from_array),
                     projection:matrices.projection.map(Vec4::from_array),..default()
-                },&current.depth_view,&water.alpha.full_sample,lights,
+                },&current.unhacked.as_ref().unwrap().1,&water.alpha.full_sample,lights,
                 receiver.map_or(&[],|r| r.shadows.as_slice()))?;
             tiled.record(context.command_encoder(),programs)?;
+            area_bindings.publish_tiles(&resources.queue,tiled.lights.clone(),tiled.normal_heads.clone(),
+                tiled.buffers.pool.clone(),[grid.dimensions[0],grid.lighting_shift,SURFACE_MAX_LIGHTS,1]);
+            return Ok(());
         }
+        if stage==Stage::Prepare {return Ok(());}
         if no_atmosphere {
             let source=current.water_depth.as_ref().map_or(&current.depth_view,|owner|&owner.water.sample);
             current.fog.record_linear_depth(&resources.device,context.command_encoder(),source);
@@ -1288,7 +1338,8 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
     })();
     match result {
         Ok(()) => {
-            if preparation {
+            if stage!=Stage::Render {
+                if stage!=Stage::Depth {*last_error=None;return;}
                 gpu.depth_completed=depth_frame.filter(|_|depth_prepared);
                 gpu.prepared_revision=depth_prepared.then_some((frame.camera,frame.revision));
                 *last_error=None;
@@ -1307,7 +1358,7 @@ fn submit_atmosphere(params:AtmosphereParams, preparation:bool) {
         }
         Err(error) => {
             if last_error.as_ref() != Some(&error) {
-                warn!(preparation, "Atmosphere submission pending: {error}");
+                warn!(?stage, "Atmosphere submission pending: {error}");
                 *last_error = Some(error);
             }
         }

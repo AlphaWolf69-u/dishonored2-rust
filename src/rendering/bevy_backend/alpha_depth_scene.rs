@@ -67,9 +67,11 @@ pub fn register(app: &mut App) {
             )
             .add_systems(
                 Core3d,
+                // depthAlpha's geometry precedes the TLF gather (eotw capture:
+                // alpha draws 26312-27291, gather 28463, main pass 38372).
                 draw.in_set(Core3dSystems::MainPass)
-                    .after(super::fog_scene::AtmosphereDepthPass)
-                    .before(super::fog_scene::AtmospherePass),
+                    .after(super::fog_scene::SceneDepthPass)
+                    .before(super::fog_scene::SceneLightsPass),
             );
     }
 }
