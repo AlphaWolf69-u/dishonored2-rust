@@ -549,6 +549,11 @@ pub struct ShadowSceneFrame {
     pub state: ShadowSceneState,
 }
 
+/// The depthCopy RPD's draw state (DAT_1422b3670+0x460), which 32db10 draws
+/// with when it does not take its CopySubresourceRegion branch.
+#[derive(Resource, Clone, ExtractResource)]
+pub struct ShadowDepthCopyState(pub Result<[u32; 9], String>);
+
 impl Default for ShadowSceneFrame {
     fn default() -> Self {
         Self {
@@ -600,6 +605,9 @@ pub(crate) struct ShadowSceneGpu {
     vista_sampler: Option<Sampler>,
     sampling_buffer: Option<Buffer>,
     sampling_bytes: Vec<u8>,
+    /// This revision's receiver is not published yet; unless the submission
+    /// completes, `publish_incomplete_receiver` publishes the neutral one.
+    receiver_pending: bool,
 }
 
 impl ShadowSceneGpu {
@@ -618,6 +626,9 @@ struct CachedTarget {
     cache_valid: Vec<bool>,
     cache_generation: Vec<Option<u64>>,
     layer_valid: Vec<bool>,
+    /// 32db10's slice-to-atlas transfer: None is its CopySubresourceRegion
+    /// branch, otherwise the depthCopy draw built from this RPD state.
+    layer_copy: Option<([u32; 9], crate::shadow_depth_copy::ShadowDepthCopy)>,
 }
 
 impl CachedTarget {
@@ -649,6 +660,7 @@ impl CachedTarget {
             cache_valid: vec![false; cache_count],
             cache_generation: vec![None; cache_count],
             layer_valid: vec![false; dimensions.layers as usize],
+            layer_copy: None,
         })
     }
 
@@ -722,6 +734,7 @@ impl Plugin for ShadowScenePlugin {
         app.init_resource::<ShadowSceneFrame>()
             .init_resource::<ShadowSceneCompletion>()
             .add_plugins(ExtractResourcePlugin::<ShadowSceneFrame>::default())
+            .add_plugins(ExtractResourcePlugin::<ShadowDepthCopyState>::default())
             .add_plugins(ExtractResourcePlugin::<ShadowSceneCompletion>::default())
             .add_plugins(ExtractResourcePlugin::<
                 crate::shadow_sampling::ParallelSamplingBuffer,
@@ -739,6 +752,9 @@ impl Plugin for ShadowScenePlugin {
                 Core3d,
                 (
                     render_shadow_scene.before(Core3dSystems::MainPass),
+                    publish_incomplete_receiver
+                        .after(render_shadow_scene)
+                        .before(Core3dSystems::MainPass),
                     submit_shadows_and_prepass
                         .after(render_shadow_scene)
                         .after(Core3dSystems::Prepass)
@@ -907,6 +923,7 @@ fn render_shadow_scene(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     adapter: Res<RenderAdapter>,
+    copy_state: Option<Res<ShadowDepthCopyState>>,
     mut context: RenderContext,
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
@@ -971,12 +988,7 @@ fn render_shadow_scene(
         return;
     }
     // No new receiver rows may sample an incomplete or failed atlas submission.
-    publish_sampling(
-        &mut gpu,
-        sampling,
-        &queue,
-        crate::shadow_sampling::ParallelSamplingUniform::default(),
-    );
+    gpu.receiver_pending = true;
     if receiver.is_some() && sampling.is_none() {
         return; // Complete receiver publication retries after PrepareAssets.
     }
@@ -1093,6 +1105,35 @@ fn render_shadow_scene(
     let target = targets
         .get_mut(&target_id)
         .expect("target prepared before draws");
+    // 32db10 copies with CopySubresourceRegion only while the hardware
+    // inspector's +0x38 field is 0, which only its NVAPI path (1400dd580)
+    // writes; AGS (1400dd330) writes 1 and the DXGI fallback 2 or 3.
+    // approximate_: an NVIDIA adapter stands for a successful NVAPI query.
+    if adapter.get_info().vendor == 0x10de {
+        target.layer_copy = None;
+    } else {
+        let state = match copy_state.as_deref().map(|state| &state.0) {
+            Some(Ok(state)) => *state,
+            Some(Err(error)) => {
+                bevy::log::error!("directional depthCopy state unavailable: {error}");
+                return;
+            }
+            None => {
+                bevy::log::error!("directional depthCopy state was not extracted");
+                return;
+            }
+        };
+        if target.layer_copy.as_ref().is_none_or(|(old, _)| *old != state) {
+            let format = target.array.texture.format();
+            match crate::shadow_depth_copy::ShadowDepthCopy::new(&device, format, state, false) {
+                Ok(copy) => target.layer_copy = Some((state, copy)),
+                Err(error) => {
+                    bevy::log::error!("{error}");
+                    return;
+                }
+            }
+        }
+    }
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let span = diagnostics.time_span(context.command_encoder(), "directional_shadows");
@@ -1132,6 +1173,7 @@ fn render_shadow_scene(
                 "directional_layer_2", "directional_layer_3", "directional_layer_4"];
             let layer_span = diagnostics.time_span(context.command_encoder(), LAYER_SPANS[layer_index.min(4)]);
             let encoded = directional::encode_layer(
+                &device,
                 context.command_encoder(),
                 target,
                 physical,
@@ -1179,6 +1221,7 @@ fn render_shadow_scene(
             crate::shadow_sampling::ParallelSamplingUniform::from_owner_receiver(receiver)
                 .expect("receiver route validated before submitting any layer");
         publish_sampling(&mut gpu, sampling, &queue, sampling_value);
+        gpu.receiver_pending = false;
     } // Whole-view depth submission never enables an incomplete receiver.
       // Do not cache missing assets or failed submissions; retry that same owner revision.
     gpu.last_revision = Some(frame.revision);
@@ -1893,6 +1936,29 @@ fn draw_shadow_groups<'a>(
         temporary.texture.format().has_stencil_aspect(),
     );
     ShadowDepthPipeline::draw_layer_sequence(encoder, temporary, 0, ops.0, ops.1, &sequence)
+}
+
+/// The neutral receiver for a revision whose submission did not complete.
+/// Queue writes all precede the frame's submissions, so writing it here
+/// instead of before the submission changes nothing a pass reads, but a
+/// completed submission no longer uploads the receiver twice.
+fn publish_incomplete_receiver(
+    mut gpu: ResMut<ShadowSceneGpu>,
+    sampling_handle: Option<Res<crate::shadow_sampling::ParallelSamplingBuffer>>,
+    sampling_buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    queue: Res<RenderQueue>,
+) {
+    if std::mem::take(&mut gpu.receiver_pending) {
+        let sampling = sampling_handle
+            .as_ref()
+            .and_then(|handle| sampling_buffers.get(handle.buffer.id()));
+        publish_sampling(
+            &mut gpu,
+            sampling,
+            &queue,
+            crate::shadow_sampling::ParallelSamplingUniform::default(),
+        );
+    }
 }
 
 fn publish_sampling(

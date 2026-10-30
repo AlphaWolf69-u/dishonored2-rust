@@ -1043,6 +1043,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 super::vegetation_wind::initialize_vegetation_wind,
                 initialize_parallel_shadow_owner,
                 shadow_updates::initialize_parallel_receiver_source,
+                shadow_updates::initialize_shadow_depth_copy,
                 local_shadow_updates::initialize_local_shadow_owner,
             )
                 .chain(),

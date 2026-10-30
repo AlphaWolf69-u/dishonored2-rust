@@ -375,9 +375,8 @@ fn draw(
     if gpu.programs.last_revision == Some(frame.revision) {
         return;
     }
-    if let Some((_, buffer)) = sampling {
-        queue.write_buffer(&buffer.buffer, 0, &0u32.to_le_bytes());
-    }
+    // Every exit before this frame's receiver write publishes no lights.
+    let mut neutral = NeutralReceiver(&queue, sampling.map(|(_, buffer)| &buffer.buffer));
     if frame.layers.len() != frame.regions.len() {
         bevy::log::error!("local region/draw count mismatch");
         return;
@@ -666,6 +665,7 @@ fn draw(
             );
         }
         queue.write_buffer(&buffer.buffer, 0, &bytes);
+        neutral.1 = None;
         if !gpu.receiver_reported {
             println!(
                 "Local shadow receiver online: {matched} actual clustered light indices, {} native shadow records",
@@ -682,6 +682,17 @@ fn draw(
                 bevy::log::warn!("Local shadow receiver pending: {error}");
                 gpu.receiver_error = Some(error);
             }
+        }
+    }
+}
+
+/// Writes the receiver's empty state (word 0 = 0) when dropped while armed.
+struct NeutralReceiver<'a>(&'a RenderQueue, Option<&'a bevy::render::render_resource::Buffer>);
+
+impl Drop for NeutralReceiver<'_> {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.1 {
+            self.0.write_buffer(buffer, 0, &0u32.to_le_bytes());
         }
     }
 }

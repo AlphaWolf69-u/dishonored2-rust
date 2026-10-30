@@ -249,6 +249,7 @@ fn cached_directional_slices_preserve_depth_stencil_and_generations_gpu() {
                     let mut encoder = device.create_command_encoder(&default());
                     for (layer_index, layer) in layers.iter().enumerate() {
                         let publication = encode_layer(
+                            &device,
                             &mut encoder,
                             target,
                             layer_index,

@@ -26,6 +26,7 @@ impl Publication {
 }
 
 pub(super) fn encode_layer(
+    device: &RenderDevice,
     encoder: &mut CommandEncoder,
     target: &CachedTarget,
     physical_layer: usize,
@@ -107,11 +108,18 @@ pub(super) fn encode_layer(
         }
     }
     LAYER_STATS[layer_index.min(4)][0].fetch_add(counted, std::sync::atomic::Ordering::Relaxed);
-    // 32db10 full-rectangle copy fast path, AFTER the dynamic pass.
+    // 32db10 full-rectangle transfer, AFTER the dynamic pass.
     let span = diagnostics.time_span(encoder, "array_copy");
-    target
-        .array
-        .copy_layer_from(encoder, physical_layer as u32, temporary, 0)?;
+    match &target.layer_copy {
+        None => target
+            .array
+            .copy_layer_from(encoder, physical_layer as u32, temporary, 0)?,
+        Some((_, copy)) => {
+            let size = temporary.size;
+            let full = [0, 0, size.width as i32 - 1, size.height as i32 - 1];
+            copy.copy(device, encoder, temporary, 0, full, &target.array, physical_layer as u32, full)?;
+        }
+    }
     span.end(encoder);
     Ok(publication)
 }
@@ -141,6 +149,7 @@ pub(super) fn record_layers(
                 let result = (|| {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let publication = encode_layer(
+                        device,
                         &mut encoder,
                         target,
                         first_layer + index,
