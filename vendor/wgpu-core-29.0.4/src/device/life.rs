@@ -310,17 +310,16 @@ impl LifetimeTracker {
             .unwrap_or(self.active.len());
 
         let mut work_done_closures: SmallVec<_> = self.work_done_closures.drain(..).collect();
+        let mut done = Vec::new();
         for a in self.active.drain(..done_count) {
             self.ready_to_map.extend(a.mapped);
             self.ready_to_compact.extend(a.compact_read_back);
-            for encoder in a.encoders {
-                // This involves actually decrementing the ref count of all command buffer
-                // resources, so can be _very_ expensive.
-                profiling::scope!("drop command buffer trackers");
-                drop(encoder);
-            }
+            // This involves actually decrementing the ref count of all command buffer
+            // resources, so can be _very_ expensive.
+            done.extend(a.encoders);
             work_done_closures.extend(a.work_done_closures);
         }
+        drop_completed_encoders(done);
         work_done_closures
     }
 
@@ -406,5 +405,39 @@ impl LifetimeTracker {
             }
         }
         pending_callbacks
+    }
+}
+
+/// DH2 (project patch): completed command buffers are dropped on their own
+/// thread. Their drop releases every tracked resource reference and returns
+/// the encoder to the device's allocator, both thread-safe, and nothing
+/// waits for it; done inline it ran inside `Queue::submit` on the thread
+/// that ends every frame.
+fn drop_completed_encoders(encoders: Vec<EncoderInFlight>) {
+    use std::sync::{mpsc, Mutex, OnceLock};
+    if encoders.is_empty() {
+        return;
+    }
+    static DROPPER: OnceLock<Option<Mutex<mpsc::Sender<Vec<EncoderInFlight>>>>> = OnceLock::new();
+    let dropper = DROPPER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<Vec<EncoderInFlight>>();
+        std::thread::Builder::new()
+            .name("wgpu completed command buffers".into())
+            .spawn(move || {
+                for encoders in receiver {
+                    profiling::scope!("drop command buffer trackers");
+                    drop(encoders);
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(sender))
+    });
+    match dropper {
+        Some(sender) => {
+            if let Err(mpsc::SendError(encoders)) = sender.lock().unwrap().send(encoders) {
+                drop(encoders);
+            }
+        }
+        None => drop(encoders),
     }
 }
