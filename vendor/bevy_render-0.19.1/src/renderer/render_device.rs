@@ -223,10 +223,79 @@ impl RenderDevice {
         order: wgpu::util::TextureDataOrder,
         data: &[u8],
     ) -> Texture {
-        let wgpu_texture =
-            self.device
-                .create_texture_with_data(render_queue.as_ref(), desc, order, data);
-        Texture::from(wgpu_texture)
+        // DH2 patch: wgpu's helper writes each mip and layer with its own
+        // queue.write_texture, and each write holds a staging allocation (at
+        // least 64 KiB on D3D12) until its submission completes. Several
+        // subresources are uploaded from one buffer instead, in the same
+        // order and layout.
+        if desc.mip_level_count * desc.array_layer_count() <= 1 || desc.format.is_depth_stencil_format() {
+            let wgpu_texture =
+                self.device
+                    .create_texture_with_data(render_queue.as_ref(), desc, order, data);
+            return Texture::from(wgpu_texture);
+        }
+        let mut desc = desc.to_owned();
+        desc.usage |= wgpu::TextureUsages::COPY_DST;
+        let texture = self.device.create_texture(&desc);
+        let block_size = desc.format.block_copy_size(None).unwrap_or(4);
+        let (block_width, block_height) = desc.format.block_dimensions();
+        let layers = desc.array_layer_count();
+        let (outer, inner) = match order {
+            wgpu::util::TextureDataOrder::LayerMajor => (layers, desc.mip_level_count),
+            wgpu::util::TextureDataOrder::MipMajor => (desc.mip_level_count, layers),
+        };
+        let mut packed = Vec::new();
+        let mut copies = Vec::new();
+        let mut source = 0usize;
+        for o in 0..outer {
+            for i in 0..inner {
+                let (layer, mip) = match order {
+                    wgpu::util::TextureDataOrder::LayerMajor => (o, i),
+                    wgpu::util::TextureDataOrder::MipMajor => (i, o),
+                };
+                let mut size = desc.mip_level_size(mip).unwrap();
+                if desc.dimension != wgpu::TextureDimension::D3 {
+                    size.depth_or_array_layers = 1;
+                }
+                let physical = size.physical_size(desc.format);
+                let width_blocks = physical.width / block_width;
+                let height_blocks = physical.height / block_height;
+                let bytes_per_row = (width_blocks * block_size) as usize;
+                let rows = (height_blocks * size.depth_or_array_layers) as usize;
+                let padded_row = bytes_per_row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+                let offset = packed.len();
+                for row in 0..rows {
+                    let start = source + row * bytes_per_row;
+                    packed.extend_from_slice(&data[start..start + bytes_per_row]);
+                    packed.resize(packed.len() + padded_row - bytes_per_row, 0);
+                }
+                source += bytes_per_row * rows;
+                copies.push((layer, mip, offset as u64, padded_row as u32, height_blocks, physical));
+            }
+        }
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("texture upload"),
+            contents: &packed,
+            usage: wgpu::BufferUsages::COPY_SRC,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("texture upload") });
+        for (layer, mip, offset, bytes_per_row, rows_per_image, extent) in copies {
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: Some(bytes_per_row), rows_per_image: Some(rows_per_image) },
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                extent,
+            );
+        }
+        render_queue.submit([encoder.finish()]);
+        Texture::from(texture)
     }
 
     /// Creates a new [`Texture`].

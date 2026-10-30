@@ -28,7 +28,8 @@ pub(super) fn mark(phase: &str) {
 
 /// Marks the first frame, then "streaming settled" once no texture upload
 /// is pending and the resident count has held for 60 frames.
-pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>, mut state: bevy::prelude::Local<(bool, usize, u32, bool)>) {
+pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>, mut state: bevy::prelude::Local<(bool, usize, u32, bool)>,
+    device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>) {
     let (first, resident, stable, settled) = &mut *state;
     if !*first {
         *first = true;
@@ -48,6 +49,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     if *stable == 60 {
         *settled = true;
         mark(&format!("streaming settled ({now} of {} images resident)", scene.diffuse_image_handles.len()));
+        gpu_allocations(device.as_deref());
     }
 }
 
@@ -69,13 +71,14 @@ pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
 
 /// When every loading gate is complete: play starts, and the coverage of
 /// the original's load lists is reported.
-pub(super) fn level_ready(mut done: bevy::prelude::Local<bool>) {
+pub(super) fn level_ready(mut done: bevy::prelude::Local<bool>, device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>) {
     if *done || !crate::loading::ready() {
         return;
     }
     *done = true;
     crate::loading::play_started();
     mark("level ready");
+    gpu_allocations(device.as_deref());
     if let Some(list) = LIST.get() {
         let report = crate::loading::report(list);
         let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
@@ -140,4 +143,34 @@ impl Drop for Growth {
             eprintln!("LOAD growth {} MB: {what}", (after - before) >> 20);
         }
     }
+}
+
+/// Diagnostic: the GPU allocator's live allocations by label, largest first.
+fn gpu_allocations(device: Option<&bevy::render::renderer::RenderDevice>) {
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
+        return;
+    }
+    let Some(report) = device.and_then(|d| d.wgpu_device().generate_allocator_report()) else {
+        return eprintln!("LOAD gpu: no allocator report");
+    };
+    let mut by_name: std::collections::HashMap<&str, (u64, usize)> = Default::default();
+    for a in &report.allocations {
+        let e = by_name.entry(if a.name.is_empty() { "--" } else { a.name.as_str() }).or_default();
+        e.0 += a.size;
+        e.1 += 1;
+    }
+    let mut names: Vec<_> = by_name.into_iter().collect();
+    names.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    eprintln!("LOAD gpu: {} MB allocated, {} MB reserved, {} blocks, {} allocations",
+        report.total_allocated_bytes >> 20, report.total_reserved_bytes >> 20, report.blocks.len(), report.allocations.len());
+    for (name, (bytes, count)) in names.iter().take(25) {
+        eprintln!("LOAD gpu {name}: {} MB in {count}", bytes >> 20);
+    }
+    let mut buckets = [(0u64, 0usize); 8];
+    for a in report.allocations.iter().filter(|a| a.name.ends_with("Staging")) {
+        let bucket = match a.size { 0..4096 => 0, 4096..65536 => 1, 65536..262144 => 2, 262144..1048576 => 3, 1048576..4194304 => 4, 4194304..16777216 => 5, 16777216..67108864 => 6, _ => 7 };
+        buckets[bucket].0 += a.size;
+        buckets[bucket].1 += 1;
+    }
+    eprintln!("LOAD gpu staging by size (<4K, <64K, <256K, <1M, <4M, <16M, <64M, more): {:?}", buckets.map(|(b, n)| format!("{n}: {} MB", b >> 20)));
 }
