@@ -140,8 +140,10 @@ impl BloomUpsamplePass {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
+                // The original never clears this target; the full-screen
+                // triangle (no blending, no discard) writes every texel.
                 ops: Operations {
-                    load: LoadOp::Clear(Default::default()),
+                    load: LoadOp::Load,
                     store: StoreOp::Store,
                 },
             })],

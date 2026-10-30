@@ -450,8 +450,10 @@ impl FogPass {
                     view: &self.targets.depth.view,
                     depth_slice: None,
                     resolve_target: None,
+                        // The original never clears this target; the full-screen draw (no
+                        // blending, discard, depth test or viewport) writes every texel.
                     ops: Operations {
-                        load: LoadOp::Clear(LinearRgba::NONE.into()),
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
                 })],
@@ -517,8 +519,10 @@ impl FogPass {
                     view: &canvas.target.view,
                     depth_slice: None,
                     resolve_target: None,
+                        // The original never clears this target; the full-screen draw (no
+                        // blending, discard, depth test or viewport) writes every texel.
                     ops: Operations {
-                        load: LoadOp::Clear(LinearRgba::NONE.into()),
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
                 })],

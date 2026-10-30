@@ -364,8 +364,10 @@ impl HbaoPass {
             );
             self.linear_binding = Some((hardware_depth.id(), group));
         }
-        let clear = Operations {
-            load: LoadOp::Clear(default()),
+        // The original never clears the AO producer targets; every stage is a
+        // full-screen triangle without blending or discard.
+        let overwrite = Operations {
+            load: LoadOp::Load,
             store: StoreOp::Store,
         };
         let draw = |encoder: &mut CommandEncoder,
@@ -394,12 +396,12 @@ impl HbaoPass {
             encoder,
             &self.linear_stage,
             &self.linear_binding.as_ref().unwrap().1,
-            &[attachment(&self.linear_view, clear)],
+            &[attachment(&self.linear_view, overwrite)],
         );
         for i in 0..2 {
             let attachments: Vec<_> = self.depth_slices[i * 8..i * 8 + 8]
                 .iter()
-                .map(|v| attachment(v, clear))
+                .map(|v| attachment(v, overwrite))
                 .collect();
             draw(
                 encoder,
@@ -412,13 +414,13 @@ impl HbaoPass {
             encoder,
             &self.normal_stage,
             &self.normal_binding,
-            &[attachment(&self.normals_view, clear)],
+            &[attachment(&self.normals_view, overwrite)],
         );
         draw(
             encoder,
             &self.coarse_stage,
             &self.coarse_binding,
-            &[attachment(&self.coarse_view, clear)],
+            &[attachment(&self.coarse_view, overwrite)],
         );
         draw(
             encoder,
