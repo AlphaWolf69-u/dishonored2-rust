@@ -1293,11 +1293,16 @@ impl Queue {
                         };
 
                         // execute resource transitions
-                        if let Err(e) = baked.encoder.open_pass(hal_label(
-                            Some("(wgpu internal) Transit"),
-                            self.device.instance_flags,
-                        )) {
-                            break 'error Err(e.into());
+                        // DH2 (project patch): the transit list opens only when
+                        // memory initialization or a barrier records into it.
+                        let always_transit = !CommandEncoder::skip_empty_prepass();
+                        if always_transit {
+                            if let Err(e) = baked.encoder.open_pass(hal_label(
+                                Some("(wgpu internal) Transit"),
+                                self.device.instance_flags,
+                            )) {
+                                break 'error Err(e.into());
+                            }
                         }
 
                         //Note: locking the trackers has to be done after the storages
@@ -1316,15 +1321,34 @@ impl Queue {
 
                         //Note: stateless trackers are not merged:
                         // device already knows these resources exist.
-                        CommandEncoder::insert_barriers_from_device_tracker(
-                            baked.encoder.raw.as_mut(),
-                            &mut trackers,
-                            &baked.trackers,
-                            &snatch_guard,
-                        );
+                        let device_trackers = &mut *trackers;
+                        let buffer_barriers = device_trackers
+                            .buffers
+                            .set_from_tracker_and_drain_transitions(&baked.trackers.buffers, &snatch_guard)
+                            .collect::<Vec<_>>();
+                        let texture_barriers = device_trackers
+                            .textures
+                            .set_from_tracker_and_drain_transitions(&baked.trackers.textures, &snatch_guard)
+                            .collect::<Vec<_>>();
+                        if !buffer_barriers.is_empty() || !texture_barriers.is_empty() {
+                            if !baked.encoder.is_open {
+                                if let Err(e) = baked.encoder.open_pass(hal_label(
+                                    Some("(wgpu internal) Transit"),
+                                    self.device.instance_flags,
+                                )) {
+                                    break 'error Err(e.into());
+                                }
+                            }
+                            unsafe {
+                                baked.encoder.raw.transition_buffers(&buffer_barriers);
+                                baked.encoder.raw.transition_textures(&texture_barriers);
+                            }
+                        }
 
-                        if let Err(e) = baked.encoder.close_and_push_front() {
-                            break 'error Err(e.into());
+                        if baked.encoder.is_open {
+                            if let Err(e) = baked.encoder.close_and_push_front() {
+                                break 'error Err(e.into());
+                            }
                         }
 
                         // Transition surface textures into `Present` state.

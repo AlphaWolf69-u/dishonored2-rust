@@ -1006,6 +1006,8 @@ impl CommandEncoder {
         }
     }
 
+    // DH2 (project patch): queue submit stages these itself to skip empty transit lists.
+    #[allow(dead_code)]
     pub(crate) fn insert_barriers_from_device_tracker(
         raw: &mut dyn hal::DynCommandEncoder,
         base: &mut DeviceTracker,

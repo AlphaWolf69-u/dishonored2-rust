@@ -9,7 +9,7 @@ use hashbrown::hash_map::Entry;
 use crate::{
     device::Device,
     init_tracker::*,
-    resource::{DestroyedResourceError, ParentDevice, RawResourceAccess, Texture, Trackable},
+    resource::{ParentDevice, RawResourceAccess, Texture, Trackable},
     snatch::SnatchGuard,
     track::{DeviceTracker, TextureTracker},
     FastHashMap,
@@ -168,7 +168,7 @@ impl BakedCommands {
         &mut self,
         device_tracker: &mut DeviceTracker,
         snatch_guard: &SnatchGuard<'_>,
-    ) -> Result<(), DestroyedResourceError> {
+    ) -> Result<(), crate::device::queue::QueueSubmitError> {
         profiling::scope!("initialize_buffer_memory");
 
         // Gather init ranges for each buffer so we can collapse them.
@@ -228,8 +228,10 @@ impl BakedCommands {
 
             let raw_buf = buffer.try_raw(snatch_guard)?;
 
+            // DH2 (project patch): the transit list opens on its first command.
+            let raw = self.encoder.open_if_closed()?;
             unsafe {
-                self.encoder.raw.transition_buffers(
+                raw.transition_buffers(
                     transition
                         .map(|pending| pending.into_hal(&buffer, snatch_guard))
                         .as_slice(),
@@ -253,7 +255,7 @@ impl BakedCommands {
                 );
 
                 unsafe {
-                    self.encoder.raw.clear_buffer(raw_buf, range.clone());
+                    raw.clear_buffer(raw_buf, range.clone());
                 }
             }
         }
@@ -269,7 +271,7 @@ impl BakedCommands {
         device_tracker: &mut DeviceTracker,
         device: &Device,
         snatch_guard: &SnatchGuard<'_>,
-    ) -> Result<(), DestroyedResourceError> {
+    ) -> Result<(), crate::device::queue::QueueSubmitError> {
         profiling::scope!("initialize_texture_memory");
 
         let mut ranges: Vec<TextureInitRange> = Vec::new();
@@ -306,7 +308,7 @@ impl BakedCommands {
                 let clear_result = clear_texture(
                     &texture_use.texture,
                     range,
-                    self.encoder.raw.as_mut(),
+                    self.encoder.open_if_closed()?,
                     &mut device_tracker.textures,
                     &device.alignments,
                     device.zero_buffer.as_ref(),
@@ -318,7 +320,7 @@ impl BakedCommands {
                 // and now, this is out of our control so we have to handle
                 // it gracefully.
                 if let Err(ClearError::DestroyedResource(e)) = clear_result {
-                    return Err(e);
+                    return Err(e.into());
                 }
 
                 // Other errors are unexpected.
