@@ -1331,6 +1331,8 @@ fn prepare_shadow_records(
                     uniforms,
                     images,
                     buffers,
+                    allocator,
+                    meshes,
                 )
                 .then(|| cached.records.clone())
         })
@@ -1409,6 +1411,7 @@ fn prepare_shadow_records(
             fresh.clone(),
             images,
             buffers,
+            allocator,
         );
     }
     Some(fresh)
