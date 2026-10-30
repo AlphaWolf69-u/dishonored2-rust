@@ -235,6 +235,7 @@ pub(super) fn benchmark_frames(
             "BENCHMARK complete rendering ready after {:.2}s; starting warmup",
             readiness.0
         );
+        crate::rendering::bevy_backend::debug_graphics_capture::mark_rendering_ready();
         readiness.1 = false;
     }
     let previous_elapsed = *elapsed;

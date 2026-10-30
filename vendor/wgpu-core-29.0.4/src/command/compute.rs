@@ -263,6 +263,11 @@ struct State<'scope, 'snatch_guard, 'cmd_enc> {
     immediates: Vec<u32>,
 
     intermediate_trackers: Tracker,
+
+    /// DH2 (project patch): the pass records into the encoder's open list and
+    /// takes each dispatch's barriers from the command buffer's own tracker,
+    /// so no pre-pass list is needed for its first-use transitions.
+    inline: bool,
 }
 
 impl<'scope, 'snatch_guard, 'cmd_enc> State<'scope, 'snatch_guard, 'cmd_enc> {
@@ -338,13 +343,17 @@ impl<'scope, 'snatch_guard, 'cmd_enc> State<'scope, 'snatch_guard, 'cmd_enc> {
         // dropping `UsageScope`s is significant (even with the pool), we
         // add and then remove usage from a single usage scope.
 
+        let trackers = if self.inline {
+            &mut *self.pass.base.tracker
+        } else {
+            &mut self.intermediate_trackers
+        };
         for bind_group in self.pass.binder.list_active() {
-            self.intermediate_trackers
-                .set_and_remove_from_usage_scope_sparse(&mut self.pass.scope, &bind_group.used);
+            trackers.set_and_remove_from_usage_scope_sparse(&mut self.pass.scope, &bind_group.used);
         }
 
         if track_indirect_buffer {
-            self.intermediate_trackers
+            trackers
                 .buffers
                 .set_and_remove_from_usage_scope_sparse(
                     &mut self.pass.scope.buffers,
@@ -359,9 +368,14 @@ impl<'scope, 'snatch_guard, 'cmd_enc> State<'scope, 'snatch_guard, 'cmd_enc> {
 
         flush_bindings_helper(&mut self.pass)?;
 
+        let trackers = if self.inline {
+            &mut *self.pass.base.tracker
+        } else {
+            &mut self.intermediate_trackers
+        };
         CommandEncoder::drain_barriers(
             self.pass.base.raw_encoder,
-            &mut self.intermediate_trackers,
+            trackers,
             self.pass.base.snatch_guard,
         );
         Ok(())
@@ -517,17 +531,28 @@ pub(super) fn encode_compute_pass(
 
     let device = parent_state.device;
 
-    // We automatically keep extending command buffers over time, and because
-    // we want to insert a command buffer _before_ what we're about to record,
-    // we need to make sure to close the previous one.
-    parent_state
-        .raw_encoder
-        .close_if_open()
-        .map_pass_err(pass_scope)?;
-    let raw_encoder = parent_state
-        .raw_encoder
-        .open_pass(base.label.as_deref())
-        .map_pass_err(pass_scope)?;
+    // DH2 (project patch): unless a discarded surface may need a fixup
+    // before the pass, record it into the open list (see `State::inline`).
+    let inline =
+        CommandEncoder::skip_empty_prepass() && !parent_state.texture_memory_actions.has_discards();
+    let raw_encoder = if inline {
+        parent_state
+            .raw_encoder
+            .open_if_closed()
+            .map_pass_err(pass_scope)?
+    } else {
+        // We automatically keep extending command buffers over time, and because
+        // we want to insert a command buffer _before_ what we're about to record,
+        // we need to make sure to close the previous one.
+        parent_state
+            .raw_encoder
+            .close_if_open()
+            .map_pass_err(pass_scope)?;
+        parent_state
+            .raw_encoder
+            .open_pass(base.label.as_deref())
+            .map_pass_err(pass_scope)?
+    };
 
     let mut debug_scope_depth = 0;
 
@@ -562,6 +587,8 @@ pub(super) fn encode_compute_pass(
             device.ordered_buffer_usages,
             device.ordered_texture_usages,
         ),
+
+        inline,
     };
 
     let indices = &device.tracker_indices;
@@ -751,6 +778,20 @@ pub(super) fn encode_compute_pass(
         intermediate_trackers,
         ..
     } = state;
+
+    if inline {
+        if !pending_discard_init_fixups.is_empty() {
+            log::error!("DH2 inline compute pass needed discarded-surface fixups");
+            fixup_discarded_surfaces(
+                pending_discard_init_fixups.into_iter(),
+                parent_state.raw_encoder.open_if_closed().map_pass_err(pass_scope)?,
+                &mut parent_state.tracker.textures,
+                device,
+                parent_state.snatch_guard,
+            );
+        }
+        return Ok(());
+    }
 
     // Stop the current command encoder.
     parent_state.raw_encoder.close().map_pass_err(pass_scope)?;
@@ -971,8 +1012,12 @@ fn dispatch_indirect(
             );
         }
 
-        let src_transition = state
-            .intermediate_trackers
+        let trackers = if state.inline {
+            &mut *state.pass.base.tracker
+        } else {
+            &mut state.intermediate_trackers
+        };
+        let src_transition = trackers
             .buffers
             .set_single(&buffer, wgt::BufferUses::STORAGE_READ_ONLY);
         let src_barrier = src_transition

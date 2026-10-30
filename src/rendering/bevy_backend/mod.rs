@@ -69,7 +69,7 @@ pub mod fog_capture;
 #[cfg(feature = "game")]
 pub mod display_capture;
 #[cfg(feature = "game")]
-mod debug_graphics_capture;
+pub mod debug_graphics_capture;
 #[cfg(feature = "game")]
 pub mod fog_shadow;
 #[cfg(feature = "game")]
