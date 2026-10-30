@@ -44,6 +44,12 @@ impl CommandBufferTextureMemoryActions {
         self.init_actions.drain(..)
     }
 
+    /// DH2 (project patch): a surface discarded in this command buffer may
+    /// need an immediate fixup before a later pass that uses it.
+    pub(crate) fn has_discards(&self) -> bool {
+        !self.discards.is_empty()
+    }
+
     pub(crate) fn discard(&mut self, discard: TextureSurfaceDiscard) {
         self.discards.push(discard);
     }

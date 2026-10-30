@@ -1876,17 +1876,48 @@ pub(super) fn encode_render_pass(
 
     let mut indirect_draw_validation_batcher = crate::indirect_validation::DrawBatcher::new();
 
-    // We automatically keep extending command buffers over time, and because
-    // we want to insert a command buffer _before_ what we're about to record,
-    // we need to make sure to close the previous one.
-    parent_state
-        .raw_encoder
-        .close_if_open()
-        .map_pass_err(pass_scope)?;
-    let raw_encoder = parent_state
-        .raw_encoder
-        .open_pass(base.label.as_deref())
-        .map_pass_err(pass_scope)?;
+    // DH2 (project patch): a pass whose usage scope is known before recording
+    // takes its barriers in the open list and is recorded there as well. The
+    // separate pass list and its pre-pass list below exist only because the
+    // scope is otherwise known after recording.
+    let predicted = if CommandEncoder::skip_empty_prepass() {
+        predict_render_pass_scope(
+            device,
+            &base,
+            &color_attachments,
+            depth_stencil_attachment.as_ref(),
+            timestamp_writes.is_some() || occlusion_query_set.is_some(),
+            parent_state.texture_memory_actions,
+        )
+    } else {
+        None
+    };
+    let inline = predicted.is_some();
+    let raw_encoder = if let Some(predicted) = predicted {
+        let indices = &device.tracker_indices;
+        parent_state.tracker.buffers.set_size(indices.buffers.size());
+        parent_state.tracker.textures.set_size(indices.textures.size());
+        let raw = parent_state
+            .raw_encoder
+            .open_if_closed()
+            .map_pass_err(pass_scope)?;
+        if CommandEncoder::stage_barriers_from_scope(parent_state.tracker, &predicted) {
+            CommandEncoder::drain_barriers(raw, parent_state.tracker, parent_state.snatch_guard);
+        }
+        raw
+    } else {
+        // We automatically keep extending command buffers over time, and because
+        // we want to insert a command buffer _before_ what we're about to record,
+        // we need to make sure to close the previous one.
+        parent_state
+            .raw_encoder
+            .close_if_open()
+            .map_pass_err(pass_scope)?;
+        parent_state
+            .raw_encoder
+            .open_pass(base.label.as_deref())
+            .map_pass_err(pass_scope)?
+    };
 
     let (scope, pending_discard_init_fixups, mut pending_query_resets) = {
         let mut pending_query_resets = QueryResetMap::new();
@@ -2274,12 +2305,29 @@ pub(super) fn encode_render_pass(
 
         let pending_discard_init_fixups = state.pass.pending_discard_init_fixups;
 
-        parent_state.raw_encoder.close().map_pass_err(pass_scope)?;
+        if !inline {
+            parent_state.raw_encoder.close().map_pass_err(pass_scope)?;
+        }
         (trackers, pending_discard_init_fixups, pending_query_resets)
     };
 
     let encoder = &mut parent_state.raw_encoder;
     let tracker = &mut parent_state.tracker;
+
+    if inline {
+        // The recorded scope must need nothing the prediction did not.
+        let late = CommandEncoder::stage_barriers_from_scope(tracker, &scope);
+        if late
+            || !pending_discard_init_fixups.is_empty()
+            || !pending_query_resets.is_empty()
+            || !indirect_draw_validation_batcher.is_empty()
+        {
+            log::error!("DH2 inline render pass needed barriers or fixups its prediction missed");
+            let raw = encoder.open_if_closed().map_pass_err(pass_scope)?;
+            CommandEncoder::drain_barriers(raw, tracker, parent_state.snatch_guard);
+        }
+        return Ok(());
+    }
 
     // DH2 (project patch): without discarded-surface fixups or query resets,
     // stage the barriers first and open the pre-pass list only when there are
@@ -2356,6 +2404,95 @@ pub(super) fn encode_render_pass(
     encoder.close_and_swap().map_pass_err(pass_scope)?;
 
     Ok(())
+}
+
+/// DH2 (project patch): the usage scope `encode_render_pass` will merge for
+/// this pass, computed from its attachments and commands before recording,
+/// or None when recording could need work before the pass that is only known
+/// afterwards: query resets, render bundles, indirect draws validated in a
+/// pre-pass, or fixups of surfaces this encoder discarded.
+fn predict_render_pass_scope<'a>(
+    device: &'a Arc<Device>,
+    base: &BasePass<ArcRenderCommand, Infallible>,
+    color_attachments: &ColorAttachments<Arc<TextureView>>,
+    depth_stencil: Option<&ResolvedRenderPassDepthStencilAttachment<Arc<TextureView>>>,
+    queries: bool,
+    texture_memory_actions: &CommandBufferTextureMemoryActions,
+) -> Option<UsageScope<'a>> {
+    if queries || texture_memory_actions.has_discards() {
+        return None;
+    }
+    let validated = device.indirect_validation.is_some();
+    let mut scope = device.new_usage_scope();
+    for (view, usage) in color_attachments
+        .iter()
+        .flatten()
+        .flat_map(|at| core::iter::once(&at.view).chain(at.resolve_target.as_ref()))
+        .map(|view| (view, wgt::TextureUses::COLOR_TARGET))
+        .chain(depth_stencil.map(|at| {
+            // RenderPassInfo::start's depth/stencil attachment usage.
+            let usage = if at.depth.is_readonly()
+                && at.stencil.is_readonly()
+                && device
+                    .downlevel
+                    .flags
+                    .contains(wgt::DownlevelFlags::READ_ONLY_DEPTH_STENCIL)
+            {
+                wgt::TextureUses::DEPTH_STENCIL_READ | wgt::TextureUses::RESOURCE
+            } else {
+                wgt::TextureUses::DEPTH_STENCIL_WRITE
+            };
+            (&at.view, usage)
+        }))
+    {
+        unsafe {
+            scope
+                .textures
+                .merge_single(&view.parent, Some(view.selector.clone()), usage)
+                .ok()?
+        };
+    }
+    for command in &base.commands {
+        match command {
+            ArcRenderCommand::SetBindGroup {
+                bind_group: Some(bind_group),
+                ..
+            } => unsafe { scope.merge_bind_group(&bind_group.used).ok()? },
+            ArcRenderCommand::SetIndexBuffer { buffer, .. } => scope
+                .buffers
+                .merge_single(buffer, wgt::BufferUses::INDEX)
+                .ok()?,
+            ArcRenderCommand::SetVertexBuffer { buffer, .. } => scope
+                .buffers
+                .merge_single(buffer, wgt::BufferUses::VERTEX)
+                .ok()?,
+            ArcRenderCommand::DrawIndirect { buffer, .. } if !validated => scope
+                .buffers
+                .merge_single(buffer, wgt::BufferUses::INDIRECT)
+                .ok()?,
+            ArcRenderCommand::MultiDrawIndirectCount {
+                buffer,
+                count_buffer,
+                ..
+            } => {
+                scope
+                    .buffers
+                    .merge_single(buffer, wgt::BufferUses::INDIRECT)
+                    .ok()?;
+                scope
+                    .buffers
+                    .merge_single(count_buffer, wgt::BufferUses::INDIRECT)
+                    .ok()?;
+            }
+            ArcRenderCommand::DrawIndirect { .. }
+            | ArcRenderCommand::ExecuteBundle(_)
+            | ArcRenderCommand::WriteTimestamp { .. }
+            | ArcRenderCommand::BeginOcclusionQuery { .. }
+            | ArcRenderCommand::BeginPipelineStatisticsQuery { .. } => return None,
+            _ => {}
+        }
+    }
+    Some(scope)
 }
 
 fn set_pipeline(

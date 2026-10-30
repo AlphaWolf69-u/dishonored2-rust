@@ -1003,6 +1003,7 @@ fn render_shadow_scene(
 
     let target_id = target_image.id();
     let Some(image) = images.get(target_id) else {
+        shadow_input_pending::<()>("directional target image");
         return;
     }; // Retry after PrepareAssets.
     let expected_format = parallel_target_format(dimensions.depth_32_bits);
@@ -1073,6 +1074,7 @@ fn render_shadow_scene(
     }
 
     let Some(uniform_buffer) = gpu.uniform_ring.as_ref().cloned() else {
+        shadow_input_pending::<()>("shadow uniform ring");
         return;
     };
     let uniform_stride = gpu.uniform_stride;
@@ -1646,11 +1648,11 @@ fn prepare_shadow_records_with_bindings(
             &instance.per_instance_cb
         {
             let Some(palette) = sampling_buffers.get(palette.id()) else {
-                return None;
+                return shadow_input_pending("shadow palette buffer");
             };
             let diffuse = if let Some(material) = &instance.alpha_material {
                 let Some(image) = images.get(material.diffuse.id()) else {
-                    return None;
+                    return shadow_input_pending("shadow alpha diffuse image");
                 };
                 Some((&image.texture_view, alpha_sampler.as_ref().unwrap()))
             } else {
@@ -1688,11 +1690,11 @@ fn prepare_shadow_records_with_bindings(
         } = &instance.per_instance_cb
         {
             let Some((ids, transforms)) = world_buffers(visible_indices.id(), matrices.id()) else {
-                return None;
+                return shadow_input_pending("world visible-ID/matrix buffers");
             };
             let wind_gpu = if let Some(handle) = winds {
                 let Some(gpu) = sampling_buffers.get(handle.id()) else {
-                    return None;
+                    return shadow_input_pending("world wind buffer");
                 };
                 Some(gpu)
             } else {
@@ -1722,10 +1724,10 @@ fn prepare_shadow_records_with_bindings(
                 }
             }
             let Some(material) = &instance.alpha_material else {
-                return None;
+                return shadow_input_pending("vegetation alpha material");
             };
             let Some(diffuse) = images.get(material.diffuse.id()) else {
-                return None;
+                return shadow_input_pending("vegetation diffuse image");
             };
             let resource_key = ShadowResourceKey::World(
                 pipeline,
@@ -1795,7 +1797,7 @@ fn prepare_shadow_records_with_bindings(
             }
             let diffuse = if let Some(material) = &instance.alpha_material {
                 let Some(diffuse) = images.get(material.diffuse.id()) else {
-                    return None;
+                    return shadow_input_pending("world alpha diffuse image");
                 };
                 Some(diffuse)
             } else {
@@ -3378,3 +3380,17 @@ mod uniform_tests;
 
 #[path = "shadow_pass/mesh_allocations.rs"]
 mod mesh_allocations;
+
+
+/// A record input not prepared yet: the whole submission retries next frame.
+/// Each new reason is logged once so a submission that never completes says why.
+fn shadow_input_pending<T>(what: &str) -> Option<T> {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    if let Ok(mut last) = LAST.lock() {
+        if *last != what {
+            bevy::log::info!("Shadow submission waits for {what}");
+            *last = what.to_string();
+        }
+    }
+    None
+}
