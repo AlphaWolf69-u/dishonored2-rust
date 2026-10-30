@@ -42,6 +42,24 @@ struct PendingCommandBuffersInner {
     parallel: bool,
     parallel_encoders: u64,
     finalization_pool: Option<bevy_tasks::TaskPool>,
+    /// DH2 (project patch, diagnostic): the system whose encoders are being queued.
+    queuing_system: Option<alloc::string::String>,
+}
+
+/// DH2 (project patch, diagnostic): `DH2_TRACE_FINISH=1` reports, once per
+/// 301 takes (taken twice a frame), the slowest encoder finishes: the queuing
+/// system, when its finish started relative to the first, and its duration.
+fn trace_finish() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("DH2_TRACE_FINISH").is_some_and(|value| value == "1"))
+}
+
+type FinishRecord = (alloc::string::String, std::time::Instant, core::time::Duration);
+
+fn finish_trace() -> &'static std::sync::Mutex<alloc::vec::Vec<FinishRecord>> {
+    static RECORDS: std::sync::OnceLock<std::sync::Mutex<alloc::vec::Vec<FinishRecord>>> =
+        std::sync::OnceLock::new();
+    RECORDS.get_or_init(Default::default)
 }
 
 /// Opt into concurrent CPU finalization of independently recorded command
@@ -78,11 +96,19 @@ impl PendingCommandBuffers {
             #[cfg(not(target_arch = "wasm32"))]
             PendingCommandBuffer::Recorded(encoder) if self.0.parallel => {
                 self.0.parallel_encoders += 1;
+                let name = self.0.queuing_system.take();
                 let pool: &bevy_tasks::TaskPool = match self.0.finalization_pool.as_ref() {
                     Some(pool) => pool,
                     None => bevy_tasks::ComputeTaskPool::get(),
                 };
-                PendingCommandBuffer::Finishing(pool.spawn(async move { encoder.finish() }))
+                PendingCommandBuffer::Finishing(pool.spawn(async move {
+                    let start = std::time::Instant::now();
+                    let buffer = encoder.finish();
+                    if let Some(name) = name {
+                        finish_trace().lock().unwrap().push((name, start, start.elapsed()));
+                    }
+                    buffer
+                }))
             }
             command => command,
         }
@@ -109,6 +135,27 @@ impl PendingCommandBuffers {
     }
 
     pub fn take(&mut self) -> Vec<CommandBuffer> {
+        let buffers = self.take_ordered();
+        if trace_finish() {
+            static FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let mut records = core::mem::take(&mut *finish_trace().lock().unwrap());
+            if FRAMES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % 301 == 0 && !records.is_empty() {
+                let first = records.iter().map(|record| record.1).min();
+                records.sort_by_key(|record| core::cmp::Reverse(record.1 + record.2));
+                for (name, start, duration) in records.iter().take(6) {
+                    std::eprintln!(
+                        "DH2_FINISH start={:.2}ms dur={:.2}ms end={:.2}ms {name}",
+                        (*start - first.unwrap()).as_secs_f64() * 1e3,
+                        duration.as_secs_f64() * 1e3,
+                        (*start + *duration - first.unwrap()).as_secs_f64() * 1e3
+                    );
+                }
+            }
+        }
+        buffers
+    }
+
+    fn take_ordered(&mut self) -> Vec<CommandBuffer> {
         let commands = core::mem::take(&mut self.0.commands);
         #[cfg(not(target_arch = "wasm32"))]
         if self.0.parallel
@@ -260,6 +307,9 @@ impl SystemBuffer for RenderContextState {
             pending.0.parallel = inner.parallel_finalization;
             pending.push(begin);
             for command in core::mem::take(&mut inner.command_buffers) {
+                if trace_finish() {
+                    pending.0.queuing_system = Some(alloc::format!("{}", _system_meta.name()));
+                }
                 let command = pending.start_finishing(command);
                 pending.0.commands.push(command);
             }

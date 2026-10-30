@@ -954,7 +954,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(chunk_size) = env::var("DH2_CAMERA_DRAW_CHUNK_SIZE")
         .ok()
         .or_else(|| {
-            (cfg!(target_os = "windows") && parallel_finalization).then(|| "4096".to_owned())
+            // Each chunk records and finishes on its own thread. At the eotw
+            // view (release, PresentMon, 3-5 runs each) 4096 left the main
+            // opaque encoder's 1.32 ms finish as the frame's last task:
+            // p50 11.29 ms; 1024 10.89, 512 10.86, 256 10.94, 128 11.14.
+            (cfg!(target_os = "windows") && parallel_finalization).then(|| "512".to_owned())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|size| *size > 0 && *size <= 16384)
