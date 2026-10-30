@@ -67,12 +67,8 @@ impl CommandBufferTextureMemoryActions {
         // DH2 (project patch): a fully initialized texture with no discarded
         // surface in this command buffer yields no action (`check_action`
         // finds nothing uninitialized and `discards` is empty).
-        let hinted = || {
-            static LOCKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            !*LOCKS.get_or_init(|| std::env::var_os("DH2_WGPU_INIT_LOCKS").is_some_and(|value| value == "1"))
-        };
         if self.discards.is_empty()
-            && hinted()
+            && skip_initialized_locks()
             && action.texture.initialized_hint.load(core::sync::atomic::Ordering::Acquire)
         {
             return immediately_necessary_clears;

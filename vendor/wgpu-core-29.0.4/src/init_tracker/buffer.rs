@@ -38,3 +38,25 @@ impl BufferInitTracker {
             })
     }
 }
+
+/// DH2 (project patch): `create_action` through the buffer's status lock,
+/// skipped once the whole buffer is initialized: the action would be empty.
+/// The shared lock acquisition writes the lock word, which every recording
+/// thread otherwise contends on for each bound, vertex, index or indirect
+/// buffer. DH2_WGPU_INIT_LOCKS=1 always takes the lock, for A/B measurement.
+pub(crate) fn buffer_init_action(
+    buffer: &Arc<Buffer>,
+    query_range: Range<wgt::BufferAddress>,
+    kind: MemoryInitKind,
+) -> Option<BufferInitTrackerAction> {
+    use core::sync::atomic::Ordering;
+    if super::skip_initialized_locks() && buffer.initialized_hint.load(Ordering::Acquire) {
+        return None;
+    }
+    let status = buffer.initialization_status.read();
+    let action = status.create_action(buffer, query_range, kind);
+    if status.uninitialized_ranges.is_empty() {
+        buffer.initialized_hint.store(true, Ordering::Release);
+    }
+    action
+}

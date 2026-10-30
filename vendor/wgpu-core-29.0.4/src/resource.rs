@@ -451,6 +451,10 @@ pub struct Buffer {
     pub(crate) usage: wgt::BufferUsages,
     pub(crate) size: wgt::BufferAddress,
     pub(crate) initialization_status: RwLock<BufferInitTracker>,
+    /// DH2 (project patch): set under the status read lock once the whole
+    /// buffer is initialized. Buffer initialization only grows (no discard),
+    /// so it stays set; see `init_tracker::buffer_init_action`.
+    pub(crate) initialized_hint: core::sync::atomic::AtomicBool,
     /// The `label` from the descriptor used to create the resource.
     pub(crate) label: String,
     pub(crate) tracking_data: TrackingData,

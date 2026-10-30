@@ -38,7 +38,14 @@ use smallvec::SmallVec;
 mod buffer;
 mod texture;
 
-pub(crate) use buffer::{BufferInitTracker, BufferInitTrackerAction};
+pub(crate) use buffer::{buffer_init_action, BufferInitTracker, BufferInitTrackerAction};
+
+/// DH2 (project patch): whether fully initialized resources skip their init
+/// status lock (`DH2_WGPU_INIT_LOCKS=1` disables it for A/B measurement).
+pub(crate) fn skip_initialized_locks() -> bool {
+    static LOCKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*LOCKS.get_or_init(|| std::env::var_os("DH2_WGPU_INIT_LOCKS").is_some_and(|value| value == "1"))
+}
 pub(crate) use texture::{
     has_copy_partial_init_tracker_coverage, TextureInitRange, TextureInitTracker,
     TextureInitTrackerAction,

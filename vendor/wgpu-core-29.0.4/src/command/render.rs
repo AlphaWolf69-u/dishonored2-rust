@@ -2605,7 +2605,7 @@ fn set_index_buffer(
     state.index.update_buffer(offset..end, index_format);
 
     state.pass.base.buffer_memory_init_actions.extend(
-        buffer.initialization_status.read().create_action(
+        crate::init_tracker::buffer_init_action(
             &buffer,
             offset..end,
             MemoryInitKind::NeedsInitializedMemory,
@@ -2664,7 +2664,7 @@ fn set_vertex_buffer(
     state.vertex.buffer_sizes[slot as usize] = Some(buffer_size);
 
     state.pass.base.buffer_memory_init_actions.extend(
-        buffer.initialization_status.read().create_action(
+        crate::init_tracker::buffer_init_action(
             &buffer,
             offset..(offset + buffer_size),
             MemoryInitKind::NeedsInitializedMemory,
@@ -2979,7 +2979,7 @@ fn multi_draw_indirect(
     }
 
     state.pass.base.buffer_memory_init_actions.extend(
-        indirect_buffer.initialization_status.read().create_action(
+        crate::init_tracker::buffer_init_action(
             &indirect_buffer,
             offset..end_offset,
             MemoryInitKind::NeedsInitializedMemory,
@@ -3191,7 +3191,7 @@ fn multi_draw_indirect_count(
         });
     }
     state.pass.base.buffer_memory_init_actions.extend(
-        indirect_buffer.initialization_status.read().create_action(
+        crate::init_tracker::buffer_init_action(
             &indirect_buffer,
             offset..end_offset,
             MemoryInitKind::NeedsInitializedMemory,
@@ -3208,7 +3208,7 @@ fn multi_draw_indirect_count(
         });
     }
     state.pass.base.buffer_memory_init_actions.extend(
-        count_buffer.initialization_status.read().create_action(
+        crate::init_tracker::buffer_init_action(
             &count_buffer,
             count_buffer_offset..end_count_offset,
             MemoryInitKind::NeedsInitializedMemory,

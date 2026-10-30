@@ -166,11 +166,7 @@ pub(super) fn flush_bindings_helper(state: &mut PassState) -> Result<(), Destroy
     for (i, bind_group, dynamic_offsets) in entries {
         state.base.buffer_memory_init_actions.extend(
             bind_group.used_buffer_ranges.iter().filter_map(|action| {
-                action
-                    .buffer
-                    .initialization_status
-                    .read()
-                    .check_action(action)
+                crate::init_tracker::buffer_init_action(&action.buffer, action.range.clone(), action.kind)
             }),
         );
         for action in bind_group.used_texture_ranges.iter() {
