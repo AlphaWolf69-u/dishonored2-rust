@@ -64,6 +64,20 @@ impl CommandBufferTextureMemoryActions {
     ) -> SurfacesInDiscardState {
         let mut immediately_necessary_clears = SurfacesInDiscardState::new();
 
+        // DH2 (project patch): a fully initialized texture with no discarded
+        // surface in this command buffer yields no action (`check_action`
+        // finds nothing uninitialized and `discards` is empty).
+        let hinted = || {
+            static LOCKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            !*LOCKS.get_or_init(|| std::env::var_os("DH2_WGPU_INIT_LOCKS").is_some_and(|value| value == "1"))
+        };
+        if self.discards.is_empty()
+            && hinted()
+            && action.texture.initialized_hint.load(core::sync::atomic::Ordering::Acquire)
+        {
+            return immediately_necessary_clears;
+        }
+
         // Note that within a command buffer we may stack arbitrary memory init
         // actions on the same texture Since we react to them in sequence, they
         // are going to be dropped again at queue submit
@@ -71,13 +85,16 @@ impl CommandBufferTextureMemoryActions {
         // We don't need to add MemoryInitKind::NeedsInitializedMemory to
         // init_actions if a surface is part of the discard list. But that would
         // mean splitting up the action which is more than we'd win here.
-        self.init_actions.extend(
-            action
-                .texture
-                .initialization_status
-                .read()
-                .check_action(action),
-        );
+        {
+            let status = action.texture.initialization_status.read();
+            self.init_actions.extend(status.check_action(action));
+            if status.is_fully_initialized() {
+                action
+                    .texture
+                    .initialized_hint
+                    .store(true, core::sync::atomic::Ordering::Release);
+            }
+        }
 
         // We expect very few discarded surfaces at any point in time which is
         // why a simple linear search is likely best. (i.e. most of the time
@@ -334,11 +351,12 @@ impl BakedCommands {
         // cmdbuf start, we discard init states for textures it left discarded
         // after its execution.
         for surface_discard in self.texture_memory_actions.discards.iter() {
+            let mut status = surface_discard.texture.initialization_status.write();
             surface_discard
                 .texture
-                .initialization_status
-                .write()
-                .discard(surface_discard.mip_level, surface_discard.layer);
+                .initialized_hint
+                .store(false, core::sync::atomic::Ordering::Release);
+            status.discard(surface_discard.mip_level, surface_discard.layer);
         }
 
         Ok(())

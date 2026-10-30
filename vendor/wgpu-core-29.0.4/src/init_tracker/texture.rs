@@ -101,6 +101,11 @@ impl TextureInitTracker {
         }
     }
 
+    /// DH2 (project patch): no mip level has an uninitialized layer.
+    pub(crate) fn is_fully_initialized(&self) -> bool {
+        self.mips.iter().all(|mip| mip.uninitialized_ranges.is_empty())
+    }
+
     pub(crate) fn discard(&mut self, mip_level: u32, layer: u32) {
         self.mips[mip_level as usize].discard(layer);
     }

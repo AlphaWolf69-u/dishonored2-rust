@@ -1286,6 +1286,12 @@ pub struct Texture {
     pub(crate) _hal_usage: wgt::TextureUses,
     pub(crate) format_features: wgt::TextureFormatFeatures,
     pub(crate) initialization_status: RwLock<TextureInitTracker>,
+    /// DH2 (project patch): set under the status read lock once the whole
+    /// texture is initialized, cleared under the write lock by a discard (the
+    /// only operation that uninitializes). Lets `register_init_action` skip
+    /// the status lock, whose shared acquisition every recording thread
+    /// otherwise writes, for every bound texture of every bind group set.
+    pub(crate) initialized_hint: core::sync::atomic::AtomicBool,
     pub(crate) full_range: TextureSelector,
     /// The `label` from the descriptor used to create the resource.
     pub(crate) label: String,
@@ -1319,6 +1325,7 @@ impl Texture {
                     TextureInitTracker::new(desc.mip_level_count, 0)
                 },
             ),
+            initialized_hint: core::sync::atomic::AtomicBool::new(false),
             full_range: TextureSelector {
                 mips: 0..desc.mip_level_count,
                 layers: 0..desc.array_layer_count(),
