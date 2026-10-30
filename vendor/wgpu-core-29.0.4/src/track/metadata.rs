@@ -34,8 +34,13 @@ impl<T: Clone> ResourceMetadata<T> {
         resize_bitvec(&mut self.owned, size);
     }
 
+    /// DH2 (project patch): release only the members, keeping the arrays'
+    /// lengths. Emptying them made the next `set_size` refill an entry per
+    /// resource on the device, once per render pass.
     pub(super) fn clear(&mut self) {
-        self.resources.clear();
+        for index in iterate_bitvec_indices(&self.owned) {
+            self.resources[index] = None;
+        }
         self.owned.fill(false);
     }
 

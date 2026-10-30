@@ -278,8 +278,11 @@ impl TextureUsageScope {
         self.set.tracker_assert_in_bounds(index);
     }
 
+    /// DH2 (project patch): a non-member's simple state is never read
+    /// (merging an absent index inserts its state), so only the members and
+    /// complex states are released.
     pub fn clear(&mut self) {
-        self.set.clear();
+        self.set.complex.clear();
         self.metadata.clear();
     }
 

@@ -95,8 +95,9 @@ impl BufferUsageScope {
         strict_assert!(index < self.state.len());
         self.metadata.tracker_assert_in_bounds(index);
     }
+    /// DH2 (project patch): a non-member's state is never read (merging an
+    /// absent index inserts its state), so only the members are released.
     pub fn clear(&mut self) {
-        self.state.clear();
         self.metadata.clear();
     }
 
