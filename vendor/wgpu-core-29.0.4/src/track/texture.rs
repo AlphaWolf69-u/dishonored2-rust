@@ -282,7 +282,11 @@ impl TextureUsageScope {
     /// (merging an absent index inserts its state), so only the members and
     /// complex states are released.
     pub fn clear(&mut self) {
-        self.set.complex.clear();
+        if super::metadata::full_scope_clear() {
+            self.set.clear();
+        } else {
+            self.set.complex.clear();
+        }
         self.metadata.clear();
     }
 

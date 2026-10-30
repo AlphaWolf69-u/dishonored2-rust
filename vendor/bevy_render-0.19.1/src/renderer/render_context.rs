@@ -46,6 +46,13 @@ struct PendingCommandBuffersInner {
     queuing_system: Option<alloc::string::String>,
 }
 
+/// DH2 (project patch, measurement): `DH2_FINISH_AT_SUBMIT=1` finishes every
+/// encoder at the submission barrier again, for A/B measurement.
+fn finish_at_submit() -> bool {
+    static AT_SUBMIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AT_SUBMIT.get_or_init(|| std::env::var_os("DH2_FINISH_AT_SUBMIT").is_some_and(|value| value == "1"))
+}
+
 /// DH2 (project patch, diagnostic): `DH2_TRACE_FINISH=1` reports, once per
 /// 301 takes (taken twice a frame), the slowest encoder finishes: the queuing
 /// system, when its finish started relative to the first, and its duration.
@@ -94,7 +101,7 @@ impl PendingCommandBuffers {
     fn start_finishing(&mut self, command: PendingCommandBuffer) -> PendingCommandBuffer {
         match command {
             #[cfg(not(target_arch = "wasm32"))]
-            PendingCommandBuffer::Recorded(encoder) if self.0.parallel => {
+            PendingCommandBuffer::Recorded(encoder) if self.0.parallel && !finish_at_submit() => {
                 self.0.parallel_encoders += 1;
                 let name = self.0.queuing_system.take();
                 let pool: &bevy_tasks::TaskPool = match self.0.finalization_pool.as_ref() {

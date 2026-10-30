@@ -415,7 +415,11 @@ impl LifetimeTracker {
 /// that ends every frame.
 fn drop_completed_encoders(encoders: Vec<EncoderInFlight>) {
     use std::sync::{mpsc, Mutex, OnceLock};
-    if encoders.is_empty() {
+    // DH2_WGPU_INLINE_DROP=1 restores inline dropping for A/B measurement.
+    static INLINE: OnceLock<bool> = OnceLock::new();
+    if encoders.is_empty()
+        || *INLINE.get_or_init(|| std::env::var_os("DH2_WGPU_INLINE_DROP").is_some_and(|value| value == "1"))
+    {
         return;
     }
     static DROPPER: OnceLock<Option<Mutex<mpsc::Sender<Vec<EncoderInFlight>>>>> = OnceLock::new();

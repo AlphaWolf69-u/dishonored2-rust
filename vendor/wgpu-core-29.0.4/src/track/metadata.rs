@@ -38,6 +38,11 @@ impl<T: Clone> ResourceMetadata<T> {
     /// lengths. Emptying them made the next `set_size` refill an entry per
     /// resource on the device, once per render pass.
     pub(super) fn clear(&mut self) {
+        if full_scope_clear() {
+            self.resources.clear();
+            self.owned.fill(false);
+            return;
+        }
         for index in iterate_bitvec_indices(&self.owned) {
             self.resources[index] = None;
         }
@@ -210,4 +215,11 @@ fn iterate_bitvec_indices(ownership: &BitVec<usize>) -> impl Iterator<Item = usi
                 active
             })
         })
+}
+
+/// DH2 (project patch, measurement): DH2_WGPU_FULL_SCOPE_CLEAR=1 restores
+/// upstream's whole-array scope clearing for A/B measurement.
+pub(crate) fn full_scope_clear() -> bool {
+    static FULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FULL.get_or_init(|| std::env::var_os("DH2_WGPU_FULL_SCOPE_CLEAR").is_some_and(|value| value == "1"))
 }

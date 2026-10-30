@@ -98,6 +98,9 @@ impl BufferUsageScope {
     /// DH2 (project patch): a non-member's state is never read (merging an
     /// absent index inserts its state), so only the members are released.
     pub fn clear(&mut self) {
+        if super::metadata::full_scope_clear() {
+            self.state.clear();
+        }
         self.metadata.clear();
     }
 
