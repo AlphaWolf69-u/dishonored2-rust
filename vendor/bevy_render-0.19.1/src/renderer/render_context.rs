@@ -199,6 +199,20 @@ impl SystemBuffer for RenderContextState {
 
         let inner = &mut *self.0;
 
+        // DH2 (project patch, diagnostic): DH2_TRACE_ENCODERS=1 prints which
+        // render systems flush an encoder or command buffers, once per 600 calls.
+        if std::env::var_os("DH2_TRACE_ENCODERS").is_some_and(|value| value == "1") {
+            static CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let call = CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if inner.command_encoder.is_some() || !inner.command_buffers.is_empty() {
+                std::eprintln!(
+                    "DH2_ENCODER call={call} system={} encoder={} buffers={}",
+                    _system_meta.name(),
+                    inner.command_encoder.is_some(),
+                    inner.command_buffers.len()
+                );
+            }
+        }
         // flush to ensure correct submission order
         if let Some(encoder) = inner.command_encoder.take() {
             let command = if inner.parallel_finalization {
@@ -242,9 +256,21 @@ pub struct RenderContext<'w, 's> {
     render_device: Res<'w, RenderDevice>,
     diagnostics_recorder: Option<Res<'w, DiagnosticsRecorder>>,
     parallel_finalization: Option<Res<'w, ParallelCommandFinalization>>,
+    system_name: bevy_ecs::system::SystemName,
+}
+
+/// DH2 (project patch, diagnostic): `DH2_LABEL_ENCODERS=1` names each command
+/// encoder after the render system that created it, so a capture shows which
+/// systems record which (possibly empty) command lists.
+fn label_encoders() -> bool {
+    static LABEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LABEL.get_or_init(|| std::env::var_os("DH2_LABEL_ENCODERS").is_some_and(|value| value == "1"))
 }
 
 impl<'w, 's> RenderContext<'w, 's> {
+    fn encoder_descriptor(&self) -> (Option<alloc::string::String>,) {
+        (label_encoders().then(|| alloc::format!("{}", self.system_name)),)
+    }
     fn ensure_device(&mut self) {
         if self.state.0.render_device.is_none() {
             self.state.0.render_device = Some(self.render_device.clone());
@@ -265,7 +291,11 @@ impl<'w, 's> RenderContext<'w, 's> {
     /// Returns the current command encoder, creating one if it does not already exist.
     pub fn command_encoder(&mut self) -> &mut CommandEncoder {
         self.ensure_device();
-        self.state.command_encoder()
+        let (label,) = self.encoder_descriptor();
+        let render_device = self.render_device.clone();
+        self.state.0.command_encoder.get_or_insert_with(|| {
+            render_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: label.as_deref() })
+        })
     }
 
     /// Begins a tracked render pass with the given descriptor.
@@ -274,10 +304,11 @@ impl<'w, 's> RenderContext<'w, 's> {
         descriptor: RenderPassDescriptor<'_>,
     ) -> TrackedRenderPass<'a> {
         self.ensure_device();
+        let (label,) = self.encoder_descriptor();
 
         let command_encoder = self.state.0.command_encoder.get_or_insert_with(|| {
             self.render_device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: label.as_deref() })
         });
 
         let render_pass = command_encoder.begin_render_pass(&descriptor);
