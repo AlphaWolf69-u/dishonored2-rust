@@ -278,7 +278,7 @@ impl ImageRole {
 mod tests {
     #[test]
     fn depth_key_retains_only_consumed_shader_controls() {
-        let key = super::SurfaceKey([9; 16]);
+        let key = super::SurfaceKey([9; 17]);
         let depth = key.depth_prepass();
         for index in 0..16 {
             let mut changed = key;
