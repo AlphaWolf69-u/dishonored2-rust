@@ -986,8 +986,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return None;
             }
             let count = std::thread::available_parallelism().ok()?.get();
-            // The render thread also finalizes commands in this batch.
-            (count >= 4).then(|| (count / 4).clamp(1, 3).to_string())
+            // The render thread also finalizes commands in this batch. On a
+            // 12-thread CPU at the eotw view, half the hardware threads (6)
+            // beat a quarter (3) by ~0.5 ms p50 and 11 lost 3 ms to contention.
+            (count >= 4).then(|| (count / 2).clamp(1, 8).to_string())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|threads| *threads > 0 && *threads <= 32)
