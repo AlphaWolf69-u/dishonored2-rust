@@ -21,6 +21,9 @@ use wgpu::CommandBuffer;
 enum PendingCommandBuffer {
     Ready(CommandBuffer),
     Recorded(CommandEncoder),
+    /// DH2 (project patch): finishing on the finalization pool since the
+    /// encoder was queued, overlapping the rest of the frame's recording.
+    Finishing(bevy_tasks::Task<CommandBuffer>),
 }
 
 impl PendingCommandBuffer {
@@ -28,6 +31,7 @@ impl PendingCommandBuffer {
         match self {
             Self::Ready(buffer) => buffer,
             Self::Recorded(encoder) => encoder.finish(),
+            Self::Finishing(task) => bevy_tasks::block_on(task),
         }
     }
 }
@@ -63,9 +67,25 @@ impl PendingCommandBuffers {
     }
 
     pub fn push_encoder(&mut self, encoder: CommandEncoder) {
-        self.0
-            .commands
-            .push(PendingCommandBuffer::Recorded(encoder));
+        let command = self.start_finishing(PendingCommandBuffer::Recorded(encoder));
+        self.0.commands.push(command);
+    }
+
+    /// DH2 (project patch): with parallel finalization, a recorded encoder
+    /// starts finishing when it is queued instead of at the submission barrier.
+    fn start_finishing(&mut self, command: PendingCommandBuffer) -> PendingCommandBuffer {
+        match command {
+            #[cfg(not(target_arch = "wasm32"))]
+            PendingCommandBuffer::Recorded(encoder) if self.0.parallel => {
+                self.0.parallel_encoders += 1;
+                let pool: &bevy_tasks::TaskPool = match self.0.finalization_pool.as_ref() {
+                    Some(pool) => pool,
+                    None => bevy_tasks::ComputeTaskPool::get(),
+                };
+                PendingCommandBuffer::Finishing(pool.spawn(async move { encoder.finish() }))
+            }
+            command => command,
+        }
     }
 
     pub fn set_parallel_finalization(&mut self, enabled: bool) {
@@ -113,6 +133,9 @@ impl PendingCommandBuffers {
                         PendingCommandBuffer::Ready(buffer) => buffers[index] = Some(buffer),
                         PendingCommandBuffer::Recorded(encoder) => {
                             scope.spawn(async move { (index, encoder.finish()) })
+                        }
+                        PendingCommandBuffer::Finishing(task) => {
+                            scope.spawn(async move { (index, task.await) })
                         }
                     }
                 }
@@ -236,10 +259,10 @@ impl SystemBuffer for RenderContextState {
             let mut pending = world.resource_mut::<PendingCommandBuffers>();
             pending.0.parallel = inner.parallel_finalization;
             pending.push(begin);
-            pending
-                .0
-                .commands
-                .extend(core::mem::take(&mut inner.command_buffers));
+            for command in core::mem::take(&mut inner.command_buffers) {
+                let command = pending.start_finishing(command);
+                pending.0.commands.push(command);
+            }
             pending.push(end);
         }
 
