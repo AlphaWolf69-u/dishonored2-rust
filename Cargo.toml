@@ -37,6 +37,7 @@ rand = "0.10.3"
 winit = { path = "vendor/winit-0.30.13" }
 naga = { path = "vendor/naga-29.0.4" }
 wgpu-hal = { path = "vendor/wgpu-hal-29.0.4" }
+wgpu-core = { path = "vendor/wgpu-core-29.0.4" }
 bevy_render = { path = "vendor/bevy_render-0.19.1" }
 bevy_core_pipeline = { path = "vendor/bevy_core_pipeline-0.19.1" }
 bevy_light = { path = "vendor/bevy_light-0.19.1" }
