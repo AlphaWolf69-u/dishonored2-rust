@@ -1986,6 +1986,7 @@ pub(super) fn encode_render_pass(
                 dynamic_offset_count: 0,
 
                 string_offset: 0,
+                merged_bind_groups: Default::default(),
             },
 
             active_occlusion_query: None,
@@ -2424,6 +2425,7 @@ fn predict_render_pass_scope<'a>(
     }
     let validated = device.indirect_validation.is_some();
     let mut scope = device.new_usage_scope();
+    let mut merged = crate::FastHashSet::<usize>::default();
     for (view, usage) in color_attachments
         .iter()
         .flatten()
@@ -2457,7 +2459,11 @@ fn predict_render_pass_scope<'a>(
             ArcRenderCommand::SetBindGroup {
                 bind_group: Some(bind_group),
                 ..
-            } => unsafe { scope.merge_bind_group(&bind_group.used).ok()? },
+            } => {
+                if !pass::merge_each_bind_group_once() || merged.insert(Arc::as_ptr(bind_group) as usize) {
+                    unsafe { scope.merge_bind_group(&bind_group.used).ok()? }
+                }
+            }
             ArcRenderCommand::SetIndexBuffer { buffer, .. } => scope
                 .buffers
                 .merge_single(buffer, wgt::BufferUses::INDEX)

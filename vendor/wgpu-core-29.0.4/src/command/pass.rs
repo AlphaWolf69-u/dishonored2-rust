@@ -57,6 +57,20 @@ pub(crate) struct PassState<'scope, 'snatch_guard, 'cmd_enc> {
     pub(crate) dynamic_offset_count: usize,
 
     pub(crate) string_offset: usize,
+
+    /// DH2 (project patch): bind groups already merged into `scope` in this
+    /// pass. Merging is a union of usages, so setting the same group again
+    /// adds nothing; render passes rebind the same groups across many draws.
+    pub(crate) merged_bind_groups: crate::FastHashSet<usize>,
+}
+
+/// DH2 (project patch): `DH2_WGPU_REMERGE_BIND_GROUPS=1` merges a bind group
+/// at every set again, for A/B measurement.
+pub(crate) fn merge_each_bind_group_once() -> bool {
+    static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| {
+        std::env::var_os("DH2_WGPU_REMERGE_BIND_GROUPS").is_none_or(|value| value != "1")
+    })
 }
 
 pub(crate) fn set_bind_group<E>(
@@ -108,7 +122,10 @@ where
 
         bind_group.validate_dynamic_bindings(index, &state.temp_offsets)?;
 
-        if merge_bind_groups {
+        if merge_bind_groups
+            && (!merge_each_bind_group_once()
+                || state.merged_bind_groups.insert(Arc::as_ptr(bind_group) as usize))
+        {
             // Merge the bind group's resources into the tracker. We only do this
             // for render passes. For compute passes it is done per dispatch in
             // [`flush_bindings`].
