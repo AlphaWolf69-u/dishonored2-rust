@@ -241,6 +241,22 @@ pub struct NodeProperties {
     pub auxiliary_flags: u8,
     pub auxiliary_buses: [u32; 4],
     pub bus_settings: Option<BusSettings>,
+    /// 1410de430's playback-limit and virtual-voice settings (actor nodes).
+    pub advanced: AdvancedSettings,
+}
+
+/// FUN_1410de430. `flags`: bit0 kill newest (else oldest), bit1 use
+/// virtual-voice behaviour, bit2 -> node+0x7a bit5, bit3 override the
+/// parent's limit (1410dd980 applies a node's own limit only with it or
+/// without a parent), bit4 -> node+0x7a bit2. `max_instances` is 10 bits;
+/// zero means no limit (141112bc0, which an RTPC on parameter 9 overrides).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AdvancedSettings {
+    pub flags: u8,
+    pub virtual_queue: u8,
+    pub max_instances: u16,
+    pub below_threshold: u8,
+    pub flags2: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -560,7 +576,13 @@ impl<'a> Reader<'a> {
         if node.auxiliary_flags & 8 != 0 {
             for bus in &mut node.auxiliary_buses { *bus = self.u32()?; }
         }
-        self.take(6)?; // Voice limit, virtualization and analysis settings.
+        node.advanced = AdvancedSettings {
+            flags: self.u8()?,
+            virtual_queue: self.u8()? & 7,
+            max_instances: self.u16()? & 0x3ff,
+            below_threshold: self.u8()?,
+            flags2: self.u8()?,
+        };
         self.states()?;
         node.curves = self.rtpcs()?;
         if feedback { self.u32()?; }

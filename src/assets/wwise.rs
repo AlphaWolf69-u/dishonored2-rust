@@ -11,7 +11,7 @@ mod declaration;
 mod playback;
 pub use playback::{Controls, PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
-pub use bank::{ActionDelay, ActionTransition, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
+pub use bank::{ActionDelay, ActionTransition, AdvancedSettings, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
 
 /// Game language -> middleware name (1400c1490 / 1400c1520, table 142285f00).

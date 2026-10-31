@@ -123,6 +123,21 @@ impl<'a> PlaybackBanks<'a> {
         ids.sort_unstable();
         Ok(ids)
     }
+    /// For each Play action of an event: its target's node chain (target
+    /// first) with each node's 1410de430 playback-limit settings.
+    pub fn play_limits(&self, event: u32) -> io::Result<Vec<Vec<(u32, super::AdvancedSettings)>>> {
+        let Some(&event) = self.events.get(&event) else { return Ok(Vec::new()) };
+        let bytes = self.bytes(event);
+        let mut chains = Vec::new();
+        for index in 0..read_u32_slice(bytes, 4)? as usize {
+            let Some(&action) = self.actions.get(&read_u32_slice(bytes, 8 + index * 4)?) else { continue };
+            let action = self.bytes(action);
+            if action.get(5) != Some(&4) { continue; }
+            let chain = self.node_hierarchy(read_u32_slice(action, 6)?)?;
+            chains.push(chain.iter().map(|node| (node.id, node.advanced)).collect());
+        }
+        Ok(chains)
+    }
     pub fn event_ids(&self) -> Vec<u32> {
         let mut ids = self.events.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();

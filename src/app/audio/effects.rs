@@ -7,6 +7,11 @@ use crate::rendering::{
     particles::world_sources::{WorldFxSources, WorldSoundEvent},
 };
 
+fn trace_fx_sound_limits() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("DH2_TRACE_FX_SOUND_LIMITS").as_deref() == Ok("1"))
+}
+
 struct PreparedEvent {
     declaration: Arc<WorldSoundEvent>,
     actions: Arc<Vec<SourceAction>>,
@@ -77,6 +82,14 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             state.reported_playback = false;
             info!(declarations = bridge.declarations.len(), unavailable = bridge.events.values().filter(|event| event.is_err()).count(),
                 "World FX sound dependencies prepared");
+            // DH2_TRACE_FX_SOUND_LIMITS=1: each FX event's Wwise playback limits.
+            if trace_fx_sound_limits() {
+                for event in &state.events {
+                    let id = event.declaration.declaration.id;
+                    eprintln!("FX_SOUND_LIMITS {} id={id:#010x} chains={:?}", event.declaration.name,
+                        registry.library.play_limits(id).map_err(|error| error.to_string()));
+                }
+            }
         }
         for emitter in std::mem::take(&mut bridge.released) {
             for (entity, target, _) in &playing {
@@ -135,6 +148,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                 match engine.submit(source, playing_id, prepared.declaration.declaration.id) {
                                     Ok(voice) => {
                                         submitted += 1;
+                                        if trace_fx_sound_limits() {
+                                            eprintln!("FX_SOUND_VOICE {} object={:?}", prepared.declaration.name, event.object);
+                                        }
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
                                             emitter: event.object, paused: false, world_paused: false };
                                         let entity = commands.spawn((voice, target.clone(), control.clone())).id();
