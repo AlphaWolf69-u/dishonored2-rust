@@ -33,7 +33,13 @@ pub struct AcousticWorld {
     query: WorldPointQuery,
     contacts: Vec<ShapePointContact>,
     signals: Vec<ShapeSignals>,
+    /// zone_at results by exact point: the zone world is built once in new
+    /// and never changes, and most queried sources do not move.
+    zones: hashbrown::HashMap<[u32; 3], Option<usize>>,
 }
+
+/// Bound on remembered zone_at points; moving sources would grow it forever.
+const ZONE_MEMO_CAPACITY: usize = 4096;
 
 /// A live listener's position and its resolved acoustic zone (c19b0/c249160).
 /// None in the listener array represents an inactive listener, not a failed
@@ -89,6 +95,7 @@ impl AcousticWorld {
             query: WorldPointQuery::new(u32::MAX)?,
             contacts: Vec::new(),
             signals,
+            zones: hashbrown::HashMap::new(),
         })
     }
 
@@ -96,6 +103,19 @@ impl AcousticWorld {
     /// but leaves collector+10 (early-out) false. 141288af0 keeps traversing
     /// zero-distance candidates, so the last projection supplies the zone.
     pub fn zone_at(&mut self, point: [f32; 3]) -> Result<Option<usize>, String> {
+        let key = point.map(f32::to_bits);
+        if let Some(&zone) = self.zones.get(&key) {
+            return Ok(zone);
+        }
+        let zone = self.query_zone_at(point)?;
+        if self.zones.len() == ZONE_MEMO_CAPACITY {
+            self.zones.clear();
+        }
+        self.zones.insert(key, zone);
+        Ok(zone)
+    }
+
+    fn query_zone_at(&mut self, point: [f32; 3]) -> Result<Option<usize>, String> {
         let mut request = WorldPointRequest::environment(point);
         request.filter = None;
         self.contacts.clear();
