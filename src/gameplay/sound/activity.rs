@@ -2,7 +2,8 @@
 //! Sound lifetimes register every output-bus ancestor, including logical
 //! buses. Pausing preserves registration; destroying the sound releases it.
 use super::mix::Mixer;
-use std::{collections::HashMap, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}};
+use hashbrown::HashMap;
+use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
 
 struct Bus {
     id: u32,

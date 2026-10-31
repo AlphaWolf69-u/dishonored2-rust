@@ -3,7 +3,8 @@
 //! (14111f200, 14112ba90, 14112c660, 1410eda30).
 use crate::gameplay::sound::{bus_effects::{BusEffects, EffectTables}, gain::GainRamp,
     mix::{power10, Mixer}, tail::{BufferState, BufferStatus}};
-use std::{collections::HashMap, path::Path};
+use hashbrown::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use crate::gameplay::sound::activity::Activity;
 
