@@ -104,6 +104,11 @@ struct Binding {
     query: Option<usize>,
     surfaces: Vec<SurfaceBinding>,
     lighting: crate::probe_lighting::ProbeQuery,
+    /// The last query's position bits and result, kept only when that query
+    /// left `lighting` unchanged: the same position from the same state
+    /// gives the same result, so a model that has not moved skips the walk.
+    lighting_memo: Option<([u32; 3], crate::probe_lighting::ProbeQuery,
+        Option<crate::probe_lighting::InterpolatedProbeLighting>)>,
 }
 
 #[derive(Resource)]
@@ -215,6 +220,7 @@ pub(super) fn publish_model_poses(
                     query: queries.0.iter().position(|q| q.indices == range),
                     surfaces,
                     lighting,
+                    lighting_memo: None,
                 },
             );
         }
@@ -264,10 +270,19 @@ pub(super) fn publish_model_poses(
             .as_ref()
             .and_then(|s| s.environment_probes.as_ref())
             .and_then(|probes| {
-                probes.interpolate_query_sh(
-                    std::array::from_fn(|i| (source.bounds[0][i] + source.bounds[1][i]) * 0.5),
-                    &mut binding.lighting,
-                )
+                let position: [f32; 3] =
+                    std::array::from_fn(|i| (source.bounds[0][i] + source.bounds[1][i]) * 0.5);
+                let key = position.map(f32::to_bits);
+                if let Some((memo_key, state, lighting)) = &binding.lighting_memo {
+                    if *memo_key == key && *state == binding.lighting {
+                        return lighting.clone();
+                    }
+                }
+                let before = binding.lighting;
+                let lighting = probes.interpolate_query_sh(position, &mut binding.lighting);
+                binding.lighting_memo =
+                    (binding.lighting == before).then(|| (key, before, lighting.clone()));
+                lighting
             });
         if let (Some(lighting), Some(handle), Some(buffers)) =
             (lighting, probe_buffer.as_ref(), buffers.as_mut())

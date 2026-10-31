@@ -174,7 +174,7 @@ fn select_tetrahedron(set: &ProbeLightingSet, cell: usize, p: [f32; 3]) -> Optio
 
 /// Per-object state used by 385da0. A nearest-cell query alone omits both
 /// neighbor traversal and the retained cell/tetrahedron containment checks.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct ProbeQuery {
     cell: Option<usize>,
     tetrahedron: Option<usize>,
