@@ -5,11 +5,11 @@
 //! 0x141c82b28), which runs beside them.
 //!
 //! Command processing follows FUN_140804850 and the rule table FUN_1408644e0
-//! plus the mode's `m_rules`. States the port does not implement (mantle,
-//! vault, wallcrouch, catfall, actions and powers) are "missing"
-//! from the mode, so requests for them are rejected as the game rejects a
-//! state its mode lacks. Footsteps, fall damage, stats, slide slow-time,
-//! shoves, breakables and camera constraint modes are not ported.
+//! plus the mode's `m_rules`, including CatFall, Mantle and Vault. States the
+//! port does not implement (actions and powers) are "missing" from the mode,
+//! so requests for them are rejected as the game rejects a state its mode
+//! lacks. Fall damage, stats, slide slow-time, shoves and breakables are not
+//! ported.
 use super::body::{FollowSlope, JumpAnim, Lean};
 use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS};
 use super::midnight::{Midnight, PreparedScene};
@@ -1833,7 +1833,7 @@ impl StateMachine {
                 // FUN_14085b8a0.
                 frame.requests.push_angular(0, Vec3::ZERO);
                 frame.requests.push_linear(0, Vec3::ZERO);
-                if frame.midnight.all_finished() {
+                if frame.midnight.finished(self.states[index].midnight) {
                     self.quit(id);
                 }
             }
@@ -1927,7 +1927,7 @@ impl StateMachine {
             frame.physics.set_posture(POSTURE_AUTOCROUCHING, 0.0);
         }
         let handle = self.states[index].midnight;
-        if !overlap && handle != 0 && !frame.midnight.all_finished() {
+        if !overlap && handle != 0 && !frame.midnight.finished(handle) {
             return;
         }
         if final_state == StateId::AUTOCROUCH {

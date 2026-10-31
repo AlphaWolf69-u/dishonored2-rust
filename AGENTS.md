@@ -55,7 +55,23 @@ Take the first option that fully works:
 - `docs/resource-parity.md` is the ledger: per class, its owner, its original lifecycle functions and each one's status (`ported`, `verified`, `blocked: <reason and next step>`, `host: <why the backend differs>`). Update it in the same change that touches an owner. `loading::tests` fails when a kind in the installed load lists has no ledger entry.
 - Memory and load cost are compared with the original per memory tag (`TAG_IMAGE`, `TAG_SOUND`, ...), from captures of the original running the same level; the budgets live in `tests/fixtures/` and a regression past them fails a test. Never fix performance without first measuring how the original spends the same resource.
 - Where Bevy or wgpu forces a different mechanism, mark the code `bevy_backend`/`approximate_`, state the original behavior it stands in for, and record it as `host:` in the ledger. It is never `ported`.
-- Performance work first reaches the original's measured cost by porting its algorithm. An improvement beyond the original (a different algorithm, data layout or scheduling with the same output) is recorded in `docs/optimization-opportunities.md` with its measured or estimated gain, not implemented, until the rewrite is complete.
+
+## Performance work
+
+- The goal is the fastest rewrite with the original's output. Optimizations may change the original's algorithms, data layouts and scheduling when the rendered result and game behavior stay the same; mark the deviation in code (`bevy_backend`/`approximate_` naming or a comment naming the original behavior it replaces). Anything the player would notice (extra latency, lower precision) stays opt-in.
+- Sweep a module completely while it is open; do not fix only its current bottleneck and leave known waste for a later visit. Check it for:
+  1. work redone every frame although its inputs did not change (uploads, rebuilds, recomputation);
+  2. work repeated within a frame (per draw or per bind group where once per pass suffices);
+  3. locks, atomics or shared reference counts hit by several threads in hot loops;
+  4. per-frame allocation and freeing (buffers, textures, bind groups, vectors);
+  5. serial work or waits on a critical thread that could run in parallel, earlier, or off that thread;
+  6. GPU structure: passes, clears, copies, barriers and draws beyond what the output needs or the original issues;
+  7. whether the original's algorithm is itself a good one, or a better one gives the same output.
+  Fix each finding, or record it in `docs/optimization-opportunities.md` with its estimated gain and the reason it waits.
+- Before each change, write down the expected gain and where it should appear (function, thread, GPU pass).
+- Measure only the code that changed, not whole-frame time: per-function CPU time from traces (`analysis/ab_function_costs.py`), per-pass GPU time, counts of uploads, lists or draws, averaged over hundreds of frames, with the change switched on and off in the same build. Whole-frame timings drift by about 0.5 ms between runs and hide most single changes; use them to check the total, with repeated runs.
+- A result far from the prediction (much smaller, larger, or in another place) means a mistake in the change or in the model of the code: find out which before keeping, reverting or moving on. Revert changes that measure no gain.
+- Verify unchanged output after every change (matched-view screenshot, barrier and draw counts in a capture) and state the measured before and after values in the commit.
 
 ## Function coverage and reusable research
 

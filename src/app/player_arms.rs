@@ -331,8 +331,11 @@ pub(super) fn update_player_arms(
     mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     mut visibility: Query<&mut Visibility>,
     mut last_error: Local<Option<String>>,
+    mut trace_frame: Local<u64>,
 ) {
     let Some(mut arms) = arms else { return };
+    *trace_frame += 1;
+    let trace = std::env::var_os("DH2_PLAYER_VISIBILITY_TRACE").is_some();
     let renders: Cow<[ArmRender]> = if let Some(distance) = arms.debug_rest {
         match cameras.single() {
             Ok(camera) => Cow::Owned(debug_rest_arms(&arms, camera, distance)),
@@ -411,6 +414,24 @@ pub(super) fn update_player_arms(
             }
             None => false,
         };
+        if trace {
+            let player = state.as_deref().and_then(|state| state.player.as_ref());
+            let states = player.map(|player| player.machine.active_states()).unwrap_or_default();
+            let animated = states.iter().any(|id| matches!(id.0, 4 | 7 | 8));
+            if show != arm.shown || (animated && *trace_frame % 12 == 0) {
+                let published = renders.iter().find(|render| render.model == arm.model);
+                eprintln!(
+                    "PLAYER VISIBILITY states={states:?} model={} published={:?} joints={} skinned={} shown={} legs={:?}/{}",
+                    arm.model,
+                    published.map(|render| render.visible),
+                    published.map_or(0, |render| render.joints.len()),
+                    show,
+                    arm.shown,
+                    player.map(|player| player.body.legs_visible),
+                    player.map_or(0, |player| player.body.desired_legs),
+                );
+            }
+        }
         if show != arm.shown {
             for part in &arm.surfaces {
                 if let Ok(mut visibility) = visibility.get_mut(part.entity) {

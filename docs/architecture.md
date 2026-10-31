@@ -317,8 +317,9 @@ A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
   before the states, clips folded over each tree's loco pose (BLEND, or ADD
   for additive clips) with interrupt snapshot fades, and body origin deltas
   pushed as priority-1 root-motion velocity (`assets/entities/midnight.rs`
-  parses the decls). Catfall's separate body/left/right scenes finish together;
-  weapon and mantle-dummy groups have no trees.
+  parses the decls). Catfall and mantle track their own scene handle through
+  the body and arm proxies; separately started catfall arm scenes keep playing
+  after the state ends. Weapon and mantle-dummy groups have no trees.
 - `arms.rs` evaluates the two arm trees and their bind frames. The body model
   uses `m_visibleLegsMaterials` whenever it is published, and all player models
   submit their material-image demands independently of ordinary Tome visibility.
