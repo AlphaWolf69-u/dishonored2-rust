@@ -59,6 +59,20 @@ const UNIFORMS: &[&str] = &[
     "particleAlphaTest",
 ];
 
+/// A particle renderer's material is any idMaterial (1401ea9e0/1401edab0
+/// publish desc+0x278 unchanged); only `particle/` MAIN programs are FX-pass
+/// programs. Anything else is a world program drawn by its material passes.
+pub fn world_program(catalog: &Catalog, name: &str) -> Result<bool, String> {
+    let path = format!("generated/decls/material/{}.decl", name.to_ascii_lowercase());
+    let bytes = catalog
+        .read(&path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("particle material absent: {path}"))?;
+    let program = crate::material::authored_program_override(&bytes, "mainProgram")
+        .ok_or_else(|| format!("particle main program absent: {name}"))?;
+    Ok(!program.to_ascii_lowercase().starts_with("particle/"))
+}
+
 pub struct ParticleLightingMaterial {
     pub pixel: Option<ParticlePixelMaterial>,
     pub gloss: [f32; 2],

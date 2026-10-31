@@ -91,6 +91,29 @@ impl WorldFxSources {
             .flat_map(|p| p.materials.values())
     }
 
+    /// Every (PMODEL resource, world material) pair the level's world FX can
+    /// draw as a material surface, with its model, in a stable order.
+    pub fn world_meshes(&self) -> Vec<(String, String, Arc<crate::assets::particle_model::ParticleModel>)> {
+        let mut pairs = std::collections::BTreeMap::new();
+        for definition in self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+        {
+            for declaration in definition.declarations.iter().flatten() {
+                for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                    for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
+                        let (Some(material), Some(source), Some(model)) = (&mesh.material, &mesh.source, &mesh.model) else {
+                            continue;
+                        };
+                        if definition.world_mesh_materials.contains(material) {
+                            pairs.entry((source.clone(), material.clone())).or_insert_with(|| model.clone());
+                        }
+                    }
+                }
+            }
+        }
+        pairs.into_iter().map(|((source, material), model)| (source, material, model)).collect()
+    }
+
     /// Every sound event the level's world FX post.
     pub fn sound_events(&self) -> impl Iterator<Item = u32> + '_ {
         self.effects.values().filter_map(|e| e.as_ref().ok())
@@ -159,10 +182,17 @@ impl WorldFxSources {
                 Err(error) => eprintln!("World FX actor preparation failed: {error}"),
             }
         }
-        for name in &names {
+        // Sub-FX declarations (m_subFXs) are loaded as further effects, in
+        // reference order after the declarations that name them.
+        let mut next = 0;
+        while next < names.len() {
+            let name = names[next].clone();
+            let name = &name;
+            next += 1;
             if result.effects.contains_key(name) {
                 continue;
             }
+            let mut children = Vec::new();
             let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
                 let mut read_error = None;
                 let mut read = |path: &str| match catalog.read(path) {
@@ -223,6 +253,7 @@ impl WorldFxSources {
                         .filter(|(field, value)| {
                             field != "m_particleSystems"
                                 && field != "m_sounds"
+                                && field != "m_subFXs"
                                 && matches!(value, Value::Scope(_))
                                 && scope(fields, field).is_some_and(|entries| {
                                     !list_items(entries).is_empty()
@@ -231,6 +262,12 @@ impl WorldFxSources {
                         })
                         .cloned()
                         .collect();
+                    children.extend(
+                        asset
+                            .sub_effects
+                            .iter()
+                            .flat_map(|sub| sub.effects.iter().flatten().cloned()),
+                    );
                     groups.push(WorldEffectGroup {
                         asset,
                         particles,
@@ -240,10 +277,9 @@ impl WorldFxSources {
                 }
                 Ok(Arc::new(WorldEffectDefinition { groups }))
             };
-            result.effects.insert(
-                name.clone(),
-                load().map_err(|error| format!("{name}: {error}")),
-            );
+            let loaded = load().map_err(|error| format!("{name}: {error}"));
+            result.effects.insert(name.clone(), loaded);
+            names.extend(children);
         }
         result
     }

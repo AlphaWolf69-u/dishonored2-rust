@@ -54,13 +54,24 @@ pub struct SurfaceUniform {
     /// hasDiffuseLookup, then bit 0 SSS/hasSkinFresnelLookup, bit 1
     /// SSS/hasMask, bit 2 fuzz/hasMask.
     pub skin_flags: UVec4,
+    /// arkVegetation (program 2): vegetation/transmittanceParms; .w scales
+    /// BRDF_vegetation's shadow-map thickness attenuation.
+    pub vegetation: Vec4,
+    /// translucency/intensity, distortion, power, min (ComputeTranslucencyNoRamp).
+    pub vegetation_translucency: Vec4,
+    /// translucency/enable, vegetation/indirectTranslucencyBoost,
+    /// translucencyMap bound (else translucencyUseVertexColor: weight 1).
+    pub vegetation_options: Vec4,
+    /// .x = 1: drawn as a particle renderer surface with direct instancing
+    /// (material bank2, useDirectInstancing; 1402bace0 binds the instances).
+    pub particle_instances: UVec4,
 }
 
 /// Material compile switches in the installed arkDefault/arkDefaultHelpers
 /// HLSL are #if parameters, not per-fragment uniform branches. Values must
 /// participate in the pipeline cache key; image handles and tints must not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceKey(pub [u32; 16]);
+pub struct SurfaceKey(pub [u32; 17]);
 
 impl SurfaceKey {
     /// arkDefault's Z program returns without sampling when alphaTest is off.
@@ -68,22 +79,23 @@ impl SurfaceKey {
     /// wind records; procedural liquid/sky and unsupported programs also keep
     /// their material path.
     pub fn depth_needs_material(self) -> bool {
-        self.0[6] != 1 || self.0[7] & 1 != 0
+        // Direct-instanced particle surfaces read their instance transforms.
+        self.0[6] != 1 || self.0[7] & 1 != 0 || self.0[16] != 0
     }
 
     /// The Z shader reads only the program/alpha switches. Keep procedural
     /// filling and projected-far controls as well; lighting/layers are absent
     /// from arkDefault's ClipZorShadowPass branch and dh2_probe_prepass.wgsl.
     pub fn depth_prepass(self) -> Self {
-        let mut depth = [0; 16];
-        for index in [6, 7, 14, 15] {
+        let mut depth = [0; 17];
+        for index in [6, 7, 14, 15, 16] {
             depth[index] = self.0[index];
         }
         // Colour-only fog routes never enter ClipZorShadowPass.
         depth[7] &= 7;
         Self(depth)
     }
-    pub const NAMES: [&'static str; 16] = [
+    pub const NAMES: [&'static str; 17] = [
         "DH2_EXTRA_LAYERS",
         "DH2_HAS_GLOSS",
         "DH2_GLOSS_ALPHA",
@@ -100,6 +112,7 @@ impl SurfaceKey {
         "DH2_HAS_SPECULAR",
         "DH2_FILLING_FLAGS",
         "DH2_PROJECT_FAR",
+        "DH2_PARTICLE_INSTANCE_KEY",
     ];
 }
 
@@ -122,6 +135,7 @@ impl From<&SurfaceUniform> for SurfaceKey {
             surface.specular_reuse.w,
             surface.filling_flags.x,
             u32::from(surface.misc.z == 7 || (surface.misc.z == 8 && surface.sky[4].x != 0.0)),
+            surface.particle_instances.x,
         ])
     }
 }
@@ -224,6 +238,10 @@ impl From<&Surface> for SurfaceUniform {
                     | (u32::from(s.skin.sss_mask.is_some()) << 1)
                     | (u32::from(s.skin.fuzz_mask.is_some()) << 2),
             ),
+            vegetation: Vec4::ZERO,
+            vegetation_translucency: Vec4::ZERO,
+            vegetation_options: Vec4::ZERO,
+            particle_instances: UVec4::ZERO,
         }
     }
 }
@@ -260,7 +278,7 @@ impl ImageRole {
 mod tests {
     #[test]
     fn depth_key_retains_only_consumed_shader_controls() {
-        let key = super::SurfaceKey([9; 16]);
+        let key = super::SurfaceKey([9; 17]);
         let depth = key.depth_prepass();
         for index in 0..16 {
             let mut changed = key;

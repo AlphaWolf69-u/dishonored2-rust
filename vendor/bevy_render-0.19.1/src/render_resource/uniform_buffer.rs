@@ -43,6 +43,9 @@ pub struct UniformBuffer<T: ShaderType> {
     label: Option<String>,
     changed: bool,
     buffer_usage: BufferUsages,
+    /// DH2 (project patch): the bytes last uploaded; an identical frame
+    /// skips its staging copy (the buffer is written only through here).
+    uploaded: Vec<u8>,
 }
 
 impl<T: ShaderType> From<T> for UniformBuffer<T> {
@@ -54,6 +57,7 @@ impl<T: ShaderType> From<T> for UniformBuffer<T> {
             label: None,
             changed: false,
             buffer_usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+            uploaded: Vec::new(),
         }
     }
 }
@@ -67,6 +71,7 @@ impl<T: ShaderType + Default> Default for UniformBuffer<T> {
             label: None,
             changed: false,
             buffer_usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+            uploaded: Vec::new(),
         }
     }
 }
@@ -137,8 +142,13 @@ impl<T: ShaderType + WriteInto> UniformBuffer<T> {
             }));
             self.changed = false;
         } else if let Some(buffer) = &self.buffer {
+            if self.uploaded.as_slice() == self.scratch.as_ref().as_slice() {
+                return;
+            }
             queue.write_buffer(buffer, 0, self.scratch.as_ref());
         }
+        self.uploaded.clear();
+        self.uploaded.extend_from_slice(self.scratch.as_ref());
     }
 }
 
@@ -180,6 +190,8 @@ pub struct DynamicUniformBuffer<T: ShaderType> {
     changed: bool,
     buffer_usage: BufferUsages,
     _marker: PhantomData<fn() -> T>,
+    /// DH2 (project patch): see `UniformBuffer::uploaded`.
+    uploaded: Vec<u8>,
 }
 
 impl<T: ShaderType> Default for DynamicUniformBuffer<T> {
@@ -191,6 +203,7 @@ impl<T: ShaderType> Default for DynamicUniformBuffer<T> {
             changed: false,
             buffer_usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
             _marker: PhantomData,
+            uploaded: Vec::new(),
         }
     }
 }
@@ -204,6 +217,7 @@ impl<T: ShaderType + WriteInto> DynamicUniformBuffer<T> {
             changed: false,
             buffer_usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
             _marker: PhantomData,
+            uploaded: Vec::new(),
         }
     }
 
@@ -306,6 +320,8 @@ impl<T: ShaderType + WriteInto> DynamicUniformBuffer<T> {
             self.changed = false;
         }
 
+        // The writer bypasses the uploaded-bytes comparison of write_buffer.
+        self.uploaded.clear();
         if let Some(buffer) = self.buffer.as_deref() {
             let buffer_view =
                 queue.write_buffer_with(buffer, 0, NonZero::<u64>::new(buffer.size())?)?;
@@ -342,8 +358,13 @@ impl<T: ShaderType + WriteInto> DynamicUniformBuffer<T> {
             }));
             self.changed = false;
         } else if let Some(buffer) = &self.buffer {
+            if self.uploaded.as_slice() == self.scratch.as_ref().as_slice() {
+                return;
+            }
             queue.write_buffer(buffer, 0, self.scratch.as_ref());
         }
+        self.uploaded.clear();
+        self.uploaded.extend_from_slice(self.scratch.as_ref());
     }
 
     #[inline]

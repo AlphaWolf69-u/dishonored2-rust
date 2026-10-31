@@ -187,9 +187,9 @@ pub(super) fn benchmark_frames(
         Res<super::shadow_pass::LocalShadowCompletion>,
         Res<super::ViewSettings>,
     ),
-    mut readiness: Local<(f32, bool)>,
+    mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
-    mut exit: MessageWriter<AppExit>,
+    (mut exit, mut commands): (MessageWriter<AppExit>, Commands),
 ) {
     let Some(target) = target else {
         return;
@@ -235,11 +235,39 @@ pub(super) fn benchmark_frames(
             "BENCHMARK complete rendering ready after {:.2}s; starting warmup",
             readiness.0
         );
+        crate::rendering::bevy_backend::debug_graphics_capture::mark_rendering_ready();
         readiness.1 = false;
     }
     let previous_elapsed = *elapsed;
     *elapsed += time.delta_secs();
+    // DH2_BENCHMARK_SCREENSHOT=<png>: the first measured frame, for
+    // comparing rendering before and after a change at a fixed view.
+    if previous_elapsed < target.1 && *elapsed >= target.1 {
+        bevy::render::renderer::reset_gpu_timeline();
+        // Count shader-buffer uploads of the measured frames only.
+        if let Ok(mut uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
+            *uploads = None;
+        }
+        if let Some(path) = std::env::var_os("DH2_BENCHMARK_SCREENSHOT") {
+            commands
+                .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+                .observe(bevy::render::view::screenshot::save_to_disk(std::path::PathBuf::from(path)));
+        }
+    }
     if previous_elapsed >= target.1 {
+        // A minimized or resized window renders a different pixel count;
+        // its GPU times are not comparable with the requested view.
+        let viewport = camera.iter().next().and_then(|(view, _)| view.physical_viewport_size());
+        if let Some(viewport) = viewport {
+            if *readiness.2.get_or_insert(viewport) != viewport {
+                eprintln!(
+                    "BENCHMARK INVALID: viewport changed from {:?} to {viewport:?} during measurement; no FPS result",
+                    readiness.2.unwrap()
+                );
+                exit.write(AppExit::error());
+                return;
+            }
+        }
         measured.0 += 1;
         measured.1 += time.delta_secs_f64();
         frame_times.push(time.delta_secs_f64() * 1000.0);
@@ -255,7 +283,7 @@ pub(super) fn benchmark_frames(
             for diagnostic in store.iter() {
                 let path = diagnostic.path().as_str();
                 if path.starts_with("render/")
-                    && (path.ends_with("elapsed_gpu") || path.ends_with("shader_invocations"))
+                    && (path.ends_with("elapsed_gpu") || path.ends_with("elapsed_cpu") || path.ends_with("shader_invocations"))
                 {
                     if let Some(value) = diagnostic.value().filter(|value| value.is_finite()) {
                         let metric = render_metrics
@@ -353,6 +381,7 @@ pub(super) fn benchmark_frames(
             light_culling.sphere_query_ns as f64 / 1_000_000.0,
             light_culling.zero_preset_rgb,
         );
+        let ordered_frame_times = frame_times.clone();
         frame_times.sort_unstable_by(f64::total_cmp);
         if !frame_times.is_empty() {
             let quantile =
@@ -365,6 +394,62 @@ pub(super) fn benchmark_frames(
                 quantile(1.0),
                 target.1
             );
+            // 2 ms buckets of the unsorted sequence, and how often a slow
+            // frame follows a fast one: separates periodic from random spikes.
+            let mut buckets = std::collections::BTreeMap::new();
+            for time in &ordered_frame_times {
+                *buckets.entry((*time / 2.0) as u32 * 2).or_insert(0u32) += 1;
+            }
+            let slow = quantile(0.5) * 1.5;
+            let alternations = ordered_frame_times.windows(2)
+                .filter(|pair| (pair[0] > slow) != (pair[1] > slow)).count();
+            println!("BENCHMARK frame_ms_histogram={buckets:?} slow_threshold_ms={slow:.1} slow_frames={} slow_fast_transitions={alternations}",
+                ordered_frame_times.iter().filter(|time| **time > slow).count());
+        }
+        // DH2_GPU_TIMELINE=1: GPU time after each render system, in submission order.
+        if let Some((frames, rows)) = bevy::render::renderer::gpu_timeline_report() {
+            let total: f64 = rows.iter().map(|row| row.1).sum();
+            let gaps: f64 = rows.iter().filter(|row| row.0.starts_with("(gap)")).map(|row| row.1).sum();
+            println!("BENCHMARK_GPU_TIMELINE busy_ms={:.3} gap_ms={gaps:.3}", total - gaps);
+            let counts = &bevy::render::renderer::GPU_TIMELINE_COUNTS;
+            println!("BENCHMARK_GPU_TIMELINE frames={frames} total_ms={total:.3} timestamps={} resolved={} collected={}",
+                counts[0].load(std::sync::atomic::Ordering::Relaxed),
+                counts[1].load(std::sync::atomic::Ordering::Relaxed),
+                counts[2].load(std::sync::atomic::Ordering::Relaxed));
+            for (name, ms) in rows.into_iter().take(50) {
+                println!("BENCHMARK_GPU_TIMELINE ms={ms:.3} {name}");
+            }
+        }
+        if let Ok(uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
+            let mut rows: Vec<_> = uploads.iter().flatten().collect();
+            rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+            let frames = measured.0.max(1) as f64;
+            let total: u64 = rows.iter().map(|row| row.1 .1).sum();
+            println!("BENCHMARK_SHADER_BUFFERS bytes_per_frame={:.0}", total as f64 / frames);
+            for ((size, reallocated), (count, bytes)) in rows.into_iter().take(20) {
+                println!(
+                    "BENCHMARK_SHADER_BUFFER size={size} reallocated={reallocated} uploads_per_frame={:.2} bytes_per_frame={:.0}",
+                    *count as f64 / frames, *bytes as f64 / frames,
+                );
+            }
+        }
+        {
+            use crate::rendering::bevy_backend::shadow_pass as shadow;
+            use std::sync::atomic::Ordering::Relaxed;
+            let frames = shadow::DIRECTIONAL_FRAMES.load(Relaxed).max(1) as f64;
+            let layers = shadow::DIRECTIONAL_LAYERS.load(Relaxed).max(1) as f64;
+            println!(
+                "BENCHMARK_SHADOW directional submissions={} layers_per_submission={:.2} draws_per_submission={:.1} triangles_per_submission={:.0} draws_per_layer={:.1} triangles_per_layer={:.0}",
+                frames as u64, layers / frames,
+                shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / frames, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / frames,
+                shadow::DIRECTIONAL_DRAWS.load(Relaxed) as f64 / layers, shadow::DIRECTIONAL_TRIANGLES.load(Relaxed) as f64 / layers,
+            );
+            for (index, stats) in shadow::DIRECTIONAL_LAYER_STATS.iter().enumerate() {
+                println!(
+                    "BENCHMARK_SHADOW_LAYER {index} prepared_draws={:.1} restored_static_draws={:.1} cache_rewrites={}",
+                    stats[0].load(Relaxed) as f64 / frames, stats[1].load(Relaxed) as f64 / frames, stats[2].load(Relaxed),
+                );
+            }
         }
         for (path, (samples, total, maximum)) in render_metrics.iter() {
             println!(

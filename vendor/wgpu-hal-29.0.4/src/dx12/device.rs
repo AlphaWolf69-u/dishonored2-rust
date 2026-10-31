@@ -1519,6 +1519,15 @@ impl crate::Device for super::Device {
             super::AccelerationStructure,
         >,
     ) -> Result<super::BindGroup, crate::DeviceError> {
+        // DH2 (project patch, diagnostic): DH2_TRACE_COMMAND_LISTS=1 also
+        // prints the running count of bind groups created, every 1000.
+        if std::env::var_os("DH2_TRACE_COMMAND_LISTS").is_some_and(|value| value == "1") {
+            static CREATED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let created = CREATED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+            if created % 1000 == 0 {
+                std::eprintln!("DH2_BIND_GROUPS created={created} label={:?} at={:?}", desc.label, std::time::Instant::now());
+            }
+        }
         let mut cpu_views = desc
             .layout
             .cpu_heap_views

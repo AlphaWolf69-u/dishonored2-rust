@@ -101,6 +101,9 @@ fn standard_material_new() -> StandardMaterial {
 struct PbrInput {
 #ifdef DH2_SURFACE_ENABLED
     direct_surface: WardSurface,
+    // arkVegetation: vegetation/transmittanceParms.w, the shadow-map thickness
+    // scale BRDF_vegetation applies to shadowed lights; negative otherwise.
+    vegetation_thickness: f32,
 #endif
     material: StandardMaterial,
     // Note: this gets monochromized upon deferred PbrInput reconstruction.
@@ -153,6 +156,9 @@ fn pbr_input_new() -> PbrInput {
     pbr_input.lightmap_light = vec3<f32>(0.0);
 
     pbr_input.flags = 0u;
+#ifdef DH2_SURFACE_ENABLED
+    pbr_input.vegetation_thickness = -1.0;
+#endif
 
     return pbr_input;
 }

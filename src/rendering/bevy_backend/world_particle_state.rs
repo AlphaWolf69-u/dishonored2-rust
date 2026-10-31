@@ -51,7 +51,235 @@ struct Instance {
     age: f32,
     head: u16,
     sound_head: u16,
+    /// Live m_subFXs instances of the started groups, in start order.
+    sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
+}
+
+/// What a group start (222f80) needs from the FX manager, for top-level
+/// instances and for the effects their sub-FX trigger.
+pub(super) struct GroupContext<'a> {
+    pub(super) systems: &'a mut ParticleSystems,
+    pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
+        crate::gameplay::sound::Emitter,
+        crate::gameplay::sound::playing::PlayingId,
+    >,
+    pub(super) sounds: &'a super::world_sounds::WorldSounds,
+    pub(super) effects: &'a HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
+    pub(super) world: &'a crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+    pub(super) query: &'a mut crate::gameplay::world_point_query::WorldPointQuery,
+    pub(super) position: [f32; 3],
+}
+
+impl GroupContext<'_> {
+    pub(super) fn chains(&mut self) -> super::world_sub_effects::Chains<'_> {
+        super::world_sub_effects::Chains {
+            systems: self.systems,
+            sound_systems: self.sound_systems,
+            sounds: self.sounds,
+        }
+    }
+}
+
+/// Every family of an effect, and of each effect its sub-FX can pick, must be
+/// connected and its sound dependencies prepared before playback.
+fn admit(
+    name: &str,
+    definition: &WorldEffectDefinition,
+    effects: &HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
+    sounds: Option<&super::world_sounds::WorldSounds>,
+    visited: &mut HashSet<String>,
+) -> Result<(), String> {
+    if !visited.insert(name.to_owned()) {
+        return Ok(());
+    }
+    for group in &definition.groups {
+        for (family, value) in &group.other_families {
+            if let crate::assets::entities::Value::Scope(fields) = value {
+                if crate::rendering::particles::world_sources::descriptor_fields(fields)?
+                    .iter()
+                    .any(|fields| atom(fields, "m_enabled") != Some("false"))
+                {
+                    return Err(format!("{name}: world FX family {family} is not connected"));
+                }
+            }
+        }
+        for sound in &group.sounds {
+            let audio = sounds.ok_or("FX sound owner is absent")?.lock();
+            for event in [&sound.start, &sound.stop].into_iter().flatten() {
+                audio
+                    .events
+                    .get(&event.name)
+                    .ok_or("FX sound dependency is absent")?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+            }
+        }
+        for particle in &group.particles {
+            let particle = particle.as_ref().map_err(Clone::clone)?;
+            if particle.owner.parameter_block.is_some() {
+                return Err(format!("{name}: particle parameter block binding is not connected"));
+            }
+        }
+        for sub in &group.asset.sub_effects {
+            if !super::world_sub_effects::SubEffect::admitted(sub) {
+                continue;
+            }
+            for child in sub.effects.iter().flatten() {
+                let definition = effects
+                    .get(child)
+                    .ok_or_else(|| format!("{name}: sub-FX {child} was not prepared"))?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                admit(child, definition, effects, sounds, visited)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One instance update's clock and pose, shared by its sub-FX children.
+struct UpdateFrame {
+    age: f32,
+    delta: f32,
+    particle: crate::gameplay::effects::particle::ParticleEffectFrame,
+    underwater: bool,
+    motion: crate::gameplay::particles::spawn::SpawnVelocity,
+    position: bevy::math::Vec3,
+    basis: bevy::math::Mat3,
+    sound: super::world_sounds::SoundFrame,
+}
+
+/// The particle and sound chains of one FX level; true while any is alive.
+fn update_chains(head: &mut u16, sound_head: &mut u16, frame: &UpdateFrame, context: &mut GroupContext) -> Result<bool, String> {
+    let updated = context.systems.update_with_motion(
+        head,
+        frame.age,
+        &frame.particle,
+        frame.underwater,
+        Some(&frame.motion),
+    )?;
+    let mut audio = context.sounds.clone();
+    let sound_count = context.sound_systems.update(
+        sound_head,
+        &mut audio,
+        frame.age,
+        frame.position,
+        frame.basis,
+        &frame.sound,
+    )?;
+    Ok(updated != 0 || sound_count != 0)
+}
+
+/// The sub-FX chain update (220520): each updates its children (223f60), then
+/// its schedule (230980); one no longer live is released and unlinked.
+fn update_sub_effects(
+    sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
+    frame: &UpdateFrame,
+    context: &mut GroupContext,
+) -> Result<bool, String> {
+    let mut index = 0;
+    let mut any = false;
+    while index < sub_effects.len() {
+        let sub = &mut sub_effects[index];
+        let chains = update_chains(&mut sub.head, &mut sub.sound_head, frame, context)?;
+        let children = update_sub_effects(&mut sub.children, frame, context)?;
+        if sub.advance(frame.age, frame.delta, chains || children, context)? {
+            any = true;
+            index += 1;
+        } else {
+            sub.clear(&mut context.chains())?;
+            sub_effects.remove(index);
+        }
+    }
+    Ok(any)
+}
+
+/// 222f80 over an effect's groups: admitted by location, group offsets
+/// sampled, then particles, sounds and sub-FX start in family order.
+pub(super) fn start_groups(
+    definition: &Arc<WorldEffectDefinition>,
+    start: f32,
+    head: &mut u16,
+    sound_head: &mut u16,
+    sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
+    context: &mut GroupContext,
+) -> Result<(), String> {
+    for (group_index, group) in definition.groups.iter().enumerate() {
+        let admitted = if group.asset.location == crate::assets::fx::EffectGroupLocation::Everywhere {
+            true
+        } else {
+            crate::gameplay::effects::groups::location_allowed(
+                group.asset.location,
+                context
+                    .world
+                    .particle_water_body_height(context.query, context.position)?
+                    .is_some(),
+            )
+        };
+        if !admitted {
+            continue;
+        }
+        let offsets = crate::gameplay::effects::groups::sample_offsets(
+            &group.asset.timings,
+            start,
+            &mut context.systems.seed,
+        );
+        for particle in &group.particles {
+            context
+                .systems
+                .start(head, particle.as_ref().map_err(Clone::clone)?, offsets)?;
+        }
+        for sound in &group.sounds {
+            let audio = context.sounds.lock();
+            let reference = |event: &Option<
+                Arc<crate::rendering::particles::world_sources::WorldSoundEvent>,
+            >| {
+                event
+                    .as_ref()
+                    .map(|event| {
+                        audio
+                            .events
+                            .get(&event.name)
+                            .ok_or_else(|| format!("FX sound {} was not prepared", event.name))?
+                            .as_ref()
+                            .copied()
+                            .map_err(Clone::clone)
+                    })
+                    .transpose()
+            };
+            let start_event = crate::gameplay::effects::sound::SoundEvent {
+                delay: sound.start_delay,
+                event: reference(&sound.start)?,
+            };
+            let stop_event = crate::gameplay::effects::sound::SoundEvent {
+                delay: sound.stop_delay,
+                event: reference(&sound.stop)?,
+            };
+            drop(audio);
+            context.sound_systems.start(
+                sound_head,
+                sound.position,
+                start_event,
+                stop_event,
+                offsets[0],
+                true,
+                &mut context.systems.seed,
+            )?;
+        }
+        for (index, sub) in group.asset.sub_effects.iter().enumerate() {
+            if super::world_sub_effects::SubEffect::admitted(sub) {
+                sub_effects.push(super::world_sub_effects::SubEffect::start(
+                    definition.clone(),
+                    group_index,
+                    index,
+                    offsets,
+                    &mut context.systems.seed,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 pub(crate) struct WorldParticleState {
     source: Option<Arc<Vec<crate::assets::entities::effects::FxGraph>>>,
@@ -209,10 +437,21 @@ impl WorldParticleState {
     }
     fn stop(&mut self, handle: u32, systems: &mut ParticleSystems) -> Result<(), String> {
         if let Some(&slot) = self.handles.get(&handle) {
-            if let Some(instance) = self.slots[usize::from(slot)].as_ref() {
+            if let Some(instance) = self.slots[usize::from(slot)].as_mut() {
                 systems.stop(instance.head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
+                if !instance.sub_effects.is_empty() {
+                    let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
+                    let mut chains = super::world_sub_effects::Chains {
+                        systems,
+                        sound_systems: &mut self.sound_systems,
+                        sounds,
+                    };
+                    for sub in &mut instance.sub_effects {
+                        sub.stop(instance.age, &mut chains)?;
+                    }
+                }
             }
             // 1a31f0 -> 1a1880/1a1990 removes the queued start using the
             // source's last-matching swap removal, before the next drain.
@@ -275,6 +514,17 @@ impl WorldParticleState {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
+        if !instance.sub_effects.is_empty() {
+            let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
+            let mut chains = super::world_sub_effects::Chains {
+                systems,
+                sound_systems: &mut self.sound_systems,
+                sounds,
+            };
+            for sub in &mut instance.sub_effects {
+                sub.clear(&mut chains)?;
+            }
+        }
         if instance.sound_head != u16::MAX {
             let mut sounds = self.sounds.clone().ok_or("FX sound owner is absent")?;
             self.sound_systems
@@ -537,76 +787,23 @@ impl WorldParticleState {
             let Some(mut instance) = self.slots[usize::from(slot)].take() else {
                 continue;
             };
-            let result = (|| -> Result<(), String> {
-                for group in &instance.definition.groups {
-                    let admitted = if group.asset.location
-                        == crate::assets::fx::EffectGroupLocation::Everywhere
-                    {
-                        true
-                    } else {
-                        crate::gameplay::effects::groups::location_allowed(
-                            group.asset.location,
-                            world
-                                .particle_water_body_height(&mut query, instance.pose.position)?
-                                .is_some(),
-                        )
-                    };
-                    if !admitted {
-                        continue;
-                    }
-                    let offsets = crate::gameplay::effects::groups::sample_offsets(
-                        &group.asset.timings,
-                        0.,
-                        &mut systems.seed,
-                    );
-                    for particle in &group.particles {
-                        systems.start(
-                            &mut instance.head,
-                            particle.as_ref().map_err(Clone::clone)?,
-                            offsets,
-                        )?;
-                    }
-                    for sound in &group.sounds {
-                        let audio = sounds.lock();
-                        let reference = |event: &Option<
-                            Arc<crate::rendering::particles::world_sources::WorldSoundEvent>,
-                        >| {
-                            event
-                                .as_ref()
-                                .map(|event| {
-                                    audio
-                                        .events
-                                        .get(&event.name)
-                                        .ok_or_else(|| {
-                                            format!("FX sound {} was not prepared", event.name)
-                                        })?
-                                        .as_ref()
-                                        .copied()
-                                        .map_err(Clone::clone)
-                                })
-                                .transpose()
-                        };
-                        let start = crate::gameplay::effects::sound::SoundEvent {
-                            delay: sound.start_delay,
-                            event: reference(&sound.start)?,
-                        };
-                        let stop = crate::gameplay::effects::sound::SoundEvent {
-                            delay: sound.stop_delay,
-                            event: reference(&sound.stop)?,
-                        };
-                        self.sound_systems.start(
-                            &mut instance.sound_head,
-                            sound.position,
-                            start,
-                            stop,
-                            offsets[0],
-                            true,
-                            &mut systems.seed,
-                        )?;
-                    }
-                }
-                Ok(())
-            })();
+            let definition = instance.definition.clone();
+            let result = start_groups(
+                &definition,
+                0.,
+                &mut instance.head,
+                &mut instance.sound_head,
+                &mut instance.sub_effects,
+                &mut GroupContext {
+                    systems,
+                    sound_systems: &mut self.sound_systems,
+                    sounds,
+                    effects: &sources.effects,
+                    world,
+                    query: &mut query,
+                    position: instance.pose.position,
+                },
+            );
             self.slots[usize::from(slot)] = Some(instance);
             if let Err(error) = result {
                 self.report(error);
@@ -632,10 +829,15 @@ impl WorldParticleState {
                 }
                 let delta = crate::float::multiply(clock.delta, clock.scale);
                 instance.age = crate::float::add(instance.age, delta);
-                let updated = systems.update_with_motion(
-                    &mut instance.head,
-                    instance.age,
-                    &crate::gameplay::effects::particle::ParticleEffectFrame {
+                let basis = bevy::math::Mat3::from_cols(
+                    bevy::math::Vec3::from_array(instance.pose.basis[0]),
+                    bevy::math::Vec3::from_array(instance.pose.basis[1]),
+                    bevy::math::Vec3::from_array(instance.pose.basis[2]),
+                );
+                let update = UpdateFrame {
+                    age: instance.age,
+                    delta,
+                    particle: crate::gameplay::effects::particle::ParticleEffectFrame {
                         owner: instance.pose,
                         camera: Some(camera),
                         screen_offset,
@@ -645,29 +847,23 @@ impl WorldParticleState {
                         delta,
                     },
                     underwater,
-                    Some(&instance.motion),
-                )?;
-                let mut audio = sounds.clone();
-                let sound_count = self.sound_systems.update(
-                    &mut instance.sound_head,
-                    &mut audio,
-                    instance.age,
-                    bevy::math::Vec3::from_array(instance.pose.position),
-                    bevy::math::Mat3::from_cols(
-                        bevy::math::Vec3::from_array(instance.pose.basis[0]),
-                        bevy::math::Vec3::from_array(instance.pose.basis[1]),
-                        bevy::math::Vec3::from_array(instance.pose.basis[2]),
-                    ),
-                    &super::world_sounds::SoundFrame {
-                        axis: bevy::math::Mat3::from_cols(
-                            bevy::math::Vec3::from_array(instance.pose.basis[0]),
-                            bevy::math::Vec3::from_array(instance.pose.basis[1]),
-                            bevy::math::Vec3::from_array(instance.pose.basis[2]),
-                        ),
-                        scale: clock.scale,
-                    },
-                )?;
-                Ok(updated != 0 || sound_count != 0)
+                    motion: instance.motion,
+                    position: bevy::math::Vec3::from_array(instance.pose.position),
+                    basis,
+                    sound: super::world_sounds::SoundFrame { axis: basis, scale: clock.scale },
+                };
+                let mut context = GroupContext {
+                    systems,
+                    sound_systems: &mut self.sound_systems,
+                    sounds,
+                    effects: &sources.effects,
+                    world,
+                    query: &mut query,
+                    position: instance.pose.position,
+                };
+                let alive = update_chains(&mut instance.head, &mut instance.sound_head, &update, &mut context)?;
+                let sub_effects = update_sub_effects(&mut instance.sub_effects, &update, &mut context)?;
+                Ok(alive || sub_effects)
             })();
             self.slots[slot] = Some(instance);
             match result {
@@ -924,6 +1120,9 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             return Err("world FX target/tag pose producer is not connected".into());
         }
         let name = parameters.effect.as_ref().ok_or("world FX effect absent")?;
+        if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+            bevy::log::info!(effect = name, "World FX play requested");
+        }
         let definition = self
             .sources
             .effects
@@ -934,42 +1133,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             .clone();
         // Admit only complete supported groups, never skip another enabled
         // family and consequently consume an incorrect shared RNG sequence.
-        for group in &definition.groups {
-            for (family, value) in &group.other_families {
-                if let crate::assets::entities::Value::Scope(fields) = value {
-                    if crate::rendering::particles::world_sources::descriptor_fields(fields)?
-                        .iter()
-                        .any(|fields| atom(fields, "m_enabled") != Some("false"))
-                    {
-                        return Err(format!("{name}: world FX family {family} is not connected"));
-                    }
-                }
-            }
-            for sound in &group.sounds {
-                let audio = self
-                    .state
-                    .sounds
-                    .as_ref()
-                    .ok_or("FX sound owner is absent")?
-                    .lock();
-                for event in [&sound.start, &sound.stop].into_iter().flatten() {
-                    audio
-                        .events
-                        .get(&event.name)
-                        .ok_or("FX sound dependency is absent")?
-                        .as_ref()
-                        .map_err(Clone::clone)?;
-                }
-            }
-            for particle in &group.particles {
-                let particle = particle.as_ref().map_err(Clone::clone)?;
-                if particle.owner.parameter_block.is_some() {
-                    return Err(format!(
-                        "{name}: particle parameter block binding is not connected"
-                    ));
-                }
-            }
-        }
+        admit(name, &definition, &self.sources.effects, self.state.sounds.as_ref(), &mut HashSet::new())?;
         let pose = self
             .frames
             .resolve(
@@ -979,6 +1143,9 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             .ok_or("FX location was removed")?;
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {
+            if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
+                bevy::log::info!(effect = name, "World FX instance pool exhausted");
+            }
             return Ok(None);
         }
         let id = self.state.next_instance;
@@ -993,6 +1160,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             age: 0.,
             head: u16::MAX,
             sound_head: u16::MAX,
+            sub_effects: Vec::new(),
             actor_observer: None,
         });
         self.state.handles.insert(id, slot);

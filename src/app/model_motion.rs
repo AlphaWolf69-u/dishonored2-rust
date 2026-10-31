@@ -109,6 +109,15 @@ struct Binding {
 #[derive(Resource)]
 pub(super) struct ModelProbeLighting(pub Handle<super::ShaderBuffer>);
 
+/// One object's nine SH coefficient rows as the shared probe buffer stores them.
+pub(super) fn probe_record_bytes(record: [[f32; 4]; 9]) -> [u8; 9 * 16] {
+    let mut bytes = [0; 9 * 16];
+    for (word, value) in bytes.chunks_exact_mut(4).zip(record.iter().flatten()) {
+        word.copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
 #[derive(Resource, Default)]
 pub(super) struct ModelMotionBindings(HashMap<usize, Binding>);
 
@@ -147,6 +156,7 @@ pub(super) fn publish_model_poses(
     scene: Option<Res<super::SceneData>>,
     probe_buffer: Option<Res<ModelProbeLighting>>,
     mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
+    mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     bound: Option<ResMut<BoundModels>>,
     mut effect_frames: Option<ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
     clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
@@ -262,26 +272,11 @@ pub(super) fn publish_model_poses(
         if let (Some(lighting), Some(handle), Some(buffers)) =
             (lighting, probe_buffer.as_ref(), buffers.as_mut())
         {
-            if let Some(mut buffer) = buffers.get_mut(&handle.0) {
-                if let Some(data) = buffer.data.as_mut() {
-                    for surface in &binding.surfaces {
-                        let tag = queue.instances[surface.index].probe_index;
-                        if tag & 0x80000000 != 0 {
-                            continue;
-                        }
-                        let start = tag as usize * 9 * 16;
-                        if let Some(record) = data.get_mut(start..start + 9 * 16) {
-                            for (coefficient, channels) in
-                                lighting.object_shader_record().iter().enumerate()
-                            {
-                                for (channel, value) in channels.iter().enumerate() {
-                                    record[coefficient * 16 + channel * 4
-                                        ..coefficient * 16 + channel * 4 + 4]
-                                        .copy_from_slice(&value.to_le_bytes());
-                                }
-                            }
-                        }
-                    }
+            let record = probe_record_bytes(lighting.object_shader_record());
+            for surface in &binding.surfaces {
+                let tag = queue.instances[surface.index].probe_index;
+                if tag & 0x80000000 == 0 {
+                    patches.write(buffers, &handle.0, tag as usize * record.len(), &record);
                 }
             }
         }

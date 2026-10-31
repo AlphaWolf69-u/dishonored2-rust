@@ -616,6 +616,23 @@ pub(super) fn initialize_parallel_receiver_source(
     commands.insert_resource(ParallelReceiverSource(result));
 }
 
+/// 32db10 transfers directional slices with the depthCopy RPD's draw state.
+pub(super) fn initialize_shadow_depth_copy(
+    mut commands: Commands,
+    mut programs: ResMut<ProgramCacheSource>,
+) {
+    let result = (|| -> Result<[u32; 9], String> {
+        Ok(programs
+            .0
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .definition(b"depthcopy")?
+            .ok_or("depthCopy RPD is unavailable")?
+            .render_state())
+    })();
+    commands.insert_resource(shadow_pass::ShadowDepthCopyState(result));
+}
+
 pub(super) fn publish_parallel_shadow_frame(
     owner: Option<Res<ParallelShadowOwner>>,
     cpu: Res<ParallelShadowCpu>,
@@ -1472,11 +1489,24 @@ pub(super) fn prepare_parallel_shadow_cpu(
         } else {
             -1.0
         };
+        // A stationary original camera keeps the far computed at its last
+        // translation (FUN_140330630); this seeds that history from a capture.
+        let effective_far = std::env::var("DH2_DEBUG_ADAPTIVE_FAR").ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|_| effective_far != -1.0)
+            .unwrap_or(effective_far);
         if std::env::var_os("DH2_TRACE_SHADOW_GEOMETRY").is_some() && frame_count.0 % 300 == 0 {
             eprintln!(
                 "Adaptive candidate frame={} far={effective_far}",
                 frame_count.0
             );
+        }
+        // The selected preparation's projections and coarse depth, for
+        // comparison with an original capture's 64x64 grid.
+        if let Some(path) = std::env::var_os("DH2_DEBUG_ADAPTIVE_DUMP").filter(|_| frame_count.0 % 300 == 0) {
+            let mut report = String::new();
+            super::shadow_diagnostics::append_adaptive_input(&mut report, &cpu);
+            std::fs::write(path, report).map_err(|error| error.to_string())?;
         }
         let reset_frame = *cpu.reset_frame.get_or_insert(frame_count.0);
         let far_input = render_shadow::CascadeFarInput {

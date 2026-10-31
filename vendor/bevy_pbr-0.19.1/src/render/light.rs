@@ -199,20 +199,46 @@ pub struct GpuRectLight {
     range: f32,
 }
 
-/// Optional shared area-light records and texture pool for external renderers.
+/// Optional shared area-light records, texture pool and per-tile light lists
+/// for external renderers. `records` holds the lists' light packets in list
+/// index order; `grid` is (tile columns, tile shift, list limit, enabled).
 #[derive(Resource)]
 pub struct AreaLightBindings {
     pub records: Buffer,
     pub texture: Option<TextureView>,
     pub sampler: Sampler,
+    pub heads: Buffer,
+    pub pool: Buffer,
+    pub grid: Buffer,
+}
+impl AreaLightBindings {
+    /// Bind this frame's tile lists and their light packets.
+    pub fn publish_tiles(&mut self, queue: &bevy_render::renderer::RenderQueue,
+        records: Buffer, heads: Buffer, pool: Buffer, grid: [u32; 4]) {
+        self.records = records;
+        self.heads = heads;
+        self.pool = pool;
+        queue.write_buffer(&self.grid, 0, bytemuck::cast_slice(&grid));
+    }
+    /// No lists this frame: shaders read no area light.
+    pub fn disable_tiles(&mut self, queue: &bevy_render::renderer::RenderQueue) {
+        queue.write_buffer(&self.grid, 0, bytemuck::cast_slice(&[0u32; 4]));
+    }
 }
 impl FromWorld for AreaLightBindings {
     fn from_world(world: &mut World) -> Self {
         let device = world.resource::<RenderDevice>();
+        let empty = |label| device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some(label), contents: &[0; 112],
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        });
         Self {
-            records: device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("empty area-light records"), contents: &[0; 112],
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            records: empty("empty area-light records"),
+            heads: empty("empty area-light tile heads"),
+            pool: empty("empty area-light tile pool"),
+            grid: device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("area-light tile grid"), contents: &[0; 16],
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             }),
             texture: None,
             sampler: device.create_sampler(&SamplerDescriptor {

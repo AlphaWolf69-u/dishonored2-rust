@@ -3,6 +3,14 @@ use super::*;
 use bevy::platform::collections::HashSet;
 use bevy::render::render_resource::{BufferId, TextureViewId};
 
+/// A mesh's vertex and index allocations: (buffer, element range).
+type MeshSlices = [Option<(BufferId, core::ops::Range<u32>)>; 2];
+
+fn mesh_slices(allocator: &MeshAllocator, mesh: &AssetId<Mesh>) -> MeshSlices {
+    [allocator.mesh_vertex_slice(mesh), allocator.mesh_index_slice(mesh)]
+        .map(|slice| slice.map(|slice| (slice.buffer.id(), slice.range)))
+}
+
 pub(super) struct PreparedRecordCache {
     geometry_epoch: (u32, u32),
     resource_epoch: (u32, u32),
@@ -13,6 +21,9 @@ pub(super) struct PreparedRecordCache {
     uniforms: Vec<ShadowUniformRecord>,
     buffers: Vec<(AssetId<ShaderBuffer>, BufferId, u64)>,
     images: Vec<(AssetId<Image>, TextureViewId)>,
+    /// The allocator and mesh assets are written every frame, so their change
+    /// ticks move without any geometry change; these are what records use.
+    meshes: Vec<(AssetId<Mesh>, MeshSlices)>,
     pub records: Arc<Vec<PreparedShadowRecord>>,
 }
 
@@ -28,7 +39,9 @@ impl PreparedRecordCache {
         records: Arc<Vec<PreparedShadowRecord>>,
         images: &RenderAssets<GpuImage>,
         buffers: &RenderAssets<GpuShaderBuffer>,
+        allocator: &MeshAllocator,
     ) -> Option<Self> {
+        let mut mesh_ids: HashSet<AssetId<Mesh>> = HashSet::default();
         let mut buffer_ids: HashSet<AssetId<ShaderBuffer>> = HashSet::default();
         let mut image_ids: HashSet<AssetId<Image>> = HashSet::default();
         // Collect resource ownership once per distinct consecutive ID set.
@@ -36,6 +49,7 @@ impl PreparedRecordCache {
         let mut last_image = None;
         let mut last_buffers = None;
         for instance in layers.iter().flat_map(|layer| &layer.instances) {
+            mesh_ids.insert(instance.mesh.id());
             if let Some(alpha) = &instance.alpha_material {
                 let image = alpha.diffuse.id();
                 if last_image != Some(image) {
@@ -79,6 +93,10 @@ impl PreparedRecordCache {
             layers,
             uniforms: uniforms.to_vec(),
             records,
+            meshes: mesh_ids
+                .into_iter()
+                .map(|id| (id, mesh_slices(allocator, &id)))
+                .collect(),
             buffers: buffer_ids
                 .into_iter()
                 .map(|id| {
@@ -105,13 +123,20 @@ impl PreparedRecordCache {
         uniforms: &[ShadowUniformRecord],
         images: &RenderAssets<GpuImage>,
         buffers: &RenderAssets<GpuShaderBuffer>,
+        allocator: &MeshAllocator,
+        meshes: &RenderAssets<RenderMesh>,
     ) -> bool {
-        if self.geometry_epoch != geometry_epoch
-            || self.ring != ring
-            || self.stride != stride
-            || self.depth_32_bits != depth_32_bits
-            || self.uniforms != uniforms
-            || self.layers.len() != layers.len()
+        let reason = if self.geometry_epoch != geometry_epoch
+            && !self.meshes.iter().all(|(id, slices)| {
+                meshes.get(*id).is_some() && mesh_slices(allocator, id) == *slices
+            })
+        {
+            Some(0)
+        } else if self.ring != ring || self.stride != stride || self.depth_32_bits != depth_32_bits {
+            Some(1)
+        } else if self.uniforms != uniforms {
+            Some(2)
+        } else if self.layers.len() != layers.len()
             || !self.layers.iter().zip(layers).all(|(a, b)| {
                 a.instances.len() == b.instances.len()
                     && a.instances
@@ -120,6 +145,24 @@ impl PreparedRecordCache {
                         .all(|(a, b)| same_descriptor(a, b))
             })
         {
+            Some(3)
+        } else {
+            None
+        };
+        self.geometry_epoch = geometry_epoch;
+        if let Some(reason) = reason {
+            // Diagnostic: DH2_TRACE_SHADOW_CACHE=1 counts which test missed.
+            if std::env::var_os("DH2_TRACE_SHADOW_CACHE").is_some() {
+                static MISSES: [std::sync::atomic::AtomicU64; 4] =
+                    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+                let count = MISSES[reason].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count % 300 == 0 {
+                    eprintln!(
+                        "DH2_SHADOW_CACHE miss [geometry epoch, ring, uniforms, descriptors] = {:?}",
+                        MISSES.each_ref().map(|value| value.load(std::sync::atomic::Ordering::Relaxed))
+                    );
+                }
+            }
             return false;
         }
         if self.resource_epoch != resource_epoch {

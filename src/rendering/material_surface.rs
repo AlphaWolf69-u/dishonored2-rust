@@ -140,6 +140,9 @@ pub struct Surface {
     pub emissive_intensity: f32,
     pub emissive_clip: [f32; 2],
     pub skin: SkinInputs,
+    /// arkVegetation translucencyMap, bound when translucency/enable is set
+    /// and translucencyUseVertexColor is clear (renderParm defaults 0 and 1).
+    pub vegetation_translucency_map: Option<String>,
 }
 
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
@@ -342,6 +345,9 @@ impl Surface {
             emissive_color: vector(&v, "emissivecolorconstant", [0.; 3]),
             emissive_intensity: vector(&v, "emissiveintensity", [0.])[0],
             emissive_clip: vector(&v, "emissiveclipparms", [0., 0.001]),
+            vegetation_translucency_map: (number(&v, "translucency/enable", 0) != 0
+                && number(&v, "translucencyusevertexcolor", 1) == 0)
+                .then(|| image(&v, "translucencymap").unwrap_or_else(|| "_default".into())),
             skin: SkinInputs {
                 ward2: vector(&v, "wardroughness2", [0.0, 0.5]),
                 ward3: vector(&v, "wardroughness3", [0.0, 0.5]),
@@ -466,6 +472,11 @@ impl Surface {
             }
             if !is_decal && self.has_emissive_mask {
                 bindings.push((21, &self.emissive_mask));
+            }
+        }
+        if self.program() == Program::Vegetation {
+            if let Some(name) = &self.vegetation_translucency_map {
+                bindings.push((38, name.as_str()));
             }
         }
         if self.program() == Program::Skin {

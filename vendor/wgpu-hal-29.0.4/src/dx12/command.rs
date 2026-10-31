@@ -404,6 +404,15 @@ impl crate::CommandEncoder for super::CommandEncoder {
     type A = super::Api;
 
     unsafe fn begin_encoding(&mut self, label: crate::Label) -> Result<(), crate::DeviceError> {
+        // DH2 (project patch, diagnostic): DH2_TRACE_COMMAND_LISTS=1 prints the
+        // running count of D3D12 command lists begun, every 1000.
+        if std::env::var_os("DH2_TRACE_COMMAND_LISTS").is_some_and(|value| value == "1") {
+            static BEGUN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let begun = BEGUN.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+            if begun % 1000 == 0 {
+                std::eprintln!("DH2_COMMAND_LISTS begun={begun} label={label:?} at={:?}", std::time::Instant::now());
+            }
+        }
         // Only completed or discarded lists are available for checkout.
         // Release the pool lock before entering the D3D12 runtime.
         let available = self

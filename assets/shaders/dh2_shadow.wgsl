@@ -36,6 +36,31 @@ fn shadow_depth_reference(value:f32)->f32 {
 
 fn shadow_slice(info: u32) -> i32 { return i32(info & 31u); }
 
+// SampleLevel( $bilinearSampler ) of a depth slice: four texels with the
+// standard texel-centre weights, clamped to the edge (GetShadowMapZandPos).
+fn bilinear_depth(map: texture_depth_2d_array, uv: vec2<f32>, slice: i32) -> f32 {
+    let size = vec2<f32>(textureDimensions(map));
+    let texel = uv * size - 0.5;
+    let base = floor(texel);
+    let f = texel - base;
+    let last = vec2<i32>(size) - 1;
+    let a = clamp(vec2<i32>(base), vec2(0), last);
+    let b = clamp(vec2<i32>(base) + 1, vec2(0), last);
+    let d00 = textureLoad(map, a, slice, 0);
+    let d10 = textureLoad(map, vec2(b.x, a.y), slice, 0);
+    let d01 = textureLoad(map, vec2(a.x, b.y), slice, 0);
+    let d11 = textureLoad(map, b, slice, 0);
+    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+}
+
+// BRDF_vegetation's shadowed irradiance factor from GetShadowMapZandPos:
+// enableShadow * exp(-w * isBehindCaster * distance(receiver, caster)).
+fn thickness_attenuation(receiver: vec3<f32>, coordinate_z: f32, map_z: f32, caster: vec3<f32>, w: f32) -> f32 {
+    let enable_shadow = clamp(1e5 * map_z, 0.0, 1.0);
+    let behind = clamp(1e4 * (coordinate_z - map_z), 0.0, 1.0);
+    return enable_shadow * exp(-w * behind * distance(receiver, caster));
+}
+
 fn omni_shadow_side(direction: vec3<f32>) -> u32 {
     let a = abs(direction);
     if a.x > a.y {

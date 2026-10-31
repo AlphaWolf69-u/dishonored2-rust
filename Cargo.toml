@@ -28,7 +28,7 @@ swf = { version = "0.3.0", default-features = false }
 # Reuse Bevy/wgpu's existing logging facade to set its fast runtime level cap.
 log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }
-bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio", "wav"] }
+bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio", "wav", "debug"] }
 ww2ogg = "0.1.0"
 lewton = "0.10.2"
 rand = "0.10.3"
@@ -37,15 +37,22 @@ rand = "0.10.3"
 winit = { path = "vendor/winit-0.30.13" }
 naga = { path = "vendor/naga-29.0.4" }
 wgpu-hal = { path = "vendor/wgpu-hal-29.0.4" }
+wgpu-core = { path = "vendor/wgpu-core-29.0.4" }
 bevy_render = { path = "vendor/bevy_render-0.19.1" }
 bevy_core_pipeline = { path = "vendor/bevy_core_pipeline-0.19.1" }
 bevy_light = { path = "vendor/bevy_light-0.19.1" }
 bevy_pbr = { path = "vendor/bevy_pbr-0.19.1" }
 bevy_render_macros = { path = "vendor/bevy_render_macros-0.19.1" }
 
+[dev-dependencies]
+# Already in the graph through Bevy; tests compare against its helpers.
+wgpu = "=29.0.4"
+
 [features]
 game = ["dep:bevy", "dep:log"]
 launcher = ["dep:slint", "dep:git2", "dep:serde_json"]
+# Diagnostic: live heap bytes per allocation tag (platform::allocation_tags).
+debug_allocations = []
 
 [[bin]]
 name = "dishonored2-rust"
@@ -112,10 +119,21 @@ path = "src/bin/visibility_probe.rs"
 [profile.dev]
 debug = 0
 incremental = false
+opt-level = 1
+
+# Unoptimized Bevy/wgpu ran the dev client at ~5 FPS, too slow for diagnostic
+# runs. Timing comparisons with the original still use release builds.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Release code with line tables, for ETW/xperf CPU sampling (target/profiling).
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
 
 [[bin]]
 name = "probe-audit"

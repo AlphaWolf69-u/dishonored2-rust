@@ -32,6 +32,10 @@ struct SurfaceUniform {
     glass:vec4<f32>,
     skin:array<vec4<f32>,3>,
     skin_flags:vec4<u32>,
+    vegetation:vec4<f32>,
+    vegetation_translucency:vec4<f32>,
+    vegetation_options:vec4<f32>,
+    particle_instances:vec4<u32>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> surface: SurfaceUniform;
 
@@ -39,6 +43,9 @@ struct SurfaceUniform {
 // parameters in the uniform but specialize resource/feature branches.
 const compiled_flags = vec4<u32>(#{DH2_EXTRA_LAYERS}u, #{DH2_HAS_GLOSS}u, #{DH2_GLOSS_ALPHA}u, #{DH2_HAS_METALLIC}u);
 const compiled_misc = vec4<u32>(#{DH2_HAS_BUMP}u, #{DH2_VERTEX_COLOR_MULTIPLY}u, #{DH2_SURFACE_ENABLED}u, #{DH2_ALPHA_FLAGS}u);
+// arkDefaultHelpers: $VtxColorMultiply || $useParticleColorInstancing (the
+// latter outside shadow and plain Z passes, which never sample albedo here).
+const vertex_colour_multiply = compiled_misc.y != 0u || #{DH2_PARTICLE_INSTANCE_KEY}u != 0u;
 const compiled_occlusion = #{DH2_HAS_OCCLUSION}u;
 // Original shadowCommon offset flags and shadowFilteringQuality are shader
 // options. Preserve specialization instead of evaluating their branches for
@@ -85,8 +92,9 @@ const compiled_shadow = vec4<u32>(#{DH2_SHADOW_ROUTE}u, #{DH2_SHADOW_OFFSET_FLAG
 @group(#{MATERIAL_BIND_GROUP}) @binding(170) var skin_fresnel_lookup:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(172) var sss_mask:texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(173) var fuzz_mask:texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;
 #endif
+// translucency/mask (arkSSSRender) or translucencyMap (arkVegetation).
+@group(#{MATERIAL_BIND_GROUP}) @binding(174) var translucency_mask:texture_2d<f32>;
 #ifdef PREPASS_PIPELINE
 #import bevy_render::globals::Globals
 @group(0) @binding(1) var<uniform> globals:Globals;
@@ -200,7 +208,7 @@ fn decal_diffuse(uv0:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> 
         if info.w!=0u {mask=1.0-mask;}
         colour*=mix(vec4(1.0),surface.colors[0],mask);
     }
-    if compiled_misc.y!=0u {colour*=vertex_color;}
+    if vertex_colour_multiply {colour*=vertex_color;}
     return colour;
 }
 
@@ -307,7 +315,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
         // Layer1 bump reuse likewise skips interpolation of identical input.
         if i != 1u || surface.reuse[i].y == 0u { out.normal_xy = mix(out.normal_xy, bump[i], masks[i]); }
     }
-    if !is_decal && !is_vegetation && compiled_misc.y != 0u { out.albedo *= vertex_color; }
+    if !is_decal && !is_vegetation && vertex_colour_multiply { out.albedo *= vertex_color; }
     let base_uv=select(uv0,uv1,surface.uv_sets[0].x!=0u);
     let base_dx=select(dx0,dx1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;
     let base_dy=select(dy0,dy1,surface.uv_sets[0].x!=0u)*surface.uv[0].xy;

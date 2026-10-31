@@ -421,6 +421,37 @@ fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 impl ParticlePass {
+    /// Raise the instance/draw capacity in place. Only the capacity-sized
+    /// storage and the bind groups that reference it are rebuilt; the shader,
+    /// pipelines and level materials are kept.
+    pub fn grow(&mut self, device: &RenderDevice, max_instances: usize, max_draws: usize) {
+        if max_instances <= self.max_instances && max_draws <= self.max_draws {
+            return;
+        }
+        let max_instances = max_instances.max(self.max_instances);
+        let max_draws = max_draws.max(self.max_draws);
+        let storage = |label, size| {
+            device.create_buffer(&BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        self.instances = storage("particle instances", (max_instances * 96) as u64);
+        self.objects = storage("particle volume fog", (max_draws * FogObjectParameters::SIZE) as u64);
+        self.transparency_parameters = storage("particle transparency parameters", (max_draws * 48) as u64);
+        self.root_lighting = storage("particle root probe records", (max_draws * 9 * 16) as u64);
+        self.max_instances = max_instances;
+        self.max_draws = max_draws;
+        self.instance_bytes.reserve((max_instances * 96).saturating_sub(self.instance_bytes.len()));
+        self.view_bindings = None;
+        self.fog_binding = None;
+        self.lighting_binding = None;
+        for (_, binding) in self.meshes.values_mut() {
+            *binding = None;
+        }
+    }
     fn geometry_binding(&self,device:&RenderDevice,vertices:&Buffer,adaptation:&Buffer)->BindGroup {
         device.create_bind_group(Some("particle geometry view"),&self.view_layout,&[
             BindGroupEntry{binding:0,resource:self.view.binding().unwrap()},
@@ -537,10 +568,22 @@ impl ParticlePass {
             .collect::<Vec<_>>()
             .join("\n")
             .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
+        // Directives are stripped; only the particle-surface instancing branch
+        // (never defined for the FX pass) is removed with its body.
         let shared_source = |source: &str| {
+            let mut instanced = None;
             source
                 .lines()
-                .filter(|line| !line.trim_start().starts_with('#'))
+                .filter(|line| {
+                    let directive = line.trim_start();
+                    match (directive, instanced) {
+                        ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
+                        ("#else", Some(true)) => instanced = Some(false),
+                        ("#endif", Some(_)) => instanced = None,
+                        _ => return instanced != Some(true) && !directive.starts_with('#'),
+                    }
+                    false
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };

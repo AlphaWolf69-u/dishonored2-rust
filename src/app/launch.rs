@@ -742,6 +742,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         app.insert_resource(BenchmarkSeconds(total, warmup));
+        // Bevy's default caps an unfocused window at 60 Hz; a measurement
+        // must not depend on which window has focus.
+        app.insert_resource(bevy::winit::WinitSettings::continuous());
     }
     // An explicit host benchmark size keeps pixel/LOD work independent of
     // desktop resolution and DPI. Ordinary launches retain borderless mode.
@@ -789,6 +792,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         | bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE;
     graphics.features |= bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
         | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D;
+    // Direct-instanced particle surfaces pass {mesh_index, first} as immediates.
+    graphics.features |= bevy::render::settings::WgpuFeatures::IMMEDIATES;
+    let mut limits = graphics.limits.clone();
+    limits.max_immediate_size = limits
+        .max_immediate_size
+        .max(crate::rendering::bevy_backend::particle_meshes::IMMEDIATE_SIZE);
+    graphics.limits = limits;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
     app.insert_resource(ProgramCacheSource(program_cache))
@@ -842,6 +852,20 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .set(bevy::app::TaskPoolPlugin {
                     task_pool_options: task_pools,
+                })
+                // Host diagnostic: benchmarks and DH2_DEBUG_MUTE=1 play silently.
+                .set(bevy::audio::AudioPlugin {
+                    global_volume: bevy::audio::GlobalVolume::new(
+                        if benchmark_resolution.is_some()
+                            || env::var("DH2_BENCHMARK_SECONDS").is_ok()
+                            || env::var("DH2_DEBUG_MUTE").as_deref() == Ok("1")
+                        {
+                            bevy::audio::Volume::SILENT
+                        } else {
+                            bevy::audio::Volume::Linear(1.0)
+                        },
+                    ),
+                    ..default()
                 })
                 .set(bevy::window::WindowPlugin {
                     primary_window: Some({
@@ -930,7 +954,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(chunk_size) = env::var("DH2_CAMERA_DRAW_CHUNK_SIZE")
         .ok()
         .or_else(|| {
-            (cfg!(target_os = "windows") && parallel_finalization).then(|| "4096".to_owned())
+            // Each chunk records and finishes on its own thread. At the eotw
+            // view (release, PresentMon, 3-5 runs each) 4096 left the main
+            // opaque encoder's 1.32 ms finish as the frame's last task:
+            // p50 11.29 ms; 1024 10.89, 512 10.86, 256 10.94, 128 11.14.
+            (cfg!(target_os = "windows") && parallel_finalization).then(|| "512".to_owned())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|size| *size > 0 && *size <= 16384)
@@ -962,8 +990,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return None;
             }
             let count = std::thread::available_parallelism().ok()?.get();
-            // The render thread also finalizes commands in this batch.
-            (count >= 4).then(|| (count / 4).clamp(1, 3).to_string())
+            // The render thread also finalizes commands in this batch. On a
+            // 12-thread CPU at the eotw view, half the hardware threads (6)
+            // beat a quarter (3) by ~0.5 ms p50 and 11 lost 3 ms to contention.
+            (count >= 4).then(|| (count / 2).clamp(1, 8).to_string())
         })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|threads| *threads > 0 && *threads <= 32)
@@ -1017,6 +1047,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 super::vegetation_wind::initialize_vegetation_wind,
                 initialize_parallel_shadow_owner,
                 shadow_updates::initialize_parallel_receiver_source,
+                shadow_updates::initialize_shadow_depth_copy,
                 local_shadow_updates::initialize_local_shadow_owner,
             )
                 .chain(),
@@ -1180,6 +1211,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         crate::rendering::bevy_backend::probe_weights::indirect_shader
     );
     bevy::asset::load_internal_asset!(app,super::state::REFLECTION_SHADER_HANDLE,"../../assets/shaders/dh2_reflection.wgsl",Shader::from_wgsl);
+    bevy::asset::load_internal_asset!(app,super::state::PARTICLE_SURFACE_SHADER_HANDLE,"../../assets/shaders/dh2_particle_surface.wgsl",Shader::from_wgsl);
     bevy::asset::load_internal_asset!(
         app,
         SKY_SHADER_HANDLE,

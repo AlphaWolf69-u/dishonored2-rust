@@ -351,6 +351,10 @@ pub use super::pipeline_state::{depth_stencil_gpu, mesh_raster as shadow_mesh_ra
 /// A native depth draw with caller-prepared model state and vertex streams.
 /// Index format, ranges and scissor are explicit. Rigid opaque/cutout and the
 /// verified vegetation program are supported; skin/paraboloid remain unmapped.
+/// Diagnostic: shadow depth draws and triangles submitted (all shadow passes).
+pub static DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static TRIANGLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub struct ShadowDepthDraw<'a> {
     pub model_state: &'a BindGroup,
     /// Byte offset in the shared per-frame constant ring. Static bindings use 0.
@@ -1607,6 +1611,8 @@ impl ShadowDepthPipeline {
                 draw.base_vertex,
                 draw.instances.clone(),
             );
+            DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            TRIANGLES.fetch_add(draw.indices.len() as u64 / 3 * draw.instances.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }

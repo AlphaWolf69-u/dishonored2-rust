@@ -64,12 +64,22 @@ fn parallel_camera_chunks_preserve_lighting_after_light_and_grid_changes_gpu() {
         // registered modules, just as in the game client.
         crate::shadow_sampling::register_shaders(&mut app);
         super::fog_material::register_shaders(&mut app);
+        super::area_light_scene::register_shaders(&mut app);
+        super::vegetation_wind::register_shaders(&mut app);
         let _indirect = app
             .world_mut()
             .resource_mut::<Assets<bevy::shader::Shader>>()
             .add(bevy::shader::Shader::from_wgsl(
                 super::probe_weights::indirect_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
                 "cluster-fixture/dh2_indirect.wgsl",
+            ));
+        // The client registers this module in app::launch, outside rendering.
+        let _reflection = app
+            .world_mut()
+            .resource_mut::<Assets<bevy::shader::Shader>>()
+            .add(bevy::shader::Shader::from_wgsl(
+                include_str!("../../../assets/shaders/dh2_reflection.wgsl"),
+                "cluster-fixture/dh2_reflection.wgsl",
             ));
 
         app.world_mut().insert_resource(GlobalAmbientLight {

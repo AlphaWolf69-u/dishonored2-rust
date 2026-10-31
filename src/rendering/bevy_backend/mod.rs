@@ -59,6 +59,8 @@ pub mod area_light_pool;
 #[cfg(feature = "game")]
 mod area_light_scene;
 #[cfg(feature = "game")]
+pub mod shader_buffer_patches;
+#[cfg(feature = "game")]
 pub mod fog;
 #[cfg(feature = "game")]
 pub mod fog_lookup;
@@ -66,6 +68,8 @@ pub mod fog_lookup;
 pub mod fog_capture;
 #[cfg(feature = "game")]
 pub mod display_capture;
+#[cfg(feature = "game")]
+pub mod debug_graphics_capture;
 #[cfg(feature = "game")]
 pub mod fog_shadow;
 #[cfg(feature = "game")]
@@ -215,6 +219,8 @@ mod depth_restore_tests;
 mod command_pool_tests;
 #[cfg(all(test, feature = "game"))]
 mod storage_upload_tests;
+#[cfg(all(test, feature = "game"))]
+mod texture_upload_tests;
 #[cfg(feature = "game")]
 pub mod colour_cube;
 #[cfg(feature = "game")]
@@ -249,6 +255,8 @@ pub mod screen_effects;
 #[cfg(feature = "game")]
 pub mod particle_pass;
 #[cfg(feature = "game")]
+pub mod particle_meshes;
+#[cfg(feature = "game")]
 pub(crate) mod particle_system;
 #[cfg(feature = "game")]
 pub(crate) mod particle_systems;
@@ -256,5 +264,7 @@ pub(crate) mod particle_systems;
 pub mod world_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_particle_state;
+#[cfg(feature = "game")]
+mod world_sub_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_sounds;

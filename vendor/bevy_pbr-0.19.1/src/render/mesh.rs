@@ -4419,6 +4419,17 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
     }
 }
 
+/// DH2 (project patch): entities drawn as direct-instanced surfaces, as the
+/// original draws particle renderers (1402bb550 -> 1402bace0). Each listed
+/// entity draws `count` instances; the vertex stage reads its own mesh
+/// uniform through immediates {mesh_index, first} and the instance records
+/// from bind group 4.
+#[derive(Resource, Default)]
+pub struct DirectInstanceDraws {
+    pub entities: MainEntityHashMap<(u32, u32)>,
+    pub bind_group: Option<BindGroup>,
+}
+
 pub struct DrawMesh;
 impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
     type Param = (
@@ -4429,6 +4440,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         SRes<MeshAllocator>,
         Option<SRes<PreprocessPipelines>>,
         SRes<GpuPreprocessingSupport>,
+        Option<SRes<DirectInstanceDraws>>,
     );
     type ViewQuery = Has<PreprocessBindGroups>;
     type ItemQuery = ();
@@ -4445,6 +4457,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
             mesh_allocator,
             preprocess_pipelines,
             preprocessing_support,
+            direct_instances,
         ): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -4477,6 +4490,37 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         pass.set_vertex_buffer(0, vertex_buffer_slice.buffer.slice(..));
 
         let batch_range = item.batch_range();
+
+        let direct_instances = direct_instances.map(|draws| draws.into_inner());
+        // Every direct-instanced entity is listed each frame (count 0 when it
+        // has no instances), so its pipeline never takes the ordinary path.
+        if let Some((first, count)) = direct_instances
+            .and_then(|draws| draws.entities.get(&item.main_entity()).copied())
+        {
+            let (Some(bind_group), RenderMeshBufferInfo::Indexed { index_format, count: indices }) =
+                (direct_instances.and_then(|draws| draws.bind_group.as_ref()), &gpu_mesh.buffer_info)
+            else {
+                return RenderCommandResult::Skip;
+            };
+            if count == 0 || batch_range.end != batch_range.start + 1 {
+                return RenderCommandResult::Skip;
+            }
+            let Some(index_buffer_slice) = mesh_allocator.mesh_index_slice(&mesh_asset_id) else {
+                return RenderCommandResult::Skip;
+            };
+            pass.set_index_buffer(index_buffer_slice.buffer.slice(..), *index_format);
+            pass.set_bind_group(4, bind_group, &[]);
+            let mut immediates = [0u8; 8];
+            immediates[..4].copy_from_slice(&batch_range.start.to_le_bytes());
+            immediates[4..].copy_from_slice(&first.to_le_bytes());
+            pass.set_immediates(0, &immediates);
+            pass.draw_indexed(
+                index_buffer_slice.range.start..(index_buffer_slice.range.start + *indices),
+                vertex_buffer_slice.range.start as i32,
+                0..count,
+            );
+            return RenderCommandResult::Success;
+        }
 
         // Draw either directly or indirectly, as appropriate. If we're in
         // indirect mode, we can additionally multi-draw. (We can't multi-draw

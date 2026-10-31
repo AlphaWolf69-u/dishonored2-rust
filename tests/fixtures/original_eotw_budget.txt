@@ -1,0 +1,217 @@
+# Original Dishonored 2 (Steam AppID 403640, VoidEngine v1.77.9.0) at the start
+# of eotw_p_lowchaos, 1920x1080 borderless, r_renderQualityPresets 5,
+# AMD Radeon RX 6800 XT, D3D11, captured 2026-10-28.
+# Memory tags: analysis/memory_tags.py (allocator counters DAT_1432c4f60 /
+# DAT_1432c5460, names at 0x142288a30). Process and GPU: Windows counters.
+# Frames: PresentMon 2, 10 s, analysis/frame_stats.py.
+# Render: the r_showStats report (analysis/render_stats.py); per-pass GPU
+# times are compiled out of the retail build (always 0) and not recorded.
+# Passes: RenderDoc 1.46 capture replayed by analysis/rdc_pass_times.py
+# (a pass = consecutive actions writing the same targets). The capture is
+# 1366x768: display scaling virtualized the borderless window. pass lines:
+# index draws dispatches triangles share_of_summed_gpu_time targets.
+process private_mb 8626
+process working_set_mb 3897
+gpu dedicated_mb 3987
+gpu shared_mb 235
+gpu utilization_3d_percent 46.7
+cpu cores_busy 4.46
+frame time_ms_mean 11.17
+frame time_ms_p95 12.38
+frame cpu_busy_ms_mean 10.88
+frame gpu_busy_ms_mean 5.19
+frame gpu_busy_ms_p95 5.51
+tag WWISE bytes 240890571 count 13
+tag ANIMATION bytes 195174788 count 22633
+tag HAVOK bytes 103479168 count 12502
+tag IGGY bytes 86057717 count 595
+tag FACEFX_SYSTEM bytes 84439792 count 34198
+tag UMBRA_TOME bytes 77553524 count 1
+tag RENDERMODEL bytes 72481984 count 19507
+tag INDIRECT_LIGHTING bytes 61751560 count 46614
+tag COMPONENT bytes 55492034 count 26607
+tag RESOURCE bytes 51830920 count 22543
+tag TRIANGLES bytes 50402432 count 26456
+tag ANIMTREE bytes 49835196 count 94206
+tag PARTICLE bytes 46524457 count 13628
+tag SHADERCACHE bytes 43566840 count 93362
+tag PHYSICS bytes 38820534 count 1196
+tag ATOMIC_STRING bytes 34537472 count 527
+tag SKELETON bytes 22829396 count 35410
+tag KISCULE bytes 22018157 count 93089
+tag NAVIGATION bytes 18353100 count 3967
+tag IDCLASS bytes 18194344 count 105314
+tag AI_RULE bytes 18111192 count 73449
+tag HASHTABLE bytes 17252688 count 201966
+tag UMBRA_QUERYSYSTEM bytes 15758216 count 63
+tag DECL bytes 14226448 count 47478
+tag COMPONENT_AI bytes 13773888 count 284
+tag SYSTEM bytes 13461696 count 187902
+tag NEW bytes 12977772 count 43957
+tag SAVEGAMES bytes 12262296 count 115
+tag COMPONENT_ANIM bytes 10656016 count 2877
+tag IDLIST bytes 9976462 count 27473
+tag STATICMODEL bytes 9291620 count 1004
+tag FX bytes 9149240 count 15839
+tag RENDERPARM bytes 8546580 count 18394
+tag STRING bytes 8399977 count 38701
+tag HASHINDEX bytes 8154048 count 2520
+tag ANIMSET bytes 6591156 count 19152
+tag RENDERER bytes 5799177 count 46946
+tag GAME bytes 4951850 count 69146
+tag MIDNIGHT bytes 4551652 count 19627
+tag AI_BT bytes 4344520 count 5595
+tag AI_DSM bytes 3702434 count 20823
+tag DECLTEXT bytes 3654497 count 3857
+tag SKINNED_RENDERMODEL bytes 2505580 count 5145
+tag AUDIO_PROPA bytes 1907886 count 412
+tag CURVE bytes 1758948 count 41700
+tag PAGEFILECACHE bytes 1279016 count 5
+tag AI_USER_VAR bytes 1256504 count 42315
+tag IMAGE bytes 1250104 count 219
+tag GUI_MODEL bytes 980352 count 3
+tag AUDIO bytes 929384 count 2461
+tag LANGDICT bytes 547888 count 1
+tag IDLIB bytes 521065 count 44067
+tag AI_GLOBAL bytes 261800 count 3281
+tag RENDERWORLD bytes 96768 count 2
+tag EVENT_LISTENER bytes 93736 count 3454
+tag FREE1 bytes 53248 count 13
+tag COLLISION bytes 34412 count 4
+tag CVAR bytes 33608 count 142
+tag NETWORKING bytes 27680 count 2
+tag KDTREE bytes 26496 count 1
+tag FILE bytes 22024 count 38
+tag SOUND bytes 19280 count 328
+tag DEBUG bytes 18428 count 76
+tag AUDIO_COOK bytes 9760 count 41
+tag FONTS bytes 9178 count 9
+tag FXPHYSICS bytes 5960 count 3
+tag LEXER bytes 1624 count 10
+tag FUNC_CALLBACK bytes 1128 count 69
+tag TABLE bytes 416 count 4
+tag RESOURCE_BGL bytes 112 count 1
+tag BITARRAY bytes 21 count 17
+render model_commits_per_frame 552.200
+render light_commits_per_frame 102.000
+render models_total 9374.000
+render lights_total 628.000
+render approx-light_models 0.000
+render trans-sort_quads 0.000
+render trans-add_quads 0.000
+render ms_cpu_render 6.858
+render ms_cpu_wait_gpuSubmits 0.007
+render ms_portal_query 1.501
+render ms_light_query 0.164
+render ms_shadow_casters_query 0.846
+# capture: 118 passes, 5646 draws, 23 dispatches, 59.827 ms summed
+pass 1 1 0 2 0.0002 2D_Render_Target_86321_683x384_R8_UNORM
+pass 2 1 1 2 0.0002 2D_Render_Target_86322_683x384_R8_UNORM
+pass 3 0 7 0 0.0008 depth_2D_Depth_Target_82729_2048x2048x8_D24S8_TYPELESS
+pass 4 0 2 0 0.0004 
+pass 5 1952 0 2852396 0.2281 2D_Render_Target_146_1366x768_R16G16_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 6 1 0 1 0.0006 depth_2D_Depth_Target_138_1366x768_D24S8_TYPELESS
+pass 7 1 0 2 0.0003 2D_Render_Target_82700_512x512_R16G16B16A16_FLOAT
+pass 8 1 0 2 0.0002 2D_Render_Target_82701_512x512_R16G16B16A16_FLOAT
+pass 9 1 1 33449 0.0005 2D_Render_Target_82702_512x512_R16_FLOAT
+pass 10 0 1 0 0.0002 
+pass 11 1 0 1 0.0003 depth_2D_Depth_Target_150_1366x768_D24S8_TYPELESS
+pass 12 123 0 15863 0.0233 2D_Render_Target_146_1366x768_R16G16_FLOAT_|_depth_2D_Depth_Target_150_1366x768_D24S8_TYPELESS
+pass 13 1 0 1 0.0005 depth_2D_Depth_Target_150_1366x768_D24S8_TYPELESS
+pass 14 1 0 1 0.0009 depth_2D_Depth_Target_149_1366x768_D24S8_TYPELESS
+pass 15 2 0 175 0.0008 depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 16 1 0 174 0.0003 depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 17 1 0 1 0.0002 2D_Render_Target_86579_342x192_R8_UNORM
+pass 18 1 0 1 0.0002 depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 19 1 0 1 0.0001 depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 20 0 1 0 0.0005 
+pass 21 1 0 1 0.0003 2D_Render_Target_127_683x384_R16G16_FLOAT
+pass 22 0 2 0 0.0002 
+pass 23 6 0 11 0.0008 2D_Render_Target_86320_683x384_R16G16B16A16_FLOAT_|_depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 24 1 0 1 0.0002 2D_Render_Target_86831_1366x768_R32_FLOAT
+pass 25 2 0 2 0.0002 2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT_|_2D_Render_Target_86837_342x192x16_R16_FLOAT
+pass 26 1 0 1 0.0002 2D_Render_Target_86834_1366x768_R8G8B8A8_UNORM
+pass 27 16 0 16 0.0030 2D_Render_Target_86872_342x192x16_R8_UNORM
+pass 28 1 0 1 0.0003 2D_Render_Target_147_1366x768_R8G8B8A8_UNORM
+pass 29 1 0 1 0.0002 2D_Render_Target_147_1366x768_R8G8B8A8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 31 45 0 64763 0.0040 depth_2D_Depth_Target_82725_2048x2048_D24S8_TYPELESS
+pass 33 1 0 1 0.0001 2D_Render_Target_86325_683x384_R8G8_UNORM
+pass 34 68 0 17447 0.0068 2D_Render_Target_153_1366x768_R16G16_FLOAT_|_depth_2D_Depth_Target_149_1366x768_D24S8_TYPELESS
+pass 35 68 0 17447 0.0071 depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 36 1 0 96 0.0001 2D_Render_Target_153_1366x768_R16G16_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 37 10 0 75898 0.0009 depth_2D_Depth_Target_82725_2048x2048_D24S8_TYPELESS
+pass 38 1 0 2 0.0006 depth_2D_Depth_Target_82724_2048x2048x5_D24S8_TYPELESS
+pass 39 0 1 0 0.0014 
+pass 40 10 2 20 0.0018 depth_2D_Depth_Target_82729_2048x2048x8_D24S8_TYPELESS
+pass 41 20 0 92016 0.0029 depth_2D_Depth_Target_82725_2048x2048_D24S8_TYPELESS
+pass 42 1 0 2 0.0008 depth_2D_Depth_Target_82724_2048x2048x5_D24S8_TYPELESS
+pass 44 262 0 210025 0.0200 depth_2D_Depth_Target_82729_2048x2048x8_D24S8_TYPELESS
+pass 45 83 0 273478 0.0112 depth_2D_Depth_Target_82725_2048x2048_D24S8_TYPELESS
+pass 46 1 0 2 0.0009 depth_2D_Depth_Target_82724_2048x2048x5_D24S8_TYPELESS
+pass 48 442 0 734770 0.0438 depth_2D_Depth_Target_82725_2048x2048_D24S8_TYPELESS
+pass 49 1 0 2 0.0007 depth_2D_Depth_Target_82724_2048x2048x5_D24S8_TYPELESS
+pass 50 2 0 2 0.0008 2D_Render_Target_147_1366x768_R8G8B8A8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 51 1 0 1 0.0003 2D_Render_Target_86383_1366x768_R8G8B8A8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 52 1 0 1 0.0003 2D_Render_Target_147_1366x768_R8G8B8A8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 53 0 1 0 0.0002 
+pass 54 1703 0 2358089 0.4617 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 55 2 0 1217 0.0003 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_2D_Render_Target_144_1366x768_R8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 56 216 0 395629 0.0488 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 57 59 0 93820 0.0108 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_2D_Render_Target_140_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 58 110 0 110431 0.0192 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 60 1 0 1 0.0013 2D_Render_Target_86579_342x192_R8_UNORM
+pass 61 2 0 2 0.0008 2D_Render_Target_86323_683x384_R16G16B16A16_FLOAT_|_depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 62 1 0 1 0.0001 2D_Render_Target_86593_86x48_R8_UNORM
+pass 63 1 0 1 0.0002 2D_Render_Target_86323_683x384_R16G16B16A16_FLOAT
+pass 64 2 0 2 0.0001 2D_Render_Target_86323_683x384_R16G16B16A16_FLOAT_|_depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 65 1 0 1 0.0001 2D_Render_Target_86593_86x48_R8_UNORM
+pass 66 1 0 2 0.0001 2D_Render_Target_86604_86x48_R8_UNORM
+pass 67 1 0 2 0.0001 2D_Render_Target_86593_86x48_R8_UNORM
+pass 68 1 0 1 0.0007 2D_Render_Target_86570_683x384_R16G16B16A16_FLOAT
+pass 69 1 0 1 0.0006 2D_Render_Target_86323_683x384_R16G16B16A16_FLOAT
+pass 70 1 0 1 0.0007 2D_Render_Target_86332_342x192_R16_FLOAT
+pass 71 1 0 2 0.0004 2D_Render_Target_86389_342x192_R16_FLOAT
+pass 72 1 0 2 0.0004 2D_Render_Target_86332_342x192_R16_FLOAT
+pass 73 1 0 2 0.0002 2D_Render_Target_86389_342x192_R16_FLOAT
+pass 74 1 0 2 0.0006 2D_Render_Target_86332_342x192_R16_FLOAT
+pass 75 121 0 15515 0.0403 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_150_1366x768_D24S8_TYPELESS
+pass 76 1 0 1 0.0004 2D_Render_Target_139_1366x768_R11G11B10_FLOAT
+pass 77 1 0 1 0.0002 2D_Render_Target_86324_683x384_R11G11B10_FLOAT
+pass 78 1 0 1 0.0001 2D_Render_Target_86414_342x192_R11G11B10_FLOAT
+pass 79 1 0 1 0.0001 2D_Render_Target_86426_342x192_R8G8_UNORM
+pass 80 1 0 1 0.0001 2D_Render_Target_86324_683x384_R11G11B10_FLOAT_|_2D_Render_Target_86456_683x384_R8_UNORM_|_depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 81 1 0 1 0.0001 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_149_1366x768_D24S8_TYPELESS
+pass 82 40 0 14677 0.0072 2D_Render_Target_154_1366x768_R16G16B16A16_FLOAT_|_2D_Render_Target_155_1366x768_R8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 83 24 0 2644 0.0084 2D_Render_Target_152_1366x768_R16G16B16A16_FLOAT_|_2D_Render_Target_153_1366x768_R16G16_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 84 1 0 1 0.0003 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 85 1 0 6 0.0001 2D_Render_Target_234934_1366x768_R8_UNORM_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 86 1 0 2 0.0004 2D_Render_Target_234950_1366x768_R8_UNORM
+pass 87 1 0 2 0.0003 2D_Render_Target_234934_1366x768_R8_UNORM
+pass 88 1 0 2 0.0002 2D_Render_Target_139_1366x768_R11G11B10_FLOAT_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS
+pass 89 1 0 1 0.0001 2D_Render_Target_86332_342x192_R16_FLOAT
+pass 90 1 0 1 0.0001 2D_Render_Target_86389_342x192_R16_FLOAT
+pass 91 1 0 1 0.0001 2D_Render_Target_86332_342x192_R16_FLOAT
+pass 92 1 0 1 0.0001 2D_Render_Target_86325_683x384_R8G8_UNORM
+pass 93 1 0 1 0.0002 2D_Render_Target_86326_683x384_R11G11B10_FLOAT
+pass 94 1 0 1 0.0001 2D_Render_Target_86414_342x192_R11G11B10_FLOAT
+pass 95 1 0 1 0.0001 2D_Render_Target_86426_342x192_R8G8_UNORM
+pass 96 1 0 1 0.0001 depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 97 1 0 1 0.0000 2D_Render_Target_86445_683x384_R11G11B10_FLOAT_|_2D_Render_Target_86456_683x384_R8_UNORM_|_depth_2D_Depth_Target_86327_683x384_D24S8_TYPELESS
+pass 98 1 0 1 0.0004 2D_Render_Target_140_1366x768_R11G11B10_FLOAT
+pass 99 1 0 1 0.0003 2D_Render_Target_139_1366x768_R11G11B10_FLOAT
+pass 100 1 0 1 0.0003 2D_Render_Target_140_1366x768_R11G11B10_FLOAT
+pass 101 9 0 9 0.0009 2D_Render_Target_86328_683x384_R16G16B16A16_FLOAT
+pass 102 0 3 0 0.0003 
+pass 103 1 0 1 0.0001 2D_Render_Target_86463_43x12_R16G16B16A16_FLOAT
+pass 104 1 0 1 0.0001 2D_Render_Target_86472_43x24_R16G16B16A16_FLOAT
+pass 105 1 0 1 0.0001 2D_Render_Target_86481_86x24_R16G16B16A16_FLOAT
+pass 106 1 0 1 0.0001 2D_Render_Target_86488_86x48_R16G16B16A16_FLOAT
+pass 107 1 0 1 0.0001 2D_Render_Target_86493_171x48_R16G16B16A16_FLOAT
+pass 108 1 0 1 0.0001 2D_Render_Target_86497_171x96_R16G16B16A16_FLOAT
+pass 109 1 0 1 0.0001 2D_Render_Target_86535_341x192_R11G11B10_FLOAT
+pass 110 1 0 1 0.0001 2D_Render_Target_86520_341x192_R11G11B10_FLOAT
+pass 111 1 0 1 0.0002 2D_Render_Target_86535_341x192_R11G11B10_FLOAT
+pass 112 1 1 1 0.0002 2D_Render_Target_86520_341x192_R11G11B10_FLOAT
+pass 113 1 0 1 0.0006 2D_Render_Target_145_1366x768_R8G8B8A8_TYPELESS
+pass 114 1 0 1 0.0004 Swapchain_Image_136_1366x768_R8G8B8A8_SRGB
+pass 116 173 0 6076 0.0174 Swapchain_Image_136_1366x768_R8G8B8A8_SRGB_|_depth_2D_Depth_Target_137_1366x768_D24S8_TYPELESS

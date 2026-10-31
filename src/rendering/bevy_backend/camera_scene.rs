@@ -40,9 +40,82 @@ pub(super) struct CameraGpu {
     particle_systems: super::particle_systems::ParticleSystems,
     world_particles: super::world_particle_state::WorldParticleState,
     screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
+    /// The FX update's draws for this frame: FX-pass sprites/meshes, and
+    /// world-material meshes drawn as model surfaces.
+    pub(super) particle_publication: Option<ParticlePublicationFrame>,
     particles: Option<ParticleGpu>,
     screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
+pub(super) struct ParticlePublicationFrame {
+    pub camera: Entity,
+    pub frame: u32,
+    pub draws: Vec<super::particle_pass::ParticleDraw>,
+    pub world_meshes: Vec<super::particle_system::WorldMeshDraw>,
+}
+
+/// 1ffff0 publishes every visible system's renderers after its simulation;
+/// all of this frame's consumers read the same publication.
+fn publish_particles(
+    gpu: &mut CameraGpu,
+    water: &super::water_scene::WaterFrame,
+    queries: &super::particle_systems::ParticleQueryFrame,
+    fog_frame: &FogSceneFrame,
+) -> Result<(), String> {
+    gpu.particle_publication = None;
+    let frame = fog_frame
+        .0
+        .as_ref()
+        .filter(|f| f.camera == water.camera)
+        .ok_or("particle fog awaits the gameplay camera")?;
+        let matrices = &water.matrices.current;
+        let axes = [
+            std::array::from_fn(|i| -matrices.view[2][i]),
+            std::array::from_fn(|i| -matrices.view[0][i]),
+            std::array::from_fn(|i| matrices.view[1][i]),
+        ];
+        let sprite_view = crate::rendering::particles::SpriteView {
+            camera_position: matrices.position,
+            camera_axes: axes,
+            custom_basis: axes,
+            emitter_basis: axes,
+            owner_colour: [1.; 4],
+            owner_scale: 1.,
+        };
+        let console = crate::platform::console::shared().read();
+        let (draws, world_meshes) = gpu
+            .particle_systems
+            .publish_draws(water.matrices.frame, |pose| {
+                Ok(super::screen_effects::ParticleDrawContext {
+                    view: &sprite_view,
+                    probes: queries.0.as_ref()
+                        .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
+                        .ok_or("particle lighting awaits the current scene publication")?
+                        .probes.as_deref(),
+                    // This backend publishes a single logical gameplay origin.
+                    // Both view origins coincide for this supported view path.
+                    camera: crate::rendering::particles::view::ParticleCamera::select(
+                        pose.position,
+                        matrices.position,
+                        matrices.position,
+                        axes,
+                    ),
+                    view_z: std::array::from_fn(|i| -matrices.view[2][i]),
+                    query_visibility: 1.,
+                    alpha_scale: 1.,
+                    cvars: &console.cvars,
+                    areas: &frame.areas,
+                })
+            })?;
+        drop(console);
+    gpu.particle_publication = Some(ParticlePublicationFrame {
+        camera: water.camera,
+        frame: water.matrices.frame,
+        draws,
+        world_meshes,
+    });
+    Ok(())
+}
+
 struct ParticleGpu {
     pass: super::particle_pass::ParticlePass,
     instances: usize,
@@ -110,6 +183,9 @@ pub(super) fn register(app: &mut App) {
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::screen_effects::ScreenEffectMaterials,
     >::default());
+    app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<
+        super::particle_meshes::ParticleMeshProxy,
+    >::default());
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<CameraGpu>().add_systems(
             Core3d,
@@ -128,14 +204,35 @@ pub(super) fn register(app: &mut App) {
             .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d));
         render.add_systems(
             Core3d,
-            (prepare_screen_effects, render_particles)
-                .chain()
+            render_particles
                 .in_set(Core3dSystems::MainPass)
                 .after(super::fog_scene::AtmospherePass)
                 .before(bevy::core_pipeline::core_3d::main_transparent_pass_3d),
         );
+        // FX simulation and publication precede every pass that draws their
+        // surfaces: world-material particle meshes enter the Z prepass.
+        render.add_systems(
+            Core3d,
+            prepare_screen_effects
+                .in_set(FxUpdate)
+                .before(Core3dSystems::Prepass)
+                .before(render_particles),
+        );
+        render
+            .init_resource::<bevy::pbr::DirectInstanceDraws>()
+            .init_resource::<super::particle_meshes::ParticleMeshBuffers>()
+            .add_systems(
+                Core3d,
+                super::particle_meshes::prepare_particle_meshes
+                    .after(FxUpdate)
+                    .before(Core3dSystems::Prepass),
+            );
     }
 }
+
+/// The per-frame FX update (simulation and draw publication).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FxUpdate;
 
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
@@ -225,45 +322,12 @@ fn render_particles(
             .camera_depth(water.camera, water.matrices.frame)
             .ok_or("particle depth awaits completed atmosphere")?;
         let matrices = &water.matrices.current;
-        let axes = [
-            std::array::from_fn(|i| -matrices.view[2][i]),
-            std::array::from_fn(|i| -matrices.view[0][i]),
-            std::array::from_fn(|i| matrices.view[1][i]),
-        ];
-        let sprite_view = crate::rendering::particles::SpriteView {
-            camera_position: matrices.position,
-            camera_axes: axes,
-            custom_basis: axes,
-            emitter_basis: axes,
-            owner_colour: [1.; 4],
-            owner_scale: 1.,
-        };
-        let console = crate::platform::console::shared().read();
         let draws = gpu
-            .particle_systems
-            .publish_draws(water.matrices.frame, |pose| {
-                Ok(super::screen_effects::ParticleDrawContext {
-                    view: &sprite_view,
-                    probes: queries.0.as_ref()
-                        .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
-                        .ok_or("particle lighting awaits the current scene publication")?
-                        .probes.as_deref(),
-                    // This backend publishes a single logical gameplay origin.
-                    // Both view origins coincide for this supported view path.
-                    camera: crate::rendering::particles::view::ParticleCamera::select(
-                        pose.position,
-                        matrices.position,
-                        matrices.position,
-                        axes,
-                    ),
-                    view_z: std::array::from_fn(|i| -matrices.view[2][i]),
-                    query_visibility: 1.,
-                    alpha_scale: 1.,
-                    cvars: &console.cvars,
-                    areas: &frame.areas,
-                })
-            })?;
-        drop(console);
+            .particle_publication
+            .take()
+            .filter(|published| published.camera == water.camera && published.frame == water.matrices.frame)
+            .ok_or("particle draws await the FX update")?
+            .draws;
         let lens = display
             .0
             .as_ref()
@@ -272,6 +336,16 @@ fn render_particles(
             .ok_or("particle HDR settings await the current view")?;
         let colour_format = target.main_texture_format();
         let depth_format = depth.alpha.full.format();
+        // A larger live capacity only grows the instance/draw storage; the
+        // pass and its level materials are rebuilt only for new targets.
+        if let Some(particles) = gpu.particles.as_mut().filter(|p| {
+            p.colour_format == colour_format && p.depth_format == depth_format
+                && (p.instances < instances || p.draws < draw_capacity)
+        }) {
+            particles.pass.grow(&device, instances, draw_capacity);
+            particles.instances = particles.instances.max(instances);
+            particles.draws = particles.draws.max(draw_capacity);
+        }
         if gpu.particles.as_ref().is_none_or(|p| {
             p.instances < instances
                 || p.draws < draw_capacity
@@ -449,19 +523,29 @@ fn render_particles(
 }
 /// The shared CPU controller advances before transparent colour submission.
 /// Camera postprocessing consumes these commands without advancing it again.
+/// World FX inputs and the pre-pass water state read by the FX update.
+#[derive(SystemParam)]
+struct FxUpdateInputs<'w> {
+    world_sources: Res<'w, super::world_effects::WorldEffectSources>,
+    world_graphs: Res<'w, super::world_effects::WorldEffectDefinitions>,
+    world_frames: Res<'w, super::world_effects::WorldEffectFrames>,
+    world_sounds: Res<'w, super::world_sounds::WorldSounds>,
+    water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
+    device: Res<'w, RenderDevice>,
+}
+
 fn prepare_screen_effects(
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
-    world_sources: Res<super::world_effects::WorldEffectSources>,
-    world_graphs: Res<super::world_effects::WorldEffectDefinitions>,
-    world_frames: Res<super::world_effects::WorldEffectFrames>,
-    world_sounds: Res<super::world_sounds::WorldSounds>,
+    fx: FxUpdateInputs,
     water: Res<WaterSceneFrame>,
-    fog: Res<FogGpu>,
+    mut fog: ResMut<FogGpu>,
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
     particle_view: Res<super::particle_systems::ParticleQueryFrame>,
+    fog_frame: Res<FogSceneFrame>,
     mut gpu: ResMut<CameraGpu>,
     view: ViewQuery<&MainEntity>,
     mut last_error: Local<Option<String>>,
+    mut ocean_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
 ) {
@@ -478,12 +562,26 @@ fn prepare_screen_effects(
         return;
     }
     gpu.screen_draws = None;
-    if fog
-        .camera_depth(water.camera, water.matrices.frame)
-        .is_none()
-    {
-        return;
-    }
+    // The original advances FX on the game thread before the frame renders;
+    // its water inputs are this frame's CPU view state and the completed
+    // head-query readbacks, both available before any GPU pass.
+    let (ocean_height, head_water_surface) = match fog.upcoming_ocean_inputs(
+        &fx.device,
+        water,
+        fx.water_selection.as_ref().and_then(|selection| selection.0.as_ref()),
+    ) {
+        Ok(inputs) => {
+            *ocean_error = None;
+            inputs
+        }
+        Err(error) => {
+            if ocean_error.as_ref() != Some(&error) {
+                warn!("FX ocean inputs pending: {error}");
+                *ocean_error = Some(error);
+            }
+            return;
+        }
+    };
     let Some(sources) = sources.0.as_ref() else {
         gpu.screen_state = Default::default();
         gpu.particle_systems = Default::default();
@@ -503,9 +601,8 @@ fn prepare_screen_effects(
         gpu.particles = None;
         gpu.screen_sources = Some(sources.clone());
     }
-    let underwater = fog
-        .head_water_surface(water.camera, water.matrices.frame, water.head_water_surface)
-        .is_some_and(|height| water.matrices.current.position[2] <= height);
+    let underwater =
+        head_water_surface.is_some_and(|height| water.matrices.current.position[2] <= height);
     let camera_frame = crate::gameplay::reference_frame::ReferenceFrame {
         position: water.matrices.current.position,
         basis: [
@@ -525,8 +622,8 @@ fn prepare_screen_effects(
     );
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
-        match world_particles.advance(&world_graphs,&world_sources.0,&world_frames,
-            particle_systems,&world_sounds,water.matrices.frame,camera_frame,underwater,&inputs.world) {
+        match world_particles.advance(&fx.world_graphs,&fx.world_sources.0,&fx.world_frames,
+            particle_systems,&fx.world_sounds,water.matrices.frame,camera_frame,underwater,&inputs.world) {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");
@@ -543,16 +640,6 @@ fn prepare_screen_effects(
                 .filter(|q| q.camera == water.camera && q.frame == water.matrices.frame)
                 .ok_or_else(|| "particle physics inputs await the current camera frame".to_owned())
                 .and_then(|q| {
-                    let ocean_height = fog
-                        .ocean_capture(water.camera, water.matrices.frame)
-                        .map(|ocean| {
-                            ocean.prepared_water_level(
-                                water.matrices.frame,
-                                water.ocean_render_settings.skip,
-                            )
-                        })
-                        .transpose()?
-                        .flatten();
                     let particle_view = particle_view.0.as_ref()
                         .filter(|query| query.camera == water.camera && query.frame == water.matrices.frame)
                         .ok_or("particle visibility awaits the current camera frame")?;
@@ -565,6 +652,9 @@ fn prepare_screen_effects(
                         &particle_view.wind,
                     )
                 });
+            // Publication does not depend on this frame's simulation result:
+            // systems publish only for the frame they were made visible in.
+            let simulation = simulation.and(publish_particles(&mut gpu, water, &particle_view, &fog_frame));
             match simulation {
                 Ok(()) => *particle_error = None,
                 Err(error) if particle_error.as_ref() != Some(&error) => {

@@ -131,6 +131,24 @@ where
     }
 }
 
+/// Diagnostic: uploads prepared by [`GpuShaderBuffer`], keyed by
+/// (byte size, reallocated). Values are (uploads, bytes). Sizes identify the
+/// producing system; reallocation means a new GPU buffer was created.
+pub static SHADER_BUFFER_UPLOADS: std::sync::Mutex<
+    Option<bevy_platform::collections::HashMap<(u64, bool), (u64, u64)>>,
+> = std::sync::Mutex::new(None);
+
+fn record_upload(size: u64, reallocated: bool) {
+    if let Ok(mut uploads) = SHADER_BUFFER_UPLOADS.lock() {
+        let entry = uploads
+            .get_or_insert_with(Default::default)
+            .entry((size, reallocated))
+            .or_default();
+        entry.0 += 1;
+        entry.1 += size;
+    }
+}
+
 /// Opt-in recycling of temporary buffers used by changed shader-buffer assets.
 /// Transfers finish before `prepare_assets::<GpuShaderBuffer>` returns, so
 /// dependent systems retain the ordinary queue-ordering contract.
@@ -240,6 +258,7 @@ impl RenderAsset for GpuShaderBuffer {
                     .contains(BufferUsages::COPY_DST))
         {
             if let Some(data) = source_asset.data {
+                record_upload(data.len() as u64, false);
                 if let Some(batch) = upload_batch.as_deref_mut() {
                     if !data.is_empty() {
                         batch.pending.push((prev.buffer.clone(), data));
@@ -250,6 +269,7 @@ impl RenderAsset for GpuShaderBuffer {
             }
             prev.buffer.clone()
         } else if let Some(ref data) = source_asset.data {
+            record_upload(data.len() as u64, true);
             render_device.create_buffer_with_data(&BufferInitDescriptor {
                 label: source_asset.buffer_description.label,
                 contents: data,

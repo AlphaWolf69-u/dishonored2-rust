@@ -36,8 +36,88 @@ pub struct EffectGroupAsset {
     pub timings: crate::gameplay::effects::timing::EffectTimingRanges,
     pub environments: Vec<EnvironmentEffectAsset>,
     pub sounds: Vec<SoundEffectAsset>,
+    pub sub_effects: Vec<SubEffectAsset>,
 }
 pub type EnvironmentGroupAsset = EffectGroupAsset;
+
+/// arkFXSubFXDesc: nested FX played by a group (group+0x120, 0x38 bytes).
+/// Ranges keep the serialized maximum-then-minimum order of arkFXMinMax.
+pub struct SubEffectAsset {
+    pub enabled: bool,
+    /// arkStandardEventTimings: m_delay, m_cycles and m_period.
+    pub delay: [f32; 2],
+    pub cycles: [i32; 2],
+    pub period: [f32; 2],
+    pub wait_end: bool,
+    pub sequential: bool,
+    pub random_start: bool,
+    /// m_decls: FX resources; None for a NULL entry.
+    pub effects: Vec<Option<String>>,
+}
+
+impl Default for SubEffectAsset {
+    /// 230500/2242d0 constructor defaults: enabled, m_waitFXEnd set,
+    /// m_sequentialMode and m_randomStart clear; delay 0, one cycle, period 1.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay: [0.; 2],
+            cycles: [1; 2],
+            period: [1.; 2],
+            wait_end: true,
+            sequential: false,
+            random_start: false,
+            effects: Vec::new(),
+        }
+    }
+}
+
+fn sub_effect(fields: &Fields) -> Result<SubEffectAsset, String> {
+    let mut effect = SubEffectAsset::default();
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_enabled" => effect.enabled = boolean(value)?,
+            "m_waitFXEnd" => effect.wait_end = boolean(value)?,
+            "m_sequentialMode" => effect.sequential = boolean(value)?,
+            "m_randomStart" => effect.random_start = boolean(value)?,
+            "m_timings" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_delay" => bounds(&mut effect.delay, scope(value)?)?,
+                        "m_period" => bounds(&mut effect.period, scope(value)?)?,
+                        "m_cycles" => {
+                            let mut pair = effect.cycles.map(|v| v as f32);
+                            bounds(&mut pair, scope(value)?)?;
+                            effect.cycles = pair.map(|v| v as i32);
+                        }
+                        _ => return Err(format!("unknown sub-FX timing field {name}")),
+                    }
+                }
+            }
+            "m_decls" => {
+                for (position, (name, value)) in scope(value)?.iter().enumerate() {
+                    if name == "num" {
+                        if position != 0 {
+                            return Err("sub-FX declaration count must precede its elements".into());
+                        }
+                        let count = atom(value)?.parse::<usize>().map_err(|e| format!("sub-FX count: {e}"))?;
+                        effect.effects.resize(count, None);
+                    } else {
+                        let index = name.strip_prefix("item[").and_then(|n| n.strip_suffix(']'))
+                            .ok_or_else(|| format!("unknown sub-FX declaration field {name}"))?
+                            .parse::<usize>().map_err(|e| format!("sub-FX index: {e}"))?;
+                        let entry = effect.effects.get_mut(index)
+                            .ok_or_else(|| format!("sub-FX declaration {index} exceeds declared count"))?;
+                        let path = atom(value)?;
+                        *entry = (!path.is_empty() && !path.eq_ignore_ascii_case("NULL")).then(|| path.to_owned());
+                    }
+                }
+            }
+            _ => return Err(format!("unknown sub-FX field {name}")),
+        }
+    }
+    Ok(effect)
+}
 
 pub struct SoundEventAsset {
     /// Serialized order: maximum followed by minimum.
@@ -86,6 +166,7 @@ impl Default for EffectGroupAsset {
             },
             environments: Vec::new(),
             sounds: Vec::new(),
+            sub_effects: Vec::new(),
         }
     }
 }
@@ -345,6 +426,7 @@ pub fn effect_group(fields: &Fields) -> Result<EffectGroupAsset, String> {
                 descriptor_list(&mut group.environments, scope(value)?, environment_effect)?;
             }
             "m_sounds" => descriptor_list(&mut group.sounds, scope(value)?, sound_effect)?,
+            "m_subFXs" => descriptor_list(&mut group.sub_effects, scope(value)?, sub_effect)?,
             _ => {} // Other effect families are not environment descriptors.
         }
     }

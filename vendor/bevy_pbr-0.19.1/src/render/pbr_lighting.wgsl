@@ -1103,11 +1103,14 @@ fn rect_light(
 
     let light = &view_bindings::lights.rect_lights[light_id];
 #ifdef DH2_SURFACE_ENABLED
-    if (*light).color.w<0.0 {
-        let result=opaque_area_lighting(u32(-(*light).color.w-1.0),(*input).direct_surface,P);
-        return select(vec3(0.0),result.diffuse,enable_diffuse)+result.specular;
-    }
-#endif
+    // Game surfaces receive the game's area-light records only, and every rect
+    // light the rewrite spawns carries one (negative W). The stock LTC
+    // evaluator is unreachable for them; compiling it beside the record
+    // evaluator only raised the main pass's register allocation.
+    if !((*light).color.w<0.0) {return vec3(0.0);}
+    let result=opaque_area_lighting(u32(-(*light).color.w-1.0),(*input).direct_surface,P);
+    return select(vec3(0.0),result.diffuse,enable_diffuse)+result.specular;
+#else
 
     let light_to_frag = (*light).position - P;
     let distance_square = dot(light_to_frag, light_to_frag);
@@ -1186,6 +1189,7 @@ fn rect_light(
 #else
     return (spec_weight * spec + diffuse_color * diff) * (*light).color.rgb * range_falloff;
 #endif
+#endif  // DH2_SURFACE_ENABLED
 }
 #endif
 

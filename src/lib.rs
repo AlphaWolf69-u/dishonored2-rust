@@ -66,6 +66,10 @@ pub mod app;
 pub mod assets;
 pub mod gameplay;
 pub mod loading;
+
+#[cfg(feature = "debug_allocations")]
+#[global_allocator]
+static ALLOCATOR: platform::allocation_tags::TaggedAllocator = platform::allocation_tags::TaggedAllocator;
 mod noise;
 pub mod platform;
 pub mod random;

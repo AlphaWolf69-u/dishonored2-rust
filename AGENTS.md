@@ -49,6 +49,14 @@ Take the first option that fully works:
 5. Can it be one line a reader gets at a glance? One line.
 
 
+## Resource parity
+
+- Each resource class of the original (image, model, sound bank/source, decl, Iggy file, ...) has one owner module that ports its whole lifecycle from the decompilation: load, GPU upload, residency, streaming, unload, with the original's addresses cited. Other systems request resources from the owner; they never read, upload or cache them their own way.
+- `docs/resource-parity.md` is the ledger: per class, its owner, its original lifecycle functions and each one's status (`ported`, `verified`, `blocked: <reason and next step>`, `host: <why the backend differs>`). Update it in the same change that touches an owner. `loading::tests` fails when a kind in the installed load lists has no ledger entry.
+- Memory and load cost are compared with the original per memory tag (`TAG_IMAGE`, `TAG_SOUND`, ...), from captures of the original running the same level; the budgets live in `tests/fixtures/` and a regression past them fails a test. Never fix performance without first measuring how the original spends the same resource.
+- Where Bevy or wgpu forces a different mechanism, mark the code `bevy_backend`/`approximate_`, state the original behavior it stands in for, and record it as `host:` in the ledger. It is never `ported`.
+- Performance work first reaches the original's measured cost by porting its algorithm. An improvement beyond the original (a different algorithm, data layout or scheduling with the same output) is recorded in `docs/optimization-opportunities.md` with its measured or estimated gain, not implemented, until the rewrite is complete.
+
 ## Function coverage and reusable research
 
 - The ongoing objective is the complete, faithful Rust rewrite. User requests guide priorities; all original-game research must also advance overall rewrite coverage. Do not discard understood functions because they lie outside the immediate feature request.

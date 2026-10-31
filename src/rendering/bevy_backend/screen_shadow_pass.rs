@@ -81,6 +81,7 @@ impl Plugin for ScreenShadowScenePlugin {
             (
                 clear_view_stencil.before(Core3dSystems::Prepass),
                 render_screen_shadow
+                    .in_set(ScreenShadowPass)
                     .in_set(Core3dSystems::MainPass)
                     .before(main_opaque_pass_3d),
             ),
@@ -109,12 +110,21 @@ fn ensure_screen_depth_source(
     }
 }
 
+/// Orders consumers of the unhacked depth copy after its recording.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ScreenShadowPass;
 #[derive(Resource, Default)]
-struct ScreenGpu {
+pub(super) struct ScreenGpu {
     unhack: Option<super::depth_buffer_hack::DepthBufferHack>,
     cached: Option<ScreenTargets>,
     ambient: Option<AmbientTargets>,
     reported: bool,
+}
+impl ScreenGpu {
+    /// This frame's FUN_1402fcff0 copy with the model depth hack undone.
+    pub(super) fn unhacked_depth(&self) -> Option<&bevy::render::render_resource::Texture> {
+        self.unhack.as_ref().map(|unhack| &unhack.texture)
+    }
 }
 struct AmbientTargets {
     depth_default_id: Option<TextureId>,

@@ -299,8 +299,10 @@ impl LuminancePyramid {
                     view: &level.view,
                     depth_slice: None,
                     resolve_target: None,
+                    // The original never clears this level; the full-screen
+                    // triangle (no blending, no discard) writes every texel.
                     ops: Operations {
-                        load: LoadOp::Clear(Default::default()),
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
                 })],

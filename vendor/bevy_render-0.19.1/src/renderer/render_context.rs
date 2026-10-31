@@ -21,6 +21,9 @@ use wgpu::CommandBuffer;
 enum PendingCommandBuffer {
     Ready(CommandBuffer),
     Recorded(CommandEncoder),
+    /// DH2 (project patch): finishing on the finalization pool since the
+    /// encoder was queued, overlapping the rest of the frame's recording.
+    Finishing(bevy_tasks::Task<CommandBuffer>),
 }
 
 impl PendingCommandBuffer {
@@ -28,6 +31,7 @@ impl PendingCommandBuffer {
         match self {
             Self::Ready(buffer) => buffer,
             Self::Recorded(encoder) => encoder.finish(),
+            Self::Finishing(task) => bevy_tasks::block_on(task),
         }
     }
 }
@@ -38,6 +42,31 @@ struct PendingCommandBuffersInner {
     parallel: bool,
     parallel_encoders: u64,
     finalization_pool: Option<bevy_tasks::TaskPool>,
+    /// DH2 (project patch, diagnostic): the system whose encoders are being queued.
+    queuing_system: Option<alloc::string::String>,
+}
+
+/// DH2 (project patch, measurement): `DH2_FINISH_AT_SUBMIT=1` finishes every
+/// encoder at the submission barrier again, for A/B measurement.
+fn finish_at_submit() -> bool {
+    static AT_SUBMIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AT_SUBMIT.get_or_init(|| std::env::var_os("DH2_FINISH_AT_SUBMIT").is_some_and(|value| value == "1"))
+}
+
+/// DH2 (project patch, diagnostic): `DH2_TRACE_FINISH=1` reports, once per
+/// 301 takes (taken twice a frame), the slowest encoder finishes: the queuing
+/// system, when its finish started relative to the first, and its duration.
+fn trace_finish() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("DH2_TRACE_FINISH").is_some_and(|value| value == "1"))
+}
+
+type FinishRecord = (alloc::string::String, std::time::Instant, core::time::Duration);
+
+fn finish_trace() -> &'static std::sync::Mutex<alloc::vec::Vec<FinishRecord>> {
+    static RECORDS: std::sync::OnceLock<std::sync::Mutex<alloc::vec::Vec<FinishRecord>>> =
+        std::sync::OnceLock::new();
+    RECORDS.get_or_init(Default::default)
 }
 
 /// Opt into concurrent CPU finalization of independently recorded command
@@ -63,9 +92,33 @@ impl PendingCommandBuffers {
     }
 
     pub fn push_encoder(&mut self, encoder: CommandEncoder) {
-        self.0
-            .commands
-            .push(PendingCommandBuffer::Recorded(encoder));
+        let command = self.start_finishing(PendingCommandBuffer::Recorded(encoder));
+        self.0.commands.push(command);
+    }
+
+    /// DH2 (project patch): with parallel finalization, a recorded encoder
+    /// starts finishing when it is queued instead of at the submission barrier.
+    fn start_finishing(&mut self, command: PendingCommandBuffer) -> PendingCommandBuffer {
+        match command {
+            #[cfg(not(target_arch = "wasm32"))]
+            PendingCommandBuffer::Recorded(encoder) if self.0.parallel && !finish_at_submit() => {
+                self.0.parallel_encoders += 1;
+                let name = self.0.queuing_system.take();
+                let pool: &bevy_tasks::TaskPool = match self.0.finalization_pool.as_ref() {
+                    Some(pool) => pool,
+                    None => bevy_tasks::ComputeTaskPool::get(),
+                };
+                PendingCommandBuffer::Finishing(pool.spawn(async move {
+                    let start = std::time::Instant::now();
+                    let buffer = encoder.finish();
+                    if let Some(name) = name {
+                        finish_trace().lock().unwrap().push((name, start, start.elapsed()));
+                    }
+                    buffer
+                }))
+            }
+            command => command,
+        }
     }
 
     pub fn set_parallel_finalization(&mut self, enabled: bool) {
@@ -89,6 +142,27 @@ impl PendingCommandBuffers {
     }
 
     pub fn take(&mut self) -> Vec<CommandBuffer> {
+        let buffers = self.take_ordered();
+        if trace_finish() {
+            static FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let mut records = core::mem::take(&mut *finish_trace().lock().unwrap());
+            if FRAMES.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % 301 == 0 && !records.is_empty() {
+                let first = records.iter().map(|record| record.1).min();
+                records.sort_by_key(|record| core::cmp::Reverse(record.1 + record.2));
+                for (name, start, duration) in records.iter().take(6) {
+                    std::eprintln!(
+                        "DH2_FINISH start={:.2}ms dur={:.2}ms end={:.2}ms {name}",
+                        (*start - first.unwrap()).as_secs_f64() * 1e3,
+                        duration.as_secs_f64() * 1e3,
+                        (*start + *duration - first.unwrap()).as_secs_f64() * 1e3
+                    );
+                }
+            }
+        }
+        buffers
+    }
+
+    fn take_ordered(&mut self) -> Vec<CommandBuffer> {
         let commands = core::mem::take(&mut self.0.commands);
         #[cfg(not(target_arch = "wasm32"))]
         if self.0.parallel
@@ -113,6 +187,9 @@ impl PendingCommandBuffers {
                         PendingCommandBuffer::Ready(buffer) => buffers[index] = Some(buffer),
                         PendingCommandBuffer::Recorded(encoder) => {
                             scope.spawn(async move { (index, encoder.finish()) })
+                        }
+                        PendingCommandBuffer::Finishing(task) => {
+                            scope.spawn(async move { (index, task.await) })
                         }
                     }
                 }
@@ -199,6 +276,20 @@ impl SystemBuffer for RenderContextState {
 
         let inner = &mut *self.0;
 
+        // DH2 (project patch, diagnostic): DH2_TRACE_ENCODERS=1 prints which
+        // render systems flush an encoder or command buffers, once per 600 calls.
+        if std::env::var_os("DH2_TRACE_ENCODERS").is_some_and(|value| value == "1") {
+            static CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let call = CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if inner.command_encoder.is_some() || !inner.command_buffers.is_empty() {
+                std::eprintln!(
+                    "DH2_ENCODER call={call} system={} encoder={} buffers={}",
+                    _system_meta.name(),
+                    inner.command_encoder.is_some(),
+                    inner.command_buffers.len()
+                );
+            }
+        }
         // flush to ensure correct submission order
         if let Some(encoder) = inner.command_encoder.take() {
             let command = if inner.parallel_finalization {
@@ -210,12 +301,26 @@ impl SystemBuffer for RenderContextState {
         }
 
         if !inner.command_buffers.is_empty() {
+            let marks = world.get_resource::<super::GpuTimeline>().map(|timeline| {
+                let device = world.resource::<RenderDevice>();
+                let name = _system_meta.name().to_string();
+                (
+                    timeline.mark(device, alloc::borrow::Cow::Owned(format!("{}{name}", super::gpu_timeline::BEGIN))),
+                    timeline.mark(device, alloc::borrow::Cow::Owned(name)),
+                )
+            });
+            let (begin, end) = marks.unwrap_or((None, None));
             let mut pending = world.resource_mut::<PendingCommandBuffers>();
             pending.0.parallel = inner.parallel_finalization;
-            pending
-                .0
-                .commands
-                .extend(core::mem::take(&mut inner.command_buffers));
+            pending.push(begin);
+            for command in core::mem::take(&mut inner.command_buffers) {
+                if trace_finish() {
+                    pending.0.queuing_system = Some(alloc::format!("{}", _system_meta.name()));
+                }
+                let command = pending.start_finishing(command);
+                pending.0.commands.push(command);
+            }
+            pending.push(end);
         }
 
         inner.render_device = None;
@@ -231,9 +336,21 @@ pub struct RenderContext<'w, 's> {
     render_device: Res<'w, RenderDevice>,
     diagnostics_recorder: Option<Res<'w, DiagnosticsRecorder>>,
     parallel_finalization: Option<Res<'w, ParallelCommandFinalization>>,
+    system_name: bevy_ecs::system::SystemName,
+}
+
+/// DH2 (project patch, diagnostic): `DH2_LABEL_ENCODERS=1` names each command
+/// encoder after the render system that created it, so a capture shows which
+/// systems record which (possibly empty) command lists.
+fn label_encoders() -> bool {
+    static LABEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LABEL.get_or_init(|| std::env::var_os("DH2_LABEL_ENCODERS").is_some_and(|value| value == "1"))
 }
 
 impl<'w, 's> RenderContext<'w, 's> {
+    fn encoder_descriptor(&self) -> (Option<alloc::string::String>,) {
+        (label_encoders().then(|| alloc::format!("{}", self.system_name)),)
+    }
     fn ensure_device(&mut self) {
         if self.state.0.render_device.is_none() {
             self.state.0.render_device = Some(self.render_device.clone());
@@ -254,7 +371,11 @@ impl<'w, 's> RenderContext<'w, 's> {
     /// Returns the current command encoder, creating one if it does not already exist.
     pub fn command_encoder(&mut self) -> &mut CommandEncoder {
         self.ensure_device();
-        self.state.command_encoder()
+        let (label,) = self.encoder_descriptor();
+        let render_device = self.render_device.clone();
+        self.state.0.command_encoder.get_or_insert_with(|| {
+            render_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: label.as_deref() })
+        })
     }
 
     /// Begins a tracked render pass with the given descriptor.
@@ -263,10 +384,11 @@ impl<'w, 's> RenderContext<'w, 's> {
         descriptor: RenderPassDescriptor<'_>,
     ) -> TrackedRenderPass<'a> {
         self.ensure_device();
+        let (label,) = self.encoder_descriptor();
 
         let command_encoder = self.state.0.command_encoder.get_or_insert_with(|| {
             self.render_device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: label.as_deref() })
         });
 
         let render_pass = command_encoder.begin_render_pass(&descriptor);

@@ -12,6 +12,9 @@
 #ifdef DH2_VEGETATION_WIND
 #import dh2_vegetation_wind::{vegetation_slot, vegetation_world_position}
 #endif
+#ifdef DH2_PARTICLE_INSTANCES
+#import dh2_particle_surface::{particle_surface_draw, particle_surface_instance, particle_surface_world_from_local, particle_surface_colour}
+#endif
 
 #ifdef DEFERRED_PREPASS
 #import bevy_pbr::rgb9e5
@@ -70,6 +73,12 @@ fn morph_prev_vertex(vertex_in: Vertex, instance_index: u32) -> Vertex {
 @vertex
 fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var out: VertexOutput;
+#ifdef DH2_PARTICLE_INSTANCES
+    // Direct instancing (see mesh.wgsl). Ordinary draws keep reading
+    // vertex_no_morph.instance_index directly (naga 2416).
+    let particle_mesh_index = particle_surface_draw.mesh_index;
+    let particle = particle_surface_instance(vertex_no_morph.instance_index);
+#endif
 
 #ifdef MORPH_TARGETS
     var vertex = morph_vertex(vertex_no_morph, vertex_no_morph.instance_index);
@@ -77,7 +86,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var vertex = vertex_no_morph;
 #endif
 
+#ifdef DH2_PARTICLE_INSTANCES
+    let mesh_world_from_local = particle_surface_world_from_local(particle);
+#else
     let mesh_world_from_local = mesh_functions::get_world_from_local(vertex_no_morph.instance_index);
+#endif
 
 #ifdef SKINNED
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
@@ -95,7 +108,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef DH2_VEGETATION_WIND
     // Same placement as the forward pass; this rewrite has no motion-vector
     // prepass, so the HLSL's previous-frame AnimateVegetation is not needed.
+#ifdef DH2_PARTICLE_INSTANCES
+    let vegetation = vegetation_slot(particle.parameters.w);
+#else
     let vegetation = vegetation_slot(mesh[vertex_no_morph.instance_index].tag);
+#endif
     if vegetation != 0xffffffffu {
         out.world_position = vec4(vegetation_world_position(vegetation, vertex.vegetation_position,
             vertex.vegetation_normal, vertex.vegetation_color, world_from_local), 1.0);
@@ -125,12 +142,17 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef SKINNED
     out.world_normal = skinning::skin_normals(world_from_local, vertex.normal);
 #else // SKINNED
+#ifdef DH2_PARTICLE_INSTANCES
+    // 1eaa40 publishes a plain instance matrix: model-linear normals.
+    out.world_normal = normalize((world_from_local * vec4(vertex.normal, 0.0)).xyz);
+#else
     out.world_normal = mesh_functions::mesh_normal_local_to_world(
         vertex.normal,
         // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
         // See https://github.com/gfx-rs/naga/issues/2416
         vertex_no_morph.instance_index
     );
+#endif
 #endif // SKINNED
 #endif // VERTEX_NORMALS
 
@@ -146,7 +168,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif // NORMAL_PREPASS_OR_DEFERRED_PREPASS
 
 #ifdef VERTEX_COLORS
+#ifdef DH2_PARTICLE_INSTANCES
+    out.color = particle_surface_colour(particle, vertex.color);
+#else
     out.color = vertex.color;
+#endif
 #endif
 
     // Compute the motion vector for TAA among other purposes. For this we need
@@ -184,7 +210,12 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #else   // SKINNED
     // Use vertex_no_morph.instance_index instead of prev_vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
+#ifdef DH2_PARTICLE_INSTANCES
+    // 1eaa40 writes the previous model rows equal to the current ones.
+    let prev_model = mesh_world_from_local;
+#else
     let prev_model = mesh_functions::get_previous_world_from_local(vertex_no_morph.instance_index);
+#endif
 #endif  // SKINNED
 
     out.previous_world_position = mesh_functions::mesh_position_local_to_world(
@@ -196,7 +227,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
+#ifdef DH2_PARTICLE_INSTANCES
+    out.instance_index = particle_mesh_index;
+#else
     out.instance_index = vertex_no_morph.instance_index;
+#endif
 #endif
 
 #ifdef VISIBILITY_RANGE_DITHER

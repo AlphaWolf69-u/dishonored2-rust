@@ -402,6 +402,26 @@ impl OceanScene {
     /// 302d20 admits the actual owner only when the global disable is clear
     /// and owner+78 is enabled. Particle fallback reads owner+84 directly;
     /// the wave-displaced head-contact surface is a different input.
+    /// The water level prepare_with_selection will publish for this frame,
+    /// without mutating the retained state (3014b0's view preparation is pure
+    /// CPU work over the extracted inputs and the previous level).
+    pub fn upcoming_water_level(
+        &self,
+        frame: &WaterFrame,
+        selection: Option<&crate::rendering::environment_contacts::WaterViewPublication>,
+    ) -> Option<f32> {
+        if frame.ocean_render_settings.skip {
+            return None;
+        }
+        let view = crate::rendering::ocean::prepare_ocean_view(
+            &frame.ocean_environment.view,
+            self.state.view.water_level,
+            frame.ocean_render_settings.tile_size,
+            selection.map_or(true, |selection| selection.update_ocean_height),
+        )
+        .0;
+        view.enabled.then_some(view.water_level)
+    }
     pub fn prepared_water_level(&self, frame: u32, disabled: bool) -> Result<Option<f32>, String> {
         if disabled {
             return Ok(None);

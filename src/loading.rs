@@ -113,3 +113,37 @@ pub fn report(list: &[crate::assets::map_resources::Resource]) -> Vec<Coverage> 
         out
     })
 }
+
+#[cfg(test)]
+mod tests {
+    /// Kinds of `docs/resource-parity.md`'s ledger table (rows `| \`kind\` |`).
+    fn ledger_kinds() -> std::collections::HashSet<String> {
+        let ledger = include_str!("../docs/resource-parity.md");
+        ledger
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| rest.split_once('`').map(|(kind, _)| kind.to_owned()))
+            .collect()
+    }
+
+    /// Every resource kind in the installed load lists of every map (init,
+    /// common and each map's `.mapResources`) has a ledger entry.
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn every_listed_kind_has_a_ledger_entry() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let catalog = crate::assets::archive::Catalog::open(&base).unwrap();
+        let language = crate::assets::lang::read_text_language(&base).unwrap();
+        let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+        for path in catalog.paths_with_suffix(".mapresources") {
+            let name = path.trim_start_matches("generated/buildgame/").trim_end_matches(".mapresources");
+            for resource in crate::assets::map_resources::load_list(&base, &catalog, name, language).unwrap() {
+                *kinds.entry(resource.kind).or_default() += 1;
+            }
+        }
+        let ledger = ledger_kinds();
+        let covered = |kind: &str| ledger.contains(kind) || ledger.iter().any(|l| l.strip_suffix('*').is_some_and(|prefix| kind.starts_with(prefix)));
+        let missing: Vec<_> = kinds.iter().filter(|(k, _)| !covered(k)).collect();
+        assert!(missing.is_empty(), "load-list kinds without a ledger entry (kind, entries in all lists): {missing:?}");
+    }
+}

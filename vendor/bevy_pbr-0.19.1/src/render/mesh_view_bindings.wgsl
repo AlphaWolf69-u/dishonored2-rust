@@ -162,3 +162,7 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 @group(0) @binding(64) var<storage,read> area_light_records:array<vec4<u32>>;
 @group(0) @binding(65) var area_light_textures:texture_2d_array<f32>;
 @group(0) @binding(66) var area_light_sampler:sampler;
+// Per-tile light lists (lightcontext heads/pool) and their (columns, shift, limit, enabled).
+@group(0) @binding(67) var<storage,read> area_light_heads:array<u32>;
+@group(0) @binding(68) var<storage,read> area_light_pool:array<u32>;
+@group(0) @binding(69) var<uniform> area_light_grid:vec4<u32>;

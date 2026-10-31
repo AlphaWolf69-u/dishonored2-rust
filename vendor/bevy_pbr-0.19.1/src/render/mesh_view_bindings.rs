@@ -470,6 +470,9 @@ fn layout_entries(
         (64, storage_buffer_read_only_sized(false, None)),
         (65, texture_2d_array(TextureSampleType::Float { filterable: true })),
         (66, sampler(SamplerBindingType::Filtering)),
+        (67, storage_buffer_read_only_sized(false, None)),
+        (68, storage_buffer_read_only_sized(false, None)),
+        (69, uniform_buffer_sized(false, None)),
     ));
     // LTC LUTs for area lights
     if cfg!(feature = "area_light_luts") {
@@ -900,6 +903,9 @@ pub fn prepare_mesh_view_bind_groups(
                 (64, area_lights.records.as_entire_binding()),
                 (65, area_lights.texture.as_ref().unwrap_or(&fallback_image.d2_array.texture_view)),
                 (66, &area_lights.sampler),
+                (67, area_lights.heads.as_entire_binding()),
+                (68, area_lights.pool.as_entire_binding()),
+                (69, area_lights.grid.as_entire_binding()),
             ));
             // LTC LUTs for area lights
             if cfg!(feature = "area_light_luts") {

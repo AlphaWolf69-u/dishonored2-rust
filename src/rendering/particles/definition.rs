@@ -10,13 +10,20 @@ use crate::{
     gameplay::options::decl::read_edit,
     shader_cache::ProgramLibrary,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct ParticleDefinition {
     pub owner: Arc<particle_system::ParticleSystemAsset>,
     pub declarations: Vec<Option<Arc<particle_declaration::ParticleDeclaration>>>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
+    /// Mesh materials whose MAIN program is a world program. 1401fbad0 makes
+    /// every renderer an ordinary model surface (material = desc+0x278), so
+    /// these draw through the world material's own passes, not the FX pass.
+    pub world_mesh_materials: HashSet<String>,
 }
 impl ParticleDefinition {
     pub fn load(
@@ -108,14 +115,25 @@ impl ParticleDefinition {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mut materials = HashMap::new();
+        let mut world_mesh_materials = HashSet::new();
         for declaration in declarations.iter().flatten() {
             for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
+                    if let Some(name) = &mesh.material {
+                        if super::material::world_program(catalog, name)? {
+                            world_mesh_materials.insert(name.clone());
+                        }
+                    }
+                }
                 let names = stage.sprites.iter().filter(|sprite| sprite.enabled).map(|sprite| &sprite.material)
                     .chain(stage.meshes.iter().filter(|mesh| mesh.enabled).map(|mesh| &mesh.material));
                 for material in names {
                     let Some(name) = material else {
                         continue;
                     };
+                    if world_mesh_materials.contains(name) {
+                        continue;
+                    }
                     if !material_cache.contains_key(name) {
                         material_cache.insert(
                             name.clone(),
@@ -130,6 +148,7 @@ impl ParticleDefinition {
             owner: Arc::new(owner),
             declarations,
             materials,
+            world_mesh_materials,
         })
     }
 }

@@ -143,7 +143,36 @@ shadow cost. A value of `0` also selects the authored ranges.
 - `DH2_BENCHMARK_SECONDS` runs a fixed-camera benchmark; it disables movement
   during that measurement.
 - `DH2_BENCHMARK_SIZE=1920x1080` fixes the physical benchmark viewport independently
-  of desktop size and DPI. Benchmark output records viewport and camera pose.
+  of desktop size and DPI. Benchmark output records viewport and camera pose;
+  a run whose viewport changes (a minimized window) reports INVALID.
+- `DH2_BENCHMARK_CAMERA=px,py,pz,fx,fy,fz` places the benchmark camera at a
+  game-space eye and forward (up +Z), such as an original capture's
+  `cb_wscampos`/`cb_wscamforwarddir` (`analysis/rdc_view_constants.py`).
+  Compare with the original only under its own config
+  (`DH2_HOST_CONFIG_PATH`) and resolution.
+- `DH2_BENCHMARK_SCREENSHOT=<png>` saves the first measured frame.
+- The game keeps its cascade far distances while the camera does not translate
+  (`r_tightenParallelShadows`), so a capture of a stationary player reflects
+  where it last moved. `DH2_DEBUG_ADAPTIVE_FAR=<metres>` seeds that value
+  (the capture's last `cb_parallellightslicefars` entry) to compare shadow
+  casters; `DH2_DEBUG_ADAPTIVE_DUMP=<file>` writes the adaptive depth grid and
+  projections. Benchmarks report directional draws per layer and cache reuse.
+- Benchmarks play silently; `DH2_DEBUG_MUTE=1` silences other runs.
+- Benchmarks report shader-buffer uploads per frame by exact size
+  (`BENCHMARK_SHADER_BUFFER`); a large size repeating every frame names an
+  asset re-uploaded in full.
+- `DH2_GPU_TIMELINE=1` writes a GPU timestamp before and after every render
+  system's commands; benchmarks report each system's GPU busy time and the
+  gaps between systems (queue writes, direct submissions, GPU idle).
+- CPU profiling: `cargo build --profile profiling --features game` builds
+  release code with line tables (`target/profiling/`), for ETW sampling
+  (Windows Performance Recorder) and symbol-resolved stacks.
+- `DH2_DEBUG_GPU_CAPTURE_SECONDS=<s>` under `renderdoccmd capture` records the
+  first frame after that many seconds through wgpu's graphics-debugger API
+  (RenderDoc's own trigger misses the D3D12 swapchain).
+- `DH2_TRACE_LIGHT_COMPONENT` attributes forward lighting cost: 5 returns
+  base colour, 2 keeps only the sun, 9 omits local shadow queries, 10 omits
+  opaque area lights.
 
 Exact shadow-query reuse, compact world-shadow constants, unchanged local
 atlas reuse, mesh allocation metadata reuse and prepared shadow record reuse

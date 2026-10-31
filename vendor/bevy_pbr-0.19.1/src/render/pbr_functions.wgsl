@@ -1,9 +1,13 @@
 #define_import_path bevy_pbr::pbr_functions
 #ifdef DH2_LOCAL_SHADOWS
-#import dh2_local_receiver::local_visibility
+#import dh2_local_receiver::{local_visibility,local_thickness_visibility}
 #endif
 #ifdef DH2_SKIN
 #import dh2_direct::{skin_light_diffuse,skin_direct_diffuse}
+#endif
+#ifdef DH2_SURFACE_ENABLED
+#import dh2_tlf_list
+#import dh2_area_light_opaque::opaque_area_lighting
 #endif
 
 #import bevy_pbr::{
@@ -357,6 +361,23 @@ fn apply_pbr_lighting_with_directional_shadow(
         transmitted_directional_shadow,vec4<u32>(3u,0u,0u,0u),vec3<f32>(0.0));
 }
 
+#ifdef DH2_LOCAL_SHADOWS
+// Profiling attribution: DH2_TRACE_LIGHT_COMPONENT 9 omits local shadow queries.
+// Every caller is itself inside DH2_LOCAL_SHADOWS, which imports local_visibility.
+// BRDF_vegetation (thickness >= 0): the light proceeds when m_shadow is
+// positive, then a shadowed light is attenuated by its shadow-map thickness.
+fn traced_local_visibility(light_id:u32,position:vec3<f32>,normal:vec3<f32>,route:vec4<u32>,thickness:f32,gated:bool)->f32 {
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+    if #{DH2_TRACE_LIGHT_COMPONENT} == 9u {return 1.0;}
+#endif
+    let visibility=local_visibility(light_id,position,normal,route);
+    if thickness >= 0.0 {
+        return select(0.0,local_thickness_visibility(light_id,position,thickness),visibility>0.0 || !gated);
+    }
+    return visibility;
+}
+#endif
+
 fn apply_pbr_lighting_with_shadows(
     in: pbr_types::PbrInput,
     directional_index: u32,
@@ -546,7 +567,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness,in.direct_surface.translucency.enabled==0.0);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -574,7 +595,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::point_light(light_id, &transmissive_lighting_input, enable_diffuse, true);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness,in.direct_surface.translucency.enabled==0.0);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -635,7 +656,7 @@ fn apply_pbr_lighting_with_shadows(
         lobes_alive = lobes_alive || any(skin_light_diffuse!=vec3<f32>(0.0));
 #endif
         if lobes_alive {
-            shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness,in.direct_surface.translucency.enabled==0.0);
         }
 #endif
         direct_light += light_contrib * shadow;
@@ -669,7 +690,7 @@ fn apply_pbr_lighting_with_shadows(
             lighting::spot_light(light_id, &transmissive_lighting_input, enable_diffuse);
 #ifdef DH2_LOCAL_SHADOWS
         if any(transmitted_light_contrib!=vec3<f32>(0.0)) {
-            transmitted_shadow*=local_visibility(light_id,in.world_position.xyz,in.N,shadow_route);
+            transmitted_shadow*=traced_local_visibility(light_id,in.world_position.xyz,in.N,shadow_route,in.vegetation_thickness,in.direct_surface.translucency.enabled==0.0);
         }
 #endif
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
@@ -756,6 +777,24 @@ fn apply_pbr_lighting_with_shadows(
 #ifdef DH2_TRACE_LIGHT_COMPONENT
     let trace_directional_light = direct_light - trace_local_light;
 #endif
+#ifdef DH2_SURFACE_ENABLED
+    // lighting.renderprog's LIGHT_TYPE_AREA loop: this pixel's tile list, at
+    // most maxLights entries. Every game area light is only in these lists.
+    if view_bindings::area_light_grid.w != 0u {
+        let grid = view_bindings::area_light_grid;
+        let head = dh2_tlf_list::light_head_coordinate(vec2<u32>(in.frag_coord.xy), 3u, grid.y, grid.x);
+        var list = dh2_tlf_list::begin_light_list(view_bindings::area_light_heads[head.y * grid.x * 4u + head.x]);
+        while dh2_tlf_list::has_light(list, grid.z) {
+            let index = dh2_tlf_list::advance_light(&list, view_bindings::area_light_pool[list.head]);
+            let area = opaque_area_lighting(index, lighting_input.direct_surface, lighting_input.P);
+            direct_light += area.diffuse + area.specular;
+    #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
+            let transmitted = opaque_area_lighting(index, transmissive_lighting_input.direct_surface, transmissive_lighting_input.P);
+            transmitted_light += transmitted.diffuse + transmitted.specular;
+    #endif
+        }
+    }
+#else
 #ifdef AREA_LIGHT_LUTS
     // Rect lights
     let n_rect_lights = view_bindings::lights.n_rect_lights;
@@ -771,6 +810,7 @@ fn apply_pbr_lighting_with_shadows(
     #endif
     }
 #endif
+#endif  // DH2_SURFACE_ENABLED
 
 #ifdef STANDARD_MATERIAL_DIFFUSE_TRANSMISSION
     // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated

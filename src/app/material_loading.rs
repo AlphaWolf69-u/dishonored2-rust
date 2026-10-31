@@ -323,6 +323,32 @@ pub(super) fn resolve_shadow_material_parameters(
     Ok(ShadowMaterialParameters::new(overrides, defaults))
 }
 
+/// A material float renderParm: the material's value, else the registered default.
+pub(super) fn resolved_float_parameter(
+    library: &mut shader_cache::ProgramLibrary,
+    catalog: &archive::Catalog,
+    bytes: &[u8],
+    name: &[u8],
+) -> Result<Vec4, String> {
+    let values = entities::material_float_parameters(&entities::declaration_text(bytes), |n| {
+        n.as_bytes() == name
+    })?;
+    let overrides = render_program::SerializedParameterBlock {
+        flags: 0,
+        parameters: values
+            .into_iter()
+            .map(|(name, words)| render_program::SerializedParameter {
+                name: name.into_bytes(),
+                kind: render_program::RenderParameterKind::Uniform,
+                value: render_program::SerializedParameterValue::Words(words),
+            })
+            .collect(),
+    };
+    library
+        .registered_float_vector(catalog, &overrides, name, None)
+        .map(|words| Vec4::from_array(words.map(f32::from_bits)))
+}
+
 pub(super) fn material_option_overrides(
     library: &shader_cache::ProgramLibrary,
     bytes: &[u8],
@@ -611,6 +637,14 @@ impl MaterialResolver<'_> {
         self.diffuse_image_paths.push(stem.clone());
         self.diffuse_image_slots.insert(stem, slot);
         Some(slot)
+    }
+
+    /// The streamed image slots and roles of a resolved model material.
+    pub(super) fn model_images(&self, path: &str) -> Vec<(usize, surface_gpu::ImageRole)> {
+        self.cache
+            .get_for(path, MaterialGeometry::Model)
+            .and_then(|cached| cached.as_ref())
+            .map_or_else(Vec::new, |cached| cached.images.clone())
     }
 
     pub(super) fn get(
@@ -918,11 +952,14 @@ impl MaterialResolver<'_> {
                 // lightContext::ComputeAmbientOcclusion bypasses both map AO
                 // and screen AO for the actual isAlpha specialization.
                 fog_flags |= u32::from(option(b"isAlpha")? != 0) << 6;
-                let standard_brdf = matches!(uniform.misc.z, 1 | 6)
+                // BRDF_vegetation's direct lighting without translucency is
+                // BRDF_ward's (sheen-mixed Oren-Nayar, FresnelAccurate, Ward);
+                // only its shadow term differs (dh2_probe's program-2 branch).
+                let standard_brdf = matches!(uniform.misc.z, 1 | 2 | 6)
                     && option(b"hasSheenMap")? == 0
                     && option(b"hasDiffuseLookup")? == 0
                     && option(b"fuzz/enable")? == 0
-                    && option(b"translucency/enable")? == 0;
+                    && (uniform.misc.z == 2 || option(b"translucency/enable")? == 0);
                 fog_flags |= u32::from(standard_brdf) << 7;
                 let direct = option(b"noScreenShadows")? != 0;
                 let flags = u32::from(option(b"shadow/useNormalOffset")? != 0)
@@ -984,6 +1021,55 @@ impl MaterialResolver<'_> {
                     eprintln!("Skin program options unavailable {path}: {error}");
                     return None;
                 }
+            }
+        }
+        if surface.program() == material_surface::Program::Vegetation {
+            // BRDF_vegetation reads vegetation/transmittanceParms: the
+            // material's value, else the registered renderParm default.
+            let resolved = (|| {
+                let catalog = self.catalog.ok_or("vegetation parameter catalog is unavailable")?;
+                let library = self
+                    .programs
+                    .as_deref_mut()
+                    .ok_or("program library is unavailable")?
+                    .as_mut()
+                    .map_err(|error| error.clone())?;
+                let float = |library: &mut shader_cache::ProgramLibrary, name: &[u8]| {
+                    resolved_float_parameter(library, catalog, bytes, name).map(|v| v[0])
+                };
+                let transmittance =
+                    resolved_float_parameter(library, catalog, bytes, b"vegetation/transmittanceparms")?;
+                let main = surface.main_program.as_deref().ok_or("vegetation MAIN is absent")?;
+                let overrides = material_option_overrides(library, bytes)?;
+                let translucent = library.option_value(main.as_bytes(), &overrides, b"translucency/enable")? != 0;
+                if translucent && library.option_value(main.as_bytes(), &overrides, b"vegetation/usetransmittancemap")? != 0 {
+                    return Err("vegetation/useTransmittanceMap (HL2 transmittance map) is unported".to_string());
+                }
+                let translucency = if translucent {
+                    Vec4::new(
+                        float(library, b"translucency/intensity")?,
+                        float(library, b"translucency/distortion")?,
+                        float(library, b"translucency/power")?,
+                        float(library, b"translucency/min")?,
+                    )
+                } else {
+                    Vec4::ZERO
+                };
+                let options = Vec4::new(
+                    f32::from(u8::from(translucent)),
+                    float(library, b"vegetation/indirecttranslucencyboost")?,
+                    f32::from(u8::from(surface.vegetation_translucency_map.is_some())),
+                    0.0,
+                );
+                Ok::<_, String>((transmittance, translucency, options))
+            })();
+            match resolved {
+                Ok((transmittance, translucency, options)) => {
+                    uniform.vegetation = transmittance;
+                    uniform.vegetation_translucency = translucency;
+                    uniform.vegetation_options = options;
+                }
+                Err(error) => eprintln!("Vegetation lighting parameters unavailable for {path}: {error}"),
             }
         }
         // FUN_1402d5210 encodes inherited `invisible` as material+0x4b's

@@ -1,12 +1,13 @@
-#import bevy_pbr::mesh_view_bindings::view
-#import dh2_ward::ward_surface
+#import bevy_pbr::mesh_view_bindings::{view,lights}
+#import dh2_ward::{ward_surface,WardTranslucency,ward_translucency,rgb_to_hsv,hsv_to_rgb}
 #ifdef DH2_SKIN
 #import dh2_direct::{SkinSurface,skin_surface,skin_direct_diffuse,ward_inverse_roughness_squared}
-#import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask,translucency_mask}
+#import dh2_surface::{skin_fresnel_lookup,sss_mask,fuzz_mask}
 #import dh2_indirect::{MaterialLightingValues,evaluate_mapped_diffuse_response}
+#endif
+// Skin and vegetation read wsPositionHacked and the directional cloud factor.
 #import dh2_parallel_receiver::parallel_cloud_shadowing
 #import bevy_pbr::view_transformations::{frag_coord_to_ndc,position_ndc_to_world}
-#endif
 
 #import bevy_pbr::{
     forward_io::VertexOutput,
@@ -17,11 +18,11 @@
     decal::clustered::apply_decals,
 }
 
-#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow}
+#import dh2_surface::{evaluate_surface, unpack_bc5_normal_map, surface, compiled_misc, compiled_shadow, translucency_mask}
 #import dh2_surface::{diffuse0, bump0, gloss0, lightmap, emissive_map, surface_sampler, surface_anisotropic_sampler}
 #import dh2_vista::vista_lighting
 #import dh2_indirect::{probe_sh, PackedIrradiance, unpack_diffuse, probe_diffuse}
-#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, ambient_occlusion}
+#import dh2_parallel_receiver::{parallel_directional_index, parallel_depth_visibility, parallel_thickness_visibility, ambient_occlusion}
 #import dh2_surface::{filling_plane_alpha, filling_normal, filling_fresnel, scaled_uv}
 #import dh2_material_samplers::linear_clamp
 #import dh2_sky::sky_colour
@@ -43,6 +44,14 @@ struct ProbeOutput {
     @location(0) color: vec4<f32>,
 }
 #endif
+
+fn surface_tag(vertex_output: VertexOutput) -> u32 {
+#ifdef DH2_PARTICLE_INSTANCES
+    return vertex_output.particle_tag;
+#else
+    return mesh[vertex_output.instance_index].tag;
+#endif
+}
 
 @fragment
 fn fragment(
@@ -124,6 +133,7 @@ fn fragment(
         return out;
     }
     var diffuse_response=pbr_input.material.base_color.rgb;
+    var vegetation_albedo=vec3<f32>(0.0);
     var indirect=vec3<f32>(0.0);
     var emissive=vec3<f32>(0.0);
     var specular_reflectance=vec3<f32>(0.0);
@@ -176,6 +186,23 @@ fn fragment(
         pbr_input.direct_surface=ward_surface(pbr_input.N,pbr_input.V,authored.roughness,
             authored.direct_diffuse,authored.direct_ior,surface.direct.x,surface.direct.y,
             authored.fresnel_strength);
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            // arkVegetation translucency: surf.translucency from translucencyMap
+            // (else vertex colour, i.e. 1), and the albedo saturated and
+            // brightened in HSV into the transmittance colour.
+            var weight=1.0;
+            if surface.vegetation_options.z != 0.0 {
+                let base_uv=scaled_uv(select(uv,uv1,surface.uv_sets[0].x!=0u),surface.uv[0]);
+                weight=textureSample(translucency_mask,surface_anisotropic_sampler,base_uv).x;
+            }
+            vegetation_albedo=authored.albedo.rgb;
+            var hsv=rgb_to_hsv(authored.albedo.rgb);
+            hsv.x+=surface.vegetation.y;
+            hsv.y=min(hsv.y*surface.vegetation.x,1.0);
+            hsv.z=min(hsv.z+0.25*surface.vegetation.x,1.0);
+            pbr_input.direct_surface.translucency=WardTranslucency(normalize(pbr_input.world_normal),weight,
+                hsv_to_rgb(hsv),1.0,surface.vegetation_translucency,surface.vegetation.z);
+        }
 #ifdef DH2_SKIN
         {
             // arkSSSRender: specularTint 0.028 -> IOR (Fresnel_IORFromF0), diffuse
@@ -266,7 +293,11 @@ fn fragment(
 
     var skin_ambient_out=vec3<f32>(0.0);
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+#ifdef DH2_PARTICLE_INSTANCES
+        let probe_index = vertex_output.particle_tag;
+#else
         let probe_index = mesh[vertex_output.instance_index].tag;
+#endif
 #ifdef DH2_SKIN
         let ambient_normal=skin_ambient_normal;
 #else
@@ -283,9 +314,28 @@ fn fragment(
             ambient_normal, vertex_output.world_tangent.xyz, bitangent,
             vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
         indirect = probe_irradiance * diffuse_response;
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            // ComputeVegetationAmbientLighting: back irradiance along -vertexNormal
+            // through Rho_t (specularTintDielectric) and the transmittance colour.
+            let t=pbr_input.direct_surface.translucency;
+            let back=unpack_diffuse(PackedIrradiance(vertex_output.probe_luminance,
+                vertex_output.probe_chroma_a, vertex_output.probe_chroma_b),
+                -t.vertex_normal, vertex_output.world_tangent.xyz, bitangent,
+                vertex_output.world_normal, pbr_input.diffuse_occlusion.x, (compiled_misc.w & 4u) != 0u);
+            let rho=vec3(1.0)-(vec3(1.0)-surface.specular_dielectric.rgb)*vegetation_albedo;
+            let amount=ward_translucency(t,t.weight,-t.vertex_normal,pbr_input.V);
+            indirect += surface.vegetation_options.y * rho * t.transmittance * back * amount * diffuse_response;
+        }
 #else
         indirect = probe_diffuse(ambient_normal, probe_index)
             * diffuse_response * pbr_input.diffuse_occlusion;
+        if compiled_misc.z == 2u && surface.vegetation_options.x != 0.0 {
+            let t=pbr_input.direct_surface.translucency;
+            let rho=vec3(1.0)-(vec3(1.0)-surface.specular_dielectric.rgb)*vegetation_albedo;
+            let amount=ward_translucency(t,t.weight,-t.vertex_normal,pbr_input.V);
+            indirect += surface.vegetation_options.y * rho * t.transmittance
+                * probe_diffuse(-t.vertex_normal, probe_index) * amount * diffuse_response * pbr_input.diffuse_occlusion;
+        }
 #endif
 #ifdef DH2_SKIN
         skin_ambient_out=indirect;
@@ -340,11 +390,29 @@ fn fragment(
         let visibility = parallel_depth_visibility(hacked, vertex_output.world_normal,
             vertex_output.position.xy, compiled_shadow)*parallel_cloud_shadowing(hacked);
 #else
-        let visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
+        var visibility = parallel_depth_visibility(pbr_input.world_position.xyz, vertex_output.world_normal,
             vertex_output.position.xy, compiled_shadow);
+        if compiled_misc.z == 2u {
+            pbr_input.vegetation_thickness = surface.vegetation.w;
+            // BRDF_vegetation: the light proceeds when m_shadow (PCF times
+            // cloud shadow) is positive, then irradiance is attenuated by
+            // shadow-map thickness and cloud shadow instead of m_shadow.
+            let hacked=position_ndc_to_world(frag_coord_to_ndc(vertex_output.position));
+            let cloud = parallel_cloud_shadowing(hacked);
+            // Translucent vegetation proceeds without the m_shadow gate.
+            visibility = select(0.0, parallel_thickness_visibility(pbr_input.world_position.xyz, hacked,
+                surface.vegetation.w) * cloud, visibility * cloud > 0.0 || surface.vegetation_options.x != 0.0);
+        }
 #endif
         out.color = apply_pbr_lighting_with_shadows(pbr_input,
             parallel_directional_index(), visibility, visibility, compiled_shadow, indirect);
+#ifdef DH2_TRACE_LIGHT_COMPONENT
+        // Numerical attribution: the BRDF's N.L and V.N, and the face flag.
+        if #{DH2_TRACE_LIGHT_COMPONENT} == 12u && parallel_directional_index() != 0xffffffffu {
+            let sun = lights.directional_lights[parallel_directional_index()].direction_to_light;
+            out.color = vec4(dot(pbr_input.N, sun), dot(pbr_input.V, pbr_input.N), select(-1.0, 1.0, is_front), 1.0);
+        }
+#endif
     } else {
         out.color = pbr_input.material.base_color;
         if compiled_misc.z==6u {
@@ -360,7 +428,7 @@ fn fragment(
     out.color=vec4(material_fog_composite(out.color.rgb,vertex_output.fog_color),out.color.a);
 #else
     if (compiled_misc.w&8u)!=0u {
-        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,mesh[vertex_output.instance_index].tag),out.color.a);
+        out.color=vec4(material_fog_pixel(out.color.rgb,vertex_output.position,vertex_output.world_position.xyz,surface_tag(vertex_output)),out.color.a);
     }
 #endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
