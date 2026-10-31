@@ -473,12 +473,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         app.insert_resource(TomeWorld {
             sphere_graph: tome::SphereCellGraph::parse(&tome_bytes),
-            bytes: tome_bytes,
-            tree: tome_tree,
+            bytes: tome_bytes.into(),
+            tree: tome_tree.into(),
             gate_states,
-            query_data,
+            query_data: query_data.into(),
             query_job_count,
-            query_pool,
+            query_pool: query_pool.map(std::sync::Arc::new),
         });
     } else {
         println!(
@@ -1021,6 +1021,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_plugins(crate::rendering::bevy_backend::fog::FogPlugin)
         .add_plugins(crate::rendering::bevy_backend::water_scene::WaterPlugin)
         .init_resource::<super::scene_queue::VisibleSceneInstances>()
+        .init_resource::<super::visibility_queries::EarlyTomeQuery>()
         .init_resource::<super::world_instances::WorldMatrices>()
         .init_resource::<shadow_updates::ParallelShadowCpu>()
         .init_resource::<local_shadow_updates::LocalShadowCpu>()
@@ -1083,6 +1084,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             publish_initial_whole_view_depth
                 .after(game_clock_runtime::ClockSystems::PublishView)
                 .before(bevy::asset::AssetEventSystems),
+        )
+        .add_systems(
+            PostUpdate,
+            super::visibility_queries::begin_tome_query
+                .before(bevy::transform::TransformSystems::Propagate)
+                .before(stream_visible_models),
         )
         .add_systems(
             PostUpdate,

@@ -242,9 +242,9 @@ fn saved_dust_approach_visibility_queries() {
     let world = TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
         gate_states: tome::initial_gate_states(&bytes).unwrap(),
-        query_data: tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap(),
-        bytes,
-        tree,
+        query_data: tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap().into(),
+        bytes: bytes.into(),
+        tree: tree.into(),
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     };

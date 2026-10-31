@@ -66,13 +66,14 @@ pub(super) struct EnvironmentVolumes(
 
 #[derive(Resource)]
 pub(super) struct TomeWorld {
-    pub(super) bytes: Vec<u8>,
-    pub(super) tree: tome::SpatialTree,
+    // Shared with the early visibility query task (visibility_queries).
+    pub(super) bytes: std::sync::Arc<Vec<u8>>,
+    pub(super) tree: std::sync::Arc<tome::SpatialTree>,
     pub(super) gate_states: Vec<u32>,
-    pub(super) query_data: tome::DirectTomeQueryData,
+    pub(super) query_data: std::sync::Arc<tome::DirectTomeQueryData>,
     pub(super) sphere_graph: Result<tome::SphereCellGraph, String>,
     pub(super) query_job_count: u32,
-    pub(super) query_pool: Option<bevy::tasks::TaskPool>,
+    pub(super) query_pool: Option<std::sync::Arc<bevy::tasks::TaskPool>>,
 }
 
 #[derive(Resource)]

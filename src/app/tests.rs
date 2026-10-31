@@ -6355,9 +6355,9 @@ fn light_sphere_batch_rejects_hidden_cells_and_retains_unlocated_sources() {
     world.insert_resource(TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
         gate_states: tome::initial_gate_states(&bytes).unwrap(),
-        bytes,
-        tree,
-        query_data,
+        bytes: bytes.into(),
+        tree: tree.into(),
+        query_data: query_data.into(),
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     });
@@ -6590,9 +6590,9 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
     world.insert_resource(TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
         gate_states: tome::initial_gate_states(&bytes).unwrap(),
-        bytes,
-        tree,
-        query_data,
+        bytes: bytes.into(),
+        tree: tree.into(),
+        query_data: query_data.into(),
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     });
@@ -7753,10 +7753,10 @@ fn roof_point_diagnostic_reports_authored_tome_records() {
     let query_data = tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap();
     let tome_world = TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
-        bytes,
-        tree,
+        bytes: bytes.into(),
+        tree: tree.into(),
         gate_states,
-        query_data,
+        query_data: query_data.into(),
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     };
@@ -7832,10 +7832,10 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
     let gate_states = tome::initial_gate_states(&bytes).unwrap();
     let mut world = TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
-        bytes,
-        tree,
+        bytes: bytes.into(),
+        tree: tree.into(),
         gate_states,
-        query_data,
+        query_data: query_data.into(),
         query_job_count: 1,
         query_pool: None,
     };
@@ -7865,6 +7865,7 @@ fn parallel_tome_dispatch_matches_serial_jobs() {
                 .num_threads(threads)
                 .thread_name("Tome Query Test".into())
                 .build()
+                .into()
         });
         let input = tome::OrdinaryDirectQueryInput {
             camera_point: [pose[0][3], pose[1][3], pose[2][3]],
@@ -8117,9 +8118,9 @@ fn dense_depth_grid_matches_bounds_after_camera_shifts() {
     let world = TomeWorld {
         sphere_graph: tome::SphereCellGraph::parse(&bytes),
         gate_states: tome::initial_gate_states(&bytes).unwrap(),
-        bytes,
-        tree,
-        query_data,
+        bytes: bytes.into(),
+        tree: tree.into(),
+        query_data: query_data.into(),
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     };

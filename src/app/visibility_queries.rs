@@ -14,21 +14,32 @@ pub(super) fn run_tome_render_jobs(
     world: &TomeWorld,
     input: &tome::OrdinaryDirectQueryInput<'_>,
 ) -> Vec<tome::RenderQueryJob> {
+    run_tome_jobs(
+        &world.tree,
+        &world.bytes,
+        &world.query_data,
+        world.query_pool.as_deref(),
+        world.query_job_count,
+        input,
+    )
+}
+
+fn run_tome_jobs(
+    tree: &tome::SpatialTree,
+    bytes: &[u8],
+    query_data: &tome::DirectTomeQueryData,
+    query_pool: Option<&bevy::tasks::TaskPool>,
+    query_job_count: u32,
+    input: &tome::OrdinaryDirectQueryInput<'_>,
+) -> Vec<tome::RenderQueryJob> {
     let dispatch = |count| {
         let run = |job| {
-            tome::ordinary_direct_tome_render_job(
-                &world.tree,
-                &world.bytes,
-                &world.query_data,
-                input,
-                job,
-                count,
-            )
+            tome::ordinary_direct_tome_render_job(tree, bytes, query_data, input, job, count)
         };
         if count == 1 {
             return vec![run(0)];
         }
-        let pool: &bevy::tasks::TaskPool = match world.query_pool.as_ref() {
+        let pool: &bevy::tasks::TaskPool = match query_pool {
             Some(pool) => pool,
             None => bevy::tasks::ComputeTaskPool::get(),
         };
@@ -39,8 +50,8 @@ pub(super) fn run_tome_render_jobs(
             }
         })
     };
-    let actual = dispatch(world.query_job_count);
-    if world.query_job_count != tome::DEFAULT_QUERY_JOB_COUNT
+    let actual = dispatch(query_job_count);
+    if query_job_count != tome::DEFAULT_QUERY_JOB_COUNT
         && std::env::var("DH2_VERIFY_TOME_QUERY_JOBS").as_deref() == Ok("1")
     {
         let expected = dispatch(tome::DEFAULT_QUERY_JOB_COUNT);
@@ -103,7 +114,7 @@ fn verify_tome_job_outputs(actual: &[tome::RenderQueryJob], expected: &[tome::Re
     );
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct TomeRenderQueryKey {
     pub(super) camera_point: [u32; 3],
     pub(super) render_rows: [[u32; 4]; 4],
@@ -153,6 +164,152 @@ impl TomeRenderQueryKey {
             job_count,
         }
     }
+}
+
+/// The ordinary query's camera-derived inputs; gate states come from the
+/// TomeWorld at the time the query runs.
+#[derive(Clone, Copy)]
+pub(super) struct TomeQueryParts {
+    rows: [[f32; 4]; 4],
+    camera_point: [f32; 3],
+    distance_imprecision: f32,
+    accurate_threshold: f32,
+    object_distance_scale: f32,
+    minimum_area_metric: f32,
+}
+
+fn tome_query_rows(
+    transform: &Transform,
+    projection: &Projection,
+    viewport: UVec2,
+) -> Result<[[f32; 4]; 4], String> {
+    reference_fov_from_projection(projection).and_then(|reference_fov| {
+        tome::world_visibility_query_matrix(
+            reference_fov,
+            viewport.x,
+            viewport.y,
+            1.0,
+            game_pose_from_view_transform(transform),
+            DEFAULT_NEAR,
+            DEFAULT_FAR,
+        )
+    })
+}
+
+impl TomeQueryParts {
+    fn new(
+        rows: [[f32; 4]; 4],
+        transform: &Transform,
+        projection: &Projection,
+        viewport: UVec2,
+        view_settings: Option<&ViewSettings>,
+    ) -> Result<Self, String> {
+        let query_settings = match view_settings {
+            Some(settings) => settings.0.clone()?,
+            None => game_settings::view_settings("")?,
+        };
+        Ok(Self {
+            rows,
+            camera_point: view_to_game(transform.translation),
+            distance_imprecision: query_settings.umbra_distance_imprecision,
+            accurate_threshold: query_settings.umbra_accurate_threshold,
+            object_distance_scale: view_distance_scale(projection, viewport, view_settings)?,
+            minimum_area_metric: 25.0 / (viewport.x as f32 * viewport.y as f32),
+        })
+    }
+
+    fn input<'a>(&self, gate_states: &'a [u32]) -> tome::OrdinaryDirectQueryInput<'a> {
+        tome::OrdinaryDirectQueryInput {
+            camera_point: self.camera_point,
+            render_rows: self.rows,
+            cropped_rows: self.rows,
+            initial_tile_rect: [0, 0, 8, 16],
+            camera_imprecision: [self.distance_imprecision; 3],
+            global_distance_threshold: self.accurate_threshold,
+            object_distance_scale: self.object_distance_scale,
+            object_imprecision: self.distance_imprecision,
+            minimum_area_metric: self.minimum_area_metric,
+            winding_flip: tome::query_matrix_winding_flip(self.rows),
+            gate_states: Some(gate_states),
+            output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
+        }
+    }
+}
+
+/// bevy_backend scheduling: the camera is final once Update ends, but the
+/// visibility system runs after transform propagation and frustum updates.
+/// The query starts at the beginning of PostUpdate from the inputs then
+/// current; stream_visible_models uses its jobs only when the key it builds
+/// from its own inputs is identical, and otherwise runs the query itself.
+///
+/// The query runs on a task pool holding only query work. A thread waiting
+/// on a shared-pool scope also runs unrelated pool tasks, and during loading
+/// those can wait on later frame stages, which wait on this query.
+#[derive(Resource, Default)]
+pub(super) struct EarlyTomeQuery {
+    pending: Option<(TomeRenderQueryKey, bevy::tasks::Task<Vec<tome::RenderQueryJob>>)>,
+    /// Key of the query cached by stream_visible_models: no early start.
+    cached_key: Option<TomeRenderQueryKey>,
+    pool: Option<std::sync::Arc<bevy::tasks::TaskPool>>,
+}
+
+pub(super) fn begin_tome_query(
+    cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
+    tome_world: Option<Res<TomeWorld>>,
+    view_settings: Option<Res<ViewSettings>>,
+    mut early: ResMut<EarlyTomeQuery>,
+    mut enabled: Local<Option<bool>>,
+) {
+    early.pending = None;
+    // DH2_EARLY_TOME_QUERY=0 measures the query started by stream_visible_models.
+    if !*enabled.get_or_insert_with(|| std::env::var("DH2_EARLY_TOME_QUERY").as_deref() != Ok("0")) {
+        return;
+    }
+    let (Some(world), Ok((camera, transform, projection))) = (tome_world, cameras.single()) else {
+        return;
+    };
+    let Some(viewport) = camera.physical_viewport_size() else {
+        return;
+    };
+    let Ok(parts) = tome_query_rows(transform, projection, viewport).and_then(|rows| {
+        TomeQueryParts::new(rows, transform, projection, viewport, view_settings.as_deref())
+    }) else {
+        return;
+    };
+    let key = TomeRenderQueryKey::new(&parts.input(&world.gate_states), world.query_job_count);
+    if !world.is_changed() && early.cached_key.as_ref() == Some(&key) {
+        return;
+    }
+    let pool = match (&world.query_pool, &early.pool) {
+        (Some(pool), _) | (None, Some(pool)) => pool.clone(),
+        (None, None) => {
+            let pool = std::sync::Arc::new(
+                bevy::tasks::TaskPoolBuilder::new()
+                    .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num())
+                    .thread_name("Tome Early Query".into())
+                    .build(),
+            );
+            early.pool = Some(pool.clone());
+            pool
+        }
+    };
+    let tree = world.tree.clone();
+    let bytes = world.bytes.clone();
+    let query_data = world.query_data.clone();
+    let job_count = world.query_job_count;
+    let gate_states = world.gate_states.clone();
+    let jobs_pool = pool.clone();
+    let task = pool.spawn(async move {
+        run_tome_jobs(
+            &tree,
+            &bytes,
+            &query_data,
+            Some(&jobs_pool),
+            job_count,
+            &parts.input(&gate_states),
+        )
+    });
+    early.pending = Some((key, task));
 }
 
 #[derive(Default)]
@@ -214,8 +371,10 @@ pub(super) fn stream_visible_models(
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
     arms: Option<Res<super::player_arms::PlayerArms>>,
+    mut early: Option<ResMut<EarlyTomeQuery>>,
 ) {
     let started = Instant::now();
+    let mut early_jobs = early.as_deref_mut().and_then(|early| early.pending.take());
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
         *query_cache = TomeRenderQueryCache::default();
     }
@@ -262,42 +421,17 @@ pub(super) fn stream_visible_models(
             query_viewport = Some([viewport.x, viewport.y]);
             scene.texture_viewport_pixels = viewport.x.saturating_mul(viewport.y);
             let query_started = Instant::now();
-            let query = reference_fov_from_projection(projection)
-                .and_then(|reference_fov| {
-                    tome::world_visibility_query_matrix(
-                        reference_fov,
-                        viewport.x,
-                        viewport.y,
-                        1.0,
-                        game_pose_from_view_transform(transform),
-                        DEFAULT_NEAR,
-                        DEFAULT_FAR,
-                    )
-                })
+            let query = tome_query_rows(transform, projection, viewport)
                 .and_then(|rows| {
                     query_rows = Some(rows);
-                    let query_settings = match view_settings.as_deref() {
-                        Some(settings) => settings.0.clone()?,
-                        None => game_settings::view_settings("")?,
-                    };
-                    let input = tome::OrdinaryDirectQueryInput {
-                        camera_point: view_to_game(transform.translation),
-                        render_rows: rows,
-                        cropped_rows: rows,
-                        initial_tile_rect: [0, 0, 8, 16],
-                        camera_imprecision: [query_settings.umbra_distance_imprecision; 3],
-                        global_distance_threshold: query_settings.umbra_accurate_threshold,
-                        object_distance_scale: view_distance_scale(
-                            projection,
-                            viewport,
-                            view_settings.as_deref(),
-                        )?,
-                        object_imprecision: query_settings.umbra_distance_imprecision,
-                        minimum_area_metric: 25.0 / (viewport.x as f32 * viewport.y as f32),
-                        winding_flip: tome::query_matrix_winding_flip(rows),
-                        gate_states: Some(&tome_world.gate_states),
-                        output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
-                    };
+                    let parts = TomeQueryParts::new(
+                        rows,
+                        transform,
+                        projection,
+                        viewport,
+                        view_settings.as_deref(),
+                    )?;
+                    let input = parts.input(&tome_world.gate_states);
                     let key = TomeRenderQueryKey::new(&input, tome_world.query_job_count);
                     if query_cache.matches(&key, tome_world.is_changed()) {
                         query_cached = true;
@@ -308,7 +442,12 @@ pub(super) fn stream_visible_models(
                         return Ok(query_cache.output.clone());
                     }
                     query_cache.key = None;
-                    let jobs = run_tome_render_jobs(tome_world, &input);
+                    let jobs = match early_jobs.take() {
+                        Some((early_key, task)) if early_key == key => {
+                            bevy::tasks::block_on(task)
+                        }
+                        _ => run_tome_render_jobs(tome_world, &input),
+                    };
                     let result = tome::merge_render_query_outputs(&jobs);
                     job_errors = jobs
                         .iter()
@@ -326,6 +465,9 @@ pub(super) fn stream_visible_models(
                     // models/pickups, light gathering and texture demand still run.
                     // Failed/partial jobs are always retried, never cached.
                     query_cache.store(key, &result, &query_diagnostics);
+                    if let Some(early) = early.as_deref_mut() {
+                        early.cached_key.clone_from(&query_cache.key);
+                    }
                     result
                 });
             query_ns = query_started.elapsed().as_nanos();
