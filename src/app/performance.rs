@@ -171,7 +171,7 @@ pub(super) fn benchmark_frames(
     target: Option<Res<BenchmarkSeconds>>,
     models: Res<SceneRenderQueue>,
     camera: Query<(&bevy::prelude::Camera, &Transform), With<Camera3d>>,
-    visibility_timing: Option<Res<VisibilityElapsedTiming>>,
+    mut visibility_timing: Option<ResMut<VisibilityElapsedTiming>>,
     light_culling: Res<LocalLightCullStats>,
     mut elapsed: Local<f32>,
     mut measured: Local<(u64, f64)>,
@@ -244,6 +244,10 @@ pub(super) fn benchmark_frames(
     // comparing rendering before and after a change at a fixed view.
     if previous_elapsed < target.1 && *elapsed >= target.1 {
         bevy::render::renderer::reset_gpu_timeline();
+        // Visibility timing likewise covers the measured frames, not loading.
+        if let Some(timing) = visibility_timing.as_deref_mut() {
+            *timing = VisibilityElapsedTiming::default();
+        }
         // Count shader-buffer uploads of the measured frames only.
         if let Ok(mut uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             *uploads = None;

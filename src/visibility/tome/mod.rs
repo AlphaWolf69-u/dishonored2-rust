@@ -6,7 +6,8 @@
 //! The ordinary camera query combines global spatial selection, local cell
 //! traversal, portal coverage, and per-cell object acceptance.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use hashbrown::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 mod cell_worklist;
 mod portal_raster;
@@ -519,6 +520,8 @@ pub struct CellTree {
     cell_link_ranges: Vec<(u32, u32)>,
     cell_candidate_ranges: Vec<(u32, u32)>,
     links_at: usize,
+    /// Traversal records decoded once at parse, indexed like the file table.
+    links: Vec<[u32; 4]>,
     candidates_at: usize,
     candidate_index_bits: usize,
     candidate_run_bits: usize,
@@ -546,6 +549,53 @@ pub struct CellObjectVisibilityQuery<'a> {
     pub depth_grid: Option<(&'a [f32], f32)>,
     ///Some only when the native perspective baked-occlusion stage is enabled.
     pub point_occlusion_near_offset: Option<f32>,
+    /// Decoded object tables; None reads them from the Tome bytes.
+    pub objects: Option<&'a ObjectQueryTable>,
+}
+
+/// The +0x44 bounds and +0x48 distance tables read by FUN_140a82710 per
+/// candidate, decoded once at load instead of per object test.
+pub struct ObjectQueryTable {
+    bounds: Vec<[[f32; 3]; 2]>,
+    distance: Option<Vec<[[f32; 4]; 2]>>,
+}
+
+impl ObjectQueryTable {
+    /// None when any record fails validation, so per-object reads report
+    /// that error where the query reaches it.
+    fn parse(bytes: &[u8], object_count: usize) -> Option<Self> {
+        let bounds = (0..object_count as u32)
+            .map(|index| object_bounds(bytes, index))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let distance = if word(bytes, 0x48).ok()? == 0 {
+            None
+        } else {
+            Some(
+                (0..object_count as u32)
+                    .map(|index| object_distance_bounds(bytes, index).ok().flatten())
+                    .collect::<Option<Vec<_>>>()?,
+            )
+        };
+        Some(Self { bounds, distance })
+    }
+
+    pub fn bounds(&self, index: u32) -> Result<[[f32; 3]; 2], String> {
+        self.bounds
+            .get(index as usize)
+            .copied()
+            .ok_or_else(|| "Tome object index out of range".into())
+    }
+
+    pub fn distance_bounds(&self, index: u32) -> Result<Option<[[f32; 4]; 2]>, String> {
+        match &self.distance {
+            None => Ok(None),
+            Some(records) => records
+                .get(index as usize)
+                .map(|record| Some(*record))
+                .ok_or_else(|| "Tome object distance index out of range".into()),
+        }
+    }
 }
 
 /// Immutable direct-Tome resource views shared by camera queries. The original
@@ -557,6 +607,7 @@ pub struct DirectTomeQueryData {
     record_trees: Vec<Option<Result<CellTree, String>>>,
     object_count: usize,
     cell_count: usize,
+    pub objects: Option<ObjectQueryTable>,
 }
 
 impl DirectTomeQueryData {
@@ -575,6 +626,7 @@ impl DirectTomeQueryData {
             record_trees,
             object_count,
             cell_count: word(bytes, 0x7c)? as usize,
+            objects: ObjectQueryTable::parse(bytes, object_count),
         })
     }
 
@@ -2060,11 +2112,18 @@ pub fn clip_box_to_active_query_planes(
     }
     let low = std::array::from_fn(|axis| input[0][axis].max(query_bounds[0][axis]));
     let high = std::array::from_fn(|axis| input[1][axis].min(query_bounds[1][axis]));
-    let selected = active
-        .iter()
-        .copied()
-        .skip_while(|&index| index < 2)
-        .collect::<Vec<_>>();
+    // Fixed-size scratch instead of per-call vectors; query plane sets
+    // carry six planes.
+    const MAX_PLANES: usize = 8;
+    let mut selected_planes = [0usize; MAX_PLANES];
+    let mut selected_count = 0;
+    for index in active.iter().copied().skip_while(|&index| index < 2) {
+        *selected_planes
+            .get_mut(selected_count)
+            .ok_or("Tome box clip has more than eight active planes")? = index;
+        selected_count += 1;
+    }
+    let selected = &selected_planes[..selected_count];
     if selected.is_empty() {
         return Ok([low, high]);
     }
@@ -2082,10 +2141,11 @@ pub fn clip_box_to_active_query_planes(
         ((terms[1] + terms[0]) + terms[2]) + terms[3]
     };
     let distances = corners.map(|corner| {
-        selected
-            .iter()
-            .map(|&index| distance(corner, planes[index]))
-            .collect::<Vec<_>>()
+        let mut row = [0.0f32; MAX_PLANES];
+        for (value, &index) in row.iter_mut().zip(selected) {
+            *value = distance(corner, planes[index]);
+        }
+        row
     });
     let mut clipped_low = [f32::MAX; 4];
     let mut clipped_high = [-f32::MAX; 4];
@@ -2096,7 +2156,7 @@ pub fn clip_box_to_active_query_planes(
         }
     };
     for current in 0..8 {
-        if distances[current].iter().all(|&value| value >= 0.0) {
+        if distances[current][..selected.len()].iter().all(|&value| value >= 0.0) {
             include(corners[current]);
             continue;
         }
@@ -3997,7 +4057,9 @@ where
         i32::from(incoming.rect[2]) * 8,
         i32::from(incoming.rect[3]) * 4,
     ];
-    for link in cells.traversal_records(bytes, source.cell_index)? {
+    // Read each record in place; collecting them allocated per cell visit.
+    for record in cells.traversal_record_range(source.cell_index)? {
+        let link = cells.traversal_record(record)?;
         let Some(target) = direct_spatial_link_target(link) else {
             // FUN_140a85bd0's bit-28 branch merges coverage into +0x1c7e,
             // without scheduling a local cell. Finalization rasterizes it at1.
@@ -5115,6 +5177,7 @@ fn ordinary_direct_tome_visible_objects_inner(
                 //perspective near offset when query flags bit1 is set.
                 //The ordinary37e1d0/a73820 caller passes flags0.
                 point_occlusion_near_offset: Some(0.0),
+                objects: data.and_then(|data| data.objects.as_ref()),
             };
             let object_started = profile_cost.then(std::time::Instant::now);
             let result = cells.append_visible_object_candidates(

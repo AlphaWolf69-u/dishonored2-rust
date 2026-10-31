@@ -886,6 +886,23 @@ impl CellTree {
         if count != 0 && internal_rank * 2 + 1 != count {
             return Err("incomplete Tome cell tree".into());
         }
+        // Each cell's range was checked against the file above.
+        let link_count = cell_link_ranges
+            .iter()
+            .map(|&(start, count)| start as usize + count as usize)
+            .max()
+            .unwrap_or(0);
+        let links = (0..link_count)
+            .map(|index| {
+                let at = links_at + index * 16;
+                Ok([
+                    word(bytes, at)?,
+                    word(bytes, at + 4)?,
+                    word(bytes, at + 8)?,
+                    word(bytes, at + 12)?,
+                ])
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             bounds,
             children,
@@ -901,6 +918,7 @@ impl CellTree {
             cell_table_at: cell_table,
             cell_link_ranges,
             cell_candidate_ranges,
+            links,
             links_at,
             candidates_at,
             candidate_index_bits,
@@ -1175,7 +1193,11 @@ impl CellTree {
                 if output.contains(object_index)? {
                     continue;
                 }
-                if let Some(distance_bounds) = object_distance_bounds(bytes, object_index)? {
+                let distance_bounds = match query.objects {
+                    Some(objects) => objects.distance_bounds(object_index)?,
+                    None => object_distance_bounds(bytes, object_index)?,
+                };
+                if let Some(distance_bounds) = distance_bounds {
                     if object_distance_rejection_mask(
                         distance_bounds,
                         query.object_distance_point,
@@ -1190,7 +1212,10 @@ impl CellTree {
                         continue;
                     }
                 }
-                let bounds = object_bounds(bytes, object_index)?;
+                let bounds = match query.objects {
+                    Some(objects) => objects.bounds(object_index)?,
+                    None => object_bounds(bytes, object_index)?,
+                };
                 let expanded = expand_object_bounds_for_camera_imprecision(
                     bounds,
                     query.camera_translation_imprecision,
@@ -1258,36 +1283,33 @@ impl CellTree {
         cell_index: usize,
         visit: &mut dyn FnMut([u32; 4]) -> Result<bool, String>,
     ) -> Result<(), String> {
+        for index in self.traversal_record_range(cell_index)? {
+            if !visit(self.traversal_record(index)?)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Indices of one cell's traversal records, for `traversal_record`.
+    pub(super) fn traversal_record_range(
+        &self,
+        cell_index: usize,
+    ) -> Result<std::ops::Range<u32>, String> {
         let (start, count) = *self.cell_link_ranges.get(cell_index).ok_or_else(|| {
             format!(
                 "Tome cell index {cell_index} exceeds table of {}",
                 self.cell_link_ranges.len()
             )
         })?;
-        for index in start
-            ..start
-                .checked_add(count)
-                .ok_or("Tome traversal index overflow")?
-        {
-            let at = self
-                .links_at
-                .checked_add(
-                    (index as usize)
-                        .checked_mul(16)
-                        .ok_or("Tome traversal offset overflow")?,
-                )
-                .ok_or("Tome traversal offset overflow")?;
-            let keep_going = visit([
-                word(bytes, at)?,
-                word(bytes, at + 4)?,
-                word(bytes, at + 8)?,
-                word(bytes, at + 12)?,
-            ])?;
-            if !keep_going {
-                break;
-            }
-        }
-        Ok(())
+        Ok(start..start.checked_add(count).ok_or("Tome traversal index overflow")?)
+    }
+
+    pub(super) fn traversal_record(&self, index: u32) -> Result<[u32; 4], String> {
+        self.links
+            .get(index as usize)
+            .copied()
+            .ok_or_else(|| "Tome traversal record outside the decoded table".into())
     }
 
     /// Run FUN_140a85790's same-spatial chain using this parsed local cell

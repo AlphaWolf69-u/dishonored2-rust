@@ -232,6 +232,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
         portal: &portal,
         depth_grid: None,
         point_occlusion_near_offset: None,
+        objects: None,
     };
     let mut output = VisibleObjectIndexOutput::new(object_ids(&bytes).unwrap().len(), 32768);
     cells
@@ -489,6 +490,7 @@ fn authored_eotw_record_direct_loop_accepts_roof_objects() {
                     portal,
                     depth_grid: None,
                     point_occlusion_near_offset: None,
+                    objects: None,
                 };
                 cells.append_visible_object_candidates(
                     &bytes,
@@ -3532,6 +3534,7 @@ fn cell_candidate_pipeline_skips_accepted_and_distance_rejected_bounds() {
         cell_link_ranges: vec![(0, 0)],
         cell_candidate_ranges: vec![(0, 1)],
         links_at: 0,
+        links: Vec::new(),
         candidates_at: 0x60,
         candidate_index_bits: 1,
         candidate_run_bits: 1,
@@ -3561,6 +3564,7 @@ fn cell_candidate_pipeline_skips_accepted_and_distance_rejected_bounds() {
         portal: &portal,
         depth_grid: None,
         point_occlusion_near_offset: None,
+        objects: None,
     };
     let mut output = VisibleObjectIndexOutput::new(1, 1);
     cells
@@ -4010,6 +4014,7 @@ fn visible_cell_test_tree(first: u32, count: u32) -> CellTree {
         cell_link_ranges: Vec::new(),
         cell_candidate_ranges: Vec::new(),
         links_at: 0,
+        links: Vec::new(),
         candidates_at: 0,
         candidate_index_bits: 0,
         candidate_run_bits: 0,
@@ -4305,6 +4310,7 @@ fn object_candidate_batches_match_32_entry_limit_across_runs() {
         cell_link_ranges: Vec::new(),
         cell_candidate_ranges: vec![(0, 35)],
         links_at: 0,
+        links: Vec::new(),
         candidates_at: 0,
         candidate_index_bits: 6,
         candidate_run_bits: 5,
@@ -5411,6 +5417,8 @@ fn selects_direct_cell_code_from_local_tree() {
     assert_eq!(decoded[1][1], 2.0);
     assert!((decoded[1][2] - 1.0000153).abs() < 0.000001);
     data[base + 0x124..base + 0x128].copy_from_slice(&((1u32 << 16) | 3).to_le_bytes());
+    // Traversal records are decoded at parse; parse the edited bytes again.
+    let cells = CellTree::parse(&data, base as u32).unwrap();
     assert_eq!(
         cells.traversal_records(&data, 0).unwrap(),
         vec![[2, (1 << 16) | 3, 4, 5]]
