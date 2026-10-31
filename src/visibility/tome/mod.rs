@@ -4997,7 +4997,7 @@ fn ordinary_direct_tome_visible_objects_inner(
     mut output_state: Option<&mut RenderQueryState>,
 ) -> Result<Option<VisibleObjectIndexOutput>, String> {
     *diagnostics = OrdinaryQueryDiagnostics::default();
-    let profile_cost = std::env::var_os("DH2_PROFILE_TOME_QUERY").is_some();
+    let profile_cost = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var_os("DH2_PROFILE_TOME_QUERY").is_some()) };
     let setup_started = profile_cost.then(std::time::Instant::now);
     diagnostics.stage = "setup";
     //a77560 normalizes the first depth plane before either the global

@@ -278,7 +278,7 @@ impl SystemBuffer for RenderContextState {
 
         // DH2 (project patch, diagnostic): DH2_TRACE_ENCODERS=1 prints which
         // render systems flush an encoder or command buffers, once per 600 calls.
-        if std::env::var_os("DH2_TRACE_ENCODERS").is_some_and(|value| value == "1") {
+        if { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var_os("DH2_TRACE_ENCODERS").is_some_and(|value| value == "1")) } {
             static CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
             let call = CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if inner.command_encoder.is_some() || !inner.command_buffers.is_empty() {

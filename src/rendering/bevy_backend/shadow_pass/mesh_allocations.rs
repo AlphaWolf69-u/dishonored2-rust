@@ -28,7 +28,7 @@ impl MeshAllocationCache {
             self.frame = 1;
         }
         self.epoch = enabled.then_some(epoch);
-        self.verify = std::env::var("DH2_VERIFY_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1");
+        self.verify = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_VERIFY_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1")) };
     }
 
     pub fn finish_frame(&mut self, complete: bool) {

@@ -591,6 +591,8 @@ pub(crate) struct ShadowSceneGpu {
     resource_bindings: HashMap<ShadowResourceKey, BindGroup>,
     mesh_allocations: mesh_allocations::MeshAllocationCache,
     prepared_records: Option<prepared_cache::PreparedRecordCache>,
+    /// Last frame's uniforms: the record cache is built once they repeat.
+    previous_uniform_records: Vec<ShadowUniformRecord>,
     prepared_hits: u64,
     prepared_misses: u64,
     prepared_recycles: u64,
@@ -807,7 +809,7 @@ fn upload_shadow_uniform_ring(
     // World shader indexing is CB.offset + instance_index. Moving that exact
     // integer offset into first_instance leaves every shader read unchanged
     // and lets packets with the same view/UV data share a constant record.
-    let compact_world = std::env::var("DH2_COMPACT_SHADOW_UNIFORMS").as_deref() != Ok("0");
+    let compact_world = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_COMPACT_SHADOW_UNIFORMS").as_deref() != Ok("0")) };
     gpu.uniform_bytes.clear();
     gpu.uniform_records.clear();
     gpu.uniform_records.reserve(draw_count);
@@ -1142,7 +1144,7 @@ fn render_shadow_scene(
     let counted = (super::shadow_pipeline::DRAWS.load(std::sync::atomic::Ordering::Relaxed),
         super::shadow_pipeline::TRIANGLES.load(std::sync::atomic::Ordering::Relaxed));
     let mut complete = true;
-    if std::env::var("DH2_PARALLEL_SHADOW_ENCODING").as_deref() != Ok("0") {
+    if { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_PARALLEL_SHADOW_ENCODING").as_deref() != Ok("0")) } {
         let encoded = directional::record_layers(
             &device,
             target,
@@ -1313,10 +1315,19 @@ fn prepare_shadow_records(
         assert!(std::ptr::eq(shared.as_slice(), layers));
     }
     let enabled = shared_layers.is_some()
-        && std::env::var("DH2_CACHE_PREPARED_SHADOWS").as_deref() != Ok("0");
-    let verify = std::env::var("DH2_VERIFY_PREPARED_SHADOWS").as_deref() == Ok("1");
+        && { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_CACHE_PREPARED_SHADOWS").as_deref() != Ok("0")) };
+    let verify = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_VERIFY_PREPARED_SHADOWS").as_deref() == Ok("1")) };
     let geometry_epoch = (allocator.last_changed().get(), meshes.last_changed().get());
     let resource_epoch = (images.last_changed().get(), buffers.last_changed().get());
+    // A moving camera changes the uniforms every frame, so a record cache
+    // built then misses on the next frame; build it once they repeat.
+    // DH2_SHADOW_CACHE_EVERY_FRAME=1 builds it every frame (measurement).
+    static EVERY_FRAME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let uniforms_repeat = gpu.previous_uniform_records == gpu.uniform_records
+        || *EVERY_FRAME.get_or_init(|| {
+            std::env::var("DH2_SHADOW_CACHE_EVERY_FRAME").as_deref() == Ok("1")
+        });
+    gpu.previous_uniform_records.clone_from(&gpu.uniform_records);
     let uniforms = &gpu.uniform_records;
     let cached = if enabled {
         gpu.prepared_records.as_mut().and_then(|cached| {
@@ -1399,7 +1410,9 @@ fn prepare_shadow_records(
         return Some(cached);
     }
     let fresh = Arc::new(fresh);
-    if enabled {
+    if enabled && !uniforms_repeat {
+        gpu.prepared_records = None;
+    } else if enabled {
         gpu.prepared_records = prepared_cache::PreparedRecordCache::new(
             shared_layers.unwrap().clone(),
             geometry_epoch,
@@ -1439,12 +1452,12 @@ fn prepare_shadow_records_fresh(
         pipeline.begin_material_frame();
     }
     let mut allocations = std::mem::take(&mut gpu.mesh_allocations);
-    let cache_meshes = std::env::var("DH2_CACHE_SHADOW_MESH_ALLOCATIONS").as_deref() != Ok("0");
+    let cache_meshes = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_CACHE_SHADOW_MESH_ALLOCATIONS").as_deref() != Ok("0")) };
     allocations.begin_frame(
         (allocator.last_changed().get(), meshes.last_changed().get()),
         cache_meshes,
     );
-    let mut timings = (std::env::var("DH2_PROFILE_SHADOW_RECORDS").as_deref() == Ok("1"))
+    let mut timings = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| (std::env::var("DH2_PROFILE_SHADOW_RECORDS").as_deref() == Ok("1"))) }
         .then(|| ([0u128; 3], HashMap::<ShadowProgram, usize>::new()));
     let result = prepare_shadow_records_with_bindings(
         layers,
@@ -1478,7 +1491,7 @@ fn prepare_shadow_records_fresh(
             gpu.uniform_capacity as u64 * gpu.uniform_stride);
     }
     allocations.finish_frame(result.is_some());
-    if std::env::var("DH2_TRACE_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1")
+    if { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_TRACE_SHADOW_MESH_ALLOCATIONS").as_deref() == Ok("1")) }
         && gpu
             .last_revision
             .is_some_and(|revision| revision % 300 == 0)

@@ -126,13 +126,9 @@ impl PreparedRecordCache {
         allocator: &MeshAllocator,
         meshes: &RenderAssets<RenderMesh>,
     ) -> bool {
-        let reason = if self.geometry_epoch != geometry_epoch
-            && !self.meshes.iter().all(|(id, slices)| {
-                meshes.get(*id).is_some() && mesh_slices(allocator, id) == *slices
-            })
-        {
-            Some(0)
-        } else if self.ring != ring || self.stride != stride || self.depth_32_bits != depth_32_bits {
+        // The per-mesh allocator lookups are the costly test; a moving camera
+        // changes the uniforms every frame, so test those first.
+        let reason = if self.ring != ring || self.stride != stride || self.depth_32_bits != depth_32_bits {
             Some(1)
         } else if self.uniforms != uniforms {
             Some(2)
@@ -146,6 +142,12 @@ impl PreparedRecordCache {
             })
         {
             Some(3)
+        } else if self.geometry_epoch != geometry_epoch
+            && !self.meshes.iter().all(|(id, slices)| {
+                meshes.get(*id).is_some() && mesh_slices(allocator, id) == *slices
+            })
+        {
+            Some(0)
         } else {
             None
         };

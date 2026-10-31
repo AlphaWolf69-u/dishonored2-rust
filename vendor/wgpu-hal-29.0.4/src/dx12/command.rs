@@ -406,7 +406,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
     unsafe fn begin_encoding(&mut self, label: crate::Label) -> Result<(), crate::DeviceError> {
         // DH2 (project patch, diagnostic): DH2_TRACE_COMMAND_LISTS=1 prints the
         // running count of D3D12 command lists begun, every 1000.
-        if std::env::var_os("DH2_TRACE_COMMAND_LISTS").is_some_and(|value| value == "1") {
+        if { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var_os("DH2_TRACE_COMMAND_LISTS").is_some_and(|value| value == "1")) } {
             static BEGUN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
             let begun = BEGUN.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
             if begun % 1000 == 0 {
