@@ -165,6 +165,7 @@ fn installed_atmosphere_materials_retain_geometry_and_images() {
     let parameters = entities::EnvironmentRenderParameters { layers: Vec::new() };
     let mut fog_test_images = Assets::default();
     let mut resolver = MaterialResolver {
+        blended_materials: Default::default(),
         water_model_colours: default(),
         water_stencil_materials: default(),
         fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings::disabled(

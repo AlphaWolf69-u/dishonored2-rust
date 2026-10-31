@@ -2,7 +2,7 @@
 use super::{
     archive, entities, env, material, material_surface, probe_lighting, render_program,
     render_state, shader_cache, surface_gpu, CachedMaterial, DecalExtension, DecalMaterial,
-    HashMap, MaterialHandle, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
+    HashMap, HashSet, MaterialHandle, ProbeExtension, ProbeMaterial, ResolvedMaterial, ShaderBuffer,
     ShadowMaterialInputs, ShadowMaterialParameters, ShadowMaterials,
 };
 use bevy::prelude::*;
@@ -462,6 +462,9 @@ fn forward_fog_flags(
 }
 
 pub(super) struct MaterialResolver<'a> {
+    /// Materials created with AlphaMode::Blend, the only ones whose instances
+    /// enter the transparent phase that alpha depth is drawn from.
+    pub(super) blended_materials: HashSet<MaterialHandle>,
     pub(super) fog_material: crate::rendering::bevy_backend::fog_material::FogMaterialBindings,
     pub(super) reflections: Option<Handle<Image>>,
     pub(super) reflection_brdf_lookup: Option<Handle<Image>>,
@@ -1386,6 +1389,9 @@ impl MaterialResolver<'_> {
                 },
             }))
         };
+        if alpha_mode == AlphaMode::Blend {
+            self.blended_materials.insert(handle.clone());
+        }
         if surface.program() == material_surface::Program::Vegetation {
             // The forward VS reads the same vegetAnim vectors as VS14200,
             // whichever shadow class (or none) this material resolves to.

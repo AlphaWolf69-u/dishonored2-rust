@@ -322,6 +322,7 @@ pub(super) fn setup(
     let reflection_planes = loaded_reflections.planes;
     let reflection_brdf_lookup = loaded_reflections.brdf_lookup;
     let mut resolver = MaterialResolver {
+        blended_materials: Default::default(),
         fog_material: fog_material.bindings(),
         reflections: Some(reflections),
         reflection_brdf_lookup,

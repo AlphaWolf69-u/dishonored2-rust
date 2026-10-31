@@ -16,10 +16,11 @@ impl MaterialResolver<'_> {
             .cache
             .named_values()
             .filter_map(|(name, cached)| {
-                matches!(
+                // Only blended materials reach the transparent phase.
+                (matches!(
                     cached.handle,
                     super::MaterialHandle::Probe(_) | super::MaterialHandle::Decal(_)
-                )
+                ) && self.blended_materials.contains(&cached.handle))
                 .then_some((name.to_owned(), cached.handle.clone()))
             })
             .collect::<Vec<_>>();
