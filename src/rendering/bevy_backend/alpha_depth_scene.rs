@@ -12,9 +12,8 @@ use bevy::{
         Render, RenderApp, RenderSystems,
     },
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Mutex,
+use hashbrown::{HashMap, HashSet};
+use std::{sync::Mutex,
 };
 
 const SHADER: Handle<Shader> = bevy::asset::uuid_handle!("e3a49cd7-5e51-4226-a2b9-d0a1084c1481");

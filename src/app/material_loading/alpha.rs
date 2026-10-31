@@ -2,7 +2,8 @@
 use super::{material, MaterialResolver};
 use crate::rendering::bevy_backend::alpha_depth_scene::AlphaDepthMaterial;
 use bevy::prelude::*;
-use std::{collections::HashMap, sync::Arc};
+use bevy::platform::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Resource, Clone, Default)]
 pub(in crate::app) struct AlphaDepthMaterials(

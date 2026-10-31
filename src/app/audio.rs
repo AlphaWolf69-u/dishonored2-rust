@@ -1,6 +1,7 @@
 //! Wwise events from pause UI and player gameplay.
 use bevy::{audio::{AddAudioSource, AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings}, prelude::*};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use hashbrown::HashMap;
+use std::{path::PathBuf, sync::Arc};
 use crate::gameplay::sound::{objects, Emitter, Request};
 mod pcm;
 mod graph;
@@ -35,8 +36,8 @@ impl WwiseRegistry {
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
             let file = match files.entry(owner) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
+                hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                hashbrown::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
             };
             bank.package.read_entry(file, media).map(Some)
         })?.ok_or_else(|| "event has no supported Wwise actions".into())

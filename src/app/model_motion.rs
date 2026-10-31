@@ -5,7 +5,7 @@ use super::{
     SceneRenderQueue, ShadowModelBoundsSources,
 };
 use bevy::prelude::*;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 #[derive(Clone, Copy)]
 pub(super) struct ModelPose {
@@ -65,7 +65,7 @@ impl BoundModels {
         // (including audio targets) participate in the same propagation.
         let mut entity_stack = poses.iter().filter_map(|pose| placements.get(pose.placement)
             .map(|placement| (placement.id.clone(), pose.delta))).collect::<Vec<_>>();
-        let mut moved = entity_stack.iter().map(|(id, _)| id.clone()).collect::<std::collections::HashSet<_>>();
+        let mut moved = entity_stack.iter().map(|(id, _)| id.clone()).collect::<hashbrown::HashSet<_>>();
         while let Some((id, delta)) = entity_stack.pop() {
             self.entity_deltas.insert(id.clone(), delta);
             for bind in self.binds.iter().filter(|bind| bind.parent == id) {
@@ -73,7 +73,7 @@ impl BoundModels {
             }
         }
         let children = self.children(placements);
-        let mut posed: std::collections::HashSet<usize> = poses.iter().map(|p| p.placement).collect();
+        let mut posed: hashbrown::HashSet<usize> = poses.iter().map(|p| p.placement).collect();
         let mut stack: Vec<ModelPose> = poses.clone();
         while let Some(pose) = stack.pop() {
             for &child in children.get(&pose.placement).into_iter().flatten() {

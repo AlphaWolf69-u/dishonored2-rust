@@ -17,7 +17,7 @@ use crate::{
     rendering::bevy_backend::vegetation_wind::{instance_words, INSTANCE_WORDS, NO_SLOT},
 };
 use bevy::{prelude::*, render::storage::ShaderBuffer};
-use std::collections::HashMap;
+use bevy::platform::collections::HashMap;
 
 /// The shared buffers every probe material binds, plus each arkVegetation
 /// material's vegetAnim vectors (literal overrides over registered defaults,

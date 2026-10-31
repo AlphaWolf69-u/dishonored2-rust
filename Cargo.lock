@@ -2577,6 +2577,7 @@ dependencies = [
  "flate2",
  "git2",
  "half",
+ "hashbrown 0.16.1",
  "iced-x86",
  "lewton",
  "log",

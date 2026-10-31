@@ -3,7 +3,7 @@
 use crate::gameplay::reference_frame::{self, ReferenceFrame};
 use crate::rendering::particles::world_sources::WorldFxSources;
 use bevy::{prelude::Resource, render::extract_resource::ExtractResource};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Resource, Clone, Default, ExtractResource)]

@@ -10,7 +10,8 @@ use crate::{
     gameplay::options::decl::{atom, list_items, read_edit, scope},
     shader_cache::ProgramLibrary,
 };
-use std::{collections::HashMap, sync::Arc};
+use hashbrown::HashMap;
+use std::sync::Arc;
 
 pub struct WorldEffectGroup {
     pub asset: EffectGroupAsset,
@@ -147,7 +148,7 @@ impl WorldFxSources {
                 }
             }
         }
-        let mut materials = HashMap::new();
+        let mut materials = std::collections::HashMap::new();
         let mut sound_events = HashMap::new();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.

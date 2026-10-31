@@ -1,7 +1,7 @@
 //! Acoustic-zone game sends (1400c3860/1400c4f70).
 use crate::assets::sound_propagation::Propagation;
 use super::paths::Path;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// Declaration references retained by acoustic zones (1400b9eb0).
 pub struct Buses(HashMap<String, Option<u32>>);

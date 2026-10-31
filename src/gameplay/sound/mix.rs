@@ -1,6 +1,6 @@
 //! Wwise version-113 property curves and the authored output-bus hierarchy.
 use crate::assets::wwise::{BankMix, MediaProperties, NodeProperties, RtpcCurve};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// The logarithm approximation in conversion-table scaling (1410cb000).
@@ -116,7 +116,7 @@ pub struct VoiceRouting {
 impl From<BankMix> for Mixer {
     fn from(bank: BankMix) -> Self {
         let bus_order = bank.buses.iter().map(|bus| bus.id).collect();
-        Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters,
+        Self { buses: bank.buses.into_iter().map(|bus| (bus.id, bus)).collect(), parameters: bank.parameters.into_iter().collect(),
             effects: bank.effects.into_iter().map(|effect| ((effect.shared, effect.id), effect)).collect(),
             volume_threshold_db: bank.volume_threshold_db, environment: bank.environment, primary_bus: bank.primary_bus, bus_order, activity: None }
     }

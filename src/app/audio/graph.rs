@@ -5,7 +5,8 @@ use crate::{assets::wwise::{ContainerPlayback, MediaProperties, PlaybackNode, Se
     gameplay::sound::{containers::{transition_ms, Loops, Selection}, filters::{Kind as FilterKind, VoiceFilter},
         mix::{Mixer, power10}, properties::RandomProperties, resampler::{pitch_step, Resampler}, gain::GainRamp, Emitter}};
 use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
-use std::{collections::HashMap, io, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}, time::Duration};
+use hashbrown::HashMap;
+use std::{io, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}, time::Duration};
 
 mod sequence;
 mod flow;

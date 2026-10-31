@@ -29,6 +29,9 @@ swf = { version = "0.3.0", default-features = false }
 log = { version = "0.4.34", optional = true }
 bevy_math = { version = "0.19.1", default-features = false, features = ["std"] }
 bevy = { version = "0.19.1", optional = true, default-features = false, features = ["3d", "png", "mouse", "ui", "default_font", "area_light_luts", "audio", "wav", "debug"] }
+# Already in the graph through Bevy; its default (foldhash) hasher replaces
+# std SipHash in per-frame maps of modules built without the game feature.
+hashbrown = "0.16.1"
 ww2ogg = "0.1.0"
 lewton = "0.10.2"
 rand = "0.10.3"

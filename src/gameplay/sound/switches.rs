@@ -2,7 +2,7 @@
 //! Commands preserve callback order; the host applies them synchronously.
 use crate::assets::wwise::{SwitchCase, SwitchPlayback};
 use super::Emitter;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct History { pub value: u32, pub count: u32 }

@@ -78,7 +78,7 @@ impl PlayerArms {
     pub(super) fn submit_texture_demands(
         &self,
         state: Option<&crate::visibility::tome::RenderQueryState>,
-        bindings: &std::collections::HashMap<MaterialHandle, Vec<usize>>,
+        bindings: &bevy::platform::collections::HashMap<MaterialHandle, Vec<usize>>,
         demands: &[crate::texture::ProjectedAreaDemand],
     ) -> Result<(), String> {
         for arm in self.arms.iter().filter(|arm| arm.shown) {

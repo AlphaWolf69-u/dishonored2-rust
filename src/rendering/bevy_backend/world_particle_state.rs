@@ -17,9 +17,8 @@ use crate::{
     gameplay::reference_frame::ReferenceFrame,
     rendering::particles::world_sources::{WorldEffectDefinition, WorldFxSources},
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
+use hashbrown::{HashMap, HashSet};
+use std::{sync::Arc,
 };
 
 struct FxEntity {

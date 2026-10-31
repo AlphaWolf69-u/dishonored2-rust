@@ -1,7 +1,7 @@
 //! Global state groups (1410d7fc0 / 1410d87b0). Switch containers read the
 //! current state immediately; property transitions use the authored duration.
 use crate::assets::wwise::StateGroup;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 #[derive(Default)]
 pub struct States {

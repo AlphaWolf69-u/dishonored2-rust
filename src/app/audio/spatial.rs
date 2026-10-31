@@ -1,7 +1,8 @@
 //! World/listener integration for the recovered Wwise spatial calculations.
 use bevy::prelude::*;
 use crate::{assets::wwise::{Attenuation, MediaProperties}, gameplay::sound::{panning::{Rule, Stereo}, spatial, Emitter}};
-use std::{collections::HashMap, sync::Arc};
+use hashbrown::HashMap;
+use std::sync::Arc;
 use crate::gameplay::sound::environment::{self, ControlLevels, FilterRay};
 
 #[derive(Clone, Copy)]

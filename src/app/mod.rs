@@ -37,7 +37,10 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::shader::{Shader, ShaderRef};
 use bevy::window::{CursorGrabMode, CursorOptions};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+// Fixed-seed foldhash maps (Bevy's): std's SipHash was a measurable share
+// of per-frame instance and material lookups.
+use bevy::platform::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
