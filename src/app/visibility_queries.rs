@@ -349,6 +349,8 @@ impl TomeRenderQueryCache {
 pub(super) struct VisibilityUpdateScratch {
     instance_buffer: usize,
     visible: Vec<bool>,
+    /// Instances with a pickup, whose visibility another system can clear.
+    pickup: Vec<bool>,
 }
 
 // The ordinary direct-Tome query selects mapped static BWM instances and
@@ -679,6 +681,11 @@ pub(super) fn stream_visible_models(
             .iter()
             .map(|instance| instance.visible)
             .collect();
+        updates.pickup = scene
+            .instances
+            .iter()
+            .map(|instance| instance.pickup_id.is_some())
+            .collect();
     }
     let verify_updates = std::env::var("DH2_VERIFY_VISIBILITY_UPDATES").as_deref() == Ok("1");
     if verify_updates {
@@ -694,106 +701,128 @@ pub(super) fn stream_visible_models(
     if let Some(selection) = visible_instances.as_deref_mut() {
         selection.begin(&scene);
     }
-    for index in 0..scene.instances.len() {
-        // FUN_14037e1d0 handles BWM indices; FUN_14031ad30 handles the
-        // supported initial BML groups independently of serialized Tome IDs.
-        let visible = tome_visibility.as_ref().is_some_and(|result| result[index]);
-        if !visible && !updates.visible[index] {
+    // Most instances are neither visible now nor last frame: skip
+    // 64-instance blocks where both lists are all false.
+    let instance_count = scene.instances.len();
+    for block in (0..instance_count).step_by(64) {
+        let block_end = (block + 64).min(instance_count);
+        if !updates.visible[block..block_end].contains(&true)
+            && tome_visibility
+                .as_ref()
+                .is_none_or(|result| !result[block..block_end].contains(&true))
+        {
             continue;
         }
-        let instance = &mut scene.instances[index];
-        let available = instance
-            .pickup_id
-            .as_ref()
-            .is_none_or(|id| pickups.world.pickup_available(id));
-        if visible && available {
-            if let Some(entity) = instance.entity {
-                if !instance.visible {
-                    commands.entity(entity).insert(Visibility::Visible);
+        for index in block..block_end {
+            // FUN_14037e1d0 handles BWM indices; FUN_14031ad30 handles the
+            // supported initial BML groups independently of serialized Tome IDs.
+            let visible = tome_visibility.as_ref().is_some_and(|result| result[index]);
+            if !visible && !updates.visible[index] {
+                continue;
+            }
+            // Visible last frame and now, without a pickup: the mirror equals
+            // the instance and nothing below would change it, so keep its
+            // large record out of the cache.
+            if visible && updates.visible[index] && !updates.pickup[index] {
+                if let Some(selection) = visible_instances.as_deref_mut() {
+                    selection.indices.push(index);
+                }
+                continue;
+            }
+            let instance = &mut scene.instances[index];
+            let available = instance
+                .pickup_id
+                .as_ref()
+                .is_none_or(|id| pickups.world.pickup_available(id));
+            if visible && available {
+                if let Some(entity) = instance.entity {
+                    if !instance.visible {
+                        commands.entity(entity).insert(Visibility::Visible);
+                        instance.visible = true;
+                        active += 1;
+                        shown += 1;
+                    }
+                } else {
+                    let mut entity = match &instance.material {
+                        MaterialHandle::Water(material) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            crate::rendering::bevy_backend::water_scene::WaterMesh {
+                                material: material.clone(), order: index,
+                                geometry: instance.source.map(|source| match source.surface {
+                                    super::RenderModelSurface::World { object, matrix } => crate::rendering::bevy_backend::water_scene::WaterGeometry::World { object, matrix },
+                                    super::RenderModelSurface::Bmd6 {skin_influences,..} if skin_influences>0 => crate::rendering::bevy_backend::water_scene::WaterGeometry::SkinnedModel,
+                                    _ => crate::rendering::bevy_backend::water_scene::WaterGeometry::Model,
+                                }),
+                            },
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                        MaterialHandle::BoatVolume(material) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            crate::rendering::bevy_backend::boat_scene::BoatMesh {
+                                material:material.clone(),order:index,
+                                geometry:match instance.source.map(|s|s.surface) {
+                                    Some(super::RenderModelSurface::World{object,matrix})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::World{object,matrix},
+                                    Some(super::RenderModelSurface::Bmodel{..})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::RigidModel,
+                                    _=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::Unsupported,
+                                },
+                            },
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                        MaterialHandle::Interior(_) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            crate::rendering::bevy_backend::fog::InteriorVolume,
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                        MaterialHandle::Sky(material) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            crate::rendering::bevy_backend::sky_mask::SkyMesh {material:material.clone(),order:index},
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                        MaterialHandle::Probe(material) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                        MaterialHandle::Decal(material) => commands.spawn((
+                            Mesh3d(instance.mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            instance.transform,
+                            Visibility::Visible,
+                        )),
+                    };
+                    // Streaming runs after transform propagation. These are
+                    // root entities: publish the authored world transform now,
+                    // rather than culling at the default identity for one frame.
+                    entity.insert((
+                        MeshTag(instance.probe_index),
+                        GlobalTransform::from(instance.transform),
+                    ));
+                    if let Some(id) = &instance.pickup_id {
+                        entity.insert(PickupVisual(id.clone()));
+                    }
+                    instance.entity = Some(entity.id());
                     instance.visible = true;
                     active += 1;
-                    shown += 1;
+                    spawned += 1;
                 }
-            } else {
-                let mut entity = match &instance.material {
-                    MaterialHandle::Water(material) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        crate::rendering::bevy_backend::water_scene::WaterMesh {
-                            material: material.clone(), order: index,
-                            geometry: instance.source.map(|source| match source.surface {
-                                super::RenderModelSurface::World { object, matrix } => crate::rendering::bevy_backend::water_scene::WaterGeometry::World { object, matrix },
-                                super::RenderModelSurface::Bmd6 {skin_influences,..} if skin_influences>0 => crate::rendering::bevy_backend::water_scene::WaterGeometry::SkinnedModel,
-                                _ => crate::rendering::bevy_backend::water_scene::WaterGeometry::Model,
-                            }),
-                        },
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                    MaterialHandle::BoatVolume(material) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        crate::rendering::bevy_backend::boat_scene::BoatMesh {
-                            material:material.clone(),order:index,
-                            geometry:match instance.source.map(|s|s.surface) {
-                                Some(super::RenderModelSurface::World{object,matrix})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::World{object,matrix},
-                                Some(super::RenderModelSurface::Bmodel{..})=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::RigidModel,
-                                _=>crate::rendering::bevy_backend::boat_scene::BoatGeometry::Unsupported,
-                            },
-                        },
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                    MaterialHandle::Interior(_) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        crate::rendering::bevy_backend::fog::InteriorVolume,
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                    MaterialHandle::Sky(material) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        crate::rendering::bevy_backend::sky_mask::SkyMesh {material:material.clone(),order:index},
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                    MaterialHandle::Probe(material) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        MeshMaterial3d(material.clone()),
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                    MaterialHandle::Decal(material) => commands.spawn((
-                        Mesh3d(instance.mesh.clone()),
-                        MeshMaterial3d(material.clone()),
-                        instance.transform,
-                        Visibility::Visible,
-                    )),
-                };
-                // Streaming runs after transform propagation. These are
-                // root entities: publish the authored world transform now,
-                // rather than culling at the default identity for one frame.
-                entity.insert((
-                    MeshTag(instance.probe_index),
-                    GlobalTransform::from(instance.transform),
-                ));
-                if let Some(id) = &instance.pickup_id {
-                    entity.insert(PickupVisual(id.clone()));
+            } else if instance.visible {
+                if let Some(entity) = instance.entity {
+                    commands.entity(entity).insert(Visibility::Hidden);
+                    instance.visible = false;
+                    active -= 1;
+                    hidden += 1;
                 }
-                instance.entity = Some(entity.id());
-                instance.visible = true;
-                active += 1;
-                spawned += 1;
             }
-        } else if instance.visible {
-            if let Some(entity) = instance.entity {
-                commands.entity(entity).insert(Visibility::Hidden);
-                instance.visible = false;
-                active -= 1;
-                hidden += 1;
-            }
-        }
-        updates.visible[index] = instance.visible;
-        if instance.visible {
-            if let Some(selection) = visible_instances.as_deref_mut() {
-                selection.indices.push(index);
+            updates.visible[index] = instance.visible;
+            if instance.visible {
+                if let Some(selection) = visible_instances.as_deref_mut() {
+                    selection.indices.push(index);
+                }
             }
         }
     }
