@@ -785,9 +785,12 @@ impl OceanScene {
             r.device.limits().min_uniform_buffer_offset_alignment,
         )) as usize;
         let mut bytes = vec![0; stride * self.vertices.len()];
+        // Only the vertex block (bytes 112..288) differs between patches:
+        // serialize the shared block once and rewrite that range per patch.
+        let shared = parameters.uniform_bytes();
         for (slot, vertex) in bytes.chunks_exact_mut(stride).zip(&self.vertices) {
-            parameters.vertex = *vertex;
-            slot[..1200].copy_from_slice(&parameters.uniform_bytes());
+            slot[..1200].copy_from_slice(&shared);
+            slot[112..288].copy_from_slice(&vertex.uniform_bytes());
         }
         if self
             .colour_uniform
