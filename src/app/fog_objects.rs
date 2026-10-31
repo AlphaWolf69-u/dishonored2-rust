@@ -18,6 +18,15 @@ pub(super) struct FogObjectSources<'w> {
     pub buffers: ResMut<'w, Assets<ShaderBuffer>>,
 }
 
+/// The highest ordinary probe tag + 1, kept for one instance buffer: a
+/// tag is fixed when its instance is created and instances are only
+/// appended, so the whole-queue scan reruns only when the buffer changes.
+#[derive(Default)]
+pub(super) struct NormalTagExtent {
+    buffer: (usize, usize),
+    count: usize,
+}
+
 pub(super) fn prepare(
     frame: &FogFrame,
     scene: &SceneData,
@@ -25,15 +34,20 @@ pub(super) fn prepare(
     probes: &Assets<ProbeMaterial>,
     decals: &Assets<DecalMaterial>,
     view_z: [f32; 4],
+    extent: &mut NormalTagExtent,
 ) -> Result<FogObjectFrame, String> {
-    let normal_count = sources
-        .queue
-        .instances
-        .iter()
-        .filter(|i| i.probe_index & 0x80000000 == 0)
-        .map(|i| i.probe_index as usize + 1)
-        .max()
-        .unwrap_or(1);
+    let instances = &sources.queue.instances;
+    let buffer = (instances.as_ptr() as usize, instances.len());
+    if extent.buffer != buffer || extent.count == 0 {
+        extent.count = instances
+            .iter()
+            .filter(|i| i.probe_index & 0x80000000 == 0)
+            .map(|i| i.probe_index as usize + 1)
+            .max()
+            .unwrap_or(1);
+        extent.buffer = buffer;
+    }
+    let normal_count = extent.count;
     let capacity = normal_count
         .checked_add(scene.world.visibility.len())
         .ok_or("alpha fog tag domain overflow")?;
@@ -51,7 +65,7 @@ pub(super) fn prepare(
     if frame.areas.is_empty() {
         return Ok(result);
     }
-    let models: std::collections::HashMap<_, _> = sources
+    let models: hashbrown::HashMap<_, _> = sources
         .models
         .0
         .iter()

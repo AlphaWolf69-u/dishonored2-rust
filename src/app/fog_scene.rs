@@ -389,6 +389,7 @@ pub(super) fn publish_fog_frame(
     mut output: ResMut<crate::rendering::bevy_backend::fog::FogSceneFrame>,
     mut ray_sources: ResMut<crate::rendering::bevy_backend::sun_rays::SunRaySources>,
     mut last_error: Local<Option<String>>,
+    mut normal_extent: Local<super::fog_objects::NormalTagExtent>,
 ) {
     use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
     let Some(fog) = fog.as_mut() else {
@@ -517,6 +518,7 @@ pub(super) fn publish_fog_frame(
             &probe_materials,
             &decal_materials,
             view_z,
+            &mut normal_extent,
         )?;
         material.publish_objects(objects, &mut object_sources.buffers)?;
         Ok(frame)
