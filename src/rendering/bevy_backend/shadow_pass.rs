@@ -596,6 +596,8 @@ pub(crate) struct ShadowSceneGpu {
     prepared_hits: u64,
     prepared_misses: u64,
     prepared_recycles: u64,
+    /// Revision whose descriptor counts were last reported.
+    prepared_reported: Option<u64>,
     material_preparations: u64,
     alpha_materials_evicted: u64,
     uniform_ring: Option<Buffer>,
@@ -1357,10 +1359,10 @@ fn prepare_shadow_records(
         } else {
             gpu.prepared_misses += 1;
         }
-        if gpu
-            .last_revision
-            .is_some_and(|revision| revision % 300 == 0)
+        if gpu.last_revision.is_some_and(|revision| revision % 300 == 0)
+            && gpu.prepared_reported != gpu.last_revision
         {
+            gpu.prepared_reported = gpu.last_revision;
             eprintln!(
                 "Prepared shadow descriptors: hits={} misses={} recycled={}",
                 gpu.prepared_hits, gpu.prepared_misses, gpu.prepared_recycles
