@@ -108,7 +108,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             object.publish_frame(frozen);
             if object.has_events() {
                 let settings = crate::gameplay::sound::component::Settings {
-                    occlusion_and_obstruction: object.level_scale,
+                    occlusion_at_emitter: object.source_occlusion,
                     ..Default::default()
                 };
                 let evaluation = level.evaluate(emitter, object.position, object.front, object.range,

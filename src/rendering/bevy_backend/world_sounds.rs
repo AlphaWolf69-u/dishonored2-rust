@@ -20,7 +20,9 @@ pub(crate) struct SoundObject {
     pub displacement: Vec3,
     pub scale: f32,
     pub energy: Option<(u32, f32)>,
-    pub level_scale: bool,
+    /// Sound object +0xa8 (1400c3b70): the source zone's occlusion weight in
+    /// path scoring. The +0xa4 level scale (1400c3b40) stays at its default.
+    pub source_occlusion: bool,
     pub audible_mask: u32,
     pub range: f32,
     events: Vec<(PlayingId, f32)>,
@@ -104,7 +106,7 @@ impl SoundObjectWorld for WorldSounds {
         state.objects.insert(emitter, SoundObject {
             position, pending_position: position, front: context.axis.x_axis,
             pending_front: context.axis.x_axis, displacement: Vec3::ZERO,
-            scale: 1.0, energy: None, level_scale: true, audible_mask: 0,
+            scale: 1.0, energy: None, source_occlusion: true, audible_mask: 0,
             range: -1.0, events: Vec::new(),
         });
         Ok(Some(emitter))
@@ -148,7 +150,7 @@ impl SoundObjectWorld for WorldSounds {
         let object = state.objects.get_mut(&object).ok_or("FX sound object is absent")?;
         // Ordinary world NodeFx context21dc10 initializes velocity and mass0.
         object.energy = Some((energy.id, energy.clamp(0.0)));
-        object.level_scale = false; // 22fac0 ->c3b70(0), after successful post.
+        object.source_occlusion = false; // 22fac0 ->c3b70(0), after successful post.
         Ok(())
     }
     fn object_inaudible(&mut self, object: Emitter) -> Result<bool, String> {
