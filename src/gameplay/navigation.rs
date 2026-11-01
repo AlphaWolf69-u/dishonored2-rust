@@ -5,7 +5,7 @@
 use super::collision_filter::{filter_info, layer, QueryFilter};
 use crate::entities::physics_material::PhysicsMaterial;
 use bevy_math::Vec3;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// `material` value of a triangle whose physics material is not resolved.
 pub const NO_MATERIAL: u32 = u32::MAX;
@@ -27,7 +27,8 @@ struct Triangle {
 
 pub struct CollisionWorld {
     triangles: Vec<Triangle>,
-    cells: HashMap<(i32, i32, i32), Vec<usize>>,
+    /// foldhash (hashbrown's default): looked up per cell of every query.
+    cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>>,
     large: Vec<usize>,
     owner_ids: HashMap<String, Vec<u32>>,
     owner_active: Vec<bool>,
@@ -69,7 +70,7 @@ impl CollisionWorld {
         }
         let mut world = Self {
             triangles: Vec::new(),
-            cells: HashMap::new(),
+            cells: hashbrown::HashMap::new(),
             large: Vec::new(),
             owner_ids,
             owner_active: vec![true; owners.len()],
@@ -195,10 +196,7 @@ impl CollisionWorld {
     /// Active triangles `filter` accepts whose bounds overlap `min..max`:
     /// (index, vertices, owner), owner `u32::MAX` for level geometry.
     pub fn triangles_in(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<(u32, [Vec3; 3], u32)> {
-        let mut indices = self.candidates(min, max, filter);
-        // Ascending index keeps query results independent of hash order.
-        indices.sort_unstable();
-        indices
+        self.candidates(min, max, filter)
             .into_iter()
             .map(|index| {
                 let t = self.triangles[index];
@@ -207,11 +205,12 @@ impl CollisionWorld {
             .collect()
     }
 
+    /// Matching triangle indices in ascending order, so results never depend
+    /// on hash order (first_hit_details keeps the first of equal distances).
     fn candidates(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<usize> {
         let low = cell(min);
         let high = cell(max);
-        let mut found = HashSet::new();
-        found.extend(self.large.iter().copied());
+        let mut found = self.large.clone();
         for x in low.0..=high.0 {
             for y in low.1..=high.1 {
                 for z in low.2..=high.2 {
@@ -221,17 +220,17 @@ impl CollisionWorld {
                 }
             }
         }
+        found.retain(|&index| {
+            let triangle = self.triangles[index];
+            (triangle.owner == u32::MAX || self.owner_active[triangle.owner as usize])
+                && filter.accepts(triangle.filter)
+                && (0..3).all(|axis| {
+                    triangle.min[axis] <= max[axis] && triangle.max[axis] >= min[axis]
+                })
+        });
+        found.sort_unstable();
+        found.dedup();
         found
-            .into_iter()
-            .filter(|&index| {
-                let triangle = self.triangles[index];
-                (triangle.owner == u32::MAX || self.owner_active[triangle.owner as usize])
-                    && filter.accepts(triangle.filter)
-                    && (0..3).all(|axis| {
-                        triangle.min[axis] <= max[axis] && triangle.max[axis] >= min[axis]
-                    })
-            })
-            .collect()
     }
 
     /// Highest walkable surface below/within one step above the proposed feet.
