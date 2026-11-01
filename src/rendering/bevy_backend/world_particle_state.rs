@@ -697,21 +697,24 @@ impl WorldParticleState {
             }
             self.collect(index);
         }
-        let order = self.entity_order.clone();
-        for id in order {
-            let Some(mut entity) = self.entities.remove(&id) else {
-                continue;
-            };
+        let order = std::mem::take(&mut self.entity_order);
+        for &id in &order {
             // 87e8e0 publishes updateFxPosition into the dynamic-entity pose
             // update flag. Static actor effects retain their spawn pose; they
             // do not run the attached component's per-frame pose/velocity work.
+            // Checked in place: moving them out of the map and back is not needed.
+            let Some(entity) = self.entities.get(&id) else {
+                continue;
+            };
             if entity.suspended
                 || (matches!(entity.owner, FxEntityOwner::Actor { .. })
                     && !entity.parameters.update_position)
             {
-                self.entities.insert(id, entity);
                 continue;
             }
+            let Some(mut entity) = self.entities.remove(&id) else {
+                continue;
+            };
             let mut component = std::mem::take(&mut entity.component);
             let result = (|| {
                 // 79e6a0 ->875e80 creates a separate FX entity bound to its
@@ -764,6 +767,9 @@ impl WorldParticleState {
             }
             self.entities.insert(id, entity);
         }
+        // Entities created while ticking were appended to the emptied list.
+        let created = std::mem::replace(&mut self.entity_order, order);
+        self.entity_order.extend(created);
         for (graph, node, handle) in std::mem::take(&mut self.started) {
             if let Some(runtime) = self.graphs[graph].as_mut() {
                 if let Err(error) = runtime.effect_started(node, handle) {
