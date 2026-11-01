@@ -23,6 +23,31 @@ impl VisibleSceneInstances {
     }
 }
 
+/// [`for_each_visible_instance`] by instance index.
+pub(super) fn for_each_visible_instance_index(
+    scene: &SceneRenderQueue,
+    selection: Option<&VisibleSceneInstances>,
+    mut visit: impl FnMut(usize),
+) {
+    if let Some(selection) = selection.filter(|selection| {
+        selection.instance_buffer == scene.instances.as_ptr() as usize
+            && selection.count == scene.instances.len()
+    }) {
+        for &index in &selection.indices {
+            // A pickup may have been removed after forward visibility ran.
+            if scene.instances[index].visible {
+                visit(index);
+            }
+        }
+    } else {
+        for (index, instance) in scene.instances.iter().enumerate() {
+            if instance.visible {
+                visit(index);
+            }
+        }
+    }
+}
+
 pub(super) fn for_each_visible_instance(
     scene: &SceneRenderQueue,
     selection: Option<&VisibleSceneInstances>,

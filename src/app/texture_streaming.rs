@@ -692,6 +692,7 @@ pub(super) fn stream_visible_textures(
     mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     arms: Option<Res<super::player_arms::PlayerArms>>,
+    mut instance_slots: Local<InstanceImageSlots>,
 ) {
     let Some(mut worker) = worker else {
         return;
@@ -699,16 +700,14 @@ pub(super) fn stream_visible_textures(
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
     let mut requested = vec![false; queue.diffuse_image_paths.len()];
-    super::scene_queue::for_each_visible_instance(
+    instance_slots.update(&queue);
+    let slots = &*instance_slots;
+    super::scene_queue::for_each_visible_instance_index(
         &queue,
         visible_instances.as_deref(),
-        |instance| {
-            if let Some(slots) = queue.material_images.get(&instance.material) {
-                for &slot in slots {
-                    requested[slot] = true;
-                }
-            } else if let Some(slot) = instance.diffuse_image_slot {
-                if let Some(needed) = requested.get_mut(slot) {
+        |index| {
+            for &slot in slots.of(index) {
+                if let Some(needed) = requested.get_mut(slot as usize) {
                     *needed = true;
                 }
             }
@@ -1182,3 +1181,38 @@ pub(super) fn stream_visible_textures(
         }
     }
 }
+
+/// The image slots each scene instance requests when visible: its material's
+/// slots, else its own diffuse slot. Materials and their slots are fixed once
+/// built and instances are only appended, so each instance is resolved once
+/// instead of hashing its material for every visible instance every frame.
+#[derive(Default)]
+pub(super) struct InstanceImageSlots {
+    instances: usize,
+    ranges: Vec<(u32, u32)>,
+    slots: Vec<u32>,
+}
+
+impl InstanceImageSlots {
+    fn update(&mut self, queue: &SceneRenderQueue) {
+        let buffer = queue.instances.as_ptr() as usize;
+        if self.instances != buffer || self.ranges.len() > queue.instances.len() {
+            *self = Self { instances: buffer, ..Default::default() };
+        }
+        for instance in &queue.instances[self.ranges.len()..] {
+            let start = self.slots.len() as u32;
+            if let Some(slots) = queue.material_images.get(&instance.material) {
+                self.slots.extend(slots.iter().map(|&slot| slot as u32));
+            } else if let Some(slot) = instance.diffuse_image_slot {
+                self.slots.push(slot as u32);
+            }
+            self.ranges.push((start, self.slots.len() as u32));
+        }
+    }
+
+    fn of(&self, index: usize) -> &[u32] {
+        let (start, end) = self.ranges[index];
+        &self.slots[start as usize..end as usize]
+    }
+}
+
