@@ -10,11 +10,13 @@ pub struct TransparencyParameters {
     pub parameters: [f32; 4],
 }
 impl TransparencyParameters {
-    pub fn read(
-        cvars: &CVars,
-        state: crate::render_state::RenderState,
-        particle: bool,
-    ) -> Result<Self, String> {
+    /// The only material input: additive source blend without other flags.
+    pub fn additive(state: crate::render_state::RenderState) -> bool {
+        let source = (state[0] >> 1) & 15;
+        (source == 4 || source == 1) && state[0] & 0x1e0 == 0x20
+    }
+
+    fn resolve(cvars: &CVars, additive: bool, particle: bool) -> Result<Self, String> {
         let mode = cvars.int("r_OIT").ok_or("r_OIT is not registered")?;
         if !(0..=2).contains(&mode) {
             return Err("particle transparency debug resolve is not connected".into());
@@ -24,8 +26,6 @@ impl TransparencyParameters {
                 .float(name)
                 .ok_or_else(|| format!("{name} is not registered"))
         };
-        let source = (state[0] >> 1) & 15;
-        let additive = (source == 4 || source == 1) && state[0] & 0x1e0 == 0x20;
         if mode == 0 {
             return Ok(Self {
                 mode,
@@ -100,5 +100,17 @@ impl TransparencyParameters {
             weights,
             parameters,
         })
+    }
+}
+
+/// Particle parameters for one frame's cvars, resolved once per blend kind
+/// instead of by cvar name for every particle material drawn.
+pub struct ParticleTransparency([Result<TransparencyParameters, String>; 2]);
+impl ParticleTransparency {
+    pub fn new(cvars: &CVars) -> Self {
+        Self([false, true].map(|additive| TransparencyParameters::resolve(cvars, additive, true)))
+    }
+    pub fn get(&self, state: crate::render_state::RenderState) -> Result<TransparencyParameters, String> {
+        self.0[TransparencyParameters::additive(state) as usize].clone()
     }
 }

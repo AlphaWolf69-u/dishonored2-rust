@@ -82,6 +82,7 @@ fn publish_particles(
             owner_scale: 1.,
         };
         let console = crate::platform::console::shared().read();
+        let transparency = crate::rendering::particles::transparency::ParticleTransparency::new(&console.cvars);
         let (draws, world_meshes) = gpu
             .particle_systems
             .publish_draws(water.matrices.frame, |pose| {
@@ -103,6 +104,7 @@ fn publish_particles(
                     query_visibility: 1.,
                     alpha_scale: 1.,
                     cvars: &console.cvars,
+                    transparency: &transparency,
                     areas: &frame.areas,
                 })
             })?;

@@ -36,6 +36,7 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub query_visibility: f32,
     pub alpha_scale: f32,
     pub cvars: &'a crate::platform::cvars::CVars,
+    pub transparency: &'a crate::rendering::particles::transparency::ParticleTransparency,
     pub areas: &'a [super::fog::AreaFogFrame],
 }
 
@@ -223,12 +224,7 @@ impl ParticleSystem {
                 if bounds.is_none() {
                     continue;
                 }
-                let mut transparency =
-                    crate::rendering::particles::transparency::TransparencyParameters::read(
-                        context.cvars,
-                        material.state,
-                        true,
-                    )?;
+                let mut transparency = context.transparency.get(material.state)?;
                 if material.distortion { transparency.mode = 0; }
                 let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
                     material.state,
@@ -295,7 +291,7 @@ impl ParticleSystem {
                 crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
                     &view,context.query_visibility,alpha_scale,&mut instances)?;
                 if instances.is_empty(){continue;}
-                let mut transparency=crate::rendering::particles::transparency::TransparencyParameters::read(context.cvars,material.state,true)?;
+                let mut transparency=context.transparency.get(material.state)?;
                 if material.distortion{transparency.mode=0;}
                 let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
                     transparency.mode!=0,self.water_flags&8!=0);

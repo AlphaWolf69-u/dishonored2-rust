@@ -31,8 +31,13 @@ pub(crate) struct ParticleSystems {
     pub seed: u32,
     links: EffectPoolLinks,
     slots: Vec<Option<ParticleSystem>>,
-    query: Option<crate::gameplay::world_point_query::WorldPointQuery>,
-    ray: crate::gameplay::world_ray_query::WorldRayQuery,
+    /// Point/ray query scratch, one per simulation worker. Each query only
+    /// holds per-call work lists, so which worker simulates a system does not
+    /// change its result.
+    workers: Vec<(
+        crate::gameplay::world_point_query::WorldPointQuery,
+        crate::gameplay::world_ray_query::WorldRayQuery,
+    )>,
 }
 impl Default for ParticleSystems {
     fn default() -> Self {
@@ -41,8 +46,7 @@ impl Default for ParticleSystems {
             seed: 0,
             slots: (0..links.next.len()).map(|_| None).collect(),
             links,
-            query: None,
-            ray: Default::default(),
+            workers: Vec::new(),
         }
     }
 }
@@ -169,12 +173,6 @@ impl ParticleSystems {
         if self.links.allocated_count == 0 {
             return Ok(());
         }
-        if self.query.is_none() {
-            self.query = Some(crate::gameplay::world_point_query::WorldPointQuery::new(
-                u32::MAX,
-            )?);
-        }
-        let query = self.query.as_mut().unwrap();
         let visibility = visibility
             .map(crate::tome::RenderAabbQuery::from_state)
             .transpose()?;
@@ -182,22 +180,70 @@ impl ParticleSystems {
         let minimum_angular_size = crate::rendering::particles::visibility::minimum_angular_size(
             2. * (1. / view.projection[1][1]).atan(),
         );
-        let mut error = None;
-        for system in self.slots.iter_mut().flatten() {
-            if let Err(failure) = system.simulate_in_world(
-                frame,
-                world,
-                query,
-                &mut self.ray,
-                ocean_height,
-                view,
-                visibility.as_ref(),
-                minimum_angular_size,
-                wind,
-            ) {
-                error.get_or_insert(failure);
-            }
+        // Systems are independent (each reads the shared world snapshot and
+        // writes only itself), so they are simulated on several workers.
+        // Errors are reported in slot order, as the serial loop did.
+        // DH2_SERIAL_PARTICLE_SIMULATION=1 keeps one worker (measurement).
+        static SERIAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let mut systems: Vec<&mut ParticleSystem> = self.slots.iter_mut().flatten().collect();
+        let pool = bevy::tasks::ComputeTaskPool::get();
+        let workers = if *SERIAL.get_or_init(|| {
+            std::env::var("DH2_SERIAL_PARTICLE_SIMULATION").as_deref() == Ok("1")
+        }) {
+            1
+        } else {
+            pool.thread_num().max(1).min(systems.len().div_ceil(4)).max(1)
+        };
+        while self.workers.len() < workers {
+            self.workers.push((
+                crate::gameplay::world_point_query::WorldPointQuery::new(u32::MAX)?,
+                Default::default(),
+            ));
         }
-        error.map_or(Ok(()), Err)
+        let chunk = systems.len().div_ceil(workers).max(1);
+        let visibility = visibility.as_ref();
+        let simulate = |chunk_index: usize,
+                        systems: &mut [&mut ParticleSystem],
+                        (query, ray): &mut (
+            crate::gameplay::world_point_query::WorldPointQuery,
+            crate::gameplay::world_ray_query::WorldRayQuery,
+        )| {
+            let mut first = None;
+            for (offset, system) in systems.iter_mut().enumerate() {
+                if let Err(failure) = system.simulate_in_world(
+                    frame,
+                    world,
+                    query,
+                    ray,
+                    ocean_height,
+                    view,
+                    visibility,
+                    minimum_angular_size,
+                    wind,
+                ) {
+                    first.get_or_insert((chunk_index * chunk + offset, failure));
+                }
+            }
+            first
+        };
+        let errors = if workers == 1 {
+            vec![simulate(0, &mut systems, &mut self.workers[0])]
+        } else {
+            pool.scope(|scope| {
+                for (chunk_index, (systems, scratch)) in systems
+                    .chunks_mut(chunk)
+                    .zip(self.workers.iter_mut())
+                    .enumerate()
+                {
+                    let simulate = &simulate;
+                    scope.spawn(async move { simulate(chunk_index, systems, scratch) });
+                }
+            })
+        };
+        errors
+            .into_iter()
+            .flatten()
+            .min_by_key(|(index, _)| *index)
+            .map_or(Ok(()), |(_, failure)| Err(failure))
     }
 }

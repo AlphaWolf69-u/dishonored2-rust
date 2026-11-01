@@ -1129,8 +1129,9 @@ impl ParticlePass {
             self.material_sampler = Some(surface_sampler.id());
         }
         let mut created = 0;
+        let transparencies = crate::rendering::particles::transparency::ParticleTransparency::new(cvars);
         for material in materials {
-            let mut transparency = crate::rendering::particles::transparency::TransparencyParameters::read(cvars, material.state, true)?;
+            let mut transparency = transparencies.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
             for water in [false, true] {
                 let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
