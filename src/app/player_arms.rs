@@ -364,19 +364,27 @@ pub(super) fn update_player_arms(
             }
             let palette =
                 edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
-            for part in &arm.surfaces {
-                let surface = &arm.info.surfaces[part.surface];
+            // Surfaces skin independently; most are small, so they are spread
+            // across the compute pool rather than skinned one after another.
+            let (info, palette) = (&arm.info, &palette);
+            let streams = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+                for part in &arm.surfaces {
+                    scope.spawn(async move {
+                        shadow_preparation::skin_streams(
+                            &info.surfaces[part.surface],
+                            palette,
+                            part.influences,
+                            |p| game_to_view(p.to_array()),
+                            |v| game_to_view(v.to_array()),
+                        )
+                    });
+                }
+            });
+            for (part, streams) in arm.surfaces.iter().zip(streams) {
                 let mut mesh = meshes
                     .get_mut(&part.mesh)
                     .ok_or_else(|| format!("{} mesh is missing", arm.model))?;
-                shadow_preparation::skin_surface(
-                    &mut mesh,
-                    surface,
-                    &palette,
-                    part.influences,
-                    |p| game_to_view(p.to_array()),
-                    |v| game_to_view(v.to_array()),
-                )?;
+                streams?.insert(&mut mesh);
             }
             // Model vtable+88: the probe position is the centre of the
             // current world bounds. Joint 0 (`origin`, rest identity) is the

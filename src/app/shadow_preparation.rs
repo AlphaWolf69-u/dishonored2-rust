@@ -516,57 +516,105 @@ pub(super) fn apply_rest_pose(
 
 /// CPU skinning with the installed skin VS blend: palette-weighted game-space
 /// position, normal, tangent and bitangent, then `position`/`direction` map
-/// them into the mesh's space.
+/// them into the mesh's space. bevy_backend: the original blends in its skin
+/// vertex programs; vertices are independent, so large surfaces are split
+/// across the compute pool (the first-person arms are re-skinned every frame
+/// on the main world's critical path).
 pub(super) fn skin_surface(
     mesh: &mut Mesh,
     surface: &bmd6::SurfaceInfo,
     palette: &[[[f32; 4]; 3]],
     influences: u8,
-    position: impl Fn(Vec3) -> Vec3,
-    direction: impl Fn(Vec3) -> Vec3,
+    position: impl Fn(Vec3) -> Vec3 + Sync,
+    direction: impl Fn(Vec3) -> Vec3 + Sync,
 ) -> Result<(), String> {
+    skin_streams(surface, palette, influences, position, direction)?.insert(mesh);
+    Ok(())
+}
+
+/// Skinned vertex streams of one surface, for `SkinnedStreams::insert`.
+pub(super) struct SkinnedStreams(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>);
+
+impl SkinnedStreams {
+    pub(super) fn insert(self, mesh: &mut Mesh) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.0);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.1);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.2);
+        mesh.insert_attribute(DH2_BITANGENT, self.3);
+    }
+}
+
+/// `skin_surface`'s vertex streams without a mesh, so several surfaces can
+/// be skinned at once.
+pub(super) fn skin_streams(
+    surface: &bmd6::SurfaceInfo,
+    palette: &[[[f32; 4]; 3]],
+    influences: u8,
+    position: impl Fn(Vec3) -> Vec3 + Sync,
+    direction: impl Fn(Vec3) -> Vec3 + Sync,
+) -> Result<SkinnedStreams, String> {
     if surface.skin_indices.len() != surface.positions.len()
         || surface.skin_weights.len() != surface.positions.len()
     {
         return Err("skin vertex streams have different lengths".into());
     }
-    let mut positions = Vec::with_capacity(surface.positions.len());
-    let mut normals = Vec::with_capacity(surface.positions.len());
-    let mut tangents = Vec::with_capacity(surface.positions.len());
-    let mut bitangents = Vec::with_capacity(surface.positions.len());
-    for i in 0..surface.positions.len() {
-        let matrix = edge_skeleton::vertex_skin_matrix(
-            palette,
-            surface.matrix_offset,
-            surface.skin_indices[i],
-            surface.skin_weights[i],
-            influences,
-        )?;
-        let transform = |v: Vec3, w: f32| {
-            Vec3::from_array(matrix.map(|r| Vec4::from_array(r).dot(v.extend(w))))
-        };
-        let p = transform(Vec3::from_array(surface.positions[i]), 1.0);
-        positions.push(position(p).to_array());
-        let packed = surface.packed_channels[i];
-        let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
-        let n = transform(
-            Vec3::new(snorm(packed[4]), snorm(packed[5]), snorm(packed[6])),
-            0.0,
-        );
-        let t = transform(
-            Vec3::new(snorm(packed[8]), snorm(packed[9]), snorm(packed[10])),
-            0.0,
-        );
-        let sign = snorm(packed[11]);
-        normals.push(direction(n).to_array());
-        tangents.push(direction(t).extend(sign).to_array());
-        bitangents.push(direction(n.cross(t) * sign).to_array());
-    }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
-    mesh.insert_attribute(DH2_BITANGENT, bitangents);
-    Ok(())
+    type Streams = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>);
+    let skin = |range: std::ops::Range<usize>| -> Result<Streams, String> {
+        let mut streams: Streams = (Vec::with_capacity(range.len()), Vec::with_capacity(range.len()),
+            Vec::with_capacity(range.len()), Vec::with_capacity(range.len()));
+        for i in range {
+            let matrix = edge_skeleton::vertex_skin_matrix(
+                palette,
+                surface.matrix_offset,
+                surface.skin_indices[i],
+                surface.skin_weights[i],
+                influences,
+            )?;
+            let transform = |v: Vec3, w: f32| {
+                Vec3::from_array(matrix.map(|r| Vec4::from_array(r).dot(v.extend(w))))
+            };
+            let p = transform(Vec3::from_array(surface.positions[i]), 1.0);
+            streams.0.push(position(p).to_array());
+            let packed = surface.packed_channels[i];
+            let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
+            let n = transform(
+                Vec3::new(snorm(packed[4]), snorm(packed[5]), snorm(packed[6])),
+                0.0,
+            );
+            let t = transform(
+                Vec3::new(snorm(packed[8]), snorm(packed[9]), snorm(packed[10])),
+                0.0,
+            );
+            let sign = snorm(packed[11]);
+            streams.1.push(direction(n).to_array());
+            streams.2.push(direction(t).extend(sign).to_array());
+            streams.3.push(direction(n.cross(t) * sign).to_array());
+        }
+        Ok(streams)
+    };
+    const CHUNK: usize = 2048;
+    let count = surface.positions.len();
+    let (positions, normals, tangents, bitangents) = if count <= CHUNK {
+        skin(0..count)?
+    } else {
+        let skin = &skin;
+        let parts = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            for start in (0..count).step_by(CHUNK) {
+                scope.spawn(async move { skin(start..(start + CHUNK).min(count)) });
+            }
+        });
+        let mut streams: Streams = (Vec::with_capacity(count), Vec::with_capacity(count),
+            Vec::with_capacity(count), Vec::with_capacity(count));
+        for part in parts {
+            let part = part?;
+            streams.0.extend(part.0);
+            streams.1.extend(part.1);
+            streams.2.extend(part.2);
+            streams.3.extend(part.3);
+        }
+        streams
+    };
+    Ok(SkinnedStreams(positions, normals, tangents, bitangents))
 }
 
 #[derive(Clone)]
