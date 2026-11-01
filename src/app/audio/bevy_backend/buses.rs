@@ -74,6 +74,16 @@ impl Buses {
         Ok(())
     }
 
+    /// The output gain a mixing bus applies to its next block, the linear
+    /// volume 1410eb1f0 stores at bus+0xcc. Bus 0 is the device output.
+    pub fn output_gain(&self, id: u32) -> f32 {
+        if id == 0 { return 1.0; }
+        self.indices.get(&id).map_or(1.0, |&index| {
+            let bus = &self.nodes[index];
+            power10((bus.base_db + self.activity.output_ducking(bus.id, false)) * 0.05)
+        })
+    }
+
     pub fn begin(&mut self) {
         self.output.fill(0.0);
         for bus in &mut self.nodes {
