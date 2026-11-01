@@ -795,6 +795,33 @@ pub struct MediaProperties {
     pub bus: u32,
 }
 
+/// A voice's response to falling below the volume threshold (node+0xb0
+/// bits 3..6, 1410de430).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BelowThreshold { Continue, Kill, Virtual, Other(u8) }
+
+/// Where a virtual voice resumes when audible again (node+0xb0 bits 0..2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum VirtualReturn { FromBeginning, FromElapsedTime, Resume, Other(u8) }
+
+impl MediaProperties {
+    /// 1410dd720: the first node from the sound up whose override bit is set
+    /// (flags bit 4, node+0x7a bit 2), else the root, supplies both settings.
+    pub fn below_threshold(&self) -> (BelowThreshold, VirtualReturn) {
+        let Some(node) = self.nodes.iter().find(|node| node.advanced.flags & 0x10 != 0).or(self.nodes.last())
+        else { return (BelowThreshold::Continue, VirtualReturn::FromBeginning) };
+        let behaviour = match node.advanced.below_threshold & 0xf {
+            0 => BelowThreshold::Continue, 1 => BelowThreshold::Kill, 2 => BelowThreshold::Virtual,
+            other => BelowThreshold::Other(other),
+        };
+        let queue = match node.advanced.virtual_queue {
+            0 => VirtualReturn::FromBeginning, 1 => VirtualReturn::FromElapsedTime, 2 => VirtualReturn::Resume,
+            other => VirtualReturn::Other(other),
+        };
+        (behaviour, queue)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BankMix {
     pub buses: Vec<NodeProperties>,
