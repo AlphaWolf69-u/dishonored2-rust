@@ -16,6 +16,11 @@ pub(super) struct BenchmarkCameraSweep {
     /// DH2_BENCHMARK_CAMERA=px,py,pz,fx,fy,fz: game-space eye and forward
     /// (up +Z), applied once, to measure from a captured original view.
     placement: Option<([f32; 3], [f32; 3])>,
+    /// DH2_BENCHMARK_PATH=px,py,pz,fx,fy,fz;...: game-space waypoints the
+    /// camera travels at DH2_BENCHMARK_PATH_SPEED m/s (default the free
+    /// camera's), there and back, so traversal work is measured.
+    path: Vec<([f32; 3], [f32; 3])>,
+    path_speed: f32,
 }
 
 impl Default for BenchmarkCameraSweep {
@@ -31,11 +36,24 @@ impl Default for BenchmarkCameraSweep {
             let v: Vec<f32> = value.split(',').filter_map(|x| x.trim().parse().ok()).collect();
             (v.len() == 6).then(|| ([v[0], v[1], v[2]], [v[3], v[4], v[5]]))
         });
+        let path: Vec<([f32; 3], [f32; 3])> = std::env::var("DH2_BENCHMARK_PATH").ok().map_or_else(Vec::new, |value| {
+            value.split(';').filter_map(|point| {
+                let v: Vec<f32> = point.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (v.len() == 6).then(|| ([v[0], v[1], v[2]], [v[3], v[4], v[5]]))
+            }).collect()
+        });
+        let path_speed = std::env::var("DH2_BENCHMARK_PATH_SPEED").ok().and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0).unwrap_or(DEBUG_FREE_FLY_SPEED);
+        if path.len() >= 2 {
+            println!("BENCHMARK camera_path points={} speed={path_speed}", path.len());
+        }
         Self {
             degrees,
             base: None,
             elapsed: 0.0,
             placement,
+            path,
+            path_speed,
         }
     }
 }
@@ -79,6 +97,31 @@ pub(super) fn camera_controls(
                 *camera = Transform::from_translation(eye)
                     .looking_to(super::game_to_view(forward), Vec3::Y);
                 println!("BENCHMARK camera placed at {eye:?}");
+            }
+        }
+        if sweep.path.len() >= 2 {
+            if let Ok(mut camera) = cameras.single_mut() {
+                sweep.elapsed += time.delta_secs();
+                let segments: Vec<f32> = sweep.path.windows(2)
+                    .map(|pair| Vec3::from(pair[0].0).distance(Vec3::from(pair[1].0))).collect();
+                let length: f32 = segments.iter().sum();
+                if length > 0.0 {
+                    // There and back: distance folds into [0, length].
+                    let travelled = (sweep.elapsed * sweep.path_speed) % (2.0 * length);
+                    let mut distance = if travelled > length { 2.0 * length - travelled } else { travelled };
+                    let mut segment = 0;
+                    while segment + 1 < segments.len() && distance > segments[segment] {
+                        distance -= segments[segment];
+                        segment += 1;
+                    }
+                    let fraction = if segments[segment] > 0.0 { (distance / segments[segment]).min(1.0) } else { 0.0 };
+                    let (from, to) = (sweep.path[segment], sweep.path[segment + 1]);
+                    let eye = Vec3::from(from.0).lerp(Vec3::from(to.0), fraction);
+                    let forward = Vec3::from(from.1).normalize_or_zero().lerp(Vec3::from(to.1).normalize_or_zero(), fraction);
+                    let forward = if forward.length_squared() > 1e-6 { forward } else { Vec3::from(to.1) };
+                    *camera = Transform::from_translation(super::game_to_view(eye.to_array()))
+                        .looking_to(super::game_to_view(forward.to_array()), Vec3::Y);
+                }
             }
         }
         if let Some(degrees) = sweep.degrees {

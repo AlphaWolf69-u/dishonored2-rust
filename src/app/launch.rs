@@ -413,14 +413,28 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()?;
-    // bevy_backend: Bevy sizes its pools from the hardware thread count, with
-    // 25% each for I/O and async compute by default. Here those pools only
-    // read textures, wait on the early Tome query and compile pipelines
-    // (under 2% of a thread each while the camera moves), while frame work
-    // queues on the compute pool. On 12 threads: I/O 1, async 2, compute 9.
+    // bevy_backend: Bevy sizes its pools from the hardware thread count: 25%
+    // each for I/O and async compute by default, the rest for compute. Here
+    // the I/O pool runs the serial texture reader (one thread at most) and
+    // the async pool waits on the early Tome query and compiles pipelines in
+    // bursts while new areas come into view. Frame work runs on the compute
+    // pool, which gets every hardware thread: the main and render threads
+    // mostly wait on it, and idle I/O and async threads park. On the eotw
+    // camera path with 4 cores (DH2_DEBUG_TOTAL_THREADS=4, affinity 0x55),
+    // compute 2 (the remainder) ran 65 fps, 3 ran 81 and 4 ran 89; on 12
+    // threads, 9 and 12 measured the same.
     let mut task_pools = bevy::app::TaskPoolOptions::default();
     task_pools.io.percent = 0.1;
     task_pools.async_compute.percent = 0.15;
+    // DH2_DEBUG_TOTAL_THREADS sizes the pools for a smaller CPU (measurement,
+    // with the process affinity limited to that many cores).
+    let total_override = env::var("DH2_DEBUG_TOTAL_THREADS").ok().and_then(|value| value.parse::<usize>().ok());
+    if let Some(total) = total_override {
+        task_pools.min_total_threads = total;
+        task_pools.max_total_threads = total;
+    }
+    task_pools.compute.min_threads = total_override
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |threads| threads.get()));
     if let Some(threads) = compute_threads {
         if !(1..=32).contains(&threads) {
             return Err("DH2_COMPUTE_THREADS must be between 1 and 32".into());
