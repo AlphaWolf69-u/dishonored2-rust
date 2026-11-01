@@ -599,6 +599,69 @@ pub(super) fn sample_player_input(
     }
 }
 
+/// DH2_BENCHMARK_WALK=1 with DH2_BENCHMARK_PATH: the benchmark keeps the
+/// player and walks it along the waypoints' ground positions, holding the
+/// forward action, so player movement is measured. debug_ steering: at the
+/// start and at each turn the player is teleported in place to face the
+/// next waypoint, there and back along the list.
+#[derive(Default)]
+pub(super) struct DebugBenchmarkWalk {
+    targets: Vec<Vec3>,
+    next: usize,
+    step: isize,
+    started: bool,
+    stalled: f32,
+    last: Vec3,
+}
+
+pub(super) fn debug_benchmark_walk_enabled() -> bool {
+    std::env::var("DH2_BENCHMARK_WALK").as_deref() == Ok("1")
+}
+
+impl DebugBenchmarkWalk {
+    fn targets() -> Vec<Vec3> {
+        std::env::var("DH2_BENCHMARK_PATH").ok().map_or_else(Vec::new, |value| value.split(';').filter_map(|point| {
+            let v: Vec<f32> = point.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (v.len() >= 3).then(|| Vec3::new(v[0], v[1], v[2] - super::controls::DEBUG_CAMERA_EYE_HEIGHT))
+        }).collect())
+    }
+
+    /// The forward press to add this frame, after steering the player.
+    fn steer(&mut self, player: &mut Player, dt: f32) -> Option<ActionEvent> {
+        let forward = |down: bool| ActionEvent { action: crate::gameplay::player::controller::ACTION_MOVE_FORWARD,
+            key: 0, value: [0.0; 2], flags: down as u32 };
+        if !self.started {
+            self.targets = Self::targets();
+            if self.targets.len() < 2 { return None; }
+            self.started = true;
+            self.next = 1;
+            self.step = 1;
+            let start = self.targets[0];
+            let to = self.targets[1] - start;
+            player.teleport(start, to.y.atan2(to.x));
+            self.last = start;
+            println!("BENCHMARK walking {} waypoints", self.targets.len());
+            return Some(forward(true));
+        }
+        if self.targets.len() < 2 { return None; }
+        let feet = player.feet();
+        let moved = (feet - self.last).truncate().length();
+        self.last = feet;
+        self.stalled = if moved < 0.5 * dt { self.stalled + dt } else { 0.0 };
+        let reached = (self.targets[self.next] - feet).truncate().length() < 1.5;
+        if !reached && self.stalled < 1.0 { return None; }
+        let last = self.targets.len() as isize - 1;
+        let mut next = self.next as isize + self.step;
+        if next < 0 || next > last { self.step = -self.step; next = self.next as isize + self.step; }
+        self.next = next as usize;
+        self.stalled = 0.0;
+        let to = self.targets[self.next] - feet;
+        println!("BENCHMARK walk turn feet={feet:?} reached={reached} next={} target={:?}", self.next, self.targets[self.next]);
+        player.teleport(feet, to.y.atan2(to.x));
+        Some(forward(true))
+    }
+}
+
 /// The simulated frame (input dispatch happens only on simulated frames;
 /// unsimulated frames keep accumulating events), then the view.
 pub(super) fn update_player(
@@ -611,8 +674,10 @@ pub(super) fn update_player(
     mut cameras: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut contact_sounds: MessageWriter<super::audio::ContactSound>,
+    mut walk: Local<DebugBenchmarkWalk>,
 ) {
-    if benchmark.is_some() || state.debug_free_fly {
+    let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
+    if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
         return;
     }
@@ -635,7 +700,8 @@ pub(super) fn update_player(
         if clock.advanced() {
             let dt = game_clock.delta(3).unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
-            let events = std::mem::take(&mut input.events);
+            let mut events = std::mem::take(&mut input.events);
+            if walking { events.extend(walk.steer(player, dt)); }
             player.body_settings = body_settings(difficulty.as_ref());
 
             player.frame(&world, &events, &look_settings(), dt, frame_delta, game_clock.time(3).unwrap_or(0.0), base);

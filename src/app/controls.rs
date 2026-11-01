@@ -99,7 +99,7 @@ pub(super) fn camera_controls(
                 println!("BENCHMARK camera placed at {eye:?}");
             }
         }
-        if sweep.path.len() >= 2 {
+        if sweep.path.len() >= 2 && !super::player::debug_benchmark_walk_enabled() {
             if let Ok(mut camera) = cameras.single_mut() {
                 sweep.elapsed += time.delta_secs();
                 let segments: Vec<f32> = sweep.path.windows(2)
