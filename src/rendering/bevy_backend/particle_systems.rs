@@ -184,15 +184,30 @@ impl ParticleSystems {
         // writes only itself), so they are simulated on several workers.
         // Errors are reported in slot order, as the serial loop did.
         // DH2_SERIAL_PARTICLE_SIMULATION=1 keeps one worker (measurement).
+        // The compute pool's threads are busy with other main- and render-
+        // world systems at this point (a scope there ran every task on this
+        // thread), so a dedicated pool uses the hardware threads it leaves
+        // idle. Its tasks only compute; they never wait on another pool.
         static SERIAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static POOL: std::sync::OnceLock<bevy::tasks::TaskPool> = std::sync::OnceLock::new();
         let mut systems: Vec<&mut ParticleSystem> = self.slots.iter_mut().flatten().collect();
-        let pool = bevy::tasks::ComputeTaskPool::get();
+        let pool = POOL.get_or_init(|| {
+            let spare = std::thread::available_parallelism()
+                .map_or(2, |threads| threads.get())
+                .saturating_sub(bevy::tasks::ComputeTaskPool::get().thread_num())
+                .clamp(1, 8);
+            bevy::tasks::TaskPoolBuilder::new()
+                .num_threads(spare)
+                .thread_name("Particle Simulation".into())
+                .build()
+        });
         let workers = if *SERIAL.get_or_init(|| {
             std::env::var("DH2_SERIAL_PARTICLE_SIMULATION").as_deref() == Ok("1")
         }) {
             1
         } else {
-            pool.thread_num().max(1).min(systems.len().div_ceil(4)).max(1)
+            // This thread also runs scope tasks while it waits.
+            (pool.thread_num() + 1).min(systems.len().div_ceil(4)).max(1)
         };
         while self.workers.len() < workers {
             self.workers.push((
