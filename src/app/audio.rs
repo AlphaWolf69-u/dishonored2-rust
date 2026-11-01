@@ -294,9 +294,10 @@ const LEVEL_SOUNDS_GATE: &str = "level emitter and world FX sound events";
 fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
     let events: Vec<u32> = events.iter().copied().filter(|e| !registry.sources.contains_key(e)).collect();
     let shared = &*registry;
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let prepared: Vec<(u32, Vec<SourceAction>)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = events.chunks(events.len().div_ceil(threads).max(1)).map(|chunk| scope.spawn(move || {
+    let pool = bevy::tasks::ComputeTaskPool::get();
+    let threads = pool.thread_num().max(1);
+    let prepared: Vec<(u32, Vec<SourceAction>)> = pool.scope(|scope| {
+        for chunk in events.chunks(events.len().div_ceil(threads).max(1)) { scope.spawn(async move {
             let _tag = crate::platform::allocation_tags::tag("sound preparation");
             chunk.iter().filter_map(|&event| match shared.decode_event(event) {
                 Ok(actions) => Some((event, actions)),
@@ -305,9 +306,8 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
                     None
                 }
             }).collect::<Vec<_>>()
-        })).collect();
-        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
-    });
+        }); }
+    }).into_iter().flatten().collect();
     let count = prepared.len();
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {

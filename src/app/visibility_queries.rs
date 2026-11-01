@@ -19,6 +19,7 @@ pub(super) fn run_tome_render_jobs(
         &world.bytes,
         &world.query_data,
         world.query_pool.as_deref(),
+        true,
         world.query_job_count,
         input,
     )
@@ -29,6 +30,9 @@ fn run_tome_jobs(
     bytes: &[u8],
     query_data: &tome::DirectTomeQueryData,
     query_pool: Option<&bevy::tasks::TaskPool>,
+    // false: the waiting thread runs only these jobs' scope, never other
+    // tasks queued on the pool (see EarlyTomeQuery).
+    tick_pool: bool,
     query_job_count: u32,
     input: &tome::OrdinaryDirectQueryInput<'_>,
 ) -> Vec<tome::RenderQueryJob> {
@@ -43,7 +47,7 @@ fn run_tome_jobs(
             Some(pool) => pool,
             None => bevy::tasks::ComputeTaskPool::get(),
         };
-        pool.scope(|scope| {
+        pool.scope_with_executor(tick_pool, None, |scope| {
             for job in 0..count {
                 let run = &run;
                 scope.spawn(async move { run(job) });
@@ -242,15 +246,15 @@ impl TomeQueryParts {
 /// current; stream_visible_models uses its jobs only when the key it builds
 /// from its own inputs is identical, and otherwise runs the query itself.
 ///
-/// The query runs on a task pool holding only query work. A thread waiting
-/// on a shared-pool scope also runs unrelated pool tasks, and during loading
-/// those can wait on later frame stages, which wait on this query.
+/// The query is an async-compute-pool task whose jobs run on the compute
+/// pool. Its thread waits on them without ticking the compute pool: a thread
+/// running unrelated compute tasks there could enter one that waits on later
+/// frame stages during loading, which wait on this query (it deadlocked).
 #[derive(Resource, Default)]
 pub(super) struct EarlyTomeQuery {
     pending: Option<(TomeRenderQueryKey, bevy::tasks::Task<Vec<tome::RenderQueryJob>>)>,
     /// Key of the query cached by stream_visible_models: no early start.
     cached_key: Option<TomeRenderQueryKey>,
-    pool: Option<std::sync::Arc<bevy::tasks::TaskPool>>,
 }
 
 pub(super) fn begin_tome_query(
@@ -280,31 +284,28 @@ pub(super) fn begin_tome_query(
     if !world.is_changed() && early.cached_key.as_ref() == Some(&key) {
         return;
     }
-    let pool = match (&world.query_pool, &early.pool) {
-        (Some(pool), _) | (None, Some(pool)) => pool.clone(),
-        (None, None) => {
-            let pool = std::sync::Arc::new(
-                bevy::tasks::TaskPoolBuilder::new()
-                    .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num())
-                    .thread_name("Tome Early Query".into())
-                    .build(),
-            );
-            early.pool = Some(pool.clone());
-            pool
-        }
-    };
+    // Bevy's async compute pool runs work that spans systems. The waiting
+    // thread stays off the compute pool: a compute-pool thread waiting on a
+    // scope there would run unrelated frame tasks (and it deadlocked once).
+    let explicit = world.query_pool.clone();
     let tree = world.tree.clone();
     let bytes = world.bytes.clone();
     let query_data = world.query_data.clone();
     let job_count = world.query_job_count;
     let gate_states = world.gate_states.clone();
-    let jobs_pool = pool.clone();
-    let task = pool.spawn(async move {
+    // The jobs run on the compute pool's workers; this async-pool thread waits
+    // without running other compute tasks, which could wait on later stages.
+    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
+        let (jobs, tick): (&bevy::tasks::TaskPool, bool) = match explicit.as_deref() {
+            Some(pool) => (pool, true),
+            None => (bevy::tasks::ComputeTaskPool::get(), false),
+        };
         run_tome_jobs(
             &tree,
             &bytes,
             &query_data,
-            Some(&jobs_pool),
+            Some(jobs),
+            tick,
             job_count,
             &parts.input(&gate_states),
         )

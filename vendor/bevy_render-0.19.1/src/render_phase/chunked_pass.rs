@@ -134,7 +134,6 @@ fn render_chunks_in_parallel<BPI: BinnedPhaseItem>(
     stencil_reference: u32,
 ) -> Option<Result<(), DrawError>> {
     static SERIAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    static POOL: std::sync::OnceLock<bevy_tasks::TaskPool> = std::sync::OnceLock::new();
     if *SERIAL.get_or_init(|| std::env::var("DH2_SERIAL_PASS_RECORDING").as_deref() == Ok("1")) {
         return None;
     }
@@ -148,13 +147,7 @@ fn render_chunks_in_parallel<BPI: BinnedPhaseItem>(
     }
     // Each worker set is prepared once for this pass by its task.
     let device = ctx.render_device().clone();
-    let pool = POOL.get_or_init(|| {
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        bevy_tasks::TaskPoolBuilder::new()
-            .num_threads((threads / 2).clamp(1, super::DRAW_FUNCTION_WORKERS))
-            .thread_name("Camera Pass Recording".into())
-            .build()
-    });
+    let pool = bevy_tasks::ComputeTaskPool::get();
     let first_colors: Vec<Option<RenderPassColorAttachment<'_>>> = colors.to_vec();
     let first_depth = depth.clone();
     let mut loaded_colors = first_colors.clone();

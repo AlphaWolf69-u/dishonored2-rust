@@ -413,7 +413,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()?;
+    // bevy_backend: Bevy sizes its pools from the hardware thread count, with
+    // 25% each for I/O and async compute by default. Here those pools only
+    // read textures, wait on the early Tome query and compile pipelines
+    // (under 2% of a thread each while the camera moves), while frame work
+    // queues on the compute pool. On 12 threads: I/O 1, async 2, compute 9.
     let mut task_pools = bevy::app::TaskPoolOptions::default();
+    task_pools.io.percent = 0.1;
+    task_pools.async_compute.percent = 0.15;
     if let Some(threads) = compute_threads {
         if !(1..=32).contains(&threads) {
             return Err("DH2_COMPUTE_THREADS must be between 1 and 32".into());
@@ -984,18 +991,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             render.insert_resource(bevy::render::renderer::ParallelCommandFinalization);
         }
     }
+    // Encoders finish on Bevy's compute pool; DH2_RENDER_FINALIZATION_THREADS
+    // (measurement only) gives them a private pool instead. Private pools
+    // over-subscribe the hardware once their work overlaps with the frame's.
     if let Some(threads) = env::var("DH2_RENDER_FINALIZATION_THREADS")
         .ok()
-        .or_else(|| {
-            if !cfg!(target_os = "windows") {
-                return None;
-            }
-            let count = std::thread::available_parallelism().ok()?.get();
-            // The render thread also finalizes commands in this batch. On a
-            // 12-thread CPU at the eotw view, half the hardware threads (6)
-            // beat a quarter (3) by ~0.5 ms p50 and 11 lost 3 ms to contention.
-            (count >= 4).then(|| (count / 2).clamp(1, 8).to_string())
-        })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|threads| *threads > 0 && *threads <= 32)
     {

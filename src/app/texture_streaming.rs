@@ -4,7 +4,7 @@ use super::{
     archive, entities, material, mpsc, render_state, surface_gpu, texture, Arc, AssetId,
     DecalMaterial, Extent3d, GpuImage, ImageAddressMode, ImageSampler, ImageSamplerDescriptor,
     MaterialHandle, Mutex, ProbeMaterial, Receiver, RenderAssetUsages, RenderAssets, RenderDevice,
-    RenderQueue, SceneRenderQueue, StreamingDiagnostics, SyncSender, TexelCopyBufferLayout,
+    RenderQueue, SceneRenderQueue, StreamingDiagnostics, TexelCopyBufferLayout,
     TextureDimension, TextureFormat, VecDeque,
 };
 use bevy::prelude::*;
@@ -244,9 +244,22 @@ pub(super) type TextureReadResult = (
     Result<Option<StreamedDiffuse>, String>,
 );
 
+type TextureReadRequest = (usize, String, TextureReadTarget);
+
+/// Requests read one at a time in submission order. A reader task runs on
+/// Bevy's I/O pool only while requests are pending, so no pool thread stays
+/// blocked waiting for work.
+#[derive(Default)]
+struct TextureReadQueue {
+    pending: VecDeque<TextureReadRequest>,
+    reading: bool,
+}
+
 #[derive(Resource)]
 pub(super) struct TextureReadWorker {
-    pub(super) requests: SyncSender<(usize, String, TextureReadTarget)>,
+    catalog: Arc<archive::Catalog>,
+    queue: Arc<Mutex<TextureReadQueue>>,
+    completed_tx: mpsc::Sender<TextureReadResult>,
     pub(super) completed: Mutex<Receiver<TextureReadResult>>,
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
@@ -255,25 +268,49 @@ pub(super) struct TextureReadWorker {
 
 impl TextureReadWorker {
     pub(super) fn new(catalog: archive::Catalog, image_count: usize) -> Self {
-        let (requests, request_rx) =
-            mpsc::sync_channel::<(usize, String, TextureReadTarget)>(TEXTURE_READ_QUEUE_CAPACITY);
         let (completed_tx, completed) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _tag = crate::platform::allocation_tags::tag("texture worker");
-            while let Ok((slot, stem, target)) = request_rx.recv() {
-                let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
-                if completed_tx.send((slot, target, result)).is_err() {
-                    break;
-                }
-            }
-        });
         Self {
-            requests,
+            catalog: Arc::new(catalog),
+            queue: Arc::default(),
+            completed_tx,
             completed: Mutex::new(completed),
             ready: VecDeque::new(),
             inflight: vec![false; image_count],
             inflight_count: 0,
         }
+    }
+
+    /// Queues a read; `Err` returns the request when the queue is full.
+    fn request(&self, request: TextureReadRequest) -> Result<(), TextureReadRequest> {
+        let mut queue = self.queue.lock().unwrap();
+        if queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
+            return Err(request);
+        }
+        queue.pending.push_back(request);
+        if std::mem::replace(&mut queue.reading, true) {
+            return Ok(());
+        }
+        drop(queue);
+        let (catalog, queue, completed_tx) =
+            (self.catalog.clone(), self.queue.clone(), self.completed_tx.clone());
+        bevy::tasks::IoTaskPool::get().spawn(async move {
+            let _tag = crate::platform::allocation_tags::tag("texture worker");
+            loop {
+                let Some((slot, stem, target)) = ({
+                    let mut queue = queue.lock().unwrap();
+                    let next = queue.pending.pop_front();
+                    queue.reading = next.is_some();
+                    next
+                }) else {
+                    return;
+                };
+                let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
+                if completed_tx.send((slot, target, result)).is_err() {
+                    return;
+                }
+            }
+        }).detach();
+        Ok(())
     }
 }
 
@@ -1132,9 +1169,7 @@ pub(super) fn stream_visible_textures(
             }
             TextureReadTarget::Initial(queue.preferred_mip)
         };
-        match worker
-            .requests
-            .try_send((slot, queue.diffuse_image_paths[slot].clone(), target))
+        match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target))
         {
             Ok(()) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
@@ -1157,7 +1192,7 @@ pub(super) fn stream_visible_textures(
                 worker.inflight[slot] = true;
                 worker.inflight_count += 1;
             }
-            Err(mpsc::TrySendError::Full(_)) => {
+            Err(_) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
                         "read_queue_full stream_frame={frame} slot={slot} path={:?} target={target:?} inflight={}/{}",
@@ -1166,16 +1201,6 @@ pub(super) fn stream_visible_textures(
                         TEXTURE_READ_QUEUE_CAPACITY,
                     ));
                 }
-                break;
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
-                        "read_queue_disconnected stream_frame={frame} slot={slot} path={:?} target={target:?}",
-                        queue.diffuse_image_paths[slot],
-                    ));
-                }
-                eprintln!("Texture read worker stopped");
                 break;
             }
         }
