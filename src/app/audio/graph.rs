@@ -696,19 +696,21 @@ impl Runtime {
                     let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else { return false };
                     *sample = value;
                 }
-                let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
-                    + random.volume_db + random.makeup_db;
-                let threshold = f32::from_bits(audio.control.threshold_db.load(Ordering::Relaxed));
                 let update_gain = *gain_tick != Some(now / 1024);
                 if routing.is_some() && update_gain {
                     *routes = Some(audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).clone());
                 }
                 let route = if routing.is_some() { routes.as_ref().and_then(|routes| routes.get(*index)) } else { None };
-                let gain = if volume <= threshold { 0.0 } else {
-                    power10(route.map_or(volume, |route| route.routing.volume_db + random.volume_db
-                        + audio.control.activity.as_ref().map_or(0.0, |activity| activity.voice_ducking(sound.properties.bus))) * 0.05)
-                };
                 if update_gain {
+                    // The voice gain sets this block's ramp targets only, so it
+                    // is evaluated once per block rather than per frame.
+                    let volume = f32::from_bits(audio.control.volumes_db[*index].load(Ordering::Relaxed))
+                        + random.volume_db + random.makeup_db;
+                    let threshold = f32::from_bits(audio.control.threshold_db.load(Ordering::Relaxed));
+                    let gain = if volume <= threshold { 0.0 } else {
+                        power10(route.map_or(volume, |route| route.routing.volume_db + random.volume_db
+                            + audio.control.activity.as_ref().map_or(0.0, |activity| activity.voice_ducking(sound.properties.bus))) * 0.05)
+                    };
                     *gain_tick = Some(now / 1024);
                     // 1410fc5c0 includes the transition amplitude in voice
                     // gain before 14113ef50 interpolates its speaker product.

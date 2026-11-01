@@ -24,6 +24,9 @@ struct Bus {
 pub(in crate::app::audio) struct Buses {
     nodes: Vec<Bus>,
     indices: HashMap<u32, usize>,
+    /// Direct-mapped memo of `indices` for the per-sample `add`; entries are
+    /// only ever added to `indices`, so a cached slot never goes stale.
+    recent: [(u32, u32); 16],
     primary: u32,
     activity: Arc<Activity>,
     output: [f32; FRAMES * 2],
@@ -32,7 +35,7 @@ pub(in crate::app::audio) struct Buses {
 impl Buses {
     pub fn new(mixer: &Mixer, base: &Path, activity: Arc<Activity>) -> Result<Self, String> {
         let tables = EffectTables::load(mixer, base)?;
-        let mut result = Self { nodes: Vec::new(), indices: HashMap::new(),
+        let mut result = Self { nodes: Vec::new(), indices: HashMap::new(), recent: [(0, 0); 16],
             primary: mixer.primary_bus.ok_or("Wwise initialization bank has no primary bus")?, activity,
             output: [0.0; FRAMES * 2] };
         for &id in &mixer.bus_order {
@@ -86,7 +89,15 @@ impl Buses {
             self.output[frame * 2 + 1] += sample[1];
             return Ok(());
         }
-        let bus = &mut self.nodes[*self.indices.get(&id).ok_or_else(|| format!("unresolved mixing bus {id:#010x}"))?];
+        let way = ((id ^ (id >> 8) ^ (id >> 16)) & 15) as usize;
+        let index = if self.recent[way].0 == id {
+            self.recent[way].1 as usize
+        } else {
+            let index = *self.indices.get(&id).ok_or_else(|| format!("unresolved mixing bus {id:#010x}"))?;
+            self.recent[way] = (id, index as u32);
+            index
+        };
+        let bus = &mut self.nodes[index];
         bus.input = true;
         for (channel, sample) in bus.channels.iter_mut().zip(sample) { channel[frame] += sample; }
         Ok(())
