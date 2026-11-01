@@ -113,15 +113,27 @@ impl<P: PhaseItem> DrawFunctionsInternal<P> {
 #[derive(Resource)]
 pub struct DrawFunctions<P: PhaseItem> {
     internal: RwLock<DrawFunctionsInternal<P>>,
+    /// DH2 patch: independent copies of every render command, one set per
+    /// pass-recording worker, each with its own system-parameter state. They
+    /// let several threads record ranges of one phase; a set is complete only
+    /// while it holds as many functions as the main registry.
+    workers: Vec<std::sync::Mutex<DrawFunctionsInternal<P>>>,
 }
+
+/// DH2 patch: number of draw-function copies made per render command.
+pub const DRAW_FUNCTION_WORKERS: usize = 8;
 
 impl<P: PhaseItem> Default for DrawFunctions<P> {
     fn default() -> Self {
+        let empty = || DrawFunctionsInternal {
+            draw_functions: Vec::new(),
+            indices: Default::default(),
+        };
         Self {
-            internal: RwLock::new(DrawFunctionsInternal {
-                draw_functions: Vec::new(),
-                indices: Default::default(),
-            }),
+            internal: RwLock::new(empty()),
+            workers: (0..DRAW_FUNCTION_WORKERS)
+                .map(|_| std::sync::Mutex::new(empty()))
+                .collect(),
         }
     }
 }
@@ -137,6 +149,18 @@ impl<P: PhaseItem> DrawFunctions<P> {
         self.internal
             .write()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// DH2 patch: the worker copies, when every registered draw function has
+    /// one (functions added directly through `write().add` have none).
+    pub fn complete_workers(&self) -> Option<&[std::sync::Mutex<DrawFunctionsInternal<P>>]> {
+        let count = self.read().draw_functions.len();
+        self.workers
+            .iter()
+            .all(|worker| {
+                worker.lock().unwrap_or_else(PoisonError::into_inner).draw_functions.len() == count
+            })
+            .then_some(self.workers.as_slice())
     }
 }
 
@@ -365,6 +389,9 @@ impl AddRenderCommand for SubApp {
         C::Param: ReadOnlySystemParam,
     {
         let draw_function = RenderCommandState::<P, C>::new(self.world_mut());
+        let worker_functions: Vec<_> = (0..DRAW_FUNCTION_WORKERS)
+            .map(|_| RenderCommandState::<P, C>::new(self.world_mut()))
+            .collect();
         let draw_functions = self
             .world()
             .get_resource::<DrawFunctions<P>>()
@@ -376,6 +403,12 @@ impl AddRenderCommand for SubApp {
                 );
             });
         draw_functions.write().add_with::<C, _>(draw_function);
+        for (worker, function) in draw_functions.workers.iter().zip(worker_functions) {
+            worker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .add_with::<C, _>(function);
+        }
         self
     }
 }

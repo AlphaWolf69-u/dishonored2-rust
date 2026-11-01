@@ -1132,6 +1132,41 @@ where
         Ok(())
     }
 
+    /// DH2 patch: draw a range of direct batches with an explicit, already
+    /// prepared function set (a pass-recording worker's copy). Unbatchable
+    /// meshes and non-meshes are not drawn here.
+    pub fn render_direct_batches_with<'w>(
+        &self,
+        pass: &mut TrackedRenderPass<'w>,
+        world: &'w World,
+        view: Entity,
+        range: Range<usize>,
+        functions: &mut DrawFunctionsInternal<BPI>,
+    ) -> Result<(), DrawError> {
+        let BinnedRenderPhaseBatchSets::Direct(batches) = &self.batch_sets else {
+            unreachable!("direct range requires direct batches")
+        };
+        assert!(range.start <= range.end && range.end <= batches.len());
+        for (batch, (set, bin)) in batches
+            .iter()
+            .zip(self.batchable_meshes.keys())
+            .skip(range.start)
+            .take(range.len())
+        {
+            let item = BPI::new(
+                set.clone(),
+                bin.clone(),
+                batch.representative_entity,
+                batch.instance_range.clone(),
+                batch.extra_index.clone(),
+            );
+            if let Some(function) = functions.get_mut(item.draw_function()) {
+                function.draw(world, pass, view, &item)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Renders all batchable meshes queued in this phase.
     fn render_batchable_meshes<'w>(
         &self,
