@@ -853,11 +853,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .set(bevy::app::TaskPoolPlugin {
                     task_pool_options: task_pools,
                 })
-                // Host diagnostic: benchmarks and DH2_DEBUG_MUTE=1 play silently.
+                // Host diagnostic: benchmarks and DH2_DEBUG_MUTE=1 play silently;
+                // DH2_DEBUG_BENCHMARK_AUDIO=1 keeps benchmark audio for level captures.
                 .set(bevy::audio::AudioPlugin {
                     global_volume: bevy::audio::GlobalVolume::new(
-                        if benchmark_resolution.is_some()
-                            || env::var("DH2_BENCHMARK_SECONDS").is_ok()
+                        if (benchmark_resolution.is_some() || env::var("DH2_BENCHMARK_SECONDS").is_ok())
+                            && env::var("DH2_DEBUG_BENCHMARK_AUDIO").as_deref() != Ok("1")
                             || env::var("DH2_DEBUG_MUTE").as_deref() == Ok("1")
                         {
                             bevy::audio::Volume::SILENT

@@ -327,6 +327,20 @@ pub(super) struct Playing {
     emitter: Emitter,
 }
 impl Playing {
+    /// Diagnostic levels: each sound's mixed volume (dB) and its loudest
+    /// spatial channel gain, as last published by `update`.
+    pub fn debug_levels(&self) -> Vec<(u32, f32, f32)> {
+        self.definition.sounds.iter().zip(self.control.volumes_db.iter().zip(&self.control.spatial)).map(|(sound, (volume, spatial))| {
+            let peak = spatial[..4].iter().map(|gain| f32::from_bits(gain.load(Ordering::Relaxed))).fold(0.0, f32::max);
+            (sound.properties.nodes.first().map_or(0, |node| node.id), f32::from_bits(volume.load(Ordering::Relaxed)), peak)
+        }).collect()
+    }
+    /// Diagnostic: the first sound's ancestor IDs, sound first, and its bus.
+    pub fn debug_chain(&self) -> Vec<u32> {
+        self.definition.sounds.first().map_or_else(Vec::new, |sound| {
+            sound.properties.nodes.iter().map(|node| node.id).chain([sound.properties.bus]).collect()
+        })
+    }
     pub fn stop(&self, target: u32, milliseconds: i32, curve: u8) {
         // An action can target a parent outside this Play action's subtree.
         let target = if self.definition.root_properties().nodes.iter().any(|node| node.id == target) {

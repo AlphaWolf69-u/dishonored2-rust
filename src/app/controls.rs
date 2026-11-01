@@ -68,6 +68,11 @@ pub(super) fn camera_controls(
     input: Res<PlayerInput>,
 ) {
     if benchmark.is_some() {
+        // DH2_DEBUG_BENCHMARK_AUDIO=1: the placed camera is the listener, as
+        // the G free-fly camera is, so captures hear the measured view.
+        if std::env::var("DH2_DEBUG_BENCHMARK_AUDIO").as_deref() == Ok("1") {
+            player.debug_free_fly = true;
+        }
         if let Some((eye, forward)) = sweep.placement.take() {
             if let Ok(mut camera) = cameras.single_mut() {
                 let eye = super::game_to_view(eye);

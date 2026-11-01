@@ -22,6 +22,7 @@ pub(super) struct EffectAudio {
     source: Option<Arc<WorldFxSources>>,
     events: Vec<PreparedEvent>,
     reported_playback: bool,
+    trace_frame: u32,
 }
 
 /// Prepare dependencies, publish actual sound-object frames, then execute
@@ -91,6 +92,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 }
             }
         }
+        if trace_fx_sound_limits() && !bridge.released.is_empty() {
+            eprintln!("FX_SOUND_RELEASED {} frame={}", bridge.released.len(), state.trace_frame);
+        }
         for emitter in std::mem::take(&mut bridge.released) {
             for (entity, target, _) in &playing {
                 if target.emitter == emitter { commands.entity(entity).try_despawn(); }
@@ -149,7 +153,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                     Ok(voice) => {
                                         submitted += 1;
                                         if trace_fx_sound_limits() {
-                                            eprintln!("FX_SOUND_VOICE {} object={:?}", prepared.declaration.name, event.object);
+                                            eprintln!("FX_SOUND_VOICE {} object={:?} position={:?} range={}", prepared.declaration.name, event.object,
+                                                object.position, prepared.declaration.declaration.max_distance);
                                         }
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
                                             emitter: event.object, paused: false, world_paused: false };
@@ -165,6 +170,23 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 }
             }
         }
+        // DH2_TRACE_FX_SOUND_LIMITS=1: FX voices playing at once, every 2 s.
+        if trace_fx_sound_limits() && state.trace_frame % 120 == 0 {
+            let mut voices = std::collections::BTreeMap::<String, Vec<String>>::new();
+            for (_, target, voice) in &playing {
+                let name = state.events.iter().find(|event| event.declaration.declaration.id == target.event)
+                    .map_or_else(|| format!("event:{}", target.event), |event| event.declaration.name.clone());
+                let levels = voice.debug_levels().iter().map(|(id, volume, peak)| format!("{id}:{volume:.1}dB*{peak:.3}")).collect::<Vec<_>>().join("+");
+                let chain = voice.debug_chain().iter().map(u32::to_string).collect::<Vec<_>>().join(">");
+                voices.entry(name).or_default().push(format!("[{chain}] {levels}"));
+            }
+            let total = voices.values().map(Vec::len).sum::<usize>();
+            let objects = bridge.objects.values().filter(|object| object.has_events()).collect::<Vec<_>>();
+            eprintln!("FX_SOUND_PLAYING total={total} objects_with_events={} audible={} listener={:?}", objects.len(),
+                objects.iter().filter(|object| object.audible_mask != 0).count(), scene.listener().map(|l| l.position));
+            for (name, levels) in voices { eprintln!("FX_SOUND_PLAYING {name} n={} {}", levels.len(), levels.join(" ")); }
+        }
+        state.trace_frame = state.trace_frame.wrapping_add(1);
         if submitted != 0 && !state.reported_playback {
             info!(voices = submitted, "World FX sound playback submitted to shared output");
             state.reported_playback = true;
