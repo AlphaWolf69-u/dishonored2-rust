@@ -330,7 +330,16 @@ impl OceanScene {
             lod: 0,
             children: [-1; 4],
         };
+        let query = match &frame.ocean_query {
+            Some(state) => Some(state.as_deref().map(crate::tome::RenderAabbQuery::from_state).transpose()?),
+            None => None,
+        };
+        let culling = match &query {
+            Some(query) => OceanPatchCulling::Query(query.as_ref()),
+            None => OceanPatchCulling::Frustum(&matrices.view_projection),
+        };
         let mut patches = Vec::new();
+        let mut query_error = None;
         build_ocean_patches(
             &mut patches,
             root,
@@ -338,18 +347,23 @@ impl OceanScene {
             threshold,
             |p| {
                 !self.state.view.water_volume
-                    && ocean_patch_visible(
-                        ocean_patch_bounds(
+                    && culling
+                        .visible(ocean_patch_bounds(
                             p,
                             self.state.view.water_level,
                             self.state.view.max_wave_amplitude,
                             self.state.view.tile_size,
-                        ),
-                        &matrices.view_projection,
-                    )
+                        ))
+                        .unwrap_or_else(|error| {
+                            query_error.get_or_insert(error);
+                            false
+                        })
             },
             |p| ocean_projected_cell_area(p, patch_view),
         )?;
+        if let Some(error) = query_error {
+            return Err(error);
+        }
         let vertex_view = OceanVertexView {
             clip_from_world: clip,
             previous_clip_from_world: Mat4::from_cols_array_2d(

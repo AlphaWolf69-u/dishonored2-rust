@@ -180,6 +180,10 @@ pub struct WaterFrame {
     /// Same prepared environment sun used by the view and atmosphere owners.
     pub parallel: Option<([f32; 3], [f32; 3])>,
     pub ocean_render_settings: crate::platform::game_settings::OceanRenderSettings,
+    /// The ocean cull pass's query flag and the ordinary query descriptor
+    /// (rendering::ocean::OceanPatchCulling). None selects the frustum path;
+    /// Some(None) is the query path with an invalid descriptor.
+    pub ocean_query: Option<Option<Arc<crate::tome::RenderQueryState>>>,
     pub values: crate::rendering::water::parameters::WaterViewParameters,
     /// Ordinary environment inputs; the ordered render-view water-contact override
     /// and retained OceanViewState must still be applied by the ocean owner.

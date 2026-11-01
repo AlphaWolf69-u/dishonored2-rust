@@ -26,7 +26,7 @@ pub use geometry::{
     OceanGeometryRecord,
 };
 pub use patches::{
-    build_ocean_patches, ocean_patch_bounds, ocean_patch_visible, ocean_projected_cell_area,
+    build_ocean_patches, ocean_patch_bounds, ocean_patch_visible, OceanPatchCulling, ocean_projected_cell_area,
     OceanPatchView,
 };
 pub use queries::{OceanQueryHandle, OceanQueryQueue, OCEAN_QUERY_CAPACITY};

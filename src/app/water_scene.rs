@@ -270,6 +270,7 @@ pub(super) fn publish_water_frame(
     screen_effects:Res<crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials>,
     mut queries: ResMut<crate::rendering::bevy_backend::physics_queries::PhysicsQueryFrame>,
     mut query_error: Local<Option<String>>,
+    (queue, tome): (Res<super::SceneRenderQueue>, Option<Res<super::state::TomeWorld>>),
 ) {
     let Some(water) = water.as_mut() else {
         output.0 = None;
@@ -323,6 +324,11 @@ pub(super) fn publish_water_frame(
             tile_size:console.cvars.get("r_oceanTileSize").ok_or("ocean tile cvar unavailable")?.float,
             skip:console.cvars.get("r_skipOcean").ok_or("ocean skip cvar unavailable")?.int!=0,
         };
+        // 351780: renderer+5fa360 = scene Tome world && !umbra_skipOcclusion.
+        let skip_occlusion=console.cvars.get("umbra_skipOcclusion").ok_or("occlusion skip cvar unavailable")?.int!=0;
+        let ocean_query=(tome.is_some() && !skip_occlusion).then(|| {
+            queue.shadow_ordinary_query.as_ref().and_then(|output| output.state.clone()).map(Arc::new)
+        });
         let mut ocean_environment=water.ocean_environment.update(
             &scene.area_environments,eye,scene.environment_blend_duration,delta)?;
         let completed=if let Some(physics)=physics.as_mut() {
@@ -361,6 +367,7 @@ pub(super) fn publish_water_frame(
                 ))
             }),
             ocean_render_settings,
+            ocean_query,
             values,
             ocean_environment,
             matrices,

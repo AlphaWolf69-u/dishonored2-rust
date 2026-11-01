@@ -482,3 +482,101 @@ fn saved_dust_approach_visibility_queries() {
         print!("{}", String::from_utf8_lossy(&game.stdout));
     }
 }
+
+#[test]
+#[ignore = "requires installed archives"]
+fn eotw_ocean_query_culling_matches_running_original() {
+    use crate::rendering::ocean::{
+        build_ocean_patches, ocean_patch_bounds, ocean_projected_cell_area, OceanPatch,
+        OceanPatchCulling, OceanPatchView,
+    };
+    bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+    // The original at the eotw benchmark camera took the query path
+    // (ARK_RENDERPASS_CULL_OCEAN flags read live as 01 01).
+    let fixture = include_str!("../../../tests/fixtures/ocean_patches_eotw.txt");
+    let mut lines = fixture.lines().filter(|l| !l.starts_with('#'));
+    let input = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap()))
+        .collect::<Vec<_>>();
+    let pose: [[f32; 4]; 4] = std::array::from_fn(|r| std::array::from_fn(|c| input[21 + r * 4 + c]));
+    let (water, amplitude, tile, threshold) = (input[37], input[38], input[39], input[40]);
+    let (width, height, fov) = (1366, 768, 110.0);
+    let catalog =
+        archive::Catalog::open(&crate::assets::installation::game_base().unwrap()).unwrap();
+    let level = crate::assets::level::LevelResources::resolve(&catalog, "eotw_p_lowchaos").unwrap();
+    let bytes = level.read_tome(&catalog).unwrap().unwrap();
+    let tree = tome::SpatialTree::parse(&bytes).unwrap();
+    let world = TomeWorld {
+        sphere_graph: tome::SphereCellGraph::parse(&bytes),
+        gate_states: tome::initial_gate_states(&bytes).unwrap(),
+        query_data: tome::DirectTomeQueryData::parse(&bytes, &tree).unwrap().into(),
+        bytes: bytes.into(),
+        tree: tree.into(),
+        query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
+        query_pool: None,
+    };
+    let settings = game_settings::read_view_settings().unwrap().1;
+    let rows = tome::world_visibility_query_matrix(fov, width, height, 1.0, pose, 0.01, 7000.0).unwrap();
+    // The query rows share the live render clip (view+7510) except depth.
+    for r in [0, 1, 3] {
+        for c in 0..4 {
+            let live = input[5 + r * 4 + c];
+            assert!((rows[r][c] - live).abs() <= 1e-3 * live.abs().max(1.0), "row {r} col {c}: {} vs {live}", rows[r][c]);
+        }
+    }
+    let query_input = tome::OrdinaryDirectQueryInput {
+        camera_point: [pose[0][3], pose[1][3], pose[2][3]],
+        render_rows: rows,
+        cropped_rows: rows,
+        initial_tile_rect: [0, 0, 8, 16],
+        camera_imprecision: [settings.umbra_distance_imprecision; 3],
+        object_imprecision: settings.umbra_distance_imprecision,
+        minimum_area_metric: 25.0 / (width * height) as f32,
+        global_distance_threshold: settings.umbra_accurate_threshold,
+        object_distance_scale: view_distance_scale(
+            &Projection::custom(camera_projection::GameProjection::new(fov, 0.01, 7000.0)),
+            UVec2::new(width, height),
+            Some(&ViewSettings(Ok(settings.clone()))),
+        )
+        .unwrap(),
+        winding_flip: tome::query_matrix_winding_flip(rows),
+        gate_states: Some(&world.gate_states),
+        output_capacity: tome::WORLD_QUERY_OUTPUT_CAPACITY,
+    };
+    let jobs = run_tome_render_jobs(&world, &query_input);
+    let output = tome::merge_render_query_outputs(&jobs).unwrap().unwrap();
+    let query = tome::RenderAabbQuery::from_state(output.state.as_ref().unwrap()).unwrap();
+    let culling = OceanPatchCulling::Query(Some(&query));
+    let view = OceanPatchView {
+        eye: [input[0], input[1], input[2]],
+        surface_height: water,
+        grid_size: input[41].to_bits() as i32,
+        projection_scale: [input[3], input[4]],
+        pixel_area: (width * height) as f32,
+    };
+    let mut patches = Vec::new();
+    build_ocean_patches(
+        &mut patches,
+        OceanPatch { origin: [-7000.; 2], size: 14000., lod: 0, children: [-1; 4] },
+        tile,
+        threshold,
+        |p| culling.visible(ocean_patch_bounds(p, water, amplitude, tile)).unwrap(),
+        |p| ocean_projected_cell_area(p, view),
+    )
+    .unwrap();
+    let actual = patches
+        .iter()
+        .map(|p| {
+            [p.origin[0].to_bits(), p.origin[1].to_bits(), p.size.to_bits(), p.lod]
+                .into_iter()
+                .chain(p.children.map(|c| c as u32))
+                .map(|w| format!("{w:08x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, lines.collect::<Vec<_>>());
+}

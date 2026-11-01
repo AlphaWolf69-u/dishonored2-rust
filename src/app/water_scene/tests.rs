@@ -62,6 +62,7 @@ fn installed_ocean_submits_depth_and_colour() {
         near_far: [projection.near, projection.far],
         parallel: Some(([0., 0., -1.], [1.; 3])),
         ocean_render_settings: scene.ocean_render_settings,
+        ocean_query: None,
         values: scene.update(&areas, eye, 1., 1. / 60.).unwrap(),
         ocean_environment: scene
             .ocean_environment

@@ -1183,6 +1183,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .after(game_clock_runtime::ClockSystems::PublishView),
         )
         .add_systems(PostUpdate,super::water_scene::publish_water_frame
+            // The ocean cull consumes this frame's ordinary query descriptor.
+            .after(super::visibility_queries::stream_visible_models)
             .after(game_clock_runtime::ClockSystems::PublishView)
             .after(bevy::camera::CameraUpdateSystems)
             .after(bevy::transform::TransformSystems::Propagate))

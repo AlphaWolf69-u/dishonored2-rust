@@ -45,6 +45,27 @@ pub fn ocean_patch_visible(
     ).culled
 }
 
+/// 302d50's two patch visibility paths. ARK_RENDERPASS_CULL_OCEAN's second
+/// flag byte (renderer+5fa360, set by 351780 when the scene has a Tome world
+/// at +0x2050 and umbra_skipOcclusion is 0) selects 1403007e0, whose
+/// 1403013e0 tests only the ordinary query descriptor (DAT_1432fc640[1])
+/// through FUN_140a764c0 flag0; otherwise 140300af0 tests the view frustum.
+pub enum OceanPatchCulling<'a> {
+    Frustum(&'a crate::render_shadow::ShadowMatrix),
+    /// An invalid descriptor (+0x598 == 0) accepts every box.
+    Query(Option<&'a crate::tome::RenderAabbQuery<'a>>),
+}
+
+impl OceanPatchCulling<'_> {
+    pub fn visible(&self, bounds: [[f32; 3]; 2]) -> Result<bool, String> {
+        match self {
+            Self::Frustum(clip) => Ok(ocean_patch_visible(bounds, clip)),
+            Self::Query(None) => Ok(true),
+            Self::Query(Some(query)) => query.visible(bounds),
+        }
+    }
+}
+
 pub fn ocean_projected_cell_area(patch: OceanPatch, view: OceanPatchView) -> f32 {
     let samples = [
         [0, 0],

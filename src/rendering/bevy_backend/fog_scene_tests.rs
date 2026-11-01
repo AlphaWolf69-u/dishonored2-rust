@@ -554,6 +554,7 @@ fn atmosphere_owner_draws_sky_and_fog_and_restores_unfogged_frame() {
                         "",
                     )
                     .unwrap(),
+                    ocean_query: None,
                     ocean_environment: crate::rendering::ocean::OceanSettings::load(&catalog, &env)
                         .unwrap(),
                     values,
