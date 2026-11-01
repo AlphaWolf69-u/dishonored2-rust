@@ -429,16 +429,28 @@ pub struct VorbisCursor {
     reader: Option<lewton::inside_ogg::OggStreamReader<Cursor<std::sync::Arc<[u8]>>>>,
     window: Vec<f32>,
     start: usize,
+    /// The first HEAD_FRAMES decoded frames, kept from the first pass. A loop
+    /// wrap's resampler reads alternate between the stream's last frames and
+    /// its first ones; serving the first ones from here avoids reopening and
+    /// re-decoding the whole stream for each such read.
+    head: Vec<f32>,
 }
+
+/// Frames kept from a stream's start: well past any resampler's reach back
+/// across a loop seam, and a small fraction of a second of audio.
+const HEAD_FRAMES: usize = 8192;
 
 impl VorbisCursor {
     pub fn new(media: std::sync::Arc<EncodedVorbis>) -> Self {
-        Self { media, reader: None, window: Vec::new(), start: 0 }
+        Self { media, reader: None, window: Vec::new(), start: 0, head: Vec::new() }
     }
 
     pub fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
         let channels = usize::from(self.media.channels);
         if frame >= self.media.frames || channel >= channels { return None; }
+        if frame < self.start && frame < self.head.len() / channels {
+            return self.head.get(frame * channels + channel).copied();
+        }
         if self.reader.is_none() || frame < self.start {
             self.reader = Some(lewton::inside_ogg::OggStreamReader::new(Cursor::new(self.media.ogg.clone())).ok()?);
             self.window.clear();
@@ -449,6 +461,11 @@ impl VorbisCursor {
             self.window.drain(..keep * channels);
             self.start += keep;
             let packet = self.reader.as_mut()?.read_dec_packet_generic::<lewton::samples::InterleavedSamples<f32>>().ok()??;
+            let position = self.start + self.window.len() / channels;
+            if position == self.head.len() / channels && position < HEAD_FRAMES {
+                let take = packet.samples.len().min((HEAD_FRAMES - position) * channels);
+                self.head.extend_from_slice(&packet.samples[..take]);
+            }
             self.window.extend(packet.samples);
         }
         self.window.get((frame - self.start) * channels + channel).copied()
@@ -1097,6 +1114,11 @@ mod stream_tests {
                 let frames = encoded.frames;
                 let mut order: Vec<usize> = (0..frames).collect();
                 order.extend(frames / 3..frames);
+                // A loop wrap's resampler reads alternate across the seam.
+                for step in 0..64 {
+                    order.push(frames - 1 - step % 4);
+                    order.push(step);
+                }
                 for frame in order {
                     for channel in 0..channels {
                         assert_eq!(cursor.sample(frame, channel), Some(full.samples[frame * channels + channel]), "frame {frame}");
