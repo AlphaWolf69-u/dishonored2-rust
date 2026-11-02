@@ -309,6 +309,7 @@ fn world_object_retains_its_actual_material_owner() {
             material: None,
             material_error: None,
             gather_flags48: None,
+            layout: None,
         }],
         shared_mesh_count: 1,
     };

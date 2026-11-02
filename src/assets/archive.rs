@@ -19,18 +19,69 @@ struct Entry {
     kind: u16,
 }
 
+/// Sorted strings packed into one buffer. The installed index lists about a
+/// million resource paths; as separate `String`s their headers and
+/// allocations cost more than their text.
+#[derive(Default)]
+struct Names {
+    text: String,
+    ends: Vec<u32>,
+}
+
+impl Names {
+    fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut packed = Self::default();
+        for name in names {
+            packed.text.push_str(name);
+            packed.ends.push(packed.text.len() as u32);
+        }
+        packed.text.shrink_to_fit();
+        packed.ends.shrink_to_fit();
+        packed
+    }
+
+    fn get(&self, index: usize) -> &str {
+        let start = index.checked_sub(1).map_or(0, |i| self.ends[i] as usize);
+        &self.text[start..self.ends[index] as usize]
+    }
+
+    fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &str> {
+        (0..self.len()).map(|i| self.get(i))
+    }
+
+    fn search(&self, key: &str) -> std::result::Result<usize, usize> {
+        let index = self.partition_point(|name| name < key);
+        if index < self.len() && self.get(index) == key { Ok(index) } else { Err(index) }
+    }
+
+    fn partition_point(&self, before: impl Fn(&str) -> bool) -> usize {
+        let (mut low, mut high) = (0, self.len());
+        while low < high {
+            let middle = (low + high) / 2;
+            if before(self.get(middle)) { low = middle + 1 } else { high = middle }
+        }
+        low
+    }
+}
+
 pub struct Catalog {
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
-    entries: Vec<(String, Entry)>,
+    /// Sorted resource paths, and the entry of each.
+    paths: Names,
+    entries: Vec<Entry>,
     // Loose resource files of the rewrite's enabled mods by normalized
     // resource path, sorted; they win over the archives.
     overlay: Vec<(String, PathBuf)>,
     // Image source names are authoritative index aliases, including imageprog
     // expressions and option suffixes. Values index the final override table.
-    image_sources: Vec<(String, usize)>,
-    image_programs: Vec<(String, usize)>,
+    image_sources: (Names, Vec<u32>),
+    image_programs: (Names, Vec<u32>),
 }
 
 // Native image programs are tokenized before their source alias is emitted.
@@ -66,10 +117,7 @@ fn image_program_key(source: &str) -> String {
 impl Catalog {
     fn entry(&self, path: &str) -> Option<&Entry> {
         let normalized = path.replace('\\', "/").to_ascii_lowercase();
-        self.entries
-            .binary_search_by(|(key, _)| key.as_str().cmp(&normalized))
-            .ok()
-            .map(|index| &self.entries[index].1)
+        self.paths.search(&normalized).ok().map(|index| &self.entries[index])
     }
 }
 
@@ -161,12 +209,16 @@ impl Catalog {
             .collect::<Vec<_>>();
         image_programs.sort();
         image_programs.dedup();
+        let packed = |pairs: Vec<(String, usize)>| {
+            (Names::new(pairs.iter().map(|(name, _)| name.as_str())), pairs.iter().map(|&(_, i)| i as u32).collect())
+        };
         Ok(Self {
             kinds,
             base: base.to_path_buf(),
-            entries,
-            image_sources,
-            image_programs,
+            paths: Names::new(entries.iter().map(|(path, _)| path.as_str())),
+            entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+            image_sources: packed(image_sources),
+            image_programs: packed(image_programs),
             overlay: crate::platform::home::layers().files,
         })
     }
@@ -183,9 +235,8 @@ impl Catalog {
     /// Resource paths of the archives and the overlay, sorted and unique.
     fn all_paths<'a>(&'a self, keep: impl Fn(&str) -> bool + 'a) -> Vec<String> {
         let mut paths: Vec<String> = self
-            .entries
+            .paths
             .iter()
-            .map(|(path, _)| path.as_str())
             .chain(self.overlay.iter().map(|(path, _)| path.as_str()))
             .filter(|path| keep(path))
             .map(str::to_string)
@@ -217,28 +268,20 @@ impl Catalog {
         // Native idStr slash normalization140140da0/140140de0 treats both
         // Windows separators alike before resource/image-source lookup.
         let source = source.replace('\\', "/").to_ascii_lowercase();
-        let index = self
-            .image_sources
-            .binary_search_by(|(key, _)| key.cmp(&source))
-            .ok()?;
-        Some(&self.entries[self.image_sources[index].1].0)
+        let index = self.image_sources.0.search(&source).ok()?;
+        Some(self.paths.get(self.image_sources.1[index] as usize))
     }
 
     /// Resolve any compiled image program through authoritative index aliases;
     /// no guessed compiled filename or replacement procedural image is used.
     pub fn image_program_resource(&self, source: &str) -> Option<&str> {
         let key = image_program_key(source);
-        let i = self.image_programs.partition_point(|(s, _)| s < &key);
-        let (found, index) = self.image_programs.get(i)?;
-        if found != &key
-            || self
-                .image_programs
-                .get(i + 1)
-                .is_some_and(|(s, _)| s == &key)
-        {
+        let (names, indices) = &self.image_programs;
+        let i = names.partition_point(|s| s < key.as_str());
+        if i >= names.len() || names.get(i) != key || (i + 1 < names.len() && names.get(i + 1) == key) {
             return None;
         }
-        Some(&self.entries[*index].0)
+        Some(self.paths.get(indices[i] as usize))
     }
 
     pub fn paths_with_suffix(&self, suffix: &str) -> Vec<String> {

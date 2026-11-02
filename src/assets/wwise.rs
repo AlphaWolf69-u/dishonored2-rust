@@ -874,6 +874,11 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
     Ok(Some(BankMix { buses, effects, parameters, state_groups, volume_threshold_db, environment, primary_bus }))
 }
 
+/// Diagnostic: media ids read for streamed or prefetched sources (stream
+/// type != 0), with their sizes.
+pub static STREAMED_MEDIA: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
 fn media_from_sound(
     sound: &[u8],
     chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
@@ -884,7 +889,10 @@ fn media_from_sound(
     // Streamed and prefetched sources use the full package file. DIDX may
     // contain only a prefetch prefix, which must not replace the full media.
     if sound[8] != 0 {
-        if let Some(media) = package_media(media_id)? { return Ok(Some(media)); }
+        if let Some(media) = package_media(media_id)? {
+            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, media.len());
+            return Ok(Some(media));
+        }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
         if didx.len() % 12 != 0 { return Err(invalid("invalid Wwise DIDX size")); }

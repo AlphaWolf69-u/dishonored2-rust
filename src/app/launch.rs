@@ -62,6 +62,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = level.read_world(catalog.as_ref().unwrap())?;
     let world =
         world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    // `run` lasts the whole session; the installed file is parsed.
+    drop(bytes);
     super::load_timing::mark("world mesh");
     if profile {
         println!(
@@ -1291,6 +1293,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         app.insert_resource(prepared_images);
     }
+    // Every loader has read the parsed entities; `run` lasts the session.
+    drop(entity_document);
     super::load_timing::mark("app built");
     if let bevy::app::AppExit::Error(code) = app.run() {
         return Err(format!("Game runtime exited with error code {code}").into());

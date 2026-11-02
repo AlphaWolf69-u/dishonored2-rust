@@ -9,7 +9,8 @@ use std::{io, sync::Arc};
 
 pub struct PacketIndex {
     ident: IdentHeader,
-    setup: SetupHeader,
+    /// Shared by every stream with the same setup packet and block sizes.
+    setup: Arc<SetupHeader>,
     /// Audio packets: a byte range of the Ogg stream, or of `joined` for a
     /// packet continued across pages.
     packets: Vec<(u32, u32, bool)>,
@@ -20,6 +21,23 @@ pub struct PacketIndex {
 }
 
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message.to_owned()) }
+
+/// Decoded setups by (setup packet, channels, block sizes). Wwise encodes
+/// from a shared codebook library, so many streams carry the same setup;
+/// its decoded codebooks are large and identical, so each is kept once.
+type SetupKey = (Vec<u8>, u8, (u8, u8));
+static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, Arc<SetupHeader>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn shared_setup(packet: &[u8], channels: u8, blocksizes: (u8, u8)) -> io::Result<Arc<SetupHeader>> {
+    let key = (packet.to_vec(), channels, blocksizes);
+    if let Some(setup) = SETUPS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(setup.clone());
+    }
+    let setup = Arc::new(read_header_setup(packet, channels, blocksizes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?);
+    Ok(SETUPS.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(setup).clone())
+}
 
 impl PacketIndex {
     pub fn new(ogg: &[u8]) -> io::Result<Self> {
@@ -71,8 +89,7 @@ impl PacketIndex {
         };
         let [ident, _, setup, ..] = &raws[..] else { return Err(invalid("Ogg Vorbis stream has no headers")) };
         let ident = read_header_ident(bytes(ident.packet)).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?;
-        let setup = read_header_setup(bytes(setup.packet), ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?;
+        let setup = shared_setup(bytes(setup.packet), ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))?;
         // The first packet decodes nothing; each later one decodes the span
         // between its window centres (a packet that cannot be read counts as
         // none, and decoding stops there). read_dec_packet_generic truncates the
@@ -132,7 +149,7 @@ impl VorbisCursor {
         let (start, length, joined) = *index.packets.get(packet)?;
         let source = if joined { &index.joined[..] } else { &self.media.ogg[..] };
         let data = &source[start as usize..(start + length) as usize];
-        let mut samples = read_audio_packet_generic::<InterleavedSamples<f32>>(&index.ident, &index.setup, data, &mut self.window_right)
+        let mut samples = read_audio_packet_generic::<InterleavedSamples<f32>>(&index.ident, &*index.setup, data, &mut self.window_right)
             .ok()?.samples;
         let frames = (index.starts[packet + 1] - index.starts[packet]) as usize;
         samples.truncate(frames * usize::from(self.media.channels));

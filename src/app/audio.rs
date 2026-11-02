@@ -55,7 +55,11 @@ impl WwiseRegistry {
     /// The event's actions with every Play source decoded.
     fn decode_event(&self, event: u32) -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
         use crate::assets::wwise::PlaybackCommand;
-        let graph_actions = self.playback(event)?;
+        let graph_actions = {
+            let _tag = crate::platform::allocation_tags::tag("sound bank lookup");
+            self.playback(event)?
+        };
+        let _tag = crate::platform::allocation_tags::tag("sound graph");
         let mut actions = Vec::new();
         for action in graph_actions {
             // Each action is dispatched independently in 1410e5600 /
@@ -313,6 +317,8 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
         for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
         }
+        let streamed = crate::assets::wwise::STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+        eprintln!("LOAD sound streamed sources: {} media, {} MB", streamed.len(), streamed.values().sum::<usize>() >> 20);
     }
     registry.sources.extend(prepared);
     count

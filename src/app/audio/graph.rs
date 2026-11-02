@@ -49,6 +49,7 @@ fn prepare_media(sound: u32, media: &[u8]) -> io::Result<PreparedMedia> {
     if let Some(prepared) = MEDIA.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.len())) {
         return Ok(prepared.clone());
     }
+    let _tag = crate::platform::allocation_tags::tag("sound media");
     let prepared = match crate::assets::wwise::prepare_wem(media)? {
         crate::assets::wwise::SourceMedia::Vorbis(media) => {
             let channels = ChannelCount::new(media.channels).ok_or_else(|| invalid("invalid Wwise Vorbis channel count"))?;
