@@ -1441,39 +1441,6 @@ mod upload_tests {
     use super::*;
 
     #[test]
-    fn immutable_shadow_upload_shares_only_identical_bytes_and_preserves_old_generations() {
-        let mut buffers = Assets::<ShaderBuffer>::default();
-        let mut slot = None;
-        let first = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
-        let reference = buffers.get(&first).unwrap().data.clone();
-        let same = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
-        assert_eq!(first.id(), same.id());
-        assert_eq!(
-            reference,
-            ShaderBuffer::from(vec![7u32, 11, 13]).data,
-            "immutable uploads keep their exact length"
-        );
-        let changed = reuse_immutable_shadow_values(vec![19u32, 23, 29], &mut slot, &mut buffers);
-        assert_ne!(changed.id(), first.id());
-        assert_eq!(buffers.get(&first).unwrap().data, reference);
-        let changed_bytes = buffers.get(&changed).unwrap().data.clone();
-        let grown = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
-        assert_ne!(grown.id(), changed.id());
-        assert_eq!(buffers.get(&changed).unwrap().data, changed_bytes);
-        buffers.get_mut(&grown).unwrap().set_data(vec![99u32; 5]);
-        let repaired = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
-        assert_ne!(
-            grown.id(),
-            repaired.id(),
-            "another writer invalidates reuse without overwriting its asset"
-        );
-        assert_eq!(
-            buffers.get(&grown).unwrap().data,
-            ShaderBuffer::from(vec![99u32; 5]).data
-        );
-    }
-
-    #[test]
     fn live_shadow_upload_reuses_capacity_and_replaces_every_value() {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut cached = None;
@@ -1563,39 +1530,13 @@ where
     handle
 }
 
-/// Share identical immutable generation data; changed data gets a new asset
-/// so every older retained snapshot keeps its original bytes.
-fn reuse_immutable_shadow_values<T>(
-    values: Vec<T>,
-    cached: &mut Option<(Handle<ShaderBuffer>, usize)>,
-    buffers: &mut Assets<ShaderBuffer>,
-) -> Handle<ShaderBuffer>
-where
-    Vec<T>: bevy::render::render_resource::ShaderType
-        + bevy::render::render_resource::encase::internal::WriteInto,
-{
-    let length = values.len();
-    let encoded = ShaderBuffer::from(values);
-    if let Some((handle, _)) = cached {
-        if buffers
-            .get(&*handle)
-            .is_some_and(|buffer| buffer.data == encoded.data)
-        {
-            return handle.clone();
-        }
-    }
-    let handle = buffers.add(encoded);
-    *cached = Some((handle.clone(), length));
-    handle
-}
-
 pub(super) fn build_world_layer(
     plans: Vec<WorldShadowMaskPlan>,
     matrices: Option<&Handle<ShaderBuffer>>,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
 ) -> shadow_pass::ShadowLayer {
-    build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None, false)
+    build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None)
 }
 
 pub(super) fn build_world_shadow_layer(
@@ -1604,7 +1545,6 @@ pub(super) fn build_world_shadow_layer(
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
     mut uploads: Option<&mut Vec<WorldShadowUpload>>,
-    immutable_uploads: bool,
 ) -> shadow_pass::ShadowLayer {
     let mut instances = Vec::new();
     for (index, plan) in plans.into_iter().enumerate() {
@@ -1618,18 +1558,12 @@ pub(super) fn build_world_shadow_layer(
             &mut uploads[index]
         });
         let (visible_indices, winds) = if let Some(upload) = upload {
-            let ids = if immutable_uploads {
-                reuse_immutable_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
-            } else {
-                upload_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
-            };
-            let winds = (!plan.auxiliary.is_empty()).then(|| {
-                if immutable_uploads {
-                    reuse_immutable_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
-                } else {
-                    upload_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
-                }
-            });
+            // Written in place: a cascade's static generation is live only
+            // until the next one replaces it, so its GPU buffer and the bind
+            // groups that reference it survive across generations.
+            let ids = upload_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers);
+            let winds = (!plan.auxiliary.is_empty())
+                .then(|| upload_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers));
             (ids, winds)
         } else {
             (

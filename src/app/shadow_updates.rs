@@ -1312,7 +1312,6 @@ pub(super) fn prepare_parallel_world_draws(
                         } else {
                             &mut draws.uploads[layer]
                         }),
-                        cached,
                     )
                 }
                 None => draws.static_layers[layer].as_ref().unwrap().1.clone(),
