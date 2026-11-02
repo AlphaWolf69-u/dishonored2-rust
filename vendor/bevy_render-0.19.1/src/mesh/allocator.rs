@@ -452,7 +452,15 @@ impl MeshAllocator {
         self.copy_element_data(
             &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
             mesh.get_vertex_buffer_size(),
-            |slice| mesh.write_packed_vertex_buffer_data(slice),
+            |mut slice| {
+                // DH2: Mesh::write_packed_vertex_buffer_data copies each
+                // attribute of each vertex with a variable-size memcpy into
+                // the mapped staging buffer; meshes re-skinned every frame
+                // spent ~0.8 ms per frame there. Interleave with fixed-size
+                // copies in memory and write the staging buffer once.
+                let packed = packed_vertex_data(mesh);
+                slice.slice(..packed.len()).copy_from_slice(&packed);
+            },
             render_device,
             render_queue,
         );
@@ -1039,3 +1047,37 @@ mod tests {
         );
     }
 }
+
+/// The bytes of `Mesh::write_packed_vertex_buffer_data`: attributes in the
+/// mesh's order, each vertex's attributes adjacent.
+pub fn packed_vertex_data(mesh: &Mesh) -> Vec<u8> {
+    fn interleave<const N: usize>(out: &mut [u8], source: &[u8], stride: usize, offset: usize, count: usize) {
+        for (vertex, bytes) in source.chunks_exact(N).take(count).enumerate() {
+            let at = vertex * stride + offset;
+            out[at..at + N].copy_from_slice(bytes);
+        }
+    }
+    let stride = mesh.get_vertex_size() as usize;
+    let count = mesh.count_vertices();
+    let mut out = alloc::vec![0u8; stride * count];
+    let mut offset = 0;
+    for (attribute, values) in mesh.attributes() {
+        let size = attribute.format.size() as usize;
+        let source = values.get_bytes();
+        match size {
+            4 => interleave::<4>(&mut out, source, stride, offset, count),
+            8 => interleave::<8>(&mut out, source, stride, offset, count),
+            12 => interleave::<12>(&mut out, source, stride, offset, count),
+            16 => interleave::<16>(&mut out, source, stride, offset, count),
+            _ => {
+                for (vertex, bytes) in source.chunks_exact(size).take(count).enumerate() {
+                    let at = vertex * stride + offset;
+                    out[at..at + size].copy_from_slice(bytes);
+                }
+            }
+        }
+        offset += size;
+    }
+    out
+}
+
