@@ -106,7 +106,7 @@ trailing `*` covers a family of kinds.
 | `material` | `app::material_loading` (material class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `md6Def` | `assets::bmd6`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
-| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values) and shadows still read a separate game-space position copy; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
+| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values); world shadow programs read the shared mesh's own position, NORMAL and COLOR (axis swap undone in the shader), so only vegetation (forward wind) and water meshes keep game-space copies; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
 | `musicManager` | none | none: no owner yet |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |

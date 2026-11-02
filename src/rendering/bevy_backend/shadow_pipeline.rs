@@ -1688,9 +1688,11 @@ fn validate_alpha_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<()
 fn validate_vegetation_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<(), String> {
     validate_opaque_vertex_layout(layout)?;
     validate_alpha_vertex_layout(layout)?;
-    for (location, format, bytes, name) in [
-        (2, VertexFormat::Float32x3, 12, "raw color.xyz"),
-        (3, VertexFormat::Float32x2, 8, "original normal.xy"),
+    // Model vegetation retains float copies; shared world meshes supply the
+    // installed packed COLOR and NORMAL (the shader takes xyz and xy).
+    for (location, formats, name) in [
+        (2, [(VertexFormat::Float32x3, 12), (VertexFormat::Unorm8x4, 4)], "raw color.xyz"),
+        (3, [(VertexFormat::Float32x2, 8), (VertexFormat::Snorm8x4, 4)], "original normal.xy"),
     ] {
         let mut fields = layout
             .attributes
@@ -1701,8 +1703,11 @@ fn validate_vegetation_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Resu
                 "vegetation shadow mesh lacks {name} at location {location}"
             ));
         };
+        let format = field.format;
+        let Some(&(_, bytes)) = formats.iter().find(|(allowed, _)| *allowed == format) else {
+            return Err(format!("vegetation shadow {name} at location {location} has unsupported {format:?}"));
+        };
         if fields.next().is_some()
-            || field.format != format
             || field.offset % 4 != 0
             || field
                 .offset

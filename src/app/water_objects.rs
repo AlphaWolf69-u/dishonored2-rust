@@ -31,6 +31,11 @@ pub(super) fn prepare_world_geometry(
                 if matches!(source.material,Some(MaterialHandle::Water(_))) {
                     water_world_colour::retain_normal_w(&mut mesh, channels)?;
                 }
+                // The water passes read raw game-space positions.
+                let positions = &world.meshes[source.mesh_index].positions;
+                if !mesh.contains_attribute(crate::rendering::bevy_backend::shadow_pass::VEGETATION_POSITION) {
+                    mesh.insert_attribute(crate::rendering::bevy_backend::shadow_pass::VEGETATION_POSITION, positions.clone());
+                }
                 Ok(WaterWorldMesh {
                     mesh: source.mesh.clone(),
                     surface_flags: u8::from(source.flipped),

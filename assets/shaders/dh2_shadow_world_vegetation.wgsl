@@ -63,21 +63,21 @@ struct VertexOutput {
 }
 @vertex
 fn vertex(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
-    @location(2) color: vec3<f32>, @location(3) normal_xy: vec2<f32>,
+    @location(2) color: vec3<f32>, @location(3) normal: vec3<f32>,
     @builtin(instance_index) instance: u32) -> VertexOutput
 {
     var output: VertexOutput;
-    output.clip = world_vegetation_shadow_position(position, normal_xy, color, instance);
+    output.clip = world_vegetation_shadow_position(installed_position(position), installed_normal_xy(normal), color, instance);
     output.uv = uv;
     return output;
 }
 @vertex
 fn vertex_fixed(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
-    @location(2) color: vec3<f32>, @location(3) normal_xy: vec2<f32>,
+    @location(2) color: vec3<f32>, @location(3) normal: vec3<f32>,
     @builtin(instance_index) instance: u32) -> VertexOutput
 {
     var output: VertexOutput;
-    output.clip = world_fixed_vegetation_shadow_position(position, normal_xy, color, instance);
+    output.clip = world_fixed_vegetation_shadow_position(installed_position(position), installed_normal_xy(normal), color, instance);
     output.uv = uv;
     return output;
 }
