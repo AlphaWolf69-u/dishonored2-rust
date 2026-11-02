@@ -14,10 +14,12 @@
 //! materials and probe lighting.
 //!
 //! Each arm surface is its own entity (the Tome-driven scene queue never
-//! culls it). Its mesh holds world-space vertices, CPU-skinned every frame
-//! from `Player::arms()` with palette = joint × inverse bind.
+//! culls it). Its mesh holds the bind-pose vertices with all eight skin
+//! weights; the GPU blends them (DH2_SKIN8, the installed skin VS order)
+//! with the palette joint × inverse bind from `Player::arms()`, published
+//! each frame as the model's joint transforms.
 use super::{
-    archive, bmd6, edge_skeleton, entities, game_to_view, material, model_motion,
+    archive, bmd6, edge_skeleton, entities, material, model_motion,
     player::PlayerState, render_model, shadow_preparation, source_mesh, view_to_game, MaterialHandle,
     MaterialResolver, MeshTag, SceneData, ShaderBuffer,
 };
@@ -27,10 +29,6 @@ use std::borrow::Cow;
 
 struct ArmSurface {
     entity: Entity,
-    mesh: Handle<Mesh>,
-    /// Index into the model's surfaces.
-    surface: usize,
-    influences: u8,
     probe_index: u32,
     material: MaterialHandle,
 }
@@ -38,6 +36,9 @@ struct ArmSurface {
 struct ArmModel {
     /// The md6 decl path, as `ArmRender::model` names it.
     model: String,
+    /// One entity per palette entry whose transform is that entry; its
+    /// surfaces' SkinnedMesh reads them (created on first use).
+    joints: Vec<Entity>,
     skeleton: edge_skeleton::EdgeSkeleton,
     info: bmd6::ModelInfo,
     surfaces: Vec<ArmSurface>,
@@ -230,15 +231,8 @@ pub(super) fn load_player_arms(
             let influences = surface.skin_influences;
             let mut mesh =
                 source_mesh(&surface.positions, &surface.uvs, &surface.indices, &surface.packed_channels, false);
-            shadow_preparation::skin_surface(
-                &mut mesh,
-                surface,
-                &palette,
-                influences,
-                |p| game_to_view(p.to_array()),
-                |v| game_to_view(v.to_array()),
-            )
-            .map_err(|error| format!("{model} surface {index}: {error}"))?;
+            bind_pose_skin(&mut mesh, surface, influences, palette.len())
+                .map_err(|error| format!("{model} surface {index}: {error}"))?;
             if model_depth_hack > 0.0 {
                 // Non-unit positive values are published; otherwise the
                 // programs read the view default 1.0 (FUN_1403586a0).
@@ -248,8 +242,8 @@ pub(super) fn load_player_arms(
                     vec![value; surface.positions.len()],
                 );
             }
-            // Re-skinned on the CPU every frame: keep the main-world copy.
-            mesh.asset_usage = bevy::asset::RenderAssetUsages::default();
+            // Skinned on the GPU: the vertices never change after upload.
+            mesh.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
             let mesh = meshes.add(mesh);
             let entity = commands
                 .spawn((
@@ -266,15 +260,16 @@ pub(super) fn load_player_arms(
                 .id();
             surfaces.push(ArmSurface {
                 entity,
-                mesh,
-                surface: index,
-                influences,
                 probe_index: resolved.probe_index,
                 material: resolved.handle.clone(),
             });
         }
+        if palette.len() > bevy::pbr::MAX_JOINTS {
+            return Err(format!("{model} has {} joints, beyond a GPU skin's {}", palette.len(), bevy::pbr::MAX_JOINTS));
+        }
         arms.push(ArmModel {
             model,
+            joints: Vec::new(),
             skeleton,
             info,
             surfaces,
@@ -318,6 +313,83 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
         .collect()
 }
 
+/// The installed skin stream in bind pose for GPU skinning: game-space
+/// positions and authored N/T/B (the palette carries the axis conversion),
+/// joints 0..3 in Bevy's joint attributes and 4..7 in DH2's, each joint
+/// offset by the surface's palette start. A joint past the palette must
+/// carry no weight (as `edge_skeleton::vertex_skin_matrix` requires); it is
+/// then pointed at joint 0, contributing nothing.
+fn bind_pose_skin(
+    mesh: &mut Mesh,
+    surface: &bmd6::SurfaceInfo,
+    influences: u8,
+    joints: usize,
+) -> Result<(), String> {
+    if !matches!(influences, 4 | 8) {
+        return Err("skin input must have four or eight weights".into());
+    }
+    let count = surface.positions.len();
+    if surface.skin_indices.len() != count || surface.skin_weights.len() != count || surface.packed_channels.len() != count {
+        return Err("skin vertex streams have different lengths".into());
+    }
+    let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
+    let mut normals = Vec::with_capacity(count);
+    let mut tangents = Vec::with_capacity(count);
+    let mut bitangents = Vec::with_capacity(count);
+    let mut first = Vec::with_capacity(count);
+    let mut first_weights = Vec::with_capacity(count);
+    let mut second = Vec::with_capacity(count);
+    let mut second_weights = Vec::with_capacity(count);
+    for i in 0..count {
+        let packed = surface.packed_channels[i];
+        let n = Vec3::new(snorm(packed[4]), snorm(packed[5]), snorm(packed[6]));
+        let t = Vec3::new(snorm(packed[8]), snorm(packed[9]), snorm(packed[10]));
+        let sign = snorm(packed[11]);
+        normals.push(n.to_array());
+        tangents.push(t.extend(sign).to_array());
+        bitangents.push((n.cross(t) * sign).to_array());
+        let mut index = [0u32; 8];
+        let mut weight = [0.0f32; 8];
+        for k in 0..usize::from(influences) {
+            let joint = surface.matrix_offset
+                .checked_add(u32::from(surface.skin_indices[i][k]))
+                .ok_or("skin joint index overflow")?;
+            let w = surface.skin_weights[i][k];
+            if (joint as usize) < joints {
+                index[k] = joint;
+            } else if w != 0 {
+                return Err(format!("skin joint {joint} exceeds {joints} actual palette entries"));
+            }
+            weight[k] = f32::from(w) / 255.0;
+        }
+        first.push([index[0] as u16, index[1] as u16, index[2] as u16, index[3] as u16]);
+        first_weights.push([weight[0], weight[1], weight[2], weight[3]]);
+        second.push([index[4], index[5], index[6], index[7]]);
+        second_weights.push([weight[4], weight[5], weight[6], weight[7]]);
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, surface.positions.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+    mesh.insert_attribute(super::materials::DH2_BITANGENT, bitangents);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, bevy::mesh::VertexAttributeValues::Uint16x4(first));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, first_weights);
+    mesh.insert_attribute(super::materials::DH2_JOINT_INDEX_B, bevy::mesh::VertexAttributeValues::Uint32x4(second));
+    mesh.insert_attribute(super::materials::DH2_JOINT_WEIGHT_B, second_weights);
+    Ok(())
+}
+
+/// A palette entry (game-space 3x4 rows) as a view-space joint transform:
+/// game_to_view (x, z, -y) only reorders and negates rows, so folding it into
+/// the palette is exact.
+fn joint_transform(matrix: &[[f32; 4]; 3]) -> GlobalTransform {
+    let rows = [matrix[0], matrix[2], matrix[1].map(|value| -value)];
+    let column = |c: usize| bevy::math::Vec3A::new(rows[0][c], rows[1][c], rows[2][c]);
+    GlobalTransform::from(bevy::math::Affine3A {
+        matrix3: bevy::math::Mat3A::from_cols(column(0), column(1), column(2)),
+        translation: column(3),
+    })
+}
+
 /// Skin and show the arms `Player::arms()` names (left, then right); hide
 /// arm models it omits or marks invisible.
 pub(super) fn update_player_arms(
@@ -326,7 +398,9 @@ pub(super) fn update_player_arms(
     cameras: Query<&Transform, With<Camera3d>>,
     scene: Option<Res<SceneData>>,
     probe_buffer: Option<Res<model_motion::ModelProbeLighting>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut commands: Commands,
+    mut inverse_bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
+    mut joint_transforms: Query<&mut GlobalTransform, Without<Mesh3d>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     mut visibility: Query<&mut Visibility>,
@@ -364,27 +438,24 @@ pub(super) fn update_player_arms(
             }
             let palette =
                 edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
-            // Surfaces skin independently; most are small, so they are spread
-            // across the compute pool rather than skinned one after another.
-            let (info, palette) = (&arm.info, &palette);
-            let streams = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            if arm.joints.is_empty() {
+                // Bevy's joint matrices are joint transform x inverse bind;
+                // the palette already includes the inverse bind.
+                arm.joints = palette.iter().map(|matrix| commands.spawn(joint_transform(matrix)).id()).collect();
+                let identity = inverse_bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(
+                    vec![Mat4::IDENTITY; palette.len()]));
                 for part in &arm.surfaces {
-                    scope.spawn(async move {
-                        shadow_preparation::skin_streams(
-                            &info.surfaces[part.surface],
-                            palette,
-                            part.influences,
-                            |p| game_to_view(p.to_array()),
-                            |v| game_to_view(v.to_array()),
-                        )
+                    commands.entity(part.entity).insert(bevy::mesh::skinning::SkinnedMesh {
+                        inverse_bindposes: identity.clone(),
+                        joints: arm.joints.clone(),
                     });
                 }
-            });
-            for (part, streams) in arm.surfaces.iter().zip(streams) {
-                let mut mesh = meshes
-                    .get_mut(&part.mesh)
-                    .ok_or_else(|| format!("{} mesh is missing", arm.model))?;
-                streams?.insert(&mut mesh);
+            } else {
+                for (&joint, matrix) in arm.joints.iter().zip(&palette) {
+                    if let Ok(mut transform) = joint_transforms.get_mut(joint) {
+                        *transform = joint_transform(matrix);
+                    }
+                }
             }
             // Model vtable+88: the probe position is the centre of the
             // current world bounds. Joint 0 (`origin`, rest identity) is the

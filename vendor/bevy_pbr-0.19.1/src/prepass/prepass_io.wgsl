@@ -27,6 +27,10 @@ struct Vertex {
     @location(5) joint_indices: vec4<u32>,
     @location(6) joint_weights: vec4<f32>,
 #endif
+#ifdef DH2_SKIN8
+    @location(14) dh2_joint_indices_b: vec4<u32>,
+    @location(15) dh2_joint_weights_b: vec4<f32>,
+#endif
 
 #ifdef VERTEX_COLORS
     @location(7) color: vec4<f32>,

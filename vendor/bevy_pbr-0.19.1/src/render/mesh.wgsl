@@ -75,6 +75,15 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif
 
 #ifdef SKINNED
+#ifdef DH2_SKIN8
+    var world_from_local = skinning::skin_model8(
+        vertex.joint_indices,
+        vertex.dh2_joint_indices_b,
+        vertex.joint_weights,
+        vertex.dh2_joint_weights_b,
+        vertex_no_morph.instance_index
+    );
+#else
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416 .
     var world_from_local = skinning::skin_model(
@@ -82,6 +91,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.joint_weights,
         vertex_no_morph.instance_index
     );
+#endif
 #else
     var world_from_local = mesh_world_from_local;
 #endif
@@ -90,7 +100,13 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef DH2_AUTHORED_BASIS
     // DH2 common vertex: model-linear N/T/B, independently normalized.
     out.world_normal = normalize((world_from_local * vec4(vertex.normal, 0.0)).xyz);
+#ifdef DH2_SKIN8
+    // The skin program's bitangent: cross of the skinned normal and tangent.
+    out.world_bitangent = normalize(cross((world_from_local * vec4(vertex.normal, 0.0)).xyz,
+        (world_from_local * vec4(vertex.tangent.xyz, 0.0)).xyz) * vertex.tangent.w);
+#else
     out.world_bitangent = normalize((world_from_local * vec4(vertex.bitangent, 0.0)).xyz);
+#endif
 #else
 #ifdef SKINNED
     out.world_normal = skinning::skin_normals(world_from_local, vertex.normal);

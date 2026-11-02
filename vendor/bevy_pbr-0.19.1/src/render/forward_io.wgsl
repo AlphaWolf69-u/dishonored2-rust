@@ -40,6 +40,11 @@ struct Vertex {
     @location(6) joint_indices: vec4<u32>,
     @location(7) joint_weights: vec4<f32>,
 #endif
+#ifdef DH2_SKIN8
+    // Joints and weights 4..7 of the installed eight-weight skin stream.
+    @location(14) dh2_joint_indices_b: vec4<u32>,
+    @location(15) dh2_joint_weights_b: vec4<f32>,
+#endif
 #ifdef DH2_VERTEX_PROBE
     @builtin(vertex_index) index: u32,
 #else

@@ -42,6 +42,42 @@ fn skin_model(
 #endif  // SKINS_USE_UNIFORM_BUFFERS
 }
 
+#ifdef DH2_SKIN8
+fn dh2_skin_term(m: mat4x4<f32>, w: f32, acc: mat4x4<f32>) -> mat4x4<f32> {
+    return mat4x4<f32>(fma(m[0], vec4(w), acc[0]), fma(m[1], vec4(w), acc[1]),
+        fma(m[2], vec4(w), acc[2]), fma(m[3], vec4(w), acc[3]));
+}
+
+fn dh2_joint(skin_index: u32, joint: u32) -> mat4x4<f32> {
+#ifdef SKINS_USE_UNIFORM_BUFFERS
+    return joint_matrices.data[joint];
+#else
+    return joint_matrices[skin_index + joint];
+#endif
+}
+
+// DH2: the installed skin vertex program's eight-weight blend
+// (edge_skeleton::vertex_skin_matrix): joint 1 times weight 1, multiply-add
+// joint 0, then joints 2..7 in order.
+fn skin_model8(
+    first: vec4<u32>,
+    second: vec4<u32>,
+    first_weights: vec4<f32>,
+    second_weights: vec4<f32>,
+    instance_index: u32,
+) -> mat4x4<f32> {
+    let skin_index = mesh[instance_index].current_skin_index;
+    var m = dh2_joint(skin_index, first.y) * first_weights.y;
+    m = dh2_skin_term(dh2_joint(skin_index, first.x), first_weights.x, m);
+    m = dh2_skin_term(dh2_joint(skin_index, first.z), first_weights.z, m);
+    m = dh2_skin_term(dh2_joint(skin_index, first.w), first_weights.w, m);
+    m = dh2_skin_term(dh2_joint(skin_index, second.x), second_weights.x, m);
+    m = dh2_skin_term(dh2_joint(skin_index, second.y), second_weights.y, m);
+    m = dh2_skin_term(dh2_joint(skin_index, second.z), second_weights.z, m);
+    return dh2_skin_term(dh2_joint(skin_index, second.w), second_weights.w, m);
+}
+#endif
+
 // Returns the skinned position of a vertex with the given weights from the
 // previous frame.
 //
