@@ -3519,11 +3519,10 @@ fn cell_candidate_pipeline_skips_accepted_and_distance_rejected_bounds() {
         bytes[0x80 + index * 4..0x84 + index * 4].copy_from_slice(&value.to_le_bytes());
     }
     let cells = CellTree {
-        bounds: Vec::new(),
-        children: Vec::new(),
-        axes: Vec::new(),
-        planes: Vec::new(),
-        leaf_ranks: Vec::new(),
+        node_count: 0,
+        codes_at: 0,
+        planes_at: 0,
+        plane_count: 0,
         cell_codes: Vec::new(),
         cell_ids: vec![1],
         cell_visibility_counts: vec![0],
@@ -3999,11 +3998,10 @@ fn projected_rectangle_output_selects_portal_or_depth_branch() {
 
 fn visible_cell_test_tree(first: u32, count: u32) -> CellTree {
     CellTree {
-        bounds: Vec::new(),
-        children: Vec::new(),
-        axes: Vec::new(),
-        planes: Vec::new(),
-        leaf_ranks: Vec::new(),
+        node_count: 0,
+        codes_at: 0,
+        planes_at: 0,
+        plane_count: 0,
         cell_codes: Vec::new(),
         cell_ids: vec![first],
         cell_visibility_counts: vec![count],
@@ -4295,11 +4293,10 @@ fn object_candidate_batches_match_32_entry_limit_across_runs() {
     let packed = first_run | (second_run << 11);
     let bytes = packed.to_le_bytes();
     let cells = CellTree {
-        bounds: Vec::new(),
-        children: Vec::new(),
-        axes: Vec::new(),
-        planes: Vec::new(),
-        leaf_ranks: Vec::new(),
+        node_count: 0,
+        codes_at: 0,
+        planes_at: 0,
+        plane_count: 0,
         cell_codes: Vec::new(),
         cell_ids: Vec::new(),
         cell_visibility_counts: Vec::new(),

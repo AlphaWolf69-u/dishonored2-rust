@@ -453,9 +453,14 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let tome_path = PathBuf::from(&level.tome);
     if let Some(tome_bytes) = level.read_tome(catalog.as_ref().unwrap())? {
         let tome_started = Instant::now();
-        let tome_tree = tome::SpatialTree::parse(&tome_bytes)?;
+        let tome_tree = { let _tag = crate::platform::allocation_tags::tag("tome spatial tree"); tome::SpatialTree::parse(&tome_bytes)? };
         let gate_states = tome::initial_gate_states(&tome_bytes)?;
-        let query_data = tome::DirectTomeQueryData::parse(&tome_bytes, &tome_tree)?;
+        let query_data = { let _tag = crate::platform::allocation_tags::tag("tome query data"); tome::DirectTomeQueryData::parse(&tome_bytes, &tome_tree)? };
+        if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+            for (field, bytes) in query_data.decoded_bytes() {
+                eprintln!("LOAD tome decoded {field}: {} KB", bytes >> 10);
+            }
+        }
         let query_job_count = env::var("DH2_UMBRA_QUERY_JOBS")
             .map(|value| value.parse::<u32>())
             .unwrap_or(Ok(tome::DEFAULT_QUERY_JOB_COUNT))?;
@@ -477,7 +482,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             query_data.decoded_record_count(),
             tome_started.elapsed().as_secs_f64(),
         );
-        match tome::shadow_caster::ShadowCasterTome::parse(&tome_bytes) {
+        let shadow_tome = { let _tag = crate::platform::allocation_tags::tag("tome shadow casters"); tome::shadow_caster::ShadowCasterTome::parse(&tome_bytes) };
+        match shadow_tome {
             Ok(shadow_tome) => {
                 println!(
                     "Shadow Tome cache: {} original caster objects",
@@ -501,7 +507,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .thread_name("Tome Query".into()).build()
         });
         app.insert_resource(TomeWorld {
-            sphere_graph: tome::SphereCellGraph::parse(&tome_bytes),
+            sphere_graph: { let _tag = crate::platform::allocation_tags::tag("tome sphere graph"); tome::SphereCellGraph::parse(&tome_bytes) },
             bytes: tome_bytes.into(),
             tree: tome_tree.into(),
             gate_states,

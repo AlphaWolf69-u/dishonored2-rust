@@ -80,7 +80,7 @@ trailing `*` covers a family of kinds.
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
 | `fade` | none | none: no owner yet |
-| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); Tome blob and decoded views stay resident |
+| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the remaining decoded Tome tables (links, cell codes, object data) are still copies |
 | `Font` | `flash::text` | partial: reads its resources; lifecycle not ported (see its class) |
 | `footStepPhysMat` | none | none: no owner yet |
 | `fx` | `rendering::particles::world_sources`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |

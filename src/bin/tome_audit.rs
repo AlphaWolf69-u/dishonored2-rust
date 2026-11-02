@@ -449,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     code_counts.1 += counts.1;
                     code_counts.2 += counts.2;
                     if verify_portals {
-                        for point in cells.portal_leaf_centers() {
+                        for point in cells.portal_leaf_centers(&bytes).unwrap_or_default() {
                             match cells.cell_for_point(&bytes, point) {
                                 Ok(Some(_)) => portal_results.0 += 1,
                                 Ok(None) => portal_results.1 += 1,
