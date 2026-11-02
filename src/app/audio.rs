@@ -252,7 +252,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
                 }
             }
         }
-        let catalog = crate::archive::Catalog::open(&base)?;
+        let catalog = crate::archive::Catalog::shared(&base)?;
         let source = catalog.read("generated/decls/soundengineinternals/default.soundengineinternals.decl")?
             .ok_or("sound engine internals declaration is absent")?;
         let fields = crate::entities::parse_declaration(&crate::entities::declaration_text(&source))?;
@@ -313,7 +313,7 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = crate::archive::Catalog::open(&base).map_err(|e| e.to_string())?;
+        let catalog = crate::archive::Catalog::shared(&base).map_err(|e| e.to_string())?;
         let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
         let map = map.trim_start_matches("maps/").trim_end_matches(".map");
         let language = crate::assets::lang::read_text_language(&base)?;

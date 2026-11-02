@@ -7383,7 +7383,7 @@ fn cutout_initial_residency_is_ready_for_late_caster_gpu() {
     queue.diffuse_image_demands = vec![texture::ProjectedAreaDemand::default()];
     queue.diffuse_image_last_visible = vec![0];
     app.insert_resource(queue);
-    app.insert_resource(TextureReadWorker::new(catalog, 1));
+    app.insert_resource(TextureReadWorker::new(std::sync::Arc::new(catalog), 1));
     app.init_resource::<Assets<ProbeMaterial>>();
     app.init_resource::<Assets<DecalMaterial>>();
     app.add_systems(Update, stream_visible_textures);
@@ -7496,7 +7496,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
     });
     app.insert_resource(materials);
     app.insert_resource(Assets::<DecalMaterial>::default());
-    app.insert_resource(TextureReadWorker::new(catalog, 1));
+    app.insert_resource(TextureReadWorker::new(std::sync::Arc::new(catalog), 1));
     app.insert_resource(SceneRenderQueue {
         static_world_model_present: false,
         instances: vec![RenderInstance {

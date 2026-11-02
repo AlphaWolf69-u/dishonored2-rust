@@ -20,7 +20,7 @@ struct Group {
     sounds: Vec<Sound>,
 }
 struct Definitions {
-    catalog: Catalog,
+    catalog: std::sync::Arc<Catalog>,
     /// Declaration text read with the level (`texts_at_load`).
     texts: HashMap<String, String>,
     database: ContactDatabase,
@@ -53,7 +53,7 @@ fn texts_at_load(base: &std::path::Path, catalog: &Catalog) -> Result<HashMap<St
 impl Definitions {
     fn load() -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
-        let catalog = Catalog::open(&base).map_err(|error| error.to_string())?;
+        let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
         let source = text(&catalog, &HashMap::new(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
         let database = ContactDatabase::parse(&source)?;
         let texts = texts_at_load(&base, &catalog).unwrap_or_else(|error| {

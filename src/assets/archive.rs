@@ -126,7 +126,23 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 use index::archive_path;
+/// One catalog per installation for the whole process: every owner reads the
+/// same index instead of opening its own copy.
+static SHARED: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<Catalog>)>> = std::sync::Mutex::new(None);
+
 impl Catalog {
+    /// The process's catalog of `base`, opened on first use.
+    pub fn shared(base: &Path) -> Result<std::sync::Arc<Self>> {
+        let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((path, catalog)) = shared.as_ref().filter(|(path, _)| path == base) {
+            let _ = path;
+            return Ok(catalog.clone());
+        }
+        let catalog = std::sync::Arc::new(Self::open(base)?);
+        *shared = Some((base.to_path_buf(), catalog.clone()));
+        Ok(catalog)
+    }
+
     pub fn open(base: &Path) -> Result<Self> {
         let mut entries = Vec::new();
         let mut kinds: Vec<String> = Vec::new();

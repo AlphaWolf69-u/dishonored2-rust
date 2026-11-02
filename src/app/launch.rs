@@ -42,7 +42,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     crate::platform::client_diagnostics::record_setup(&base);
     let game_base = Some(base);
-    let catalog = Some(archive::Catalog::open(game_base.as_deref().unwrap())?);
+    let catalog = Some(archive::Catalog::shared(game_base.as_deref().unwrap())?);
     super::load_timing::mark("catalog");
     let requested = env::args()
         .nth(1)

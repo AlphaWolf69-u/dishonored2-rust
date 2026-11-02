@@ -86,7 +86,7 @@ pub(super) fn setup(
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
     let catalog_storage = scene.catalog.take();
-    let catalog = catalog_storage.as_ref();
+    let catalog = catalog_storage.as_deref();
     let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
         &mut images,
         &mut probe_sh_buffers,
