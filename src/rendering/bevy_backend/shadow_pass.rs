@@ -549,10 +549,6 @@ pub struct ShadowSceneFrame {
     pub state: ShadowSceneState,
 }
 
-/// The depthCopy RPD's draw state (DAT_1422b3670+0x460), which 32db10 draws
-/// with when it does not take its CopySubresourceRegion branch.
-#[derive(Resource, Clone, ExtractResource)]
-pub struct ShadowDepthCopyState(pub Result<[u32; 9], String>);
 
 impl Default for ShadowSceneFrame {
     fn default() -> Self {
@@ -623,16 +619,11 @@ impl ShadowSceneGpu {
 struct CachedTarget {
     dimensions: ParallelShadowTargetDimensions,
     array: ShadowDepthArray,
-    /// Separate static/dynamic submission surfaces, then copied to the atlas.
-    temporary: Vec<ShadowDepthArray>,
     /// Original cache[layer-1], excluding cascade0 and the auxiliary whole view.
     static_cache: Vec<ShadowDepthArray>,
     cache_valid: Vec<bool>,
     cache_generation: Vec<Option<u64>>,
     layer_valid: Vec<bool>,
-    /// 32db10's slice-to-atlas transfer: None is its CopySubresourceRegion
-    /// branch, otherwise the depthCopy draw built from this RPD state.
-    layer_copy: Option<([u32; 9], crate::shadow_depth_copy::ShadowDepthCopy)>,
 }
 
 impl CachedTarget {
@@ -649,9 +640,6 @@ impl CachedTarget {
         let allocate = |label| {
             ShadowDepthArray::new_with_format(device, size, array.texture.format(), label)
         };
-        let temporary = (0..dimensions.layers)
-            .map(|_| allocate("directional slice temporary"))
-            .collect::<Result<Vec<_>, _>>()?;
         let cache_count = dimensions.layers.saturating_sub(2) as usize;
         let static_cache = (0..cache_count)
             .map(|_| allocate("directional static cache"))
@@ -659,12 +647,10 @@ impl CachedTarget {
         Ok(Self {
             dimensions,
             array,
-            temporary,
             static_cache,
             cache_valid: vec![false; cache_count],
             cache_generation: vec![None; cache_count],
             layer_valid: vec![false; dimensions.layers as usize],
-            layer_copy: None,
         })
     }
 
@@ -738,7 +724,6 @@ impl Plugin for ShadowScenePlugin {
         app.init_resource::<ShadowSceneFrame>()
             .init_resource::<ShadowSceneCompletion>()
             .add_plugins(ExtractResourcePlugin::<ShadowSceneFrame>::default())
-            .add_plugins(ExtractResourcePlugin::<ShadowDepthCopyState>::default())
             .add_plugins(ExtractResourcePlugin::<ShadowSceneCompletion>::default())
             .add_plugins(ExtractResourcePlugin::<
                 crate::shadow_sampling::ParallelSamplingBuffer,
@@ -927,7 +912,6 @@ fn render_shadow_scene(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     adapter: Res<RenderAdapter>,
-    copy_state: Option<Res<ShadowDepthCopyState>>,
     mut context: RenderContext,
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
@@ -1111,35 +1095,6 @@ fn render_shadow_scene(
     let target = targets
         .get_mut(&target_id)
         .expect("target prepared before draws");
-    // 32db10 copies with CopySubresourceRegion only while the hardware
-    // inspector's +0x38 field is 0, which only its NVAPI path (1400dd580)
-    // writes; AGS (1400dd330) writes 1 and the DXGI fallback 2 or 3.
-    // approximate_: an NVIDIA adapter stands for a successful NVAPI query.
-    if adapter.get_info().vendor == 0x10de {
-        target.layer_copy = None;
-    } else {
-        let state = match copy_state.as_deref().map(|state| &state.0) {
-            Some(Ok(state)) => *state,
-            Some(Err(error)) => {
-                bevy::log::error!("directional depthCopy state unavailable: {error}");
-                return;
-            }
-            None => {
-                bevy::log::error!("directional depthCopy state was not extracted");
-                return;
-            }
-        };
-        if target.layer_copy.as_ref().is_none_or(|(old, _)| *old != state) {
-            let format = target.array.texture.format();
-            match crate::shadow_depth_copy::ShadowDepthCopy::new(&device, format, state, false) {
-                Ok(copy) => target.layer_copy = Some((state, copy)),
-                Err(error) => {
-                    bevy::log::error!("{error}");
-                    return;
-                }
-            }
-        }
-    }
     let diagnostics = context.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let span = diagnostics.time_span(context.command_encoder(), "directional_shadows");
@@ -1179,7 +1134,6 @@ fn render_shadow_scene(
                 "directional_layer_2", "directional_layer_3", "directional_layer_4"];
             let layer_span = diagnostics.time_span(context.command_encoder(), LAYER_SPANS[layer_index.min(4)]);
             let encoded = directional::encode_layer(
-                &device,
                 context.command_encoder(),
                 target,
                 physical,
@@ -1930,7 +1884,8 @@ fn directional_layer_draws<'a>(
 /// cache boundaries. Pipeline changes share the attachment pass in that order.
 fn draw_shadow_groups<'a>(
     encoder: &mut bevy::render::render_resource::CommandEncoder,
-    temporary: &ShadowDepthArray,
+    target: &ShadowDepthArray,
+    layer: u32,
     pipelines: &ShadowPipelineStore,
     draws: Vec<(PipelineId, ShadowDepthDraw<'a>)>,
     requested: ShadowLayerOps,
@@ -1939,7 +1894,7 @@ fn draw_shadow_groups<'a>(
         if matches!(requested.depth, ShadowLoad::Clear(_))
             || matches!(requested.stencil, StencilLoad::Clear(_))
         {
-            clear_empty_layer(encoder, temporary, 0, requested);
+            clear_empty_layer(encoder, target, layer, requested);
         }
         return Ok(());
     }
@@ -1950,9 +1905,9 @@ fn draw_shadow_groups<'a>(
     let ops = layer_operations(
         requested,
         true,
-        temporary.texture.format().has_stencil_aspect(),
+        target.texture.format().has_stencil_aspect(),
     );
-    ShadowDepthPipeline::draw_layer_sequence(encoder, temporary, 0, ops.0, ops.1, &sequence)
+    ShadowDepthPipeline::draw_layer_sequence(encoder, target, layer, ops.0, ops.1, &sequence)
 }
 
 /// The neutral receiver for a revision whose submission did not complete.

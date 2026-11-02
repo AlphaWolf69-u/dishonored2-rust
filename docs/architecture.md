@@ -1038,8 +1038,10 @@ and resource-binding lookups are reused only within one immutable render
 submission. Each draw still validates its own buffer ranges and constants.
 
 Directional slices record independently, including retained static caches. Each
-slice owns its temporary surface and static-cache texture. Its cache restore or
-refresh, dynamic pass and atlas copy remain ordered within one encoder. The
+slice draws into its own atlas layer and owns its static-cache texture; the
+original's per-slice temporary and whole-rectangle transfer (32db10) leave the
+same depth in the layer, so the backend draws there directly. Its cache restore
+or refresh and dynamic pass remain ordered within one encoder. The
 backend finalizes those encoders concurrently, then submits them in owner layer
 order and publishes completed cache generations. Serial recording remains
 available for numeric comparisons. GPU checks compare depth and stencil across

@@ -26,7 +26,6 @@ impl Publication {
 }
 
 pub(super) fn encode_layer(
-    device: &RenderDevice,
     encoder: &mut CommandEncoder,
     target: &CachedTarget,
     physical_layer: usize,
@@ -37,7 +36,11 @@ pub(super) fn encode_layer(
     receiver: Option<&ParallelReceiverVars>,
     diagnostics: Option<&bevy::render::diagnostic::DiagnosticsRecorder>,
 ) -> Result<Publication, String> {
-    let temporary = &target.temporary[physical_layer];
+    // bevy_backend: 32db10 draws each slice into a temporary and transfers
+    // the whole rectangle to its atlas layer (CopySubresourceRegion or the
+    // depthCopy draw with compare ALWAYS). Drawing into the atlas layer leaves
+    // the same depth there without the transfer or the temporaries.
+    let (atlas, layer_in_atlas) = (&target.array, physical_layer as u32);
     let mut remaining = directional_layer_draws(records, pipelines, layer_index);
     if remaining.is_empty()
         && layer.cache == ShadowCacheOp::None
@@ -68,18 +71,18 @@ pub(super) fn encode_layer(
     let counted = remaining.len() as u64;
     match layer.cache {
         ShadowCacheOp::None => {
-            draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+            draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, remaining, layer.ops)?;
         }
         ShadowCacheOp::Restore => {
-            temporary.copy_resource_from(encoder, &target.static_cache[layer_index - 1])?;
-            draw_shadow_groups(encoder, temporary, pipelines, remaining, load)?;
+            atlas.copy_layer_from(encoder, layer_in_atlas, &target.static_cache[layer_index - 1], 0)?;
+            draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, remaining, load)?;
         }
         ShadowCacheOp::Store { static_instances } => {
             let dynamic = remaining.split_off(static_instances);
-            draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
-            target.static_cache[layer_index - 1].copy_resource_from(encoder, temporary)?;
+            draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, remaining, layer.ops)?;
+            target.static_cache[layer_index - 1].copy_layer_from(encoder, 0, atlas, layer_in_atlas)?;
             publication.cache = CacheUpdate::Written(None);
-            draw_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
+            draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, dynamic, load)?;
         }
         ShadowCacheOp::Retained {
             generation,
@@ -89,38 +92,25 @@ pub(super) fn encode_layer(
             let cache = layer_index - 1;
             if target.cache_valid[cache] && target.cache_generation[cache] == Some(generation) {
                 let span = diagnostics.time_span(encoder, "cache_restore");
-                temporary.copy_resource_from(encoder, &target.static_cache[cache])?;
+                atlas.copy_layer_from(encoder, layer_in_atlas, &target.static_cache[cache], 0)?;
                 span.end(encoder);
                 LAYER_STATS[layer_index.min(4)][1].fetch_add(remaining.len() as u64, std::sync::atomic::Ordering::Relaxed);
             } else {
                 LAYER_STATS[layer_index.min(4)][2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let span = diagnostics.time_span(encoder, "static_draws");
-                draw_shadow_groups(encoder, temporary, pipelines, remaining, layer.ops)?;
+                draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, remaining, layer.ops)?;
                 span.end(encoder);
                 let span = diagnostics.time_span(encoder, "cache_store");
-                target.static_cache[cache].copy_resource_from(encoder, temporary)?;
+                target.static_cache[cache].copy_layer_from(encoder, 0, atlas, layer_in_atlas)?;
                 span.end(encoder);
                 publication.cache = CacheUpdate::Written(Some(generation));
             }
             let span = diagnostics.time_span(encoder, "dynamic_draws");
-            draw_shadow_groups(encoder, temporary, pipelines, dynamic, load)?;
+            draw_shadow_groups(encoder, atlas, layer_in_atlas, pipelines, dynamic, load)?;
             span.end(encoder);
         }
     }
     LAYER_STATS[layer_index.min(4)][0].fetch_add(counted, std::sync::atomic::Ordering::Relaxed);
-    // 32db10 full-rectangle transfer, AFTER the dynamic pass.
-    let span = diagnostics.time_span(encoder, "array_copy");
-    match &target.layer_copy {
-        None => target
-            .array
-            .copy_layer_from(encoder, physical_layer as u32, temporary, 0)?,
-        Some((_, copy)) => {
-            let size = temporary.size;
-            let full = [0, 0, size.width as i32 - 1, size.height as i32 - 1];
-            copy.copy(device, encoder, temporary, 0, full, &target.array, physical_layer as u32, full)?;
-        }
-    }
-    span.end(encoder);
     Ok(publication)
 }
 
@@ -140,8 +130,8 @@ pub(super) fn record_layers(
     pipelines: &ShadowPipelineStore,
     receiver: Option<&ParallelReceiverVars>,
 ) -> Vec<(usize, RecordedLayer)> {
-    // Each slice has its own temporary and static cache. Only the atlas is
-    // shared, and each encoder copies to a distinct physical array layer.
+    // Each slice has its own static cache and draws into its own atlas
+    // layer, so the encoders touch disjoint subresources.
     // Publish and submit in the owner's order after all recording finishes.
     let mut encoded = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
         for (index, layer) in layers.iter().enumerate() {
@@ -149,7 +139,6 @@ pub(super) fn record_layers(
                 let result = (|| {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     let publication = encode_layer(
-                        device,
                         &mut encoder,
                         target,
                         first_layer + index,

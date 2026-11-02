@@ -366,7 +366,7 @@ mod tests {
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         let draws = directional_layer_draws(&records, &gpu.pipelines, 1);
-        draw_shadow_groups(&mut encoder, &depth, &gpu.pipelines, draws, input.0[1].ops)
+        draw_shadow_groups(&mut encoder, &depth, 0, &gpu.pipelines, draws, input.0[1].ops)
             .unwrap();
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {

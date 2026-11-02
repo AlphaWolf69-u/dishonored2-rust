@@ -616,23 +616,6 @@ pub(super) fn initialize_parallel_receiver_source(
     commands.insert_resource(ParallelReceiverSource(result));
 }
 
-/// 32db10 transfers directional slices with the depthCopy RPD's draw state.
-pub(super) fn initialize_shadow_depth_copy(
-    mut commands: Commands,
-    mut programs: ResMut<ProgramCacheSource>,
-) {
-    let result = (|| -> Result<[u32; 9], String> {
-        Ok(programs
-            .0
-            .as_mut()
-            .map_err(|error| error.clone())?
-            .definition(b"depthcopy")?
-            .ok_or("depthCopy RPD is unavailable")?
-            .render_state())
-    })();
-    commands.insert_resource(shadow_pass::ShadowDepthCopyState(result));
-}
-
 pub(super) fn publish_parallel_shadow_frame(
     owner: Option<Res<ParallelShadowOwner>>,
     cpu: Res<ParallelShadowCpu>,
