@@ -1672,12 +1672,17 @@ fn validate_alpha_vertex_layout(layout: &RawVertexBufferLayout<'_>) -> Result<()
     let Some(attribute) = uv.next() else {
         return Err("alpha shadow mesh lacks layer-zero UV stream".into());
     };
+    // Float copies, or the installed half floats of shared world meshes.
+    let bytes = match attribute.format {
+        VertexFormat::Float32x2 => 8,
+        VertexFormat::Float16x2 => 4,
+        _ => return Err("alpha shadow needs one aligned Float32x2 or Float16x2 UV at location 1".into()),
+    };
     if uv.next().is_some()
-        || attribute.format != VertexFormat::Float32x2
         || attribute.offset % 4 != 0
         || attribute
             .offset
-            .checked_add(8)
+            .checked_add(bytes)
             .is_none_or(|end| end > layout.array_stride)
     {
         return Err("alpha shadow needs one aligned Float32x2 UV at location 1".into());

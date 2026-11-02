@@ -920,6 +920,10 @@ pub(super) const PACKED_NORMAL: bevy::mesh::MeshVertexAttribute = bevy::mesh::Me
     name: "Vertex_Normal", id: Mesh::ATTRIBUTE_NORMAL.id, format: bevy::render::render_resource::VertexFormat::Snorm8x4 };
 pub(super) const PACKED_TANGENT: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
     name: "Vertex_Tangent", id: Mesh::ATTRIBUTE_TANGENT.id, format: bevy::render::render_resource::VertexFormat::Snorm8x4 };
+pub(super) const PACKED_UV_0: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Uv", id: Mesh::ATTRIBUTE_UV_0.id, format: bevy::render::render_resource::VertexFormat::Float16x2 };
+pub(super) const PACKED_UV_1: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Uv_1", id: Mesh::ATTRIBUTE_UV_1.id, format: bevy::render::render_resource::VertexFormat::Float16x2 };
 pub(super) const PACKED_COLOR: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
     name: "Vertex_Color", id: Mesh::ATTRIBUTE_COLOR.id, format: bevy::render::render_resource::VertexFormat::Unorm8x4 };
 
@@ -946,11 +950,12 @@ fn packed_authored_mesh<const N: usize>(
     let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, points.iter().map(|p| p.to_array()).collect::<Vec<_>>())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, packed.iter().map(|p| [
-            half::f16::from_bits(u16::from_le_bytes([p[0], p[1]])).to_f32(),
-            half::f16::from_bits(u16::from_le_bytes([p[2], p[3]])).to_f32(),
-        ]).collect::<Vec<_>>())
+        // Both UV sets are installed half floats (the parser widened UV0;
+        // narrowing a widened half restores its bits exactly).
+        .with_inserted_attribute(PACKED_UV_0, bevy::mesh::VertexAttributeValues::Float16x2(
+            uvs.iter().map(|uv| uv.map(half::f16::from_f32)).collect()))
+        .with_inserted_attribute(PACKED_UV_1, bevy::mesh::VertexAttributeValues::Float16x2(
+            packed.iter().map(|p| [half::f16::from_le_bytes([p[0], p[1]]), half::f16::from_le_bytes([p[2], p[3]])]).collect()))
         .with_inserted_attribute(PACKED_NORMAL, bevy::mesh::VertexAttributeValues::Snorm8x4(
             packed.iter().map(|p| packed_view_direction(p[4], p[5], p[6], p[7])).collect()))
         .with_inserted_attribute(PACKED_TANGENT, bevy::mesh::VertexAttributeValues::Snorm8x4(
