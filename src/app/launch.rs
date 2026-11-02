@@ -409,6 +409,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Authored light entities resolved: {}", placed_lights.len());
     let mut app = App::new();
+    // bevy_backend: the original ships compiled shaders; the D3D12 backend
+    // keeps the bytecode it compiles here for later runs (vendored wgpu-hal).
+    if env::var_os("DH2_SHADER_CACHE_DIR").is_none() {
+        // SAFETY: set before the renderer and its threads start.
+        unsafe { env::set_var("DH2_SHADER_CACHE_DIR", crate::platform::home::home().cache_dir().join("shaders")); }
+    }
     let compute_threads = env::var("DH2_COMPUTE_THREADS")
         .ok()
         .map(|value| value.parse::<usize>())

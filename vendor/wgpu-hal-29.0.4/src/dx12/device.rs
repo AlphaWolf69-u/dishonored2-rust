@@ -408,14 +408,54 @@ impl super::Device {
 
         let full_stage = format!("{}_{}", naga_stage.to_hlsl_str(), key.shader_model.to_str());
 
-        let compiled_shader = self.compiler_container.compile(
-            self,
-            &key.source,
-            source_name,
-            &key.entry_point,
-            stage_bit,
-            &full_stage,
-        )?;
+        // DH2: compiled bytecode persists between runs in DH2_SHADER_CACHE_DIR,
+        // so a pipeline built in a frame (lazily created passes, Bevy's
+        // pipeline cache) reads its shaders instead of running the compiler.
+        let compiler = match &*self.compiler_container {
+            super::shader_compilation::CompilerContainer::Fxc(_) => "fxc",
+            _ => "dxc",
+        };
+        let disk_key = format!("dh2-shader-cache-1\n{compiler}\n{full_stage}\n{}\n{}", key.entry_point, key.source);
+        let disk_path = std::env::var_os("DH2_SHADER_CACHE_DIR").map(|directory| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::hash::DefaultHasher::new();
+            disk_key.hash(&mut hasher);
+            std::path::PathBuf::from(directory).join(std::format!("{:016x}.bin", hasher.finish()))
+        });
+        let cached = disk_path.as_ref().and_then(|path| {
+            let bytes = std::fs::read(path).ok()?;
+            let header = bytes.get(..8)?;
+            let key_length = u64::from_le_bytes(header.try_into().ok()?) as usize;
+            let stored = bytes.get(8..8usize.checked_add(key_length)?)?;
+            (stored == disk_key.as_bytes()).then(|| bytes[8 + key_length..].to_vec())
+        });
+        let compiled_shader = if let Some(bytes) = cached {
+            super::CompiledShader::Precompiled(bytes)
+        } else {
+            let compiled = self.compiler_container.compile(
+                self,
+                &key.source,
+                source_name,
+                &key.entry_point,
+                stage_bit,
+                &full_stage,
+            )?;
+            if let Some(path) = &disk_path {
+                let native = compiled.create_native_shader();
+                // SAFETY: the bytecode blob is alive while `compiled` is.
+                let blob = unsafe { std::slice::from_raw_parts(native.pShaderBytecode.cast::<u8>(), native.BytecodeLength) };
+                let mut file = (disk_key.len() as u64).to_le_bytes().to_vec();
+                file.extend_from_slice(disk_key.as_bytes());
+                file.extend_from_slice(blob);
+                let temporary = path.with_extension(std::format!("{}.tmp", std::process::id()));
+                if path.parent().is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
+                    && std::fs::write(&temporary, &file).is_ok()
+                {
+                    let _ = std::fs::rename(&temporary, path);
+                }
+            }
+            compiled
+        };
 
         {
             let mut shader_cache = self.shader_cache.lock();
