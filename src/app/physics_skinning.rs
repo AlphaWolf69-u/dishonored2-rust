@@ -22,6 +22,10 @@ pub(super) struct SystemSkin {
     model: bmd6::ModelInfo,
     /// The placement's skinned instances and palette, bound on first use.
     bound: Option<(std::ops::Range<usize>, Handle<ShaderBuffer>)>,
+    /// The palette last applied: an identical pose (resting bodies) leaves
+    /// the meshes, bounds and published palette as they are, so Bevy does not
+    /// re-extract and re-upload four meshes every frame.
+    posed: Option<Vec<Affine>>,
 }
 
 fn multiply(a: &Affine, b: &Affine) -> Affine {
@@ -87,6 +91,7 @@ pub(super) fn load_skins(
                 rest,
                 model,
                 bound: None,
+                posed: None,
             })
         };
         match load() {
@@ -168,6 +173,10 @@ pub(super) fn pose_physics_systems(
         let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.inverse_bind) else {
             continue;
         };
+        if skin.bound.is_some() && source.skinning.is_some() && skin.posed.as_deref() == Some(&palette[..]) {
+            continue;
+        }
+        skin.posed = Some(palette.clone());
         // Setup gives deformed placements their own meshes that keep their
         // main-world data (AmbientMachinery::deformed_placements).
         let (instances, buffer) = skin.bound.get_or_insert_with(|| {
