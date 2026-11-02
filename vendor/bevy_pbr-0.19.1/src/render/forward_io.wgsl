@@ -24,7 +24,9 @@ struct Vertex {
     @location(5) color: vec4<f32>,
 #endif
 #ifdef DH2_AUTHORED_BASIS
+#ifndef DH2_DERIVED_BITANGENT
     @location(8) bitangent: vec3<f32>,
+#endif
 #endif
 #ifdef DH2_VEGETATION_WIND
     // Original local POSITION, NORMAL.xy and COLOR.xyz for AnimateVegetation.
