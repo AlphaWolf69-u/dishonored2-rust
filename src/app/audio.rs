@@ -174,18 +174,57 @@ impl Plugin for SoundPlugin {
     }
 }
 
+/// The packages and bank ids the original loads for the current map.
+struct LevelBanks { packages: Vec<String>, banks: std::collections::HashSet<u32> }
+
+/// Wwise names its ids by FNV-1 of the lowercase name (verified on the
+/// installed main-common-sfx.pck: common_default).
+fn wwise_id(name: &str) -> u32 {
+    name.bytes().fold(0x811c_9dc5u32, |hash, byte| hash.wrapping_mul(0x0100_0193) ^ u32::from(byte.to_ascii_lowercase()))
+}
+
+/// wwisedescription.txt ("cooked level descriptions", 1400c0cb0): "V1", an
+/// entry count, then per entry its name, package prefixes and bank names.
+fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(base.join("wwisedescription.txt"))?;
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("V1") { return Err("wwisedescription.txt is not V1".into()); }
+    let count: usize = lines.next().ok_or("wwisedescription.txt has no entry count")?.trim().parse()?;
+    let mut entries = HashMap::new();
+    for _ in 0..count {
+        let name = lines.next().ok_or("wwisedescription.txt entry truncated")?.trim();
+        let packages = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
+        let banks = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
+        entries.insert(name, (packages, banks));
+    }
+    let map = crate::gameplay::map_info::current_map().ok_or("no current map for its sound banks")?;
+    let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
+    let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default() };
+    for name in ["common", "init", map.as_str()] {
+        let (packages, banks) = entries.get(name).ok_or_else(|| format!("wwisedescription.txt has no entry {name}"))?;
+        for prefix in packages {
+            selection.packages.push(format!("{prefix}{language}.pck"));
+            selection.packages.push(format!("{prefix}sfx.pck"));
+        }
+        selection.banks.extend(banks.iter().map(|bank| wwise_id(bank)));
+    }
+    selection.packages.sort();
+    selection.packages.dedup();
+    Ok(selection)
+}
+
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
         let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
-        let mut paths = std::fs::read_dir(base.join("pck"))?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
-            .collect::<Vec<_>>();
-        paths.sort();
+        // 1400bd510 (LoadSharedCookedGamePackages): the "common", "init" and
+        // current-map entries of wwisedescription.txt name the packages
+        // (prefix + language / "sfx.pck") and banks to load, plus main-init.pck.
+        let selection = level_banks(&base, package_language)?;
+        let paths = selection.packages.iter().map(|name| base.join("pck").join(name))
+            .filter(|path| path.is_file()).collect::<Vec<_>>();
 
         let mut banks = Vec::new();
         let mut attenuations = HashMap::new();
@@ -194,7 +233,9 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         for path in paths {
             let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
             let language = package.language_id(package_language);
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
+            let init = path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("main-init.pck"));
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language)
+                .filter(|entry| init || u32::try_from(entry.id).is_ok_and(|id| selection.banks.contains(&id))) {
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
