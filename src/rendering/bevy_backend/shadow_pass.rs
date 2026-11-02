@@ -1455,10 +1455,7 @@ fn prepare_shadow_records_fresh(
     }
     let mut allocations = std::mem::take(&mut gpu.mesh_allocations);
     let cache_meshes = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| std::env::var("DH2_CACHE_SHADOW_MESH_ALLOCATIONS").as_deref() != Ok("0")) };
-    allocations.begin_frame(
-        (allocator.last_changed().get(), meshes.last_changed().get()),
-        cache_meshes,
-    );
+    allocations.begin_frame(allocator, cache_meshes);
     let mut timings = { static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *FLAG.get_or_init(|| (std::env::var("DH2_PROFILE_SHADOW_RECORDS").as_deref() == Ok("1"))) }
         .then(|| ([0u128; 3], HashMap::<ShadowProgram, usize>::new()));
     let result = prepare_shadow_records_with_bindings(

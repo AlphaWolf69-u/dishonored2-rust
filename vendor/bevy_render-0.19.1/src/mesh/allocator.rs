@@ -54,6 +54,11 @@ pub struct MeshAllocator {
     /// WebGL 2. On this platform, we must give each vertex array its own
     /// buffer, because we can't adjust the first vertex when we perform a draw.
     general_vertex_slabs_supported: bool,
+
+    /// DH2: the meshes the latest `free_meshes` released, and how many times
+    /// it has run, so caches of allocation slices invalidate only those.
+    freed: Vec<AssetId<Mesh>>,
+    free_generation: u64,
 }
 
 /// Tunable parameters that customize the behavior of the allocator.
@@ -234,6 +239,8 @@ impl FromWorld for MeshAllocator {
         Self {
             slab_allocator,
             general_vertex_slabs_supported,
+            freed: Vec::new(),
+            free_generation: 0,
         }
     }
 }
@@ -272,6 +279,18 @@ pub fn allocate_and_free_meshes(
 }
 
 impl MeshAllocator {
+    /// DH2: (generation, meshes) of the latest `free_meshes` call. Between two
+    /// consecutive generations, only these meshes' slices can have changed,
+    /// unless `slab_buffer_replacements` changed too.
+    pub fn freed_meshes(&self) -> (u64, &[AssetId<Mesh>]) {
+        (self.free_generation, &self.freed)
+    }
+
+    /// DH2: how many times a slab buffer was replaced, moving its allocations.
+    pub fn slab_buffer_replacements(&self) -> u64 {
+        self.slab_allocator.buffer_replacements
+    }
+
     /// Returns the buffer and range within that buffer of the vertex data for
     /// the mesh with the given ID.
     ///
@@ -532,7 +551,10 @@ impl MeshAllocator {
             .chain(extracted_meshes.modified.iter())
             .chain(extracted_meshes.added.iter());
 
+        self.free_generation += 1;
+        self.freed.clear();
         for mesh_id in meshes_to_free {
+            self.freed.push(*mesh_id);
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Vertex));
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Index));
             #[cfg(feature = "morph")]
@@ -658,6 +680,8 @@ mod tests {
         MeshAllocator {
             slab_allocator: SlabAllocator::new(),
             general_vertex_slabs_supported,
+            freed: Vec::new(),
+            free_generation: 0,
         }
     }
 

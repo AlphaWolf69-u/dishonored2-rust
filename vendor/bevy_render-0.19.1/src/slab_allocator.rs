@@ -74,6 +74,10 @@ where
 
     /// Additional buffer usages to add to any vertex or index buffers created.
     pub extra_buffer_usages: BufferUsages,
+
+    /// DH2: times a general slab's buffer was replaced by a larger one,
+    /// moving every allocation it held.
+    pub buffer_replacements: u64,
 }
 
 /// Describes the type of the data that a [`SlabAllocator`] will store.
@@ -596,6 +600,7 @@ where
             key_to_slab: HashMap::default(),
             slab_layouts: HashMap::default(),
             extra_buffer_usages: BufferUsages::empty(),
+            buffer_replacements: 0,
         }
     }
 }
@@ -864,6 +869,7 @@ where
         slab.buffer = Some(new_buffer.clone());
 
         let Some(old_buffer) = old_buffer else { return };
+        self.buffer_replacements += 1;
 
         // In order to do buffer copies, we need a command encoder.
         let mut encoder = render_device.create_command_encoder(&CommandEncoderDescriptor {
