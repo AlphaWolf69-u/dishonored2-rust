@@ -33,6 +33,7 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 | `FUN_1400bd480` arkWwiseBankLoader::LoadBanksAndPackages | loads the `common`, `init` and map packages (`FUN_1400bd510`; loose banks `FUN_1400bca10`) | blocked: the rewrite indexes every installed bank; per-map package loading not ported |
 | Wwise codecs | media stay encoded; Vorbis and IMA ADPCM decode per voice | ported: `assets::wwise::VorbisCursor`, `AdpcmCursor` |
 | `141122400` | a source references its Sound's media rather than copying it | ported: prepared media shared by Wwise sound id |
+| stream manager (stream type != 0 sources) | streamed and prefetched sources are read from their package while they play, not kept resident | partial: their format is read at load and their media is read on the IO pool when an event plays them, held by that playback and released after; a request waits for its read (the original starts a non-prefetch stream once its first buffer arrives). Not ported: the prefetch prefix that lets a prefetched source start at once (`blocked`: trace the original's prefetch buffer use and start timing, then keep the prefix resident) |
 | listed `soundevent` decls | loaded with the map | ported: prepared at startup |
 
 ### Material, model, animation, physics, FX, Iggy, entities

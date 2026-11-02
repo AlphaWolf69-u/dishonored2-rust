@@ -26,6 +26,8 @@ struct WwiseRegistry {
     states: bevy_backend::StateGroups,
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
+    /// Package location of every media read, for streamed sources.
+    locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
 }
 
 impl WwiseRegistry {
@@ -35,6 +37,10 @@ impl WwiseRegistry {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+            self.locators.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, graph::StreamLocator {
+                path: bank.path.clone(), offset: media.offset,
+                size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
+            });
             let file = match files.entry(owner) {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 hashbrown::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
@@ -81,7 +87,11 @@ impl WwiseRegistry {
             // 14113b5c0 sends every Play through the same source
             // and bus clock, including plain PCM and UI sounds.
             PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) }),
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations, &|id| {
+                    // Diagnostic A/B: DH2_DEBUG_RESIDENT_STREAMS=1 keeps streamed sources resident.
+                    if std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1") { return None; }
+                    self.locators.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
+                })?) }),
             } })();
             match decoded {
                 Ok(action) => actions.push(action),
@@ -92,6 +102,10 @@ impl WwiseRegistry {
     }
 
 }
+
+/// The streamed media a playback reads; dropped with its voice entity.
+#[derive(Component, Clone)]
+struct StreamedMedia(Vec<graph::StreamHold>);
 
 #[derive(Resource, Default)]
 struct AudioMix {
@@ -356,19 +370,26 @@ fn play_events(
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
     engine: Res<bevy_backend::Engine>,
+    mut pending: Local<Vec<Request>>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
-    for message in events.read() {
-        let (event, emitter, parameter, position) = match message.0 {
+    // A request whose streamed media is still being read waits, keeping its
+    // place ahead of later requests for the same emitter.
+    let requests: Vec<Request> = std::mem::take(&mut *pending).into_iter().chain(events.read().map(|message| message.0)).collect();
+    let mut waiting = Vec::new();
+    for request in requests {
+        let (event, emitter, parameter, position) = match request {
             Request::Post { event, emitter } => (event, emitter, None, None),
             Request::PostWithParameter { event, emitter, parameter, value } => (event, emitter, Some((parameter, value)), None),
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
+                if waiting.contains(&emitter) { pending.push(request); continue; }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
+        if waiting.contains(&emitter) { pending.push(request); continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
@@ -377,6 +398,23 @@ fn play_events(
             continue;
         }
         if let Some(actions) = registry.sources.get(&event).cloned() {
+            let mut holds = Vec::new();
+            let mut loading = false;
+            for action in &actions {
+                let SourceAction::Play { definition, .. } = action else { continue };
+                for source in definition.streamed() {
+                    match source.acquire() {
+                        Ok(Some(hold)) => holds.push(hold),
+                        Ok(None) => loading = true,
+                        Err(error) => warn!("Wwise event {event:#010x} streamed media unavailable: {error}"),
+                    }
+                }
+            }
+            if loading {
+                waiting.push(emitter);
+                pending.push(request);
+                continue;
+            }
             let playing_id = engine.playing_id();
             for action in actions {
                 match action {
@@ -396,13 +434,13 @@ fn play_events(
                                 let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false };
                                 if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
-                                        Ok(voice) => { commands.spawn((voice, audio_target, scheduled)); },
+                                        Ok(voice) => { commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone()))); },
                                         Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
                                     }
                                 } else {
                                     match engine.register_fallback(scheduled.clone(), event, emitter) {
                                         Ok(control) => { commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
-                                            audio_target, scheduled, control)); },
+                                            audio_target, scheduled, control, StreamedMedia(holds.clone()))); },
                                         Err(error) => error!("Wwise event {event:#010x} action control unavailable: {error}"),
                                     }
                                 }

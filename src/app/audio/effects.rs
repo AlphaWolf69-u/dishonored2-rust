@@ -123,11 +123,29 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         }
         let mut spawned = Vec::new();
         let mut submitted = 0u32;
+        // A ticket whose streamed media is still being read stays queued.
+        let mut loading_tickets = Vec::new();
         for ticket in std::mem::take(&mut bridge.queued) {
             let event = ticket.event();
             let prepared = state.events.get(event.declaration as usize).ok_or("accepted FX event declaration is absent")?;
             let object = bridge.objects.get(&event.object).ok_or("accepted FX event object is absent")?;
             let parameter = object.energy;
+            let mut holds = Vec::new();
+            let mut loading = false;
+            for action in prepared.actions.iter() {
+                let SourceAction::Play { definition, .. } = action else { continue };
+                for source in definition.streamed() {
+                    match source.acquire() {
+                        Ok(Some(hold)) => holds.push(hold),
+                        Ok(None) => loading = true,
+                        Err(error) => warn!("FX event {} streamed media unavailable: {error}", prepared.declaration.name),
+                    }
+                }
+            }
+            if loading {
+                loading_tickets.push(ticket);
+                continue;
+            }
             let playing_id = engine.playing_id();
             for action in prepared.actions.iter() {
                 match action {
@@ -158,7 +176,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                                         }
                                         let target = super::AudioTarget { event: prepared.declaration.declaration.id,
                                             emitter: event.object, paused: false, world_paused: false };
-                                        let entity = commands.spawn((voice, target.clone(), control.clone())).id();
+                                        let entity = commands.spawn((voice, target.clone(), control.clone(), super::StreamedMedia(holds.clone()))).id();
                                         spawned.push((entity, target, control));
                                     }
                                     Err(message) => warn!("FX event {} output failed: {message}", prepared.declaration.name),
@@ -170,6 +188,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 }
             }
         }
+        bridge.queued.splice(0..0, loading_tickets);
         // DH2_TRACE_FX_SOUND_LIMITS=1: FX voices playing at once, every 2 s.
         if trace_fx_sound_limits() && state.trace_frame % 120 == 0 {
             let mut voices = std::collections::BTreeMap::<String, Vec<String>>::new();

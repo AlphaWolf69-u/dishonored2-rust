@@ -735,6 +735,10 @@ pub struct MediaGroup {
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
     pub media: std::sync::Arc<[u8]>,
+    /// The package media id of a streamed or prefetched source (stream type
+    /// != 0), which the original reads through its stream manager while it
+    /// plays instead of keeping it resident.
+    pub streamed: Option<u32>,
     pub weight: u32,
     pub properties: MediaProperties,
 }
@@ -883,7 +887,7 @@ fn media_from_sound(
     sound: &[u8],
     chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
     package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
-) -> io::Result<Option<Vec<u8>>> {
+) -> io::Result<Option<(Vec<u8>, Option<u32>)>> {
     if sound.len() < 13 { return Ok(None); }
     let media_id = read_u32_slice(sound, 9)?;
     // Streamed and prefetched sources use the full package file. DIDX may
@@ -891,7 +895,7 @@ fn media_from_sound(
     if sound[8] != 0 {
         if let Some(media) = package_media(media_id)? {
             STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, media.len());
-            return Ok(Some(media));
+            return Ok(Some((media, Some(media_id))));
         }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
@@ -900,10 +904,10 @@ fn media_from_sound(
             if read_u32_slice(record, 0)? != media_id { continue; }
             let start = read_u32_slice(record, 4)? as usize;
             let end = start.checked_add(read_u32_slice(record, 8)? as usize).ok_or_else(|| invalid("Wwise media range overflow"))?;
-            return Ok(Some(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?.to_vec()));
+            return Ok(Some((data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?.to_vec(), None)));
         }
     }
-    package_media(media_id)
+    Ok(package_media(media_id)?.map(|media| (media, None)))
 }
 
 /// List event object IDs in the HIRC chunk for building an installed-bank index.
