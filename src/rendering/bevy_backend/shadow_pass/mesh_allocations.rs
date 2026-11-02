@@ -161,9 +161,9 @@ mod tests {
         meshes: Res<RenderAssets<RenderMesh>>,
         selected: Res<SelectedMesh>,
         mut cache: ResMut<FixtureCache>,
-    ) -> (bool, u64, u64, (u32, u32)) {
-        let epoch = (allocator.last_changed().get(), meshes.last_changed().get());
-        cache.0.begin_frame(epoch, true);
+    ) -> (bool, u64, u64, (u64, u64)) {
+        let epoch = (allocator.slab_buffer_replacements(), allocator.freed_meshes().0);
+        cache.0.begin_frame(&allocator, true);
         let actual = cache
             .0
             .get(selected.0, &allocator, &meshes)
@@ -252,18 +252,14 @@ mod tests {
             "stable frames must actually reuse metadata"
         );
         assert_eq!(a.3, b.3, "idle allocator/assets must keep their epochs");
-        {
-            let mut cache = app
-                .sub_app_mut(RenderApp)
-                .world_mut()
-                .resource_mut::<FixtureCache>();
-            cache.0.begin_frame(b.3, true);
+        app.sub_app_mut(RenderApp).world_mut().resource_scope(|world, mut cache: Mut<FixtureCache>| {
+            cache.0.begin_frame(world.resource::<MeshAllocator>(), true);
             cache.0.finish_frame(true);
             assert!(
                 cache.0.entries.is_empty(),
                 "an unused allocation must not survive a complete submission"
             );
-        }
+        });
         app.world_mut()
             .resource_mut::<Assets<Mesh>>()
             .insert(handle.id(), mesh(3000, true))
@@ -276,10 +272,9 @@ mod tests {
             .resource_mut::<Assets<Mesh>>()
             .add(mesh(5000, false));
         let d = update(&mut app);
-        assert!(
-            d.0 && d.2 > c.2,
-            "other allocations invalidate slab metadata too"
-        );
+        // Another mesh's allocation leaves this one's metadata valid unless
+        // its slab buffer moved; observe compares it with a fresh lookup.
+        assert!(d.0);
         app.world_mut()
             .resource_mut::<Assets<Mesh>>()
             .remove(handle.id());
