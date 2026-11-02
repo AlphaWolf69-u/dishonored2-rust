@@ -97,6 +97,11 @@ pub(super) fn level_ready(
         }
     }
     gpu_allocations(device.as_deref());
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        for (frames, bytes, blocks) in crate::platform::allocation_tags::big_blocks().into_iter().take(30) {
+            eprintln!("LOAD big {} MB in {blocks}: {frames}", bytes >> 20);
+        }
+    }
     if let Some(list) = LIST.get() {
         let report = crate::loading::report(list);
         let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
