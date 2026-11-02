@@ -429,7 +429,10 @@ fn update_playing_volume(
     let world_paused = paused.is_some_and(|paused| paused.0);
     let pause_changed = world_paused != *previous_pause;
     engine.update_action_pause(pause_changed.then_some(world_paused), |emitter| scene.frozen(emitter));
-    for (mut target, sink, scheduled, voice, fallback) in &mut playing {
+    // Each voice publishes only its own targets; the update is on the main
+    // world's critical path while walking, so voices update in parallel.
+    playing.par_iter_mut().batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
+        .for_each(|(mut target, sink, scheduled, voice, fallback)| {
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same
         // world's global object, and c4550 posts new IDs while paused.
@@ -443,16 +446,16 @@ fn update_playing_volume(
             if !frozen {
                 if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
             }
-            continue;
+            return;
         }
-        let Some(sink) = sink else { continue };
+        let Some(sink) = sink else { return };
         if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
             target.paused = frozen;
         }
-        if frozen { continue; }
+        if frozen { return; }
         if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
-    }
+    });
     *previous_pause = world_paused;
     mix.generation = generation;
 }
