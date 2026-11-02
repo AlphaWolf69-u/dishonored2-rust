@@ -7,7 +7,7 @@ use super::{
     light_distance, light_preset, light_projection_bounds, light_proximity_from_cached_bounds,
     local_light_clip_to_world, local_shadow_updates, material, mean_game_position,
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
-    preserved_half_point_angular_scale, probe_lighting, render_bounds, render_light, render_model,
+    preserved_half_point_angular_scale, render_bounds, render_light, render_model,
     rest_skinning, retain_model_shadow_position, retain_skin_inputs, runtime, shadow_pipeline,
     shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,

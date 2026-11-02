@@ -309,6 +309,8 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
 /// header (`1411606d0`, `141149320`), so nothing is decoded until a voice
 /// reads it through a [`VorbisCursor`].
 pub struct EncodedVorbis {
+    /// The installed Wwise media, whose packets are decoded in place, or for
+    /// a layout that is not, its Ogg Vorbis conversion.
     pub ogg: std::sync::Arc<[u8]>,
     index: vorbis::PacketIndex,
     pub channels: u16,
@@ -409,6 +411,17 @@ pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
     }
     let (frames, points) = wem_source_metadata(bytes)?;
     if let Some(frames) = frames {
+        // The original decodes the installed Wwise packets directly; so does
+        // this, without the per-byte Ogg conversion.
+        if let Some(layout) = vorbis::wwise_layout(bytes) {
+            let index = vorbis::PacketIndex::wwise(bytes, &layout, u64::from(frames))
+                .map_err(|error| invalid_owned(format!("installed Wwise Vorbis stream: {error}")))?;
+            let (channels, sample_rate) = (index.channels(), index.sample_rate());
+            if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
+            let frames = frames as usize;
+            let loop_points = loop_points(points, frames)?;
+            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: bytes.into(), index, channels, sample_rate, frames, loop_points }));
+        }
         let encoded = decode_wem(bytes)?;
         if encoded.starts_with(b"OggS") {
             let index = vorbis::PacketIndex::new(&encoded)
@@ -735,9 +748,9 @@ pub struct MediaGroup {
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
     pub media: std::sync::Arc<[u8]>,
-    /// The package media id of a streamed or prefetched source (stream type
-    /// != 0), which the original reads through its stream manager while it
-    /// plays instead of keeping it resident.
+    /// The package media id of a streamed source (stream type 2), which the
+    /// original reads through its stream manager while it plays instead of
+    /// keeping it resident. Prefetched sources (type 1) stay resident.
     pub streamed: Option<u32>,
     pub weight: u32,
     pub properties: MediaProperties,
@@ -879,8 +892,8 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
 }
 
 /// Diagnostic: media ids read for streamed or prefetched sources (stream
-/// type != 0), with their sizes.
-pub static STREAMED_MEDIA: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, usize>>> =
+/// type != 0): (stream type, full size, size of the bank's DIDX entry).
+pub static STREAMED_MEDIA: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u8, usize, Option<usize>)>>> =
     std::sync::LazyLock::new(Default::default);
 
 fn media_from_sound(
@@ -894,8 +907,15 @@ fn media_from_sound(
     // contain only a prefetch prefix, which must not replace the full media.
     if sound[8] != 0 {
         if let Some(media) = package_media(media_id)? {
-            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, media.len());
-            return Ok(Some((media, Some(media_id))));
+            let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
+                .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
+                .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
+            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.len(), prefix));
+            // Type 2 streams with no prefix: the original starts it once its
+            // stream delivers. Type 1 (prefetch) starts at once from a bank
+            // prefix (~4 KB); at eotw that is 13 media, 1 MB in all, so they
+            // stay resident whole, which starts them at once as well.
+            return Ok(Some((media, (sound[8] == 2).then_some(media_id))));
         }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
@@ -1128,6 +1148,39 @@ mod stream_tests {
             }
         }
         assert_eq!(checked, 24);
+    }
+
+    /// Every installed Wwise Vorbis media decoded in place gives exactly the
+    /// samples of its ww2ogg Ogg conversion decoded in full.
+    #[test]
+    #[ignore = "requires installed game archives"]
+    fn direct_decode_matches_conversion_for_all_media() {
+        let base = crate::assets::installation::game_base().unwrap();
+        let mut paths: Vec<_> = std::fs::read_dir(base.join("pck")).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pck"))).collect();
+        paths.sort();
+        let (mut direct, mut converted) = (0, 0);
+        for path in paths {
+            let Ok(package) = Package::open(&path) else { continue };
+            let mut file = File::open(&path).unwrap();
+            for entry in package.media.iter().chain(&package.external_media).copied() {
+                let bytes = package.read_entry(&mut file, entry).unwrap();
+                if wem_codec(&bytes) != Some(0xffff) { continue; }
+                if vorbis::wwise_layout(&bytes).is_none() { converted += 1; continue; }
+                let Ok(SourceMedia::Vorbis(encoded)) = prepare_wem(&bytes) else { converted += 1; continue };
+                let full = decode_wem_pcm(&bytes).unwrap();
+                let channels = usize::from(encoded.channels);
+                assert_eq!(full.samples.len(), encoded.frames * channels, "{} media {}", path.display(), entry.id);
+                let mut cursor = VorbisCursor::new(std::sync::Arc::new(encoded));
+                for (i, &expected) in full.samples.iter().enumerate() {
+                    assert_eq!(cursor.sample(i / channels, i % channels), Some(expected),
+                        "{} media {} frame {}", path.display(), entry.id, i / channels);
+                }
+                direct += 1;
+            }
+        }
+        eprintln!("direct {direct}, through conversion {converted}");
+        assert!(direct > 0);
     }
 
     /// Installed IMA ADPCM media read through a cursor give the full

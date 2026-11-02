@@ -332,7 +332,15 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
             eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
         }
         let streamed = crate::assets::wwise::STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner());
-        eprintln!("LOAD sound streamed sources: {} media, {} MB", streamed.len(), streamed.values().sum::<usize>() >> 20);
+        let mut by_type = std::collections::BTreeMap::<u8, (usize, usize, usize, usize)>::new();
+        for &(kind, size, prefix) in streamed.values() {
+            let entry = by_type.entry(kind).or_default();
+            entry.0 += 1; entry.1 += size;
+            if let Some(prefix) = prefix { entry.2 += 1; entry.3 += prefix; }
+        }
+        for (kind, (count, bytes, prefixed, prefix_bytes)) in by_type {
+            eprintln!("LOAD sound streamed type {kind}: {count} media, {} MB; {prefixed} with a DIDX entry, {} KB in them", bytes >> 20, prefix_bytes >> 10);
+        }
     }
     registry.sources.extend(prepared);
     count
