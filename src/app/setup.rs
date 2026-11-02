@@ -230,10 +230,19 @@ pub(super) fn setup(
     if records.is_empty() {
         records.push([Vec4::ZERO; 9]);
     }
+    // The per-vertex references only build this GPU buffer; nothing reads
+    // them on the CPU afterwards, so they are released once it is built.
     let words = scene
         .environment_probes
-        .as_deref()
-        .map(probe_lighting::ProbeLightingSet::vertex_shader_words)
+        .as_mut()
+        .map(|set| {
+            let words = set.vertex_shader_words();
+            if let Some(set) = std::sync::Arc::get_mut(set) {
+                set.vertex_references.instance_offsets = Vec::new();
+                set.vertex_references.tetrahedron_indices = Vec::new();
+            }
+            words
+        })
         .unwrap_or_else(|| vec![0u32; 8]);
     let bytes = words.len() as u64 * 4;
     let limits = render_device.limits();
@@ -249,7 +258,9 @@ pub(super) fn setup(
         records.len(),
         limits.max_storage_buffer_binding_size
     );
-    let vertex_probe_buffer = probe_sh_buffers.add(ShaderBuffer::from(words));
+    let mut vertex_probe_buffer = ShaderBuffer::from(words);
+    vertex_probe_buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+    let vertex_probe_buffer = probe_sh_buffers.add(vertex_probe_buffer);
     let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(records.clone()));
     let shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
         shadow_sampling::ParallelSamplingUniform::default(),
@@ -1769,6 +1780,7 @@ pub(super) fn setup(
         &scene.world, &world_shadow_mesh_sources, &mut meshes,
         &mut world_matrices, resolver.probe_sh_buffers,
     ));
+    world_shadow_mesh_sources.release_cpu_copies(&mut meshes);
     commands.insert_resource(world_shadow_mesh_sources);
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
@@ -1857,6 +1869,15 @@ pub(super) fn setup(
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
         commands.insert_resource(TextureReadWorker::new(catalog, diffuse_image_count));
+    }
+    // Every world mesh is uploaded and its shadow/water/probe inputs are
+    // built; the original keeps no CPU copy of uploaded world geometry.
+    drop(pickup_ids);
+    for mesh in &mut scene.world.meshes {
+        mesh.positions = Vec::new();
+        mesh.uvs = Vec::new();
+        mesh.packed_channels = Vec::new();
+        mesh.indices = Vec::new();
     }
     super::load_timing::mark("setup: end");
 }

@@ -71,13 +71,31 @@ pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
 
 /// When every loading gate is complete: play starts, and the coverage of
 /// the original's load lists is reported.
-pub(super) fn level_ready(mut done: bevy::prelude::Local<bool>, device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>) {
+pub(super) fn level_ready(
+    mut done: bevy::prelude::Local<bool>,
+    device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>,
+    meshes: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Mesh>>,
+    images: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Image>>,
+    buffers: bevy::prelude::Res<bevy::prelude::Assets<bevy::render::storage::ShaderBuffer>>,
+) {
     if *done || !crate::loading::ready() {
         return;
     }
     *done = true;
     crate::loading::play_started();
     mark("level ready");
+    asset_bytes(&meshes, &images);
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        let bytes: usize = buffers.iter().map(|(_, b)| b.data.as_ref().map_or(0, Vec::len)).sum();
+        eprintln!("LOAD shader buffers: {} with {} MB CPU", buffers.len(), bytes >> 20);
+        let mut largest: Vec<_> = buffers.iter()
+            .map(|(_, b)| (b.data.as_ref().map_or(0, Vec::len), b.buffer_description.label.unwrap_or("--")))
+            .collect();
+        largest.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (bytes, label) in largest.iter().take(8) {
+            eprintln!("LOAD shader buffer {label}: {} KB", bytes >> 10);
+        }
+    }
     gpu_allocations(device.as_deref());
     if let Some(list) = LIST.get() {
         let report = crate::loading::report(list);
@@ -104,21 +122,50 @@ pub(super) fn asset_bytes(meshes: &bevy::prelude::Assets<bevy::prelude::Mesh>, i
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
         return;
     }
+    // Render-world-only meshes lose their data once extracted; count only
+    // meshes whose CPU copy is still held.
     let mut sizes: Vec<(usize, usize, usize)> = meshes
         .iter()
-        .map(|(_, m)| {
-            let vertices = m.count_vertices();
-            let attributes: usize = m.attributes().map(|(_, values)| values.get_bytes().len()).sum();
-            let indices = m.indices().map_or(0, |i| i.len() * if matches!(i, bevy::mesh::Indices::U16(_)) { 2 } else { 4 });
-            (attributes + indices, vertices, m.attributes().count())
+        .filter_map(|(_, m)| {
+            let attributes = m.try_attributes().ok()?;
+            let (mut bytes, mut vertices, mut count) = (0, 0, 0);
+            for (_, values) in attributes {
+                bytes += values.get_bytes().len();
+                vertices = values.len();
+                count += 1;
+            }
+            let indices = m.try_indices_option().ok().flatten()
+                .map_or(0, |i| i.len() * if matches!(i, bevy::mesh::Indices::U16(_)) { 2 } else { 4 });
+            Some((bytes + indices, vertices, count))
         })
         .collect();
     sizes.sort_unstable_by(|a, b| b.0.cmp(&a.0));
     let total: usize = sizes.iter().map(|s| s.0).sum();
+    // Which builders keep CPU copies: held meshes grouped by attribute set.
+    let mut groups: std::collections::HashMap<String, (usize, usize)> = Default::default();
+    for (_, m) in meshes.iter() {
+        let Ok(attributes) = m.try_attributes() else { continue };
+        let mut names: Vec<&str> = Vec::new();
+        let mut bytes = 0;
+        for (attribute, values) in attributes {
+            names.push(attribute.name);
+            bytes += values.get_bytes().len();
+        }
+        names.sort_unstable();
+        let entry = groups.entry(names.join(",")).or_default();
+        entry.0 += 1;
+        entry.1 += bytes;
+    }
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    groups.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    for (names, (count, bytes)) in groups.iter().take(8) {
+        eprintln!("LOAD held meshes {count} ({} MB): {names}", bytes >> 20);
+    }
     let image_bytes: usize = images.iter().map(|(_, i)| i.data.as_ref().map_or(0, Vec::len)).sum();
     eprintln!(
-        "LOAD assets: {} meshes {} MB (largest {:?}), {} images {} MB CPU",
+        "LOAD assets: {} of {} meshes hold {} MB CPU (largest {:?}), {} images {} MB CPU",
         sizes.len(),
+        meshes.len(),
         total >> 20,
         sizes.iter().take(5).map(|s| (s.0 >> 20, s.1, s.2)).collect::<Vec<_>>(),
         images.len(),

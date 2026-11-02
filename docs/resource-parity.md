@@ -75,11 +75,11 @@ trailing `*` covers a family of kinds.
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
 | `env` | `assets::entities`, `assets::environment` | partial: reads its resources; lifecycle not ported (see its class) |
-| `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: reads its resources; lifecycle not ported (see its class) |
+| `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: the per-vertex probe references become the GPU vertex-probe buffer at setup and are then released (no main-world copy of either); load path not compared with the original |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
 | `fade` | none | none: no owner yet |
-| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: reads its resources; lifecycle not ported (see its class) |
+| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); Tome blob and decoded views stay resident |
 | `Font` | `flash::text` | partial: reads its resources; lifecycle not ported (see its class) |
 | `footStepPhysMat` | none | none: no owner yet |
 | `fx` | `rendering::particles::world_sources`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |

@@ -267,6 +267,11 @@ pub(super) struct TextureReadWorker {
 }
 
 impl TextureReadWorker {
+    /// The installed archives, for on-demand diagnostic reads.
+    pub(super) fn catalog(&self) -> &archive::Catalog {
+        &self.catalog
+    }
+
     pub(super) fn new(catalog: archive::Catalog, image_count: usize) -> Self {
         let (completed_tx, completed) = mpsc::channel();
         Self {
