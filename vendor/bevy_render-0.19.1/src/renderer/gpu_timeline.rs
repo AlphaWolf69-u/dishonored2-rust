@@ -36,6 +36,10 @@ struct Readback {
 struct Totals {
     systems: HashMap<String, (f64, u64)>,
     frames: u64,
+    /// GPU-busy milliseconds of each collected frame (gaps excluded).
+    busy: alloc::vec::Vec<f64>,
+    /// The busiest frame's systems: (busy ms, [(system, ms)]).
+    worst: (f64, alloc::vec::Vec<(String, f64)>),
 }
 
 static TOTALS: Mutex<Option<Totals>> = Mutex::new(None);
@@ -48,6 +52,18 @@ pub fn reset_gpu_timeline() {
     if let Ok(mut totals) = TOTALS.lock() {
         *totals = Some(Totals::default());
     }
+}
+
+/// Per-frame GPU-busy milliseconds (p50, p99, max) and the busiest frame's
+/// systems, largest first.
+pub fn gpu_timeline_frames() -> Option<([f64; 3], alloc::vec::Vec<(String, f64)>)> {
+    let totals = TOTALS.lock().ok()?;
+    let totals = totals.as_ref()?;
+    let mut busy = totals.busy.clone();
+    if busy.is_empty() { return None; }
+    busy.sort_by(f64::total_cmp);
+    let pick = |q: f64| busy[((busy.len() - 1) as f64 * q) as usize];
+    Some(([pick(0.5), pick(0.99), busy[busy.len() - 1]], totals.worst.1.clone()))
 }
 
 /// Collected frames and each system's mean GPU milliseconds per frame, largest first.
@@ -145,14 +161,27 @@ impl GpuTimeline {
                 if let Ok(mut totals) = TOTALS.lock() {
                     let totals = totals.get_or_insert_with(Totals::default);
                     totals.frames += 1;
+                    let mut busy = 0.0;
+                    let mut frame = alloc::vec::Vec::new();
                     for (pair, name) in ticks.windows(2).zip(&readback.names[1..]) {
+                        let gap = name.starts_with(BEGIN);
                         let key = match name.strip_prefix(BEGIN) {
                             Some(system) => format!("(gap) {system}"),
                             None => name.to_string(),
                         };
+                        let nanos = pair[1].saturating_sub(pair[0]) as f64 * period;
+                        if !gap {
+                            busy += nanos / 1e6;
+                            frame.push((key.clone(), nanos / 1e6));
+                        }
                         let entry = totals.systems.entry(key).or_default();
-                        entry.0 += pair[1].saturating_sub(pair[0]) as f64 * period;
+                        entry.0 += nanos;
                         entry.1 += 1;
+                    }
+                    totals.busy.push(busy);
+                    if busy > totals.worst.0 {
+                        frame.sort_by(|a, b| b.1.total_cmp(&a.1));
+                        totals.worst = (busy, frame);
                     }
                 }
             }

@@ -423,6 +423,12 @@ pub(super) fn benchmark_frames(
             for (name, ms) in rows.into_iter().take(50) {
                 println!("BENCHMARK_GPU_TIMELINE ms={ms:.3} {name}");
             }
+            if let Some(([p50, p99, max], worst)) = bevy::render::renderer::gpu_timeline_frames() {
+                println!("BENCHMARK_GPU_FRAMES busy_ms[p50,p99,max]={p50:.3},{p99:.3},{max:.3}");
+                for (name, ms) in worst.into_iter().take(8) {
+                    println!("BENCHMARK_GPU_WORST_FRAME ms={ms:.3} {name}");
+                }
+            }
         }
         if let Ok(uploads) = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock() {
             let mut rows: Vec<_> = uploads.iter().flatten().collect();
