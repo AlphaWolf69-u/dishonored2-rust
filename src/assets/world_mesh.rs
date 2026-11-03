@@ -31,6 +31,9 @@ pub struct Mesh {
 
 #[derive(Debug)]
 pub struct WorldMesh {
+    /// 295fa0's immutable receiver tree belongs to this loaded WORLD, shared
+    /// by shadow and projected-decal consumers. Geometry release preserves it.
+    pub(crate) spatial_query_cache: std::sync::OnceLock<std::sync::Arc<crate::local_caster_query::LocalWorldQuery>>,
     pub meshes: Vec<Mesh>,
     /// Row-major 3x4 affine transforms in game coordinates (Z up).
     pub matrices: Vec<[f32; 12]>,
@@ -182,6 +185,15 @@ pub(crate) fn sort_shadow_records<T>(
 }
 
 impl WorldMesh {
+    pub fn spatial_query(&self) -> std::sync::Arc<crate::local_caster_query::LocalWorldQuery> {
+        let create = || {
+            let _tag = crate::platform::allocation_tags::tag("WORLD spatial queries");
+            std::sync::Arc::new(crate::local_caster_query::LocalWorldQuery::new(self))
+        };
+        // Diagnostic acquisition A/B of the former per-consumer trees.
+        if std::env::var("DH2_DEBUG_UNSHARED_WORLD_QUERIES").as_deref() == Ok("1") { return create(); }
+        self.spatial_query_cache.get_or_init(create).clone()
+    }
     /// FUN_140295e40: append the midpoint of every record belonging to a
     /// needsWindBuffers (material +0x48 bit6) object, in file/object order.
     /// Runtime +0x1c receives that appended signed-short index; serialized
@@ -760,6 +772,7 @@ pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
         return Err(format!("{} unparsed BWM bytes", bytes.len() - at));
     }
     Ok(WorldMesh {
+        spatial_query_cache: Default::default(),
         meshes,
         matrices: decoded_matrices,
         visibility,
@@ -777,6 +790,7 @@ mod tests {
 
     fn shadow_mask_world(count: usize) -> WorldMesh {
         WorldMesh {
+            spatial_query_cache: Default::default(),
             meshes: Vec::new(),
             matrices: Vec::new(),
             objects: Vec::new(),

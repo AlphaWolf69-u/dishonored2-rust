@@ -203,7 +203,7 @@ pub(super) struct ParallelShadowCpu {
     projection_cache: Vec<query_cache::ProjectionMaskCache>,
     masks: Option<ShadowInstanceMasks>,
     gather_count: usize,
-    world_query: Option<crate::local_caster_query::LocalWorldQuery>,
+    world_query: Option<Arc<crate::local_caster_query::LocalWorldQuery>>,
     shadow_extent: crate::rendering::environment::EnvironmentScalar,
     last_shadow_extent: Option<f32>,
     static_frames: Vec<Option<Arc<StaticShadowFrame>>>,
@@ -1804,9 +1804,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
             )?;
         }
         if cpu.world_query.is_none() {
-            cpu.world_query = Some(crate::local_caster_query::LocalWorldQuery::new(
-                &scene.world,
-            ));
+            cpu.world_query = Some(scene.world.spatial_query());
             cpu.projection_cache.clear();
         }
         let broad_span = profile.as_deref().map(|p| p.measure(41));

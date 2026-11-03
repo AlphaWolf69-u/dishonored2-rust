@@ -89,3 +89,15 @@ The R8 format change saves 75% at the same atlas dimensions; the stage cap is
 an additional fidelity correction, not included in that saving. The installed
 pause movie retains 252 vertices, 16 batches, nine lazy outlines and pixel hash
 `4ea5cd8f67a25f61083190ac3c60c2d90dd988fba7b29265d33c97aaf04a3a3c`.
+
+WORLD query ownership prediction: sunlight and local shadows require two
+identical immutable trees; projected decals add a third consumer. Sharing the
+WORLD resource's lazily prepared `295fa0` tree predicts 2 -> 1 constructions
+without decals and 3 -> 1 with decals, without changing bounds or predicates.
+
+WORLD query acquisition, same debug-allocation build, installed EotW WORLD:
+200 factory calls, three retained consumers: 3 -> 1 distinct trees,
+13,864,920 -> 4,622,536 live requested bytes (66.7% reduction, as predicted).
+Acquisition: 22,974,652 -> 118,445 microseconds over 200 requests (dev profile,
+not a release timing claim). Both modes: 200 queries, 11,949 hits and hash
+`73b8970a1d4d2c0890e42fd88ea60975f1631bef2679a6103e42828e7a935bc1`.

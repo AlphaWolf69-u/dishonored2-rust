@@ -99,7 +99,7 @@ fn run() -> Result<()> {
     let base = Path::new(&args[2]);
     let entries = load_catalog(base)?;
     match args[1].as_str() {
-        "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" => {
+        "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-world-queries" => {
             resource_audit::run(&args[1], base, &args[3..])?;
         }
         "summary" => {

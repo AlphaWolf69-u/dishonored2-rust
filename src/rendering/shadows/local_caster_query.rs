@@ -95,6 +95,7 @@ struct Node {
     right: Option<Box<Node>>,
 }
 
+#[derive(Debug)]
 pub struct LocalWorldQuery {
     bounds: Vec<[[f32; 3]; 2]>,
     ids: Vec<u32>,

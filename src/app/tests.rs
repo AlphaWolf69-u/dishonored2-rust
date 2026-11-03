@@ -347,6 +347,7 @@ fn world_shadow_test_world() -> world_mesh::WorldMesh {
         ]
     };
     world_mesh::WorldMesh {
+        spatial_query_cache: Default::default(),
         meshes: vec![world_mesh::Mesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
@@ -7762,6 +7763,7 @@ fn roof_point_diagnostic_reports_authored_tome_records() {
         query_pool: None,
     };
     let empty_world = world_mesh::WorldMesh {
+        spatial_query_cache: Default::default(),
         meshes: Vec::new(),
         matrices: Vec::new(),
         visibility: Vec::new(),
@@ -8626,6 +8628,7 @@ fn post_merge_spatial_list_overwrites_visibility_and_clears_area_metrics() {
         [[8.0, 0.0, 0.0], [9.0, 1.0, 1.0]],
     ];
     let world = world_mesh::WorldMesh {
+        spatial_query_cache: Default::default(),
         meshes: Vec::new(),
         matrices: vec![[0.0; 12]; 3],
         visibility: bounds
@@ -8719,6 +8722,7 @@ fn authored_id_dispatch_uses_group_emptiness_and_unsigned_sort() {
 #[test]
 fn sightline_identifies_bwm_surface_and_instance() {
     let world = world_mesh::WorldMesh {
+        spatial_query_cache: Default::default(),
         meshes: vec![world_mesh::Mesh {
             positions: vec![[-1.0, 2.0, -1.0], [1.0, 2.0, -1.0], [0.0, 2.0, 1.0]],
             uvs: vec![],

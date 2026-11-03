@@ -9,6 +9,43 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-world-queries" => {
+            let path = args.first().ok_or("inspect-world-queries requires a WORLD resource")?;
+            let unshared = args.get(1).is_some_and(|value| value == "unshared");
+            env::set_var("DH2_DEBUG_UNSHARED_WORLD_QUERIES", if unshared { "1" } else { "0" });
+            let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+            let bytes = catalog.read(path)?.ok_or("WORLD resource absent")?;
+            let world = dishonored2_rust::world_mesh::parse(&bytes)?;
+            let before = dishonored2_rust::platform::allocation_tags::report().into_iter()
+                .find(|(name, _)| *name == "WORLD spatial queries").map_or(0, |(_, bytes)| bytes);
+            let mut owners = Vec::new();
+            let start = std::time::Instant::now();
+            for round in 0..200 {
+                let query = world.spatial_query();
+                if round < 3 { owners.push(query); }
+                else { std::hint::black_box(query); }
+            }
+            let acquisition = start.elapsed();
+            let unique = owners.iter().map(|query| std::sync::Arc::as_ptr(query) as usize)
+                .collect::<std::collections::HashSet<_>>().len();
+            let acquired_bytes = dishonored2_rust::platform::allocation_tags::report().into_iter()
+                .find(|(name, _)| *name == "WORLD spatial queries").map_or(0, |(_, bytes)| bytes) - before;
+            // Real WORLD bounds exercise the unchanged original query path.
+            // This reports outputs/costs; it supplies no invented expected values.
+            let mut hash = blake3::Hasher::new();
+            let start = std::time::Instant::now();
+            let mut hits = 0;
+            let mut queries = 0;
+            for record in world.visibility.iter().take(200) {
+                let volume = dishonored2_rust::rendering::bounds::OrientedBox::from_aabb(record.bounds);
+                let mask = owners[0].query_box(record.bounds, &volume);
+                hits += mask.iter().filter(|&&value| value != 0).count();
+                queries += 1;
+                hash.update(&mask);
+            }
+            println!("mode={} requests=200 live_consumers=3 distinct_live_trees={unique} acquired_bytes={acquired_bytes} acquisition_us={} queries={queries} query_us={} hits={hits} output_hash={}",
+                if unshared { "unshared" } else { "shared" }, acquisition.as_micros(), start.elapsed().as_micros(), hash.finalize());
+        }
         "inspect-ui-fonts" => {
             use dishonored2_rust::flash::{raster::Images, render, Player};
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
