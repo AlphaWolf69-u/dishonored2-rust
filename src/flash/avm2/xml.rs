@@ -128,7 +128,7 @@ fn string_value(vm: &mut Vm, v: &Value) -> String {
 
 pub fn xml_value(vm: &Vm, n: Rc<XmlNode>) -> Value {
     let class = vm.b().xml.clone();
-    Value::Object(Obj::new(ObjectData {
+    Value::Object(vm.new_object(ObjectData {
         class: Some(class.clone()),
         traits: Some(class.instance.clone()),
         kind: Kind::Xml(n),
@@ -138,7 +138,7 @@ pub fn xml_value(vm: &Vm, n: Rc<XmlNode>) -> Value {
 
 fn list(vm: &Vm, items: Vec<Value>) -> Value {
     let class = vm.b().xml_list.clone();
-    Value::Object(Obj::new(ObjectData {
+    Value::Object(vm.new_object(ObjectData {
         class: Some(class.clone()),
         traits: Some(class.instance.clone()),
         kind: Kind::XmlList(items),

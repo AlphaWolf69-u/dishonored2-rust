@@ -329,7 +329,6 @@ struct GeometryGpu {
 struct MaterialGpu {
     _source: Arc<ParticleMaterial>,
     _parameters: UniformBuffer<MaterialParameters>,
-    _images: Vec<Texture>,
     binding: BindGroup,
     pipeline: RenderPipeline,
 }
@@ -337,6 +336,7 @@ struct MaterialGpu {
 /// Allocations are bounded by the admitted declaration's capacity and sprite
 /// count. Construct a new owner when changing level or target formats.
 pub struct ParticlePass {
+    images: super::particle_images::ParticleImagesGpu,
     view: UniformBuffer<ViewParameters>,
     fog_view: UniformBuffer<FogViewParameters>,
     instances: Buffer,
@@ -798,6 +798,7 @@ impl ParticlePass {
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             _unused_cube: unused_cube,
             unused_cube_view,
+            images: Default::default(),
             materials: HashMap::new(),
             material_sampler: None,
             view_bindings: None,
@@ -810,7 +811,7 @@ impl ParticlePass {
     }
 
     fn material(
-        &self,
+        &mut self,
         device: &RenderDevice,
         queue: &RenderQueue,
         source: Arc<ParticleMaterial>,
@@ -821,11 +822,12 @@ impl ParticlePass {
         let accumulation = accumulation && !source.distortion;
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
-        let mut images = Vec::new();
         let mut views = HashMap::new();
         for (name, image) in &source.images {
-            let texture = device.create_texture_with_data(
+            let view = self.images.acquire(
+                device,
                 queue,
+                image,
                 &TextureDescriptor {
                     label: Some(&source.name),
                     size: Extent3d {
@@ -843,15 +845,16 @@ impl ParticlePass {
                 TextureDataOrder::LayerMajor,
                 &image.payload,
             );
-            views.insert(name.as_str(), texture.create_view(&default()));
-            images.push(texture);
+            views.insert(name.as_str(), view);
         }
         let opacity = views
             .get("fx/opacity")
             .ok_or("particle opacity image absent")?;
         let volume_view = if let Some(volume) = &source.volume {
-            let texture = device.create_texture_with_data(
+            let view = self.images.acquire(
+                device,
                 queue,
+                volume,
                 &TextureDescriptor {
                     label: Some(&source.name),
                     size: Extent3d {
@@ -869,15 +872,15 @@ impl ParticlePass {
                 TextureDataOrder::MipMajor,
                 &volume.payload,
             );
-            let view = texture.create_view(&default());
-            images.push(texture);
             Some(view)
         } else {
             None
         };
         let distortion_volume_view = if let Some(volume) = &source.distortion_volume {
-            let texture = device.create_texture_with_data(
+            let view = self.images.acquire(
+                device,
                 queue,
+                volume,
                 &TextureDescriptor {
                     label: Some(&source.name),
                     size: Extent3d {
@@ -895,8 +898,6 @@ impl ParticlePass {
                 TextureDataOrder::MipMajor,
                 &volume.payload,
             );
-            let view = texture.create_view(&default());
-            images.push(texture);
             Some(view)
         } else {
             None
@@ -1101,7 +1102,6 @@ impl ParticlePass {
         Ok(MaterialGpu {
             _source: source,
             _parameters: parameters,
-            _images: images,
             binding,
             pipeline,
         })
@@ -1216,25 +1216,24 @@ impl ParticlePass {
         {
             return Err("particle surface maps await the canonical anisotropic sampler".into());
         }
-        let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap);
-        if self.material_sampler != Some(surface_sampler.id()) {
+        let sampler_id = input.surface_sampler.unwrap_or(&self.wrap).id();
+        if self.material_sampler != Some(sampler_id) {
             self.materials.clear();
-            self.material_sampler = Some(surface_sampler.id());
+            self.material_sampler = Some(sampler_id);
         }
         for draw in draws {
             let key = (draw.material.name.clone(), draw.state);
             if !self.materials.contains_key(&key) {
-                self.materials.insert(
-                    key,
-                    self.material(
+                let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
+                let material = self.material(
                         device,
                         queue,
                         draw.material.clone(),
                         draw.state,
                         accumulation,
-                        surface_sampler,
-                    )?,
-                );
+                        &surface_sampler,
+                    )?;
+                self.materials.insert(key, material);
             }
         }
         let position = input.matrices.position;

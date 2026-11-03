@@ -114,6 +114,14 @@ pub struct Player {
     pub state: Shared,
 }
 
+impl Drop for Player {
+    fn drop(&mut self) {
+        // No callbacks run after movie close. Release player roots before the
+        // VM breaks runtime cycles; shared immutable libraries keep their owner.
+        *self.state.borrow_mut() = PlayerState::default();
+    }
+}
+
 impl Player {
     pub fn new(stage_size: (f64, f64), frame_rate: f64) -> Result<Self> {
         let mut vm = Vm::new();

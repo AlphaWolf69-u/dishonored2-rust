@@ -216,11 +216,11 @@ pub fn install(vm: &mut Vm) {
     vm.native_report.extend(report);
     for c in [&object, &class, &function] {
         let proto_parent = c.super_class.as_ref().map(|s| s.prototype());
-        let proto = Obj::new(ObjectData::plain(proto_parent));
+        let proto = vm.new_object(ObjectData::plain(proto_parent));
         *c.prototype.borrow_mut() = Some(proto);
     }
     for c in [&object, &class, &function] {
-        let o = Obj::new(ObjectData {
+        let o = vm.new_object(ObjectData {
             class: Some(class.clone()),
             traits: Some(c.statics.clone()),
             kind: Kind::Class(c.clone()),
@@ -422,14 +422,14 @@ pub fn native_globals(vm: &mut Vm) -> Obj {
         traits.slots.push(Some(super::object::Slot { name: q.clone(), type_name: 0, unit: None, default: v.clone(), constant: true }));
         slots.push(v.clone());
     }
-    let holder = Obj::new(ObjectData { traits: Some(Rc::new(traits)), slots, ..ObjectData::plain(None) });
+    let holder = vm.new_object(ObjectData { traits: Some(Rc::new(traits)), slots, ..ObjectData::plain(None) });
     vm.native_holder = Some(holder.clone());
     holder
 }
 
 pub fn namespace_object(vm: &mut Vm, ns: Namespace) -> Value {
     let class = vm.b().namespace.clone();
-    Value::Object(Obj::new(ObjectData {
+    Value::Object(vm.new_object(ObjectData {
         class: Some(class.clone()),
         traits: Some(class.instance.clone()),
         kind: Kind::Namespace(ns),
@@ -731,7 +731,7 @@ fn like(vm: &mut Vm, this: &Value, items: Vec<Value>) -> Value {
             let element = v.element.clone();
             drop(d);
             let class = class.unwrap_or_else(|| vm.b().vector.clone());
-            return Value::Object(Obj::new(ObjectData {
+            return Value::Object(vm.new_object(ObjectData {
                 class: Some(class.clone()),
                 traits: Some(class.instance.clone()),
                 kind: Kind::Vector(Vector { element, fixed: false, items }),

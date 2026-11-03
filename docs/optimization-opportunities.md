@@ -5,6 +5,53 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+Resource lifetime audit follow-ups (full owner inventory and evidence in
+`resource-lifetimes.md`):
+
+- Surface, resident UI/postprocess and particle image registries still have
+  separate identity domains. Joining them can remove duplicate compiled chains
+  and GPU textures for paths requested by several domains, and connect particle
+  finer-mip demand to streaming. Saving is the intersection of their live path
+  sets, not the sum of their allocations; that intersection has not been
+  measured. Preserve dimensional fallbacks, per-use samplers, mip demand and
+  readiness gates before consolidating.
+- Wwise type-2 source preparation reads the whole encoded media to obtain its
+  format/index; active playback also holds a whole encoded file rather than a
+  bounded incremental IO buffer. Type-1 prefetch keeps the full media (earlier
+  EotW measurement: 13 sources, roughly 1 MiB) to avoid start latency. Expected
+  saving is unused encoded media beyond the required prefix/read-ahead window.
+  Proper incremental Vorbis packet indexing and IO readiness need tracing;
+  synchronous file reads or page faults on the audio callback would sacrifice
+  performance. Do not replace this with eager PCM expansion.
+- `assets::wwise::vorbis` setup/header caches retain encountered codebooks across
+  maps. Measure unused decoded setups after map-bank release before choosing
+  eviction: live media must keep shared headers and cross-event setup decoding
+  must remain once per identity. The retained codebook byte count is not yet
+  measured, so no MB claim is assigned.
+- `assets::map_resources` retains source and combined manifest descriptor lists
+  per visited map. A weak combined-list registry can remove duplicate request
+  strings after their last active consumer releases them, without repeating
+  source index reads. Quantify descriptor bytes and map-return combination CPU
+  before changing the cache; payload ownership is separate from these lists.
+- Closed-movie AVM2 cycles are now reclaimed. Cyclic garbage during a long-lived
+  movie is still not collected; expected saving depends on unreachable objects
+  accumulated by that actual movie. Obtain a retained-object trace before
+  implementing collection. Resetting a live VM or dropping AS3 event listeners
+  would change behavior. Existing teardown takes under 3 ms on the UI worker;
+  its repeated empty class-scope allocations are a smaller follow-up than live
+  runtime collection and need targeted teardown attribution.
+- `bevy_backend::particle_pass` rebuilds pipelines/uniforms as well as bindings
+  on surface-sampler changes. Image uploads are now reused. Reusing compatible
+  pipelines could remove one creation per affected material/state on that rare
+  transition; measure those creations before splitting this cache. No new
+  per-frame scanning or locking should be introduced.
+- Some backend caches retain the last view's bindings/area-light handles until
+  destination preparation replaces them, while viewport capacity intentionally
+  persists. Trace the outgoing-world boundary separately from settled memory
+  before tightening release: expected gain is a lower transition peak, not a
+  steady-state saving. Keep compiled pipelines and reusable viewport capacity;
+  existing shadow static-cache accumulation was already fixed and measured.
+
 - Wwise playback preparation repeatedly parses/clones parent property chains
   into event graphs (`assets::wwise::playback::media_properties`,
   `app::audio::graph::Definition::decode`). The load attribution includes
@@ -161,10 +208,12 @@ batch or one oversized asset/variant, rather than the whole map. The loading
 gate stays closed until the unchanged resource set is complete. A diagnostic
 switch restores unbounded acquisition in the same binary for comparison.
 
-Particle GPU materials currently own textures per material/state variant;
-sharing those image identities requires a lifecycle change through the particle
-image owner and per-tag original measurements. No resident-memory saving is
-claimed for the scheduling change; reducing that duplication remains separate.
+Particle image duplication was fixed by the resource lifetime audit: level-scoped
+compiled chains and one backend texture per acquired identity, independently of
+material/state/sampler. Release EotW: 190 -> 59 uploads, 43,785,808 -> 16,046,296
+uploaded bytes, image acquisition/upload CPU 37.240 -> 11.323 ms. The common
+image-registry baseline and per-tag original snapshot are recorded in
+`resource-lifetimes.md`; cross-family image identity/streaming remains partial.
 
 The transition trace (`loading-teardown`) disproves the hypothesis that deep
 world-resource destruction causes the remaining one-second blank interval:

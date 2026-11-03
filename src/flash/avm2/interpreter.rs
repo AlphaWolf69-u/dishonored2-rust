@@ -287,7 +287,7 @@ fn has_next(vm: &Vm, object: &mut Value, index: &mut u32) {
     }
 }
 
-fn catch_scope(handler: &super::unit::Handler, unit: &Rc<Unit>) -> Obj {
+fn catch_scope(vm: &Vm, handler: &super::unit::Handler, unit: &Rc<Unit>) -> Obj {
     let mut traits = Traits::default();
     traits.slots.push(None);
     if let Some(q) = unit.pools.qname(handler.variable) {
@@ -295,7 +295,7 @@ fn catch_scope(handler: &super::unit::Handler, unit: &Rc<Unit>) -> Obj {
         traits.bindings.insert(q, super::object::Binding::Slot(1));
     }
     let traits = Rc::new(traits);
-    Obj::new(ObjectData { slots: traits.initial_slots(), traits: Some(traits), ..ObjectData::plain(None) })
+    vm.new_object(ObjectData { slots: traits.initial_slots(), traits: Some(traits), ..ObjectData::plain(None) })
 }
 
 pub fn run(
@@ -674,7 +674,7 @@ fn step(vm: &mut Vm, f: &mut Frame, body: &super::unit::Body, pc: &mut usize) ->
         }
         Op::NewActivation => {
             let traits = body.activation.clone();
-            let o = Obj::new(ObjectData { slots: traits.initial_slots(), traits: Some(traits), ..ObjectData::plain(None) });
+            let o = vm.new_object(ObjectData { slots: traits.initial_slots(), traits: Some(traits), ..ObjectData::plain(None) });
             f.push(o);
         }
         Op::NewObject { num_args } => {
@@ -704,7 +704,7 @@ fn step(vm: &mut Vm, f: &mut Frame, body: &super::unit::Body, pc: &mut usize) ->
         }
         Op::NewCatch { index } => {
             let h = &body.handlers[index.0 as usize];
-            f.push(catch_scope(h, unit));
+            f.push(catch_scope(vm, h, unit));
         }
         Op::FindPropStrict { index } | Op::FindProperty { index } | Op::FindDef { index } => {
             let operand = resolve(vm, f, index.0)?;

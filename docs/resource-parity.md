@@ -6,6 +6,12 @@ Status words: `ported`, `verified` (against a capture or the original's
 output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 `partial`, `none`.
 
+The cross-family ownership audit, including intentional performance-oriented
+differences, current release scopes and unresolved streaming gaps, is in
+[`resource-lifetimes.md`](resource-lifetimes.md). Original allocation budgets
+remain the baseline; the user also authorizes improvements that preserve
+behavior and improve performance/memory rather than copying inefficiencies.
+
 ## Classes
 
 ### Resource manager (all classes)
@@ -14,7 +20,7 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 |---|---|---|
 | `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` records reads, actual manifest progress and readiness gates; `app::loading_screen` presents bootstrap/map stages in one renderer; the rewrite's loads are not driven by the lists yet |
 | `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | blocked: vfunc `+0xb0` (map name to container id) not traced |
-| "%i streamed" entries | some listed resources are registered for streaming rather than loaded | blocked: trace which entries count as streamed |
+| "%i streamed" entries (`140066ac0`-`140066b8c`) | the map preloader skips index flag `0x20` and `.sbcm`/`.tbcm`/`.bwm` records | partial: classification traced in installed instructions; `140068800` reads the index flags into record+`0x4a0`. In installed `game1_001.index`, 6,952 flagged records are image mips (6,476), Iggy (350) and generic files (126). This does not imply that every ordinary placed mesh is spatially streamed. Typed rewrite owners request these payloads themselves; unified registry-driven loading remains partial |
 
 ### Image (`idImage`)
 
@@ -26,6 +32,7 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 | `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | partial: `app::texture_streaming` uses its own request and residency rules, not the original's |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
 | `listImages` | the original's image listing (sizes, classes) | capture pending |
+| `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Cross-family scene/UI/particle identity unification and particle finer-mip streaming remain partial |
 
 ### Sound (Wwise)
 
@@ -156,6 +163,18 @@ trailing `*` covers a family of kinds.
 | `menuSectionOption*` | `gameplay::options` | partial |
 
 ### Loading presentation and shared UI acquisitions
+
+Closed movie runtime: `flash::avm2::{Vm,heap::Heap,unit::Unit}` owns per-player
+objects, classes, methods and decoded bodies. Original `1410298b0` tears down
+the VM through `1410629a0` / `141086460` and releases its allocator; ordinary
+Rust `Rc` drops did not release function/prototype/constructor and unit cycles.
+Host: weak per-VM allocation tracking, explicit object/class edge teardown and
+unit cache release on movie close. Immutable Iggy/ABC/library images keep their
+existing shared owners. Verified normal release client EotW -> Dust -> EotW:
+cleanup disabled leaves 3,722 / 3,723 / 3,722 tracked movie objects alive;
+cleanup enabled leaves zero after each close (2.697 / 2.930 / 2.849 ms on the
+UI worker). No gameplay render work is added. This is movie teardown, not a
+claim that live-movie cyclic garbage collection has been implemented.
 
 | Original | Owner / behavior | Status |
 |---|---|---|

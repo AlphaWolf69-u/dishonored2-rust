@@ -34,6 +34,7 @@ pub struct Body {
 }
 
 pub struct Unit {
+    heap: std::cell::OnceCell<std::rc::Weak<super::heap::Heap>>,
     pub id: u32,
     pub abc: Rc<AbcFile>,
     pub pools: Pools,
@@ -53,6 +54,23 @@ impl std::fmt::Debug for Unit {
 }
 
 impl Unit {
+    pub(super) fn set_heap(&self, heap: std::rc::Weak<super::heap::Heap>) {
+        let _ = self.heap.set(heap);
+    }
+
+    pub(super) fn release_runtime(&self) {
+        self.classes.borrow_mut().clear();
+        self.methods.borrow_mut().clear();
+        self.bodies.borrow_mut().clear();
+    }
+
+    fn new_object(&self, data: super::object::ObjectData) -> super::object::Obj {
+        match self.heap.get().and_then(std::rc::Weak::upgrade) {
+            Some(heap) => heap.allocate(data),
+            None => super::object::Obj::new(data),
+        }
+    }
+
     pub fn new(id: u32, abc: AbcFile) -> Rc<Self> {
         Self::with_namespace_class(id, abc, None)
     }
@@ -71,6 +89,7 @@ impl Unit {
         }
         let classes = RefCell::new(vec![None; abc.classes.len()]);
         Rc::new(Unit {
+            heap: Default::default(),
             id,
             abc,
             pools,
@@ -246,7 +265,7 @@ impl Unit {
             | DefaultValue::Private(i) => {
                 let ns = self.pools.namespace(i.0);
                 match &self.namespace {
-                    Some(class) => Value::Object(super::object::Obj::new(super::object::ObjectData {
+                    Some(class) => Value::Object(self.new_object(super::object::ObjectData {
                         class: Some(class.clone()),
                         traits: Some(class.instance.clone()),
                         kind: super::object::Kind::Namespace(ns),

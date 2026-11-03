@@ -42,7 +42,7 @@ pub fn assign_transform(vm: &mut Vm, o: &Obj, t: &Value) -> Result<()> {
 fn number_vector(vm: &mut Vm, values: &[f64]) -> Result<Value> {
     let number = vm.b().number.clone();
     let class = vm.vector_class(Some(number))?;
-    Ok(Value::Object(Obj::new(super::avm2::object::ObjectData {
+    Ok(Value::Object(vm.new_object(super::avm2::object::ObjectData {
         class: Some(class.clone()),
         traits: Some(class.instance.clone()),
         kind: Kind::Vector(Vector { element: class.applied.clone().flatten(), fixed: false, items: values.iter().map(|v| Value::from(*v)).collect() }),

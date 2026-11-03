@@ -19,6 +19,7 @@ use std::{
 /// original declarations/resources are immutable; only emitters own simulation
 /// state. These host caches never share a particle's age, RNG or pool slot.
 pub struct ParticleResources {
+    images: super::image_resources::ParticleImages,
     declarations: HashMap<String, Result<Arc<particle_declaration::ParticleDeclaration>, String>>,
     models: HashMap<String, Arc<crate::assets::particle_model::ParticleModel>>,
     field_images: HashMap<String, Arc<crate::assets::fx::particle_field::FieldPixels>>,
@@ -34,6 +35,7 @@ pub struct ParticleResources {
 impl Default for ParticleResources {
     fn default() -> Self {
         Self {
+            images: Default::default(),
             declarations: Default::default(),
             models: Default::default(),
             field_images: Default::default(),
@@ -228,7 +230,7 @@ impl ParticleDefinition {
                         resources.material_reads += 1;
                         resources.materials.insert(
                             key.clone(),
-                            Arc::new(ParticleMaterial::load(catalog, library, name)?),
+                            Arc::new(ParticleMaterial::load_shared(catalog, library, name, &mut resources.images)?),
                         );
                     }
                     materials.insert(name.clone(), resources.materials[&key].clone());

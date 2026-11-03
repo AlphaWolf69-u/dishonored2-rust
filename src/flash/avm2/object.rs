@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-/// A garbage-free reference to an AS3 object. Identity is pointer identity.
+/// A reference to an AS3 object. Identity is pointer identity; its VM owns
+/// teardown of reference cycles through `heap::Heap`.
 #[derive(Clone)]
 pub struct Obj(Rc<RefCell<ObjectData>>);
 
@@ -42,6 +43,10 @@ impl std::hash::Hash for Obj {
 impl Obj {
     pub fn new(data: ObjectData) -> Self {
         Obj(Rc::new(RefCell::new(data)))
+    }
+
+    pub(super) fn downgrade(&self) -> std::rc::Weak<RefCell<ObjectData>> {
+        Rc::downgrade(&self.0)
     }
 
     pub fn borrow(&self) -> Ref<'_, ObjectData> {

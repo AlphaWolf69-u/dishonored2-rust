@@ -4,6 +4,7 @@
 //! rules that Iggy's verifier and interpreter implement; Iggy-specific
 //! behavior is cited where the executable defines it.
 pub mod builtins;
+mod heap;
 mod interpreter;
 pub mod name;
 pub mod native_class;
@@ -77,6 +78,7 @@ pub struct Builtins {
 }
 
 pub struct Vm {
+    heap: Rc<heap::Heap>,
     pub units: Vec<Rc<Unit>>,
     scripts: Vec<Rc<Script>>,
     /// Script-defined names in load order of their defining scripts.
@@ -111,6 +113,7 @@ pub struct Vm {
 impl Vm {
     pub fn new() -> Self {
         let mut vm = Vm {
+            heap: Rc::default(),
             units: Vec::new(),
             scripts: Vec::new(),
             definitions: HashMap::new(),
@@ -135,6 +138,10 @@ impl Vm {
 
     pub fn b(&self) -> &Builtins {
         self.builtins.as_ref().expect("builtins installed")
+    }
+
+    pub(crate) fn new_object(&self, data: ObjectData) -> Obj {
+        self.heap.allocate(data)
     }
 
     // ---- errors ----
@@ -202,11 +209,12 @@ impl Vm {
 
     pub fn load_shared_abc(&mut self, parsed: Rc<swf::avm2::types::AbcFile>) -> Result<Rc<Unit>> {
         let unit = Unit::with_shared_abc(self.units.len() as u32, parsed, Some(self.b().namespace.clone()));
+        unit.set_heap(Rc::downgrade(&self.heap));
         self.units.push(unit.clone());
         for (index, script) in unit.abc.scripts.iter().enumerate() {
             let traits = unit::build_traits(&unit, &script.traits, None)?;
             let traits = Rc::new(traits);
-            let global = Obj::new(ObjectData {
+            let global = self.new_object(ObjectData {
                 slots: traits.initial_slots(),
                 traits: Some(traits.clone()),
                 proto: Some(self.b().object.prototype()),
@@ -310,7 +318,7 @@ impl Vm {
 
     pub fn plain_object(&self) -> Obj {
         let object = self.b().object.clone();
-        Obj::new(ObjectData {
+        self.new_object(ObjectData {
             class: Some(object.clone()),
             traits: Some(object.instance.clone()),
             ..ObjectData::plain(Some(object.prototype()))
@@ -319,7 +327,7 @@ impl Vm {
 
     pub fn array(&self, items: Vec<Value>) -> Obj {
         let array = self.b().array.clone();
-        Obj::new(ObjectData {
+        self.new_object(ObjectData {
             class: Some(array.clone()),
             traits: Some(array.instance.clone()),
             kind: Kind::Array(items),
@@ -330,7 +338,7 @@ impl Vm {
     pub fn function(&self, method: Rc<Method>, scope: Rc<[Scope]>, this: Option<Value>) -> Obj {
         let function = self.b().function.clone();
         let proto = self.plain_object();
-        let f = Obj::new(ObjectData {
+        let f = self.new_object(ObjectData {
             class: Some(function.clone()),
             traits: Some(function.instance.clone()),
             kind: Kind::Function(Function { method, scope, this }),
@@ -354,11 +362,11 @@ impl Vm {
         // Base-less classes (interfaces) still chain to Object.prototype.
         let object_proto = self.builtins.as_ref().map(|b| b.object.prototype());
         let proto_parent = class.super_class.as_ref().map(|s| s.prototype()).or(object_proto);
-        let prototype = Obj::new(ObjectData {
+        let prototype = self.new_object(ObjectData {
             class: self.builtins.as_ref().map(|b| b.object.clone()),
             ..ObjectData::plain(proto_parent)
         });
-        let object = Obj::new(ObjectData {
+        let object = self.new_object(ObjectData {
             class: class_class.clone(),
             slots: class.statics.initial_slots(),
             traits: Some(class.statics.clone()),
@@ -1042,7 +1050,7 @@ impl Vm {
                 _ => Some(self.b().object.prototype()),
             };
             let class = self.b().object.clone();
-            let object = Obj::new(ObjectData { traits: Some(class.instance.clone()), class: Some(class), ..ObjectData::plain(proto) });
+            let object = self.new_object(ObjectData { traits: Some(class.instance.clone()), class: Some(class), ..ObjectData::plain(proto) });
             let r = self.call(ctor, Value::Object(object.clone()), args)?;
             return Ok(match r {
                 Value::Object(_) => r,
@@ -1068,7 +1076,7 @@ impl Vm {
             Some((_, alloc)) => alloc(self, class)?,
             None => Kind::Plain,
         };
-        Ok(Obj::new(ObjectData {
+        Ok(self.new_object(ObjectData {
             class: Some(class.clone()),
             traits: Some(class.instance.clone()),
             proto: Some(class.prototype()),
@@ -1315,6 +1323,25 @@ fn dictionary_set(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) {
     match entries.iter_mut().find(|(k, _)| dictionary_key_eq(k, &key)) {
         Some(e) => e.1 = value,
         None => entries.push((key, value)),
+    }
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        let cleanup = std::env::var("DH2_DEBUG_RETAIN_UI_RUNTIME").as_deref() != Ok("1");
+        if cleanup {
+            for unit in &self.units { unit.release_runtime(); }
+            self.scripts.clear();
+            self.definitions.clear();
+            self.natives.clear();
+            self.vectors.clear();
+            self.native_holder = None;
+            self.table_classes.clear();
+            self.builtins = None;
+            self.units.clear();
+            self.host = Box::new(());
+        }
+        self.heap.release(cleanup);
     }
 }
 

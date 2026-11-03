@@ -142,6 +142,15 @@ impl ParticleMaterial {
         library: &mut ProgramLibrary,
         name: &str,
     ) -> Result<Self, String> {
+        Self::load_shared(catalog, library, name, &mut super::image_resources::ParticleImages::default())
+    }
+
+    pub(crate) fn load_shared(
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        name: &str,
+        image_resources: &mut super::image_resources::ParticleImages,
+    ) -> Result<Self, String> {
         let path = format!(
             "generated/decls/material/{}.decl",
             name.to_ascii_lowercase()
@@ -275,7 +284,7 @@ impl ParticleMaterial {
             let source = scopes.image_source(image)?;
             images.insert(
                 image.to_ascii_lowercase(),
-                Arc::new(crate::material::load_2d_image(catalog, &source)?),
+                image_resources.image(catalog, &source)?,
             );
         }
         let lighting = if !distortion && options["fx/opt/use_lighting"] != 0 {
@@ -349,10 +358,7 @@ impl ParticleMaterial {
                     if enabled {
                         images.insert(
                             image.to_ascii_lowercase(),
-                            Arc::new(crate::material::load_2d_image(
-                                catalog,
-                                &scopes.image_source(image)?,
-                            )?),
+                            image_resources.image(catalog, &scopes.image_source(image)?)?,
                         );
                     }
                 }
@@ -374,10 +380,7 @@ impl ParticleMaterial {
                     if enabled {
                         images.insert(
                             image.to_ascii_lowercase(),
-                            Arc::new(crate::material::load_2d_image(
-                                catalog,
-                                &scopes.image_source(image)?,
-                            )?),
+                            image_resources.image(catalog, &scopes.image_source(image)?)?,
                         );
                     }
                 }
@@ -428,10 +431,7 @@ impl ParticleMaterial {
                 if enabled {
                     images.insert(
                         name.to_ascii_lowercase(),
-                        Arc::new(crate::material::load_2d_image(
-                            catalog,
-                            &scopes.image_source(name)?,
-                        )?),
+                        image_resources.image(catalog, &scopes.image_source(name)?)?,
                     );
                 }
             }
@@ -439,10 +439,7 @@ impl ParticleMaterial {
                 if enabled {
                     images.insert(
                         name.to_ascii_lowercase(),
-                        Arc::new(crate::material::load_2d_image(
-                            catalog,
-                            &scopes.image_source(name)?,
-                        )?),
+                        image_resources.image(catalog, &scopes.image_source(name)?)?,
                     );
                 }
             }
@@ -472,15 +469,12 @@ impl ParticleMaterial {
             None
         };
         let volume = if options["fx/opt/use_flipbook"] != 0 {
-            Some(Arc::new(crate::material::load_3d_image(
-                catalog,
-                &scopes.image_source("fx/flipbook")?,
-            )?))
+            Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbook")?)?)
         } else {
             None
         };
         let distortion_volume = if distortion && options["fx/opt/use_flipbook"] != 0 {
-            Some(Arc::new(crate::material::load_3d_image(catalog, &scopes.image_source("fx/flipbooknormals")?)?))
+            Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbooknormals")?)?)
         } else { None };
         Ok(Self {
             name: name.to_owned(),
