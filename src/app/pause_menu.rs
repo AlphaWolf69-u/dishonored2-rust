@@ -53,6 +53,7 @@ enum Command {
 }
 
 enum Event {
+    TexturePending,
     Frame(FlashFrame),
     Sound(u32),
     Resume,
@@ -142,6 +143,7 @@ impl Loaded {
 pub struct PauseMenu {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    textures: Receiver<super::resident_images::UiTextureRequest>,
     open: bool,
     /// The screen size the next player was last prepared for.
     prepared_for: Option<(i32, i32)>,
@@ -164,16 +166,27 @@ impl Default for PauseMenu {
     fn default() -> Self {
         let (commands, inbox) = channel();
         let (outbox, events) = channel();
+        let (texture_sender, textures) = channel();
         std::thread::Builder::new()
             .name("pause movie".into())
             .stack_size(256 << 20)
-            .spawn(move || run(inbox, outbox))
+            .spawn(move || {
+                let notify = outbox.clone();
+                crate::flash::iggy_functions::set_texture_resolver(Box::new(move |name| {
+                    let (reply, response) = std::sync::mpsc::sync_channel(1);
+                    texture_sender.send(super::resident_images::UiTextureRequest { name: name.to_owned(), reply }).map_err(|e| e.to_string())?;
+                    notify.send(Event::TexturePending).map_err(|e| e.to_string())?;
+                    response.recv().map_err(|e| e.to_string())?
+                }));
+                run(inbox, outbox);
+            })
             .expect("pause movie thread");
-        Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None) }
+        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None) }
     }
 }
 
 impl PauseMenu {
+    pub(super) fn texture_requests(&self) -> impl Iterator<Item = super::resident_images::UiTextureRequest> + '_ { self.textures.try_iter() }
     pub(super) fn start_loading(&self, screen: (i32, i32), map: String) -> Receiver<Result<super::loading_movie::Frame, String>> {
         let (frames, receive) = channel();
         let _ = self.commands.send(Command::Loading { screen, map, frames });
@@ -598,6 +611,7 @@ pub fn update_pause_menu(
     mut exit: MessageWriter<AppExit>,
     mut screen_fx: Option<ResMut<super::pause_fx::PauseScreenFx>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
+    mut image_service: super::resident_images::UiImageService,
 ) {
     let menu = &mut *menu;
     // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
@@ -722,6 +736,7 @@ pub fn update_pause_menu(
             Err(_) => break,
         };
         match event {
+            Event::TexturePending => image_service.service(menu, &loading.catalog),
             Event::Frame(f) if menu.open => {
                 framed = true;
                 menu.ready = true;

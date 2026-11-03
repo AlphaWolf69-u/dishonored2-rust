@@ -24,11 +24,15 @@ fn include(acc: &mut [f64; 4], m: &Affine, r: [f64; 4]) {
 pub fn content(vm: &Vm, o: &Obj) -> [f64; 4] {
     let mut acc = EMPTY;
     let id = Affine::default();
-    let (kind, character, graphics) = match display_ref(o) {
-        Some(d) => (d.kind, d.character, d.graphics.clone()),
+    let (kind, character, graphics, game_size) = match display_ref(o) {
+        Some(d) => (d.kind, d.character, d.graphics.clone(), d.game_texture_size),
         None => return acc,
     };
-    if kind == DisplayKind::Text {
+    if let (DisplayKind::Bitmap, Some([width, height])) = (kind, game_size) {
+        // 14103bb40 uses the bound wrapper dimensions instead of the authored
+        // placeholder's character rectangle.
+        include(&mut acc, &id, [0.0, 0.0, width, height]);
+    } else if kind == DisplayKind::Text {
         if let Some(r) = super::text::field_bounds(o) {
             include(&mut acc, &id, r);
         }

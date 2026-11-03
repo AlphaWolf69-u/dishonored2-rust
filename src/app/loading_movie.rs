@@ -181,6 +181,19 @@ impl Movie {
                     list.batches.len(),
                     list.vertices.len()
                 );
+                for batch in &list.batches {
+                    if let render::Texture::Game(name) = &batch.texture {
+                        let vertices = &list.vertices
+                            [batch.first as usize..(batch.first + batch.count) as usize];
+                        eprintln!(
+                            "LOAD movie game quad: {name} {:?}",
+                            vertices
+                                .iter()
+                                .map(|v| (v.position, v.uv, v.mul[3]))
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
                 for error in &self.player.state.borrow().uncaught {
                     eprintln!("LOAD movie AS3 exception: {error}");
                 }
@@ -211,6 +224,18 @@ impl Movie {
     pub fn mouse_button(&mut self, down: bool, button: u8) -> Result<(), String> {
         self.player
             .mouse_button(button, down)
+            .and_then(|_| {
+                self.player
+                    .call_path_method(
+                        "inputsManager.mouseHandler",
+                        "IG_OnMouseEvent",
+                        &[
+                            (0xe0u32 + button as u32).into(),
+                            (if down { 1.0 } else { 0.0 }).into(),
+                        ],
+                    )
+                    .map(|_| ())
+            })
             .map_err(|e| self.player.describe(&e))
     }
 }

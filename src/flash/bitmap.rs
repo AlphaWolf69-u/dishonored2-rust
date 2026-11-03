@@ -24,6 +24,7 @@ fn data_state(o: &Value) -> Option<BitmapDataState> {
 
 /// Size of a Bitmap display object's data.
 pub fn bitmap_size(o: &Obj) -> Option<(f64, f64)> {
+    if let Some([width, height]) = display_ref(o).and_then(|d| d.game_texture_size) { return Some((width, height)); }
     let data = o.host::<Native>()?.target_value.clone()?;
     let s = data_state(&data)?;
     Some((s.width as f64, s.height as f64))

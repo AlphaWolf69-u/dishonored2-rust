@@ -143,3 +143,26 @@ when the clock is paused; later unchanged paused frames retain that publication.
 This lets the existing particle-material gate prepare before play rather than
 waiting for simulation to start. Simulation time and authored animations stay
 paused until the loading movie's close callback.
+
+Loading presentation correction (2026-11-03): merely binding a game image did
+not replace the embedded placeholder bitmap's dimensions. `14101d290` stores
+the resolved texture extent at wrapper +0x28/+0x2c, and `14103bb40` uses that
+extent for bitmap bounds. The Flash runtime now obtains that extent from the
+shared image owner before the movie lays out its background; drawing uses the
+same dimensions and full UVs. The EotW image contains 2,073,600 opaque BC3 alpha
+samples, so its missing background was not authored transparency. This adds no
+gameplay pass or duplicate image upload.
+
+Loading mouse input also needs the game's `IG_OnMouseEvent` route, as in the
+existing pause integration: ordinary Flash mouse events alone do not reach the
+loading movie's controller-event continuation listener. Both routes are now
+forwarded. The host cursor is hidden while the loading movie is active.
+
+The corrected production dev client acquired the 1920x1080 EotW background
+through that callback. Its six draw vertices cover (0,0)..(1920,1080), with
+UVs (0,0)..(1,1) and alpha 1. The diagnostic injected only a mouse down/up
+through the regular loading input route after readiness: the authored close
+callback fired, gameplay started, and the client exited normally. No AS3
+exception was reported. Artifacts: `artifacts/loading-mouse.*`. This verifies
+geometry and input behavior without viewing screenshots; human appearance
+verification is still required.

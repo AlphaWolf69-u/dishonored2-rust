@@ -228,6 +228,10 @@ pub(super) fn install(
     })
     .add_systems(Startup, show_bootstrap)
     .add_systems(First, acquire)
+    .add_systems(
+        First,
+        super::resident_images::service_ui_images.after(acquire),
+    )
     .add_systems(Update, loading_input)
     .add_systems(
         PostUpdate,
@@ -250,7 +254,9 @@ fn show_bootstrap(
         LoadingCamera,
     ));
     let catalog = &state.input.as_ref().unwrap().0;
-    let super::resident_images::UiImages { resident, aliases } = &mut *cache;
+    let super::resident_images::UiImages {
+        resident, aliases, ..
+    } = &mut *cache;
     let image = super::resident_images::prepare_image(
         catalog,
         "models/guis/loading_screens/loading_mainmenu_is.png",
@@ -411,10 +417,14 @@ fn finish_loading(
     pause: NonSend<super::pause_menu::PauseMenu>,
     mut paused: ResMut<crate::gameplay::game_clock_runtime::GamePaused>,
     mut overlays: Query<&mut Visibility, With<super::state::GameplayOverlay>>,
+    mut cursors: Query<&mut bevy::window::CursorOptions>,
 ) {
     if state.published && state.movie.is_some() && state.continued && crate::loading::ready() {
         state.finished = true;
         paused.0 = false;
+        for mut cursor in &mut cursors {
+            cursor.visible = true;
+        }
         for mut overlay in &mut overlays {
             *overlay = Visibility::Inherited;
         }
@@ -473,9 +483,14 @@ fn loading_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     pause: NonSend<super::pause_menu::PauseMenu>,
+    mut cursors: Query<&mut bevy::window::CursorOptions>,
 ) {
     if state.finished || state.movie.is_none() {
         return;
+    }
+    for mut cursor in &mut cursors {
+        cursor.visible = false;
+        cursor.grab_mode = bevy::window::CursorGrabMode::None;
     }
     let keyboard = crate::platform::bindings::Keyboard::default();
     for (down, codes) in [
@@ -504,11 +519,18 @@ fn loading_input(
     // allowing unattended loading checks without bypassing its state machine.
     if !state.debug_continued
         && state.completion_visible
-        && (std::env::var("DH2_DEBUG_CONTINUE_LOADING").as_deref() == Ok("1")
-            || std::env::var_os("DH2_BENCHMARK_SECONDS").is_some())
+        && (matches!(
+            std::env::var("DH2_DEBUG_CONTINUE_LOADING").as_deref(),
+            Ok("1" | "mouse")
+        ) || std::env::var_os("DH2_BENCHMARK_SECONDS").is_some())
     {
-        pause.loading_key(true, 13);
-        pause.loading_key(false, 13);
+        if std::env::var("DH2_DEBUG_CONTINUE_LOADING").as_deref() == Ok("mouse") {
+            pause.loading_button(true, 0);
+            pause.loading_button(false, 0);
+        } else {
+            pause.loading_key(true, 13);
+            pause.loading_key(false, 13);
+        }
         state.debug_continued = true;
     }
 }

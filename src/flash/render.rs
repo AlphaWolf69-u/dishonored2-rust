@@ -601,7 +601,7 @@ impl Builder<'_> {
     /// The object's own drawing and its children.
     fn draw_content(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         let Some(d) = display_ref(o) else { return };
-        let (kind, character, graphics, blend, game_texture) = (d.kind, d.character, d.graphics.clone(), d.blend, d.game_texture.clone());
+        let (kind, character, graphics, blend, game_texture, game_size) = (d.kind, d.character, d.graphics.clone(), d.blend, d.game_texture.clone(), d.game_texture_size);
         drop(d);
         let (m, c) = (*m, *c);
         if let Some(g) = graphics {
@@ -631,10 +631,14 @@ impl Builder<'_> {
                 let data = o.host::<super::Native>().and_then(|n| n.target_value.clone());
                 let smooth = o.host::<super::Native>().is_some_and(|n| n.flag);
                 let from_data = data.as_ref().and_then(|v| v.as_object()?.host::<super::Native>()?.bitmap_data.clone()).and_then(|s| s.character);
-                if let Some(ch) = character.or(from_data) {
+                if let (Some(name), Some([width, height])) = (game_texture, game_size) {
+                    // The external texture has its own extent and full UVs;
+                    // the embedded placeholder's rectangle/UVs do not apply.
+                    self.bitmap(Texture::Game(name), width as f32, height as f32, [1.0, 1.0, 0.0, 0.0], &m, &c, smooth, blend);
+                } else if let Some(ch) = character.or(from_data) {
                     let file = player::state(self.vm).borrow().file(ch.library);
                     if let Ok(Some(b)) = file.bitmap(ch.id as usize) {
-                        self.bitmap(game_texture.map(Texture::Game).unwrap_or(Texture::Bitmap(ch)), b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
+                        self.bitmap(Texture::Bitmap(ch), b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
                     }
                 }
             }

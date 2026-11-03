@@ -96,6 +96,8 @@ pub struct Display {
     pub antialiasing: bool,
     /// A game texture bound by `IggyFunctions.setTextureForBitmap` (DO +0x148).
     pub game_texture: Option<String>,
+    /// Bound image dimensions (14101d290 +0x28/+0x2c).
+    pub game_texture_size: Option<[f64; 2]>,
 }
 
 impl Display {
@@ -142,6 +144,7 @@ impl Display {
             custom_depth: None,
             antialiasing: true,
             game_texture: None,
+            game_texture_size: None,
         }
     }
 
