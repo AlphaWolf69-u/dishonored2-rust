@@ -215,6 +215,11 @@ impl RenderAsset for GpuShaderBuffer {
         source_asset.asset_usage
     }
 
+    fn byte_len(source: &Self::SourceAsset) -> Option<usize> {
+        if crate::render_asset::unbounded_loading_acquisition() { return None; }
+        Some(source.data.as_ref().map_or(source.buffer_description.size as usize, Vec::len))
+    }
+
     fn take_gpu_data(
         source: &mut Self::SourceAsset,
         previous_gpu_asset: Option<&Self>,

@@ -255,6 +255,7 @@ pub fn allocate_and_free_meshes(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
 ) {
+    let _loading_span = crate::diagnostic::LoadingSpan::new("mesh allocation and upload");
     // Empty allocation/deallocation stages have no pending work: their commit
     // methods only drain transactions created by the current call. Avoid a
     // mutable dereference so change detection describes real mesh events.

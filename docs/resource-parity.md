@@ -216,6 +216,27 @@ for scope, captures and the remaining human appearance check.
 
 ### Responsive loading and load fade
 
+The composition gate uses the camera owner's same-frame completion flag;
+optional DoF scratch-image residency is not a completion requirement when that
+effect is disabled. Explicit `r_skipPostProcess` bypasses only the disabled
+camera/lens chain, not atmosphere/depth or forward/shadow readiness. This
+settings-path correction is verified in the production client with DoF disabled
+and with developer-only post-processing bypass; both enter play and complete
+the installed fade without shader errors (docs/loading.md).
+
+Host responsiveness follow-up: backend extraction defers whole assets under
+the existing loading byte budget before mesh allocation; Modified/Unused events
+remain owned by the extractor. Shader-buffer sizes participate in that same
+budget. Particle material acquisition yields after one newly compiled state
+variant while loading, retaining the same material owner and completeness gate.
+Gameplay upload policy, payloads, shader states and drawing are unchanged.
+Original image acquisition remains `1402ea140` / `1402e9ff0`; the host's
+extraction/compilation scheduling is not claimed as original engine code.
+Production-client same-binary A/B validates unchanged mesh/image/buffer counts
+and reduces the maximum mesh call from 691.519 to 87.525 ms and particle call
+from 594.127 to 30.141 ms. Remaining backend stalls are documented in
+docs/loading.md; full responsiveness is not yet claimed.
+
 | Original | Owner / behavior | Status |
 |---|---|---|
 | `1400661e0`, `1400607f0` / `14005feb0` | resource acquisition with pre-registered identities | host: `bevy_backend::asset_preparation` prepares CPU payloads using the existing asset handle providers; `app::setup_commands` reserves entities with the live world's remote allocator. `app::scene_preparation` runs the existing setup implementation on the acquisition worker and transfers payloads/commands once. Canonical asset stores, shared resource caches and GPU uploads stay in their existing owners. Scene base-image bytes are read by the same texture owner on that worker; common/map GPU upload phases remain separate. Audio owner data moves to that worker while map systems are suspended, retaining its resource identities/output and shared-bank backing; the same bank/event preparation helpers serve synchronous diagnostic callers. Screen-shadow/depth preparation runs before setup transfers the catalog. GPU attachment/mesh/buffer readiness precedes camera activation; forward and shadow submissions precede continuation. EotW -> Dust -> EotW completes without shader errors; remaining subsecond loading stalls are under investigation (docs/loading.md) |

@@ -147,3 +147,21 @@ transparent draw stage (638.575 ms), not synchronous scene setup. Investigate
 which asset types participate in the soft upload budget and first-use draw
 initialization before changing them. These are dev diagnostic spans, not
 release gameplay CPU or FPS measurements; no walking-performance gain is claimed.
+
+The precise backend trace (`loading-backend-dust`) attributes 691.558 ms to
+mesh allocation/upload and 581.237 ms to particle material acquisition, not
+ordinary transparent drawing. Expected host change: limit extraction before
+the mesh allocator consumes payloads, using the existing loading byte budget;
+shader buffers must report their byte size to participate too. Preserve pending
+Modified events until actual extraction. Ordinary gameplay has no byte budget.
+Particle loading acquires one new material/state variant per frame (cached
+variants do not consume the quota), rather than constructing the whole list
+inside one draw-stage call. Expected maximum work scales with one admitted
+batch or one oversized asset/variant, rather than the whole map. The loading
+gate stays closed until the unchanged resource set is complete. A diagnostic
+switch restores unbounded acquisition in the same binary for comparison.
+
+Particle GPU materials currently own textures per material/state variant;
+sharing those image identities requires a lifecycle change through the particle
+image owner and per-tag original measurements. No resident-memory saving is
+claimed for the scheduling change; reducing that duplication remains separate.

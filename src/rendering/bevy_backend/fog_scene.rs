@@ -334,6 +334,12 @@ fn render_atmosphere(params: AtmosphereParams) {
     submit_atmosphere(params, Stage::Render);
 }
 fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
+    let _loading_span = bevy::render::diagnostic::LoadingSpan::new(match stage {
+        Stage::Depth => "atmosphere scene depth",
+        Stage::Lights => "atmosphere light lists",
+        Stage::Prepare => "atmosphere preparation",
+        Stage::Render => "atmosphere rendering",
+    });
     let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut area_bindings,mut context,mut last_error,mut water_submission}=params;
     let mut depth_prepared=false;
 

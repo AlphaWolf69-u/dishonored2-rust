@@ -147,6 +147,9 @@ pub(super) fn release_level(world: &mut World) {
     gpu.screen_effects.clear_frame();
 }
 impl CameraGpu {
+    pub(super) fn is_complete(&self, camera: Entity, frame: u32) -> bool {
+        self.completed == Some((camera, frame))
+    }
     pub(super) fn capture_planes(
         &self,
         camera: Entity,
@@ -163,7 +166,7 @@ impl CameraGpu {
         planes
     }
     pub(super) fn half_colour(&self, camera: Entity, frame: u32) -> Option<&TextureView> {
-        (self.completed == Some((camera, frame)))
+        self.is_complete(camera, frame)
             .then(|| self.current.as_ref().map(|(_, v)| v.half_colour()))
             .flatten()
     }
@@ -254,6 +257,7 @@ pub(crate) struct FxUpdate;
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    upload_budget: Res<'w, bevy::render::render_asset::RenderAssetBytesPerFrameLimiter>,
     screen: Option<Res<'w, super::screen_shadow_pass::ScreenShadowFrame>>,
     sampler: Option<Res<'w,super::particle_pass::ParticleMaterialSampler>>,
     queries: Res<'w,super::particle_systems::ParticleQueryFrame>,
@@ -293,6 +297,7 @@ fn render_particles(
     mut last_error: Local<Option<String>>,
     mut reported: Local<bool>,
 ) {
+    let _loading_span = bevy::render::diagnostic::LoadingSpan::new("particle rendering");
     let queries=&lighting_scene.queries;
     let Some(water) = water.0.as_ref() else {
         gpu.particles = None;
@@ -394,7 +399,13 @@ fn render_particles(
             if !particles.prepared || particles.pass.sampler_changed(sampler) {
                 let console = crate::platform::console::shared().read();
                 let materials = lighting_scene.world_sources.0.particle_materials().chain(sources.particle_materials());
-                let created = particles.pass.prepare_materials(&device, &queue, materials, &console.cvars, sampler)?;
+                let bounded = !particles.prepared && lighting_scene.upload_budget.max_bytes.is_some()
+                    && !bevy::render::render_asset::unbounded_loading_acquisition();
+                let (created, complete) = particles.pass.prepare_materials_bounded(
+                    &device, &queue, materials, &console.cvars, sampler, bounded.then_some(1))?;
+                if !complete {
+                    return Err("particle materials are preparing".into());
+                }
                 if !particles.prepared {
                     info!(created, "Level particle materials prepared");
                     crate::loading::complete(PARTICLE_GATE);
@@ -716,6 +727,7 @@ fn render_camera<const PREPARE_ALPHA: bool>(
     )>,
     mut last_error: Local<Option<String>>,
 ) {
+    let _loading_span = bevy::render::diagnostic::LoadingSpan::new(if PREPARE_ALPHA { "camera alpha preparation" } else { "camera composition" });
     gpu.completed = None;
     if PREPARE_ALPHA {gpu.alpha_completed = None;}
     let Some(frame) = display.0.as_ref() else {

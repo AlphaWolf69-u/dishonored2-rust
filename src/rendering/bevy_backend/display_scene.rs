@@ -404,10 +404,11 @@ fn render_display(
         *tonemapping_mode = Tonemapping::None;
         // Pipeline idleness alone can precede the first successful scene.
         // Publish readiness only after the real atmosphere/camera/lens chain.
+        let skip_camera = frame.lens.as_ref().is_none_or(|lens| lens.settings.skip_post_process);
         if *ready_view != Some(frame.camera) && water_frame.0.as_ref().is_some_and(|water| {
-            camera_gpu.half_colour(frame.camera, water.matrices.frame).is_some()
+            (skip_camera || camera_gpu.is_complete(frame.camera, water.matrices.frame))
                 && fog_gpu.camera_depth(frame.camera, water.matrices.frame).is_some()
-        }) && (lens_drawn || frame.lens.as_ref().is_none_or(|lens| lens.settings.skip_post_process)) {
+        }) && (lens_drawn || skip_camera) {
             crate::loading::complete("initial gameplay composition");
             *ready_view = Some(frame.camera);
         }

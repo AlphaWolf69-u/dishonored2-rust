@@ -371,6 +371,13 @@ cameras are explicitly UI-only. Acquisition errors return to the loading
 coordinator rather than silently omitting this required owner. This repairs the
 initialization order; it does not bypass readiness or clear failed pipelines.
 
+The camera readiness predicate observes the camera owner's same-frame completion,
+not presence of its optional DoF half-colour target. With DoF disabled that
+target correctly does not exist. Explicitly disabled post-processing similarly
+does not require a camera/lens submission, while actual fog/depth and forward
+submission gates remain mandatory. This follows the existing settings branches;
+it does not force an effect on to make loading finish.
+
 The repaired production-client sequence (`loading-handoff-transition-fixed`,
 dev DX12) completed EotW -> Dust -> EotW with zero shader errors. All three
 loads retained PID 20812, catalog 0x21438ddee60, device 0x21477270530, window
@@ -392,3 +399,36 @@ transparent draw stage. The longest window gap was 948.535 ms. Worker cooking,
 entity publication and remaining Startup are not the cause. The Dust load still
 completed normally. Further responsiveness work must address backend asset
 preparation and first-draw work rather than weaken readiness or insert a delay.
+
+Bounded acquisition verification (`loading-budget-*`, same dev DX12 binary,
+1280x720, Dust District, no concurrent compilation):
+
+| Scope | Diagnostic unbounded | Loading budget enabled |
+|---|---:|---:|
+| Longest mesh allocation/upload call | 691.519 ms | 87.525 ms |
+| Longest particle acquisition/draw call | 594.127 ms | 30.141 ms |
+| Longest window-update gap | 933.782 ms | 352.997 ms |
+| Loading movie closed, since process start | 23.957 s | 26.371 s |
+
+Both acquired 8647 meshes, 3970 image assets and 104 shader buffers; both
+reported 8 CPU-backed meshes, 3 MiB image payloads and 29 MiB shader-buffer
+payloads at readiness. Both logged hidden/locked cursor handoff and completed
+the installed 4-second fade with no shader errors. This establishes improved
+loading scheduling, not release walking/FPS or a claim that every hitch is gone.
+The bounded path trades about 2.4 seconds of total loading time in this dev run
+for smaller work batches. The logged mesh spans above 10 ms sum to 905.506 ms
+versus 691.519 ms before; those truncated sums are not total function costs.
+
+With `r_skipDOF=1`, loading closed at 26.004 s and the fade completed 4.003 s
+later, with no DoF constructor submissions or shader errors. The initial
+`no-post` case did not exercise `r_skipPostProcess`: that unarchived cvar is
+protected in retail mode. A corrected developer-mode capture
+(`loading-no-post-developer`) logged the explicit lens bypass, closed loading
+at 24.715 s and completed the fade at 28.712 s. Neither optional pass is forced
+on to satisfy readiness.
+
+Remaining stalls are backend work, including image creation (177.695 ms), a
+large shader-buffer preparation (112.942 ms), and first-view bind groups
+(106.919 ms). The worst bounded frame includes several such phases; it is not
+one remaining 350 ms image operation. Further work must keep ownership and
+readiness intact and avoid conflating per-function costs with whole-frame gaps.

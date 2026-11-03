@@ -1124,6 +1124,23 @@ impl ParticlePass {
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
     ) -> Result<usize, String> {
+        self.prepare_materials_bounded(device, queue, materials, cvars, surface_sampler, None)
+            .map(|(created, _)| created)
+    }
+
+    /// Host loading scheduling: acquire at most the requested number of new
+    /// variants before returning to the UI. Cached variants consume no quota.
+    /// The loading gate stays closed until both water states of every authored
+    /// material exist. Ordinary gameplay retains the unbounded path.
+    pub fn prepare_materials_bounded<'a>(
+        &mut self,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        cvars: &crate::platform::cvars::CVars,
+        surface_sampler: &Sampler,
+        max_created: Option<usize>,
+    ) -> Result<(usize, bool), String> {
         if self.material_sampler != Some(surface_sampler.id()) {
             self.materials.clear();
             self.material_sampler = Some(surface_sampler.id());
@@ -1137,12 +1154,15 @@ impl ParticlePass {
                 let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
                 let key = (material.name.clone(), state);
                 if self.materials.contains_key(&key) { continue; }
+                if max_created.is_some_and(|limit| created >= limit) {
+                    return Ok((created, false));
+                }
                 let gpu = self.material(device, queue, material.clone(), state, transparency.mode != 0, surface_sampler)?;
                 self.materials.insert(key, gpu);
                 created += 1;
             }
         }
-        Ok(created)
+        Ok((created, true))
     }
 
     pub fn record(

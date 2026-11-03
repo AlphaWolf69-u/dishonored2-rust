@@ -30,6 +30,7 @@ pub fn main_transparent_pass_3d(
     transparent_phases: Res<ViewSortedRenderPhases<Transparent3d>>,
     mut ctx: RenderContext,
 ) {
+    let _loading_span = bevy_render::diagnostic::LoadingSpan::new("main transparent pass");
     let view_entity = view.entity();
 
     let (

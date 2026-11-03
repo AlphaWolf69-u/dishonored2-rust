@@ -6,6 +6,8 @@ mod erased_render_asset_diagnostic_plugin;
 pub(crate) mod internal;
 mod mesh_allocator_diagnostic_plugin;
 mod render_asset_diagnostic_plugin;
+mod loading_span;
+pub use loading_span::LoadingSpan;
 #[cfg(feature = "tracing-tracy")]
 mod tracy_gpu;
 

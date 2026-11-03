@@ -285,13 +285,19 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
     mut to_reextract: Option<ResMut<RenderAssetsToReExtract<A>>>,
     mut extracted_assets: ResMut<ExtractedAssets<A>>,
     mut main_world: ResMut<MainWorld>,
-    mut needs_extracting: Local<HashSet<AssetId<A::SourceAsset>>>,
+    mut needs_extracting: Local<HashMap<AssetId<A::SourceAsset>, bool>>,
 ) {
     extracted_assets.extracted.clear();
     extracted_assets.removed.clear();
     extracted_assets.modified.clear();
     extracted_assets.added.clear();
-    needs_extracting.clear();
+    // DH2 host: the mesh allocator consumes extracted bytes before
+    // prepare_assets applies its limiter. Bound that earlier publication too,
+    // retaining deferred identities and their Modified state in this owner.
+    let max_bytes = if unbounded_loading_acquisition() { None } else {
+        main_world.get_resource::<RenderAssetBytesPerFrame>().and_then(|b| b.max_bytes)
+    };
+    let mut extracted_bytes = 0usize;
 
     let reextract_ids = to_reextract
         .as_mut()
@@ -303,7 +309,7 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
             let (mut events, mut assets, maybe_render_assets) = cached_state.state.get_mut(world).unwrap();
 
             if let Some(reextract_ids) = reextract_ids {
-                needs_extracting.extend(reextract_ids);
+                needs_extracting.extend(reextract_ids.into_iter().map(|id| (id, false)));
             }
 
             for event in events.read() {
@@ -313,11 +319,10 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
                 )]
                 match event {
                     AssetEvent::Added { id } => {
-                        needs_extracting.insert(*id);
+                        needs_extracting.entry(*id).or_insert(false);
                     }
                     AssetEvent::Modified { id } => {
-                        needs_extracting.insert(*id);
-                        extracted_assets.modified.insert(*id);
+                        needs_extracting.insert(*id, true);
                     }
                     AssetEvent::Removed { .. } => {
                         // We don't care that the asset was removed from Assets<T> in the main world.
@@ -334,17 +339,25 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
                 }
             }
 
-            for id in needs_extracting.drain() {
-                if let Some(asset) = assets.get(id) {
+            needs_extracting.retain(|id, modified| {
+                if let Some(asset) = assets.get(*id) {
                     let asset_usage = A::asset_usage(asset);
                     if asset_usage.contains(RenderAssetUsages::RENDER_WORLD) {
+                        if let Some(max_bytes) = max_bytes {
+                            let bytes = A::byte_len(asset).unwrap_or(0);
+                            // Soft limit: admit a whole oversized asset so it
+                            // can always make progress, just like GPU uploads.
+                            if bytes != 0 && extracted_bytes >= max_bytes { return true; }
+                            extracted_bytes = extracted_bytes.saturating_add(bytes);
+                        }
+                        if *modified { extracted_assets.modified.insert(*id); }
                         if asset_usage == RenderAssetUsages::RENDER_WORLD {
-                            if let Some(asset) = assets.get_mut_untracked(id) {
-                                let previous_asset = maybe_render_assets.as_ref().and_then(|render_assets| render_assets.get(id));
+                            if let Some(asset) = assets.get_mut_untracked(*id) {
+                                let previous_asset = maybe_render_assets.as_ref().and_then(|render_assets| render_assets.get(*id));
                                 match A::take_gpu_data(asset, previous_asset) {
                                     Ok(gpu_data_asset) => {
-                                        extracted_assets.extracted.push((id, gpu_data_asset));
-                                        extracted_assets.added.insert(id);
+                                        extracted_assets.extracted.push((*id, gpu_data_asset));
+                                        extracted_assets.added.insert(*id);
                                     }
                                     Err(e) => {
                                         error!("{} with RenderAssetUsages == RENDER_WORLD cannot be extracted: {e}", core::any::type_name::<A>());
@@ -352,16 +365,23 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
                                 };
                             }
                         } else {
-                            extracted_assets.extracted.push((id, asset.clone()));
-                            extracted_assets.added.insert(id);
+                            extracted_assets.extracted.push((*id, asset.clone()));
+                            extracted_assets.added.insert(*id);
                         }
                     }
                 }
-            }
+                false
+            });
 
             cached_state.state.apply(world);
         },
     );
+}
+
+/// Diagnostic A/B switch; normal acquisition obeys the existing host budget.
+pub fn unbounded_loading_acquisition() -> bool {
+    static UNBOUNDED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UNBOUNDED.get_or_init(|| std::env::var("DH2_DEBUG_UNBOUNDED_LOADING_ACQUISITION").as_deref() == Ok("1"))
 }
 
 // TODO: consider storing inside system?
@@ -389,6 +409,7 @@ pub fn prepare_assets<A: RenderAsset>(
     bpf: Res<RenderAssetBytesPerFrameLimiter>,
 ) {
     let mut wrote_asset_count = 0;
+    let _loading_span = crate::diagnostic::LoadingSpan::new(core::any::type_name::<A>());
 
     let mut param = param.into_inner();
     let queued_assets = core::mem::take(&mut prepare_next_frame.assets);
