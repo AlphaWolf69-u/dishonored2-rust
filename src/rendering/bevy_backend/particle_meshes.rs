@@ -87,11 +87,15 @@ pub(super) fn prepare_particle_meshes(
     view: ViewQuery<&MainEntity>,
     mut reported: Local<Option<String>>,
     mut reported_active: Local<bool>,
+    mut previous: Local<Vec<MainEntity>>,
 ) {
     // Every proxy is listed before any pass can draw it.
-    draws.entities.clear();
+    // Each owner replaces its own entries; decal receiver draws share this
+    // service and are published later in the same FX preparation interval.
+    for entity in previous.drain(..) { draws.entities.remove(&entity); }
     for (entity, _) in &proxies {
-        draws.entities.insert(*entity, (0, 0));
+        previous.push(*entity);
+        draws.entities.insert(*entity, (0, 0).into());
     }
     let Some(water) = water.0.as_ref() else {
         return;
@@ -144,7 +148,7 @@ pub(super) fn prepare_particle_meshes(
             lighting_index += 1;
         }
         let count = (buffers.instance_bytes.len() / INSTANCE_BYTES) as u32 - first;
-        draws.entities.insert(*entity, (first, count));
+        draws.entities.insert(*entity, (first, count).into());
         if count != 0 && !*reported_active {
             info!(source = proxy.source, material = proxy.material, count, sample = ?sample,
                 "Particle surface submission active (first instance game position, axis-0 scale)");

@@ -1,40 +1,67 @@
 //! Resolve each decal variant through the same cache and image-streaming owner
 //! as ordinary WORLD/model materials.
-use super::{MaterialResolver, ResolvedMaterial};
-use crate::assets::decal::DecalMaterials;
+use super::MaterialResolver;
 
 impl MaterialResolver<'_> {
-    pub(in crate::app) fn decal_materials(
+    /// Clone only the host material binding for direct projection submission.
+    /// Parsed controls, texture resources and receiver geometry stay shared.
+    pub(in crate::app) fn projected_decal_material(
         &mut self,
         name: &str,
-        position: [f32; 3],
-    ) -> Result<DecalMaterials<ResolvedMaterial>, String> {
-        let catalog = self.catalog.ok_or("decal material catalog unavailable")?;
-        let references = DecalMaterials::read(catalog, name)?
-            .ok_or_else(|| format!("decal declaration absent: {name}"))?
-            .resolve(catalog)?;
-        let mut load = |name: String, world: bool| {
-            let resolved = if world {
-                self.get_world(&name, 0, position)
-            } else {
-                self.get(&name, 0, position)
-            };
-            resolved.ok_or_else(|| format!("decal material not admitted: {name}"))
+        world: bool,
+    ) -> Result<
+        (
+            super::super::MaterialHandle,
+            Vec<(usize, crate::surface_gpu::ImageRole)>,
+        ),
+        String,
+    > {
+        let resolved = if world {
+            self.get_world(name, 0, [0.; 3])
+        } else {
+            self.get(name, 0, [0.; 3])
+        }
+        .ok_or_else(|| format!("projected decal material not admitted: {name}"))?;
+        let super::super::MaterialHandle::Decal(handle) = resolved.handle else {
+            return Err(format!(
+                "projected material does not use a decal program: {name}"
+            ));
         };
-        Ok(DecalMaterials {
-            opaque: references
-                .opaque
-                .map(|name| load(name, false))
-                .transpose()?,
-            opaque_instanced: references
-                .opaque_instanced
-                .map(|name| load(name, true))
-                .transpose()?,
-            alpha: references.alpha.map(|name| load(name, false)).transpose()?,
-            alpha_instanced: references
-                .alpha_instanced
-                .map(|name| load(name, true))
-                .transpose()?,
-        })
+        let mut material = self
+            .decal_materials
+            .get(&handle)
+            .cloned()
+            .ok_or("projected decal binding is absent")?;
+        let program = material
+            .extension
+            .projection
+            .as_ref()
+            .ok_or("decal program controls absent")?
+            .clone();
+        let mut images = self
+            .cache
+            .get_for(
+                name,
+                if world {
+                    super::MaterialGeometry::World
+                } else {
+                    super::MaterialGeometry::Model
+                },
+            )
+            .and_then(Option::as_ref)
+            .ok_or("decal image references absent")?
+            .images
+            .clone();
+        if let Some(opacity) = program.opacity.as_deref() {
+            let slot = self
+                .register_image(opacity)
+                .ok_or_else(|| format!("decal opacity image absent: {opacity}"))?;
+            images.push((slot, crate::surface_gpu::ImageRole(39)));
+        }
+        material.extension.projected = true;
+        Ok((
+            super::super::MaterialHandle::Decal(self.decal_materials.add(material)),
+            images,
+        ))
     }
 }

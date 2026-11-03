@@ -23,6 +23,10 @@ allocations; FONTS 9,178 / 9; PARTICLE 46,524,457 / 13,628; KISCULE
 22,018,157 / 93,089; DECL 14,226,448 / 47,478; FX 9,149,240 / 15,839.
 Reuse that baseline; a new level load is not needed to recover these values.
 
+Release font acquisition (200 rounds): English metadata 417 us, eager 192,660 us,
+lazy 27,304 us; Russian metadata 458 us, eager 200,791 us, lazy 27,926 us.
+These runs use the same acquired resources and compare all decoded outlines.
+
 English font acquisition (200 rounds, dev optimized profile): metadata 587 us,
 eager 471,074 us, lazy 35,526 us. All 1,266 outlines match; point-vector
 capacity alone is 1,235,808 bytes when all outlines are decoded. Russian:
@@ -56,8 +60,8 @@ Pause movie acquisition/draw audit: eager and lazy modes produce the same
 252 vertices, 16 batches and CPU-rasterized pixel hash
 `4ea5cd8f67a25f61083190ac3c60c2d90dd988fba7b29265d33c97aaf04a3a3c`.
 The authored cache page is 1024x1024: 1,048,576 R8 bytes instead of 4,194,304
-RGBA bytes on CPU and GPU, with the same draw count. Hardware sampling
-verification is separate from this software draw audit.
+RGBA bytes on CPU and GPU, with the same draw count. The later D3D12 capture below verifies the uploaded glyph coverage and draw
+count separately from this software draw audit.
 
 Tagged live allocations (`debug_allocations`, same-build A/B over installed
 Edge of the World data): particle-definition residency after releasing the
@@ -74,12 +78,56 @@ bounds: zero outlines are decoded during this movie's construction.
 These allocation figures are requested Rust heap bytes, not Windows working
 set, GPU memory or the complete original tags (which also include gameplay
 and effect families not implemented by the rewrite). Acquisition CPU numbers
-above are diagnostic dev-profile measurements; release timings remain separate.
+include both diagnostic dev-profile and main release-profile measurements.
 
-Decal animation is a missing rendering path, not a measured memory saving.
-The existing sampled animation and pool binding need authored descriptor
-acquisition plus the world FX scheduler/renderer connection. No claim of
-complete decal support is made by a declaration-reference cache alone.
+Authored ordinary decal animation is now acquired and connected to the world
+FX scheduler and receiver renderer. This closes a fidelity gap; its declaration
+reference cache alone would not constitute the rendering feature. Skin-decal
+FX is a separate family and remains unsupported.
+
+Ordinary decal integration uses `arkFXDecalDesc` (reflection `143ae3730`,
+constructor `217d50`): all descriptor phases, attachment axes, initial ranges
+and reference alternatives are acquired through typed definitions. A level
+reference cache retains shared resolved material-name sets. The 256-entry
+FX family (`19a0b0`/`19f230`) remains distinct from the renderer projection
+budget (4..128, `r_maxDynamicDecals`). First active application selects the
+reference (`218620`), after initialization samples (`218e80`), preserving the
+manager random stream. Group start, stop, clear and nested sub-FX chains now
+carry the ordinary decal family. Receiver submission is connected, with
+material admission through the prepared shared program table. GPU submission and animated visible output are confirmed by the capture
+reported below; declaration parsing alone is not the verification.
+
+The installed `arkDecal` program supplies the projection rules: NONE=0,
+CLIP_MODEL=1, CULL_MODEL=2, DEPTH_BOX=3. The depth-box path reconstructs
+receiver position and normals from scene depth; it must not be replaced by
+a translucent box surface. Model/WORLD geometry paths preserve the four
+resolved receiver/instancing material alternatives. Skin decals remain a
+separate FX family. Renderer integration predicts no additional acquisition
+reads per update: definitions and material references are prepared once.
+
+Host submission prediction before connecting projected geometry: one bounded
+FX/projection record per original slot, shared mesh assets and one renderer
+proxy per material/layout, rather than entities and converted mesh copies for
+every projection/receiver pair. Existing particle direct draws retain their
+layout, instance count and geometry path. The direct-draw service accepts
+explicit shared mesh draws and per-owner instance bindings; no CPU vertex
+conversion or GPU mesh duplication belongs to the per-frame decal update.
+
+The typed projection-program acquisition was exercised on the installed blood
+WORLD material: DEPTH_BOX, FX enabled, colour-adjust RGB 0.3564, box projection
+[2.5, 0.9], alpha blur 0.01, and the authored blood opacity image. Its descending
+sphere-fade edges require the HLSL smoothstep polynomial, not WGSL's undefined
+reversed-edge builtin. The installed PS confirms stable quadratic roots and
+the smaller-root selection. Depth normal reconstruction uses right/left for U
+and **up/down** for V (`MinDiff(centre, up, down)`), not screen-down V.
+
+Installed-declaration coverage: all 25 decal declarations resolve 99 distinct
+material variants through the typed projection-program reader with zero errors
+(74 CLIP_MODEL, 25 DEPTH_BOX; 52 FX-opacity materials). This proves acquisition
+coverage, not rendering or visibility. The new host direct-mesh path uses the
+existing single direct-surface lookup per mesh command; it does not add another
+map lookup to every ordinary draw. Particle publication now replaces only its
+own entries so it cannot erase another surface owner's draws.
 
 Font atlas budget audit: `14002c440` caps each side to the already loaded
 movie's stage size before power-of-two rounding, then doubles above 1920x1080
@@ -101,3 +149,53 @@ WORLD query acquisition, same debug-allocation build, installed EotW WORLD:
 Acquisition: 22,974,652 -> 118,445 microseconds over 200 requests (dev profile,
 not a release timing claim). Both modes: 200 queries, 11,949 hits and hash
 `73b8970a1d4d2c0890e42fd88ea60975f1631bef2679a6103e42828e7a935bc1`.
+
+Receiver bounds come from the existing model owner's prepared world bounds,
+including model motion and physics updates (`25da70`/`330c10`). Per-surface
+`RenderInstance.bounds` are already world-space; transforming them again would
+incorrectly reject receivers. Layout proxies borrow the source skin palette
+and select Bevy's corresponding skinned mesh binding without creating another
+skeleton or uploading its joints again. Geometry decal homogeneous-Z bias is
+excluded from DEPTH_BOX, as the installed arkDecal vertex program requires.
+
+Connected-path evidence: the installed blood_splat_01 FX is acquired through
+placed-actor playback at the player's actual start transform. The live run
+publishes one projection and one pair and exits normally after 379 measured
+frames. RenderDoc event 21335 contains the depth-box cube draw (36 indices,
+one instance), with actual scene-depth, projection/remap, opacity, material
+and lighting inputs. This first capture is near activation, where authored FX opacity can still be
+zero. The later capture below establishes visible RGB output.
+
+Final D3D12 acquisition modes (same executable, installed EotW, same saved
+camera): sparse and eager receiver publication both submit the depth-box cube
+with 36 indices and one instance at event 22947. The sparse draw changes 1,400
+HDR RGB pixels; the eager draw changes 1,139. Authored randomized scale/colour
+and effect sampling times differ between the two runs, so those are not a
+pixel-equality comparison. Receiver buffer bytes are 64 versus 315,392, exactly
+the predicted 4,928 -> 1 record reduction. The lazy path uses the same receiver
+record constructor and updates each remap alongside its record; projection
+admission and draw ordering are unchanged. Only referenced records are uploaded.
+
+The actual paused-game glyph atlas has the same normalized coverage SHA-256
+in R8 and expanded RGBA:
+`59abbd2bf8dd8bbdb65335fb13e909c1e7f88e7f9b37f98c7049ecdde7692d3c`.
+Captured storage is 1,048,576 versus 4,194,304 bytes (75% less); both submit
+98 UI draws and zero dispatches. Both use the same red-channel glyph shader
+and identical active stage transform. Whole UI canvas/vertex hashes differ
+between independently timed captures (animated UI and scene background), so
+no whole-frame pixel equality is claimed. The deterministic installed-movie
+software draw audit above verifies unchanged glyph geometry and pixel output.
+No unit tests or synthetic oracle executables were written or run for this work.
+
+The backend and existing WORLD packet builder share the `298ee0` material
+admission rules, including its cursor advance over excluded receiver ranges.
+The range-end summary is prepared from the original WORLD material classes;
+it is not a camera-distance heuristic. This keeps absent/DEPTH_BOX material
+variants and bit-4/bit-5 exclusions consistent across the host draw service
+and the already ported packet construction.
+
+After sharing the WORLD admission rules, the final game build completed and
+an additional 382 measured gameplay frames exited normally with an active
+projection and both a model receiver and depth-box receiver (two pairs, two
+uploaded receiver records). No graphics-validation error or runtime error was
+reported. These dev-profile frames are a runtime check, not a release FPS claim.

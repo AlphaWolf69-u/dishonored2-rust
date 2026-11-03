@@ -20,6 +20,9 @@ static READY: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new
 pub fn mark_rendering_ready() {
     READY.get_or_init(std::time::Instant::now);
 }
+/// Shared diagnostic readiness; normal gameplay never uses this wall clock.
+pub fn rendering_ready_age() -> Option<std::time::Duration> { READY.get().map(std::time::Instant::elapsed) }
+
 
 pub(super) fn register(app: &mut App) {
     let Some(seconds) = std::env::var("DH2_DEBUG_GPU_CAPTURE_SECONDS")

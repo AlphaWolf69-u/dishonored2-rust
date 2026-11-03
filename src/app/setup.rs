@@ -1742,6 +1742,8 @@ pub(super) fn setup(
             crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
         particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
+        particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
+            &mut resolver, &mut meshes, &mut commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());

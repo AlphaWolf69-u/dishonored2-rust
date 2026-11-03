@@ -3,12 +3,14 @@
 use super::{bounds::OrientedBox, shadows::local_caster_query::LocalWorldQuery};
 
 mod effect;
+pub mod material;
 mod pool;
 mod world_draws;
+pub mod systems;
 pub use effect::{DecalAttachment, DecalAttachmentDefinition, DecalEffect, DecalEffectBinding};
 pub use pool::{DecalPool, DecalSlot};
 pub use world_draws::{
-    gather_world_draws, ProjectedWorldDraw, ProjectedWorldDraws, ProjectionData,
+    gather_world_draws, receiver_target_floor, receiver_accepts_geometry, ProjectedWorldDraw, ProjectedWorldDraws, ProjectionData,
     ProjectionMaterial, WorldReceiver,
 };
 
@@ -158,6 +160,10 @@ impl<M: Clone> DecalPool<DecalDescription<M>, CommittedDecal<M>> {
                 .description
                 .as_ref()
                 .ok_or("live decal has no authored description")?;
+            // A zero-volume initial phase has no covered pixels. The executable
+            // retains unwritten inverse storage; the host defers publication
+            // until it can retain a real inverse instead of fabricating one.
+            if slot.renderer.is_none() && description.scale.contains(&0.0) { continue; }
             if let Some(renderer) = slot.renderer.as_mut() {
                 renderer.update(description, tree);
             } else {

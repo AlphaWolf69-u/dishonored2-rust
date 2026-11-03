@@ -456,6 +456,14 @@ impl MaterialExtension for ProbeExtension {
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(DecalKey)]
 pub(super) struct DecalExtension {
+    /// Only FX projections carry these immutable installed program controls.
+    #[reflect(ignore)]
+    pub(super) projection: Option<std::sync::Arc<crate::rendering::decals::material::DecalProgram>>,
+    #[texture(175)]
+    pub(super) projection_opacity: Option<Handle<Image>>,
+    pub(super) projected: bool,
+    #[uniform(176)]
+    pub(super) projection_parameters: crate::rendering::bevy_backend::projected_decals::ProjectionParameters,
     #[storage(167, read_only)]
     pub(super) fog_objects: Handle<ShaderBuffer>,
     #[storage(161, read_only)]
@@ -621,7 +629,7 @@ macro_rules! image_access {
     };
 }
 image_access!(ProbeExtension, 34 => skin_fresnel_lookup, 35 => diffuse_lookup, 36 => sss_mask, 37 => fuzz_mask, 38 => translucency_mask);
-image_access!(DecalExtension);
+image_access!(DecalExtension, 39 => projection_opacity);
 
 pub(super) trait ShadowImageAccess {
     fn sync_shadow_images(
@@ -664,12 +672,18 @@ shadow_image_access!(DecalExtension);
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub(super) struct DecalKey {
     pub(super) surface: surface_gpu::SurfaceKey,
+    projection: u8,
+    use_fx: bool,
+    state: Option<crate::render_state::RenderState>,
 }
 
 impl From<&DecalExtension> for DecalKey {
     fn from(extension: &DecalExtension) -> Self {
         Self {
             surface: surface_gpu::SurfaceKey::from(&extension.surface),
+            projection: if extension.projected { extension.projection.as_ref().map_or(0, |p| p.kind as u8 + 1) } else { 0 },
+            use_fx: extension.projected && extension.projection.as_ref().is_some_and(|p| p.use_fx),
+            state: extension.projected.then(|| extension.projection.as_ref().map(|p| p.state)).flatten(),
         }
     }
 }
@@ -697,6 +711,37 @@ impl MaterialExtension for DecalExtension {
         }
         specialize_vertex_lighting(descriptor, layout, key.bind_group_data.surface);
         specialize_surface(descriptor, key.bind_group_data.surface);
+        if key.bind_group_data.projection != 0 {
+            let defs = [
+                bevy::shader::ShaderDefVal::Bool("DH2_DECAL_INSTANCES".into(), true),
+                bevy::shader::ShaderDefVal::Bool("DH2_DECAL_NONE".into(), key.bind_group_data.projection == 1),
+                bevy::shader::ShaderDefVal::Bool("DH2_DECAL_PROJECTS_UV".into(), key.bind_group_data.projection >= 2),
+                bevy::shader::ShaderDefVal::Bool("DH2_DECAL_FX".into(), key.bind_group_data.use_fx),
+                bevy::shader::ShaderDefVal::Bool("DH2_DECAL_DEPTH_BOX".into(), key.bind_group_data.projection == 4),
+            ];
+            descriptor.vertex.shader_defs.extend(defs.iter().cloned());
+            if let Some(fragment) = descriptor.fragment.as_mut() { fragment.shader_defs.extend(defs); }
+            descriptor.layout.push(crate::rendering::bevy_backend::projected_decals::instance_layout());
+            descriptor.immediate_size = 8;
+            specialize_skin8(descriptor, layout)?;
+            if let Some(state) = key.bind_group_data.state {
+                let native = crate::rendering::bevy_backend::pipeline_state::mesh_raster(&state, true);
+                descriptor.primitive.front_face = native.0;
+                descriptor.primitive.cull_mode = native.1;
+                if let Some(depth) = descriptor.depth_stencil.as_mut() {
+                    *depth = crate::rendering::bevy_backend::pipeline_state::depth_stencil_gpu(&state, depth.format)
+                        .unwrap_or_else(|error| panic!("projected decal depth state: {error}"));
+                }
+                if let Some(fragment) = descriptor.fragment.as_mut() {
+                    if let Some(Some(target)) = fragment.targets.first_mut() {
+                        let blend = crate::render_state::blend_state(&state).targets[0].expect("decal colour target");
+                        target.blend = crate::rendering::bevy_backend::pipeline_state::blend_target(blend)
+                            .unwrap_or_else(|error| panic!("projected decal blend state: {error}"));
+                        target.write_mask = bevy::render::render_resource::ColorWrites::from_bits_truncate(u32::from(blend.write_mask));
+                    }
+                }
+            }
+        }
         authored_basis_pipeline(descriptor, layout)
     }
 }

@@ -1836,6 +1836,10 @@ fn authored_surface_gpu_pipelines_compile() {
                 ..default()
             },
             extension: DecalExtension {
+                projection: None,
+                projection_opacity: None,
+                projected: false,
+                projection_parameters: default(),
                 fog_parameters: fog_parameters.clone(),
                 fog_objects: fog_bindings.objects.clone(),
                 fog_world: fog_bindings.world.clone(),

@@ -17,6 +17,7 @@ pub struct WorldEffectGroup {
     pub asset: EffectGroupAsset,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
+    pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
     /// Deferred admission of other families, in authored order. Keep parsing
     /// errors until activation, without retaining their generic syntax trees.
     pub other_families: Vec<(String, Result<bool, String>)>,
@@ -171,6 +172,7 @@ impl WorldFxSources {
             }
         }
         let mut sound_events = HashMap::new();
+        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
         let mut names = Vec::new();
@@ -203,6 +205,10 @@ impl WorldFxSources {
                 }
                 Err(error) => eprintln!("World FX actor preparation failed: {error}"),
             }
+        }
+        // Opt-in installed FX preview uses the same acquisition owner.
+        if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
+            names.push(effect);
         }
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
         // reference order after the declarations that name them.
@@ -270,11 +276,19 @@ impl WorldFxSources {
                             ParticleDefinition::load(fields, catalog, library, resources)
                         })
                         .collect();
+                    let decals = match descriptor_fields(scope(fields, "m_decals").unwrap_or(&[])) {
+                        Ok(descriptors) => descriptors.iter()
+                            .filter(|fields| atom(fields, "m_enabled") != Some("false"))
+                            .map(|fields| crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut decal_resources).map(Arc::new))
+                            .collect(),
+                        Err(error) => vec![Err(error)],
+                    };
                     let other_families = fields
                         .iter()
                         .filter(|(field, value)| {
                             field != "m_particleSystems"
                                 && field != "m_sounds"
+                                && field != "m_decals"
                                 && field != "m_subFXs"
                                 && matches!(value, Value::Scope(_))
                                 && scope(fields, field).is_some_and(|entries| {
@@ -303,6 +317,7 @@ impl WorldFxSources {
                         asset,
                         particles,
                         sounds,
+                        decals,
                         other_families,
                     });
                 }

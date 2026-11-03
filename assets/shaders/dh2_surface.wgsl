@@ -2,6 +2,10 @@
 
 #import dh2_indirect::{material_lighting_values,evaluate_mapped_diffuse_response}
 #import bevy_pbr::pbr_bindings::{occlusion_texture, occlusion_sampler}
+#ifdef DH2_DECAL_INSTANCES
+#import dh2_decal_projection::{decal_diffuse_dx, decal_diffuse_dy}
+#endif
+
 
 struct SurfaceUniform {
     colors: array<vec4<f32>, 3>,
@@ -129,6 +133,7 @@ fn filling_colour(uv:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> 
 
 
 struct SurfaceResult {
+    specular_sample: vec3<f32>,
     albedo: vec4<f32>,
     roughness: f32,
     metallic: f32,
@@ -189,7 +194,15 @@ fn unpack_bc5_normal_map(xy: vec2<f32>) -> vec3<f32> {
 // without the HQ normal/gloss fetches or gloss-in-alpha conversion.
 fn decal_diffuse(uv0:vec2<f32>,uv1:vec2<f32>,vertex_color:vec4<f32>)->vec4<f32> {
     let uv=scaled_uv(select(uv0,uv1,surface.uv_sets[0].x!=0u),surface.uv[0]);
+#ifdef DH2_DECAL_INSTANCES
+#ifdef DH2_DECAL_DEPTH_BOX
+    var colour=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,decal_diffuse_dx,decal_diffuse_dy);
+#else
     var colour=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv));
+#endif
+#else
+    var colour=textureSampleGrad(diffuse0,surface_anisotropic_sampler,uv,dpdx(uv),dpdy(uv));
+#endif
     if (compiled_misc.w&1u)!=0u && colour.a<0.5 {discard;}
     let info=surface.mask_settings[0];
     if info.z!=0u {
@@ -362,6 +375,7 @@ fn evaluate_surface(uv0: vec2<f32>, uv1: vec2<f32>, vertex_color: vec4<f32>) -> 
     else { out.metallic = surface.ranges.w; }
     let lighting=material_lighting_values(out.albedo.rgb,out.roughness,out.metallic,specular,
         #{DH2_HAS_SPECULAR}u==0u,surface.specular_dielectric.rgb,surface.diffuse_metal.rgb);
+    out.specular_sample=specular;
     out.diffuse_response=evaluate_mapped_diffuse_response(lighting,out.roughness);
     out.specular_reflectance=lighting.reflectance;
     out.direct_diffuse=lighting.diffuse;

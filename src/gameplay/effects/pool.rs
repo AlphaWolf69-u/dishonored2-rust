@@ -25,6 +25,12 @@ impl EffectPoolLinks {
         Self::ascending(1024)
     }
 
+    /// 19a0b0 -> 19f230: 256 live decal-FX entries. This family pool is
+    /// distinct from the renderer's configurable 4..128 projection records.
+    pub fn decals() -> Self {
+        Self::ascending(256)
+    }
+
     /// 19a7e0 ->19fcc0 initializes each ordinary/attached sound family.
     pub fn sounds() -> Self {
         Self::ascending(512)

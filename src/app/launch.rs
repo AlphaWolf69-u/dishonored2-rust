@@ -1063,6 +1063,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .add_plugins(super::decal_pass::DecalPassPlugin)
+        .add_plugins(super::projected_decals::ProjectedDecalPlugin)
         .insert_resource(VisibilityElapsedTiming::default())
         .init_resource::<super::model_motion::ModelPoseUpdates>()
         .init_resource::<super::model_motion::ModelMotionBindings>()

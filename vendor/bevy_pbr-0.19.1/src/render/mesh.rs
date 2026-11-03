@@ -4275,13 +4275,13 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<RenderLightmaps>,
     );
     type ViewQuery = Has<MotionVectorPrepass>;
-    type ItemQuery = ();
+    type ItemQuery = Has<DirectMeshSkin>;
 
     #[inline]
     fn render<'w>(
         item: &P,
         has_motion_vector_prepass: bool,
-        _item_query: Option<()>,
+        direct_skin: Option<bool>,
         (
             render_device,
             bind_groups,
@@ -4342,7 +4342,12 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             }
         };
 
-        let is_skinned = current_skin_byte_offset.is_some();
+        // A direct-mesh proxy borrows source palettes through its instance
+        // bindings. Match its skinned vertex layout without owning a skeleton.
+        if direct_skin == Some(true) && skins_use_uniform_buffers {
+            return RenderCommandResult::Failure("Direct skinned meshes require storage-buffer palettes");
+        }
+        let is_skinned = current_skin_byte_offset.is_some() || direct_skin == Some(true);
 
         let lightmap_slab_index = lightmaps
             .render_lightmaps
@@ -4424,10 +4429,31 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
 /// entity draws `count` instances; the vertex stage reads its own mesh
 /// uniform through immediates {mesh_index, first} and the instance records
 /// from bind group 4.
+#[derive(Component, Clone, bevy_render::extract_component::ExtractComponent)]
+pub struct DirectMeshSkin;
+
 #[derive(Resource, Default)]
 pub struct DirectInstanceDraws {
-    pub entities: MainEntityHashMap<(u32, u32)>,
+    pub entities: MainEntityHashMap<DirectInstanceDraw>,
     pub bind_group: Option<BindGroup>,
+    /// Per-owner instance records; the particle owner uses `bind_group` above.
+    pub bind_groups: MainEntityHashMap<BindGroup>,
+}
+
+pub enum DirectInstanceDraw {
+    Instances { first: u32, count: u32 },
+    /// Shared receiver geometry, submitted through one material/layout proxy.
+    Meshes(Vec<DirectMeshDraw>),
+}
+
+impl From<(u32, u32)> for DirectInstanceDraw {
+    fn from((first, count): (u32, u32)) -> Self { Self::Instances { first, count } }
+}
+
+pub struct DirectMeshDraw {
+    pub mesh: AssetId<Mesh>,
+    pub first: u32,
+    pub count: u32,
 }
 
 pub struct DrawMesh;
@@ -4477,6 +4503,51 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         let indirect_parameters_buffer = indirect_parameters_buffer.into_inner();
         let mesh_allocator = mesh_allocator.into_inner();
 
+        // DH2 host integration: projected receiver meshes share the material
+        // proxy's pipeline/bindings, with explicit per-draw geometry and records.
+        // This avoids a material/mesh entity for each projection/receiver pair.
+        let direct_instances = direct_instances.map(|draws| draws.into_inner());
+        // One direct-surface lookup per mesh command, including ordinary draws.
+        let direct = direct_instances.and_then(|draws| draws.entities.get(&item.main_entity()));
+        if let Some(DirectInstanceDraw::Meshes(draws)) = direct {
+            let batch = item.batch_range();
+            if batch.end != batch.start + 1 {
+                return RenderCommandResult::Skip;
+            }
+            if draws.is_empty() {
+                return RenderCommandResult::Success;
+            }
+            let Some(group) = direct_instances
+                .and_then(|direct| direct.bind_groups.get(&item.main_entity()))
+            else {
+                return RenderCommandResult::Skip;
+            };
+            pass.set_bind_group(4, group, &[]);
+            for draw in draws {
+                if draw.count == 0 { continue; }
+                let (Some(mesh), Some(vertices)) =
+                    (meshes.get(draw.mesh), mesh_allocator.mesh_vertex_slice(&draw.mesh))
+                else { continue; };
+                pass.set_vertex_buffer(0, vertices.buffer.slice(..));
+                let mut immediates = [0u8; 8];
+                immediates[..4].copy_from_slice(&batch.start.to_le_bytes());
+                immediates[4..].copy_from_slice(&draw.first.to_le_bytes());
+                pass.set_immediates(0, &immediates);
+                match &mesh.buffer_info {
+                    RenderMeshBufferInfo::Indexed { index_format, count } => {
+                        let Some(indices) = mesh_allocator.mesh_index_slice(&draw.mesh) else { continue; };
+                        pass.set_index_buffer(indices.buffer.slice(..), *index_format);
+                        pass.draw_indexed(indices.range.start..indices.range.start + *count,
+                            vertices.range.start as i32, 0..draw.count);
+                    }
+                    RenderMeshBufferInfo::NonIndexed => {
+                        pass.draw(vertices.range, 0..draw.count);
+                    }
+                }
+            }
+            return RenderCommandResult::Success;
+        }
+
         let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(item.main_entity()) else {
             return RenderCommandResult::Skip;
         };
@@ -4491,12 +4562,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
         let batch_range = item.batch_range();
 
-        let direct_instances = direct_instances.map(|draws| draws.into_inner());
         // Every direct-instanced entity is listed each frame (count 0 when it
         // has no instances), so its pipeline never takes the ordinary path.
-        if let Some((first, count)) = direct_instances
-            .and_then(|draws| draws.entities.get(&item.main_entity()).copied())
-        {
+        if let Some(DirectInstanceDraw::Instances { first, count }) = direct {
+            let (first, count) = (*first, *count);
             let (Some(bind_group), RenderMeshBufferInfo::Indexed { index_format, count: indices }) =
                 (direct_instances.and_then(|draws| draws.bind_group.as_ref()), &gpu_mesh.buffer_info)
             else {

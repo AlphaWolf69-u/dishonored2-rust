@@ -18,8 +18,7 @@ use crate::{
     rendering::particles::world_sources::{WorldEffectDefinition, WorldFxSources},
 };
 use hashbrown::{HashMap, HashSet};
-use std::{sync::Arc,
-};
+use std::sync::Arc;
 
 struct FxEntity {
     owner: FxEntityOwner,
@@ -50,6 +49,7 @@ struct Instance {
     age: f32,
     head: u16,
     sound_head: u16,
+    decal_head: u16,
     /// Live m_subFXs instances of the started groups, in start order.
     sub_effects: Vec<super::world_sub_effects::SubEffect>,
     actor_observer: Option<(usize, u32)>,
@@ -59,6 +59,7 @@ struct Instance {
 /// instances and for the effects their sub-FX trigger.
 pub(super) struct GroupContext<'a> {
     pub(super) systems: &'a mut ParticleSystems,
+    pub(super) decals: &'a mut super::decal_effects::DecalSystems,
     pub(super) sound_systems: &'a mut crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
@@ -74,6 +75,7 @@ impl GroupContext<'_> {
     pub(super) fn chains(&mut self) -> super::world_sub_effects::Chains<'_> {
         super::world_sub_effects::Chains {
             systems: self.systems,
+            decals: self.decals,
             sound_systems: self.sound_systems,
             sounds: self.sounds,
         }
@@ -87,6 +89,7 @@ fn admit(
     definition: &WorldEffectDefinition,
     effects: &HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
     sounds: Option<&super::world_sounds::WorldSounds>,
+    decal_programs: &super::projected_decals::ProgramTable,
     visited: &mut HashSet<String>,
 ) -> Result<(), String> {
     if !visited.insert(name.to_owned()) {
@@ -96,6 +99,32 @@ fn admit(
         for (family, admission) in &group.other_families {
             if *admission.as_ref().map_err(Clone::clone)? {
                 return Err(format!("{name}: world FX family {family} is not connected"));
+            }
+        }
+        for decal in &group.decals {
+            let decal = decal.as_ref().map_err(Clone::clone)?;
+            if !decal.asset.enabled {
+                continue;
+            }
+            for references in decal.declarations.iter().flatten() {
+                for (material, world) in [
+                    (&references.opaque, false),
+                    (&references.alpha, false),
+                    (&references.opaque_instanced, true),
+                    (&references.alpha_instanced, true),
+                ] {
+                    if let Some(material) = material {
+                        if decal_programs
+                            .get(material)
+                            .and_then(|variants| variants[usize::from(world)].as_ref())
+                            .is_none()
+                        {
+                            return Err(format!(
+                                "{name}: decal material {material} has no prepared receiver program"
+                            ));
+                        }
+                    }
+                }
             }
         }
         for sound in &group.sounds {
@@ -112,7 +141,9 @@ fn admit(
         for particle in &group.particles {
             let particle = particle.as_ref().map_err(Clone::clone)?;
             if particle.owner.parameter_block.is_some() {
-                return Err(format!("{name}: particle parameter block binding is not connected"));
+                return Err(format!(
+                    "{name}: particle parameter block binding is not connected"
+                ));
             }
         }
         for sub in &group.asset.sub_effects {
@@ -125,7 +156,7 @@ fn admit(
                     .ok_or_else(|| format!("{name}: sub-FX {child} was not prepared"))?
                     .as_ref()
                     .map_err(Clone::clone)?;
-                admit(child, definition, effects, sounds, visited)?;
+                admit(child, definition, effects, sounds, decal_programs, visited)?;
             }
         }
     }
@@ -145,7 +176,13 @@ struct UpdateFrame {
 }
 
 /// The particle and sound chains of one FX level; true while any is alive.
-fn update_chains(head: &mut u16, sound_head: &mut u16, frame: &UpdateFrame, context: &mut GroupContext) -> Result<bool, String> {
+fn update_chains(
+    head: &mut u16,
+    sound_head: &mut u16,
+    decal_head: &mut u16,
+    frame: &UpdateFrame,
+    context: &mut GroupContext,
+) -> Result<bool, String> {
     let updated = context.systems.update_with_motion(
         head,
         frame.age,
@@ -162,7 +199,15 @@ fn update_chains(head: &mut u16, sound_head: &mut u16, frame: &UpdateFrame, cont
         frame.basis,
         &frame.sound,
     )?;
-    Ok(updated != 0 || sound_count != 0)
+    let decal_count = context.decals.update(
+        decal_head,
+        frame.age,
+        frame.particle.owner,
+        &mut context.systems.seed,
+        |materials| Ok(materials.clone()),
+        |_| {},
+    )?;
+    Ok(updated != 0 || sound_count != 0 || decal_count != 0)
 }
 
 /// The sub-FX chain update (220520): each updates its children (223f60), then
@@ -176,7 +221,13 @@ fn update_sub_effects(
     let mut any = false;
     while index < sub_effects.len() {
         let sub = &mut sub_effects[index];
-        let chains = update_chains(&mut sub.head, &mut sub.sound_head, frame, context)?;
+        let chains = update_chains(
+            &mut sub.head,
+            &mut sub.sound_head,
+            &mut sub.decal_head,
+            frame,
+            context,
+        )?;
         let children = update_sub_effects(&mut sub.children, frame, context)?;
         if sub.advance(frame.age, frame.delta, chains || children, context)? {
             any = true;
@@ -196,11 +247,13 @@ pub(super) fn start_groups(
     start: f32,
     head: &mut u16,
     sound_head: &mut u16,
+    decal_head: &mut u16,
     sub_effects: &mut Vec<super::world_sub_effects::SubEffect>,
     context: &mut GroupContext,
 ) -> Result<(), String> {
     for (group_index, group) in definition.groups.iter().enumerate() {
-        let admitted = if group.asset.location == crate::assets::fx::EffectGroupLocation::Everywhere {
+        let admitted = if group.asset.location == crate::assets::fx::EffectGroupLocation::Everywhere
+        {
             true
         } else {
             crate::gameplay::effects::groups::location_allowed(
@@ -261,6 +314,14 @@ pub(super) fn start_groups(
                 &mut context.systems.seed,
             )?;
         }
+        for decal in &group.decals {
+            context.decals.start(
+                decal_head,
+                decal.as_ref().map_err(Clone::clone)?.clone(),
+                offsets,
+                &mut context.systems.seed,
+            )?;
+        }
         for (index, sub) in group.asset.sub_effects.iter().enumerate() {
             if super::world_sub_effects::SubEffect::admitted(sub) {
                 sub_effects.push(super::world_sub_effects::SubEffect::start(
@@ -282,6 +343,9 @@ pub(crate) struct WorldParticleState {
         crate::gameplay::sound::Emitter,
         crate::gameplay::sound::playing::PlayingId,
     >,
+    decals: super::decal_effects::DecalSystems,
+    decal_programs: Arc<super::projected_decals::ProgramTable>,
+    debug_effect: Option<String>,
     graphs: FxGraphInstances,
     actors: HashMap<String, u32>,
     pending_actor_starts: Vec<u32>,
@@ -308,6 +372,9 @@ impl Default for WorldParticleState {
             source: None,
             sounds: None,
             sound_systems: Default::default(),
+            decals: super::decal_effects::new_systems(),
+            decal_programs: Arc::new(Default::default()),
+            debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
             actors: HashMap::new(),
             pending_actor_starts: Vec::new(),
@@ -344,6 +411,14 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(super) fn decal_pool(
+        &mut self,
+    ) -> &mut crate::rendering::decals::DecalPool<
+        crate::rendering::decals::DecalDescription<super::decal_effects::DecalReferences>,
+        crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>,
+    > {
+        self.decals.pool_mut()
+    }
     fn report(&mut self, error: String) {
         if self.warnings.insert(error.clone()) {
             bevy::log::warn!("World particle FX unavailable: {error}");
@@ -433,6 +508,7 @@ impl WorldParticleState {
         if let Some(&slot) = self.handles.get(&handle) {
             if let Some(instance) = self.slots[usize::from(slot)].as_mut() {
                 systems.stop(instance.head, instance.age);
+                self.decals.stop(instance.decal_head, instance.age);
                 self.sound_systems
                     .stop(instance.sound_head, instance.age, &mut systems.seed)?;
                 if !instance.sub_effects.is_empty() {
@@ -440,6 +516,7 @@ impl WorldParticleState {
                     let mut chains = super::world_sub_effects::Chains {
                         systems,
                         sound_systems: &mut self.sound_systems,
+                        decals: &mut self.decals,
                         sounds,
                     };
                     for sub in &mut instance.sub_effects {
@@ -508,11 +585,13 @@ impl WorldParticleState {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
+        self.decals.clear(&mut instance.decal_head, |_| {})?;
         if !instance.sub_effects.is_empty() {
             let sounds = self.sounds.as_ref().ok_or("FX sound owner is absent")?;
             let mut chains = super::world_sub_effects::Chains {
                 systems,
                 sound_systems: &mut self.sound_systems,
+                decals: &mut self.decals,
                 sounds,
             };
             for sub in &mut instance.sub_effects {
@@ -562,6 +641,7 @@ impl WorldParticleState {
         frames: &WorldEffectFrames,
         systems: &mut ParticleSystems,
         sounds: &super::world_sounds::WorldSounds,
+        decal_scene: &super::projected_decals::DecalScene,
         frame: u32,
         camera: ReferenceFrame,
         underwater: bool,
@@ -617,9 +697,53 @@ impl WorldParticleState {
             }
         }
         self.initialize(graphs, sources, frames)?;
+        if !Arc::ptr_eq(&self.decal_programs, &decal_scene.programs) {
+            self.decal_programs = decal_scene.programs.clone();
+        }
         let clock = frames
             .clock
             .ok_or("world FX awaits actual gameplay clocks")?;
+        // Diagnostic preview: request an installed effect through the SAME
+        // placed-actor start, admission, deferred groups and pool lifecycle.
+        // No alternate simulation, shader or material is used by this control.
+        if self.debug_effect.is_some()
+            && super::debug_graphics_capture::rendering_ready_age()
+                .is_some_and(|age| age.as_secs_f64() >= 2.0)
+        {
+            let effect = self.debug_effect.take().unwrap();
+            let pose = frames
+                .resolve(&EntityReference::Player, "")?
+                .ok_or("FX preview awaits the player pose")?;
+            let id = self.next_entity;
+            self.next_entity = id.wrapping_add(1);
+            self.entity_order.push(id);
+            self.entities.insert(
+                id,
+                FxEntity {
+                    owner: FxEntityOwner::Actor {
+                        name: "debug.fx-preview".into(),
+                        active: None,
+                        remove_on_end: false,
+                    },
+                    parameters: FxRuntimeParameters {
+                        effect: Some(effect.clone()),
+                        location: Some(EntityReference::Player),
+                        update_position: false,
+                        stop_on_parent_removal: false,
+                        ..Default::default()
+                    },
+                    component: Default::default(),
+                    suspended: false,
+                    pose,
+                    motion: crate::gameplay::particles::spawn::SpawnVelocity {
+                        center: pose.position,
+                        ..Default::default()
+                    },
+                },
+            );
+            self.pending_actor_starts.push(id);
+            bevy::log::info!(effect, position=?pose.position, "Debug FX preview requested through actor playback");
+        }
         // Reserve placed actor instances before ordinary graph actions can
         // query whether those actors are already playing (87e8e0/52ce40).
         let pending = std::mem::take(&mut self.pending_actor_starts);
@@ -637,7 +761,9 @@ impl WorldParticleState {
             }
         }
         if attempted != 0 && std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
-            eprintln!("World FX actor startup: attempted={attempted} acquired={acquired} rejected={rejected}");
+            eprintln!(
+                "World FX actor startup: attempted={attempted} acquired={acquired} rejected={rejected}"
+            );
         }
         // Action tasks use their FX entity's actual clock, separately from
         // the manager's group2 delta multiplied by entity scale during update.
@@ -793,10 +919,12 @@ impl WorldParticleState {
                 0.,
                 &mut instance.head,
                 &mut instance.sound_head,
+                &mut instance.decal_head,
                 &mut instance.sub_effects,
                 &mut GroupContext {
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    decals: &mut self.decals,
                     sounds,
                     effects: &sources.effects,
                     world,
@@ -850,19 +978,30 @@ impl WorldParticleState {
                     motion: instance.motion,
                     position: bevy::math::Vec3::from_array(instance.pose.position),
                     basis,
-                    sound: super::world_sounds::SoundFrame { axis: basis, scale: clock.scale },
+                    sound: super::world_sounds::SoundFrame {
+                        axis: basis,
+                        scale: clock.scale,
+                    },
                 };
                 let mut context = GroupContext {
                     systems,
                     sound_systems: &mut self.sound_systems,
+                    decals: &mut self.decals,
                     sounds,
                     effects: &sources.effects,
                     world,
                     query: &mut query,
                     position: instance.pose.position,
                 };
-                let alive = update_chains(&mut instance.head, &mut instance.sound_head, &update, &mut context)?;
-                let sub_effects = update_sub_effects(&mut instance.sub_effects, &update, &mut context)?;
+                let alive = update_chains(
+                    &mut instance.head,
+                    &mut instance.sound_head,
+                    &mut instance.decal_head,
+                    &update,
+                    &mut context,
+                )?;
+                let sub_effects =
+                    update_sub_effects(&mut instance.sub_effects, &update, &mut context)?;
                 Ok(alive || sub_effects)
             })();
             self.slots[slot] = Some(instance);
@@ -1133,7 +1272,14 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             .clone();
         // Admit only complete supported groups, never skip another enabled
         // family and consequently consume an incorrect shared RNG sequence.
-        admit(name, &definition, &self.sources.effects, self.state.sounds.as_ref(), &mut HashSet::new())?;
+        admit(
+            name,
+            &definition,
+            &self.sources.effects,
+            self.state.sounds.as_ref(),
+            &self.state.decal_programs,
+            &mut HashSet::new(),
+        )?;
         let pose = self
             .frames
             .resolve(
@@ -1160,6 +1306,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             age: 0.,
             head: u16::MAX,
             sound_head: u16::MAX,
+            decal_head: u16::MAX,
             sub_effects: Vec::new(),
             actor_observer: None,
         });

@@ -15,6 +15,7 @@ type SoundSystems = crate::gameplay::effects::sound::systems::SoundSystems<
 /// The chains a stop or release touches.
 pub(super) struct Chains<'a> {
     pub(super) systems: &'a mut ParticleSystems,
+    pub(super) decals: &'a mut super::decal_effects::DecalSystems,
     pub(super) sound_systems: &'a mut SoundSystems,
     pub(super) sounds: &'a WorldSounds,
 }
@@ -39,6 +40,7 @@ pub(super) struct SubEffect {
     stopped: bool,
     pub(super) head: u16,
     pub(super) sound_head: u16,
+    pub(super) decal_head: u16,
     pub(super) children: Vec<SubEffect>,
 }
 
@@ -70,8 +72,14 @@ impl SubEffect {
             let count = (unit * (maximum - minimum) + minimum) as i32;
             count.max(1) as u32
         };
-        let delay = crate::gameplay::effects::parameters::sample_range([asset.delay[1], asset.delay[0]], seed);
-        let period = crate::gameplay::effects::parameters::sample_range([asset.period[1], asset.period[0]], seed);
+        let delay = crate::gameplay::effects::parameters::sample_range(
+            [asset.delay[1], asset.delay[0]],
+            seed,
+        );
+        let period = crate::gameplay::effects::parameters::sample_range(
+            [asset.period[1], asset.period[0]],
+            seed,
+        );
         let count = asset.effects.len();
         let mut sequence = 0;
         if asset.sequential {
@@ -95,6 +103,7 @@ impl SubEffect {
             stopped: false,
             head: u16::MAX,
             sound_head: u16::MAX,
+            decal_head: u16::MAX,
             children: Vec::new(),
             owner,
             group,
@@ -141,7 +150,10 @@ impl SubEffect {
     /// 223dd0: every family chain of the child stops at `now`.
     fn reset(&mut self, now: f32, context: &mut Chains) -> Result<(), String> {
         context.systems.stop(self.head, now);
-        context.sound_systems.stop(self.sound_head, now, &mut context.systems.seed)?;
+        context.decals.stop(self.decal_head, now);
+        context
+            .sound_systems
+            .stop(self.sound_head, now, &mut context.systems.seed)?;
         for child in &mut self.children {
             child.stop(now, context)?;
         }
@@ -151,9 +163,12 @@ impl SubEffect {
     /// 2307e0 / 222e10: release the child chains.
     pub(super) fn clear(&mut self, context: &mut Chains) -> Result<(), String> {
         context.systems.clear(&mut self.head)?;
+        context.decals.clear(&mut self.decal_head, |_| {})?;
         if self.sound_head != u16::MAX {
             let mut sounds = context.sounds.clone();
-            context.sound_systems.clear(&mut self.sound_head, &mut sounds)?;
+            context
+                .sound_systems
+                .clear(&mut self.sound_head, &mut sounds)?;
         }
         for child in &mut self.children {
             child.clear(context)?;
@@ -185,7 +200,11 @@ impl SubEffect {
     }
 
     /// 2305c0: every trigger due before `now`; false ends the schedule.
-    fn trigger(&mut self, now: f32, context: &mut super::world_particle_state::GroupContext) -> Result<bool, String> {
+    fn trigger(
+        &mut self,
+        now: f32,
+        context: &mut super::world_particle_state::GroupContext,
+    ) -> Result<bool, String> {
         while self.next < now {
             self.live = true;
             let picked = self.pick(&mut context.systems.seed);
@@ -203,6 +222,7 @@ impl SubEffect {
                     now,
                     &mut self.head,
                     &mut self.sound_head,
+                    &mut self.decal_head,
                     &mut self.children,
                     context,
                 )?;
@@ -216,7 +236,10 @@ impl SubEffect {
             self.next = crate::float::add(self.next, self.period);
             let asset = self.asset();
             let range = [asset.period[1], asset.period[0]];
-            self.period = crate::gameplay::effects::parameters::sample_range(range, &mut context.systems.seed);
+            self.period = crate::gameplay::effects::parameters::sample_range(
+                range,
+                &mut context.systems.seed,
+            );
             if self.period < MINIMUM_PERIOD {
                 break;
             }

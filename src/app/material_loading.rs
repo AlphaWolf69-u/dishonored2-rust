@@ -1113,6 +1113,20 @@ impl MaterialResolver<'_> {
         } else {
             0.0
         };
+        let decal_program = if is_decal {
+            let inputs = (|| {
+                let main = surface.main_program.as_deref().ok_or("decal MAIN absent")?;
+                let catalog = self.catalog.ok_or("decal catalog absent")?;
+                let library = self.programs.as_deref_mut().ok_or("decal program library absent")?
+                    .as_mut().map_err(|error| error.clone())?;
+                let options = material_option_overrides(library, bytes)?;
+                crate::rendering::decals::material::DecalProgram::load(catalog, library, bytes, main, &options)
+            })();
+            match inputs {
+                Ok(inputs) => Some(std::sync::Arc::new(inputs)),
+                Err(error) => { eprintln!("Decal program inputs unavailable {path}: {error}"); return None; }
+            }
+        } else { None };
         let mut images = Vec::new();
         for (role, name) in surface.texture_bindings(program_is_decal).into_iter().filter(|_| !boat_volume && surface.program() != material_surface::Program::Water) {
             if let Some(slot) = self.register_image(name) {
@@ -1268,6 +1282,10 @@ impl MaterialResolver<'_> {
             MaterialHandle::Decal(self.decal_materials.add(DecalMaterial {
                 base,
                 extension: DecalExtension {
+                    projection_parameters: decal_program.as_deref().map(Into::into).unwrap_or_default(),
+                    projection: decal_program,
+                    projection_opacity: None,
+                    projected: false,
                     fog_parameters: self.fog_material.parameters.clone(),
                     fog_objects: self.fog_material.objects.clone(),
                     fog_world: self.fog_material.world.clone(),

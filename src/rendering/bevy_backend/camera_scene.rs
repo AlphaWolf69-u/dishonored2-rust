@@ -38,7 +38,7 @@ pub(super) struct CameraGpu {
     screen_effects: super::screen_effects::ScreenEffects,
     screen_state: super::screen_effects::ScreenEffectState,
     particle_systems: super::particle_systems::ParticleSystems,
-    world_particles: super::world_particle_state::WorldParticleState,
+    pub(super) world_particles: super::world_particle_state::WorldParticleState,
     screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
     /// The FX update's draws for this frame: FX-pass sprites/meshes, and
     /// world-material meshes drawn as model surfaces.
@@ -532,6 +532,7 @@ struct FxUpdateInputs<'w> {
     world_graphs: Res<'w, super::world_effects::WorldEffectDefinitions>,
     world_frames: Res<'w, super::world_effects::WorldEffectFrames>,
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
+    decals: Res<'w, super::projected_decals::DecalScene>,
     water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
     device: Res<'w, RenderDevice>,
 }
@@ -625,7 +626,7 @@ fn prepare_screen_effects(
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
         match world_particles.advance(&fx.world_graphs,&fx.world_sources.0,&fx.world_frames,
-            particle_systems,&fx.world_sounds,water.matrices.frame,camera_frame,underwater,&inputs.world) {
+            particle_systems,&fx.world_sounds,&fx.decals,water.matrices.frame,camera_frame,underwater,&inputs.world) {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");

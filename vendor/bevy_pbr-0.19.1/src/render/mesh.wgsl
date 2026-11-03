@@ -20,6 +20,10 @@
 #import dh2_particle_surface::{particle_surface_draw, particle_surface_instance, particle_surface_world_from_local, particle_surface_colour}
 #endif
 
+#ifdef DH2_DECAL_INSTANCES
+#import dh2_decal_projection::{decal_draw, decal_instance, decal_world_from_local, decal_skin4, decal_skin8}
+#endif
+
 #ifdef DH2_DECAL
 @group(#{MATERIAL_BIND_GROUP}) @binding(155) var<uniform> decal_zbias: f32;
 #endif
@@ -53,6 +57,10 @@ fn morph_vertex(vertex_in: Vertex, instance_index: u32) -> Vertex {
 @vertex
 fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var out: VertexOutput;
+#ifdef DH2_DECAL_INSTANCES
+    let projection = decal_instance(vertex_no_morph.instance_index);
+    out.decal_index = decal_draw.first + vertex_no_morph.instance_index;
+#endif
 #ifdef DH2_PARTICLE_INSTANCES
     // Direct instancing: instance_index counts this draw's instances; the
     // entity's own mesh uniform comes from the draw's immediates. Ordinary
@@ -68,13 +76,25 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var vertex = vertex_no_morph;
 #endif
 
+#ifdef DH2_DECAL_INSTANCES
+    let mesh_world_from_local = decal_world_from_local(projection);
+#else
 #ifdef DH2_PARTICLE_INSTANCES
     let mesh_world_from_local = particle_surface_world_from_local(particle);
 #else
     let mesh_world_from_local = mesh_functions::get_world_from_local(vertex_no_morph.instance_index);
 #endif
+#endif
 
 #ifdef SKINNED
+#ifdef DH2_DECAL_INSTANCES
+#ifdef DH2_SKIN8
+    var world_from_local = decal_skin8(vertex.joint_indices, vertex.dh2_joint_indices_b,
+        vertex.joint_weights, vertex.dh2_joint_weights_b, projection.receiver.indices.z);
+#else
+    var world_from_local = decal_skin4(vertex.joint_indices, vertex.joint_weights, projection.receiver.indices.z);
+#endif
+#else
 #ifdef DH2_SKIN8
     var world_from_local = skinning::skin_model8(
         vertex.joint_indices,
@@ -92,6 +112,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex_no_morph.instance_index
     );
 #endif
+#endif // DH2_DECAL_INSTANCES
 #else
     var world_from_local = mesh_world_from_local;
 #endif
@@ -146,8 +167,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     out.position.z *= vertex.model_depth_hack;
 #endif
 #ifdef DH2_DECAL
-    // arkDecal: offset homogeneous Z, preserving the authored world position.
+#ifndef DH2_DECAL_DEPTH_BOX
+    // arkDecal: only geometry decals offset homogeneous Z; the depth-box
+    // proxy reconstructs its receiver from the existing scene depth.
     out.position.z -= decal_zbias;
+#endif
 #endif
 #ifdef DH2_FAR_DEPTH
     out.position.z=0.0;
@@ -186,10 +210,14 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     // Use vertex_no_morph.instance_index instead of vertex.instance_index to work around a wgpu dx12 bug.
     // See https://github.com/gfx-rs/naga/issues/2416
+#ifdef DH2_DECAL_INSTANCES
+    out.instance_index = decal_draw.mesh_index;
+#else
 #ifdef DH2_PARTICLE_INSTANCES
     out.instance_index = particle_mesh_index;
 #else
     out.instance_index = vertex_no_morph.instance_index;
+#endif
 #endif
 #endif
 
@@ -199,6 +227,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 #endif
 
 #ifdef DH2_VERTEX_PROBE
+#ifdef DH2_DECAL_INSTANCES
+    let lighting = vertex_lighting(projection.receiver.indices.x,
+        vertex_no_morph.index - projection.receiver.indices.y, out.world_position.xyz);
+#else
 #ifdef DH2_PARTICLE_INSTANCES
     let lighting = vertex_lighting(particle.parameters.w,
         vertex_no_morph.index - mesh[particle_mesh_index].first_vertex_index,
@@ -208,6 +240,7 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex_no_morph.index - mesh[vertex_no_morph.instance_index].first_vertex_index,
         out.world_position.xyz);
 #endif
+#endif // DH2_DECAL_INSTANCES
 #ifdef DH2_AUTHORED_BASIS
     let bitangent = out.world_bitangent;
 #else
@@ -229,12 +262,16 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     out.reflection_barycentrics=bary.xy;
 #endif
 #ifdef DH2_FOG_VERTEX
+#ifdef DH2_DECAL_INSTANCES
+    out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,projection.receiver.indices.x);
+#else
 #ifdef DH2_PARTICLE_INSTANCES
     out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,particle.parameters.w);
 #else
     out.fog_color=material_fog_vertex(out.position,out.world_position.xyz,(#{DH2_ALPHA_FLAGS}u&32u)!=0u,mesh[vertex.instance_index].tag);
 #endif
 #endif
+#endif // DH2_DECAL_INSTANCES
     return out;
 }
 

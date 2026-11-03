@@ -29,3 +29,43 @@ Remove an entry when it is implemented and measured.
 | First-person arms skinned on the GPU | `app::player_arms::update_player_arms`, vendored `bevy_pbr` mesh/prepass vertex shaders | walking: arms skinning 1.3-1.4 ms per frame of main-thread waits (after e6901f4's parallel skinning) plus 0.43 ms of mesh upload on the render thread (after df8da1d); the body model alone is 10391 vertices | the installed skin VS blend (eight byte weights, weightY then MAD weightX, Z/W, second quartet; edge_skeleton::vertex_skin_matrix) | implemented 2026-11-02: bind-pose streams with joints 4..7 in DH2_JointIndexB/WeightB, the DH2_SKIN8 blend in the vendored mesh and prepass shaders (installed order; bitangent = cross(skinned N, T) x sign), the palette published as joint transforms with identity inverse binds. Rest pose matches the CPU-skinned screenshot (arms identical in an 8x diff). Deterministic walk: arm skinning 1.08 -> 0 ms/frame, allocate_and_free_meshes 0.41 -> 0.04, mean frame 10.74 -> 10.18 ms, fps 84.8 -> 88.3; opaque pass 1.874 -> 1.898 ms and prepass 0.391 -> 0.396 ms (within walk variance) |
 | CPU-skinned physics placements re-uploaded every frame | `app::physics_skinning::pose_physics_systems` | 4 meshes `modified` every frame (Assets<Mesh>::get_mut + apply_rest_pose), so Bevy re-extracts, frees and reallocates them each frame (`allocate_and_free_meshes` ~0.23 ms/frame) and invalidates any slab-based memo | identical deformed vertices | identical poses skipped 2026-11-02 (the placement keeps its last palette; resting bodies no longer re-skin or re-upload): eotw camera path, skinning 0.13 -> 0.03 ms/frame. Open: GPU skinning from the published palette for bodies that do move |
 | Wwise virtual voices (below-threshold behaviour) | `app::audio::graph` `Runtime::frame_inner` | eotw sweep with benchmark audio: audio thread 175 -> 163 ms/s (Sound::sample 75.8 -> 71.4, voice filters 14.1 -> 10.9); 72 one-shot fly/mosquito voices start beyond their attenuation range and stay virtual, while the cost is dominated by audible Vorbis loops | the original's audible output (connections at or below the -96.3 dB threshold) and voice lifetimes | implemented 2026-11-01 (1410fcf50 audibility, 1410fdda0 kill/virtual/return, 1411609c0/141161c80 return modes, 1410dd720 resolution); not covered: voices above two channels (unrouted). The Wwise instance limiter (141115880) is not ported; when it is, threshold-virtual voices (PBI+0x1f8 bit 0, set by 141106180) must stay out of its count |
+
+- `rendering/bevy_backend/particle_meshes.rs`: `by_key` and its per-key lists
+  are allocated during each publication; retaining the grouping scratch would
+  remove O(active material/source pairs) small allocations per frame. No byte
+  or CPU saving has been measured. Waits for a targeted publication A/B; this
+  pass does not alter grouping or draw order while adding another direct-surface
+  owner. GPU instance/lighting buffers already grow only when required.
+
+- Projected decal receiver publication: shares geometry/palettes but currently
+  rebuilds visible receiver transforms and temporary packet lists each frame.
+  Cache immutable classification/mesh-layout metadata and reuse list capacity
+  after the connected path is verified. Do not gate acquisition on previous-frame
+  effect activity: that would delay a newly started effect by one frame.
+  Gain is proportional to visible receiver count; not measured yet.
+- Direct projected receivers need Bevy's skinned mesh bind-group layout even
+  though projection programs borrow the current palette through their own group.
+  The host proxy has no independent skeleton. Fixed: `DirectMeshSkin` selects
+  the shared skinned binding; palette ownership stays with the source skin and
+  no duplicate proxy joint records are allocated.
+
+- Projected decal receiver GPU upload: the connected blood-splat diagnostic
+  publishes 4,928 receiver records although only one depth-box proxy is drawn.
+  At 64 bytes each this is 315,392 bytes/frame; that depth-box draw needs only
+  one 64-byte receiver. Build receiver records lazily when an admitted pair
+  actually references them, reusing the per-frame remap scratch. Prediction for
+  this view: 4,928 -> 1 records and 315,392 -> 64 uploaded receiver bytes, with
+  the same projection, pair count and draw. Implemented with a reused receiver
+  index scratch. Measured in the same executable: 315,392 -> 64 receiver
+  buffer bytes, one 36-index/one-instance depth-box draw in both modes. The
+  predicted byte saving was exact; admission, record calculation and draw
+  order are unchanged. Retained.
+
+- Projected decal CPU packet preparation still checks every visible receiver
+  per material/layout proxy before rejecting non-overlapping projections. Cache
+  immutable classification and use the prepared projection target lists to
+  visit only potential receivers after measuring this loop; expected work is
+  proportional to admitted targets rather than total visible meshes. This is
+  recorded separately from sparse GPU publication, whose byte saving is known.
+  Host phase proxies also retain zero-count submissions while inactive to
+  admit effects immediately without a one-frame visibility handoff delay.

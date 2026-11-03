@@ -46,6 +46,149 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             println!("mode={} requests=200 live_consumers=3 distinct_live_trees={unique} acquired_bytes={acquired_bytes} acquisition_us={} queries={queries} query_us={} hits={hits} output_hash={}",
                 if unshared { "unshared" } else { "shared" }, acquisition.as_micros(), start.elapsed().as_micros(), hash.finalize());
         }
+        "inspect-decal-materials" => {
+            use dishonored2_rust::{
+                assets::decal::DecalResources,
+                rendering::decals::material::DecalProgram,
+                render_program::{RenderParameterKind, SerializedParameter, SerializedParameterBlock, SerializedParameterValue},
+                shader_cache::{ProgramLibrary, ShaderCacheBackend}, material,
+            };
+            let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+            let mut library = ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog)?;
+            let mut declarations = DecalResources::default();
+            let mut names = std::collections::BTreeSet::new();
+            let mut failures = 0;
+            let mut count = 0;
+            for path in catalog.paths_containing("generated/decls/decal/") {
+                let Some(name) = path.strip_prefix("generated/decls/decal/").and_then(|p| p.strip_suffix(".decl")) else { continue; };
+                count += 1;
+                match declarations.resolve(&catalog, name) {
+                    Ok(Some(references)) => names.extend([
+                        &references.opaque, &references.opaque_instanced,
+                        &references.alpha, &references.alpha_instanced,
+                    ].into_iter().flatten().cloned()),
+                    Ok(None) => { println!("decal_missing={name}"); failures += 1; }
+                    Err(error) => { println!("decal_error={name}: {error}"); failures += 1; }
+                }
+            }
+            let mut kinds = [0usize; 4];
+            let mut fx = 0;
+            for name in &names {
+                let result = (|| -> std::result::Result<DecalProgram, String> {
+                    let bytes = catalog.read(&format!("generated/decls/material/{name}.decl"))
+                        .map_err(|error| error.to_string())?.ok_or("decal material absent")?;
+                    let main = material::authored_program_override(&bytes, "mainProgram").ok_or("decal MAIN absent")?;
+                    let parameters = material::material_option_parameters(&bytes, |key| {
+                        library.parameter_kinds.get(key.as_bytes()) == Some(&RenderParameterKind::Option)
+                    })?;
+                    let options = SerializedParameterBlock { flags: 0, parameters: parameters.into_iter()
+                        .map(|(name, value)| SerializedParameter { name: name.into_bytes(), kind: RenderParameterKind::Option,
+                            value: SerializedParameterValue::Words([value as u32, 0, 0, 0]) }).collect() };
+                    DecalProgram::load(&catalog, &mut library, &bytes, &main, &options)
+                })();
+                match result {
+                    Ok(program) => { kinds[program.kind as usize] += 1; fx += usize::from(program.use_fx); }
+                    Err(error) => { println!("decal_material_error={name}: {error}"); failures += 1; }
+                }
+            }
+            println!("declarations={count} distinct_materials={} projection_kinds={kinds:?} fx_materials={fx} errors={failures}", names.len());
+        }
+        "inspect-material-program" => {
+            use dishonored2_rust::{
+                material,
+                render_program::{
+                    RenderParameterKind, SerializedParameter, SerializedParameterBlock,
+                    SerializedParameterValue, StageBytecode,
+                },
+                shader_cache::{ProgramLibrary, ShaderCacheBackend},
+            };
+            let name = args
+                .first()
+                .ok_or("inspect-material-program requires a material name")?;
+            let output = Path::new(
+                args.get(1)
+                    .ok_or("inspect-material-program requires a local output directory")?,
+            );
+            std::fs::create_dir_all(output)?;
+            let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+            let bytes = catalog
+                .read(&format!("generated/decls/material/{name}.decl"))?
+                .ok_or("material absent")?;
+            let main = material::authored_program_override(&bytes, "mainProgram")
+                .ok_or("material MAIN absent")?;
+            let mut library = ProgramLibrary::open(base, ShaderCacheBackend::Pc, &catalog)?;
+            let parameters = material::material_option_parameters(&bytes, |name| {
+                library.parameter_kinds.get(name.as_bytes()) == Some(&RenderParameterKind::Option)
+            })?;
+            let mut options = SerializedParameterBlock {
+                flags: 0,
+                parameters: parameters
+                    .into_iter()
+                    .map(|(name, value)| SerializedParameter {
+                        name: name.into_bytes(),
+                        kind: RenderParameterKind::Option,
+                        value: SerializedParameterValue::Words([value as u32, 0, 0, 0]),
+                    })
+                    .collect(),
+            };
+            let inputs = dishonored2_rust::rendering::decals::material::DecalProgram::load(
+                &catalog, &mut library, &bytes, &main, &options,
+            )?;
+            println!("projection_inputs={inputs:?}");
+            let state = library
+                .definition(main.as_bytes())?
+                .ok_or("program definition absent")?
+                .render_state();
+            let state = dishonored2_rust::render_state::material_render_state(
+                &entities::declaration_text(&bytes),
+                state,
+            )?;
+            let decal = library.option_value(main.as_bytes(), &options, b"isDecal")? != 0;
+            let kind = library.registered_option_value(&options, b"decalType")? as u32;
+            let sky = library.option_value(main.as_bytes(), &options, b"skyType")? as u32;
+            let alpha = material::shadow_is_alpha(state[0], decal, kind, sky);
+            let no_screen = [
+                b"noScreenShadows".as_slice(),
+                b"translucency_hq/enable",
+                b"translucency/enable",
+            ]
+            .into_iter()
+            .try_fold(alpha, |value, option| {
+                library
+                    .option_value(main.as_bytes(), &options, option)
+                    .map(|n| value || n != 0)
+            })?;
+            for (name, value) in [
+                ("useMultiInstancing", args.get(2).is_none_or(|bank| bank != "model")),
+                ("isAlpha", alpha),
+                ("noScreenShadows", no_screen),
+            ] {
+                options.parameters.push(SerializedParameter {
+                    name: name.as_bytes().into(),
+                    kind: RenderParameterKind::Option,
+                    value: SerializedParameterValue::Words([u32::from(value), 0, 0, 0]),
+                });
+            }
+            let variant = library
+                .serialized_variant(main.as_bytes(), &options)?
+                .ok_or("installed variant absent")?;
+            println!("material={name} main={main} decal_type={kind} alpha={alpha} state={state:?}");
+            for (index, stage) in variant.stages.iter().enumerate() {
+                let bytes = match &stage.bytecode {
+                    StageBytecode::Absent => continue,
+                    StageBytecode::Inline(bytes) => bytes.clone(),
+                    StageBytecode::Cached(id) => library.cache.stage(*id as usize)?.bytes,
+                };
+                println!(
+                    "stage={index} kind={} layout={:?} bindings={:?}",
+                    stage.kind, stage.layout, stage.bindings
+                );
+                std::fs::write(
+                    output.join(format!("stage-{index}-{}.dxbc", stage.kind)),
+                    bytes,
+                )?;
+            }
+        }
         "inspect-ui-fonts" => {
             use dishonored2_rust::flash::{raster::Images, render, Player};
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
@@ -148,6 +291,18 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 &mut programs,
                 &mut resources,
             );
+            let mut decal_effects = sources.effects.iter().filter_map(|(name, effect)|
+                effect.as_ref().ok().filter(|effect| effect.groups.iter().any(|group| !group.decals.is_empty()))
+                    .map(|effect| (name, effect))).collect::<Vec<_>>();
+            decal_effects.sort_by_key(|(name, _)| *name);
+            for (name, effect) in decal_effects {
+                for decal in effect.groups.iter().flat_map(|group| &group.decals) {
+                    match decal {
+                        Ok(decal) => println!("decal effect={name} descriptor={:?} references={:?}", decal.asset.name, decal.asset.declarations),
+                        Err(error) => println!("decal effect={name} unavailable={error}"),
+                    }
+                }
+            }
             println!("acquisition_ms={} declaration_requests={} declaration_reads={} model_reads={} field_image_reads={} material_reads={} deferred_syntax_bytes={} deferred_admission_bytes={}",
                 started.elapsed().as_millis(), resources.declaration_requests, resources.declaration_reads,
                 resources.model_reads, resources.field_image_reads, resources.material_reads,

@@ -40,19 +40,32 @@ pub struct ProjectedWorldDraws<'a, M> {
     pub draws: Vec<ProjectedWorldDraw<'a, M>>,
 }
 
-impl<M>
-    DecalPool<
-        DecalDescription<DecalMaterials<ProjectionMaterial<M>>>,
-        CommittedDecal<DecalMaterials<ProjectionMaterial<M>>>,
-    >
-{
+/// 298ee0's retained target cursor skips every range whose selected MAIN is
+/// absent or depth-box-only. Ranges are ordered and contiguous: the last end
+/// in each receiver class is sufficient for the same prepass.
+pub fn receiver_target_floor(last_ends: [u32; 2], admitted: [bool; 2]) -> u32 {
+    (0..2)
+        .filter(|&class| !admitted[class])
+        .map(|class| last_ends[class])
+        .max()
+        .unwrap_or(0)
+}
+
+pub fn receiver_accepts_geometry(depth_box: bool, main_blend_state: u32, flags_48: u8) -> bool {
+    !depth_box || (main_blend_state & 1 != 0 && flags_48 & 0x30 == 0)
+}
+
+impl<C: Clone> DecalPool<DecalDescription<C>, CommittedDecal<C>> {
     /// Consume the same physical-slot order as prepare_world. A live slot must
     /// have completed projection preparation before it can enter the draw list.
-    pub fn world_draws(
+    pub fn world_draws<M>(
         &self,
         receivers: &[WorldReceiver],
         visible_instances: &[u8],
-    ) -> Result<ProjectedWorldDraws<'_, M>, String> {
+    ) -> Result<ProjectedWorldDraws<'_, M>, String>
+    where
+        C: AsRef<DecalMaterials<ProjectionMaterial<M>>>,
+    {
         let decals = (0..self.limit() as u32)
             .filter_map(|index| {
                 let slot = self.slot(index).unwrap();
@@ -70,12 +83,13 @@ impl<M>
 /// Keep receiver order, projection order, actual instance visibility and target
 /// cursors. 298ee0's projection-bounds visibility bit controls material updates,
 /// not this WORLD draw loop; it must not introduce another geometry cull here.
-pub fn gather_world_draws<'a, M>(
-    decals: &[&'a CommittedDecal<DecalMaterials<ProjectionMaterial<M>>>],
+pub fn gather_world_draws<'a, M: 'a, C: AsRef<DecalMaterials<ProjectionMaterial<M>>>>(
+    decals: &[&'a CommittedDecal<C>],
     receivers: &[WorldReceiver],
     visible_instances: &[u8],
 ) -> Result<ProjectedWorldDraws<'a, M>, String> {
     let mut previous_end = 0;
+    let mut last_ends = [0; 2];
     for receiver in receivers {
         if receiver.instances.start != previous_end
             || receiver.instances.end < receiver.instances.start
@@ -85,6 +99,7 @@ pub fn gather_world_draws<'a, M>(
             return Err("projected WORLD receiver ranges are invalid".into());
         }
         previous_end = receiver.instances.end;
+        last_ends[usize::from(receiver.main_blend_state & 1 != 0)] = receiver.instances.end;
     }
     let mut cursors = vec![0; decals.len()];
     let mut indices = vec![None; decals.len()];
@@ -97,21 +112,16 @@ pub fn gather_world_draws<'a, M>(
         {
             return Err("projected WORLD target IDs are invalid".into());
         }
-        // 298ee0 advances the retained cursor past receiver ranges whose
-        // selected MAIN is absent or is handled by the depth-box path.
-        for receiver in receivers {
-            let material = decal
+        let admitted = [true, false].map(|opaque| {
+            decal
                 .description
                 .material
-                .select(receiver.main_blend_state & 1 == 0, true);
-            if material.is_none_or(|m| !m.admitted()) {
-                while cursors[index] < targets.len()
-                    && targets[cursors[index]] < receiver.instances.end
-                {
-                    cursors[index] += 1;
-                }
-            }
-        }
+                .as_ref()
+                .select(opaque, true)
+                .is_some_and(|material| material.admitted())
+        });
+        let floor = receiver_target_floor(last_ends, admitted);
+        cursors[index] = targets.partition_point(|&target| target < floor);
     }
     let mut output = ProjectedWorldDraws {
         projections: Vec::new(),
@@ -130,6 +140,7 @@ pub fn gather_world_draws<'a, M>(
             let Some(material) = decal
                 .description
                 .material
+                .as_ref()
                 .select(receiver.main_blend_state & 1 == 0, true)
                 .filter(|m| m.admitted())
             else {
@@ -143,11 +154,15 @@ pub fn gather_world_draws<'a, M>(
             let depth_box_targets = decal
                 .description
                 .material
+                .as_ref()
                 .opaque_instanced
                 .as_ref()
                 .is_some_and(|m| m.depth_box);
-            let receiver_allowed = !depth_box_targets
-                || (receiver.main_blend_state & 1 != 0 && receiver.flags_48 & 0x30 == 0);
+            let receiver_allowed = receiver_accepts_geometry(
+                depth_box_targets,
+                receiver.main_blend_state,
+                receiver.flags_48,
+            );
             while let Some(&target) = targets.get(cursors[index]) {
                 if target >= receiver.instances.end {
                     break;

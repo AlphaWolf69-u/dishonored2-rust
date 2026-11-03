@@ -57,6 +57,7 @@ impl Plugin for DisplayPlugin {
         super::alpha_depth_scene::register(app);
         super::display_capture::register(app);
         super::debug_graphics_capture::register(app);
+        super::debug_shaders::register(app);
         super::shader_buffer_patches::register(app);
         app.init_resource::<DisplaySceneFrame>()
             .add_plugins(ExtractResourcePlugin::<DisplaySceneFrame>::default());

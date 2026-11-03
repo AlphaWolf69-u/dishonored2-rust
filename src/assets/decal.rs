@@ -4,6 +4,31 @@ use super::{
     entities::{declaration_text, parse_declaration},
 };
 use crate::gameplay::options::decl::{atom, scope};
+use std::{collections::HashMap, sync::Arc};
+
+/// One declaration-reference owner for a level's projected-decal effects.
+/// Instanced and ordinary receiver variants retain their own material names.
+#[derive(Default)]
+pub struct DecalResources {
+    declarations: HashMap<String, Result<Option<Arc<DecalMaterials<String>>>, String>>,
+}
+impl DecalResources {
+    pub fn resolve(
+        &mut self,
+        catalog: &Catalog,
+        name: &str,
+    ) -> Result<Option<Arc<DecalMaterials<String>>>, String> {
+        let key = name.replace('\\', "/").to_ascii_lowercase();
+        self.declarations
+            .entry(key)
+            .or_insert_with(|| {
+                DecalMaterials::read(catalog, name)?
+                    .map(|materials| materials.resolve(catalog).map(Arc::new))
+                    .transpose()
+            })
+            .clone()
+    }
+}
 
 /// The fields at 1414fc470. A missing variant is not replaced by another
 /// receiver's shader: their geometry and blend/depth requirements differ.
@@ -13,6 +38,9 @@ pub struct DecalMaterials<M> {
     pub opaque_instanced: Option<M>,
     pub alpha: Option<M>,
     pub alpha_instanced: Option<M>,
+}
+impl<M> AsRef<DecalMaterials<M>> for DecalMaterials<M> {
+    fn as_ref(&self) -> &Self { self }
 }
 impl<M> DecalMaterials<M> {
     pub fn select(&self, opaque: bool, instanced: bool) -> Option<&M> {

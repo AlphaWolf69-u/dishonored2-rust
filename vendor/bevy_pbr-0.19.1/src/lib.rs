@@ -82,6 +82,8 @@ pub use parallax::*;
 pub use pbr_material::*;
 pub use prepass::*;
 pub use render::*;
+// DH2: projection draws borrow the existing palette; no second skin upload.
+pub use skin::SkinUniforms;
 pub use ssao::*;
 pub use ssr::*;
 pub use transmission::*;

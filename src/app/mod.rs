@@ -165,3 +165,5 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests;
+
+mod projected_decals;

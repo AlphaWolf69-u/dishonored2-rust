@@ -270,3 +270,12 @@ pub(crate) mod world_particle_state;
 mod world_sub_effects;
 #[cfg(feature = "game")]
 pub(crate) mod world_sounds;
+
+#[cfg(feature = "game")]
+mod decal_effects;
+
+#[cfg(feature = "game")]
+pub mod projected_decals;
+
+#[cfg(feature = "game")]
+mod debug_shaders;
