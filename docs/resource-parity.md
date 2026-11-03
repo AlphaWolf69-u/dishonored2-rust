@@ -229,6 +229,14 @@ with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
 experiment was reverted. The independent contact-acquisition correction remains.
+A subsequent host comparison isolates only acquisition in a temporary Bevy
+TaskPool with the frame pool's existing worker count; synchronous diagnostics
+and post-publication playback keep their previous executor. This preserves
+parallelism while preventing cold media tasks from occupying frame workers.
+Same-binary client validation prepares 1437 events in both paths: equal-capacity
+isolation takes 171.071 vs 183.753 ms, and 209.431 vs 207.478 ms with four workers.
+The pool is released after acquisition and adds no persistent resource cache
+or audio output. No reduction of the remaining GPU-dominated window gaps is claimed.
 
 Fade constructor/reset (`14000f610` -> `14000f740`, curve constructors
 `14000d610` / `14000d0b0`) starts RGB and opacity with a single t=0 cubic key.

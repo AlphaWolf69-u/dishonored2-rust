@@ -400,9 +400,9 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
 /// prepared here, on all cores, instead of on the main thread at its first
 /// post.
 fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
-    if !registry.preloaded { prepare_listed_events(&mut registry); }
+    if !registry.preloaded { prepare_listed_events(&mut registry, None); }
 }
-fn prepare_listed_events(registry: &mut WwiseRegistry) {
+fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
@@ -432,7 +432,7 @@ fn prepare_listed_events(registry: &mut WwiseRegistry) {
             return warn!("Level sound events not preloaded: {error}");
         }
     };
-    let count = prepare_all(registry, &events);
+    let count = prepare_all(registry, &events, acquisition_pool);
     registry.preloaded = true;
     crate::loading::complete(LISTED_SOUNDS_GATE);
     super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
@@ -443,11 +443,12 @@ const LISTED_SOUNDS_GATE: &str = "listed sound events";
 const LEVEL_SOUNDS_GATE: &str = "level emitter and world FX sound events";
 
 /// Prepare `events` not prepared yet on all cores. Returns how many were.
-fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
+fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: Option<&bevy::tasks::TaskPool>) -> usize {
     let prepare_started = std::time::Instant::now();
     let events: Vec<u32> = events.iter().copied().filter(|e| !registry.sources.contains_key(e)).collect();
+    if events.is_empty() { return 0; }
     let shared = &*registry;
-    let pool = bevy::tasks::ComputeTaskPool::get();
+    let pool = acquisition_pool.unwrap_or_else(|| bevy::tasks::ComputeTaskPool::get());
     let threads = pool.thread_num().max(1);
     let prepared: Vec<(u32, Vec<SourceAction>)> = pool.scope(|scope| {
         for chunk in events.chunks(events.len().div_ceil(threads).max(1)) { scope.spawn(async move {
@@ -509,7 +510,7 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
     events.sort_unstable();
     events.dedup();
     let started = std::time::Instant::now();
-    let count = prepare_all(&mut registry, &events);
+    let count = prepare_all(&mut registry, &events, None);
     registry.level_prepared = true;
     crate::loading::complete(LEVEL_SOUNDS_GATE);
     super::load_timing::mark(&format!("level sounds: {count} more of {} emitter and FX events prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
@@ -678,7 +679,15 @@ impl AudioPreparation {
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands) {
         commands.insert_resource(contacts::ContactSounds::acquire());
         prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
-        prepare_listed_events(&mut self.registry);
+        // Host: cold media reads/decodes must not occupy the frame executor.
+        // Keep its existing parallelism rather than the smaller async pool,
+        // and release these workers before scene preparation continues.
+        let pool = (std::env::var("DH2_DEBUG_SOUND_FRAME_POOL").as_deref() != Ok("1"))
+            .then(|| bevy::tasks::TaskPoolBuilder::new()
+                .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num().max(1))
+                .thread_name("sound acquisition".to_owned())
+                .build());
+        prepare_listed_events(&mut self.registry, pool.as_ref());
     }
     pub fn publish(self, world: &mut World) {
         world.insert_resource(self.registry);

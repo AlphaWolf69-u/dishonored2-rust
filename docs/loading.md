@@ -485,3 +485,31 @@ workers. Maximum window gaps did not improve (186.055 vs 157.687 ms;
 176.322 vs 176.629 ms). The pool change and switch were removed. The original
 three-second observation remains unexplained; repeated tutorial captures no
 longer reproduce it. No claim is made that that cold-loading stall is fixed.
+
+Normal (non-benchmark) release input capture (`loading-input-handoff.json`):
+after the movie's mouse continuation, Windows reports the owned window in the
+foreground, hidden cursor (`flags=0`) and a one-pixel clip rectangle inside
+the client bounds. No additional gameplay click is sent. The loading interval's
+maximum gap is 210.226 ms in that run. Settings are isolated from the user's
+home for this observation; no screenshots or player navigation are used.
+
+The next acquisition-pool comparison keeps the frame pool's worker count in a
+temporary Bevy TaskPool owned by the audio preparation call. This addresses
+blocking media work occupying frame-executor workers without the smaller async
+pool's throughput loss. Workers finish and release before further scene cooking;
+playback and ordinary frame work keep their existing scheduling. The original
+pool remains available through the diagnostic switch for same-binary comparison.
+Expected warm decode cost stays near the original, plus worker creation; cold
+decode cannot queue ahead of frame tasks in the same executor. Validation pending.
+
+Same-binary validation (`loading-acquisition-pool-*`, dev client, tutorial):
+all four runs exit 0 and prepare the same 1437 events. Existing/isolated-pool
+decode costs are 183.753 / 171.071 ms; with four configured workers they are
+207.478 / 209.431 ms. Thus equal-capacity isolation avoids the async pool's
+throughput loss. Overall window maxima are GPU-dominated and do not improve
+(169.073 / 184.436 and 186.219 / 217.816 ms); these are not evidence of faster
+rendering. The cold three-second episode still does not reproduce in these
+runs. The scheduling invariant is that bulk acquisition cannot fill the frame
+executor's queue: only the loading call owns and waits for its temporary workers.
+The final visual responsiveness assessment still requires the user because
+visual inspection is disabled.
