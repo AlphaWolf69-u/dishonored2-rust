@@ -188,7 +188,7 @@ All-thread CPU time is summed across parallel threads, so it can exceed a
 frame's wall duration. The aggregate CPU/frame mean is 1.9% lower, but the
 before runs vary by 5.4%; this does not establish a significant CPU speedup.
 The small main-wall-span change (+0.049 ms) is within its before-repeat range
-(7.510–7.637 ms), while main-thread active CPU is unchanged. No measurable
+(7.510–7.636 ms), while main-thread active CPU is unchanged. No measurable
 walking CPU regression was found. This comparison covers this route and
 active audio; it is not a claim about every level or menu interaction.
 
