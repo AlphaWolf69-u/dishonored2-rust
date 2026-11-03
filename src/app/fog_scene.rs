@@ -392,6 +392,7 @@ pub(super) fn publish_fog_frame(
     mut normal_extent: Local<super::fog_objects::NormalTagExtent>,
 ) {
     use crate::rendering::bevy_backend::fog::{FogCanvas, FogFrame, FogParameters};
+    if scene.is_added() { *normal_extent = Default::default(); }
     let Some(fog) = fog.as_mut() else {
         output.0 = None;
         ray_sources.0 = None;

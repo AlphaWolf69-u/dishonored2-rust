@@ -10,10 +10,20 @@ use bevy::{
     prelude::*,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
 };
+
+static REQUESTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static REQUEST_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Host entry for a map command/menu selection. The same application owns
+/// both worlds; invalid requests leave the current world running.
+pub fn request_level(name: impl Into<String>) {
+    REQUESTS.lock().unwrap().push_back(name.into());
+    REQUEST_PENDING.store(true, std::sync::atomic::Ordering::Release);
+}
 
 #[derive(Default)]
 pub(super) struct PreparedLevel {
@@ -100,6 +110,7 @@ impl Schedules {
 #[derive(Resource)]
 pub(super) struct Acquisition {
     pub(super) catalog: Arc<Catalog>,
+    base: PathBuf,
     input: Option<(Arc<Catalog>, LevelResources, PathBuf)>,
     result: Option<Mutex<mpsc::Receiver<Result<PreparedLevel, String>>>>,
     frames: u32,
@@ -115,6 +126,11 @@ pub(super) struct Acquisition {
     completion_visible: bool,
     gpu: GpuReadiness,
     pending: Vec<&'static str>,
+    lifetime: super::level_lifetime::LevelLifetime,
+    next: Option<LevelResources>,
+    debug_sequence: VecDeque<String>,
+    debug_sequence_active: bool,
+    played_seconds: f64,
 }
 #[derive(Component)]
 struct LoadingCamera;
@@ -152,7 +168,7 @@ pub(super) fn install(
                 .get_conditions_mut(key)
                 .expect("system condition storage")
                 .push(ConditionWithAccess::new(Box::new(IntoSystem::into_system(
-                    resource_exists::<super::SceneData>,
+                    scene_published,
                 ))));
         }
     }
@@ -197,6 +213,9 @@ pub(super) fn install(
     app.init_resource::<ScenePublished>().add_plugins(
         bevy::render::extract_resource::ExtractResourcePlugin::<ScenePublished>::default(),
     );
+    app.init_resource::<SceneImageRequests>().add_plugins(
+        bevy::render::extract_resource::ExtractResourcePlugin::<SceneImageRequests>::default(),
+    );
     crate::loading::gate(GPU_GATE);
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
@@ -208,8 +227,10 @@ pub(super) fn install(
     let map = level.entities.trim_end_matches(".entities").to_owned() + ".map";
     app.insert_resource(crate::gameplay::game_clock_runtime::GamePaused(true));
     app.init_resource::<super::resident_images::UiImages>();
+    app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
     app.insert_resource(Acquisition {
         catalog: catalog.clone(),
+        base: base.clone(),
         input: Some((catalog, level, base)),
         result: None,
         frames: 0,
@@ -225,6 +246,16 @@ pub(super) fn install(
         completion_visible: false,
         gpu,
         pending: Vec::new(),
+        lifetime: Default::default(),
+        next: None,
+        debug_sequence: std::env::var("DH2_DEBUG_LEVEL_SEQUENCE")
+            .unwrap_or_default()
+            .split(';')
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        debug_sequence_active: std::env::var_os("DH2_DEBUG_LEVEL_SEQUENCE").is_some(),
+        played_seconds: 0.0,
     })
     .add_systems(Startup, show_bootstrap)
     .add_systems(First, acquire)
@@ -280,10 +311,115 @@ fn show_bootstrap(
 }
 
 fn acquire(world: &mut World) {
+    let current = world.resource::<Acquisition>();
+    if current.finished
+        && !current.debug_sequence_active
+        && !REQUEST_PENDING.load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
     let mut state = world.remove_resource::<Acquisition>().unwrap();
     if state.finished {
-        world.insert_resource(state);
-        return;
+        if state.debug_sequence_active {
+            state.played_seconds += world.resource::<Time<Real>>().delta_secs_f64();
+        }
+        if state.debug_sequence_active && state.played_seconds >= 3.0 {
+            if let Some(next) = state.debug_sequence.pop_front() {
+                request_level(next);
+            } else {
+                state.debug_sequence_active = false;
+                super::load_timing::mark("level sequence complete");
+                world.write_message(AppExit::Success);
+            }
+            state.played_seconds = 0.0;
+        }
+        let request = if REQUEST_PENDING.load(std::sync::atomic::Ordering::Acquire) {
+            let mut requests = REQUESTS.lock().unwrap();
+            let request = requests.pop_front();
+            REQUEST_PENDING.store(!requests.is_empty(), std::sync::atomic::Ordering::Release);
+            request
+        } else {
+            None
+        };
+        if let Some(request) = request {
+            match LevelResources::resolve(&state.catalog, &request) {
+                Ok(level) => {
+                    state.finished = false;
+                    state.next = Some(level);
+                    state.gpu.0.store(3, std::sync::atomic::Ordering::Release);
+                    world.resource_mut::<ScenePublished>().0 = false;
+                    world
+                        .resource_mut::<crate::gameplay::game_clock_runtime::GamePaused>()
+                        .0 = true;
+                    // Stop map producers now. Cleanup waits for the render
+                    // world to acknowledge its last outgoing publication.
+                    world
+                        .non_send_mut::<super::pause_menu::PauseMenu>()
+                        .begin_level();
+                    super::load_timing::mark("map transition requested");
+                }
+                Err(error) => error!("Map request {request}: {error}"),
+            }
+        }
+        if state.finished {
+            world.insert_resource(state);
+            return;
+        }
+    }
+    if state.next.is_some() {
+        if state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 {
+            world.insert_resource(state);
+            return;
+        }
+        state.lifetime.clear(world);
+        let level = state.next.take().unwrap();
+        state.map = level.entities.trim_end_matches(".entities").to_owned() + ".map";
+        crate::gameplay::map_info::set_current_map(&state.map);
+        crate::loading::restart_level();
+        super::audio::load_level_contacts(world);
+        state.input = Some((state.catalog.clone(), level, state.base.clone()));
+        state.published = false;
+        state.frames = 0;
+        state.movie = None;
+        state.movie_visible = false;
+        state.continued = false;
+        state.debug_continued = false;
+        state.completion_visible = false;
+        state.tick = 0.0;
+        state.pending.clear();
+        state.gpu.0.store(0, std::sync::atomic::Ordering::Release);
+        world
+            .resource_mut::<crate::rendering::bevy_backend::flash_ui::FlashUiFrame>()
+            .0 = None;
+        world.spawn((
+            Camera3d::default(),
+            bevy::core_pipeline::tonemapping::Tonemapping::None,
+            Msaa::Off,
+            LoadingCamera,
+        ));
+        super::load_timing::mark("outgoing world released");
+    }
+    match state.gpu.0.load(std::sync::atomic::Ordering::Acquire) {
+        GPU_COMMON_IMAGES_READY => start_image_phase(world, &state, false),
+        GPU_MAP_IMAGES_READY => {
+            let cameras: Vec<_> = world
+                .query_filtered::<Entity, With<LoadingCamera>>()
+                .iter(world)
+                .collect();
+            for camera in cameras {
+                world.despawn(camera);
+            }
+            for mut camera in world
+                .query_filtered::<&mut Camera, With<Camera3d>>()
+                .iter_mut(world)
+            {
+                camera.is_active = true;
+            }
+            world.resource_mut::<ScenePublished>().0 = true;
+            state.gpu.0.store(1, std::sync::atomic::Ordering::Release);
+            super::load_timing::mark("scene base images ready");
+        }
+        _ => {}
     }
     state.frames += 1;
     if state.movie.is_none() && !state.published {
@@ -396,14 +532,48 @@ fn acquire(world: &mut World) {
                 for camera in cameras {
                     world.despawn(camera);
                 }
+                let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world);
                 prepared.publish(world);
-                state.gpu.0.store(1, std::sync::atomic::Ordering::Release);
                 if let Some(mut startup) = state.startup.take() {
                     startup.run(world);
                     state.startup = Some(startup);
                 }
-                world.resource_mut::<ScenePublished>().0 = true;
+                lifetime.published(world, &resources);
+                state.lifetime = lifetime;
+                for mut camera in world
+                    .query_filtered::<&mut Camera, With<Camera3d>>()
+                    .iter_mut(world)
+                {
+                    camera.is_active = false;
+                }
+                // UI-only view while resource uploads finish. It cannot
+                // specialize/draw the map with placeholder image bindings.
+                world.spawn((
+                    Camera3d::default(),
+                    Msaa::Off,
+                    bevy::core_pipeline::tonemapping::Tonemapping::None,
+                    bevy::camera::visibility::RenderLayers::none(),
+                    LoadingCamera,
+                ));
+                start_image_phase(world, &state, true);
                 state.published = true;
+                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                    let windows: Vec<_> = world
+                        .query_filtered::<Entity, With<Window>>()
+                        .iter(world)
+                        .collect();
+                    let outputs = world
+                        .query_filtered::<Entity, With<super::level_lifetime::SessionEntity>>()
+                        .iter(world)
+                        .count();
+                    eprintln!(
+                        "LOAD session: map={} pid={} catalog={:p} device={:p} windows={windows:?} audio_outputs={outputs}",
+                        state.map,
+                        std::process::id(),
+                        Arc::as_ptr(&state.catalog),
+                        world.resource::<bevy::render::renderer::RenderDevice>()
+                    );
+                }
                 super::load_timing::mark("level initialized");
             }
         }
@@ -421,6 +591,7 @@ fn finish_loading(
 ) {
     if state.published && state.movie.is_some() && state.continued && crate::loading::ready() {
         state.finished = true;
+        state.played_seconds = 0.0;
         paused.0 = false;
         for mut cursor in &mut cursors {
             cursor.visible = true;
@@ -441,11 +612,63 @@ pub(super) fn is_loading(state: &Acquisition) -> bool {
 }
 
 const GPU_GATE: &str = "scene upload and pipelines";
+const GPU_COMMON_IMAGES: u8 = 5;
+const GPU_COMMON_IMAGES_READY: u8 = 6;
+const GPU_MAP_IMAGES: u8 = 7;
+const GPU_MAP_IMAGES_READY: u8 = 8;
 #[derive(Clone, Resource, Default)]
-struct GpuReadiness(Arc<std::sync::atomic::AtomicU8>);
+struct GpuReadiness(
+    Arc<std::sync::atomic::AtomicU8>,
+    Arc<std::sync::atomic::AtomicU64>,
+);
 
 #[derive(Clone, Resource, Default, bevy::render::extract_resource::ExtractResource)]
 struct ScenePublished(bool);
+
+#[derive(Clone, Resource, Default, bevy::render::extract_resource::ExtractResource)]
+struct SceneImageRequests {
+    generation: u64,
+    phase: u8,
+    images: Arc<Vec<bevy::asset::AssetId<Image>>>,
+}
+
+pub(super) fn image_uploads_deferred(world: &World) -> bool {
+    world.contains_resource::<SceneImageRequests>()
+}
+
+fn start_image_phase(world: &mut World, state: &Acquisition, common: bool) {
+    let images =
+        match super::texture_streaming::initialize_scene_images(world, &state.catalog, common) {
+            Ok(images) => images,
+            Err(error) => {
+                error!("Scene image acquisition failed: {error}");
+                crate::platform::client_diagnostics::record(&format!(
+                    "Scene image acquisition failed: {error}"
+                ));
+                world.write_message(AppExit::error());
+                return;
+            }
+        };
+    let phase = if common {
+        GPU_COMMON_IMAGES
+    } else {
+        GPU_MAP_IMAGES
+    };
+    let generation = state
+        .gpu
+        .1
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
+    world.insert_resource(SceneImageRequests {
+        generation,
+        phase,
+        images: Arc::new(images),
+    });
+    state
+        .gpu
+        .0
+        .store(phase, std::sync::atomic::Ordering::Release);
+}
 
 fn gpu_ready(
     published: Res<ScenePublished>,
@@ -453,8 +676,31 @@ fn gpu_ready(
     pipelines: Res<bevy::render::render_resource::PipelineCache>,
     mailbox: Res<super::PreparedImageMailbox>,
     mut last: Local<Option<(usize, usize)>>,
+    mut commands: Commands,
+    requested: Res<SceneImageRequests>,
+    images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
 ) {
     use std::sync::atomic::Ordering;
+    let phase = state.0.load(Ordering::Acquire);
+    if !published.0 && matches!(phase, GPU_COMMON_IMAGES | GPU_MAP_IMAGES) {
+        if requested.phase == phase
+            && requested.generation == state.1.load(Ordering::Acquire)
+            && requested.images.iter().all(|id| images.get(*id).is_some())
+        {
+            state.0.store(phase + 1, Ordering::Release);
+        }
+        return;
+    }
+    if !published.0 && state.0.load(Ordering::Acquire) == 3 {
+        // This render schedule has passed the outgoing frame. The main
+        // world can now release map handles without racing its producers.
+        let state = state.clone();
+        commands.queue(move |world: &mut World| {
+            crate::rendering::bevy_backend::release_level(world);
+            state.0.store(4, Ordering::Release);
+        });
+        return;
+    }
     if !published.0 || state.0.load(Ordering::Acquire) != 1 {
         return;
     }
@@ -474,6 +720,9 @@ fn gpu_ready(
     if counts != (0, 0) {
         return;
     }
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("LOAD pipeline inventory: {}", pipelines.pipelines().count());
+    }
     state.0.store(2, Ordering::Release);
     crate::loading::complete(GPU_GATE);
 }
@@ -485,12 +734,15 @@ fn loading_input(
     pause: NonSend<super::pause_menu::PauseMenu>,
     mut cursors: Query<&mut bevy::window::CursorOptions>,
 ) {
-    if state.finished || state.movie.is_none() {
+    if state.finished {
         return;
     }
     for mut cursor in &mut cursors {
         cursor.visible = false;
         cursor.grab_mode = bevy::window::CursorGrabMode::None;
+    }
+    if state.movie.is_none() {
+        return;
     }
     let keyboard = crate::platform::bindings::Keyboard::default();
     for (down, codes) in [

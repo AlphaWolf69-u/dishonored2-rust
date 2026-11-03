@@ -1,27 +1,40 @@
 //! Texture streaming.
 use super::ImageAccess;
 use super::{
-    archive, entities, material, mpsc, render_state, surface_gpu, texture, Arc, AssetId,
-    DecalMaterial, Extent3d, GpuImage, ImageAddressMode, ImageSampler, ImageSamplerDescriptor,
-    MaterialHandle, Mutex, ProbeMaterial, Receiver, RenderAssetUsages, RenderAssets, RenderDevice,
-    RenderQueue, SceneRenderQueue, StreamingDiagnostics, TexelCopyBufferLayout,
-    TextureDimension, TextureFormat, VecDeque,
+    Arc, AssetId, DecalMaterial, Extent3d, GpuImage, ImageAddressMode, ImageSampler,
+    ImageSamplerDescriptor, MaterialHandle, Mutex, ProbeMaterial, Receiver, RenderAssetUsages,
+    RenderAssets, RenderDevice, RenderQueue, SceneRenderQueue, StreamingDiagnostics,
+    TexelCopyBufferLayout, TextureDimension, TextureFormat, VecDeque, archive, entities, material,
+    mpsc, render_state, surface_gpu, texture,
 };
 use bevy::prelude::*;
 
 /// Immutable post-process images use the same installed-image reader and mip
 /// layout as streamed materials, with the complete initial chain resident.
 pub(super) fn load_resident_2d(
-    catalog:&archive::Catalog,name:&str,images:&mut Assets<Image>,
-    resident:&mut std::collections::HashMap<String,Handle<Image>>,
-)->Result<Handle<Image>,String> {
-    let path=material::image_load_resource(catalog,name)
-        .ok_or_else(||format!("unresolved resident image {name}"))?;
-    if let Some(handle)=resident.get(&path) {return Ok(handle.clone());}
-    let mut loaded=read_streamed_diffuse_at_target(catalog,&path,TextureReadTarget::Initial(Some(0)))?
-        .ok_or_else(||format!("missing resident image {path}"))?;
-    loaded.image.data=Some(loaded.uploads.into_iter().flat_map(|mip|mip.payload).collect());
-    let handle=images.add(loaded.image);resident.insert(path,handle.clone());Ok(handle)
+    catalog: &archive::Catalog,
+    name: &str,
+    images: &mut Assets<Image>,
+    resident: &mut std::collections::HashMap<String, Handle<Image>>,
+) -> Result<Handle<Image>, String> {
+    let path = material::image_load_resource(catalog, name)
+        .ok_or_else(|| format!("unresolved resident image {name}"))?;
+    if let Some(handle) = resident.get(&path) {
+        return Ok(handle.clone());
+    }
+    let mut loaded =
+        read_streamed_diffuse_at_target(catalog, &path, TextureReadTarget::Initial(Some(0)))?
+            .ok_or_else(|| format!("missing resident image {path}"))?;
+    loaded.image.data = Some(
+        loaded
+            .uploads
+            .into_iter()
+            .flat_map(|mip| mip.payload)
+            .collect(),
+    );
+    let handle = images.add(loaded.image);
+    resident.insert(path, handle.clone());
+    Ok(handle)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +46,7 @@ pub(super) struct DiffuseMipLevel {
     pub(super) format: texture::ImageFormat,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct DiffuseMipState {
     pub(super) resident: Option<DiffuseMipLevel>,
     pub(super) pending: Option<DiffuseMipLevel>,
@@ -41,6 +54,184 @@ pub(super) struct DiffuseMipState {
     pub(super) minimum_mip_count: u32,
     pub(super) pending_reduction: bool,
     pub(super) unavailable_finer: Option<u8>,
+}
+
+/// Explicit init/common image references survive world destruction. Capture
+/// the current streamed identity at a map boundary, never a second base copy.
+/// No registry lookup or lock is added to ordinary gameplay streaming.
+#[derive(Resource, Default)]
+pub(super) struct SharedImages {
+    paths: std::collections::HashSet<String>,
+    resident: std::collections::HashMap<String, (Option<u8>, Handle<Image>, DiffuseMipState)>,
+}
+
+impl SharedImages {
+    pub fn new(catalog: &archive::Catalog) -> Result<Self, String> {
+        let language = crate::assets::lang::read_text_language(catalog.base())?;
+        let mut paths = std::collections::HashSet::new();
+        for name in ["init", "common"] {
+            let list = crate::assets::map_resources::acquire_list(
+                catalog.base(),
+                catalog,
+                name,
+                language,
+            )?;
+            paths.extend(
+                list.iter()
+                    .filter(|r| r.kind == "image")
+                    .map(|r| r.path.clone()),
+            );
+        }
+        Ok(Self {
+            paths,
+            resident: Default::default(),
+        })
+    }
+
+    pub fn capture(&mut self, queue: &SceneRenderQueue) {
+        let mut count = 0;
+        for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
+            if !self.paths.contains(path) {
+                continue;
+            }
+            let (Some(handle), state) = (
+                &queue.diffuse_image_handles[slot],
+                &queue.diffuse_mip_states[slot],
+            ) else {
+                continue;
+            };
+            if state.resident.is_none() {
+                continue;
+            }
+            let mut state = state.clone();
+            state.pending = None;
+            state.pending_reduction = false;
+            self.resident
+                .insert(path.clone(), (queue.preferred_mip, handle.clone(), state));
+            count += 1;
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!(
+                "LOAD shared scene images: {count} captured, {} retained",
+                self.resident.len()
+            );
+        }
+    }
+}
+
+pub(super) fn reuse_shared_image(
+    shared: &SharedImages,
+    slot: usize,
+    queue: &mut SceneRenderQueue,
+    images: &mut Assets<Image>,
+    probe_materials: &mut Assets<ProbeMaterial>,
+    decal_materials: &mut Assets<DecalMaterial>,
+    sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+) -> bool {
+    let Some((_, handle, state)) = shared
+        .resident
+        .get(&queue.diffuse_image_paths[slot])
+        .filter(|(preferred, _, _)| *preferred == queue.preferred_mip)
+    else {
+        return false;
+    };
+    attach_prepared_diffuse_image(
+        slot,
+        handle.clone(),
+        queue,
+        images,
+        probe_materials,
+        decal_materials,
+        sky_materials,
+    );
+    queue.diffuse_mip_states[slot] = state.clone();
+    queue.diffuse_image_attempted[slot] = true;
+    true
+}
+
+/// Borrow the image owner and its material consumers together at a load boundary.
+fn with_scene_images<R>(
+    world: &mut World,
+    f: impl FnOnce(
+        &mut SceneRenderQueue,
+        &mut Assets<Image>,
+        &mut Assets<ProbeMaterial>,
+        &mut Assets<DecalMaterial>,
+        &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+        &SharedImages,
+    ) -> R,
+) -> R {
+    world.resource_scope(|world, mut scene: Mut<SceneRenderQueue>| {
+        world.resource_scope(|world, mut images: Mut<Assets<Image>>| {
+            world.resource_scope(|world, mut probes: Mut<Assets<ProbeMaterial>>| {
+                world.resource_scope(|world, mut decals: Mut<Assets<DecalMaterial>>| {
+                    world.resource_scope(
+                        |world,
+                         mut skies: Mut<
+                            Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+                        >| {
+                            f(
+                                &mut scene,
+                                &mut images,
+                                &mut probes,
+                                &mut decals,
+                                &mut skies,
+                                world.resource::<SharedImages>(),
+                            )
+                        },
+                    )
+                })
+            })
+        })
+    })
+}
+
+/// A registered image identity can precede its payload (1400607f0 /
+/// 14005feb0's placeholder entries). Bevy then retries dependent materials,
+/// rather than preparing them against temporary fallback bindings.
+pub(super) fn reserve_scene_images(world: &mut World) {
+    with_scene_images(world, |scene, images, probes, decals, skies, shared| {
+        for slot in 0..scene.diffuse_image_paths.len() {
+            if reuse_shared_image(shared, slot, scene, images, probes, decals, skies) {
+                continue;
+            }
+            let handle = images.reserve_handle();
+            attach_prepared_diffuse_image(slot, handle, scene, images, probes, decals, skies);
+        }
+    });
+}
+
+/// 1400661e0 acquires init/common resources before map resources. Keep those
+/// upload phases distinct as well: persistent textures must not be scattered
+/// among disposable map allocations in the backend's memory blocks.
+pub(super) fn initialize_scene_images(
+    world: &mut World,
+    catalog: &archive::Catalog,
+    common: bool,
+) -> Result<Vec<AssetId<Image>>, String> {
+    with_scene_images(world, |scene, images, probes, decals, skies, shared| {
+        let mut ids = Vec::new();
+        let (mut loaded, mut bytes, mut reused) = (0, 0, 0);
+        for slot in 0..scene.diffuse_image_paths.len() {
+            if shared.paths.contains(&scene.diffuse_image_paths[slot]) != common {
+                continue;
+            }
+            let resident = scene.diffuse_mip_states[slot].resident.is_some();
+            let size =
+                initialize_resident_image(catalog, slot, scene, images, probes, decals, skies)?;
+            if resident {
+                reused += 1;
+            } else {
+                loaded += 1;
+                bytes += size;
+            }
+            if let Some(handle) = &scene.diffuse_image_handles[slot] {
+                ids.push(handle.id());
+            }
+        }
+        info!(target: "dh2::textures", common, resident_images=loaded, resident_bytes=bytes, reused_images=reused, "Scene base mips initialized");
+        Ok(ids)
+    })
 }
 
 pub(super) struct StreamedDiffuse {
@@ -296,25 +487,30 @@ impl TextureReadWorker {
             return Ok(());
         }
         drop(queue);
-        let (catalog, queue, completed_tx) =
-            (self.catalog.clone(), self.queue.clone(), self.completed_tx.clone());
-        bevy::tasks::IoTaskPool::get().spawn(async move {
-            let _tag = crate::platform::allocation_tags::tag("texture worker");
-            loop {
-                let Some((slot, stem, target)) = ({
-                    let mut queue = queue.lock().unwrap();
-                    let next = queue.pending.pop_front();
-                    queue.reading = next.is_some();
-                    next
-                }) else {
-                    return;
-                };
-                let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
-                if completed_tx.send((slot, target, result)).is_err() {
-                    return;
+        let (catalog, queue, completed_tx) = (
+            self.catalog.clone(),
+            self.queue.clone(),
+            self.completed_tx.clone(),
+        );
+        bevy::tasks::IoTaskPool::get()
+            .spawn(async move {
+                let _tag = crate::platform::allocation_tags::tag("texture worker");
+                loop {
+                    let Some((slot, stem, target)) = ({
+                        let mut queue = queue.lock().unwrap();
+                        let next = queue.pending.pop_front();
+                        queue.reading = next.is_some();
+                        next
+                    }) else {
+                        return;
+                    };
+                    let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
+                    if completed_tx.send((slot, target, result)).is_err() {
+                        return;
+                    }
                 }
-            }
-        }).detach();
+            })
+            .detach();
         Ok(())
     }
 }
@@ -609,7 +805,9 @@ pub(super) fn attach_prepared_diffuse_image(
 ) {
     for (material, role) in &queue.diffuse_image_materials[slot] {
         match material {
-            MaterialHandle::Interior(_) | MaterialHandle::BoatVolume(_) | MaterialHandle::Water(_) => {
+            MaterialHandle::Interior(_)
+            | MaterialHandle::BoatVolume(_)
+            | MaterialHandle::Water(_) => {
                 unreachable!("depth-only materials have no texture bindings")
             }
             MaterialHandle::Sky(material) => {
@@ -665,6 +863,7 @@ pub(super) fn initialize_resident_image(
         .diffuse_image_handles
         .get(slot)
         .is_some_and(Option::is_some)
+        && queue.diffuse_mip_states[slot].resident.is_some()
     {
         return Ok(0);
     }
@@ -686,16 +885,24 @@ pub(super) fn initialize_resident_image(
     let bytes = data.len();
     streamed.image.data = Some(data);
     let mip_count = streamed.image.texture_descriptor.mip_level_count;
-    let handle = images.add(streamed.image);
-    attach_prepared_diffuse_image(
-        slot,
-        handle,
-        queue,
-        images,
-        probe_materials,
-        decal_materials,
-        sky_materials,
-    );
+    if let Some(handle) = &queue.diffuse_image_handles[slot] {
+        // Fulfil the registered identity. Its material references already wait
+        // on this exact handle; no redundant material mutation is needed.
+        images
+            .insert(handle.id(), streamed.image)
+            .map_err(|e| e.to_string())?;
+    } else {
+        let handle = images.add(streamed.image);
+        attach_prepared_diffuse_image(
+            slot,
+            handle,
+            queue,
+            images,
+            probe_materials,
+            decal_materials,
+            sky_materials,
+        );
+    }
     commit_prepared_diffuse_level(queue, slot, streamed.level, mip_count);
     queue.diffuse_image_attempted[slot] = true;
     Ok(bytes)
@@ -739,6 +946,9 @@ pub(super) fn stream_visible_textures(
     let Some(mut worker) = worker else {
         return;
     };
+    if queue.is_added() {
+        *instance_slots = Default::default();
+    }
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
     let mut requested = vec![false; queue.diffuse_image_paths.len()];
@@ -1174,8 +1384,7 @@ pub(super) fn stream_visible_textures(
             }
             TextureReadTarget::Initial(queue.preferred_mip)
         };
-        match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target))
-        {
+        match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
             Ok(()) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
@@ -1227,7 +1436,10 @@ impl InstanceImageSlots {
     fn update(&mut self, queue: &SceneRenderQueue) {
         let buffer = queue.instances.as_ptr() as usize;
         if self.instances != buffer || self.ranges.len() > queue.instances.len() {
-            *self = Self { instances: buffer, ..Default::default() };
+            *self = Self {
+                instances: buffer,
+                ..Default::default()
+            };
         }
         for instance in &queue.instances[self.ranges.len()..] {
             let start = self.slots.len() as u32;
@@ -1245,4 +1457,3 @@ impl InstanceImageSlots {
         &self.slots[start as usize..end as usize]
     }
 }
-

@@ -12,6 +12,17 @@ pub mod camera_alpha_composite;
 pub mod camera_view;
 #[cfg(feature = "game")]
 pub mod camera_scene;
+
+/// Host world/view references release before destination resources are
+/// acquired. Global programs and viewport-only reusable storage remain.
+#[cfg(feature = "game")]
+pub(crate) fn release_level(world: &mut bevy::prelude::World) {
+    shadow_pass::release_level(world);
+    camera_scene::release_level(world);
+    fog_scene::FogGpu::release_level(world);
+    display_scene::release_level(world);
+    auto_exposure::release_level(world);
+}
 #[cfg(feature = "game")]
 pub mod camera_alpha_colours;
 #[cfg(feature = "game")]

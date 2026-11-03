@@ -364,6 +364,10 @@ pub(super) fn stream_visible_models(
     arms: Option<Res<super::player_arms::PlayerArms>>,
     mut early: Option<ResMut<EarlyTomeQuery>>,
 ) {
+    if scene.is_added() {
+        *query_cache = Default::default();
+        *updates = Default::default();
+    }
     let started = Instant::now();
     let mut early_jobs = early.as_deref_mut().and_then(|early| early.pending.take());
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {

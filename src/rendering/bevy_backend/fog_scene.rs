@@ -106,6 +106,7 @@ pub(super) struct FogGpu {
     prepared_revision: Option<(Entity, u64)>,
 }
 impl FogGpu {
+    pub(super) fn release_level(world: &mut World) { world.insert_resource(Self::default()); }
     pub(super) fn head_water_surface(&self,camera:Entity,frame:u32,baseline:Option<f32>)->Option<f32> {
         self.ocean_capture(camera,frame).and_then(|o|o.head_water_snapshot(frame)).map_or(baseline,|s|s.surface)
     }

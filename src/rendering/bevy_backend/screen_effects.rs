@@ -49,6 +49,7 @@ struct ScreenConfig {
     format: TextureFormat,
 }
 impl ScreenEffects {
+    pub(super) fn clear_frame(&mut self) { self.completed = false; }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record(
         &mut self,

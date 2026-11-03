@@ -30,6 +30,8 @@ pub(super) fn mark(phase: &str) {
 /// is pending and the resident count has held for 60 frames.
 pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>, mut state: bevy::prelude::Local<(bool, usize, u32, bool)>,
     device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>) {
+    use bevy::prelude::DetectChanges;
+    if scene.is_added() { *state = Default::default(); }
     let (first, resident, stable, settled) = &mut *state;
     if !*first {
         *first = true;
@@ -53,7 +55,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
 }
 
-static LIST: std::sync::OnceLock<std::sync::Arc<Vec<crate::assets::map_resources::Resource>>> = std::sync::OnceLock::new();
+static LIST: Mutex<Option<std::sync::Arc<Vec<crate::assets::map_resources::Resource>>>> = Mutex::new(None);
 
 /// Keep the current map's load lists for the coverage report.
 pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
@@ -64,7 +66,7 @@ pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
     let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
     let language = crate::assets::lang::read_text_language(catalog.base()).unwrap_or("english");
     match crate::assets::map_resources::acquire_level_list(catalog.base(), catalog, &map, language) {
-        Ok(list) => drop(LIST.set(list)),
+        Ok(list) => *LIST.lock().unwrap() = Some(list),
         Err(e) => eprintln!("LOAD list {map}: {e}"),
     }
 }
@@ -73,11 +75,15 @@ pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
 /// the original's load lists is reported.
 pub(super) fn level_ready(
     mut done: bevy::prelude::Local<bool>,
+    scene: bevy::prelude::Res<super::SceneData>,
     device: Option<bevy::prelude::Res<bevy::render::renderer::RenderDevice>>,
     meshes: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Mesh>>,
     images: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Image>>,
     buffers: bevy::prelude::Res<bevy::prelude::Assets<bevy::render::storage::ShaderBuffer>>,
+    shaders: bevy::prelude::Res<bevy::prelude::Assets<bevy::shader::Shader>>,
 ) {
+    use bevy::prelude::DetectChanges;
+    if scene.is_added() { *done = false; }
     if *done || !crate::loading::ready() {
         return;
     }
@@ -85,6 +91,7 @@ pub(super) fn level_ready(
     mark("level resources ready");
     asset_bytes(&meshes, &images);
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        eprintln!("LOAD shader assets: {}", shaders.len());
         let bytes: usize = buffers.iter().map(|(_, b)| b.data.as_ref().map_or(0, Vec::len)).sum();
         eprintln!("LOAD shader buffers: {} with {} MB CPU", buffers.len(), bytes >> 20);
         let mut largest: Vec<_> = buffers.iter()
@@ -101,7 +108,7 @@ pub(super) fn level_ready(
             eprintln!("LOAD big {} MB in {blocks}: {frames}", bytes >> 20);
         }
     }
-    if let Some(list) = LIST.get() {
+    if let Some(list) = &*LIST.lock().unwrap() {
         let report = crate::loading::report(list);
         let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
         eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");

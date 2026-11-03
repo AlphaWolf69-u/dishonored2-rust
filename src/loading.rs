@@ -71,6 +71,18 @@ pub fn play_started() {
     with(|s| s.playing = true);
 }
 
+/// Re-arm per-world readiness while retaining the session acquisition registry.
+pub fn restart_level() {
+    with(|s| {
+        s.playing = false;
+        s.required = Default::default();
+        s.required_heads.clear();
+        s.required_next.clear();
+        s.acquired = 0;
+        for (_, ready) in &mut s.gates { *ready = false; }
+    });
+}
+
 /// Start the map resource phase while keeping registry/resident identities.
 /// 1400661e0 reports resources acquired / resources requested; streaming mips
 /// remain outside this progress count.

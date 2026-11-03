@@ -95,6 +95,16 @@ Remove an entry when it is implemented and measured.
 
 ## Loading scene publication
 
+World-lifetime audit: shadow target caches were keyed by image identity and
+survived every world. An actual three-map client run retained 60/121/182 MiB
+of directional static-cache textures (3/6/9 owners). Map teardown now releases
+world targets and descriptors while retaining compiled pipelines. This is a
+lifetime correction required by the persistent runtime; expected live cache
+count is three after each destination load. Quality-driven target replacement
+inside one world can also leave obsolete target IDs until the world unloads;
+pruning those against live render assets is a separate opportunity requiring a
+quality-change capture, rather than changing the ordinary shadow hot path here.
+
 `app::level_prepare` now moves archive parsing and map CPU acquisition off the
 window/event thread. `app::setup` and audio startup still build their Bevy assets
 synchronously after publication. Existing release load traces (`residency-expanded`
@@ -106,3 +116,15 @@ separating CPU cooking from main-world Assets/Commands publication while keeping
 one handle allocator and image owner; a second application/device or private
 copy of its asset stores would break ownership. This remains a host scheduling
 limitation, not a claim of complete asynchronous scene construction.
+
+
+The repeated-map production client now retains three directional cache textures
+at every load. After correcting suspended custom asset cleanup, weak atlas
+associations and outgoing view ownership, the fourth EotW load reserves
+3620 MiB across 18 GPU blocks versus 5156 MiB / 23 blocks before; both have
+2763 MiB live allocations. Common-before-map upload staging preserves resource
+acquisition order without changing allocator block policy or adding gameplay
+passes. This measures transition residency, not walking CPU time. Per-world
+visibility, decal, alpha-depth and instance-to-image scratch is invalidated
+explicitly when its scene owner is added; raw allocator addresses alone cannot
+identify a replacement world. Detailed client evidence is in docs/loading.md.

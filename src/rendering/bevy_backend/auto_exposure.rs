@@ -96,6 +96,11 @@ struct GpuView {
 }
 #[derive(Resource, Default)]
 struct TraceCopies(Vec<(Buffer, u64, f64, std::path::PathBuf)>);
+
+pub(super) fn release_level(world: &mut World) {
+    world.resource_mut::<Views>().0.clear();
+    world.resource_mut::<LuminanceViews>().retain(|_| false);
+}
 impl Plugin for ExposurePlugin {
     fn build(&self, app: &mut App) {
         let quality = crate::platform::game_settings::read_downsample_quality()

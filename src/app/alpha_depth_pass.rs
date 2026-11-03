@@ -25,6 +25,7 @@ fn extract(
     let Some(scene) = scene.as_ref() else {
         return;
     };
+    if scene.is_added() { *candidates = Default::default(); }
     // An instance's material never changes; instances are only appended and
     // the material table (blended materials only) is replaced whole. Index the
     // instances with a table entry once per (table, instance count) instead of

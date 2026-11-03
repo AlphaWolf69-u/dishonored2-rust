@@ -50,6 +50,13 @@ impl<C> Default for Switches<C> {
     fn default() -> Self { Self { history: HashMap::new(), controllers: Vec::new() } }
 }
 impl<C> Switches<C> {
+    /// Unregister a destroyed world's objects, retaining persistent UI owners.
+    /// The ordinary live-context path removes contexts before reaching here.
+    pub fn retain_objects(&mut self, keep: impl Fn(Emitter) -> bool) {
+        self.controllers.retain(|controller| keep(controller.emitter));
+        self.history.retain(|(_, emitter), _| keep(*emitter));
+    }
+
     pub fn history(&self, node: u32, emitter: Emitter) -> History {
         self.history.get(&(node, emitter)).copied().unwrap_or_default()
     }

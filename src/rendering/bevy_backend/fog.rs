@@ -133,11 +133,9 @@ impl Plugin for FogPlugin {
         super::fog_scene::register(app);
         super::sss_blur::register(app);
         super::fog_capture::register(app);
-        app.init_asset::<super::sky_mask::SkyMaterial>();
-        app.add_plugins(bevy::render::render_asset::RenderAssetPlugin::<
-            super::sky_mask::GpuSkyMaterial,
-            bevy::render::texture::GpuImage,
-        >::default());
+        if !app.is_plugin_added::<super::sky_mask::SkyAssetsPlugin>() {
+            app.add_plugins(super::sky_mask::SkyAssetsPlugin);
+        }
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
             use bevy::render::GpuResourceAppExt;
             render.init_gpu_resource::<super::sky_mask::SkyProgram>();

@@ -73,6 +73,18 @@ pub struct PlaybackBanks<'a> {
 }
 
 impl<'a> PlaybackBanks<'a> {
+    /// Release the map-acquired suffix after its instances have stopped.
+    /// 1400c97e0 -> 1400c0360 unloads the banks recorded by map acquisition;
+    /// 1400c93c0's startup banks have a separate lifetime. Earlier HIRC
+    /// definitions remain the first owners, as during insertion.
+    pub fn truncate(&mut self, count: usize) {
+        self.banks.truncate(count);
+        self.actors.retain(|_, object| object.bank < count);
+        self.actions.retain(|_, object| object.bank < count);
+        self.events.retain(|_, object| object.bank < count);
+        self.custom_effects.retain(|_, object| object.bank < count);
+    }
+
     /// Insert in bank-load order. Native loaders retain existing actor/event
     /// objects (1410f2370 / 1410f2270 / 1410f6450). Standard codec sources
     /// retain their resident media too (1410f1910 / 141122400, flags 4/12|128).
@@ -108,6 +120,11 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    pub fn actor_ids(&self) -> impl Iterator<Item = u32> + '_ { self.actors.keys().copied() }
+    /// Sources still owned by the banks after a map-bank unload.
+    pub fn sound_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.actors.iter().filter_map(|(&id, object)| (object.kind == 2).then_some(id))
+    }
     /// Allocation identities shared with the prepared encoded sources.
     pub fn resident_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.banks.iter().filter_map(|bank| match &bank.bytes {

@@ -19,6 +19,9 @@ pub struct SoundEvent(pub Request);
 #[derive(Resource, Default)]
 struct WwiseRegistry {
     banks: Vec<Bank>,
+    packages: HashMap<PathBuf, Arc<crate::assets::wwise::Package>>,
+    shared_banks: usize,
+    shared_attenuations: std::collections::HashSet<u32>,
     attenuations: HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
     library: crate::assets::wwise::PlaybackBanks<'static>,
     sources: HashMap<u32, Vec<SourceAction>>,
@@ -26,6 +29,7 @@ struct WwiseRegistry {
     states: bevy_backend::StateGroups,
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
+    level_prepared: bool,
     /// Package location of every media read, for streamed sources.
     locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
 }
@@ -131,7 +135,7 @@ impl AudioMix {
 
 struct Bank {
     path: PathBuf,
-    package: crate::assets::wwise::Package,
+    package: Arc<crate::assets::wwise::Package>,
     entry: crate::assets::wwise::Entry,
 }
 
@@ -152,18 +156,64 @@ struct AudioTarget {
 
 pub struct SoundPlugin;
 
+pub(super) struct AudioAssetsPlugin;
+impl Plugin for AudioAssetsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_audio_source::<graph::ScheduledAudio>()
+            .add_audio_source::<bevy_backend::OutputAudio>();
+    }
+}
+
+#[derive(Resource, Default)]
+struct PendingSounds(Vec<Request>);
+
+pub(super) fn begin_level(world: &mut World) {
+    world.resource::<bevy_backend::Engine>().release_level();
+    let mut registry = world.resource_mut::<WwiseRegistry>();
+    registry.sources.clear();
+    registry.locators.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let keep = registry.shared_banks;
+    registry.library.truncate(keep);
+    registry.banks.truncate(keep);
+    let actors: std::collections::HashSet<_> = registry.library.actor_ids().collect();
+    // Global history belongs to its retained actor; object-scoped history
+    // belongs to the outgoing objects. Keep the same Arc for live UI voices.
+    registry.scheduled_selections.lock().unwrap_or_else(|e| e.into_inner())
+        .retain(|(actor, emitter), _| actors.contains(actor) && emitter.is_none_or(|e| e == Emitter::Menu));
+    let sound_ids = registry.library.sound_ids().collect();
+    let shared_attenuations = registry.shared_attenuations.clone();
+    registry.attenuations.retain(|id, _| shared_attenuations.contains(id));
+    let packages: std::collections::HashSet<_> = registry.banks.iter().map(|bank| bank.path.clone()).collect();
+    registry.packages.retain(|path, _| packages.contains(path));
+    registry.preloaded = false;
+    registry.level_prepared = false;
+    drop(registry);
+    world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
+    graph::retain_media(&sound_ids);
+    world.insert_resource(PendingSounds::default());
+    world.insert_resource(spatial::Scene::default());
+    world.insert_resource(effects::EffectAudio::default());
+    world.resource_mut::<Messages<SoundEvent>>().clear();
+    world.resource_mut::<Messages<ContactSound>>().clear();
+}
+
+pub(super) fn load_level_contacts(world: &mut World) {
+    world.remove_resource::<contacts::ContactSounds>();
+    world.init_resource::<contacts::ContactSounds>();
+}
+
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<AudioAssetsPlugin>() { app.add_plugins(AudioAssetsPlugin); }
         crate::loading::gate(LISTED_SOUNDS_GATE);
         crate::loading::gate(LEVEL_SOUNDS_GATE);
-        app.add_audio_source::<graph::ScheduledAudio>()
-            .add_audio_source::<bevy_backend::OutputAudio>()
-            .add_message::<SoundEvent>()
+        app.add_message::<SoundEvent>()
             .add_message::<ContactSound>()
             .init_resource::<contacts::ContactSounds>()
             .init_resource::<objects::EffectObjects>()
             .init_resource::<effects::EffectAudio>()
             .init_resource::<WwiseRegistry>()
+            .init_resource::<PendingSounds>()
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
@@ -175,7 +225,10 @@ impl Plugin for SoundPlugin {
 }
 
 /// The packages and bank ids the original loads for the current map.
-struct LevelBanks { packages: Vec<String>, banks: std::collections::HashSet<u32> }
+struct LevelBanks {
+    packages: Vec<String>, banks: std::collections::HashSet<u32>,
+    shared_packages: std::collections::HashSet<String>, shared_banks: std::collections::HashSet<u32>,
+}
 
 /// Wwise names its ids by FNV-1 of the lowercase name (verified on the
 /// installed main-common-sfx.pck: common_default).
@@ -199,7 +252,8 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
     }
     let map = crate::gameplay::map_info::current_map().ok_or("no current map for its sound banks")?;
     let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
-    let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default() };
+    let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default(),
+        shared_packages: ["main-init.pck".to_owned()].into(), shared_banks: Default::default() };
     for name in ["common", "init", map.as_str()] {
         let (packages, banks) = entries.get(name).ok_or_else(|| format!("wwisedescription.txt has no entry {name}"))?;
         for prefix in packages {
@@ -207,6 +261,13 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
             selection.packages.push(format!("{prefix}sfx.pck"));
         }
         selection.banks.extend(banks.iter().map(|bank| wwise_id(bank)));
+        if name == "common" || name == "init" {
+            for prefix in packages {
+                selection.shared_packages.insert(format!("{prefix}{language}.pck"));
+                selection.shared_packages.insert(format!("{prefix}sfx.pck"));
+            }
+            selection.shared_banks.extend(banks.iter().map(|bank| wwise_id(bank)));
+        }
     }
     selection.packages.sort();
     selection.packages.dedup();
@@ -226,16 +287,30 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let paths = selection.packages.iter().map(|name| base.join("pck").join(name))
             .filter(|path| path.is_file()).collect::<Vec<_>>();
 
-        let mut banks = Vec::new();
-        let mut attenuations = HashMap::new();
         let mut output_mix = None;
-        let mut library = crate::assets::wwise::PlaybackBanks::default();
-        for path in paths {
-            let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
+        let before = registry.banks.len();
+        for shared in [true, false] {
+        for path in &paths {
+            let package = if let Some(package) = registry.packages.get(path) {
+                package.clone()
+            } else {
+                let Ok(package) = crate::assets::wwise::Package::open(path) else { continue };
+                let package = Arc::new(package);
+                registry.packages.insert(path.clone(), package.clone());
+                package
+            };
             let language = package.language_id(package_language);
             let init = path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("main-init.pck"));
             for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language)
                 .filter(|entry| init || u32::try_from(entry.id).is_ok_and(|id| selection.banks.contains(&id))) {
+                let shared_entry = init || (path.file_name().and_then(|name| name.to_str()).is_some_and(|name| selection.shared_packages.contains(name))
+                    && u32::try_from(entry.id).is_ok_and(|id| selection.shared_banks.contains(&id)));
+                if shared_entry != shared { continue; }
+                // 1400bd510 deduplicates shared packages; PlaybackBanks keeps
+                // its verified first-owner HIRC identity. Bank indices remain
+                // aligned with the media locator table across map loads.
+                if registry.banks.iter().any(|bank| bank.path == *path
+                    && bank.entry.id == entry.id && bank.entry.language_id == entry.language_id) { continue; }
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
@@ -243,15 +318,27 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
                 })();
                 match indexed {
                     Ok((bank_mix, bank_attenuations, bytes)) => {
-                        for attenuation in bank_attenuations { attenuations.entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
+                        for attenuation in bank_attenuations { registry.attenuations.entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        library.insert(bytes.into())?;
-                        banks.push(Bank { path: path.clone(), package: package.clone(), entry });
+                        registry.library.insert(bytes.into())?;
+                        registry.banks.push(Bank { path: path.clone(), package: package.clone(), entry });
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
                 }
             }
         }
+        if shared {
+            registry.shared_banks = registry.banks.len();
+            registry.shared_attenuations = registry.attenuations.keys().copied().collect();
+        }
+        }
+        info!("Wwise map acquisition: {} banks acquired, {before} reused, {} packages resident",
+            registry.banks.len() - before, registry.packages.len());
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD shared sound banks: count={} first_owners={:?}", registry.shared_banks,
+                registry.library.resident_allocations().take(registry.shared_banks).take(4).collect::<Vec<_>>());
+        }
+        if mix.mixer.is_some() { return Ok(None); }
         let catalog = crate::archive::Catalog::shared(&base)?;
         let source = catalog.read("generated/decls/soundengineinternals/default.soundengineinternals.decl")?
             .ok_or("sound engine internals declaration is absent")?;
@@ -273,17 +360,14 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
         let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("physics sound RTPC declaration is absent")?;
         let physics_scale = crate::assets::wwise::RtpcDeclaration::parse(&crate::entities::declaration_text(&source))?;
-        Ok((banks, attenuations, library, output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale))
+        Ok(Some((output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale)))
     })();
     match result {
-        Ok((banks, attenuations, library, output_mix, bindings, time_dilation, physics_scale)) => {
+        Ok(Some((output_mix, bindings, time_dilation, physics_scale))) => {
             registry.states = Arc::new(std::sync::Mutex::new(crate::gameplay::sound::states::States::new(output_mix.state_groups.iter().cloned())));
             mix.time_dilation = Some(time_dilation);
             mix.physics_scale = Some(physics_scale);
-            registry.attenuations = attenuations;
-            info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", banks.len(), library.event_count(), library.actor_count());
-            registry.banks = banks;
-            registry.library = library;
+            info!("Indexed {} installed Wwise banks, {} event IDs and {} global actor IDs", registry.banks.len(), registry.library.event_count(), registry.library.actor_count());
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
@@ -292,13 +376,14 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
-                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE));
+                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE, super::level_lifetime::SessionEntity));
                         info!("Shared stereo audio output initialized with installed bus effects");
                     },
                     Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
                 }
             }
         }
+        Ok(None) => {},
         Err(error) => warn!("Installed Wwise banks unavailable: {error}"),
     }
 }
@@ -403,9 +488,9 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
 /// the map load, once both exist and before they are first evaluated.
 fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
     sources: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectSources>>,
-    mut registry: ResMut<WwiseRegistry>, mut done: Local<bool>)
+    mut registry: ResMut<WwiseRegistry>)
 {
-    if *done { return; }
+    if registry.level_prepared { return; }
     let (Some(mut physics), Some(sources)) = (physics, sources) else { return };
     let mut events: Vec<u32> = sources.0.sound_events().collect();
     let visited = physics.visit_audio(|_, binding, _| {
@@ -417,7 +502,7 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
     events.dedup();
     let started = std::time::Instant::now();
     let count = prepare_all(&mut registry, &events);
-    *done = true;
+    registry.level_prepared = true;
     crate::loading::complete(LEVEL_SOUNDS_GATE);
     super::load_timing::mark(&format!("level sounds: {count} more of {} emitter and FX events prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
 }
@@ -430,12 +515,12 @@ fn play_events(
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
     engine: Res<bevy_backend::Engine>,
-    mut pending: Local<Vec<Request>>,
+    mut pending: ResMut<PendingSounds>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
     // A request whose streamed media is still being read waits, keeping its
     // place ahead of later requests for the same emitter.
-    let requests: Vec<Request> = std::mem::take(&mut *pending).into_iter().chain(events.read().map(|message| message.0)).collect();
+    let requests: Vec<Request> = std::mem::take(&mut pending.0).into_iter().chain(events.read().map(|message| message.0)).collect();
     let mut waiting = Vec::new();
     for request in requests {
         let (event, emitter, parameter, position) = match request {
@@ -444,12 +529,12 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
-                if waiting.contains(&emitter) { pending.push(request); continue; }
+                if waiting.contains(&emitter) { pending.0.push(request); continue; }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
-        if waiting.contains(&emitter) { pending.push(request); continue; }
+        if waiting.contains(&emitter) { pending.0.push(request); continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
@@ -472,7 +557,7 @@ fn play_events(
             }
             if loading {
                 waiting.push(emitter);
-                pending.push(request);
+                pending.0.push(request);
                 continue;
             }
             let playing_id = engine.playing_id();

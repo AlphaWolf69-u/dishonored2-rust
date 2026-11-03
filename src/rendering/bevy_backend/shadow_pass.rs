@@ -611,9 +611,34 @@ pub(crate) struct ShadowSceneGpu {
 }
 
 impl ShadowSceneGpu {
+    fn release_level(&mut self) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD shadow world release: targets={} pipelines_retained={}", self.targets.len(), self.pipelines.len());
+        }
+        self.last_revision = None;
+        self.targets.clear();
+        self.resource_bindings.clear();
+        self.mesh_allocations = Default::default();
+        self.prepared_records = None;
+        self.previous_uniform_records.clear();
+        self.uniform_records.clear();
+        self.prepared_reported = None;
+        self.receiver_pending = false;
+        self.sampling_buffer = None;
+        self.sampling_bytes.clear();
+        for pipeline in self.pipelines.values_mut() { pipeline.alpha_materials.clear(); }
+    }
+
     pub(crate) fn completed_revision(&self, revision: u64) -> bool {
         self.last_revision == Some(revision)
     }
+}
+
+/// bevy_backend: world targets/descriptors release at the map boundary;
+/// compiled program/pipeline and reusable upload storage remain session-owned.
+pub(crate) fn release_level(world: &mut bevy::prelude::World) {
+    world.resource_mut::<ShadowSceneGpu>().release_level();
+    local::release_level(world);
 }
 
 struct CachedTarget {

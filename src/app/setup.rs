@@ -1804,7 +1804,7 @@ pub(super) fn setup(
     } else {
         Vec::new()
     };
-    let mut render_queue = SceneRenderQueue {
+    let render_queue = SceneRenderQueue {
         instances: render_instances,
         active: 0,
         static_world_model_present: true,
@@ -1841,40 +1841,29 @@ pub(super) fn setup(
         preferred_mip,
     };
     if let Some(catalog) = catalog {
-        let mut resident_images = 0;
-        let mut resident_bytes = 0;
-        // The map load (`FUN_1400661e0`) loads every resource of the map's
-        // `.mapResources` list before play; an image's LoadResourceInternal
-        // (1402ea140 -> 1402e9ff0) uploads its base mip chain then. Every
-        // image the scene's materials bind gets that chain here; finer
-        // levels still use the ordinary texture streaming owner.
-        for slot in 0..diffuse_image_count {
-            match super::texture_streaming::initialize_resident_image(
-                catalog,
-                slot,
-                &mut render_queue,
-                &mut images,
-                &mut probe_materials,
-                &mut decal_materials,
-                &mut sky_materials,
-            ) {
-                Ok(bytes) => {
-                    resident_images += usize::from(bytes != 0);
-                    resident_bytes += bytes;
-                }
-                Err(error) => {
-                    error!(target: "dh2::textures", slot, "Scene base image initialization failed: {error}")
-                }
-            }
-        }
-        info!(target: "dh2::textures", resident_images, resident_bytes, "Scene base mips initialized");
         super::load_timing::keep_load_list(catalog);
-        super::load_timing::mark("setup: base mips");
     }
+    let image_catalog = catalog_storage.clone();
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
         commands.insert_resource(TextureReadWorker::new(catalog, diffuse_image_count));
     }
+    commands.queue(move |world: &mut World| {
+        let Some(catalog) = image_catalog else { return };
+        world.init_resource::<super::texture_streaming::SharedImages>();
+        super::texture_streaming::reserve_scene_images(world);
+        // Standalone renderer diagnostics have no loading coordinator. They
+        // acquire through the same owner immediately, as setup did before.
+        if !super::loading_screen::image_uploads_deferred(world) {
+            for common in [true, false] {
+                if let Err(error) = super::texture_streaming::initialize_scene_images(world, &catalog, common) {
+                    error!("Scene image acquisition failed: {error}");
+                    world.write_message(AppExit::error());
+                    break;
+                }
+            }
+        }
+    });
     // Every world mesh is uploaded and its shadow/water/probe inputs are
     // built; the original keeps no CPU copy of uploaded world geometry.
     drop(pickup_ids);

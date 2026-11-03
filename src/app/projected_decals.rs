@@ -216,6 +216,7 @@ fn extract_receivers(
     let (Some(queue), Some(materials)) = (queue.as_ref(), materials.as_ref()) else {
         return;
     };
+    if queue.is_added() { *bounds_owners = Default::default(); }
     if let Some(sources) = model_bounds.as_ref() {
         let domain = (sources.0.as_ptr() as usize, sources.0.len());
         if bounds_owners.domain != domain {

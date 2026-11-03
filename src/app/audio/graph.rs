@@ -109,6 +109,13 @@ static MEDIA: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>> =
 /// events playing it share its resident media.
 static STREAMED: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
 
+/// Bank unload releases only its sound sources; common/init sources keep
+/// their existing encoded/PCM identity (1410f1910 / 141122400).
+pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) {
+    MEDIA.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
+    STREAMED.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
+}
+
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
 fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator) -> io::Result<PreparedMedia> {

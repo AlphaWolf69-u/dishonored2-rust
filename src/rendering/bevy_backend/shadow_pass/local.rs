@@ -74,6 +74,16 @@ struct LocalGpu {
     atlas_reused: u64,
 }
 
+pub(super) fn release_level(world: &mut World) {
+    let mut gpu = world.resource_mut::<LocalGpu>();
+    gpu.programs.release_level();
+    gpu.arrays = None;
+    gpu.valid.clear();
+    gpu.retained_atlas = None;
+    gpu.receiver_error = None;
+    gpu.receiver_reported = false;
+}
+
 /// Atlas pixels can survive an idle frame only after a successful submission
 /// with these exact GPU owners, cache rectangles and copy state. No caster
 /// commands or missing static-cache allocations may be skipped.

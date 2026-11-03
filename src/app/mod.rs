@@ -57,6 +57,8 @@ mod model_motion;
 mod particle_view;
 mod machinery;
 mod load_timing;
+mod level_lifetime;
+pub use loading_screen::request_level;
 mod physics_skinning;
 mod shadow_updates;
 mod shadow_diagnostics;

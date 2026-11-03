@@ -19,6 +19,15 @@ pub struct SkyMaterial {
     pub state: crate::render_state::RenderState,
     pub images: [Option<Handle<Image>>; 5],
 }
+
+pub struct SkyAssetsPlugin;
+impl Plugin for SkyAssetsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_asset::<SkyMaterial>().add_plugins(
+            bevy::render::render_asset::RenderAssetPlugin::<GpuSkyMaterial, bevy::render::texture::GpuImage>::default(),
+        );
+    }
+}
 impl SkyMaterial {
     pub fn image_mut(&mut self, role: usize) -> &mut Option<Handle<Image>> {
         let slot = match role {

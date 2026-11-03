@@ -81,6 +81,11 @@ impl Console {
         let mut exec = |name: &str| std::fs::read_to_string(base.join(name)).ok();
         let cvars = &mut self.cvars;
         self.bindings.execute_with(text, &mut exec, &mut |args| {
+            #[cfg(feature = "game")]
+            if args.first().is_some_and(|name| name.eq_ignore_ascii_case("map")) {
+                if let Some(name) = args.get(1) { crate::app::request_level(name.clone()); }
+                return;
+            }
             cvars.command(args);
         })
     }

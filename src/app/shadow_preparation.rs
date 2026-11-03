@@ -9,6 +9,7 @@ use super::{
     RenderAssetUsages, SceneData, SceneRenderQueue, ShaderBuffer, DH2_BITANGENT,
 };
 use bevy::prelude::*;
+use bevy::asset::AssetId;
 
 /// Resolved once beside the real material/mesh association; the native CPU
 /// shadow owner consumes this rather than reparsing declarations every frame.
@@ -1829,7 +1830,8 @@ pub(super) fn shadow_target_dimensions(
 }
 
 /// Changing the atlas association is rare; moving the camera only updates the
-/// shared receiver buffer, not every material or its bind group.
+/// shared receiver buffer, not every material or its bind group. The cached
+/// association holds weak IDs; the owning map resources retain the textures.
 pub(super) fn sync_shadow_target<E: MaterialExtension + ShadowImageAccess>(
     frame: Res<shadow_pass::ShadowSceneFrame>,
     local_owner: Option<Res<local_shadow_updates::LocalShadowOwner>>,
@@ -1841,10 +1843,10 @@ pub(super) fn sync_shadow_target<E: MaterialExtension + ShadowImageAccess>(
     >,
     mut current: Local<
         Option<(
-            Option<Handle<Image>>,
-            Option<Handle<Image>>,
-            Option<Handle<Image>>,
-            Option<Handle<Image>>,
+            Option<AssetId<Image>>,
+            Option<AssetId<Image>>,
+            Option<AssetId<Image>>,
+            Option<AssetId<Image>>,
         )>,
     >,
 ) {
@@ -1865,10 +1867,10 @@ pub(super) fn sync_shadow_target<E: MaterialExtension + ShadowImageAccess>(
             .unwrap_or_else(|| sampling.unavailable_depth.clone()),
     );
     let association = Some((
-        target.clone(),
-        screen.clone(),
-        cloud.clone(),
-        local_target.clone(),
+        target.as_ref().map(Handle::id),
+        screen.as_ref().map(Handle::id),
+        cloud.as_ref().map(Handle::id),
+        local_target.as_ref().map(Handle::id),
     ));
     if *current == association {
         // New streamed materials need the current atlas even when the owner

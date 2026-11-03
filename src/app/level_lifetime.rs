@@ -1,0 +1,125 @@
+//! bevy_backend: map world lifetime inside the persistent host application.
+//! 1400410f0 destroys the outgoing world separately from the conditional
+//! resource-class purge. Device, configuration and shared resource owners
+//! belong to the session; entities and mutable scene publications do not.
+use bevy::{ecs::component::ComponentId, prelude::*};
+use std::collections::HashSet;
+
+/// A host service entity whose lifetime spans loaded worlds (audio output).
+#[derive(Component)]
+pub(super) struct SessionEntity;
+
+#[derive(Default)]
+pub(super) struct LevelLifetime {
+    host_entities: HashSet<Entity>,
+    resources: Vec<ComponentId>,
+}
+
+impl LevelLifetime {
+    pub fn begin(world: &mut World) -> (Self, HashSet<ComponentId>) {
+        let host_entities = world.query::<Entity>().iter(world).collect();
+        let resources = world.iter_resources().map(|(info, _)| info.id()).collect();
+        (
+            Self {
+                host_entities,
+                resources: Vec::new(),
+            },
+            resources,
+        )
+    }
+
+    pub fn published(&mut self, world: &World, before: &HashSet<ComponentId>) {
+        self.resources = world
+            .iter_resources()
+            .map(|(info, _)| info.id())
+            .filter(|id| !before.contains(id))
+            .collect();
+    }
+
+    pub fn clear(&mut self, world: &mut World) {
+        world.resource_scope(
+            |world, mut shared: Mut<super::texture_streaming::SharedImages>| {
+                if let Some(queue) = world.get_resource::<super::SceneRenderQueue>() {
+                    shared.capture(queue);
+                }
+            },
+        );
+        let entities: Vec<_> = world
+            .query_filtered::<Entity, (
+                Without<SessionEntity>,
+                Without<bevy::ecs::resource::IsResource>,
+            )>()
+            .iter(world)
+            .filter(|entity| !self.host_entities.contains(entity))
+            .collect();
+        // Parents can recursively despawn their children; contains avoids a
+        // second despawn of an already removed child.
+        for entity in entities {
+            if world.entities().contains(entity) {
+                world.despawn(entity);
+            }
+        }
+        for id in self.resources.drain(..) {
+            world.remove_resource_by_id(id);
+        }
+        reset_scene_publications(world);
+    }
+}
+
+/// Plugin registration creates these empty owners before the first map.
+/// Reset their map payloads while retaining the plugins/device themselves.
+fn reset_scene_publications(world: &mut World) {
+    use crate::rendering::bevy_backend as backend;
+    macro_rules! reset { ($($ty:ty),* $(,)?) => { $(world.insert_resource(<$ty>::default());)* }; }
+    reset!(
+        super::scene_queue::VisibleSceneInstances,
+        super::visibility_queries::EarlyTomeQuery,
+        super::world_instances::WorldMatrices,
+        super::shadow_updates::ParallelShadowCpu,
+        super::local_shadow_updates::LocalShadowCpu,
+        super::local_shadow_updates::LocalShadowViewControls,
+        super::local_shadow_updates::LocalShadowDraws,
+        super::shadow_updates::ParallelWorldDraws,
+        super::shadow_updates::ModelCasterFrame,
+        super::shadow_updates::ParallelModelDraws,
+        super::model_motion::ModelPoseUpdates,
+        super::model_motion::ModelMotionBindings,
+        super::LocalLightCullStats,
+        super::VisibilityElapsedTiming,
+        backend::fog::FogSceneFrame,
+        backend::sun_rays::SunRaySources,
+        backend::fog_light_scattering::LocalFogFrame,
+        backend::display_scene::DisplaySceneFrame,
+        backend::water_scene::WaterMaterials,
+        backend::water_scene::WaterStencilMaterials,
+        backend::water_scene::WaterModelColours,
+        backend::water_scene::WaterModelLighting,
+        backend::water_scene::WaterLighting,
+        backend::water_scene::WaterWorldMeshes,
+        backend::water_scene::WaterImageSources,
+        backend::water_scene::WaterSceneFrame,
+        backend::water_scene::WaterViewSelection,
+        backend::ocean_scene::OceanSources,
+        backend::boat_scene::BoatMaterials,
+        backend::screen_effects::ScreenEffectMaterials,
+        backend::world_effects::WorldEffectSources,
+        backend::world_effects::WorldEffectDefinitions,
+        backend::world_effects::WorldEffectFrames,
+        backend::world_sounds::WorldSounds,
+        backend::particle_pass::ParticleMaterialSampler,
+        backend::particle_systems::ParticleQueryFrame,
+        backend::physics_queries::PhysicsQueryFrame,
+        backend::shadow_pass::ShadowSceneFrame,
+        backend::shadow_pass::ShadowSceneCompletion,
+        backend::shadow_pass::LocalShadowSceneFrame,
+        backend::shadow_pass::LocalShadowCompletion,
+        backend::shadow_pass::ShadowCaptureReadiness,
+        backend::coarse_depth::CoarseDepthMailbox,
+        backend::projected_decals::DecalScene,
+        super::material_loading::alpha::AlphaDepthMaterials,
+    );
+    super::audio::begin_level(world);
+    if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
+        *mailbox.0.lock().unwrap() = Default::default();
+    }
+}

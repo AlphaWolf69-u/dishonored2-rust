@@ -297,6 +297,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_plugins(super::display_settings::DisplaySettingsPlugin(
             std::sync::Mutex::new(display_state.take()),
         ));
+    // Host asset owners must collect dropped assets and process dependencies
+    // even while map systems are suspended by the loading screen.
+    app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
+        .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+        .add_plugins(super::audio::AudioAssetsPlugin)
+        .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin);
     let loading_schedules = super::loading_screen::Schedules::capture(&mut app);
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_plugins(super::audio::SoundPlugin)
@@ -318,8 +324,6 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         .init_resource::<shadow_updates::ParallelWorldDraws>()
         .init_resource::<shadow_updates::ModelCasterFrame>()
         .init_resource::<shadow_updates::ParallelModelDraws>()
-        .add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-        .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .add_plugins(super::decal_pass::DecalPassPlugin)
         .add_plugins(super::projected_decals::ProjectedDecalPlugin)
         .insert_resource(VisibilityElapsedTiming::default())

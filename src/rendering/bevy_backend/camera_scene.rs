@@ -131,6 +131,21 @@ struct ParticleGpu {
 
 /// Level loading gate: the level's particle GPU materials exist.
 pub const PARTICLE_GATE: &str = "particle materials";
+
+pub(super) fn release_level(world: &mut World) {
+    let mut gpu = world.resource_mut::<CameraGpu>();
+    gpu.current = None;
+    gpu.completed = None;
+    gpu.alpha_completed = None;
+    gpu.screen_state = Default::default();
+    gpu.particle_systems = Default::default();
+    gpu.world_particles = Default::default();
+    gpu.screen_draws = None;
+    gpu.particle_publication = None;
+    gpu.particles = None;
+    gpu.screen_sources = None;
+    gpu.screen_effects.clear_frame();
+}
 impl CameraGpu {
     pub(super) fn capture_planes(
         &self,

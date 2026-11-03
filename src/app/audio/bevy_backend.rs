@@ -91,6 +91,39 @@ struct Shared {
 }
 
 impl Engine {
+    pub fn retain_nodes(&self, actors: &std::collections::HashSet<u32>) {
+        let Some(shared) = &self.shared else { return };
+        let shared = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let mut switches = shared.switches.lock().unwrap_or_else(|e| e.into_inner());
+        switches.definitions.retain(|node, _| actors.contains(node));
+        switches.controllers.retain_objects(|emitter| emitter == crate::gameplay::sound::Emitter::Menu);
+    }
+
+    /// Host equivalent of releasing the outgoing world's audio objects.
+    /// Keep UI voices and the output/bus clock; old world requests must not
+    /// execute after another map reuses its component handles.
+    pub fn release_level(&self) {
+        let Some(shared) = &self.shared else { return };
+        let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let menu = crate::gameplay::sound::Emitter::Menu;
+        shared.voices.retain(|voice| {
+            let keep = voice.audio.emitter() == menu;
+            if !keep { voice.control.stopped.store(true, Ordering::Relaxed); }
+            keep
+        });
+        shared.fallbacks.retain(|voice| {
+            let keep = voice.emitter == menu;
+            if !keep { voice.control.stopped.store(true, Ordering::Relaxed); }
+            keep
+        });
+        shared.pending_actions.retain(|pending| pending.emitter == menu);
+        shared.pending_plays.retain(|pending| !pending.control.stopped.load(Ordering::Relaxed));
+        shared.due.retain(|due| match due {
+            Due::Action(pending) => pending.emitter == menu,
+            Due::Play(pending) => !pending.control.stopped.load(Ordering::Relaxed),
+        });
+    }
+
     pub fn new(mixer: &crate::gameplay::sound::mix::Mixer, states: StateGroups) -> Result<(Self, OutputAudio), String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let activity = Arc::new(Activity::new(mixer)?);

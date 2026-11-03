@@ -83,6 +83,10 @@ impl Plugin for DisplayPlugin {
 struct DisplayGpu {
     current: Option<DisplayView>,
 }
+
+pub(super) fn release_level(world: &mut World) {
+    world.resource_mut::<DisplayGpu>().current = None;
+}
 struct DisplayView {
     camera: Entity,
     format: TextureFormat,

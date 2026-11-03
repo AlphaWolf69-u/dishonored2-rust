@@ -83,9 +83,24 @@ pub fn load_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> 
 
 /// The map's load lists in load order: `init`, `common`, then the map.
 pub fn level_load_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<Vec<Resource>> {
-    let mut list = load_list(base, catalog, "init", language)?;
-    list.extend(load_list(base, catalog, "common", language)?);
-    list.extend(load_list(base, catalog, map, language)?);
+    let mut list = Vec::new();
+    for name in ["init", "common", map] {
+        list.extend(acquire_list(base, catalog, name, language)?.iter().cloned());
+    }
+    Ok(list)
+}
+
+/// One immutable manifest per installed list/language. In particular common
+/// and init are not read and parsed again for every destination map.
+pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
+    type Key = (std::path::PathBuf, String, String);
+    static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
+    let key = (base.to_owned(), name.to_ascii_lowercase(), language.to_ascii_lowercase());
+    let mut lists = LISTS.lock().unwrap();
+    let lists = lists.get_or_insert_with(Default::default);
+    if let Some(list) = lists.get(&key) { return Ok(list.clone()); }
+    let list = std::sync::Arc::new(load_list(base, catalog, name, language)?);
+    lists.insert(key, list.clone());
     Ok(list)
 }
 

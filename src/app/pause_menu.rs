@@ -186,6 +186,15 @@ impl Default for PauseMenu {
 }
 
 impl PauseMenu {
+    pub(super) fn begin_level(&mut self) {
+        let _ = self.commands.send(Command::Close);
+        let _ = self.commands.send(Command::EndLoading);
+        self.open = false;
+        self.ready = false;
+        // Re-request preparation to re-arm the gate even when the worker can
+        // reuse the already prepared player and common immutable resources.
+        self.prepared_for = None;
+    }
     pub(super) fn texture_requests(&self) -> impl Iterator<Item = super::resident_images::UiTextureRequest> + '_ { self.textures.try_iter() }
     pub(super) fn start_loading(&self, screen: (i32, i32), map: String) -> Receiver<Result<super::loading_movie::Frame, String>> {
         let (frames, receive) = channel();
