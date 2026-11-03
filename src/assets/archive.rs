@@ -318,7 +318,9 @@ fn read_location(base: &Path, path: &str, entry: &Entry) -> Result<Vec<u8>> {
     // allocation for its entire compressed representation.
     let input = file.take(u64::from(entry.stored_size));
     let mut output = Vec::new();
-    output.try_reserve((entry.size as usize).min(64 * 1024))?;
+    // The decoded size plus the one probe byte that detects an oversized
+    // stream, so read_to_end never regrows and copies the buffer.
+    output.try_reserve_exact(entry.size as usize + 1)?;
     if entry.size == entry.stored_size {
         input
             .take(u64::from(entry.size) + 1)

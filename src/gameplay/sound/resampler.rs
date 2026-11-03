@@ -70,6 +70,22 @@ impl Resampler {
         Some((second - first) * fraction * (1.0 / 65536.0) + first)
     }
 
+    /// Whole source frames passed: the next sample reads frames `n - 1`, `n`.
+    pub fn position(&self) -> u64 { self.phase >> 16 }
+
+    /// The source frames one output buffer advances at the current rate,
+    /// rounded half away from zero as 1410fdda0 rounds a virtual voice's
+    /// time skip.
+    pub fn buffer_frames(&self, frames: u32) -> u64 {
+        (frames as f32 * self.target as f32 / 65536.0 + 0.5) as u64
+    }
+
+    /// Back to the first source frame at the current rate (141137dc0).
+    pub fn restart(&mut self) { *self = Self::new(self.target); }
+
+    /// 1410fdda0 advances a voice virtual from elapsed time without decoding.
+    pub fn skip(&mut self, frames: u64) { self.phase += frames << 16; }
+
     pub fn advance(&mut self) {
         let step = if self.progress < 1024 {
             self.progress += 1;

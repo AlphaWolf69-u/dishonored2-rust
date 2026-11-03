@@ -4,6 +4,42 @@ use std::{collections::{BTreeMap, HashMap}, env, error::Error, fs::File, path::P
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--virtual-voices" {
+        // Resolved below-threshold settings of every installed sound, bus HDR
+        // flags and bank feedback data: the inputs of the virtual-voice path.
+        use dishonored2_rust::assets::{installation, wwise::{bank_mix, language_name, PlaybackBanks}};
+        let base = installation::game_base()?;
+        let language = language_name(dishonored2_rust::assets::lang::read_audio_language(&base)?)
+            .ok_or("unsupported audio language")?;
+        let mut paths = std::fs::read_dir(base.join("pck"))?.map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.retain(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")));
+        paths.sort();
+        let mut library = PlaybackBanks::default();
+        for path in paths {
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            for entry in &package.banks {
+                if entry.language_id != 0 && Some(entry.language_id) != package.language_id(language) { continue; }
+                let bytes = package.read_entry(&mut file, *entry)?;
+                if let Some(mix) = bank_mix(&bytes)? {
+                    for bus in &mix.buses {
+                        let hdr = bus.bus_settings.as_ref().map_or(0, |settings| settings.hdr_flags);
+                        if hdr != 0 { println!("bus {:#010x}: hdr_flags={hdr:#04x}", bus.id); }
+                    }
+                    println!("volume threshold: {} dB", mix.volume_threshold_db);
+                }
+                library.insert(bytes.into())?;
+            }
+        }
+        let (sounds, feedback) = library.below_threshold_settings()?;
+        let mut counts = BTreeMap::new();
+        for (_, behaviour, queue, _) in &sounds { *counts.entry((*behaviour, *queue)).or_insert(0usize) += 1; }
+        let other_curves = sounds.iter().filter(|sound| sound.3).count();
+        println!("{} sounds; feedback data in a bank: {feedback}; non-game-parameter curves: {other_curves}", sounds.len());
+        for ((behaviour, queue), count) in counts { println!("{behaviour:?} {queue:?}: {count}"); }
+        return Ok(());
+    }
     if matches!(first.to_string_lossy().as_ref(), "--container-playback" | "--switch-playback") {
         let inspect_switches = first.to_string_lossy() == "--switch-playback";
         use dishonored2_rust::assets::{installation, wwise::{bank_container_playback, bank_play_settings, bank_state_actions, bank_switch_playback, TransitionMode}};

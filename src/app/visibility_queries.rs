@@ -242,15 +242,18 @@ impl TomeQueryParts {
 /// current; stream_visible_models uses its jobs only when the key it builds
 /// from its own inputs is identical, and otherwise runs the query itself.
 ///
-/// The query runs on a task pool holding only query work. A thread waiting
-/// on a shared-pool scope also runs unrelated pool tasks, and during loading
-/// those can wait on later frame stages, which wait on this query.
+/// Each query job is its own compute-pool task, and stream_visible_models
+/// waits on them from the main thread, which never runs other pool tasks
+/// meanwhile. No pool thread waits on the jobs: one running unrelated
+/// compute tasks while waiting could enter one that waits on later frame
+/// stages during loading, which wait on this query (it deadlocked). A
+/// waiting task on the async pool queued behind pipeline compiles there
+/// and froze every frame for 0.5-1.5 s while new materials came into view.
 #[derive(Resource, Default)]
 pub(super) struct EarlyTomeQuery {
-    pending: Option<(TomeRenderQueryKey, bevy::tasks::Task<Vec<tome::RenderQueryJob>>)>,
+    pending: Option<(TomeRenderQueryKey, Vec<bevy::tasks::Task<tome::RenderQueryJob>>)>,
     /// Key of the query cached by stream_visible_models: no early start.
     cached_key: Option<TomeRenderQueryKey>,
-    pool: Option<std::sync::Arc<bevy::tasks::TaskPool>>,
 }
 
 pub(super) fn begin_tome_query(
@@ -280,36 +283,22 @@ pub(super) fn begin_tome_query(
     if !world.is_changed() && early.cached_key.as_ref() == Some(&key) {
         return;
     }
-    let pool = match (&world.query_pool, &early.pool) {
-        (Some(pool), _) | (None, Some(pool)) => pool.clone(),
-        (None, None) => {
-            let pool = std::sync::Arc::new(
-                bevy::tasks::TaskPoolBuilder::new()
-                    .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num())
-                    .thread_name("Tome Early Query".into())
-                    .build(),
-            );
-            early.pool = Some(pool.clone());
-            pool
-        }
-    };
-    let tree = world.tree.clone();
-    let bytes = world.bytes.clone();
-    let query_data = world.query_data.clone();
-    let job_count = world.query_job_count;
-    let gate_states = world.gate_states.clone();
-    let jobs_pool = pool.clone();
-    let task = pool.spawn(async move {
-        run_tome_jobs(
-            &tree,
-            &bytes,
-            &query_data,
-            Some(&jobs_pool),
-            job_count,
-            &parts.input(&gate_states),
-        )
-    });
-    early.pending = Some((key, task));
+    // Job-count verification compares against a second dispatch; it runs in
+    // stream_visible_models' own query.
+    if std::env::var("DH2_VERIFY_TOME_QUERY_JOBS").as_deref() == Ok("1") {
+        return;
+    }
+    let gate_states: std::sync::Arc<[u32]> = world.gate_states.as_slice().into();
+    let count = world.query_job_count;
+    let pool = world.query_pool.as_deref().unwrap_or_else(|| bevy::tasks::ComputeTaskPool::get());
+    let tasks = (0..count.max(1)).map(|job| {
+        let (tree, bytes, query_data, gate_states) =
+            (world.tree.clone(), world.bytes.clone(), world.query_data.clone(), gate_states.clone());
+        pool.spawn(async move {
+            tome::ordinary_direct_tome_render_job(&tree, &bytes, &query_data, &parts.input(&gate_states), job, count)
+        })
+    }).collect();
+    early.pending = Some((key, tasks));
 }
 
 #[derive(Default)]
@@ -445,8 +434,8 @@ pub(super) fn stream_visible_models(
                     }
                     query_cache.key = None;
                     let jobs = match early_jobs.take() {
-                        Some((early_key, task)) if early_key == key => {
-                            bevy::tasks::block_on(task)
+                        Some((early_key, tasks)) if early_key == key => {
+                            tasks.into_iter().map(bevy::tasks::block_on).collect()
                         }
                         _ => run_tome_render_jobs(tome_world, &input),
                     };

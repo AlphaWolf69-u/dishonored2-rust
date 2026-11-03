@@ -87,6 +87,7 @@ struct Sound {
     spatial: Option<super::spatial::Voice>,
     looping: Option<crate::gameplay::sound::looping::SourceLoop>,
     loop_count: crate::gameplay::sound::looping::LoopCount,
+    threshold: (crate::assets::wwise::BelowThreshold, crate::assets::wwise::VirtualReturn),
 }
 impl Sound {
     fn sample(&self, resampler: &Resampler, channel: usize,
@@ -201,8 +202,9 @@ impl Definition {
                     let spatial = super::spatial::Voice::read(&variant.properties, attenuations).map_err(invalid)?;
                     let loop_count = crate::gameplay::sound::looping::LoopCount::read(&variant.properties).map_err(invalid)?;
                     let looping = crate::gameplay::sound::looping::SourceLoop::new(loop_points, frames, 1).map_err(invalid)?;
+                    let threshold = variant.properties.below_threshold();
                     sounds.push(Sound { channels, sample_rate, samples,
-                        properties: Arc::new(variant.properties), spatial, looping: Some(looping), loop_count });
+                        properties: Arc::new(variant.properties), spatial, looping: Some(looping), loop_count, threshold });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Generator { node, properties, definition } => {
@@ -216,9 +218,10 @@ impl Definition {
                     let sound = sounds.len();
                     let spatial = super::spatial::Voice::read(&properties, attenuations).map_err(invalid)?;
                     let loop_count = crate::gameplay::sound::looping::LoopCount::read(&properties).map_err(invalid)?;
+                    let threshold = properties.below_threshold();
                     sounds.push(Sound { samples: Samples::Silence(parameters), channels: ChannelCount::new(1).unwrap(),
                         sample_rate: SampleRate::new(48000).unwrap(), properties: Arc::new(properties), spatial,
-                        looping: None, loop_count });
+                        looping: None, loop_count, threshold });
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children, .. } => {
@@ -286,6 +289,7 @@ impl Definition {
         let control = Arc::new(Control { volumes_db: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             transitions: (0..self.nodes.len()).map(|_| AtomicU32::new(0)).collect(),
             spatial: (0..self.sounds.len()).map(|_| std::array::from_fn(|index| AtomicU32::new(if index < 4 { 1.0f32.to_bits() } else { 0 }))).collect(),
+            rays: (0..self.sounds.len()).map(|_| std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits()))).collect(),
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             source_ready: AtomicU32::new(0), threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
@@ -299,7 +303,7 @@ impl Definition {
     }
 }
 
-struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, rays: Vec<[AtomicU32; 3]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
     transitions: Vec<AtomicU32>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(Option<u32>, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
     switch_count: AtomicU32, activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
@@ -366,7 +370,7 @@ impl Playing {
                 auxiliary_enabled: crate::gameplay::sound::auxiliary::enabled(&sound.properties),
             })).collect::<Result<Vec<_>, String>>()?))
         } else { None };
-        for (index, (sound, targets)) in self.definition.sounds.iter().zip(&self.control.spatial).enumerate() {
+        for (index, ((sound, targets), rays)) in self.definition.sounds.iter().zip(&self.control.spatial).zip(&self.control.rays).enumerate() {
             let values = if let Some(spatial) = &sound.spatial {
                 if let Some(propagated) = scene.propagated(self.emitter) {
                     spatial.propagated_targets(scene, propagated, sound.channels.get(), &mixer.environment)?
@@ -375,8 +379,9 @@ impl Playing {
                 }
             } else if routes.is_some() {
                 let gains = mixer.panner_2d(&sound.properties, &parameters)?.stereo_matrix(sound.channels.get())?;
-                super::spatial::Targets { gains, auxiliary: [gains; 2], voice_filters: [0.0; 2], output_filters: [None; 2] }
+                super::spatial::Targets { gains, auxiliary: [gains; 2], voice_filters: [0.0; 2], output_filters: [None; 2], rays: [1.0; 3] }
             } else { continue };
+            for (target, value) in rays.iter().zip(values.rays) { target.store(value.to_bits(), Ordering::Relaxed); }
             let gains = values.gains;
             let filters = values.voice_filters;
             for (target, value) in targets[..6].iter().zip([gains[0], gains[1], gains[2], gains[3], filters[0], filters[1]]) {
@@ -455,6 +460,8 @@ enum State {
         stream: Option<Stream>,
         resampler: Option<Resampler>, gain: GainRamp, gain_tick: Option<u64>, filters: Vec<[VoiceFilter; 2]>, output_filters: Vec<[VoiceFilter; 2]>,
         routes: Option<Arc<Vec<VoiceRoute>>>, auxiliary: Vec<AuxiliaryConnection>, auxiliary_initialized: bool,
+        /// Below the volume threshold with the virtual behaviour: no decoding.
+        virtualized: bool,
         _activity: Option<crate::gameplay::sound::activity::Token> },
     Layer(Vec<Runtime>),
     Container { active: Vec<Runtime>, sequence: Sequence, next: Option<u64>, pending: Option<usize>, exhausted: bool },
@@ -496,7 +503,7 @@ impl Runtime {
                 looping: sound.looping.map(|looping| looping.with_count(count)),
                 resampler: None,
                 gain: GainRamp::default(), gain_tick: None,
-                routes: None, auxiliary: Vec::new(), auxiliary_initialized: false,
+                routes: None, auxiliary: Vec::new(), auxiliary_initialized: false, virtualized: false,
                 _activity: control.registrations[*index].as_ref().map(|registration| registration.start()),
                 filters: (0..definition.sounds[*index].channels.get()).map(|_| [
                     VoiceFilter::new(FilterKind::LowPass, definition.rate.get(), 1024, false),
@@ -679,7 +686,7 @@ impl Runtime {
         let node = &definition.nodes[self.node];
         match (&mut self.state, &node.kind) {
             (State::Sound { frame, random, looping, silence, stream, resampler, gain: ramp, gain_tick, filters, output_filters,
-                routes, auxiliary, auxiliary_initialized, _activity: _ }, Kind::Sound(index)) => {
+                routes, auxiliary, auxiliary_initialized, virtualized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
@@ -691,11 +698,7 @@ impl Runtime {
                 }
                 let Some(resampler) = resampler else { return false };
                 let channels = usize::from(sound.channels.get());
-                let mut samples = [0.0; 8];
-                for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else { return false };
-                    *sample = value;
-                }
+                let mut audible = None;
                 let update_gain = *gain_tick != Some(now / 1024);
                 if routing.is_some() && update_gain {
                     *routes = Some(audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).clone());
@@ -751,12 +754,75 @@ impl Runtime {
                         }
                         if route.auxiliary_enabled { *auxiliary_initialized = true; }
                     }
+                    // DH2_DEBUG_VIRTUAL_VOICES=0 keeps every voice decoding (measurement).
+                    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    let enabled = *ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_VIRTUAL_VOICES").as_deref() != Ok("0"));
+                    if let (true, Some(context), Some(route)) = (enabled, routing.as_deref(), route) {
+                        // 1410fc0f0 gives each connection the voice volume, its
+                        // loudest ray of that connection's kind and its mixing
+                        // bus volume; 1410fcf50 finds the voice inaudible when
+                        // every connection is at or below 1410ca700's linear
+                        // threshold. No installed bus enables HDR and no sound
+                        // has modulators or feedback (wwise-audit
+                        // --virtual-voices), so their factors are 1.
+                        use crate::gameplay::sound::auxiliary::SendKind;
+                        let threshold = power10(threshold * 0.05).max(10f32.powf(threshold * 0.05));
+                        let rays: [f32; 3] = std::array::from_fn(|kind| f32::from_bits(audio.control.rays[*index][kind].load(Ordering::Relaxed)));
+                        let voice = context.gain;
+                        audible = Some(dry * voice * rays[0] * context.buses.output_gain(route.routing.bus) > threshold
+                            || auxiliary.iter().any(|connection| gain * connection.target * voice
+                                * rays[if connection.kind == SendKind::Game { 1 } else { 2 }]
+                                * context.buses.output_gain(connection.bus) > threshold));
+                    }
                     // Source offsets occupy the beginning of the output
                     // block. Start its matrix ramp at that block position.
                     for _ in 0..now % 1024 {
                         ramp.next_frame();
                         for connection in auxiliary.iter_mut() { connection.gain.next_frame(); }
                     }
+                }
+                // 1410fdda0's below-threshold behaviour (1410dd720 resolves it).
+                use crate::assets::wwise::{BelowThreshold, VirtualReturn};
+                let (behaviour, queue) = sound.threshold;
+                static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if audible.is_some_and(|audible| audible == *virtualized || behaviour == BelowThreshold::Kill && !audible)
+                    && *TRACE.get_or_init(|| std::env::var("DH2_TRACE_VIRTUAL_VOICES").as_deref() == Ok("1"))
+                {
+                    eprintln!("virtual voice {:#010x}: audible={audible:?} behaviour={behaviour:?} return={queue:?} frame={frame}", node.id);
+                }
+                match audible {
+                    Some(true) if *virtualized => {
+                        *virtualized = false;
+                        // 1411609c0 restarts a from-beginning source; a voice
+                        // from elapsed time continues where its skips led.
+                        if queue == VirtualReturn::FromBeginning { resampler.restart(); }
+                    }
+                    Some(false) if behaviour == BelowThreshold::Kill => return false,
+                    Some(false) if behaviour == BelowThreshold::Virtual && !*virtualized => {
+                        *virtualized = true;
+                        // 141161c80 frees the decoder unless the voice resumes.
+                        if queue != VirtualReturn::Resume { *stream = Stream::new(&sound.samples); }
+                    }
+                    _ => {}
+                }
+                if *virtualized {
+                    if update_gain && queue == VirtualReturn::FromElapsedTime {
+                        resampler.skip(resampler.buffer_frames(1024));
+                        // The time skip stops a source that runs out of data.
+                        let last = resampler.position().saturating_sub(1);
+                        let ended = match looping {
+                            Some(looping) => looping.frame(last).is_none(),
+                            None => silence.as_ref().is_some_and(|silence| silence.sample(last).is_none()),
+                        };
+                        if ended { return false; }
+                    }
+                    *frame += 1;
+                    return true;
+                }
+                let mut samples = [0.0; 8];
+                for (channel, sample) in samples[..channels].iter_mut().enumerate() {
+                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else { return false };
+                    *sample = value;
                 }
                 let gains = ramp.next_frame();
                 let low_pass = f32::from_bits(audio.control.filters[*index][0].load(Ordering::Relaxed)) + random.low_pass;

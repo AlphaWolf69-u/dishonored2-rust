@@ -156,10 +156,14 @@ pub(super) fn update(level: Option<ResMut<LevelAudio>>,
                 }
             }
             if audio.allocated {
-                if let Some(propagated) = evaluation.propagated {
-                    scene.publish(emitter, Position { position, front: Some(front) }, propagated,
-                        binding.settings.rate(rates[1]), rates[1] == 0.0);
-                }
+                // An empty listener mask admits no rays: the object stays
+                // published and its voices keep playing at zero connection
+                // volume (1410fcf50), as the FX objects' publication does.
+                let propagated = evaluation.propagated.unwrap_or(Propagated {
+                    positions: Vec::new(), levels: Default::default(), auxiliary: Vec::new(),
+                });
+                scene.publish(emitter, Position { position, front: Some(front) }, propagated,
+                    binding.settings.rate(rates[1]), rates[1] == 0.0);
             }
             Ok(())
         })();

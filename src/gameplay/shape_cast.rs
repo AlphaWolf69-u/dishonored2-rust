@@ -20,11 +20,44 @@ pub struct Contact {
     pub position: Vec3,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Vertex {
     w: Vec3,
     b: Vec3,
 }
+
+/// A GJK simplex (at most four vertices) or its barycentric weights, kept
+/// on the stack: `closest` runs per candidate triangle and cast iteration.
+#[derive(Clone, Copy)]
+struct Small<T: Copy + Default> {
+    items: [T; 4],
+    len: usize,
+}
+
+impl<T: Copy + Default> Small<T> {
+    fn of(items: &[T]) -> Self {
+        let mut small = Self { items: [T::default(); 4], len: 0 };
+        for &item in items {
+            small.push(item);
+        }
+        small
+    }
+
+    fn push(&mut self, item: T) {
+        self.items[self.len] = item;
+        self.len += 1;
+    }
+}
+
+impl<T: Copy + Default> std::ops::Deref for Small<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.items[..self.len]
+    }
+}
+
+type Simplex = Small<Vertex>;
+type Weights = Small<f32>;
 
 fn support(points: &[Vec3], direction: Vec3) -> Vec3 {
     let mut best = points[0];
@@ -41,22 +74,22 @@ fn support(points: &[Vec3], direction: Vec3) -> Vec3 {
 
 /// Closest point to the origin on the simplex; keeps only contributing
 /// vertices and returns their barycentric weights.
-fn reduce(simplex: &mut Vec<Vertex>) -> (Vec3, Vec<f32>) {
+fn reduce(simplex: &mut Simplex) -> (Vec3, Weights) {
     match simplex.len() {
-        1 => (simplex[0].w, vec![1.0]),
+        1 => (simplex[0].w, Weights::of(&[1.0])),
         2 => {
             let (a, b) = (simplex[0].w, simplex[1].w);
             let ab = b - a;
             let t = (-a.dot(ab) / ab.length_squared().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
             if t <= 0.0 {
-                simplex.truncate(1);
-                return (a, vec![1.0]);
+                simplex.len = 1;
+                return (a, Weights::of(&[1.0]));
             }
             if t >= 1.0 {
-                simplex.remove(0);
-                return (b, vec![1.0]);
+                *simplex = Simplex::of(&[simplex[1]]);
+                return (b, Weights::of(&[1.0]));
             }
-            (a + ab * t, vec![1.0 - t, t])
+            (a + ab * t, Weights::of(&[1.0 - t, t]))
         }
         3 => {
             let (point, weights) = closest_on_triangle([simplex[0].w, simplex[1].w, simplex[2].w], Vec3::ZERO);
@@ -65,7 +98,7 @@ fn reduce(simplex: &mut Vec<Vertex>) -> (Vec3, Vec<f32>) {
         _ => {
             let w = [simplex[0].w, simplex[1].w, simplex[2].w, simplex[3].w];
             if inside_tetrahedron(w) {
-                return (Vec3::ZERO, vec![0.25; 4]);
+                return (Vec3::ZERO, Weights::of(&[0.25; 4]));
             }
             let mut best: Option<(f32, Vec3, [f32; 4])> = None;
             for (i, j, k) in [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)] {
@@ -80,14 +113,14 @@ fn reduce(simplex: &mut Vec<Vertex>) -> (Vec3, Vec<f32>) {
                 }
             }
             let (_, point, weights) = best.unwrap();
-            retain(simplex, weights.to_vec(), point)
+            retain(simplex, weights, point)
         }
     }
 }
 
-fn retain(simplex: &mut Vec<Vertex>, weights: impl IntoIterator<Item = f32>, point: Vec3) -> (Vec3, Vec<f32>) {
-    let mut kept = Vec::new();
-    let mut kept_weights = Vec::new();
+fn retain(simplex: &mut Simplex, weights: impl IntoIterator<Item = f32>, point: Vec3) -> (Vec3, Weights) {
+    let mut kept = Simplex::of(&[]);
+    let mut kept_weights = Weights::of(&[]);
     for (vertex, weight) in simplex.iter().zip(weights) {
         if weight > 0.0 {
             kept.push(*vertex);
@@ -165,9 +198,9 @@ fn support_vertex(points: &[Vec3], triangle: &[Vec3; 3], direction: Vec3) -> Ver
 /// GJK distance between the hull `points` and a triangle. Returns the
 /// separation, the unit direction from the triangle toward the hull and the
 /// closest point on the triangle, or the final simplex when they overlap.
-fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Result<(f32, Vec3, Vec3), Vec<Vertex>> {
-    let mut simplex = vec![support_vertex(points, triangle, points[0] - triangle[0])];
-    let mut weights = vec![1.0];
+fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Result<(f32, Vec3, Vec3), Simplex> {
+    let mut simplex = Simplex::of(&[support_vertex(points, triangle, points[0] - triangle[0])]);
+    let mut weights = Weights::of(&[1.0]);
     let mut v = simplex[0].w;
     for _ in 0..64 {
         let length2 = v.length_squared();
@@ -193,7 +226,7 @@ fn separation(points: &[Vec3], triangle: &[Vec3; 3]) -> Result<(f32, Vec3, Vec3)
     if distance <= 1e-6 {
         return Err(simplex);
     }
-    let on_triangle: Vec3 = simplex.iter().zip(&weights).map(|(s, &k)| s.b * k).sum();
+    let on_triangle: Vec3 = simplex.iter().zip(weights.iter()).map(|(s, &k)| s.b * k).sum();
     Ok((distance, v / distance, on_triangle))
 }
 
@@ -209,7 +242,7 @@ fn touching(points: &[Vec3], [a, b, c]: &[Vec3; 3]) -> Contact {
 }
 
 /// Grow GJK's final simplex into a tetrahedron around the origin.
-fn tetrahedron(points: &[Vec3], triangle: &[Vec3; 3], mut simplex: Vec<Vertex>) -> Option<Vec<Vertex>> {
+fn tetrahedron(points: &[Vec3], triangle: &[Vec3; 3], mut simplex: Simplex) -> Option<Vec<Vertex>> {
     if simplex.len() == 2 {
         let axis = (simplex[1].w - simplex[0].w).normalize_or_zero();
         let side = axis.any_orthonormal_vector();
@@ -230,7 +263,7 @@ fn tetrahedron(points: &[Vec3], triangle: &[Vec3; 3], mut simplex: Vec<Vertex>) 
             }
         }
     }
-    (simplex.len() == 4 && inside_tetrahedron([simplex[0].w, simplex[1].w, simplex[2].w, simplex[3].w])).then_some(simplex)
+    (simplex.len() == 4 && inside_tetrahedron([simplex[0].w, simplex[1].w, simplex[2].w, simplex[3].w])).then(|| simplex.to_vec())
 }
 
 fn face_plane(vertices: &[Vertex], f: [usize; 3]) -> Option<(Vec3, f32)> {
@@ -241,7 +274,7 @@ fn face_plane(vertices: &[Vertex], f: [usize; 3]) -> Option<(Vec3, f32)> {
 }
 
 /// EPA: the penetration depth and direction of an overlapping hull.
-fn penetration(points: &[Vec3], triangle: &[Vec3; 3], simplex: Vec<Vertex>) -> Contact {
+fn penetration(points: &[Vec3], triangle: &[Vec3; 3], simplex: Simplex) -> Contact {
     let Some(mut vertices) = tetrahedron(points, triangle, simplex) else { return touching(points, triangle) };
     let mut faces: Vec<[usize; 3]> = Vec::new();
     for f in [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]] {

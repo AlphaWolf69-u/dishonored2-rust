@@ -23,6 +23,14 @@ pub(super) struct Targets {
     pub auxiliary: [[f32; 4]; 2],
     pub voice_filters: [f32; 2],
     pub output_filters: [Option<f32>; 2],
+    /// Dry, game-send and user-send volume of the loudest admitted ray,
+    /// before panning: 1410fc0f0 takes each connection's volume from these.
+    pub rays: [f32; 3],
+}
+
+/// Per-kind maximum of the admitted rays' volumes.
+fn loudest(rays: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
+    rays.into_iter().fold([0.0; 3], |loudest, ray| std::array::from_fn(|kind| loudest[kind].max(ray[kind])))
 }
 
 #[derive(Resource)]
@@ -149,17 +157,19 @@ impl Voice {
         // when no output rays are admitted; cb3b0's ray reduction is skipped.
         if propagated.positions.is_empty() {
             return Ok(Targets { gains: [0.0; 4], auxiliary: [[0.0; 4]; 2],
-                voice_filters: [0.0; 2], output_filters: [None; 2] });
+                voice_filters: [0.0; 2], output_filters: [None; 2], rays: [0.0; 3] });
         }
         let listener = scene.listener.ok_or("propagated Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
         let mut matrices = Vec::with_capacity(propagated.positions.len());
         let mut rays = Vec::with_capacity(propagated.positions.len());
+        let mut volumes = Vec::with_capacity(propagated.positions.len());
         for &position in &propagated.positions {
-            let (matrix, _) = self.ray_targets_with_environment(scene, position, channels,
+            let (matrix, _, volume) = self.ray_targets_with_environment(scene, position, channels,
                 Some((settings, propagated.levels)))?;
             matrices.push(matrix);
+            volumes.push(volume);
             let ray = listener.ray(position.position, position.front.unwrap_or(Vec3::ZERO), 1.0);
             let gains = spatial::gains(attenuation, ray, cone.map_or(0.0, |cone| cone.outside_volume_db));
             rays.push(FilterRay {
@@ -173,7 +183,7 @@ impl Voice {
         let filters = environment::filters(settings, &rays, [0.0; 2])?;
         let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
         Ok(Targets { gains, auxiliary: [game, user],
-            voice_filters: filters.voice, output_filters: filters.output })
+            voice_filters: filters.voice, output_filters: filters.output, rays: loudest(volumes) })
     }
 
     /// Mode 2's per-channel maximum and minimum ray filters (1410cbbb0,
@@ -183,26 +193,28 @@ impl Voice {
         let first = self.ray_targets(scene, *first, channels)?;
         if remaining.is_empty() {
             let [gains, game, user] = first.0;
-            return Ok(Targets { gains, auxiliary: [game, user], voice_filters: first.1, output_filters: [None; 2] });
+            return Ok(Targets { gains, auxiliary: [game, user], voice_filters: first.1, output_filters: [None; 2], rays: first.2 });
         }
         let mut matrices = vec![first.0];
+        let mut volumes = vec![first.2];
         let mut filters = [100.0; 2];
         for index in 0..2 { if first.1[index] <= filters[index] { filters[index] = first.1[index]; } }
         for position in remaining {
-            let (matrix, next) = self.ray_targets(scene, *position, channels)?;
+            let (matrix, next, volume) = self.ray_targets(scene, *position, channels)?;
             matrices.push(matrix);
+            volumes.push(volume);
             for index in 0..2 { if next[index] <= filters[index] { filters[index] = next[index]; } }
         }
         let [gains, game, user] = crate::gameplay::sound::panning::send_directions(matrices);
-        Ok(Targets { gains, auxiliary: [game, user], voice_filters: filters, output_filters: [None; 2] })
+        Ok(Targets { gains, auxiliary: [game, user], voice_filters: filters, output_filters: [None; 2], rays: loudest(volumes) })
     }
 
-    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
+    fn ray_targets(&self, scene: &Scene, position: Position, channels: u16) -> Result<([[f32; 4]; 3], [f32; 2], [f32; 3]), String> {
         self.ray_targets_with_environment(scene, position, channels, None)
     }
 
     fn ray_targets_with_environment(&self, scene: &Scene, position: Position, channels: u16,
-        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([[f32; 4]; 3], [f32; 2]), String> {
+        environment: Option<(&crate::assets::wwise::EnvironmentSettings, ControlLevels)>) -> Result<([[f32; 4]; 3], [f32; 2], [f32; 3]), String> {
         let listener = scene.listener.ok_or("spatial Wwise event has no listener")?;
         let attenuation = self.attenuation.as_deref();
         let cone = attenuation.and_then(|attenuation| attenuation.cone.as_ref());
@@ -221,6 +233,7 @@ impl Voice {
         };
         let filters = spatial::filters(attenuation, ray, gains.cone_ratio,
             cone.map_or([0.0; 2], |cone| [cone.low_pass, cone.high_pass]), [0.0; 2]);
-        Ok((crate::gameplay::sound::panning::send_matrices(pan, gains), filters))
+        let volume = [gains.dry, gains.game_auxiliary, gains.user_auxiliary];
+        Ok((crate::gameplay::sound::panning::send_matrices(pan, gains), filters, volume))
     }
 }

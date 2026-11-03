@@ -516,57 +516,105 @@ pub(super) fn apply_rest_pose(
 
 /// CPU skinning with the installed skin VS blend: palette-weighted game-space
 /// position, normal, tangent and bitangent, then `position`/`direction` map
-/// them into the mesh's space.
+/// them into the mesh's space. bevy_backend: the original blends in its skin
+/// vertex programs; vertices are independent, so large surfaces are split
+/// across the compute pool (the first-person arms are re-skinned every frame
+/// on the main world's critical path).
 pub(super) fn skin_surface(
     mesh: &mut Mesh,
     surface: &bmd6::SurfaceInfo,
     palette: &[[[f32; 4]; 3]],
     influences: u8,
-    position: impl Fn(Vec3) -> Vec3,
-    direction: impl Fn(Vec3) -> Vec3,
+    position: impl Fn(Vec3) -> Vec3 + Sync,
+    direction: impl Fn(Vec3) -> Vec3 + Sync,
 ) -> Result<(), String> {
+    skin_streams(surface, palette, influences, position, direction)?.insert(mesh);
+    Ok(())
+}
+
+/// Skinned vertex streams of one surface, for `SkinnedStreams::insert`.
+pub(super) struct SkinnedStreams(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>);
+
+impl SkinnedStreams {
+    pub(super) fn insert(self, mesh: &mut Mesh) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.0);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.1);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, self.2);
+        mesh.insert_attribute(DH2_BITANGENT, self.3);
+    }
+}
+
+/// `skin_surface`'s vertex streams without a mesh, so several surfaces can
+/// be skinned at once.
+pub(super) fn skin_streams(
+    surface: &bmd6::SurfaceInfo,
+    palette: &[[[f32; 4]; 3]],
+    influences: u8,
+    position: impl Fn(Vec3) -> Vec3 + Sync,
+    direction: impl Fn(Vec3) -> Vec3 + Sync,
+) -> Result<SkinnedStreams, String> {
     if surface.skin_indices.len() != surface.positions.len()
         || surface.skin_weights.len() != surface.positions.len()
     {
         return Err("skin vertex streams have different lengths".into());
     }
-    let mut positions = Vec::with_capacity(surface.positions.len());
-    let mut normals = Vec::with_capacity(surface.positions.len());
-    let mut tangents = Vec::with_capacity(surface.positions.len());
-    let mut bitangents = Vec::with_capacity(surface.positions.len());
-    for i in 0..surface.positions.len() {
-        let matrix = edge_skeleton::vertex_skin_matrix(
-            palette,
-            surface.matrix_offset,
-            surface.skin_indices[i],
-            surface.skin_weights[i],
-            influences,
-        )?;
-        let transform = |v: Vec3, w: f32| {
-            Vec3::from_array(matrix.map(|r| Vec4::from_array(r).dot(v.extend(w))))
-        };
-        let p = transform(Vec3::from_array(surface.positions[i]), 1.0);
-        positions.push(position(p).to_array());
-        let packed = surface.packed_channels[i];
-        let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
-        let n = transform(
-            Vec3::new(snorm(packed[4]), snorm(packed[5]), snorm(packed[6])),
-            0.0,
-        );
-        let t = transform(
-            Vec3::new(snorm(packed[8]), snorm(packed[9]), snorm(packed[10])),
-            0.0,
-        );
-        let sign = snorm(packed[11]);
-        normals.push(direction(n).to_array());
-        tangents.push(direction(t).extend(sign).to_array());
-        bitangents.push(direction(n.cross(t) * sign).to_array());
-    }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
-    mesh.insert_attribute(DH2_BITANGENT, bitangents);
-    Ok(())
+    type Streams = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>);
+    let skin = |range: std::ops::Range<usize>| -> Result<Streams, String> {
+        let mut streams: Streams = (Vec::with_capacity(range.len()), Vec::with_capacity(range.len()),
+            Vec::with_capacity(range.len()), Vec::with_capacity(range.len()));
+        for i in range {
+            let matrix = edge_skeleton::vertex_skin_matrix(
+                palette,
+                surface.matrix_offset,
+                surface.skin_indices[i],
+                surface.skin_weights[i],
+                influences,
+            )?;
+            let transform = |v: Vec3, w: f32| {
+                Vec3::from_array(matrix.map(|r| Vec4::from_array(r).dot(v.extend(w))))
+            };
+            let p = transform(Vec3::from_array(surface.positions[i]), 1.0);
+            streams.0.push(position(p).to_array());
+            let packed = surface.packed_channels[i];
+            let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
+            let n = transform(
+                Vec3::new(snorm(packed[4]), snorm(packed[5]), snorm(packed[6])),
+                0.0,
+            );
+            let t = transform(
+                Vec3::new(snorm(packed[8]), snorm(packed[9]), snorm(packed[10])),
+                0.0,
+            );
+            let sign = snorm(packed[11]);
+            streams.1.push(direction(n).to_array());
+            streams.2.push(direction(t).extend(sign).to_array());
+            streams.3.push(direction(n.cross(t) * sign).to_array());
+        }
+        Ok(streams)
+    };
+    const CHUNK: usize = 2048;
+    let count = surface.positions.len();
+    let (positions, normals, tangents, bitangents) = if count <= CHUNK {
+        skin(0..count)?
+    } else {
+        let skin = &skin;
+        let parts = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            for start in (0..count).step_by(CHUNK) {
+                scope.spawn(async move { skin(start..(start + CHUNK).min(count)) });
+            }
+        });
+        let mut streams: Streams = (Vec::with_capacity(count), Vec::with_capacity(count),
+            Vec::with_capacity(count), Vec::with_capacity(count));
+        for part in parts {
+            let part = part?;
+            streams.0.extend(part.0);
+            streams.1.extend(part.1);
+            streams.2.extend(part.2);
+            streams.3.extend(part.3);
+        }
+        streams
+    };
+    Ok(SkinnedStreams(positions, normals, tangents, bitangents))
 }
 
 #[derive(Clone)]
@@ -1393,39 +1441,6 @@ mod upload_tests {
     use super::*;
 
     #[test]
-    fn immutable_shadow_upload_shares_only_identical_bytes_and_preserves_old_generations() {
-        let mut buffers = Assets::<ShaderBuffer>::default();
-        let mut slot = None;
-        let first = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
-        let reference = buffers.get(&first).unwrap().data.clone();
-        let same = reuse_immutable_shadow_values(vec![7u32, 11, 13], &mut slot, &mut buffers);
-        assert_eq!(first.id(), same.id());
-        assert_eq!(
-            reference,
-            ShaderBuffer::from(vec![7u32, 11, 13]).data,
-            "immutable uploads keep their exact length"
-        );
-        let changed = reuse_immutable_shadow_values(vec![19u32, 23, 29], &mut slot, &mut buffers);
-        assert_ne!(changed.id(), first.id());
-        assert_eq!(buffers.get(&first).unwrap().data, reference);
-        let changed_bytes = buffers.get(&changed).unwrap().data.clone();
-        let grown = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
-        assert_ne!(grown.id(), changed.id());
-        assert_eq!(buffers.get(&changed).unwrap().data, changed_bytes);
-        buffers.get_mut(&grown).unwrap().set_data(vec![99u32; 5]);
-        let repaired = reuse_immutable_shadow_values(vec![31u32; 5], &mut slot, &mut buffers);
-        assert_ne!(
-            grown.id(),
-            repaired.id(),
-            "another writer invalidates reuse without overwriting its asset"
-        );
-        assert_eq!(
-            buffers.get(&grown).unwrap().data,
-            ShaderBuffer::from(vec![99u32; 5]).data
-        );
-    }
-
-    #[test]
     fn live_shadow_upload_reuses_capacity_and_replaces_every_value() {
         let mut buffers = Assets::<ShaderBuffer>::default();
         let mut cached = None;
@@ -1515,39 +1530,13 @@ where
     handle
 }
 
-/// Share identical immutable generation data; changed data gets a new asset
-/// so every older retained snapshot keeps its original bytes.
-fn reuse_immutable_shadow_values<T>(
-    values: Vec<T>,
-    cached: &mut Option<(Handle<ShaderBuffer>, usize)>,
-    buffers: &mut Assets<ShaderBuffer>,
-) -> Handle<ShaderBuffer>
-where
-    Vec<T>: bevy::render::render_resource::ShaderType
-        + bevy::render::render_resource::encase::internal::WriteInto,
-{
-    let length = values.len();
-    let encoded = ShaderBuffer::from(values);
-    if let Some((handle, _)) = cached {
-        if buffers
-            .get(&*handle)
-            .is_some_and(|buffer| buffer.data == encoded.data)
-        {
-            return handle.clone();
-        }
-    }
-    let handle = buffers.add(encoded);
-    *cached = Some((handle.clone(), length));
-    handle
-}
-
 pub(super) fn build_world_layer(
     plans: Vec<WorldShadowMaskPlan>,
     matrices: Option<&Handle<ShaderBuffer>>,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
 ) -> shadow_pass::ShadowLayer {
-    build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None, false)
+    build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None)
 }
 
 pub(super) fn build_world_shadow_layer(
@@ -1556,7 +1545,6 @@ pub(super) fn build_world_shadow_layer(
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
     shader_buffers: &mut Assets<ShaderBuffer>,
     mut uploads: Option<&mut Vec<WorldShadowUpload>>,
-    immutable_uploads: bool,
 ) -> shadow_pass::ShadowLayer {
     let mut instances = Vec::new();
     for (index, plan) in plans.into_iter().enumerate() {
@@ -1570,18 +1558,12 @@ pub(super) fn build_world_shadow_layer(
             &mut uploads[index]
         });
         let (visible_indices, winds) = if let Some(upload) = upload {
-            let ids = if immutable_uploads {
-                reuse_immutable_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
-            } else {
-                upload_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers)
-            };
-            let winds = (!plan.auxiliary.is_empty()).then(|| {
-                if immutable_uploads {
-                    reuse_immutable_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
-                } else {
-                    upload_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers)
-                }
-            });
+            // Written in place: a cascade's static generation is live only
+            // until the next one replaces it, so its GPU buffer and the bind
+            // groups that reference it survive across generations.
+            let ids = upload_shadow_values(plan.instance_ids, &mut upload.ids, shader_buffers);
+            let winds = (!plan.auxiliary.is_empty())
+                .then(|| upload_shadow_values(plan.auxiliary, &mut upload.winds, shader_buffers));
             (ids, winds)
         } else {
             (

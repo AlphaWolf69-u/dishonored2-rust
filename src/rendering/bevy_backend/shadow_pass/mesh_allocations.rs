@@ -9,7 +9,11 @@ struct EntryAllocation {
 
 #[derive(Default)]
 pub(super) struct MeshAllocationCache {
-    epoch: Option<(u32, u32)>,
+    /// (slab buffer replacements, free generation) of the allocator when the
+    /// entries were last valid. Between consecutive free generations only the
+    /// freed meshes can change, so only they are dropped; anything else
+    /// (a moved slab, a skipped generation) drops every entry.
+    epoch: Option<(u64, u64)>,
     entries: HashMap<AssetId<Mesh>, EntryAllocation>,
     frame: u64,
     verify: bool,
@@ -18,9 +22,15 @@ pub(super) struct MeshAllocationCache {
 }
 
 impl MeshAllocationCache {
-    pub fn begin_frame(&mut self, epoch: (u32, u32), enabled: bool) {
-        if !enabled || self.epoch != Some(epoch) {
-            self.entries.clear();
+    pub fn begin_frame(&mut self, allocator: &MeshAllocator, enabled: bool) {
+        let (generation, freed) = allocator.freed_meshes();
+        let epoch = (allocator.slab_buffer_replacements(), generation);
+        match self.epoch {
+            Some(previous) if enabled && previous == epoch => {}
+            Some((replacements, previous)) if enabled && replacements == epoch.0 && previous + 1 == generation => {
+                for id in freed { self.entries.remove(id); }
+            }
+            _ => self.entries.clear(),
         }
         self.frame = self.frame.wrapping_add(1);
         if self.frame == 0 {

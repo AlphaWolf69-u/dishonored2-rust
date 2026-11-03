@@ -409,11 +409,38 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Authored light entities resolved: {}", placed_lights.len());
     let mut app = App::new();
+    // bevy_backend: the original ships compiled shaders; the D3D12 backend
+    // keeps the bytecode it compiles here for later runs (vendored wgpu-hal).
+    if env::var_os("DH2_SHADER_CACHE_DIR").is_none() {
+        // SAFETY: set before the renderer and its threads start.
+        unsafe { env::set_var("DH2_SHADER_CACHE_DIR", crate::platform::home::home().cache_dir().join("shaders")); }
+    }
     let compute_threads = env::var("DH2_COMPUTE_THREADS")
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()?;
+    // bevy_backend: Bevy sizes its pools from the hardware thread count: 25%
+    // each for I/O and async compute by default, the rest for compute. Here
+    // the I/O pool runs the serial texture reader (one thread at most) and
+    // the async pool waits on the early Tome query and compiles pipelines in
+    // bursts while new areas come into view. Frame work runs on the compute
+    // pool, which gets every hardware thread: the main and render threads
+    // mostly wait on it, and idle I/O and async threads park. On the eotw
+    // camera path with 4 cores (DH2_DEBUG_TOTAL_THREADS=4, affinity 0x55),
+    // compute 2 (the remainder) ran 65 fps, 3 ran 81 and 4 ran 89; on 12
+    // threads, 9 and 12 measured the same.
     let mut task_pools = bevy::app::TaskPoolOptions::default();
+    task_pools.io.percent = 0.1;
+    task_pools.async_compute.percent = 0.15;
+    // DH2_DEBUG_TOTAL_THREADS sizes the pools for a smaller CPU (measurement,
+    // with the process affinity limited to that many cores).
+    let total_override = env::var("DH2_DEBUG_TOTAL_THREADS").ok().and_then(|value| value.parse::<usize>().ok());
+    if let Some(total) = total_override {
+        task_pools.min_total_threads = total;
+        task_pools.max_total_threads = total;
+    }
+    task_pools.compute.min_threads = total_override
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |threads| threads.get()));
     if let Some(threads) = compute_threads {
         if !(1..=32).contains(&threads) {
             return Err("DH2_COMPUTE_THREADS must be between 1 and 32".into());
@@ -984,18 +1011,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             render.insert_resource(bevy::render::renderer::ParallelCommandFinalization);
         }
     }
+    // Encoders finish on Bevy's compute pool; DH2_RENDER_FINALIZATION_THREADS
+    // (measurement only) gives them a private pool instead. Private pools
+    // over-subscribe the hardware once their work overlaps with the frame's.
     if let Some(threads) = env::var("DH2_RENDER_FINALIZATION_THREADS")
         .ok()
-        .or_else(|| {
-            if !cfg!(target_os = "windows") {
-                return None;
-            }
-            let count = std::thread::available_parallelism().ok()?.get();
-            // The render thread also finalizes commands in this batch. On a
-            // 12-thread CPU at the eotw view, half the hardware threads (6)
-            // beat a quarter (3) by ~0.5 ms p50 and 11 lost 3 ms to contention.
-            (count >= 4).then(|| (count / 2).clamp(1, 8).to_string())
-        })
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|threads| *threads > 0 && *threads <= 32)
     {
@@ -1049,7 +1069,6 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 super::vegetation_wind::initialize_vegetation_wind,
                 initialize_parallel_shadow_owner,
                 shadow_updates::initialize_parallel_receiver_source,
-                shadow_updates::initialize_shadow_depth_copy,
                 local_shadow_updates::initialize_local_shadow_owner,
             )
                 .chain(),

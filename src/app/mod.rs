@@ -44,7 +44,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 

@@ -294,9 +294,10 @@ const LEVEL_SOUNDS_GATE: &str = "level emitter and world FX sound events";
 fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
     let events: Vec<u32> = events.iter().copied().filter(|e| !registry.sources.contains_key(e)).collect();
     let shared = &*registry;
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let prepared: Vec<(u32, Vec<SourceAction>)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = events.chunks(events.len().div_ceil(threads).max(1)).map(|chunk| scope.spawn(move || {
+    let pool = bevy::tasks::ComputeTaskPool::get();
+    let threads = pool.thread_num().max(1);
+    let prepared: Vec<(u32, Vec<SourceAction>)> = pool.scope(|scope| {
+        for chunk in events.chunks(events.len().div_ceil(threads).max(1)) { scope.spawn(async move {
             let _tag = crate::platform::allocation_tags::tag("sound preparation");
             chunk.iter().filter_map(|&event| match shared.decode_event(event) {
                 Ok(actions) => Some((event, actions)),
@@ -305,9 +306,8 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
                     None
                 }
             }).collect::<Vec<_>>()
-        })).collect();
-        workers.into_iter().flat_map(|worker| worker.join().unwrap_or_default()).collect()
-    });
+        }); }
+    }).into_iter().flatten().collect();
     let count = prepared.len();
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
@@ -429,7 +429,10 @@ fn update_playing_volume(
     let world_paused = paused.is_some_and(|paused| paused.0);
     let pause_changed = world_paused != *previous_pause;
     engine.update_action_pause(pause_changed.then_some(world_paused), |emitter| scene.frozen(emitter));
-    for (mut target, sink, scheduled, voice, fallback) in &mut playing {
+    // Each voice publishes only its own targets; the update is on the main
+    // world's critical path while walking, so voices update in parallel.
+    playing.par_iter_mut().batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
+        .for_each(|(mut target, sink, scheduled, voice, fallback)| {
         // 788940 -> c7d30/c7d40 -> c4300 snapshots the currently playing
         // IDs. It does not silence later UI posts: 02cbd0 uses the same
         // world's global object, and c4550 posts new IDs while paused.
@@ -443,16 +446,16 @@ fn update_playing_volume(
             if !frozen {
                 if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise shared voice update unavailable: {error}"); }
             }
-            continue;
+            return;
         }
-        let Some(sink) = sink else { continue };
+        let Some(sink) = sink else { return };
         if frozen != target.paused {
             if frozen { sink.pause(); } else { sink.play(); }
             target.paused = frozen;
         }
-        if frozen { continue; }
+        if frozen { return; }
         if let Err(error) = scheduled.update(mixer, &scene) { warn!("Wwise scheduled mix update unavailable: {error}"); }
-    }
+    });
     *previous_pause = world_paused;
     mix.generation = generation;
 }

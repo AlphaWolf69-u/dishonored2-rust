@@ -156,6 +156,33 @@ pub(super) const DH2_NORMAL_W: MeshVertexAttribute =
 /// model with a positive hack carry the attribute.
 pub(super) const DH2_MODEL_DEPTH_HACK: MeshVertexAttribute =
     MeshVertexAttribute::new("DH2_ModelDepthHack", 0x4448_3206, VertexFormat::Float32);
+/// Joints and weights 4..7 of the installed eight-weight skin stream; joints
+/// 0..3 travel in Bevy's joint attributes.
+pub(super) const DH2_JOINT_INDEX_B: MeshVertexAttribute =
+    MeshVertexAttribute::new("DH2_JointIndexB", 0x4448_3207, VertexFormat::Uint32x4);
+pub(super) const DH2_JOINT_WEIGHT_B: MeshVertexAttribute =
+    MeshVertexAttribute::new("DH2_JointWeightB", 0x4448_3208, VertexFormat::Float32x4);
+
+/// GPU-skinned surfaces with the installed eight-weight blend (DH2_SKIN8);
+/// only once Bevy's skin binding is active for the mesh (SKINNED).
+pub(super) fn specialize_skin8(
+    descriptor: &mut RenderPipelineDescriptor,
+    layout: &MeshVertexBufferLayoutRef,
+) -> Result<(), SpecializedMeshPipelineError> {
+    let skinned = descriptor.vertex.shader_defs.iter().any(
+        |value| matches!(value, bevy::shader::ShaderDefVal::Bool(name, true) if name == "SKINNED"),
+    );
+    if !skinned || !layout.0.contains(DH2_JOINT_INDEX_B) {
+        return Ok(());
+    }
+    let extra = layout.0.get_layout(&[
+        DH2_JOINT_INDEX_B.at_shader_location(14),
+        DH2_JOINT_WEIGHT_B.at_shader_location(15),
+    ])?;
+    descriptor.vertex.buffers[0].attributes.extend(extra.attributes);
+    descriptor.vertex.shader_defs.push("DH2_SKIN8".into());
+    Ok(())
+}
 
 /// Depth-hacked models scale clip Z in the depth prepass and forward vertex
 /// programs. In the prepass, FUN_1402fcff0's per-model partition
@@ -404,6 +431,7 @@ impl MaterialExtension for ProbeExtension {
         specialize_skin(descriptor, key.bind_group_data);
         authored_basis_pipeline(descriptor, layout)?;
         specialize_model_depth_hack(descriptor, layout)?;
+        specialize_skin8(descriptor, layout)?;
         crate::rendering::bevy_backend::vegetation_wind::specialize(
             descriptor,
             layout,

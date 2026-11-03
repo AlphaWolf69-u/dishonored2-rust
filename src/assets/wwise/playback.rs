@@ -138,6 +138,21 @@ impl<'a> PlaybackBanks<'a> {
         }
         Ok(chains)
     }
+    /// Each sound's resolved below-threshold settings and whether its chain
+    /// has a curve driven by something other than a game parameter (such as
+    /// a modulator), plus whether any loaded bank carries feedback data.
+    pub fn below_threshold_settings(&self) -> io::Result<(Vec<(u32, super::BelowThreshold, super::VirtualReturn, bool)>, bool)> {
+        let mut sounds = Vec::new();
+        for (&id, object) in &self.actors {
+            if object.kind != 2 { continue; }
+            let properties = MediaProperties { nodes: self.node_hierarchy(id)?, bus: 0 };
+            let (behaviour, queue) = properties.below_threshold();
+            let other_curves = properties.nodes.iter().any(|node| node.curves.iter().any(|curve| curve.kind != 0));
+            sounds.push((id, behaviour, queue, other_curves));
+        }
+        sounds.sort_unstable_by_key(|&(id, ..)| id);
+        Ok((sounds, self.banks.iter().any(|bank| bank.feedback)))
+    }
     pub fn event_ids(&self) -> Vec<u32> {
         let mut ids = self.events.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();

@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 mod bank;
+mod vorbis;
+pub use vorbis::VorbisCursor;
 mod declaration;
 mod playback;
 pub use playback::{Controls, PlaybackBanks, References};
@@ -308,6 +310,7 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
 /// reads it through a [`VorbisCursor`].
 pub struct EncodedVorbis {
     pub ogg: std::sync::Arc<[u8]>,
+    index: vorbis::PacketIndex,
     pub channels: u16,
     pub sample_rate: u32,
     pub frames: usize,
@@ -408,68 +411,16 @@ pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
     if let Some(frames) = frames {
         let encoded = decode_wem(bytes)?;
         if encoded.starts_with(b"OggS") {
-            let reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(&encoded[..]))
-                .map_err(|error| invalid_owned(format!("converted Wwise Vorbis headers: {error:?}")))?;
-            let (channels, sample_rate) = (u16::from(reader.ident_hdr.audio_channels), reader.ident_hdr.audio_sample_rate);
+            let index = vorbis::PacketIndex::new(&encoded)
+                .map_err(|error| invalid_owned(format!("converted Wwise Vorbis stream: {error}")))?;
+            let (channels, sample_rate) = (index.channels(), index.sample_rate());
             if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
             let frames = frames as usize;
             let loop_points = loop_points(points, frames)?;
-            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: encoded.into(), channels, sample_rate, frames, loop_points }));
+            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: encoded.into(), index, channels, sample_rate, frames, loop_points }));
         }
     }
     decode_wem_pcm(bytes).map(SourceMedia::Decoded)
-}
-
-/// One voice's decoder over [`EncodedVorbis`]: packets are decoded forward
-/// into a window that keeps the frame before the last request (the
-/// resampler reads frames `n - 1` and `n`). A request before the window
-/// (a loop wrap) restarts the stream.
-pub struct VorbisCursor {
-    media: std::sync::Arc<EncodedVorbis>,
-    reader: Option<lewton::inside_ogg::OggStreamReader<Cursor<std::sync::Arc<[u8]>>>>,
-    window: Vec<f32>,
-    start: usize,
-    /// The first HEAD_FRAMES decoded frames, kept from the first pass. A loop
-    /// wrap's resampler reads alternate between the stream's last frames and
-    /// its first ones; serving the first ones from here avoids reopening and
-    /// re-decoding the whole stream for each such read.
-    head: Vec<f32>,
-}
-
-/// Frames kept from a stream's start: well past any resampler's reach back
-/// across a loop seam, and a small fraction of a second of audio.
-const HEAD_FRAMES: usize = 8192;
-
-impl VorbisCursor {
-    pub fn new(media: std::sync::Arc<EncodedVorbis>) -> Self {
-        Self { media, reader: None, window: Vec::new(), start: 0, head: Vec::new() }
-    }
-
-    pub fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
-        let channels = usize::from(self.media.channels);
-        if frame >= self.media.frames || channel >= channels { return None; }
-        if frame < self.start && frame < self.head.len() / channels {
-            return self.head.get(frame * channels + channel).copied();
-        }
-        if self.reader.is_none() || frame < self.start {
-            self.reader = Some(lewton::inside_ogg::OggStreamReader::new(Cursor::new(self.media.ogg.clone())).ok()?);
-            self.window.clear();
-            self.start = 0;
-        }
-        while frame >= self.start + self.window.len() / channels {
-            let keep = frame.saturating_sub(1).saturating_sub(self.start).min(self.window.len() / channels);
-            self.window.drain(..keep * channels);
-            self.start += keep;
-            let packet = self.reader.as_mut()?.read_dec_packet_generic::<lewton::samples::InterleavedSamples<f32>>().ok()??;
-            let position = self.start + self.window.len() / channels;
-            if position == self.head.len() / channels && position < HEAD_FRAMES {
-                let take = packet.samples.len().min((HEAD_FRAMES - position) * channels);
-                self.head.extend_from_slice(&packet.samples[..take]);
-            }
-            self.window.extend(packet.samples);
-        }
-        self.window.get((frame - self.start) * channels + channel).copied()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -795,6 +746,33 @@ pub struct MediaProperties {
     pub bus: u32,
 }
 
+/// A voice's response to falling below the volume threshold (node+0xb0
+/// bits 3..6, 1410de430).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BelowThreshold { Continue, Kill, Virtual, Other(u8) }
+
+/// Where a virtual voice resumes when audible again (node+0xb0 bits 0..2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum VirtualReturn { FromBeginning, FromElapsedTime, Resume, Other(u8) }
+
+impl MediaProperties {
+    /// 1410dd720: the first node from the sound up whose override bit is set
+    /// (flags bit 4, node+0x7a bit 2), else the root, supplies both settings.
+    pub fn below_threshold(&self) -> (BelowThreshold, VirtualReturn) {
+        let Some(node) = self.nodes.iter().find(|node| node.advanced.flags & 0x10 != 0).or(self.nodes.last())
+        else { return (BelowThreshold::Continue, VirtualReturn::FromBeginning) };
+        let behaviour = match node.advanced.below_threshold & 0xf {
+            0 => BelowThreshold::Continue, 1 => BelowThreshold::Kill, 2 => BelowThreshold::Virtual,
+            other => BelowThreshold::Other(other),
+        };
+        let queue = match node.advanced.virtual_queue {
+            0 => VirtualReturn::FromBeginning, 1 => VirtualReturn::FromElapsedTime, 2 => VirtualReturn::Resume,
+            other => VirtualReturn::Other(other),
+        };
+        (behaviour, queue)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BankMix {
     pub buses: Vec<NodeProperties>,
@@ -1090,7 +1068,9 @@ mod stream_tests {
     use super::*;
 
     /// Installed Vorbis media read through a cursor give the full decoder's
-    /// samples, read forward and again after a backward jump (a loop wrap).
+    /// samples: read forward, after a backward jump (a loop wrap), and after
+    /// jumps to arbitrary frames in both directions (a virtual voice's
+    /// return at its elapsed position).
     #[test]
     #[ignore = "requires installed game archives"]
     fn cursor_matches_full_decode() {
@@ -1118,6 +1098,12 @@ mod stream_tests {
                 for step in 0..64 {
                     order.push(frames - 1 - step % 4);
                     order.push(step);
+                }
+                let mut state = 0x9e37_79b9u32;
+                for _ in 0..64 {
+                    state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+                    let frame = state as usize % frames;
+                    order.extend(frame.saturating_sub(1)..(frame + 3).min(frames));
                 }
                 for frame in order {
                     for channel in 0..channels {

@@ -183,7 +183,8 @@ pub(super) struct StreamingDiagnostics {
     pub(super) frame: u64,
     pub(super) pending: String,
     pub(super) history: VecDeque<String>,
-    pub(super) log: Option<fs::File>,
+    /// Written by the log thread: a frame never waits on the file.
+    pub(super) log: Option<crate::platform::client_diagnostics::QueuedFile>,
     pub(super) log_path: PathBuf,
     pub(super) status: String,
     pub(super) previous_status: String,
@@ -216,7 +217,7 @@ impl StreamingDiagnostics {
         let directory = diagnostic_directory("streaming-reports");
         let log_path = directory.join(format!("streaming-{stamp}-{}.log", std::process::id()));
         let log = fs::create_dir_all(&directory).and_then(|()| fs::File::create(&log_path));
-        let log = match log {
+        let log = match log.map(crate::platform::client_diagnostics::QueuedFile::new) {
             Ok(file) => {
                 println!(
                     "Streaming diagnostics: {} (F8 captures the last 120 frames)",
@@ -289,7 +290,8 @@ impl StreamingDiagnostics {
                 .cloned()
                 .collect::<Vec<_>>();
             let texture_events_dropped = self.texture_events_dropped;
-            let write_result = self.log.as_mut().map(|log| {
+            let write_result = self.log.as_ref().map(|log| {
+                let mut log = log.writer();
                 writeln!(log, "{sample}")?;
                 if texture_events_dropped > 0 {
                     writeln!(
@@ -300,7 +302,7 @@ impl StreamingDiagnostics {
                 for event in &texture_events {
                     writeln!(log, "TEXTURE_STREAM {event}")?;
                 }
-                log.flush()
+                std::io::Result::Ok(())
             });
             match write_result {
                 Some(Err(error)) => {
@@ -355,7 +357,7 @@ mod texture_streaming_diagnostics_tests {
             frame: 7,
             pending: String::new(),
             history: VecDeque::new(),
-            log: Some(fs::File::create(&log_path).unwrap()),
+            log: Some(crate::platform::client_diagnostics::QueuedFile::new(fs::File::create(&log_path).unwrap())),
             log_path: PathBuf::from(&log_path),
             status: String::new(),
             previous_status: String::new(),
@@ -368,6 +370,7 @@ mod texture_streaming_diagnostics_tests {
         };
         diagnostics.texture_event("read_requested slot=4 path=\"texture.dds\"".to_owned());
         diagnostics.record("frame=7 summary".to_owned(), 1, false);
+        crate::platform::client_diagnostics::drain_log(std::time::Duration::from_secs(5));
         let log = fs::read_to_string(&log_path).unwrap();
         assert!(log.contains("TEXTURE_STREAM frame=7 read_requested slot=4"));
         assert_eq!(diagnostics.texture_event_history.len(), 1);
