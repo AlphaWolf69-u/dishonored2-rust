@@ -513,3 +513,14 @@ runs. The scheduling invariant is that bulk acquisition cannot fill the frame
 executor's queue: only the loading call owns and waits for its temporary workers.
 The final visual responsiveness assessment still requires the user because
 visual inspection is disabled.
+
+Final requirement audit (appearance confirmation outstanding):
+
+| Requirement | Current evidence | Still needed |
+|---|---|---|
+| Responsive loading | CPU scene/image/audio/contact acquisition runs off the window thread; backend mesh/particle batches yield; bulk audio has separate equally sized workers. Transition interval falls from about 1 s to 117–130 ms. Same-binary decoding counts/costs are preserved. | User observation of the final release; the isolated cold three-second observation has not been reproduced for a direct before/after comparison. |
+| Immediate camera input | Normal non-benchmark release handoff: Windows foreground belongs to the client, cursor flags are 0 and the clip rectangle is one pixel. No second gameplay click is issued. | User confirmation of camera response after their loading continuation. |
+| Hide incomplete rendering | Continuation requires actual initial image residency, prepared image/mesh/buffer identities, forward/shadow submission and same-frame atmosphere/camera/lens composition; explicit disabled effects use their completion branches. Repeated-map clients finish without shader errors. | User confirmation that no incomplete world flashes on entry. |
+| Authored fade from black | Installed declarations and world durations, original constructor defaults and packed curves; initial fade completes at about 4 s and later fades at about 2 s in production clients. | User confirmation of the displayed transition. |
+
+This audit is not a completion claim. No image inspection or test suite is used.
