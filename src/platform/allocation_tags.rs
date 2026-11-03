@@ -52,6 +52,67 @@ pub fn report() -> Vec<(&'static str, isize)> {
     out
 }
 
+/// Live blocks of at least `BIG_BYTES`, with the stack that allocated them.
+#[cfg(feature = "debug_allocations")]
+static BIG: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
+    std::sync::Mutex::new(None);
+#[cfg(feature = "debug_allocations")]
+const BIG_BYTES: usize = 1 << 20;
+#[cfg(feature = "debug_allocations")]
+thread_local! {
+    /// Set while this thread records a big block, so the bookkeeping's own
+    /// allocations are not recorded.
+    static RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "debug_allocations")]
+fn record_big(ptr: usize, size: usize, live: bool) {
+    if RECORDING.try_with(|r| r.replace(true)).unwrap_or(true) {
+        return;
+    }
+    {
+        let mut big = BIG.lock().unwrap_or_else(|e| e.into_inner());
+        let big = big.get_or_insert_with(Default::default);
+        if live {
+            big.insert(ptr, (size, std::backtrace::Backtrace::force_capture()));
+        } else {
+            big.remove(&ptr);
+        }
+    }
+    let _ = RECORDING.try_with(|r| r.set(false));
+}
+
+/// Live big blocks grouped by the first frames of this crate that allocated
+/// them, largest first: (frames, bytes, blocks).
+pub fn big_blocks() -> Vec<(String, usize, usize)> {
+    #[cfg(feature = "debug_allocations")]
+    {
+        let _ = RECORDING.try_with(|r| r.set(true));
+        let mut groups = std::collections::HashMap::<String, (usize, usize)>::new();
+        if let Some(big) = BIG.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            for (size, trace) in big.values() {
+                let text = trace.to_string();
+                let frames: Vec<&str> = text.lines().map(str::trim)
+                    .filter(|line| line.contains(": ") && !line.starts_with("at "))
+                    .map(|line| line.split_once(": ").map_or(line, |(_, name)| name))
+                    .filter(|name| (name.contains("dishonored2_rust") || name.contains("bevy") || name.contains("wgpu"))
+                        && !name.contains("allocation_tags") && !name.contains("alloc::"))
+                    .take(4)
+                    .collect();
+                let entry = groups.entry(frames.join(" <- ")).or_default();
+                entry.0 += size;
+                entry.1 += 1;
+            }
+        }
+        let _ = RECORDING.try_with(|r| r.set(false));
+        let mut out: Vec<_> = groups.into_iter().map(|(k, (b, n))| (k, b, n)).collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1));
+        return out;
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
 #[cfg(feature = "debug_allocations")]
 pub struct TaggedAllocator;
 
@@ -69,10 +130,17 @@ unsafe impl std::alloc::GlobalAlloc for TaggedAllocator {
         let tag = CURRENT.try_with(|c| c.get()).unwrap_or(0);
         unsafe { base.write(tag) };
         LIVE[tag as usize].fetch_add(layout.size() as isize, Ordering::Relaxed);
-        unsafe { base.add(prefix) }
+        let ptr = unsafe { base.add(prefix) };
+        if layout.size() >= BIG_BYTES {
+            record_big(ptr as usize, layout.size(), true);
+        }
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        if layout.size() >= BIG_BYTES {
+            record_big(ptr as usize, layout.size(), false);
+        }
         let prefix = layout.align().max(16);
         let base = unsafe { ptr.sub(prefix) };
         let tag = unsafe { base.read() };

@@ -3,7 +3,7 @@ use super::{
     archive, bmd6, edge_skeleton, entities, game_clock, game_clock_runtime, game_settings,
     game_to_view, local_shadow_updates, material, placed_direction, placed_vertex, render_model,
     render_program, render_shadow, render_state, retain_vegetation_channels,
-    retain_world_shadow_channels, screen_shadow_pass, shader_cache, shadow_pass,
+    screen_shadow_pass, shader_cache, shadow_pass,
     shadow_pipeline, shadow_sampling, shadow_updates, source_mesh, surface_gpu, world_mesh, Arc,
     ExtendedMaterial, HashMap, MaterialExtension, MaterialHandle, ShadowImageAccess,
     RenderAssetUsages, SceneData, SceneRenderQueue, ShaderBuffer, DH2_BITANGENT,
@@ -237,6 +237,35 @@ pub(super) struct WorldShadowMeshSource {
     /// In particular noShadow/screen-gate/invisible materials must be tested
     /// by the native pointer-bank rule before requiring a GPU draw material.
     pub(super) gather_flags48: Option<Result<u8, String>>,
+    /// The mesh's vertex ABI, recorded when setup releases its CPU copy.
+    pub(super) layout: Option<WorldShadowSourceLayout>,
+}
+
+/// What per-frame shadow admission checks of a world source mesh: recorded
+/// once its setup is complete, so the mesh needs no main-world copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WorldShadowSourceLayout {
+    pub(super) vertices: usize,
+    pub(super) indexed: bool,
+    pub(super) source_position: bool,
+    pub(super) vegetation_channels: bool,
+    pub(super) uv: [bool; 2],
+}
+
+impl WorldShadowSourceLayout {
+    fn of(mesh: &Mesh) -> Self {
+        Self {
+            vertices: mesh.count_vertices(),
+            indexed: mesh.indices().is_some(),
+            source_position: mesh.contains_attribute(Mesh::ATTRIBUTE_POSITION),
+            vegetation_channels: mesh.contains_attribute(Mesh::ATTRIBUTE_NORMAL)
+                && mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR),
+            uv: [
+                mesh.contains_attribute(Mesh::ATTRIBUTE_UV_0),
+                mesh.contains_attribute(Mesh::ATTRIBUTE_UV_1),
+            ],
+        }
+    }
 }
 
 impl WorldShadowMeshSources {
@@ -256,11 +285,12 @@ impl WorldShadowMeshSources {
                     &source.packed_channels,
                     object.flipped,
                 );
-                let raw_vertex_count = retain_world_shadow_channels(
-                    &mut forward,
-                    &source.positions,
-                    &source.packed_channels,
-                );
+                // World shadow programs read the forward mesh's own position,
+                // NORMAL and COLOR; only vegetation and water meshes add
+                // game-space copies (retain_vegetation_channels, water_objects).
+                let raw_vertex_count = (forward.count_vertices() == source.positions.len())
+                    .then_some(source.positions.len())
+                    .ok_or_else(|| "world source/forward vertex counts disagree".to_string());
                 // Per-frame native program admission validates the original
                 // vertex ABI after render extraction as well as at startup.
                 forward.asset_usage |= RenderAssetUsages::MAIN_WORLD;
@@ -280,11 +310,27 @@ impl WorldShadowMeshSources {
                 material: None,
                 material_error: None,
                 gather_flags48: None,
+                layout: None,
             });
         }
         Self {
             objects,
             shared_mesh_count: shared.len(),
+        }
+    }
+
+    /// End of setup: record each shared mesh's layout and drop its
+    /// main-world copy. Nothing reads these meshes on the CPU afterwards; the
+    /// original keeps no CPU copy of uploaded world geometry either.
+    pub(super) fn release_cpu_copies(&mut self, meshes: &mut Assets<Mesh>) {
+        let mut layouts = HashMap::<AssetId<Mesh>, Option<WorldShadowSourceLayout>>::new();
+        for source in &mut self.objects {
+            source.layout = *layouts.entry(source.mesh.id()).or_insert_with(|| {
+                let mut mesh = meshes.get_mut(&source.mesh)?;
+                let layout = WorldShadowSourceLayout::of(&mesh);
+                mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
+                Some(layout)
+            });
         }
     }
 
@@ -1149,18 +1195,16 @@ pub(super) fn prepare_world_shadow_masks_with_admission(
                     packet.object
                 ));
             }
-            let source_mesh = meshes.get(&source.mesh).ok_or_else(|| {
-                format!(
-                    "world source Mesh object {} is unavailable",
-                    packet.object
-                )
-            })?;
-            if source_mesh.count_vertices() != raw_vertex_count
-                || source_mesh.indices().is_none()
-                || source_mesh
-                    .attribute(shadow_pass::VEGETATION_POSITION)
-                    .is_none()
-            {
+            let layout = match source.layout {
+                Some(layout) => layout,
+                None => WorldShadowSourceLayout::of(meshes.get(&source.mesh).ok_or_else(|| {
+                    format!(
+                        "world source Mesh object {} is unavailable",
+                        packet.object
+                    )
+                })?),
+            };
+            if layout.vertices != raw_vertex_count || !layout.indexed || !layout.source_position {
                 return Err(format!(
                     "world source Mesh object {} lacks its indexed source-position ABI",
                     packet.object
@@ -1170,12 +1214,7 @@ pub(super) fn prepare_world_shadow_masks_with_admission(
                 class,
                 shader_cache::CachedWorldShadowClass::Vegetation
                     | shader_cache::CachedWorldShadowClass::VegetationFixed
-            ) && (source_mesh
-                .attribute(shadow_pass::VEGETATION_NORMAL)
-                .is_none()
-                || source_mesh
-                    .attribute(shadow_pass::VEGETATION_COLOR)
-                    .is_none())
+            ) && !layout.vegetation_channels
             {
                 return Err(format!(
                     "world vegetation Mesh object {} lacks authored NORMAL/COLOR channels",
@@ -1238,12 +1277,7 @@ pub(super) fn prepare_world_shadow_masks_with_admission(
                             packet.object
                         ));
                     }
-                    let uv_attribute = if uv_set == 0 {
-                        Mesh::ATTRIBUTE_UV_0
-                    } else {
-                        Mesh::ATTRIBUTE_UV_1
-                    };
-                    if source_mesh.attribute(uv_attribute).is_none() {
+                    if !layout.uv[uv_set as usize] {
                         return Err(format!(
                             "world alpha Mesh object {} lacks authored UV set {uv_set}",
                             packet.object

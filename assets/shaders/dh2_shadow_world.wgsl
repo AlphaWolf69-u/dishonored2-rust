@@ -35,7 +35,7 @@ fn world_shadow_position(position: vec3<f32>, instance_id: u32) -> vec4<f32> {
 @vertex
 fn vertex(@location(0) position: vec3<f32>, @builtin(instance_index) instance: u32)
     -> @builtin(position) vec4<f32> {
-    return world_shadow_position(position, instance);
+    return world_shadow_position(installed_position(position), instance);
 }
 
 // Actual installed cutout pair: VS63aba4ead9c2c3aab263a36ae8ed362c
@@ -51,7 +51,7 @@ struct AlphaOutput {
 fn vertex_alpha(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @builtin(instance_index) instance: u32) -> AlphaOutput {
     var output: AlphaOutput;
-    output.clip = world_shadow_position(position, instance);
+    output.clip = world_shadow_position(installed_position(position), instance);
     output.uv = uv;
     return output;
 }

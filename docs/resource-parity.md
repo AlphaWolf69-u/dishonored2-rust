@@ -30,9 +30,10 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 
 | Original | Behavior | Status |
 |---|---|---|
-| `FUN_1400bd480` arkWwiseBankLoader::LoadBanksAndPackages | loads the `common`, `init` and map packages (`FUN_1400bd510`; loose banks `FUN_1400bca10`) | blocked: the rewrite indexes every installed bank; per-map package loading not ported |
-| Wwise codecs | media stay encoded; Vorbis and IMA ADPCM decode per voice | ported: `assets::wwise::VorbisCursor`, `AdpcmCursor` |
+| `FUN_1400bd480` arkWwiseBankLoader::LoadBanksAndPackages | loads the `common`, `init` and map packages (`FUN_1400bd510`; loose banks `FUN_1400bca10`) | ported: `app::audio::level_banks` reads `wwisedescription.txt` (`FUN_1400c0cb0`, path `FUN_1400c1480`) and loads the `common`, `init` and current-map entries' packages (prefix + language / `sfx.pck`, plus `main-init.pck`) and banks (FNV-1 ids, verified on `main-common-sfx.pck`). Loose-bank mode (`FUN_1400bca10`) not ported |
+| Wwise codecs | media stay encoded; Vorbis and IMA ADPCM decode per voice; Vorbis packets are decoded as installed | ported: `assets::wwise::VorbisCursor`, `AdpcmCursor`; installed Wwise Vorbis packets decoded in place through vendored `lewton` (window flags from the neighbouring packets' modes), with the decoder setup rebuilt once per distinct Wwise setup. Verified: all 132,518 installed Vorbis media give the samples of their ww2ogg conversion |
 | `141122400` | a source references its Sound's media rather than copying it | ported: prepared media shared by Wwise sound id |
+| stream manager (stream type != 0 sources) | streamed sources (type 2, no bank prefix) are read from their package while they play; prefetched sources (type 1) start at once from a bank prefix while the rest streams | partial: type 2 format is read at load and media on the IO pool when an event plays it, held by that playback and released after; a request waits for its read, as the original starts a non-prefetch stream once its first buffer arrives. `approximate_`: type 1 media (eotw: 13, 1 MB; ~4 KB prefixes) stay resident whole, which starts them at once as the prefix does |
 | listed `soundevent` decls | loaded with the map | ported: prepared at startup |
 
 ### Material, model, animation, physics, FX, Iggy, entities
@@ -75,11 +76,11 @@ trailing `*` covers a family of kinds.
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
 | `env` | `assets::entities`, `assets::environment` | partial: reads its resources; lifecycle not ported (see its class) |
-| `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: reads its resources; lifecycle not ported (see its class) |
+| `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: the per-vertex probe references become the GPU vertex-probe buffer at setup and are then released (no main-world copy of either); load path not compared with the original |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
 | `fade` | none | none: no owner yet |
-| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: reads its resources; lifecycle not ported (see its class) |
+| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the remaining decoded Tome tables (links, cell codes, object data) are still copies |
 | `Font` | `flash::text` | partial: reads its resources; lifecycle not ported (see its class) |
 | `footStepPhysMat` | none | none: no owner yet |
 | `fx` | `rendering::particles::world_sources`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -105,7 +106,7 @@ trailing `*` covers a family of kinds.
 | `material` | `app::material_loading` (material class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `md6Def` | `assets::bmd6`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
-| `model` | `assets::bmodel`, `app::setup` (model class) | partial: reads its resources; lifecycle not ported (see its class) |
+| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values); world shadow programs read the shared mesh's own position, NORMAL and COLOR (axis swap undone in the shader), so only vegetation (forward wind) and water meshes keep game-space copies; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
 | `musicManager` | none | none: no owner yet |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |

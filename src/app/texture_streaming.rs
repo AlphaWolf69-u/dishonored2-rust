@@ -267,10 +267,15 @@ pub(super) struct TextureReadWorker {
 }
 
 impl TextureReadWorker {
-    pub(super) fn new(catalog: archive::Catalog, image_count: usize) -> Self {
+    /// The installed archives, for on-demand diagnostic reads.
+    pub(super) fn catalog(&self) -> &archive::Catalog {
+        &self.catalog
+    }
+
+    pub(super) fn new(catalog: Arc<archive::Catalog>, image_count: usize) -> Self {
         let (completed_tx, completed) = mpsc::channel();
         Self {
-            catalog: Arc::new(catalog),
+            catalog,
             queue: Arc::default(),
             completed_tx,
             completed: Mutex::new(completed),

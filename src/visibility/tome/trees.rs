@@ -634,6 +634,35 @@ pub fn render_query_job_quad(
     first_depth_quad(query_planes_from_rows(base, cropped))
 }
 
+/// Size of a CellTree's rank directory, which follows its node codes:
+/// FUN_140a89550.
+fn rank_directory_bytes(count: usize) -> usize {
+    ((((count >> 8) - (count >> 16)) + 1 >> 1) + (((count >> 4) - (count >> 8)) + 3 >> 2) + (count >> 16)) * 4
+}
+
+/// Inner nodes before node `index & !15`: FUN_140a89580 sums a u32 count
+/// per 65,536 nodes, a u16 count per 256 nodes within it and a u8 count per
+/// 16 nodes within that, stored in that order after the node codes.
+fn rank_directory(bytes: &[u8], ranks_at: usize, count: usize, index: usize) -> Result<usize, String> {
+    let truncated = || "truncated Tome cell rank directory".to_string();
+    let mut inner = 0usize;
+    if index >> 16 != 0 {
+        inner += word(bytes, ranks_at + ((index >> 16) - 1) * 4)? as usize;
+    }
+    if index & 0xff00 != 0 {
+        let at = ranks_at + (count >> 16) * 4 + ((index >> 8) - (index >> 16) - 1) * 2;
+        let half = bytes.get(at..at + 2).ok_or_else(truncated)?;
+        inner += u16::from_le_bytes([half[0], half[1]]) as usize;
+    }
+    if index & 0xf0 != 0 {
+        let at = ranks_at
+            + ((count >> 16) + (((count >> 8) - (count >> 16)) + 1 >> 1)) * 4
+            + ((index >> 4) - (index >> 8) - 1);
+        inner += *bytes.get(at).ok_or_else(truncated)? as usize;
+    }
+    Ok(inner)
+}
+
 impl CellTree {
     pub fn parse(bytes: &[u8], record_offset: u32) -> Result<Self, String> {
         let base = record_offset as usize;
@@ -835,23 +864,27 @@ impl CellTree {
         {
             return Err("Tome direct cell code exceeds record's cell table".into());
         }
+        // Validate the whole tree once (load-time scratch, not kept).
         let mut bounds = vec![[[0.0; 3]; 2]; count];
         let mut visited = vec![false; count];
-        let mut children = vec![None; count];
-        let mut planes = vec![0.0; count];
-        let mut leaf_ranks = vec![None; count];
+        let ranks_at = codes_at + (count * 2).div_ceil(32) * 4;
+        if bytes.get(ranks_at..ranks_at + rank_directory_bytes(count)).is_none() {
+            return Err("truncated Tome cell rank directory".into());
+        }
         if count != 0 {
             bounds[0] = root;
             visited[0] = true;
         }
         let mut internal_rank = 0usize;
         for index in 0..count {
+            if index % 16 == 0 && rank_directory(bytes, ranks_at, count, index)? != internal_rank {
+                return Err(format!("Tome cell rank directory disagrees at node {index}"));
+            }
             if !visited[index] {
                 return Err(format!("unreachable Tome cell node {index}"));
             }
             let axis = axes[index] as usize;
             if axis == 3 {
-                leaf_ranks[index] = Some(index - internal_rank);
                 continue;
             }
             let node = bounds[index];
@@ -863,7 +896,6 @@ impl CellTree {
             if !split.is_finite() || split < node[0][axis] || split > node[1][axis] {
                 return Err(format!("invalid Tome cell split plane at node {index}"));
             }
-            planes[index] = split;
             internal_rank += 1;
             let high = internal_rank
                 .checked_mul(2)
@@ -881,7 +913,6 @@ impl CellTree {
             bounds[high][0][axis] = split;
             visited[low] = true;
             visited[high] = true;
-            children[index] = Some([low, high]);
         }
         if count != 0 && internal_rank * 2 + 1 != count {
             return Err("incomplete Tome cell tree".into());
@@ -904,11 +935,10 @@ impl CellTree {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
-            bounds,
-            children,
-            axes,
-            planes,
-            leaf_ranks,
+            node_count: count,
+            codes_at,
+            planes_at,
+            plane_count,
             cell_codes,
             cell_ids,
             cell_visibility_counts,
@@ -932,7 +962,58 @@ impl CellTree {
     }
 
     pub fn node_count(&self) -> usize {
-        self.bounds.len()
+        self.node_count
+    }
+
+    fn axis(&self, bytes: &[u8], index: usize) -> Result<usize, String> {
+        let byte = *bytes.get(self.codes_at + index / 4).ok_or("truncated Tome cell node codes")?;
+        Ok(((byte >> ((index % 4) * 2)) & 3) as usize)
+    }
+
+    /// Inner nodes before `index`: FUN_140a89840 (called with node+1 by its
+    /// callers' inclusive rank) adds the rank directory's count for the
+    /// 16-node word to the inner codes before `index` within that word.
+    fn inner_before(&self, bytes: &[u8], index: usize) -> Result<usize, String> {
+        let ranks_at = self.codes_at + (self.node_count * 2).div_ceil(32) * 4;
+        let within = index & 15;
+        let leaves = if within == 0 {
+            0
+        } else {
+            let codes = word(bytes, self.codes_at + (index >> 4) * 4)? & ((1u32 << (within * 2)) - 1);
+            (codes & (codes >> 1) & 0x5555_5555).count_ones() as usize
+        };
+        Ok(rank_directory(bytes, ranks_at, self.node_count, index)? + within - leaves)
+    }
+
+    fn split(&self, bytes: &[u8], index: usize, axis: usize, node: [[f32; 3]; 2]) -> Result<f32, String> {
+        if index < self.plane_count {
+            float(bytes, self.planes_at + index * 4)
+        } else {
+            Ok((node[0][axis] + node[1][axis]) * 0.5)
+        }
+    }
+
+    /// Every node's bounds, in node order (scratch for the audit tool).
+    fn node_bounds(&self, bytes: &[u8]) -> Result<Vec<[[f32; 3]; 2]>, String> {
+        let mut bounds = vec![[[0.0; 3]; 2]; self.node_count];
+        if let Some(root) = bounds.first_mut() {
+            *root = self.cell_bounds_root;
+        }
+        let mut inner = 0usize;
+        for index in 0..self.node_count {
+            let axis = self.axis(bytes, index)?;
+            if axis == 3 {
+                continue;
+            }
+            let node = bounds[index];
+            let split = self.split(bytes, index, axis, node)?;
+            inner += 1;
+            bounds[2 * inner - 1] = node;
+            bounds[2 * inner - 1][1][axis] = split;
+            bounds[2 * inner] = node;
+            bounds[2 * inner][0][axis] = split;
+        }
+        Ok(bounds)
     }
     pub fn cell_count(&self) -> usize {
         self.cell_ids.len()
@@ -1390,26 +1471,28 @@ impl CellTree {
         (direct, portal, empty)
     }
 
-    pub fn portal_leaf_centers(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
+    pub fn portal_leaf_centers(&self, bytes: &[u8]) -> Result<Vec<[f32; 3]>, String> {
         let high_bit = if self.code_width == 0 {
             0
         } else {
             1u32 << (self.code_width - 1)
         };
         let all_ones = (1u32 << self.code_width) - 1;
-        self.leaf_ranks
-            .iter()
-            .enumerate()
-            .filter_map(move |(node, rank)| {
-                let code = *self.cell_codes.get((*rank)?)?;
-                if code == all_ones || code & high_bit == 0 {
-                    return None;
-                }
-                let bounds = self.bounds[node];
-                Some(std::array::from_fn(|axis| {
-                    (bounds[0][axis] + bounds[1][axis]) * 0.5
-                }))
-            })
+        let bounds = self.node_bounds(bytes)?;
+        let mut centers = Vec::new();
+        let mut inner = 0usize;
+        for (node, bounds) in bounds.iter().enumerate() {
+            if self.axis(bytes, node)? != 3 {
+                inner += 1;
+                continue;
+            }
+            let Some(&code) = self.cell_codes.get(node - inner) else { continue };
+            if code == all_ones || code & high_bit == 0 {
+                continue;
+            }
+            centers.push(std::array::from_fn(|axis| (bounds[0][axis] + bounds[1][axis]) * 0.5));
+        }
+        Ok(centers)
     }
 
     pub fn cell_for_point(
@@ -1417,25 +1500,33 @@ impl CellTree {
         bytes: &[u8],
         point: [f32; 3],
     ) -> Result<Option<CellSelection>, String> {
-        if self.bounds.is_empty() {
+        if self.node_count == 0 {
             return Ok(None);
         }
+        let root = self.cell_bounds_root;
         if point.iter().any(|value| !value.is_finite())
-            || (0..3).any(|axis| {
-                point[axis] < self.bounds[0][0][axis] || point[axis] > self.bounds[0][1][axis]
-            })
+            || (0..3).any(|axis| point[axis] < root[0][axis] || point[axis] > root[1][axis])
         {
             return Ok(None);
         }
-        let mut index = 0;
-        while let Some([low, high]) = self.children[index] {
-            index = if point[self.axes[index] as usize] >= self.planes[index] {
-                high
+        // Descend the packed tree, splitting the root bounds as it goes.
+        let (mut index, mut node) = (0, root);
+        loop {
+            let axis = self.axis(bytes, index)?;
+            if axis == 3 {
+                break;
+            }
+            let split = self.split(bytes, index, axis, node)?;
+            let high = 2 * (self.inner_before(bytes, index)? + 1);
+            if point[axis] >= split {
+                node[0][axis] = split;
+                index = high;
             } else {
-                low
-            };
+                node[1][axis] = split;
+                index = high - 1;
+            }
         }
-        let leaf_rank = self.leaf_ranks[index].unwrap();
+        let leaf_rank = index - self.inner_before(bytes, index)?;
         let code = self.cell_codes[leaf_rank];
         let all_ones = (1u32 << self.code_width) - 1;
         if code == all_ones {
@@ -1456,7 +1547,7 @@ impl CellTree {
             cell_index,
             cell_id,
             link_count: self.cell_link_ranges[cell_index].1,
-            bounds: self.bounds[index],
+            bounds: node,
         }))
     }
 

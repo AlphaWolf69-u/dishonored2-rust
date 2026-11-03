@@ -218,6 +218,8 @@ mod depth_restore_tests;
 #[cfg(all(test, feature = "game", target_os = "windows"))]
 mod command_pool_tests;
 #[cfg(all(test, feature = "game"))]
+mod mesh_packing_tests;
+#[cfg(all(test, feature = "game"))]
 mod storage_upload_tests;
 #[cfg(all(test, feature = "game"))]
 mod texture_upload_tests;

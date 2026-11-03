@@ -913,6 +913,62 @@ pub(super) fn authored_mesh<const N: usize>(
     mirrored_render_mesh(mesh, indices, flipped)
 }
 
+/// Bevy's normal, tangent and colour attributes in the installed vertex
+/// formats (SNORM8x4, UNORM8x4). Same ids, so every pipeline that requests
+/// them reads them; vertex fetch gives the floats the CPU used to compute.
+pub(super) const PACKED_NORMAL: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Normal", id: Mesh::ATTRIBUTE_NORMAL.id, format: bevy::render::render_resource::VertexFormat::Snorm8x4 };
+pub(super) const PACKED_TANGENT: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Tangent", id: Mesh::ATTRIBUTE_TANGENT.id, format: bevy::render::render_resource::VertexFormat::Snorm8x4 };
+pub(super) const PACKED_UV_0: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Uv", id: Mesh::ATTRIBUTE_UV_0.id, format: bevy::render::render_resource::VertexFormat::Float16x2 };
+pub(super) const PACKED_UV_1: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Uv_1", id: Mesh::ATTRIBUTE_UV_1.id, format: bevy::render::render_resource::VertexFormat::Float16x2 };
+pub(super) const PACKED_COLOR: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute {
+    name: "Vertex_Color", id: Mesh::ATTRIBUTE_COLOR.id, format: bevy::render::render_resource::VertexFormat::Unorm8x4 };
+
+/// An installed SNORM8 direction in view axes: `game_to_view` (x, z, -y)
+/// reorders the bytes and negates one, which is exact (-128 and 127 both
+/// decode to the ends of [-1, 1]).
+fn packed_view_direction(x: u8, y: u8, z: u8, w: u8) -> [i8; 4] {
+    let negated = |b: u8| if b as i8 == i8::MIN { i8::MAX } else { -(b as i8) };
+    [x as i8, z as i8, negated(y), w as i8]
+}
+
+/// The installed vertex in view axes, packed as installed: positions and UVs
+/// as floats, normal/tangent SNORM8x4, colour UNORM8x4. The bitangent is
+/// derived in the vertex shader (DH2_DERIVED_BITANGENT) from the same values
+/// `authored_mesh` takes it from, cross(N, T) * sign.
+fn packed_authored_mesh<const N: usize>(
+    points: &[Vec3],
+    uvs: &[[f32; 2]],
+    indices: &[u16],
+    packed: &[[u8; N]],
+) -> Mesh {
+    assert_eq!(points.len(), packed.len(), "authored vertex channel count");
+    assert!(N == 12 || N == 16);
+    let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, points.iter().map(|p| p.to_array()).collect::<Vec<_>>())
+        // Both UV sets are installed half floats (the parser widened UV0;
+        // narrowing a widened half restores its bits exactly).
+        .with_inserted_attribute(PACKED_UV_0, bevy::mesh::VertexAttributeValues::Float16x2(
+            uvs.iter().map(|uv| uv.map(half::f16::from_f32)).collect()))
+        .with_inserted_attribute(PACKED_UV_1, bevy::mesh::VertexAttributeValues::Float16x2(
+            packed.iter().map(|p| [half::f16::from_le_bytes([p[0], p[1]]), half::f16::from_le_bytes([p[2], p[3]])]).collect()))
+        .with_inserted_attribute(PACKED_NORMAL, bevy::mesh::VertexAttributeValues::Snorm8x4(
+            packed.iter().map(|p| packed_view_direction(p[4], p[5], p[6], p[7])).collect()))
+        .with_inserted_attribute(PACKED_TANGENT, bevy::mesh::VertexAttributeValues::Snorm8x4(
+            packed.iter().map(|p| packed_view_direction(p[8], p[9], p[10], p[11])).collect()))
+        .with_inserted_attribute(DH2_NORMAL_W, packed.iter().map(|p| snorm(p[7])).collect::<Vec<_>>())
+        .with_inserted_indices(render_indices(indices));
+    if N == 16 {
+        mesh.insert_attribute(PACKED_COLOR, bevy::mesh::VertexAttributeValues::Unorm8x4(
+            packed.iter().map(|p| [p[12], p[13], p[14], p[15]]).collect()));
+    }
+    mesh
+}
+
 pub(super) fn source_mesh<const N: usize>(
     positions: &[[f32; 3]],
     uvs: &[[f32; 2]],
@@ -921,13 +977,11 @@ pub(super) fn source_mesh<const N: usize>(
     flipped: bool,
 ) -> Mesh {
     let points: Vec<Vec3> = positions.iter().copied().map(game_to_view).collect();
-    mirrored_render_mesh(
-        authored_mesh(&points, uvs, indices, packed, |n| {
-            game_to_view(n.to_array())
-        }),
-        indices,
-        flipped,
-    )
+    // Diagnostic A/B: DH2_DEBUG_FLOAT_VERTICES=1 builds the expanded float layout.
+    if std::env::var_os("DH2_DEBUG_FLOAT_VERTICES").is_some_and(|v| v == "1") {
+        return mirrored_render_mesh(authored_mesh(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped);
+    }
+    mirrored_render_mesh(packed_authored_mesh(&points, uvs, indices, packed), indices, flipped)
 }
 
 /// VS14200 consumes original game-local POSITION, SNORM NORMAL.xy and UNORM

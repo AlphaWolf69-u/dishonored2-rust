@@ -341,13 +341,22 @@ pub(super) fn authored_basis_pipeline(
     descriptor: &mut RenderPipelineDescriptor,
     layout: &MeshVertexBufferLayoutRef,
 ) -> Result<(), SpecializedMeshPipelineError> {
-    if layout.0.contains(DH2_BITANGENT) {
-        let extra = layout
-            .0
-            .get_layout(&[DH2_BITANGENT.at_shader_location(8)])?;
-        descriptor.vertex.buffers[0]
-            .attributes
-            .extend(extra.attributes);
+    // Installed SNORM8 normals carry no bitangent attribute: the vertex
+    // shader derives it from the same N, T and sign the CPU used to.
+    let packed_basis = layout.0.contains(Mesh::ATTRIBUTE_NORMAL)
+        && layout.0.get_layout(&[Mesh::ATTRIBUTE_NORMAL.at_shader_location(0)])?.attributes[0].format
+            == VertexFormat::Snorm8x4;
+    if layout.0.contains(DH2_BITANGENT) || packed_basis {
+        if layout.0.contains(DH2_BITANGENT) {
+            let extra = layout
+                .0
+                .get_layout(&[DH2_BITANGENT.at_shader_location(8)])?;
+            descriptor.vertex.buffers[0]
+                .attributes
+                .extend(extra.attributes);
+        } else {
+            descriptor.vertex.shader_defs.push("DH2_DERIVED_BITANGENT".into());
+        }
         descriptor
             .vertex
             .shader_defs

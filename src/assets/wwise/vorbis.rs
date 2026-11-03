@@ -3,13 +3,15 @@
 //! (141160ba0, used by the virtual-voice return 1411609c0). The converted
 //! Ogg stream's granules do not count frames across block-size changes, so
 //! each packet's frame position comes from the decoder's own windowing.
-use lewton::{audio::{get_decoded_sample_count, read_audio_packet_generic, PreviousWindowRight},
+use lewton::{audio::{get_decoded_sample_count, read_audio_packet_generic, read_wwise_audio_packet_generic,
+    wwise_decoded_sample_count, wwise_packet_mode, PreviousWindowRight},
     header::{read_header_ident, read_header_setup, IdentHeader, SetupHeader}, samples::InterleavedSamples};
 use std::{io, sync::Arc};
 
 pub struct PacketIndex {
-    ident: IdentHeader,
-    setup: SetupHeader,
+    ident: Arc<IdentHeader>,
+    /// Shared by every stream with the same setup packet and block sizes.
+    setup: Arc<SetupHeader>,
     /// Audio packets: a byte range of the Ogg stream, or of `joined` for a
     /// packet continued across pages.
     packets: Vec<(u32, u32, bool)>,
@@ -17,11 +19,159 @@ pub struct PacketIndex {
     /// Frame at which each packet's decoded output begins; one more entry
     /// holds the stream's decoded length.
     starts: Vec<u64>,
+    /// Installed Wwise packets decoded in place: each packet's long-block
+    /// flag, which gives its neighbours' window flags (None: Ogg packets).
+    wwise_long: Option<Vec<bool>>,
+}
+
+/// Installed Wwise Vorbis layout, as ww2ogg's `parse_vorb_chunk` reads it,
+/// for the variants with block sizes in the header (vorb 0x2A/0x32/0x34).
+pub struct WwiseLayout {
+    data: std::ops::Range<usize>,
+    setup: usize,
+    first_audio: usize,
+    channels: u8,
+    blocksizes: (u8, u8),
+    mod_packets: bool,
+    granule_headers: bool,
+}
+
+fn u16_at(bytes: &[u8], at: usize) -> Option<u16> { Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?)) }
+fn u32_at(bytes: &[u8], at: usize) -> Option<u32> { Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?)) }
+
+/// The layout of a Wwise Vorbis RIFF, or None for a variant decoded through
+/// the Ogg conversion (old packet headers, or no block sizes in `vorb`).
+pub fn wwise_layout(bytes: &[u8]) -> Option<WwiseLayout> {
+    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") { return None; }
+    let (mut fmt, mut vorb, mut data) = (None, None, None);
+    let mut cursor = 12usize;
+    while cursor + 8 <= bytes.len() {
+        let size = u32_at(bytes, cursor + 4)? as usize;
+        let range = cursor + 8..(cursor + 8).checked_add(size)?;
+        match &bytes[cursor..cursor + 4] {
+            b"fmt " => fmt = Some(range.clone()),
+            b"vorb" => vorb = Some(range.clone()),
+            b"data" => data = Some(range.clone()),
+            _ => {}
+        }
+        cursor = range.end + (size & 1);
+    }
+    let (fmt, data) = (fmt?, data?);
+    if u16_at(bytes, fmt.start)? != 0xffff || data.end > bytes.len() { return None; }
+    let channels = u8::try_from(u16_at(bytes, fmt.start + 2)?).ok()?;
+    // Without a vorb chunk its fields follow the 0x18-byte fmt header.
+    let vorb = vorb.or_else(|| (fmt.len() == 0x42).then(|| fmt.start + 0x18..fmt.end))?;
+    let at = |offset: usize| vorb.start + offset;
+    let (mod_packets, granule_headers, offsets, blocksizes) = match vorb.len() {
+        0x2A => {
+            let signal = u32_at(bytes, at(0x4))?;
+            (!matches!(signal, 0x4A | 0x4B | 0x69 | 0x70), false, at(0x10), at(0x28))
+        }
+        0x32 | 0x34 => (false, true, at(0x18), at(0x30)),
+        _ => return None,
+    };
+    Some(WwiseLayout {
+        setup: u32_at(bytes, offsets)? as usize,
+        first_audio: u32_at(bytes, offsets + 4)? as usize,
+        data,
+        channels,
+        blocksizes: (*bytes.get(blocksizes)?, *bytes.get(blocksizes + 1)?),
+        mod_packets,
+        granule_headers,
+    })
+}
+
+/// Decoder headers by Wwise setup packet: rebuilt once from the codebook
+/// library by converting only the media's header (no audio packets).
+static WWISE_HEADERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, (Arc<IdentHeader>, Arc<SetupHeader>)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(Arc<IdentHeader>, Arc<SetupHeader>)> {
+    let data = &bytes[layout.data.clone()];
+    let setup = data.get(layout.setup..layout.first_audio).ok_or_else(|| invalid("Wwise setup outside data"))?;
+    let key = (setup.to_vec(), layout.channels, layout.blocksizes);
+    if let Some(headers) = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(headers.clone());
+    }
+    let mut header = bytes[..layout.data.start + layout.first_audio].to_vec();
+    header[layout.data.start - 4..layout.data.start].copy_from_slice(&(layout.first_audio as u32).to_le_bytes());
+    let riff = (header.len() - 8) as u32;
+    header[4..8].copy_from_slice(&riff.to_le_bytes());
+    let index = PacketIndex::new(&super::decode_wem(&header)?)?;
+    let headers = (index.ident, index.setup);
+    Ok(WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(headers).clone())
 }
 
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message.to_owned()) }
 
+/// Decoded setups by (setup packet, channels, block sizes). Wwise encodes
+/// from a shared codebook library, so many streams carry the same setup;
+/// its decoded codebooks are large and identical, so each is kept once.
+type SetupKey = (Vec<u8>, u8, (u8, u8));
+static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, Arc<SetupHeader>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn shared_setup(packet: &[u8], channels: u8, blocksizes: (u8, u8)) -> io::Result<Arc<SetupHeader>> {
+    let key = (packet.to_vec(), channels, blocksizes);
+    if let Some(setup) = SETUPS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(setup.clone());
+    }
+    let setup = Arc::new(read_header_setup(packet, channels, blocksizes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?);
+    Ok(SETUPS.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(setup).clone())
+}
+
 impl PacketIndex {
+    /// DH2: index installed Wwise Vorbis packets in place; `bytes` is the
+    /// whole media file the packet ranges point into. Frame positions follow
+    /// the decoder's windowing as for converted media, and the last packet is
+    /// trimmed to the header's sample count as ww2ogg's final granule does.
+    pub fn wwise(bytes: &[u8], layout: &WwiseLayout, sample_count: u64) -> io::Result<Self> {
+        let (ident, setup) = wwise_headers(bytes, layout)?;
+        let header = if layout.granule_headers { 6 } else { 2 };
+        let mut raw = Vec::new();
+        let mut offset = layout.data.start + layout.first_audio;
+        while offset < layout.data.end {
+            let size = u16_at(bytes, offset).ok_or_else(|| invalid("Wwise packet header truncated"))? as usize;
+            let start = offset + header;
+            let end = start + size;
+            if end > layout.data.end { return Err(invalid("Wwise packet exceeds its data")); }
+            let packet = &bytes[start..end];
+            let long = if size == 0 || !layout.mod_packets { false } else {
+                wwise_packet_mode(&setup, packet).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?.1
+            };
+            raw.push(((start as u32, size as u32, false), long));
+            offset = end;
+        }
+        let blocksize = |long: bool| 1u64 << if long { ident.blocksize_1 } else { ident.blocksize_0 };
+        let mut starts = Vec::with_capacity(raw.len() + 1);
+        let mut frame = 0u64;
+        // ww2ogg's page granules: blocks of the current and previous packet.
+        let mut granule = 0u64;
+        let mut previous_granule = None;
+        for (number, &((start, size, _), long)) in raw.iter().enumerate() {
+            let previous_long = number.checked_sub(1).is_some_and(|i| raw[i].1);
+            let next_long = raw.get(number + 1).is_some_and(|next| next.1);
+            let mut decoded = if number == 0 { 0 } else if layout.mod_packets {
+                wwise_decoded_sample_count(&ident, long, previous_long, next_long) as u64
+            } else {
+                get_decoded_sample_count(&ident, &setup, &bytes[start as usize..(start + size) as usize]).unwrap_or(0) as u64
+            };
+            if number > 0 { granule += (blocksize(previous_long) + blocksize(long)) / 4; }
+            let last = number + 1 == raw.len();
+            let page = if last && sample_count > 0 { sample_count } else { granule };
+            if let (Some(position), true) = (previous_granule, last) {
+                decoded = decoded.min(page.saturating_sub(position));
+            }
+            previous_granule = Some(page);
+            starts.push(frame);
+            frame += decoded;
+        }
+        starts.push(frame);
+        let wwise_long = layout.mod_packets.then(|| raw.iter().map(|&(_, long)| long).collect());
+        Ok(Self { ident, setup, packets: raw.into_iter().map(|(packet, _)| packet).collect(), joined: Vec::new(), starts, wwise_long })
+    }
+
     pub fn new(ogg: &[u8]) -> io::Result<Self> {
         struct Raw { packet: (u32, u32, bool), granule: u64, last_in_page: bool, last_in_stream: bool }
         let mut raws = Vec::new();
@@ -71,8 +221,7 @@ impl PacketIndex {
         };
         let [ident, _, setup, ..] = &raws[..] else { return Err(invalid("Ogg Vorbis stream has no headers")) };
         let ident = read_header_ident(bytes(ident.packet)).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?;
-        let setup = read_header_setup(bytes(setup.packet), ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?;
+        let setup = shared_setup(bytes(setup.packet), ident.audio_channels, (ident.blocksize_0, ident.blocksize_1))?;
         // The first packet decodes nothing; each later one decodes the span
         // between its window centres (a packet that cannot be read counts as
         // none, and decoding stops there). read_dec_packet_generic truncates the
@@ -94,7 +243,7 @@ impl PacketIndex {
             frame += decoded;
         }
         starts.push(frame);
-        Ok(Self { ident, setup, packets, joined, starts })
+        Ok(Self { ident: Arc::new(ident), setup, packets, joined, starts, wwise_long: None })
     }
 
     pub fn channels(&self) -> u16 { u16::from(self.ident.audio_channels) }
@@ -132,8 +281,11 @@ impl VorbisCursor {
         let (start, length, joined) = *index.packets.get(packet)?;
         let source = if joined { &index.joined[..] } else { &self.media.ogg[..] };
         let data = &source[start as usize..(start + length) as usize];
-        let mut samples = read_audio_packet_generic::<InterleavedSamples<f32>>(&index.ident, &index.setup, data, &mut self.window_right)
-            .ok()?.samples;
+        let mut samples = match &index.wwise_long {
+            Some(long) => read_wwise_audio_packet_generic::<InterleavedSamples<f32>>(&index.ident, &*index.setup, data,
+                packet.checked_sub(1).is_some_and(|i| long[i]), long.get(packet + 1).copied().unwrap_or(false), &mut self.window_right),
+            None => read_audio_packet_generic::<InterleavedSamples<f32>>(&index.ident, &*index.setup, data, &mut self.window_right),
+        }.ok()?.samples;
         let frames = (index.starts[packet + 1] - index.starts[packet]) as usize;
         samples.truncate(frames * usize::from(self.media.channels));
         Some(samples)

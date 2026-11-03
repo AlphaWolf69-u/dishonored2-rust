@@ -26,6 +26,8 @@ struct WwiseRegistry {
     states: bevy_backend::StateGroups,
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
+    /// Package location of every media read, for streamed sources.
+    locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
 }
 
 impl WwiseRegistry {
@@ -35,6 +37,10 @@ impl WwiseRegistry {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
+            self.locators.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, graph::StreamLocator {
+                path: bank.path.clone(), offset: media.offset,
+                size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
+            });
             let file = match files.entry(owner) {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 hashbrown::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
@@ -55,7 +61,11 @@ impl WwiseRegistry {
     /// The event's actions with every Play source decoded.
     fn decode_event(&self, event: u32) -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
         use crate::assets::wwise::PlaybackCommand;
-        let graph_actions = self.playback(event)?;
+        let graph_actions = {
+            let _tag = crate::platform::allocation_tags::tag("sound bank lookup");
+            self.playback(event)?
+        };
+        let _tag = crate::platform::allocation_tags::tag("sound graph");
         let mut actions = Vec::new();
         for action in graph_actions {
             // Each action is dispatched independently in 1410e5600 /
@@ -77,7 +87,11 @@ impl WwiseRegistry {
             // 14113b5c0 sends every Play through the same source
             // and bus clock, including plain PCM and UI sounds.
             PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                definition: Arc::new(graph::Definition::decode(node, &self.attenuations)?) }),
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations, &|id| {
+                    // Diagnostic A/B: DH2_DEBUG_RESIDENT_STREAMS=1 keeps streamed sources resident.
+                    if std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1") { return None; }
+                    self.locators.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
+                })?) }),
             } })();
             match decoded {
                 Ok(action) => actions.push(action),
@@ -88,6 +102,10 @@ impl WwiseRegistry {
     }
 
 }
+
+/// The streamed media a playback reads; dropped with its voice entity.
+#[derive(Component, Clone)]
+struct StreamedMedia(Vec<graph::StreamHold>);
 
 #[derive(Resource, Default)]
 struct AudioMix {
@@ -156,18 +174,57 @@ impl Plugin for SoundPlugin {
     }
 }
 
+/// The packages and bank ids the original loads for the current map.
+struct LevelBanks { packages: Vec<String>, banks: std::collections::HashSet<u32> }
+
+/// Wwise names its ids by FNV-1 of the lowercase name (verified on the
+/// installed main-common-sfx.pck: common_default).
+fn wwise_id(name: &str) -> u32 {
+    name.bytes().fold(0x811c_9dc5u32, |hash, byte| hash.wrapping_mul(0x0100_0193) ^ u32::from(byte.to_ascii_lowercase()))
+}
+
+/// wwisedescription.txt ("cooked level descriptions", 1400c0cb0): "V1", an
+/// entry count, then per entry its name, package prefixes and bank names.
+fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(base.join("wwisedescription.txt"))?;
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("V1") { return Err("wwisedescription.txt is not V1".into()); }
+    let count: usize = lines.next().ok_or("wwisedescription.txt has no entry count")?.trim().parse()?;
+    let mut entries = HashMap::new();
+    for _ in 0..count {
+        let name = lines.next().ok_or("wwisedescription.txt entry truncated")?.trim();
+        let packages = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
+        let banks = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
+        entries.insert(name, (packages, banks));
+    }
+    let map = crate::gameplay::map_info::current_map().ok_or("no current map for its sound banks")?;
+    let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
+    let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default() };
+    for name in ["common", "init", map.as_str()] {
+        let (packages, banks) = entries.get(name).ok_or_else(|| format!("wwisedescription.txt has no entry {name}"))?;
+        for prefix in packages {
+            selection.packages.push(format!("{prefix}{language}.pck"));
+            selection.packages.push(format!("{prefix}sfx.pck"));
+        }
+        selection.banks.extend(banks.iter().map(|bank| wwise_id(bank)));
+    }
+    selection.packages.sort();
+    selection.packages.dedup();
+    Ok(selection)
+}
+
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
         let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
-        let mut paths = std::fs::read_dir(base.join("pck"))?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
-            .collect::<Vec<_>>();
-        paths.sort();
+        // 1400bd510 (LoadSharedCookedGamePackages): the "common", "init" and
+        // current-map entries of wwisedescription.txt name the packages
+        // (prefix + language / "sfx.pck") and banks to load, plus main-init.pck.
+        let selection = level_banks(&base, package_language)?;
+        let paths = selection.packages.iter().map(|name| base.join("pck").join(name))
+            .filter(|path| path.is_file()).collect::<Vec<_>>();
 
         let mut banks = Vec::new();
         let mut attenuations = HashMap::new();
@@ -176,7 +233,9 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
         for path in paths {
             let Ok(package) = crate::assets::wwise::Package::open(&path) else { continue };
             let language = package.language_id(package_language);
-            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language) {
+            let init = path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("main-init.pck"));
+            for entry in package.banks.iter().copied().filter(|entry| entry.language_id == 0 || Some(entry.language_id) == language)
+                .filter(|entry| init || u32::try_from(entry.id).is_ok_and(|id| selection.banks.contains(&id))) {
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
                     let bytes = package.read_entry(&mut file, entry)?;
@@ -193,7 +252,7 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
                 }
             }
         }
-        let catalog = crate::archive::Catalog::open(&base)?;
+        let catalog = crate::archive::Catalog::shared(&base)?;
         let source = catalog.read("generated/decls/soundengineinternals/default.soundengineinternals.decl")?
             .ok_or("sound engine internals declaration is absent")?;
         let fields = crate::entities::parse_declaration(&crate::entities::declaration_text(&source))?;
@@ -254,7 +313,7 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = crate::archive::Catalog::open(&base).map_err(|e| e.to_string())?;
+        let catalog = crate::archive::Catalog::shared(&base).map_err(|e| e.to_string())?;
         let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
         let map = map.trim_start_matches("maps/").trim_end_matches(".map");
         let language = crate::assets::lang::read_text_language(&base)?;
@@ -313,6 +372,16 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
         for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
         }
+        let streamed = crate::assets::wwise::STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+        let mut by_type = std::collections::BTreeMap::<u8, (usize, usize, usize, usize)>::new();
+        for &(kind, size, prefix) in streamed.values() {
+            let entry = by_type.entry(kind).or_default();
+            entry.0 += 1; entry.1 += size;
+            if let Some(prefix) = prefix { entry.2 += 1; entry.3 += prefix; }
+        }
+        for (kind, (count, bytes, prefixed, prefix_bytes)) in by_type {
+            eprintln!("LOAD sound streamed type {kind}: {count} media, {} MB; {prefixed} with a DIDX entry, {} KB in them", bytes >> 20, prefix_bytes >> 10);
+        }
     }
     registry.sources.extend(prepared);
     count
@@ -350,19 +419,26 @@ fn play_events(
     mix: Res<AudioMix>,
     scene: Res<spatial::Scene>,
     engine: Res<bevy_backend::Engine>,
+    mut pending: Local<Vec<Request>>,
 ) {
     let Some(mixer) = &mix.mixer else { events.clear(); return };
-    for message in events.read() {
-        let (event, emitter, parameter, position) = match message.0 {
+    // A request whose streamed media is still being read waits, keeping its
+    // place ahead of later requests for the same emitter.
+    let requests: Vec<Request> = std::mem::take(&mut *pending).into_iter().chain(events.read().map(|message| message.0)).collect();
+    let mut waiting = Vec::new();
+    for request in requests {
+        let (event, emitter, parameter, position) = match request {
             Request::Post { event, emitter } => (event, emitter, None, None),
             Request::PostWithParameter { event, emitter, parameter, value } => (event, emitter, Some((parameter, value)), None),
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
+                if waiting.contains(&emitter) { pending.push(request); continue; }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
+        if waiting.contains(&emitter) { pending.push(request); continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
@@ -371,6 +447,23 @@ fn play_events(
             continue;
         }
         if let Some(actions) = registry.sources.get(&event).cloned() {
+            let mut holds = Vec::new();
+            let mut loading = false;
+            for action in &actions {
+                let SourceAction::Play { definition, .. } = action else { continue };
+                for source in definition.streamed() {
+                    match source.acquire() {
+                        Ok(Some(hold)) => holds.push(hold),
+                        Ok(None) => loading = true,
+                        Err(error) => warn!("Wwise event {event:#010x} streamed media unavailable: {error}"),
+                    }
+                }
+            }
+            if loading {
+                waiting.push(emitter);
+                pending.push(request);
+                continue;
+            }
             let playing_id = engine.playing_id();
             for action in actions {
                 match action {
@@ -390,13 +483,13 @@ fn play_events(
                                 let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false };
                                 if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
-                                        Ok(voice) => { commands.spawn((voice, audio_target, scheduled)); },
+                                        Ok(voice) => { commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone()))); },
                                         Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
                                     }
                                 } else {
                                     match engine.register_fallback(scheduled.clone(), event, emitter) {
                                         Ok(control) => { commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
-                                            audio_target, scheduled, control)); },
+                                            audio_target, scheduled, control, StreamedMedia(holds.clone()))); },
                                         Err(error) => error!("Wwise event {event:#010x} action control unavailable: {error}"),
                                     }
                                 }

@@ -37,7 +37,7 @@ pub(super) struct SceneData {
     #[allow(dead_code)] // Authored whole-view receiver bounds, not visible-mesh bounds.
     pub(super) far_shadow_bounds: Option<[[f32; 3]; 2]>,
     pub(super) pickups: Vec<entities::Pickup>,
-    pub(super) catalog: Option<archive::Catalog>,
+    pub(super) catalog: Option<std::sync::Arc<archive::Catalog>>,
 }
 
 #[derive(Component)]

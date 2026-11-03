@@ -5,7 +5,7 @@ Keep this file short and operational. It is not a roadmap or a research log.
 ## Objective and evidence
 
 - The objective is a faithful, playable Rust rewrite using assets from the user's installed Dishonored 2 copy.
-- Use the Dishonored 2 Ghidra decompilation dump or MCP whenever a claim about an original mechanic depends on executable code. Machine code can resolve an ambiguity. If Ghidra MCP is unavailable, find other way to use ghidra.
+- Use the Dishonored 2 Ghidra decompilation dump or MCP whenever a claim about an original mechanic depends on executable code. If Ghidra MCP is unavailable, find other way to use ghidra.
 - Implement behavior in the rewrite only when it is supported by original game files, decompiled game code, or measured game behavior. Never invent or substitute any unsupported behavior, regardless of subsystem or implementation detail. If the original behavior is not yet understood, investigate it until it can be implemented from evidence.
 - When correcting writing code, first trace how the original game handles the relevant path, then rewrite that behavior in Rust. A special case is not a replacement for the game's algorithm.
 - Before starting any research or implementation step, quickly search the Rust rewrite source in `src/`, the existing executable probes and test cases in `analysis/` and `src/` for that original game function or behavior. Use `rg --no-ignore` for `analysis/` (normal ripgrep skips these local-only probes). Reuse work already verified against the game
@@ -23,14 +23,13 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 - Agents are explicitly authorized to launch, focus, run, examine, and close the user's installed original Dishonored 2 game and the Rust remake whenever needed for research or verification. No additional permission is required for these actions.
 - Launch the original through Steam AppID `403640`, never directly through `Dishonored2.exe`: a direct launch enters the free trial.
-- Don't try to control the game yourself, ask human to do it for you. Agents may ask the user to load a specific level or save, select a character or difficulty, move to a location, perform an action, or reproduce a sequence when user input or gameplay is needed. State the exact setup and action, what evidence will be captured, and which implementation question it will answer. Do routine setup and captures yourself where available tools allow it.
-- Use live debugging, breakpoints, memory inspection, and targeted instrumentation to capture function arguments, return values, object layouts, execution paths, and state changes. Combine runtime observations with Ghidra analysis; use the running game when it can resolve an uncertainty more efficiently than further static inspection.
+- Don't try to control the game yourself, ask human to do it for you. Agents may ask the user to load a specific level or save, select a character or difficulty, move to a location, perform an action, or reproduce a sequence when user input or gameplay is needed. Do routine setup and captures yourself where available tools allow it.
+- Use live debugging, breakpoints, memory inspection, and targeted instrumentation to capture function arguments, return values, object layouts, execution paths, and state changes. use the running game when it can resolve an uncertainty more efficiently than further static inspection.
 - Be not afraid of corrupting the game/save files. Everything is already backed up.
 
 ## Working in this repository
 
 - Build and test with the debug (dev) profile, or `cargo check` when only compilation matters. Use `--release` only for the main branch build the user tests from and for performance measurements (timings, frame rate, latency); the release profile uses LTO and takes several times longer.
-- Keep compilation hidden with output redirected to logs while continuing other work. Do not open build-monitor terminals unless the user requests one or the agent is handing control back immediately after starting the build.
 - ChatGPT/Codex agents only (not Claude): do not check build progress, poll build sessions, inspect build logs/processes for progress, or spend time waiting for builds. Continue useful project work while a build runs; read its final result when needed after that work.
 - Game behavior is the naming default: name files, modules, types, functions, fields, constants, shaders and fixtures by responsibility without redundant `Native`, `Original`, `native_` or `original_` qualifiers. This also applies to project-authored dependency patches and diagnostic controls. Mark host integration or deliberate deviations explicitly (for example `bevy_backend`, `debug_` or `approximate_`); keep meaningful comparison provenance in comments and test descriptions. Preserve installed resource names and historical evidence paths.
 - Prefer a general asset-format or engine-rule fix over addingdate object-name exceptions. If an exception is needed, record why it is specific.
@@ -58,7 +57,7 @@ Take the first option that fully works:
 
 ## Performance work
 
-- The goal is the fastest rewrite with the original's output. Optimizations may change the original's algorithms, data layouts and scheduling when the rendered result and game behavior stay the same; mark the deviation in code (`bevy_backend`/`approximate_` naming or a comment naming the original behavior it replaces). Anything the player would notice (extra latency, lower precision) stays opt-in.
+- The goal is the fastest rewrite with the original's output. Optimizations may change the original's algorithms, architecture, data layouts and scheduling when the rendered result and game behavior stay the same; mark the deviation in code (`bevy_backend`/`approximate_` naming or a comment naming the original behavior it replaces). Anything the player would notice (extra latency, lower precision) stays opt-in.
 - Sweep a module completely while it is open; do not fix only its current bottleneck and leave known waste for a later visit. Check it for:
   1. work redone every frame although its inputs did not change (uploads, rebuilds, recomputation);
   2. work repeated within a frame (per draw or per bind group where once per pass suffices);
@@ -69,15 +68,10 @@ Take the first option that fully works:
   7. whether the original's algorithm is itself a good one, or a better one gives the same output.
   Fix each finding, or record it in `docs/optimization-opportunities.md` with its estimated gain and the reason it waits.
 - Before each change, write down the expected gain and where it should appear (function, thread, GPU pass).
-- Measure only the code that changed, not whole-frame time: per-function CPU time from traces (`analysis/ab_function_costs.py`), per-pass GPU time, counts of uploads, lists or draws, averaged over hundreds of frames, with the change switched on and off in the same build. Whole-frame timings drift by about 0.5 ms between runs and hide most single changes; use them to check the total, with repeated runs.
-- A result far from the prediction (much smaller, larger, or in another place) means a mistake in the change or in the model of the code: find out which before keeping, reverting or moving on. Revert changes that measure no gain.
+- Measure only the code that changed, not whole-frame time: per-function CPU time from traces (`analysis/ab_function_costs.py`), per-pass GPU time, counts of uploads, lists or draws, averaged over hundreds of frames, with the change switched on and off in the same build. Whole-frame timings drift by about 0.5 ms between runs and hide most single changes
+- A result >30% different from the prediction (smaller, larger, or in another place) means a mistake in the change or in the model of the code: find out which before keeping, reverting or moving on. Revert changes that measure no gain.
 - Verify unchanged output after every change (matched-view screenshot, barrier and draw counts in a capture) and state the measured before and after values in the commit.
 
-## Function coverage and reusable research
-
-- The ongoing objective is the complete, faithful Rust rewrite. User requests guide priorities; all original-game research must also advance overall rewrite coverage. Do not discard understood functions because they lie outside the immediate feature request.
-- Implement every inspected function whose behavior is understood and whose implementation is missing or incomplete. Integrate it and verify it, including functions discovered while investigating another feature. An existing Rust/stdlib/dependency implementation may satisfy the function when its equivalence is evidenced; do not duplicate it.
-- If original behavior remains unknown, continue the investigation and save the exact unanswered branch/layout/call path, the evidence collected and the next verification step as a blocker. A missing understanding is not permission to invent behavior or silently forget the function. Return to these blockers as part of completing the rewrite.
 
 ## Repository map
 

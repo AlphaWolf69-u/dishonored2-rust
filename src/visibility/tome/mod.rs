@@ -505,11 +505,16 @@ pub struct CellSelection {
 /// FUN_140a89350 for special portal codes, and FUN_140a7b890 for the cell ID.
 #[derive(Debug)]
 pub struct CellTree {
-    bounds: Vec<[[f32; 3]; 2]>,
-    children: Vec<Option<[usize; 2]>>,
-    axes: Vec<u8>,
-    planes: Vec<f32>,
-    leaf_ranks: Vec<Option<usize>>,
+    /// The packed node tree is read in place, as the original descends it:
+    /// 2-bit axis codes at `codes_at` (3 = leaf), split planes at
+    /// `planes_at` for the first `plane_count` nodes (else the box middle).
+    /// An inner node of inner rank r has children 2r-1 and 2r; a leaf's rank
+    /// is its index minus the inner nodes before it; bounds split down from
+    /// the root. Inner ranks come from the rank directory after the codes.
+    node_count: usize,
+    codes_at: usize,
+    planes_at: usize,
+    plane_count: usize,
     cell_codes: Vec<u32>,
     cell_ids: Vec<u32>,
     cell_visibility_counts: Vec<u32>,
@@ -611,6 +616,28 @@ pub struct DirectTomeQueryData {
 }
 
 impl DirectTomeQueryData {
+    /// Diagnostic: resident bytes of the decoded cell-tree fields, summed
+    /// over every record, by field.
+    pub fn decoded_bytes(&self) -> Vec<(&'static str, usize)> {
+        use std::mem::size_of_val;
+        let mut totals = std::collections::BTreeMap::<&'static str, usize>::new();
+        for tree in self.record_trees.iter().flatten().flatten() {
+            for (name, bytes) in [
+                ("cell_codes", size_of_val(&tree.cell_codes[..])),
+                ("cell_ids", size_of_val(&tree.cell_ids[..])), ("cell_visibility_counts", size_of_val(&tree.cell_visibility_counts[..])),
+                ("cell_bounds", size_of_val(&tree.cell_bounds[..])), ("cell_link_ranges", size_of_val(&tree.cell_link_ranges[..])),
+                ("cell_candidate_ranges", size_of_val(&tree.cell_candidate_ranges[..])), ("links", size_of_val(&tree.links[..])),
+            ] {
+                *totals.entry(name).or_default() += bytes;
+            }
+        }
+        if let Some(objects) = &self.objects {
+            totals.insert("object bounds", size_of_val(&objects.bounds[..]));
+            totals.insert("object distances", objects.distance.as_ref().map_or(0, |d| size_of_val(&d[..])));
+        }
+        totals.into_iter().collect()
+    }
+
     pub fn parse(bytes: &[u8], tree: &SpatialTree) -> Result<Self, String> {
         let slot_rows = SpatialCellSlotRows::parse(bytes)?;
         let object_count = word(bytes, 0x40)? as usize;

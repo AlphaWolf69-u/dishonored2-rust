@@ -105,7 +105,12 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     out.world_bitangent = normalize(cross((world_from_local * vec4(vertex.normal, 0.0)).xyz,
         (world_from_local * vec4(vertex.tangent.xyz, 0.0)).xyz) * vertex.tangent.w);
 #else
+#ifdef DH2_DERIVED_BITANGENT
+    // DH2: installed SNORM8 N/T; the CPU's bitangent was cross(N, T) * sign.
+    out.world_bitangent = normalize((world_from_local * vec4(cross(vertex.normal, vertex.tangent.xyz) * vertex.tangent.w, 0.0)).xyz);
+#else
     out.world_bitangent = normalize((world_from_local * vec4(vertex.bitangent, 0.0)).xyz);
+#endif
 #endif
 #else
 #ifdef SKINNED

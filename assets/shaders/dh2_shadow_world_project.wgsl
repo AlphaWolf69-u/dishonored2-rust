@@ -11,3 +11,8 @@ fn shadow_world_project(world: vec4<f32>, x: vec4<f32>, y: vec4<f32>,
     return fma(column_z, vec4<f32>(world.z),
         fma(column_x, vec4<f32>(world.x), column_y * world.y)) + column_w;
 }
+
+// DH2: shared world meshes hold view-axis positions and packed normals;
+// game_to_view is (x, z, -y), so these undo it exactly.
+fn installed_position(view: vec3<f32>) -> vec3<f32> { return vec3<f32>(view.x, -view.z, view.y); }
+fn installed_normal_xy(view: vec3<f32>) -> vec2<f32> { return vec2<f32>(view.x, -view.z); }

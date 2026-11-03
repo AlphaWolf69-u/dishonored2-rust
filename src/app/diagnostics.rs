@@ -298,7 +298,7 @@ pub(super) fn collision_report(
     shadow_cpu: Option<Res<super::shadow_updates::ParallelShadowCpu>>,
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
-    images: Res<Assets<Image>>,
+    (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
     display_capture: Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>,
 ) {
     if !keys.just_pressed(KeyCode::F8) {
@@ -312,8 +312,16 @@ pub(super) fn collision_report(
         Projection::Perspective(p) => p.far,
         _ => 40.0,
     };
-    let visual =
-        sightline_world_surface(&scene.world, camera.translation, direction, distance_limit);
+    // Setup releases the world's vertex data after upload; the report reads
+    // the installed world again instead of keeping it resident.
+    let world = reader.as_ref().ok_or("texture reader owns no catalog".to_string()).and_then(|reader| {
+        let path = scene.source_path.to_string_lossy();
+        let bytes = reader.catalog().read(&path).map_err(|e| e.to_string())?.ok_or(format!("{path} is not installed"))?;
+        crate::world_mesh::parse(&bytes).map_err(|e| e.to_string())
+    });
+    let visual = world.as_ref().ok().and_then(|world| {
+        sightline_world_surface(world, camera.translation, direction, distance_limit)
+    });
     let visual_text = match &visual {
         Some((distance, mesh, matrix, material)) => format!(
             "BWM surface: distance={distance:.3} m, game_xyz={:?}, mesh={mesh}, matrix={matrix}, material={material}",

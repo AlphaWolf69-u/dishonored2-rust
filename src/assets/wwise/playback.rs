@@ -241,7 +241,7 @@ impl<'a> PlaybackBanks<'a> {
     }
 
     fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,
-        visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<Arc<[u8]>>>) -> io::Result<Option<PlaybackNode>> {
+        visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<(Arc<[u8]>, Option<u32>)>>) -> io::Result<Option<PlaybackNode>> {
         if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
         let Some(&object) = self.actors.get(&id) else { visited.remove(&id); return Ok(None); };
         let bytes = self.bytes(object);
@@ -282,13 +282,14 @@ impl<'a> PlaybackBanks<'a> {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
-                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?.map(Arc::from);
+                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?
+                        .map(|(media, streamed)| (Arc::<[u8]>::from(media), streamed));
                     entry.insert(source).clone()
                 },
             };
             let properties = self.media_properties(id)?;
             visited.remove(&id);
-            return Ok(source.map(|media| PlaybackNode::Sound { node: id, variant: MediaVariant { media, weight: 1, properties } }));
+            return Ok(source.map(|(media, streamed)| PlaybackNode::Sound { node: id, variant: MediaVariant { media, streamed, weight: 1, properties } }));
         }
         if object.kind == 7 {
             let properties = self.media_properties(id)?;

@@ -84,16 +84,16 @@ thread_local! {
     // each library resource's decoded bitmaps (the files do not change while
     // the game runs). Every open still builds a new player, as the game does
     // (`m_cacheResources` 0).
-    static CATALOG: std::cell::RefCell<Option<std::rc::Rc<Catalog>>> = const { std::cell::RefCell::new(None) };
+    static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
     static DECODED: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<(u16, Arc<Image>)>>>> = std::cell::RefCell::new(HashMap::new());
 }
 
-fn installed_catalog() -> Result<std::rc::Rc<Catalog>, String> {
+fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     if let Some(c) = CATALOG.with(|c| c.borrow().clone()) {
         return Ok(c);
     }
     let base = installation::game_base().map_err(|e| e.to_string())?;
-    let c = std::rc::Rc::new(Catalog::open(&base).map_err(|e| e.to_string())?);
+    let c = Catalog::shared(&base).map_err(|e| e.to_string())?;
     CATALOG.with(|slot| *slot.borrow_mut() = Some(c.clone()));
     Ok(c)
 }

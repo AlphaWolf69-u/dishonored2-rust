@@ -2235,14 +2235,17 @@ fn hash_layout(layout: &MeshVertexBufferLayoutRef) -> u64 {
     hasher.finish()
 }
 
+/// World programs read the shared world mesh's own view-space position and
+/// undo the axis swap in the shader (installed_position); model and skinned
+/// programs read their retained game-space copy.
 fn caster_position(program: ShadowProgram) -> MeshVertexAttribute {
     match program {
         ShadowProgram::WorldOpaque
         | ShadowProgram::WorldAlphaTested
         | ShadowProgram::WorldVistaAlpha
         | ShadowProgram::WorldVegetation
-        | ShadowProgram::WorldVegetationFixed
-        | ShadowProgram::Vegetation
+        | ShadowProgram::WorldVegetationFixed => Mesh::ATTRIBUTE_POSITION,
+        ShadowProgram::Vegetation
         | ShadowProgram::RigidOpaque
         | ShadowProgram::RigidAlphaTested
         | ShadowProgram::RigidVistaAlpha
@@ -2283,10 +2286,13 @@ fn ensure_pipeline(
     }
     if matches!(
         key.program,
-        ShadowProgram::Vegetation
-            | ShadowProgram::WorldVegetation
-            | ShadowProgram::WorldVegetationFixed
+        ShadowProgram::WorldVegetation | ShadowProgram::WorldVegetationFixed
     ) {
+        // The installed COLOR and NORMAL (packed); the shader takes COLOR.xyz
+        // and the game-space NORMAL.xy from them.
+        attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(2));
+        attributes.push(Mesh::ATTRIBUTE_NORMAL.at_shader_location(3));
+    } else if key.program == ShadowProgram::Vegetation {
         attributes.push(VEGETATION_COLOR.at_shader_location(2));
         attributes.push(VEGETATION_NORMAL.at_shader_location(3));
     }
