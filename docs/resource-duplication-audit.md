@@ -80,3 +80,12 @@ Decal animation is a missing rendering path, not a measured memory saving.
 The existing sampled animation and pool binding need authored descriptor
 acquisition plus the world FX scheduler/renderer connection. No claim of
 complete decal support is made by a declaration-reference cache alone.
+
+Font atlas budget audit: `14002c440` caps each side to the already loaded
+movie's stage size before power-of-two rounding, then doubles above 1920x1080
+except declaration names containing case-sensitive `bnet` (`140142690`).
+The runtime now passes existing player metadata, without rereading Iggy bytes.
+The R8 format change saves 75% at the same atlas dimensions; the stage cap is
+an additional fidelity correction, not included in that saving. The installed
+pause movie retains 252 vertices, 16 batches, nine lazy outlines and pixel hash
+`4ea5cd8f67a25f61083190ac3c60c2d90dd988fba7b29265d33c97aaf04a3a3c`.

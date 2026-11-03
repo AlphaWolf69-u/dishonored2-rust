@@ -349,7 +349,7 @@ fn debug_pause_draw_list_cost() {
     }
     let mut cache = super::render::Cache::default();
     if std::env::var_os("DH2_TEST_VECTOR_GLYPHS").is_none() {
-        cache.set_font_caching(crate::gameplay::pause_state::font_caching(&catalog, "ui/corvo_pause_menu.iggy", (1920, 1080)));
+        cache.set_font_caching(crate::gameplay::pause_state::font_caching(&catalog, "ui/corvo_pause_menu.iggy", player.state.borrow().stage_size, (1920, 1080)));
     }
     let list = super::render::draw_list_cached(&player.vm, &mut cache);
     let started = std::time::Instant::now();

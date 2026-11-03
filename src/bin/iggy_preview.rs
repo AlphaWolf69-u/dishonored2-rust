@@ -191,7 +191,7 @@ fn run() -> Result<(), String> {
         // every glyph as vectors.
         let mut cache = render::Cache::default();
         if !args.iter().any(|a| a == "--debug-vector-glyphs") {
-            cache.set_font_caching(pause_state::font_caching(&catalog, &movie_path, (size.0 as u32, size.1 as u32)));
+            cache.set_font_caching(pause_state::font_caching(&catalog, &movie_path, size, (size.0 as u32, size.1 as u32)));
         }
         render::draw_list_cached(&player.vm, &mut cache)
     };

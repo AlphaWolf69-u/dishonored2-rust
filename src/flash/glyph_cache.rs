@@ -43,16 +43,22 @@ pub struct FontCaching {
 }
 
 impl FontCaching {
-    /// `FUN_14002c440`: {count, width, height} -> page sides
-    /// `nextpow2(side · trunc(√count))`, doubled when the display is above
-    /// 1920×1080, and the glyph limits.
+    /// Unbounded sizing for callers without a movie (diagnostics only).
     pub fn from_buffer(count: u32, width: u32, height: u32, display: (u32, u32)) -> Option<FontCaching> {
-        if count == 0 || width == 0 || height == 0 {
+        Self::for_movie(count, width, height, (u32::MAX, u32::MAX), "", display)
+    }
+
+    /// `14002c440`: cap each requested side to the movie stage before rounding
+    /// up to a power of two. Above 1920x1080 double both sides, except movies
+    /// whose declaration name contains the case-sensitive `bnet` substring
+    /// (`140142690`, argument 3 = 1).
+    pub fn for_movie(count: u32, width: u32, height: u32, stage: (u32, u32), movie: &str, display: (u32, u32)) -> Option<FontCaching> {
+        if count == 0 || width == 0 || height == 0 || stage.0 == 0 || stage.1 == 0 {
             return None;
         }
         let root = (count as f32).sqrt() as u32;
-        let mut page = ((width * root).next_power_of_two(), (height * root).next_power_of_two());
-        if display.0 > 1920 || display.1 > 1080 {
+        let mut page = ((width * root).min(stage.0).next_power_of_two(), (height * root).min(stage.1).next_power_of_two());
+        if (display.0 > 1920 || display.1 > 1080) && !movie.contains("bnet") {
             page = (page.0 * 2, page.1 * 2);
         }
         Some(FontCaching { page, max_glyph: (width as f32, height as f32) })

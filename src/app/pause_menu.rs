@@ -249,6 +249,7 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
     }
     let frame_interval = 1.0 / player.state.borrow().frame_rate;
     info!("Pause movie {movie} ({language}) loaded in {:.2} s", started.elapsed().as_secs_f64());
+    let stage = player.state.borrow().stage_size;
     Ok(Loaded {
         player,
         pause,
@@ -261,7 +262,7 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
         frame_interval,
         draw_cache: {
             let mut cache = render::Cache::default();
-            cache.set_font_caching(pause_state::font_caching(&catalog, movie, (screen.0 as u32, screen.1 as u32)));
+            cache.set_font_caching(pause_state::font_caching(&catalog, movie, stage, (screen.0 as u32, screen.1 as u32)));
             cache
         },
         global_cache: render::Cache::default(),
@@ -493,9 +494,10 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                                 Request::GlobalChanged => {
                                     generation += 1;
                                     l.global_cache = render::Cache::default();
-                                    if let Ok(catalog) = installed_catalog() {
+                                    if let (Ok(catalog), Some((global, _))) = (installed_catalog(), l.pause.boxes.global_with_resources()) {
+                                        let stage = global.state.borrow().stage_size;
                                         let display = (l.screen.0 as u32, l.screen.1 as u32);
-                                        l.global_cache.set_font_caching(pause_state::font_caching(&catalog, crate::gameplay::message_box::MOVIE, display));
+                                        l.global_cache.set_font_caching(pause_state::font_caching(&catalog, crate::gameplay::message_box::MOVIE, stage, display));
                                     }
                                     if let Err(e) = l.rebuild_images() {
                                         warn!("Message box movie: {e}");

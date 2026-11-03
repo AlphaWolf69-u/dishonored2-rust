@@ -580,14 +580,14 @@ mod dof_tests {
 /// (`m_vectorFontBuffer` {m_maxNumGlyph, m_maxGlyphWidth, m_maxGlyphHeight},
 /// the descriptor `FUN_14002c440` reads at decl +0x64), for a display of
 /// `display` pixels.
-pub fn font_caching(catalog: &crate::assets::archive::Catalog, movie: &str, display: (u32, u32)) -> Option<crate::flash::glyph_cache::FontCaching> {
+pub fn font_caching(catalog: &crate::assets::archive::Catalog, movie: &str, stage: (f64, f64), display: (u32, u32)) -> Option<crate::flash::glyph_cache::FontCaching> {
     use crate::gameplay::options::decl::{int, read_edit, scope};
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     let name = format!("{}.iggyfile", movie.strip_suffix(".iggy").unwrap_or(movie));
     let edit = read_edit(&mut read, "iggyfile", &name).ok()?;
     let buffer = scope(&edit, "m_vectorFontBuffer")?;
     let field = |n: &str| int(buffer, n, 0).max(0) as u32;
-    crate::flash::glyph_cache::FontCaching::from_buffer(field("m_maxNumGlyph"), field("m_maxGlyphWidth"), field("m_maxGlyphHeight"), display)
+    crate::flash::glyph_cache::FontCaching::for_movie(field("m_maxNumGlyph"), field("m_maxGlyphWidth"), field("m_maxGlyphHeight"), (stage.0 as u32, stage.1 as u32), movie, display)
 }
 
 #[cfg(test)]
@@ -597,10 +597,10 @@ mod font_caching_tests {
     fn the_pause_movie_caches_glyphs_up_to_64_pixels() {
         let base = crate::assets::installation::game_base().unwrap();
         let catalog = crate::assets::archive::Catalog::open(&base).unwrap();
-        let caching = super::font_caching(&catalog, super::movie(super::Character::Corvo), (1920, 1080)).unwrap();
+        let caching = super::font_caching(&catalog, super::movie(super::Character::Corvo), (1920.0, 1080.0), (1920, 1080)).unwrap();
         assert_eq!(caching.page, (1024, 1024));
         assert_eq!(caching.max_glyph, (64.0, 64.0));
-        let large = super::font_caching(&catalog, super::movie(super::Character::Corvo), (2560, 1440)).unwrap();
+        let large = super::font_caching(&catalog, super::movie(super::Character::Corvo), (1920.0, 1080.0), (2560, 1440)).unwrap();
         assert_eq!(large.page, (2048, 2048));
     }
 }

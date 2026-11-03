@@ -45,6 +45,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 cache.set_font_caching(dishonored2_rust::gameplay::pause_state::font_caching(
                     &catalog,
                     movie,
+                    player.state.borrow().stage_size,
                     (1366, 768),
                 ));
                 let mut digest = blake3::Hasher::new();
