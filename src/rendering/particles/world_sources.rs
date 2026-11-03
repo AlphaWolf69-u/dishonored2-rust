@@ -17,9 +17,9 @@ pub struct WorldEffectGroup {
     pub asset: EffectGroupAsset,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
-    /// Keep every other authored family for the common FX owner. A particle
-    /// consumer cannot silently call such a group completely implemented.
-    pub other_families: Vec<(String, Value)>,
+    /// Deferred admission of other families, in authored order. Keep parsing
+    /// errors until activation, without retaining their generic syntax trees.
+    pub other_families: Vec<(String, Result<bool, String>)>,
 }
 
 pub struct WorldSoundDefinition {
@@ -82,6 +82,18 @@ pub(crate) fn descriptor_fields(
 pub struct WorldFxSources {
     pub effects: HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
     pub declarations: crate::assets::entities::effects::declarations::FxDeclarations,
+    /// Heap payload previously retained for unsupported-family syntax, and its
+    /// compact replacement. Excludes allocator bookkeeping in both figures.
+    pub deferred_syntax_bytes: usize,
+    pub deferred_admission_bytes: usize,
+}
+
+fn cloned_value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Atom(value) => value.len(),
+        Value::Scope(fields) => fields.len() * std::mem::size_of::<(String, Value)>()
+            + fields.iter().map(|(key, value)| key.len() + cloned_value_bytes(value)).sum::<usize>(),
+    }
 }
 
 impl WorldFxSources {
@@ -123,10 +135,20 @@ impl WorldFxSources {
     }
 
     pub fn load(
-        graphs: &[FxGraph],
+        graphs: &[Arc<FxGraph>],
         actors: &[crate::assets::entities::effects::actors::ActorDefinition],
         catalog: &Catalog,
         library: &mut ProgramLibrary,
+    ) -> Self {
+        Self::load_shared(graphs, actors, catalog, library, &mut Default::default())
+    }
+
+    pub fn load_shared(
+        graphs: &[Arc<FxGraph>],
+        actors: &[crate::assets::entities::effects::actors::ActorDefinition],
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
     ) -> Self {
         let mut result = Self {
             declarations: crate::assets::entities::effects::declarations::FxDeclarations::load(
@@ -148,7 +170,6 @@ impl WorldFxSources {
                 }
             }
         }
-        let mut materials = std::collections::HashMap::new();
         let mut sound_events = HashMap::new();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
@@ -246,7 +267,7 @@ impl WorldFxSources {
                         .iter()
                         .filter(|fields| atom(fields, "m_enabled") != Some("false"))
                         .map(|fields| {
-                            ParticleDefinition::load(fields, catalog, library, &mut materials)
+                            ParticleDefinition::load(fields, catalog, library, resources)
                         })
                         .collect();
                     let other_families = fields
@@ -261,7 +282,16 @@ impl WorldFxSources {
                                         || atom(entries, "num").is_some_and(|count| count != "0")
                                 })
                         })
-                        .cloned()
+                        .map(|(family, value)| {
+                            let Value::Scope(fields) = value else { unreachable!() };
+                            let admission = descriptor_fields(fields).map(|descriptors|
+                                descriptors.iter().any(|fields| atom(fields, "m_enabled") != Some("false")));
+                            result.deferred_syntax_bytes += std::mem::size_of::<(String, Value)>()
+                                + family.len() + cloned_value_bytes(value);
+                            result.deferred_admission_bytes += std::mem::size_of::<(String, Result<bool, String>)>()
+                                + family.len() + admission.as_ref().err().map_or(0, |error| error.capacity());
+                            (family.clone(), admission)
+                        })
                         .collect();
                     children.extend(
                         asset

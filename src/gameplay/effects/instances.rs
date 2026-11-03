@@ -39,30 +39,43 @@ impl IndexMut<usize> for FxGraphInstances {
     }
 }
 impl FxGraphInstances {
-    pub fn new(roots: &[FxGraph], declarations: &FxDeclarations, seed: u64) -> Self {
+    /// Runtime references versus distinct immutable definitions (diagnostics).
+    pub fn definition_counts(&self) -> (usize, usize) {
+        let pointers: std::collections::HashSet<_> = self.runtimes.iter().flatten()
+            .map(|runtime| runtime.definition() as *const FxGraph).collect();
+        (self.runtimes.iter().flatten().count(), pointers.len())
+    }
+    pub fn new(roots: &[Arc<FxGraph>], declarations: &FxDeclarations, seed: u64) -> Self {
+        let _tag = crate::platform::allocation_tags::tag("FX graph instances");
         let random = Arc::new(Mutex::new(crate::random::MwcRandom::event_manager(seed)));
         let mut instances = Self::default();
         for root in roots {
-            instances.add(root.clone(), None, declarations, &random, &mut Vec::new());
+            instances.add(root.clone(), root.owner.clone(), None, declarations, &random, &mut Vec::new());
         }
         instances
     }
     fn add(
         &mut self,
-        graph: FxGraph,
+        graph: Arc<FxGraph>,
+        owner: String,
         parent: Option<(usize, u32)>,
         declarations: &FxDeclarations,
         random: &Arc<Mutex<crate::random::MwcRandom>>,
         path: &mut Vec<String>,
     ) -> usize {
+        // Diagnostic A/B retains the former per-instance deep-copy cost.
+        let graph = if std::env::var("DH2_DEBUG_SHARED_FX_GRAPHS").as_deref() == Ok("0") {
+            Arc::new((*graph).clone())
+        } else { graph };
         let children = graph
             .nodes
             .iter()
             .filter_map(|node| instance_declaration(node).map(|name| (node.id, name.to_owned())))
             .collect::<Vec<_>>();
-        let owner = graph.owner.clone();
+
         let index = self.runtimes.len();
         let mut runtime = FxGraphRuntime::new(graph, HashMap::new());
+        runtime.set_owner(owner.clone());
         runtime.random_owner = Some(random.clone());
         let effectful = runtime.definition().nodes.iter().any(|node| {
             matches!(
@@ -95,10 +108,9 @@ impl FxGraphInstances {
                 }
             });
             match definition {
-                Ok(mut graph) => {
-                    graph.owner = owner.clone();
+                Ok(graph) => {
                     path.push(name);
-                    let child = self.add(graph, Some((index, node)), declarations, random, path);
+                    let child = self.add(graph, owner.clone(), Some((index, node)), declarations, random, path);
                     path.pop();
                     let variables = self[child].as_ref().unwrap().variables.clone();
                     self[index]
@@ -204,11 +216,11 @@ impl FxGraphInstances {
                 {
                     let notify =
                         runtime.boolean_parameter(entry, "m_sendUpdateNotifications", true)?;
-                    let variables = runtime.definition().variables.clone();
-                    for variable in variables {
+                    let definition = runtime.shared_definition();
+                    for variable in &definition.variables {
                         let mut runtime = self[child].take().unwrap();
                         let result =
-                            runtime.refresh_variable(self[index].as_ref().unwrap(), id, &variable);
+                            runtime.refresh_variable(self[index].as_ref().unwrap(), id, variable);
                         self[child] = Some(runtime);
                         result?;
                         if notify {

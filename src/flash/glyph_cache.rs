@@ -15,9 +15,9 @@
 //!   Iggy embeds them, at tolerance `player+0x1e80 = 0.25`
 //!   (`FUN_14102b160`).
 //!
-//! Page texels are `(c, c, c, c)`: GDraw's glyph shaders (exe 0x229dac0,
-//! 0x229dd30) multiply the page's `.x` by the premultiplied colour, which the
-//! textured shader does with that texel.
+//! Page texels are R8 coverage (14107b7e0: format 6, mapped to R8_UNORM
+//! by GDraw). Glyph shaders (exe 0x229dac0, 0x229dd30) multiply the page's
+//! `.x` by the premultiplied colour.
 use crate::assets::iggy::shape::{PathPoint, Segment};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,8 +66,8 @@ pub struct Page {
     pub id: u64,
     pub width: u32,
     pub height: u32,
-    /// RGBA8, `(c, c, c, c)` per texel.
-    pub rgba: Vec<u8>,
+    /// R8_UNORM, one coverage byte per texel.
+    pub coverage: Vec<u8>,
     /// Changes whenever texels change.
     pub version: u64,
 }
@@ -107,9 +107,12 @@ pub struct GlyphCache {
 impl GlyphCache {
     pub fn new(caching: FontCaching) -> GlyphCache {
         let (w, h) = caching.page;
+        if std::env::var_os("DH2_TRACE_FONT_RESOURCES").is_some() {
+            eprintln!("Font glyph page: {w}x{h} coverage_bytes={} former_rgba_bytes={}", w as u64 * h as u64, w as u64 * h as u64 * 4);
+        }
         GlyphCache {
             caching,
-            page: Arc::new(Page { id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed), width: w, height: h, rgba: vec![0; (w * h * 4) as usize], version: 0 }),
+            page: Arc::new(Page { id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed), width: w, height: h, coverage: vec![0; (w * h) as usize], version: 0 }),
             shelves: Vec::new(),
             entries: HashMap::new(),
         }
@@ -187,8 +190,8 @@ impl GlyphCache {
                     continue;
                 }
                 let c = pixels[(row * stride + col) as usize];
-                let at = ((ty as u32 * page.width + tx as u32) * 4) as usize;
-                page.rgba[at..at + 4].copy_from_slice(&[c; 4]);
+                let at = (ty as u32 * page.width + tx as u32) as usize;
+                page.coverage[at] = c;
             }
         }
         page.version += 1;
@@ -232,7 +235,7 @@ impl GlyphCache {
                     self.shelves.clear();
                     self.entries.clear();
                     let page = Arc::make_mut(&mut self.page);
-                    page.rgba.iter_mut().for_each(|b| *b = 0);
+                    page.coverage.fill(0);
                     page.version += 1;
                     return self.place(w, h);
                 }

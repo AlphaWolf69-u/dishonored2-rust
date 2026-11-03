@@ -46,6 +46,15 @@ impl ScreenEffectSources {
         library: &mut ProgramLibrary,
         character: &str,
     ) -> Result<Self, String> {
+        Self::load_shared(catalog, library, character, &mut Default::default())
+    }
+
+    pub fn load_shared(
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        character: &str,
+        resources: &mut crate::rendering::particles::definition::ParticleResources,
+    ) -> Result<Self, String> {
         let declarations = crate::entities::player::player_declarations(character, |path| {
             catalog
                 .read(path)
@@ -58,7 +67,6 @@ impl ScreenEffectSources {
         let leave_water = atom(swimming, "m_leaveWaterFX").ok_or("player leave-water FX absent")?;
         let mut materials = Vec::new();
         let mut indices = HashMap::<String, usize>::new();
-        let mut particle_materials = HashMap::new();
         let mut load = |effect: &str| -> Result<EffectDefinition, String> {
             let mut read = |p: &str| catalog.read(p).ok().flatten();
             let fields = read_edit(&mut read, "fx", effect)?;
@@ -130,7 +138,7 @@ impl ScreenEffectSources {
                                 fields,
                                 catalog,
                                 library,
-                                &mut particle_materials,
+                                resources,
                             ),
                             _ => Err("particle FX descriptor requires a scope".into()),
                         })

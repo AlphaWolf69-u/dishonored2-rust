@@ -15,6 +15,146 @@ use std::{
     sync::Arc,
 };
 
+/// Level-scoped acquisition owner, shared by player and world effects. The
+/// original declarations/resources are immutable; only emitters own simulation
+/// state. These host caches never share a particle's age, RNG or pool slot.
+pub struct ParticleResources {
+    declarations: HashMap<String, Result<Arc<particle_declaration::ParticleDeclaration>, String>>,
+    models: HashMap<String, Arc<crate::assets::particle_model::ParticleModel>>,
+    field_images: HashMap<String, Arc<crate::assets::fx::particle_field::FieldPixels>>,
+    materials: HashMap<String, Arc<ParticleMaterial>>,
+    world_materials: HashMap<String, Result<bool, String>>,
+    pub declaration_requests: usize,
+    pub declaration_reads: usize,
+    pub model_reads: usize,
+    pub field_image_reads: usize,
+    pub material_reads: usize,
+    shared: bool,
+}
+impl Default for ParticleResources {
+    fn default() -> Self {
+        Self {
+            declarations: Default::default(),
+            models: Default::default(),
+            field_images: Default::default(),
+            materials: Default::default(),
+            world_materials: Default::default(),
+            declaration_requests: 0,
+            declaration_reads: 0,
+            model_reads: 0,
+            field_image_reads: 0,
+            material_reads: 0,
+            shared: true,
+        }
+    }
+}
+impl ParticleResources {
+    /// Diagnostic acquisition A/B; production always shares immutable assets.
+    pub fn debug_set_sharing(&mut self, shared: bool) {
+        self.shared = shared;
+    }
+    fn declaration(
+        &mut self,
+        catalog: &Catalog,
+        path: &str,
+    ) -> Result<Arc<particle_declaration::ParticleDeclaration>, String> {
+        self.declaration_requests += 1;
+        let key = path.replace('\\', "/").to_ascii_lowercase();
+        if self.shared {
+            if let Some(loaded) = self.declarations.get(&key) {
+                return loaded.clone();
+            }
+        }
+        self.declaration_reads += 1;
+        let _tag = crate::platform::allocation_tags::tag("particle definitions");
+        let loaded = (|| {
+            let mut read = |p: &str| catalog.read(p).ok().flatten();
+            let fields = read_edit(&mut read, "particledt", path)?;
+            let mut declaration = particle_declaration::declaration(&fields)
+                .map_err(|error| format!("{path}: {error}"))?;
+            // Emission meshes are dedicated PMODEL archive resources,
+            // independent of the ordinary rendered-prop mesh loader.
+            for stage in &mut declaration.stages {
+                for field in stage
+                    .spawn_fields
+                    .iter_mut()
+                    .chain(&mut stage.vector_fields)
+                    .chain(&mut stage.acceleration_fields)
+                {
+                    for texture in &mut field.textures {
+                        let Some(source) = &texture.source else {
+                            continue;
+                        };
+                        let resource = catalog
+                            .image_resource(source)
+                            .ok_or_else(|| format!("missing field image alias {source}"))?;
+                        if !self.field_images.contains_key(resource) {
+                            self.field_image_reads += 1;
+                            let bytes = catalog
+                                .read(resource)
+                                .map_err(|error| format!("{resource}: {error}"))?
+                                .ok_or_else(|| format!("missing field image {resource}"))?;
+                            self.field_images.insert(
+                                resource.to_owned(),
+                                Arc::new(
+                                    crate::assets::fx::particle_field::FieldPixels::read(&bytes)
+                                        .map_err(|error| format!("{resource}: {error}"))?,
+                                ),
+                            );
+                        }
+                        texture.pixels = Some(self.field_images[resource].clone());
+                    }
+                }
+                for (source, model) in [
+                    (&stage.spawn_mesh.source, &mut stage.spawn_mesh.model),
+                    (&stage.velocity_mesh.source, &mut stage.velocity_mesh.model),
+                ] {
+                    let Some(source) = source else { continue };
+                    let resource = crate::assets::particle_model::resource_path(source)?;
+                    if !self.models.contains_key(&resource) {
+                        self.model_reads += 1;
+                        let bytes = catalog
+                            .read(&resource)
+                            .map_err(|error| format!("{resource}: {error}"))?
+                            .ok_or_else(|| format!("missing particle emission mesh {resource}"))?;
+                        self.models.insert(
+                            resource.clone(),
+                            Arc::new(
+                                crate::assets::particle_model::parse(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?,
+                            ),
+                        );
+                    }
+                    *model = Some(self.models[&resource].clone());
+                }
+                for mesh in &mut stage.meshes {
+                    let Some(source) = &mesh.source else { continue };
+                    let resource = crate::assets::particle_model::resource_path(source)?;
+                    if !self.models.contains_key(&resource) {
+                        self.model_reads += 1;
+                        let bytes = catalog
+                            .read(&resource)
+                            .map_err(|error| format!("{resource}: {error}"))?
+                            .ok_or_else(|| format!("missing particle render mesh {resource}"))?;
+                        self.models.insert(
+                            resource.clone(),
+                            Arc::new(
+                                crate::assets::particle_model::parse(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?,
+                            ),
+                        );
+                    }
+                    mesh.model = Some(self.models[&resource].clone());
+                }
+            }
+
+            Ok(Arc::new(declaration))
+        })();
+        self.declarations.insert(key, loaded.clone());
+        loaded
+    }
+}
+
 #[derive(Clone)]
 pub struct ParticleDefinition {
     pub owner: Arc<particle_system::ParticleSystemAsset>,
@@ -30,88 +170,20 @@ impl ParticleDefinition {
         fields: &[(String, Value)],
         catalog: &Catalog,
         library: &mut ProgramLibrary,
-        material_cache: &mut HashMap<String, Arc<ParticleMaterial>>,
+        resources: &mut ParticleResources,
     ) -> Result<Self, String> {
         let owner = particle_system::particle_system(fields)?;
-        let mut models = HashMap::new();
-        let mut field_images = HashMap::new();
+        if !resources.shared {
+            resources.models.clear();
+            resources.field_images.clear();
+        }
         let declarations = owner
             .declarations
             .iter()
             .map(|path| {
-                let Some(path) = path else { return Ok(None) };
-                let mut read = |p: &str| catalog.read(p).ok().flatten();
-                let fields = read_edit(&mut read, "particledt", path)?;
-                let mut declaration = particle_declaration::declaration(&fields)
-                    .map_err(|error| format!("{path}: {error}"))?;
-                // Emission meshes are dedicated PMODEL archive resources,
-                // independent of the ordinary rendered-prop mesh loader.
-                for stage in &mut declaration.stages {
-                    for field in stage
-                        .spawn_fields
-                        .iter_mut()
-                        .chain(&mut stage.vector_fields)
-                        .chain(&mut stage.acceleration_fields)
-                    {
-                        for texture in &mut field.textures {
-                            let Some(source) = &texture.source else {
-                                continue;
-                            };
-                            let resource = catalog
-                                .image_resource(source)
-                                .ok_or_else(|| format!("missing field image alias {source}"))?;
-                            if !field_images.contains_key(resource) {
-                                let bytes = catalog
-                                    .read(resource)
-                                    .map_err(|error| format!("{resource}: {error}"))?
-                                    .ok_or_else(|| format!("missing field image {resource}"))?;
-                                field_images.insert(
-                                    resource.to_owned(),
-                                    Arc::new(
-                                        crate::assets::fx::particle_field::FieldPixels::read(
-                                            &bytes,
-                                        )
-                                        .map_err(|error| format!("{resource}: {error}"))?,
-                                    ),
-                                );
-                            }
-                            texture.pixels = Some(field_images[resource].clone());
-                        }
-                    }
-                    for (source, model) in [
-                        (&stage.spawn_mesh.source, &mut stage.spawn_mesh.model),
-                        (&stage.velocity_mesh.source, &mut stage.velocity_mesh.model),
-                    ] {
-                    let Some(source) = source else { continue };
-                    let resource = crate::assets::particle_model::resource_path(source)?;
-                    if !models.contains_key(&resource) {
-                        let bytes = catalog
-                            .read(&resource)
-                            .map_err(|error| format!("{resource}: {error}"))?
-                            .ok_or_else(|| format!("missing particle emission mesh {resource}"))?;
-                        models.insert(
-                            resource.clone(),
-                            Arc::new(
-                                crate::assets::particle_model::parse(&bytes)
-                                    .map_err(|error| format!("{resource}: {error}"))?,
-                            ),
-                        );
-                    }
-                    *model = Some(models[&resource].clone());
-                    }
-                    for mesh in &mut stage.meshes {
-                        let Some(source) = &mesh.source else { continue };
-                        let resource = crate::assets::particle_model::resource_path(source)?;
-                        if !models.contains_key(&resource) {
-                            let bytes = catalog.read(&resource).map_err(|error| format!("{resource}: {error}"))?
-                                .ok_or_else(|| format!("missing particle render mesh {resource}"))?;
-                            models.insert(resource.clone(), Arc::new(crate::assets::particle_model::parse(&bytes)
-                                .map_err(|error| format!("{resource}: {error}"))?));
-                        }
-                        mesh.model = Some(models[&resource].clone());
-                    }
-                }
-                Ok(Some(Arc::new(declaration)))
+                path.as_deref()
+                    .map(|path| resources.declaration(catalog, path))
+                    .transpose()
             })
             .collect::<Result<Vec<_>, String>>()?;
         let mut materials = HashMap::new();
@@ -120,13 +192,30 @@ impl ParticleDefinition {
             for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
                 for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
                     if let Some(name) = &mesh.material {
-                        if super::material::world_program(catalog, name)? {
+                        let key = name.replace('\\', "/").to_ascii_lowercase();
+                        if *resources
+                            .world_materials
+                            .entry(key)
+                            .or_insert_with(|| super::material::world_program(catalog, name))
+                            .as_ref()
+                            .map_err(Clone::clone)?
+                        {
                             world_mesh_materials.insert(name.clone());
                         }
                     }
                 }
-                let names = stage.sprites.iter().filter(|sprite| sprite.enabled).map(|sprite| &sprite.material)
-                    .chain(stage.meshes.iter().filter(|mesh| mesh.enabled).map(|mesh| &mesh.material));
+                let names = stage
+                    .sprites
+                    .iter()
+                    .filter(|sprite| sprite.enabled)
+                    .map(|sprite| &sprite.material)
+                    .chain(
+                        stage
+                            .meshes
+                            .iter()
+                            .filter(|mesh| mesh.enabled)
+                            .map(|mesh| &mesh.material),
+                    );
                 for material in names {
                     let Some(name) = material else {
                         continue;
@@ -134,13 +223,15 @@ impl ParticleDefinition {
                     if world_mesh_materials.contains(name) {
                         continue;
                     }
-                    if !material_cache.contains_key(name) {
-                        material_cache.insert(
-                            name.clone(),
+                    let key = name.replace('\\', "/").to_ascii_lowercase();
+                    if !resources.materials.contains_key(&key) {
+                        resources.material_reads += 1;
+                        resources.materials.insert(
+                            key.clone(),
                             Arc::new(ParticleMaterial::load(catalog, library, name)?),
                         );
                     }
-                    materials.insert(name.clone(), material_cache[name].clone());
+                    materials.insert(name.clone(), resources.materials[&key].clone());
                 }
             }
         }

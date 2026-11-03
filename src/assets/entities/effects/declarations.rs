@@ -7,7 +7,7 @@ use crate::{
         Value,
     },
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// Keep the reflected variable record intact until its runtime type consumes
 /// it. Entity lists and other values must not be coerced into scalar defaults.
@@ -20,7 +20,7 @@ pub struct GraphVariable {
 #[derive(Default)]
 pub struct FxDeclarations {
     /// First-reference order, including dependencies of nested declarations.
-    pub declarations: Vec<Result<FxGraph, String>>,
+    pub declarations: Vec<Result<Arc<FxGraph>, String>>,
     indices: HashMap<String, usize>,
 }
 
@@ -32,7 +32,7 @@ pub fn instance_declaration(node: &Node) -> Option<&str> {
 }
 
 impl FxDeclarations {
-    pub fn load(roots: &[FxGraph], catalog: &Catalog) -> Self {
+    pub fn load(roots: &[Arc<FxGraph>], catalog: &Catalog) -> Self {
         let mut declarations = Self::default();
         for graph in roots {
             declarations.load_dependencies(graph, catalog);
@@ -40,7 +40,7 @@ impl FxDeclarations {
         declarations
     }
 
-    pub fn get(&self, name: &str) -> Result<&FxGraph, String> {
+    pub fn get(&self, name: &str) -> Result<&Arc<FxGraph>, String> {
         let index = self
             .indices
             .get(name)
@@ -65,12 +65,13 @@ impl FxDeclarations {
             if let Ok(declaration) = &parsed {
                 self.load_dependencies(declaration, catalog);
             }
-            self.declarations[index] = parsed.map_err(|error| format!("{name}: {error}"));
+            self.declarations[index] = parsed.map(Arc::new).map_err(|error| format!("{name}: {error}"));
         }
     }
 }
 
 fn read_declaration(catalog: &Catalog, name: &str) -> Result<FxGraph, String> {
+    let _tag = crate::platform::allocation_tags::tag("FX graph definitions");
     let mut failure = None;
     let mut read = |path: &str| match catalog.read(path) {
         Ok(bytes) => bytes,

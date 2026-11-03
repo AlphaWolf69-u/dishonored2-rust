@@ -1,3 +1,6 @@
+#[path = "bin/tools/resource_audit.rs"]
+mod resource_audit;
+
 use dishonored2_rust::entities;
 use dishonored2_rust::world_mesh;
 
@@ -96,6 +99,9 @@ fn run() -> Result<()> {
     let base = Path::new(&args[2]);
     let entries = load_catalog(base)?;
     match args[1].as_str() {
+        "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" => {
+            resource_audit::run(&args[1], base, &args[3..])?;
+        }
         "summary" => {
             let mut by_group = [0usize; 4];
             let mut by_kind = BTreeMap::<&str, usize>::new();

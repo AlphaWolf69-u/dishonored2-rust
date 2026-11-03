@@ -2,6 +2,97 @@
 use super::shape::{shape_body, Shape};
 use super::timeline::kind;
 use super::{IggyFile, Result};
+use std::{cell::OnceCell, rc::Rc};
+
+/// Name/style lookups read only the font header, never its outline table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontMetadata {
+    pub name: String,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Host decoding cache over the installed glyph table. The original provider
+/// (14102bd60/14102ba20) reads that table in place; decoding every outline when
+/// registering a library unnecessarily duplicates outlines never displayed.
+#[derive(Clone, Debug)]
+pub struct GlyphOutlines(Rc<OutlineStorage>);
+
+#[derive(Debug)]
+struct OutlineStorage {
+    source: Option<(Rc<IggyFile>, usize)>,
+    glyphs: Vec<OnceCell<Result<Shape>>>,
+}
+
+impl GlyphOutlines {
+    pub fn len(&self) -> usize {
+        self.0.glyphs.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.glyphs.is_empty()
+    }
+    /// 14102ba20/LAB_14102bb10 read the first path's bounds directly. Text
+    /// measurement must not decode all the points of an undrawn glyph.
+    pub fn first_bounds(&self, index: usize) -> Option<[f32; 4]> {
+        self.0.glyphs.get(index)?;
+        if let Some((file, id)) = &self.0.source {
+            let font = file.character(*id).ok()??;
+            let glyph = font.ptr(0x30).ok()??.at(index * 0x20);
+            if glyph.i16(8).ok()? <= 0 {
+                return None;
+            }
+            let path = glyph.ptr(0x18).ok()??;
+            Some([
+                path.f32(0).ok()?,
+                path.f32(4).ok()?,
+                path.f32(8).ok()?,
+                path.f32(12).ok()?,
+            ])
+        } else {
+            self.get(index)?.layers.first().map(|layer| layer.bounds)
+        }
+    }
+    pub fn get(&self, index: usize) -> Option<&Shape> {
+        self.0
+            .glyphs
+            .get(index)?
+            .get_or_init(|| {
+                let _tag = crate::platform::allocation_tags::tag("font outlines");
+                let (file, id) = self.0.source.as_ref().expect("eager glyph initialized");
+                let record = file
+                    .character(*id)?
+                    .ok_or(super::Error::Corrupt("font record absent"))?;
+                let glyphs = record
+                    .ptr(0x30)?
+                    .ok_or(super::Error::Corrupt("font outlines absent"))?;
+                shape_body([0.; 4], glyphs.at(index * 0x20))
+            })
+            .as_ref()
+            .ok()
+    }
+    pub fn decoded_count(&self) -> usize {
+        self.0
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.get().is_some())
+            .count()
+    }
+}
+
+impl std::ops::Index<usize> for GlyphOutlines {
+    type Output = Shape;
+    fn index(&self, index: usize) -> &Shape {
+        self.get(index).expect("font glyph outline unavailable")
+    }
+}
+
+impl PartialEq for GlyphOutlines {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+            || self.len() == other.len()
+                && (0..self.len()).all(|index| self.get(index) == other.get(index))
+    }
+}
 
 /// DefineFont3 metrics are stored in 1/20480 em units.
 const EM_UNITS_V3: f32 = 1.0 / 20480.0;
@@ -27,7 +118,7 @@ pub struct Font {
     /// Advance of each glyph in em units.
     pub advances: Vec<f32>,
     /// Glyph outlines in em units, y down.
-    pub glyphs: Vec<Shape>,
+    pub glyphs: GlyphOutlines,
     /// Kerning (code1, code2) -> em adjustment.
     pub kerning: Vec<(u16, u16, f32)>,
 }
@@ -42,18 +133,60 @@ impl Font {
     }
 
     pub fn kerning(&self, a: u16, b: u16) -> f32 {
-        self.kerning.iter().find(|k| k.0 == a && k.1 == b).map_or(0.0, |k| k.2)
+        self.kerning
+            .iter()
+            .find(|k| k.0 == a && k.1 == b)
+            .map_or(0.0, |k| k.2)
     }
 }
 
 impl IggyFile {
+    pub fn font_metadata(&self, id: usize) -> Result<Option<FontMetadata>> {
+        let Some(rec) = self.character(id)? else {
+            return Ok(None);
+        };
+        if rec.u8(0)? != kind::FONT {
+            return Ok(None);
+        }
+        Ok(Some(FontMetadata {
+            name: rec
+                .ptr(0x80)?
+                .map(|n| n.wide_str())
+                .transpose()?
+                .unwrap_or_default(),
+            bold: rec.u8(0x98)? != 0,
+            italic: rec.u8(0x99)? != 0,
+        }))
+    }
+
+    /// Share the library's source bytes and decode only requested glyphs.
+    pub fn shared_font(self: &Rc<Self>, id: usize) -> Result<Option<Font>> {
+        // Acquisition A/B uses the same player and immutable source bytes.
+        if std::env::var("DH2_DEBUG_EAGER_FONT_OUTLINES").as_deref() == Ok("1") {
+            self.read_font(id, None)
+        } else {
+            self.read_font(id, Some(self.clone()))
+        }
+    }
+
     pub fn font(&self, id: usize) -> Result<Option<Font>> {
-        let Some(rec) = self.character(id)? else { return Ok(None) };
+        self.read_font(id, None)
+    }
+
+    fn read_font(&self, id: usize, source: Option<Rc<Self>>) -> Result<Option<Font>> {
+        let _tag = crate::platform::allocation_tags::tag("font records");
+        let Some(rec) = self.character(id)? else {
+            return Ok(None);
+        };
         if rec.u8(0)? != kind::FONT {
             return Ok(None);
         }
         let count = rec.u16(0x20)? as usize;
-        let units = if rec.u8(0x28)? >= 3 { EM_UNITS_V3 } else { EM_UNITS };
+        let units = if rec.u8(0x28)? >= 3 {
+            EM_UNITS_V3
+        } else {
+            EM_UNITS
+        };
         let mut codes = Vec::with_capacity(count);
         let mut advances = Vec::with_capacity(count);
         let mut glyphs = Vec::with_capacity(count);
@@ -69,7 +202,12 @@ impl IggyFile {
         }
         if let Some(g) = rec.ptr(0x30)? {
             for i in 0..count {
-                glyphs.push(shape_body([0.0; 4], g.at(0x20 * i))?);
+                let cell = OnceCell::new();
+                if source.is_none() {
+                    let _tag = crate::platform::allocation_tags::tag("font outlines");
+                    let _ = cell.set(Ok(shape_body([0.0; 4], g.at(0x20 * i))?));
+                }
+                glyphs.push(cell);
             }
         }
         let mut kerning = Vec::new();
@@ -80,7 +218,11 @@ impl IggyFile {
             }
         }
         Ok(Some(Font {
-            name: rec.ptr(0x80)?.map(|n| n.wide_str()).transpose()?.unwrap_or_default(),
+            name: rec
+                .ptr(0x80)?
+                .map(|n| n.wide_str())
+                .transpose()?
+                .unwrap_or_default(),
             bold: rec.u8(0x98)? != 0,
             italic: rec.u8(0x99)? != 0,
             ascent: rec.i16(0x22)? as f32 * units,
@@ -91,7 +233,10 @@ impl IggyFile {
             union_ymax: rec.f32(0x58)?,
             codes,
             advances,
-            glyphs,
+            glyphs: GlyphOutlines(Rc::new(OutlineStorage {
+                source: source.map(|file| (file, id)),
+                glyphs,
+            })),
             kerning,
         }))
     }
@@ -137,12 +282,19 @@ impl EditText {
 
 impl IggyFile {
     pub fn edit_text(&self, id: usize) -> Result<Option<EditText>> {
-        let Some(rec) = self.character(id)? else { return Ok(None) };
+        let Some(rec) = self.character(id)? else {
+            return Ok(None);
+        };
         if rec.u8(0)? != kind::EDIT_TEXT {
             return Ok(None);
         }
         Ok(Some(EditText {
-            bounds: [rec.f32(0x20)?, rec.f32(0x24)?, rec.f32(0x28)?, rec.f32(0x2c)?],
+            bounds: [
+                rec.f32(0x20)?,
+                rec.f32(0x24)?,
+                rec.f32(0x28)?,
+                rec.f32(0x2c)?,
+            ],
             flags: rec.u16(0x30)?,
             font_class: rec.ptr(0x38)?.map(|n| n.wide_str()).transpose()?,
             colour: rec.bytes(0x40, 4)?.try_into().unwrap(),

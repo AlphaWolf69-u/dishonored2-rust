@@ -18,7 +18,7 @@ pub fn init_text(vm: &mut Vm, o: &Obj, file: &IggyFile, id: usize) -> Result<()>
         let shared = player::state(vm);
         let p = shared.borrow();
         let c = p.character_for_class(class)?;
-        p.file(c.library).font(c.id as usize).ok().flatten()
+        p.file(c.library).font_metadata(c.id as usize).ok().flatten()
     });
     let text = r.text.clone().map(|text| super::iggy_functions::substitute(vm, &text));
     let fonts = fonts(vm);

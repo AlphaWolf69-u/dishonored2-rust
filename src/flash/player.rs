@@ -99,13 +99,14 @@ impl PlayerState {
             .map_err(|e| super::avm2::Error::Internal(e.to_string()))?
             .into_iter()
             .collect();
+        let file = Rc::new(file);
         let count = file.movie().map(|m| m.character_count).unwrap_or(0) as usize;
         for id in 0..count {
-            if let Ok(Some(font)) = file.font(id) {
+            if let Ok(Some(font)) = file.shared_font(id) {
                 self.fonts.push(Rc::new(font));
             }
         }
-        self.libraries.push(Library { name, file: Rc::new(file), unit, symbols, timelines: RefCell::default() });
+        self.libraries.push(Library { name, file, unit, symbols, timelines: RefCell::default() });
         Ok(self.libraries.len() - 1)
     }
 

@@ -159,7 +159,10 @@ pub trait GraphInputs {
             other => Err(format!("unsupported entity binding {other}, port {port}")),
         }
     }
+    /// Mutable node values belong to the instance, not its shared definition.
+    fn boolean_override(&self, _node: &Node, _name: &str) -> Option<bool> { None }
     fn boolean_parameter(&self, node: &Node, name: &str, default: bool) -> Result<bool, String> {
+        if let Some(value) = self.boolean_override(node, name) { return Ok(value); }
         match atom(&node.params, name) {
             None => Ok(default),
             Some("true") => Ok(true),

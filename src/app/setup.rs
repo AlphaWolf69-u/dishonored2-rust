@@ -1716,6 +1716,7 @@ pub(super) fn setup(
     commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     commands.insert_resource(std::mem::take(&mut resolver.vegetation));
+    let mut particle_resources = crate::rendering::particles::definition::ParticleResources::default();
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
         let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
@@ -1726,8 +1727,8 @@ pub(super) fn setup(
         commands.insert_resource(crate::rendering::bevy_backend::ocean_scene::OceanSources::load(catalog,programs)
             .unwrap_or_else(|error|panic!("ocean programs: {error}")));
         commands.insert_resource(crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials(Some(Arc::new(
-            crate::rendering::bevy_backend::screen_effects::ScreenEffectSources::load(catalog,programs,
-                super::player::character_name(super::pause_menu::debug_character()))
+            crate::rendering::bevy_backend::screen_effects::ScreenEffectSources::load_shared(catalog,programs,
+                super::player::character_name(super::pause_menu::debug_character()), &mut particle_resources)
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
     }
@@ -1738,7 +1739,7 @@ pub(super) fn setup(
         let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
             .unwrap_or_else(|error| panic!("world FX program library: {error}"));
         let sources = Arc::new(
-            crate::rendering::particles::world_sources::WorldFxSources::load(&graphs.graphs,&graphs.actors,catalog,programs)
+            crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
         particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectDefinitions {
-    pub graphs: Arc<Vec<crate::assets::entities::effects::FxGraph>>,
+    pub graphs: Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>,
     pub actors: Arc<Vec<crate::assets::entities::effects::actors::ActorDefinition>>,
     pub seed: u64,
 }

@@ -61,7 +61,11 @@ fn flash_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // GDraw's textured shader (exe 0x229ce80): the multiplier with its rgb
     // scaled by its alpha, the offset scaled by the result's alpha, rgb no
     // more than alpha; blended ONE, INV_SRC_ALPHA.
-    let texel = textureSample(fill_texture, fill_sampler, uv);
+    var texel = textureSample(fill_texture, fill_sampler, uv);
+    if mode == 4u {
+        // GDraw's glyph programs read only the R8 page's red channel.
+        texel = vec4(texel.r);
+    }
     let r = texel * vec4(in.mul.rgb * in.mul.a, in.mul.a);
     return vec4(min(vec3(r.a), r.rgb + in.add.rgb * r.a), r.a);
 }

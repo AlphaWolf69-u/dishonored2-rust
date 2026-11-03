@@ -355,6 +355,10 @@ impl Programs {
 }
 
 fn upload(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, rgba: &[u8]) -> (Texture, TextureView) {
+    upload_format(device, queue, width, height, TextureFormat::Rgba8Unorm, rgba)
+}
+
+fn upload_format(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> (Texture, TextureView) {
     let texture = device.create_texture_with_data(
         queue,
         &TextureDescriptor {
@@ -363,12 +367,12 @@ fn upload(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, r
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
+            format,
             usage: TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         },
         TextureDataOrder::MipMajor,
-        rgba,
+        pixels,
     );
     let view = texture.create_view(&TextureViewDescriptor::default());
     (texture, view)
@@ -475,7 +479,16 @@ fn render_flash_ui(
                 None => continue,
             },
             TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
-                Some(page) => upload(&device, &queue, page.width, page.height, &page.rgba),
+                Some(page) => {
+                    // Diagnostic A/B of the former RGBA expansion. Glyph
+                    // sampling and every draw remain identical in both modes.
+                    if std::env::var("DH2_DEBUG_GLYPH_RGBA").as_deref() == Ok("1") {
+                        let rgba = page.coverage.iter().flat_map(|&coverage| [coverage; 4]).collect::<Vec<_>>();
+                        upload(&device, &queue, page.width, page.height, &rgba)
+                    } else {
+                        upload_format(&device, &queue, page.width, page.height, TextureFormat::R8Unorm, &page.coverage)
+                    }
+                },
                 None => continue,
             },
         };

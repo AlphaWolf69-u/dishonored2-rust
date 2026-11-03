@@ -114,7 +114,8 @@ pub(super) fn parse_graph(owner: String, fields: &[(String, Value)]) -> Result<F
     Ok(FxGraph { owner, nodes, effects, variables })
 }
 
-pub fn load(document: &Document) -> Result<Vec<FxGraph>, String> {
+pub fn load(document: &Document) -> Result<Vec<std::sync::Arc<FxGraph>>, String> {
+    let _tag = crate::platform::allocation_tags::tag("FX graph definitions");
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         let fields = child(child(&entity.fields, "edit"), "m_kiscule");
@@ -122,7 +123,7 @@ pub fn load(document: &Document) -> Result<Vec<FxGraph>, String> {
             matches!(super::event_graph::atom(node, "m_name"),
                 Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance")));
         if relevant {
-            result.push(parse_graph(entity.id.clone(), fields)?);
+            result.push(std::sync::Arc::new(parse_graph(entity.id.clone(), fields)?));
         }
     }
     Ok(result)

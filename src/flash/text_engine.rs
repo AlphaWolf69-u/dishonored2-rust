@@ -109,7 +109,7 @@ fn metrics(font: &Font) -> [f32; 5] {
         .iter()
         .map(|&c| glyph_index(font, c))
         .find(|&g| g >= 1)
-        .and_then(|g| font.glyphs.get(g as usize)?.layers.first().map(|l| l.bounds[2] - l.bounds[0]))
+        .and_then(|g| font.glyphs.first_bounds(g as usize).map(|bounds| bounds[2] - bounds[0]))
         .unwrap_or(1.0);
     [ascent, descent, leading, unit, font.union_ymax]
 }
@@ -134,10 +134,11 @@ struct GlyphMetrics {
 }
 
 fn glyph_metrics(font: &Font, g: i32) -> GlyphMetrics {
-    let Some(shape) = font.glyphs.get(g as usize) else { return GlyphMetrics { empty: true, ..Default::default() } };
-    let bounds = shape.layers.first().map_or([0.0; 4], |l| l.bounds);
+    if g < 0 || g as usize >= font.glyphs.len() { return GlyphMetrics { empty: true, ..Default::default() }; }
+    let first = font.glyphs.first_bounds(g as usize);
+    let bounds = first.unwrap_or([0.; 4]);
     let advance = font.advances.get(g as usize).copied().unwrap_or(bounds[2]);
-    GlyphMetrics { xmin: bounds[0], xmax: bounds[2], ymax: bounds[3], advance, empty: shape.layers.is_empty() }
+    GlyphMetrics { xmin: bounds[0], xmax: bounds[2], ymax: bounds[3], advance, empty: first.is_none() }
 }
 
 /// `FUN_141031af0`.

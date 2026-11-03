@@ -81,7 +81,7 @@ trailing `*` covers a family of kinds.
 | `explosion` | none | none: no owner yet |
 | `fade` | none | none: no owner yet |
 | `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the remaining decoded Tome tables (links, cell codes, object data) are still copies |
-| `Font` | `flash::text` | partial: reads its resources; lifecycle not ported (see its class) |
+| `Font` | `assets::iggy::font`, `flash::text` | partial: metadata reads do not decode glyphs; host outline caches decode only requested glyphs over shared library bytes (original provider `14102bd60` / metric reader `14102ba20` reads serialized tables). Glyph pages use R8_UNORM as `14107b7e0` format 6; full lifecycle not ported |
 | `footStepPhysMat` | none | none: no owner yet |
 | `fx` | `rendering::particles::world_sources`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
 | `fxactor` | `assets::entities::effects::actors` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -98,7 +98,7 @@ trailing `*` covers a family of kinds.
 | `inventoryLoadout` | none | none: no owner yet |
 | `jointInfo` | none | none: no owner yet |
 | `jumpProfile` | none | none: no owner yet |
-| `kiscule` | `assets::entities::effects::declarations` | partial: reads its resources; lifecycle not ported (see its class) |
+| `kiscule` | `assets::entities::effects::declarations` | partial: level and declaration graph definitions shared by Arc; runtime variables, gate values, owner overrides and queues stay instance-local (`7bc1d0`/`7bb9d0`). Host ownership optimization; full lifecycle not ported |
 | `layer` | none | none: no owner yet |
 | `loco` | none | none: no owner yet |
 | `mapInfo` | `gameplay::map_info` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -113,7 +113,7 @@ trailing `*` covers a family of kinds.
 | `navmeshLayerSettings` | none | none: no owner yet |
 | `navmeshMapSettings` | none | none: no owner yet |
 | `NPCVariationDef` | none | none: no owner yet |
-| `particledt` | `rendering::particles::definition` | partial: reads its resources; lifecycle not ported (see its class) |
+| `particledt` | `rendering::particles::definition::ParticleResources` | partial: one level-scoped host acquisition cache for declarations, PMODELs, field images and material references across player/world FX; emitters retain independent mutable simulation. Full original resource lifecycle not ported |
 | `pauseMenuSectionOptions` | `gameplay::options` | partial: reads its resources; lifecycle not ported (see its class) |
 | `pblock` | `rendering::render_program` | partial: reads its resources; lifecycle not ported (see its class) |
 | `physhape` | `assets::physworld` | partial: reads its resources; lifecycle not ported (see its class) |

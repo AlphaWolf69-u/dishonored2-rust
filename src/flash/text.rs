@@ -550,5 +550,5 @@ pub fn font_name_of_class(vm: &Vm, this: &Value) -> Option<String> {
     let shared = player::state(vm);
     let p = shared.borrow();
     let c = p.character_for_class(&qualified)?;
-    p.file(c.library).font(c.id as usize).ok().flatten().map(|f| f.name)
+    p.file(c.library).font_metadata(c.id as usize).ok().flatten().map(|f| f.name)
 }

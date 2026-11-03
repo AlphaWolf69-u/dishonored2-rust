@@ -93,14 +93,9 @@ fn admit(
         return Ok(());
     }
     for group in &definition.groups {
-        for (family, value) in &group.other_families {
-            if let crate::assets::entities::Value::Scope(fields) = value {
-                if crate::rendering::particles::world_sources::descriptor_fields(fields)?
-                    .iter()
-                    .any(|fields| atom(fields, "m_enabled") != Some("false"))
-                {
-                    return Err(format!("{name}: world FX family {family} is not connected"));
-                }
+        for (family, admission) in &group.other_families {
+            if *admission.as_ref().map_err(Clone::clone)? {
+                return Err(format!("{name}: world FX family {family} is not connected"));
             }
         }
         for sound in &group.sounds {
@@ -281,7 +276,7 @@ pub(super) fn start_groups(
     Ok(())
 }
 pub(crate) struct WorldParticleState {
-    source: Option<Arc<Vec<crate::assets::entities::effects::FxGraph>>>,
+    source: Option<Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>>,
     sounds: Option<super::world_sounds::WorldSounds>,
     sound_systems: crate::gameplay::effects::sound::systems::SoundSystems<
         crate::gameplay::sound::Emitter,

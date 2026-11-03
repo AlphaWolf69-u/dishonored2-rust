@@ -23,6 +23,8 @@ pub mod mode {
     pub const FOCAL: u32 = 2;
     /// Texture coordinates into a premultiplied gradient ramp.
     pub const LINEAR_RAMP: u32 = 3;
+    /// GDraw's glyph program replicates its R8 coverage into RGBA.
+    pub const GLYPH: u32 = 4;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -499,7 +501,7 @@ impl Builder<'_> {
         let add = c.add.map(|v| v as f32 / 255.0);
         let corner = |x: f32, y: f32, u: f32, v: f32| {
             let (px, py) = gm.apply(x as f64, y as f64);
-            Vertex { position: [px as f32, py as f32], uv: [u, v], mul, add, params: [mode::TEXTURE as f32, 0.0], w: 1.0 }
+            Vertex { position: [px as f32, py as f32], uv: [u, v], mul, add, params: [mode::GLYPH as f32, 0.0], w: 1.0 }
         };
         let (a, b, cc, d) = (corner(q0, q1, u0, v0), corner(q2, q1, u1, v0), corner(q2, q3, u1, v1), corner(q0, q3, u0, v1));
         self.push(Texture::Glyphs(0), false, true, blend, [a, b, cc, a, cc, d]);
@@ -806,6 +808,10 @@ pub fn draw_list_cached(vm: &Vm, cache: &mut Cache) -> DrawList {
 /// Diagnostic draw list that ignores `visible` (inspection of hidden screens).
 pub fn debug_draw_all(vm: &Vm) -> DrawList {
     build(vm, &mut Cache::default(), true)
+}
+
+pub fn debug_draw_all_cached(vm: &Vm, cache: &mut Cache) -> DrawList {
+    build(vm, cache, true)
 }
 
 fn build(vm: &Vm, cache: &mut Cache, debug_ignore_visibility: bool) -> DrawList {

@@ -63,7 +63,8 @@ pub enum GraphStep {
     Action { schedule: Option<u32> },
 }
 pub struct FxGraphRuntime {
-    graph: FxGraph,
+    graph: Arc<FxGraph>,
+    owner: String,
     relevant: HashSet<u32>,
     pending: Vec<(u32, u32)>,
     random: HashMap<u32, f32>,
@@ -71,15 +72,20 @@ pub struct FxGraphRuntime {
     pub(super) variables: SharedVariables,
     pub(super) children: HashMap<u32, SharedVariables>,
     gates: HashMap<u32, GateState>,
+    gate_open: HashMap<u32, bool>,
     effects: HashMap<u32, FxNode>,
     entity_effects: HashMap<u32, super::entity_node::EntityFxNode>,
 }
 impl GraphInputs for FxGraphRuntime {
+    fn boolean_override(&self, node: &Node, name: &str) -> Option<bool> {
+        (node.class == "arkKisculeNodeGate" && name == "m_isOpen")
+            .then(|| self.gate_open.get(&node.id).copied()).flatten()
+    }
     fn graph_nodes(&self) -> &[Node] {
         &self.graph.nodes
     }
     fn graph_owner(&self) -> &str {
-        &self.graph.owner
+        &self.owner
     }
     fn random_sample(&self, node: u32) -> Option<f32> {
         self.random.get(&node).copied()
@@ -148,10 +154,12 @@ impl GraphInputs for FxGraphRuntime {
 impl FxGraphRuntime {
     /// Random inputs come from the graph manager's existing RNG preparation.
     /// Constructing this domain owner does not seed another random generator.
-    pub fn new(graph: FxGraph, random: HashMap<u32, f32>) -> Self {
+    pub fn new(graph: impl Into<Arc<FxGraph>>, random: HashMap<u32, f32>) -> Self {
+        let graph = graph.into();
         let relevant = Self::relevant_nodes(&graph, graph.effects.keys().copied().collect());
         let variables = Arc::new(RwLock::new(GraphVariables::new(&graph.variables)));
         Self {
+            owner: graph.owner.clone(),
             graph,
             relevant,
             random,
@@ -160,10 +168,12 @@ impl FxGraphRuntime {
             children: HashMap::new(),
             pending: Vec::new(),
             gates: HashMap::new(),
+            gate_open: HashMap::new(),
             effects: HashMap::new(),
             entity_effects: HashMap::new(),
         }
     }
+    pub(super) fn set_owner(&mut self, owner: String) { self.owner = owner; }
     fn relevant_nodes(graph: &FxGraph, mut relevant: HashSet<u32>) -> HashSet<u32> {
         loop {
             let previous = relevant.len();
@@ -203,6 +213,7 @@ impl FxGraphRuntime {
     pub(super) fn definition(&self) -> &FxGraph {
         &self.graph
     }
+    pub(super) fn shared_definition(&self) -> Arc<FxGraph> { self.graph.clone() }
     pub(super) fn refresh_variable(
         &mut self,
         parent: &Self,
@@ -527,19 +538,8 @@ impl GateContext for GateInvocation<'_> {
             .integer_input(self.graph.node(self.id)?, "m_autoCloseCount", -1)
     }
     fn set_open(&mut self, value: bool) -> Result<(), String> {
-        let node = self
-            .graph
-            .graph
-            .nodes
-            .iter_mut()
-            .find(|n| n.id == self.id)
-            .ok_or("gate node absent")?;
-        let value = Value::Atom(if value { "true" } else { "false" }.into());
-        if let Some((_, current)) = node.params.iter_mut().find(|(key, _)| key == "m_isOpen") {
-            *current = value;
-        } else {
-            node.params.push(("m_isOpen".into(), value));
-        }
+        self.graph.node(self.id)?;
+        self.graph.gate_open.insert(self.id, value);
         Ok(())
     }
     fn emit(&mut self, output: GateOutput) -> Result<(), String> {
@@ -624,7 +624,7 @@ impl<W: FxGraphWorld> FxNodeWorld for FxInvocation<'_, W> {
             parameters.stop_on_parent_removal,
         )?;
         self.world.spawn_effect(
-            &self.graph.graph.owner,
+            &self.graph.owner,
             self.id,
             &parameters,
             state,
@@ -634,7 +634,7 @@ impl<W: FxGraphWorld> FxNodeWorld for FxInvocation<'_, W> {
     fn stop_effect(&mut self, state: &mut FxNode, handle: u32) -> Result<(), String> {
         if self
             .world
-            .stop_effect(&self.graph.graph.owner, self.id, handle)?
+            .stop_effect(&self.graph.owner, self.id, handle)?
         {
             state.effect_completed(handle, self)?;
         }
