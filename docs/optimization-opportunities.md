@@ -7,6 +7,7 @@ Remove an entry when it is implemented and measured.
 
 | Opportunity | Where | Gain | Keeps | Status |
 |---|---|---|---|---|
+| Static collision kept as installed hknp compressed meshes, decoded per query | `gameplay::navigation`, `assets::physworld` | memory: about 216 MB resident at eotw level ready (the 1.55M-triangle copy and its 4 m cell hash) | identical triangles, materials and filters per query (checked on 400 eotw probes) | decided 2026-11-03: keep the decoded triangles. Per-query decoding cost 391 ms/s of CPU on the walk against about 10 ms/s for the copy; a later version walking the mesh's hkcdSimdTree (FUN_141262020: 112-byte nodes, leaves `section << 9 \| primitive << 1 \| 1`) was never measured in game. Revisit only with a cost close to the copy's |
 | Prepare the level's listed sound events on all cores | `app::audio::prepare_all` | load: 31 s single-threaded estimate to the measured parallel time (release) | the same prepared events and media | implemented 2026-10-28 (the original prepares them on its load thread) |
 | Upload a texture's subresources from one staging buffer | `vendor/bevy_render` `RenderDevice::create_texture_with_data` | peak memory: 4.4 GB of D3D12 staging at level ready (64 KiB minimum per write) | identical texels (`texture_upload_tests`) | implemented 2026-10-31 (9f02587): staging at level ready 158 -> 17 MB |
 | Build the world geometry and materials on several threads | `app::setup` world object loop | load: 55-113 s debug, 8 s release single-threaded | the same meshes, materials and instance order | recorded |
