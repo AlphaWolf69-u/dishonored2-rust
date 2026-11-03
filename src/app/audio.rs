@@ -276,6 +276,15 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
 
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
+    if registry.preloaded { return; }
+    let mut commands = super::setup_commands::SetupCommands::Direct(commands);
+    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands);
+}
+
+fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
+    engine: &mut bevy_backend::Engine,
+    outputs: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<bevy_backend::OutputAudio>,
+    commands: &mut super::setup_commands::SetupCommands) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = crate::assets::installation::game_base()?;
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
@@ -395,6 +404,9 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
 /// prepared here, on all cores, instead of on the main thread at its first
 /// post.
 fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
+    if !registry.preloaded { prepare_listed_events(&mut registry); }
+}
+fn prepare_listed_events(registry: &mut WwiseRegistry) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
@@ -424,7 +436,7 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
             return warn!("Level sound events not preloaded: {error}");
         }
     };
-    let count = prepare_all(&mut registry, &events);
+    let count = prepare_all(registry, &events);
     registry.preloaded = true;
     crate::loading::complete(LISTED_SOUNDS_GATE);
     super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
@@ -647,4 +659,34 @@ fn update_playing_volume(
     });
     *previous_pause = world_paused;
     mix.generation = generation;
+}
+
+
+/// Move the session owner's acquisition data to the loading worker while map
+/// sound systems are suspended. The existing output callback keeps its Arc;
+/// no bank/media copy or second audio output is made. Empty slots retain the
+/// ECS resource identities until the same owner data is published back.
+pub(super) struct AudioPreparation {
+    registry: WwiseRegistry, mix: AudioMix, engine: bevy_backend::Engine,
+    outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch<bevy_backend::OutputAudio>,
+}
+impl AudioPreparation {
+    pub fn take(world: &mut World) -> Self {
+        Self {
+            registry: std::mem::take(&mut *world.resource_mut::<WwiseRegistry>()),
+            mix: std::mem::take(&mut *world.resource_mut::<AudioMix>()),
+            engine: std::mem::take(&mut *world.resource_mut::<bevy_backend::Engine>()),
+            outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch::new(world.resource::<Assets<bevy_backend::OutputAudio>>()),
+        }
+    }
+    pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands) {
+        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
+        prepare_listed_events(&mut self.registry);
+    }
+    pub fn publish(self, world: &mut World) {
+        world.insert_resource(self.registry);
+        world.insert_resource(self.mix);
+        world.insert_resource(self.engine);
+        self.outputs.publish(&mut world.resource_mut::<Assets<bevy_backend::OutputAudio>>());
+    }
 }

@@ -1,4 +1,5 @@
 //! Level-owned atmosphere inputs and resident images, loaded from archives.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{archive, resident_images::prepare_image};
 use crate::rendering::{
     environment::AreaEnvironment,
@@ -62,7 +63,7 @@ impl FogScene {
         areas: &[AreaEnvironment],
         sun: Option<(Vec3, Vec3)>,
         far_clip: f32,
-        images: &mut Assets<Image>,
+        images: &mut dyn AssetWrite<Image>,
     ) -> Result<Self, String> {
         let mut shadow_options = Vec::new();
         for path in [
@@ -185,7 +186,7 @@ impl FogScene {
         &mut self,
         catalog: &archive::Catalog,
         name: &str,
-        images: &mut Assets<Image>,
+        images: &mut dyn AssetWrite<Image>,
     ) -> Result<std::sync::Arc<PreparedEnvironmentProfile<Handle<Image>>>, String> {
         let resident = &mut self.resident;
         let aliases = &mut self.images;
@@ -254,7 +255,7 @@ impl FogScene {
     pub(super) fn upload_volumes(
         &mut self,
         sources: Vec<super::fog_volumes::AreaFogSource>,
-        meshes: &mut Assets<Mesh>,
+        meshes: &mut dyn AssetWrite<Mesh>,
     ) {
         self.volumes = sources
             .into_iter()

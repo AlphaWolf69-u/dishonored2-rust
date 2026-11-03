@@ -12,6 +12,7 @@ pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;
 pub mod decal;
+pub mod fade;
 
 pub struct EnvironmentEffectAsset {
     pub name: String,

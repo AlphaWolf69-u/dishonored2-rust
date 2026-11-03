@@ -1,4 +1,5 @@
 //! Full-mip resident images resolved through the installed archive image loader.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{
     archive,
     texture_streaming::{TextureReadTarget, read_streamed_diffuse_at_target},
@@ -9,7 +10,7 @@ use std::collections::HashMap;
 pub(super) fn prepare_image(
     catalog: &archive::Catalog,
     name: &str,
-    images: &mut Assets<Image>,
+    images: &mut dyn AssetWrite<Image>,
     resident: &mut HashMap<String, Handle<Image>>,
     aliases: &mut HashMap<String, Handle<Image>>,
 ) -> Result<Handle<Image>, String> {

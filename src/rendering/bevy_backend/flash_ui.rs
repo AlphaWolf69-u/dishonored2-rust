@@ -56,7 +56,7 @@ impl Plugin for FlashUiPlugin {
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render
                 .init_resource::<FlashUiGpu>()
-                .add_systems(Core3d, render_flash_ui.after(Core3dSystems::PostProcess));
+                .add_systems(Core3d, render_flash_ui.after(Core3dSystems::PostProcess).after(bevy::ui_render::render_pass::ui_pass).before(bevy::core_pipeline::upscaling::upscaling));
         }
     }
 }

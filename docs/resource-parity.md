@@ -81,7 +81,7 @@ trailing `*` covers a family of kinds.
 | `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: the per-vertex probe references become the GPU vertex-probe buffer at setup and are then released (no main-world copy of either); load path not compared with the original |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
-| `fade` | none | none: no owner yet |
+| `fade` | `assets::fx::fade`, `app::loading_fade` | partial: world-authored load colour/opacity curves and durations; runtime sampling follows `140166f60` / `140166e40` / `140167170`. Host display UI composition; priority/listener/script arbitration remains outside the direct-map loader |
 | `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the remaining decoded Tome tables (links, cell codes, object data) are still copies |
 | `Font` | `assets::iggy::font`, `flash::text` | partial: metadata reads do not decode glyphs; host outline caches decode only requested glyphs over shared library bytes (original provider `14102bd60` / metric reader `14102ba20` reads serialized tables). Glyph pages use R8_UNORM as `14107b7e0` format 6; atlas sizing follows `14002c440` movie-stage caps and the high-resolution `bnet` exception using already loaded metadata; full lifecycle not ported |
 | `footStepPhysMat` | none | none: no owner yet |
@@ -212,3 +212,12 @@ and reused three times. Dust District publishes the authored background in a
 reported. These verify acquisition identity and loading integration, not full
 map-to-map purge/residency parity or gameplay CPU timing. See `docs/loading.md`
 for scope, captures and the remaining human appearance check.
+
+
+### Responsive loading and load fade
+
+| Original | Owner / behavior | Status |
+|---|---|---|
+| `1400661e0`, `1400607f0` / `14005feb0` | resource acquisition with pre-registered identities | host: `bevy_backend::asset_preparation` prepares CPU payloads using the existing asset handle providers; `app::setup_commands` reserves entities with the live world's remote allocator. `app::scene_preparation` runs the existing setup implementation on the acquisition worker and transfers payloads/commands once. Canonical asset stores, shared resource caches and GPU uploads stay in their existing owners. Scene base-image bytes are read by the same texture owner on that worker; common/map GPU upload phases remain separate. Audio owner data moves to that worker while map systems are suspended, retaining its resource identities/output and shared-bank backing; the same bank/event preparation helpers serve synchronous diagnostic callers. Validation pending |
+| renderer-complete handoff | `bevy_backend::display_scene`, `app::texture_streaming` | host: initial gameplay readiness requires successful atmosphere/camera/lens composition and initial visible image residency, in addition to pipeline/upload gates. No timer substitutes for missing rendering |
+| `1408aac09` / `1408aac1f` / `1408aac49`, `140166f60`, `140166e40`, `140167170` | `assets::fx::fade`, `app::loading_fade` | partial: read world initial/later-load declarations and durations, parse colour/opacity curves using the existing partial-edit array readers, advance/sample the fade after loading. Host: black loading cover is a persistent UI node below the authored Flash presentation, then fades into gameplay. Native priority/listener arbitration and script-triggered fades remain separate. Direct first launch maps to the initial-load variant; later host map commands map to the later-load variant. No save-game mode is inferred |

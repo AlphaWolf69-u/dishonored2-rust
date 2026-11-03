@@ -1,4 +1,5 @@
 //! One immutable, game-coordinate matrix stream for every world-geometry pass.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use bevy::{prelude::*, render::storage::ShaderBuffer};
 
 /// Level-owned, independently of whether sunlight or local shadows are enabled.
@@ -10,7 +11,7 @@ impl WorldMatrices {
     pub(super) fn get_or_upload(
         &mut self,
         matrices: &[[f32; 12]],
-        buffers: &mut Assets<ShaderBuffer>,
+        buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
     ) -> Option<Handle<ShaderBuffer>> {
         if self.0.is_none() && !matrices.is_empty() {
             // The world shaders index original 48-byte affine rows. No host

@@ -161,7 +161,9 @@ own shader sources are embedded, so launch is independent of the working folder.
 
 `app::loading_screen` coordinates bootstrap, map acquisition, the installed
 loading movie and play in one Bevy application. `app::level_prepare` acquires
-typed map inputs on its worker; `app::level_lifetime` releases outgoing world
+typed map inputs on its worker; `app::scene_preparation` runs the same setup
+body there using payload batches tied to the live asset/entity allocators.
+`app::level_lifetime` releases outgoing world
 entities and publications after render acknowledgement. `app::loading_movie`
 owns the authored presentation and continuation callbacks. Shared assets stay
 with their existing format/resource owners; these modules do not create a
@@ -169,7 +171,11 @@ second renderer or private asset store. `app::request_level` is the host map
 entry for later menu/save transitions; direct launch currently skips the main
 menu. Asset cleanup systems remain active while map producers wait. See
 [loading.md](loading.md) for source evidence, gates, reuse measurements and the
-remaining synchronous scene-publication limitation.
+measured publication costs. Sound acquisition data moves to the same worker
+while sound systems are suspended; the persistent output keeps its existing
+shared engine. The display and image owners report actual initial view
+readiness. `assets::fx::fade` and `app::loading_fade` acquire and evaluate the
+world-authored transition after the loading movie closes.
 
 The original loads a level before play: the map load (`FUN_1400661e0`,
 `ResourceManager.cpp`) loads every entry of the `init`, `common` and map

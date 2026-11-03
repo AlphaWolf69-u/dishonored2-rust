@@ -18,6 +18,7 @@
 //! weights; the GPU blends them (DH2_SKIN8, the installed skin VS order)
 //! with the palette joint × inverse bind from `Player::arms()`, published
 //! each frame as the model's joint transforms.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{
     archive, bmd6, edge_skeleton, entities, material, model_motion,
     player::PlayerState, render_model, shadow_preparation, source_mesh, view_to_game, MaterialHandle,
@@ -144,8 +145,8 @@ fn character_name(character: crate::gameplay::pause_state::Character) -> &'stati
 pub(super) fn load_player_arms(
     catalog: &archive::Catalog,
     resolver: &mut MaterialResolver,
-    meshes: &mut Assets<Mesh>,
-    commands: &mut Commands,
+    meshes: &mut dyn AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<PlayerArms, String> {
     let text = |path: &str| -> Result<Option<String>, String> {
         Ok(catalog

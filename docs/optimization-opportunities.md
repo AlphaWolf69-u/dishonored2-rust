@@ -128,3 +128,14 @@ passes. This measures transition residency, not walking CPU time. Per-world
 visibility, decal, alpha-depth and instance-to-image scratch is invalidated
 explicitly when its scene owner is added; raw allocator addresses alone cannot
 identify a replacement world. Detailed client evidence is in docs/loading.md.
+
+
+Loading responsiveness follow-up supersedes the synchronous scene-cooking
+limitation above: the setup body now prepares payloads/commands on the map
+acquisition worker through the live allocators, then publishes once. Initial
+base-mip reads also move off the window thread while GPU upload ownership stays
+unchanged. The separate audio preparation and shadow-target/static-caster constructors
+also move through their same helpers on that worker. Publication and backend
+uploads still require measurements: moving meshes alone was not evidence that
+every loading stall had gone away. GPU image uploads use the configured soft
+budget during loading, restored to the prior host policy before gameplay.

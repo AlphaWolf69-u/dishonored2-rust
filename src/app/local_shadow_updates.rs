@@ -548,148 +548,10 @@ pub(super) fn initialize_local_shadow_owner(
     view_settings: Res<ViewSettings>,
     mut images: ResMut<Assets<Image>>,
     mut programs: ResMut<ProgramCacheSource>,
+    existing: Option<Res<LocalShadowOwner>>,
 ) {
-    let result = (|| -> Result<LocalShadowOwner, String> {
-        let (_, settings) = game_settings::read_local_shadow_settings()?;
-        let quality = scene
-            .shadow_quality
-            .as_ref()
-            .ok_or("local shadows have no selected original quality")?;
-        let parameters = scene
-            .environment_render_parameters
-            .as_ref()
-            .ok_or("local shadow environment parameters are absent")?;
-        let clamp = scene
-            .shadow_depth_bias_clamp
-            .ok_or("local shadow depth-bias clamp is absent")?;
-        let hardware_bias_point =
-            render_shadow::local_hardware_bias(parameters, 0, quality.depth_32_bits, clamp)?;
-        let hardware_bias_spot =
-            render_shadow::local_hardware_bias(parameters, 2, quality.depth_32_bits, clamp)?;
-        let copy_state = programs
-            .0
-            .as_mut()
-            .map_err(|e| e.clone())?
-            .definition(b"depthcopy")?
-            .ok_or("depthCopy RPD is unavailable")?
-            .render_state();
-        let format = match render_shadow::parallel_shadow_depth_format(quality.depth_32_bits)? {
-            render_shadow::ParallelShadowDepthFormat::Depth16 => {
-                bevy::render::render_resource::TextureFormat::Depth16Unorm
-            }
-            render_shadow::ParallelShadowDepthFormat::Depth24Stencil8 => {
-                bevy::render::render_resource::TextureFormat::Depth24PlusStencil8
-            }
-        };
-        let mut image = |extent: [u32; 3]| -> Result<Handle<Image>, String> {
-            Ok(images.add(shadow_pipeline::shadow_depth_image(
-                bevy::render::render_resource::Extent3d {
-                    width: extent[0],
-                    height: extent[1],
-                    depth_or_array_layers: extent[2],
-                },
-                format,
-            )?))
-        };
-        let atlas_image = image(settings.atlas)?;
-        let cache_image = image(settings.cache)?;
-        let roots = vec![
-            [
-                0,
-                0,
-                settings.atlas[0] as i32 - 1,
-                settings.atlas[1] as i32 - 1
-            ];
-            settings.atlas[2] as usize
-        ];
-        let cache_roots = vec![
-            [
-                0,
-                0,
-                settings.cache[0] as i32 - 1,
-                settings.cache[1] as i32 - 1
-            ];
-            settings.cache[2] as usize
-        ];
-        let topology = worker_topology::cpu_topology()?;
-        let query_job_count = worker_topology::local_shadow_query_job_count(&topology);
-        let mut precomputed_world_casters = HashMap::new();
-        if let Some(tome) = tome_world.as_ref() {
-            let view = view_settings.0.as_ref().map_err(Clone::clone)?;
-            let queries = local_caster_query::StaticLightCasterQueries {
-                bytes: &tome.bytes,
-                tree: &tome.tree,
-                data: &tome.query_data,
-                gates: &tome.gate_states,
-                world: &scene.world,
-                job_count: query_job_count,
-                object_imprecision: view.umbra_distance_imprecision,
-                accurate_threshold: view.umbra_accurate_threshold,
-            };
-            for (source, light) in scene.placed_lights.iter().enumerate() {
-                //881640 copies actor m_lightCulling(+448) to render-light+68.
-                //232e50 only precomputes static-position shadow-enabled lights.
-                if light.no_shadows || light.culling != entities::LightCulling::StaticPosition {
-                    continue;
-                }
-                let kind = match light.kind {
-                    entities::LightType::Point | entities::LightType::HalfPoint => 0,
-                    entities::LightType::Spot => 2,
-                    _ => continue,
-                };
-                let color = Color::srgb(
-                    light.color[0].max(0.),
-                    light.color[1].max(0.),
-                    light.color[2].max(0.),
-                )
-                .to_linear();
-                let preset = light_preset(light, [color.red, color.green, color.blue])
-                    .ok_or("local caster precomputation has no original light preset")?;
-                let near = light.shadow_near_plane.unwrap_or(0.1);
-                let clips = if kind == 2 {
-                    vec![render_shadow::unfitted_spot_projection(
-                        light.position,
-                        light.rotation,
-                        authored_light_cosines(light.angular_cutoff, light.angular_falloff).0,
-                        near,
-                        preset.range,
-                    )]
-                } else {
-                    render_shadow::prepare_omni_projections(
-                        light.position,
-                        near,
-                        preset.range,
-                        0,
-                        None,
-                        &mut [[-1., -1., 1., 1.]; 6],
-                        &mut render_shadow::ProjectionFitScratch::default(),
-                    )?
-                    .to_vec()
-                };
-                precomputed_world_casters
-                    .insert(source, queries.query_light(light.position, &clips)?);
-            }
-        }
-        println!(
-            "Local caster precomputation: {} lights, task-pool jobs={query_job_count}, physical cores={}",
-            precomputed_world_casters.len(),
-            topology.words[1]
-        );
-        Ok(LocalShadowOwner {
-            settings,
-            atlas_image,
-            cache_image,
-            atlas: render_shadow::ShadowAtlasAllocator::new(&roots, 0),
-            cache: local_shadow_cache::LocalShadowCache::new(&[cache_roots]),
-            view_flags: 0,
-            world_query: scene.world.spatial_query(),
-            precomputed_world_casters,
-            query_job_count,
-            hardware_bias_point,
-            hardware_bias_spot,
-            copy_state,
-        })
-    })();
+    if existing.is_some() { return; }
+    let result = prepare_local_shadow_owner(&scene, tome_world.as_deref(), &view_settings, &mut images, &mut programs);
     match result {
         Ok(owner) => {
             println!(
@@ -700,6 +562,154 @@ pub(super) fn initialize_local_shadow_owner(
         }
         Err(error) => eprintln!("Local shadow owner unavailable: {error}"),
     }
+}
+
+pub(super) fn prepare_local_shadow_owner(
+    scene: &SceneData, tome_world: Option<&TomeWorld>, view_settings: &ViewSettings,
+    images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
+    programs: &mut ProgramCacheSource,
+) -> Result<LocalShadowOwner, String> {
+
+    let (_, settings) = game_settings::read_local_shadow_settings()?;
+    let quality = scene
+        .shadow_quality
+        .as_ref()
+        .ok_or("local shadows have no selected original quality")?;
+    let parameters = scene
+        .environment_render_parameters
+        .as_ref()
+        .ok_or("local shadow environment parameters are absent")?;
+    let clamp = scene
+        .shadow_depth_bias_clamp
+        .ok_or("local shadow depth-bias clamp is absent")?;
+    let hardware_bias_point =
+        render_shadow::local_hardware_bias(parameters, 0, quality.depth_32_bits, clamp)?;
+    let hardware_bias_spot =
+        render_shadow::local_hardware_bias(parameters, 2, quality.depth_32_bits, clamp)?;
+    let copy_state = programs
+        .0
+        .as_mut()
+        .map_err(|e| e.clone())?
+        .definition(b"depthcopy")?
+        .ok_or("depthCopy RPD is unavailable")?
+        .render_state();
+    let format = match render_shadow::parallel_shadow_depth_format(quality.depth_32_bits)? {
+        render_shadow::ParallelShadowDepthFormat::Depth16 => {
+            bevy::render::render_resource::TextureFormat::Depth16Unorm
+        }
+        render_shadow::ParallelShadowDepthFormat::Depth24Stencil8 => {
+            bevy::render::render_resource::TextureFormat::Depth24PlusStencil8
+        }
+    };
+    let mut image = |extent: [u32; 3]| -> Result<Handle<Image>, String> {
+        Ok(images.add(shadow_pipeline::shadow_depth_image(
+            bevy::render::render_resource::Extent3d {
+                width: extent[0],
+                height: extent[1],
+                depth_or_array_layers: extent[2],
+            },
+            format,
+        )?))
+    };
+    let atlas_image = image(settings.atlas)?;
+    let cache_image = image(settings.cache)?;
+    let roots = vec![
+        [
+            0,
+            0,
+            settings.atlas[0] as i32 - 1,
+            settings.atlas[1] as i32 - 1
+        ];
+        settings.atlas[2] as usize
+    ];
+    let cache_roots = vec![
+        [
+            0,
+            0,
+            settings.cache[0] as i32 - 1,
+            settings.cache[1] as i32 - 1
+        ];
+        settings.cache[2] as usize
+    ];
+    let topology = worker_topology::cpu_topology()?;
+    let query_job_count = worker_topology::local_shadow_query_job_count(&topology);
+    let mut precomputed_world_casters = HashMap::new();
+    if let Some(tome) = tome_world.as_ref() {
+        let view = view_settings.0.as_ref().map_err(Clone::clone)?;
+        let queries = local_caster_query::StaticLightCasterQueries {
+            bytes: &tome.bytes,
+            tree: &tome.tree,
+            data: &tome.query_data,
+            gates: &tome.gate_states,
+            world: &scene.world,
+            job_count: query_job_count,
+            object_imprecision: view.umbra_distance_imprecision,
+            accurate_threshold: view.umbra_accurate_threshold,
+        };
+        for (source, light) in scene.placed_lights.iter().enumerate() {
+            //881640 copies actor m_lightCulling(+448) to render-light+68.
+            //232e50 only precomputes static-position shadow-enabled lights.
+            if light.no_shadows || light.culling != entities::LightCulling::StaticPosition {
+                continue;
+            }
+            let kind = match light.kind {
+                entities::LightType::Point | entities::LightType::HalfPoint => 0,
+                entities::LightType::Spot => 2,
+                _ => continue,
+            };
+            let color = Color::srgb(
+                light.color[0].max(0.),
+                light.color[1].max(0.),
+                light.color[2].max(0.),
+            )
+            .to_linear();
+            let preset = light_preset(light, [color.red, color.green, color.blue])
+                .ok_or("local caster precomputation has no original light preset")?;
+            let near = light.shadow_near_plane.unwrap_or(0.1);
+            let clips = if kind == 2 {
+                vec![render_shadow::unfitted_spot_projection(
+                    light.position,
+                    light.rotation,
+                    authored_light_cosines(light.angular_cutoff, light.angular_falloff).0,
+                    near,
+                    preset.range,
+                )]
+            } else {
+                render_shadow::prepare_omni_projections(
+                    light.position,
+                    near,
+                    preset.range,
+                    0,
+                    None,
+                    &mut [[-1., -1., 1., 1.]; 6],
+                    &mut render_shadow::ProjectionFitScratch::default(),
+                )?
+                .to_vec()
+            };
+            precomputed_world_casters
+                .insert(source, queries.query_light(light.position, &clips)?);
+        }
+    }
+    println!(
+        "Local caster precomputation: {} lights, task-pool jobs={query_job_count}, physical cores={}",
+        precomputed_world_casters.len(),
+        topology.words[1]
+    );
+    Ok(LocalShadowOwner {
+        settings,
+        atlas_image,
+        cache_image,
+        atlas: render_shadow::ShadowAtlasAllocator::new(&roots, 0),
+        cache: local_shadow_cache::LocalShadowCache::new(&[cache_roots]),
+        view_flags: 0,
+        world_query: scene.world.spatial_query(),
+        precomputed_world_casters,
+        query_job_count,
+        hardware_bias_point,
+        hardware_bias_spot,
+        copy_state,
+    })
+
 }
 
 pub(super) fn prepare_local_shadow_cpu(

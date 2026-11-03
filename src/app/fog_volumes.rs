@@ -120,7 +120,7 @@ pub(super) struct AreaFog {
     settings: VolumeSettings,
 }
 impl AreaFogSource {
-    pub(super) fn upload(self, meshes: &mut Assets<Mesh>) -> AreaFog {
+    pub(super) fn upload(self, meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>) -> AreaFog {
         let transform = super::placed_transform(&self.placement).to_matrix();
         let bounds = crate::render_model::transformed_bounds(
             self.model.authored_bounds,

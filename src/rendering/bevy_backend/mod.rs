@@ -1,4 +1,6 @@
 #[cfg(feature = "game")]
+pub mod asset_preparation;
+#[cfg(feature = "game")]
 pub mod ambient_occlusion;
 #[cfg(feature = "game")]
 pub mod auto_exposure;

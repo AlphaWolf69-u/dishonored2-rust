@@ -1,6 +1,7 @@
 //! Forward arkvegetation wind inputs: arkWindManager::PostLoadMap (7b7be0)
 //! over the shared wind centers (295e40), the per-frame windInfo samples
 //! (339160 -> 77fbc0) and one AnimateVegetation record per render instance.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{
     archive,
     fog_scene::WorldWind,
@@ -30,7 +31,7 @@ pub(super) struct VegetationMaterials {
 }
 
 impl VegetationMaterials {
-    pub(super) fn new(buffers: &mut Assets<ShaderBuffer>) -> Self {
+    pub(super) fn new(buffers: &mut dyn AssetWrite<ShaderBuffer>) -> Self {
         Self {
             slots: buffers.add(ShaderBuffer::from(vec![0u32])),
             instances: buffers.add(ShaderBuffer::from(vec![0u32; INSTANCE_WORDS])),

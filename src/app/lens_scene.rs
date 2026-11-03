@@ -67,7 +67,7 @@ impl LensScene {
         catalog: &Catalog,
         world: &EnvironmentRenderParameters,
         areas: &[AreaEnvironment],
-        images: &mut Assets<Image>,
+        images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
     ) -> Result<Self, String> {
         let mut resident = HashMap::new();
         let mut image = |name: &str| {

@@ -1,4 +1,5 @@
 //! Upload the installed reflection cubemaps without expanding their BC6H data.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{archive, material, probe_lighting, texture, ShaderBuffer};
 use bevy::{
     asset::RenderAssetUsages,
@@ -23,7 +24,7 @@ impl LoadedReflections {
         &self,
         probes: Option<&probe_lighting::ProbeLightingSet>,
         vertex_references: Handle<ShaderBuffer>,
-        buffers: &mut Assets<ShaderBuffer>,
+        buffers: &mut dyn AssetWrite<ShaderBuffer>,
     ) -> Result<Option<crate::rendering::bevy_backend::water_scene::WaterProbeResources>, String>
     {
         let Some(probes) = probes.filter(|probes| !probes.probes.is_empty()) else {
@@ -65,8 +66,8 @@ impl LoadedReflections {
 pub(super) fn load(
     catalog: Option<&archive::Catalog>,
     probes: Option<&probe_lighting::ProbeLightingSet>,
-    images: &mut Assets<Image>,
-    buffers: &mut Assets<ShaderBuffer>,
+    images: &mut dyn AssetWrite<Image>,
+    buffers: &mut dyn AssetWrite<ShaderBuffer>,
 ) -> Result<LoadedReflections, String> {
     let count = probes.map_or(0, |p| p.reflection_probes.len());
     let mut words = vec![count as u32, 0, 0, 0];

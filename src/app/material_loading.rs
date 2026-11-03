@@ -1,4 +1,5 @@
 //! Material loading.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{
     archive, entities, env, material, material_surface, probe_lighting, render_program,
     render_state, shader_cache, surface_gpu, CachedMaterial, DecalExtension, DecalMaterial,
@@ -476,10 +477,10 @@ pub(super) struct MaterialResolver<'a> {
     pub(super) environment: Option<&'a entities::EnvironmentRenderParameters>,
     pub(super) catalog: Option<&'a archive::Catalog>,
     pub(super) programs: Option<&'a mut Result<shader_cache::ProgramLibrary, String>>,
-    pub(super) probe_materials: &'a mut Assets<ProbeMaterial>,
-    pub(super) sky_materials: &'a mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
-    pub(super) decal_materials: &'a mut Assets<DecalMaterial>,
-    pub(super) probe_sh_buffers: &'a mut Assets<ShaderBuffer>,
+    pub(super) probe_materials: &'a mut dyn AssetWrite<ProbeMaterial>,
+    pub(super) sky_materials: &'a mut dyn AssetWrite<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+    pub(super) decal_materials: &'a mut dyn AssetWrite<DecalMaterial>,
+    pub(super) probe_sh_buffers: &'a mut dyn AssetWrite<ShaderBuffer>,
     pub(super) probe_sh_buffer: Handle<ShaderBuffer>,
     pub(super) vertex_probe_buffer: Handle<ShaderBuffer>,
     pub(super) shadow_buffer: Handle<ShaderBuffer>,

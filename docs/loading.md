@@ -281,3 +281,80 @@ The final cache review also made instance-to-image slot scratch reset on a
 newly added scene resource, alongside visibility/decal/alpha-depth scratch.
 This prevents an allocator reusing the same instance-vector address from
 mistaking a replacement world for appended instances.
+
+
+Loading handoff follow-up (user report): the current synchronous setup and
+base-image reads block the window thread, and pipeline idleness can precede
+a successful final gameplay composition. Expected change: move scene payload
+cooking and image reads to their existing acquisition worker, reserve identities
+through the live asset/entity allocators, and publish the completed payloads on
+the window thread. This removes the measured multi-second construction/read
+stalls from window updates without changing assets or adding gameplay passes.
+The readiness gate must observe a successful final scene composition, and the
+loading close must capture the cursor rather than show it. Fade timing still
+requires the executable/installed world parameters, not an arbitrary delay.
+
+
+Follow-up implementation: scene cooking and base-image reads now run inside the
+existing acquisition worker. Prepared assets reserve handles through the live
+owner's `AssetHandleProvider`; commands reserve entities through its remote
+allocator. Both publish into the same world/stores, with the same setup body
+also used by synchronous diagnostic callers. The window thread keeps its asset stores throughout: the acquisition worker
+holds payloads plus reserved handles, not borrowed main-world assets or a second
+application. The payload-writing interface is shared with existing resource
+readers; GPU uploads still happen through the canonical owners.
+
+The final display owner reports readiness after a successful same-view
+atmosphere/camera/lens chain; the image owner waits for the first view's actual
+read/upload/residency work. These replace the incorrect assumption that an
+idle pipeline queue means the gameplay image is complete. Camera input is
+captured and the cursor remains hidden when the authored close callback fires.
+
+Disassembly at `1408aac09` / `1408aac1f` selects world +0x3b8/+0x3c8 using
+initial-load flag +0x337134 bit 0; `1408aac49` starts `140166f60` at priority 3.
+`140166e40` advances seconds and `140167170` evaluates the packed curves and
+clamps RGBA. EotW's installed definitions specify 4s initially and 2s later,
+with opacity staying at 1 until normalized time 0.2969281673. The black cover
+exists before gameplay can render and stays beneath the loading movie, so its
+removal cannot expose an uninitialized world. It then follows the installed
+fade rather than a fabricated linear animation. Other fade priorities and save
+restoration remain outside the direct-map loader.
+
+
+The previous client trace (`level-owner-run.err`) measured roughly 6s of scene
+construction plus 4.6–5.7s to reach base-image readiness on the window thread.
+Listed sound preparation alone contributed about 0.5s. Its existing registry,
+mix and shared engine now transfer to the acquisition worker while their
+suspended ECS slots retain identity, then return during publication. The live
+output callback keeps the same shared engine backing. No bank/media clone or
+new output is needed on transitions. Runtime transport helpers use generic
+asset writers so ordinary per-frame paths can still dispatch statically.
+
+
+Host GPU acquisition uses Bevy's existing soft image upload limiter while the
+loading presentation is active, with the configured
+`r_textureStreamingPerFrameBudgetKB` value. A single oversized asset still
+progresses. The previous host policy is restored before play: this does not
+change gameplay texture budgets or add a render pass. Preparing all images on
+the worker is insufficient if their backend creation monopolizes one render
+frame; the limiter keeps that work progressing across loading frames.
+
+
+The first bounded-upload client run exposed an additional readiness hole:
+shadow mesh uploads were still pending after the image-only upload gate.
+`SceneGpuInputs` now carries the actual renderable mesh/buffer identities from
+the prepared payload batch; map activation waits for those GPU owners too.
+The existing forward pipeline readiness signal and directional/local submission
+completion are also loading gates. The benchmark's 30-frame warmup is not a
+loading rule and is not copied: a completed publication is sufficient.
+This run completed the installed fade, but its 798ms maximum loading update gap
+and transient missing-RenderMesh errors are intermediate results, not acceptance.
+
+
+The local-light caster precomputation and directional target constructors now
+run on that same worker through their existing constructors, before the payload
+batch is published. Startup wrappers retain the synchronous diagnostic entry
+and skip already prepared owners. The GPU input gate includes those prepared
+attachment images as well as renderable meshes and shader buffers. This removes
+the remaining measured shadow-construction wait from the window thread, without
+changing queries, light selection, target sizes or image precision.

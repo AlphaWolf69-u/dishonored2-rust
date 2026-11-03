@@ -9,6 +9,7 @@ use super::{
     RenderAssetUsages, SceneData, SceneRenderQueue, ShaderBuffer, DH2_BITANGENT,
 };
 use bevy::prelude::*;
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use bevy::asset::AssetId;
 
 /// Resolved once beside the real material/mesh association; the native CPU
@@ -270,7 +271,7 @@ impl WorldShadowSourceLayout {
 }
 
 impl WorldShadowMeshSources {
-    pub(super) fn prepare(world: &world_mesh::WorldMesh, meshes: &mut Assets<Mesh>) -> Self {
+    pub(super) fn prepare(world: &world_mesh::WorldMesh, meshes: &mut (impl AssetWrite<Mesh> + ?Sized)) -> Self {
         let mut shared = HashMap::<(usize, bool), (Handle<Mesh>, Result<usize, String>)>::new();
         let mut objects = Vec::with_capacity(world.objects.len());
         for (object_id, object) in world.objects.iter().enumerate() {
@@ -323,7 +324,7 @@ impl WorldShadowMeshSources {
     /// End of setup: record each shared mesh's layout and drop its
     /// main-world copy. Nothing reads these meshes on the CPU afterwards; the
     /// original keeps no CPU copy of uploaded world geometry either.
-    pub(super) fn release_cpu_copies(&mut self, meshes: &mut Assets<Mesh>) {
+    pub(super) fn release_cpu_copies(&mut self, meshes: &mut (impl AssetWrite<Mesh> + ?Sized)) {
         let mut layouts = HashMap::<AssetId<Mesh>, Option<WorldShadowSourceLayout>>::new();
         for source in &mut self.objects {
             source.layout = *layouts.entry(source.mesh.id()).or_insert_with(|| {
@@ -386,7 +387,7 @@ impl VegetationMeshInputs {
         &mut self,
         required: bool,
         handle: &Handle<Mesh>,
-        meshes: &mut Assets<Mesh>,
+        meshes: &mut (impl AssetWrite<Mesh> + ?Sized),
         positions: &[[f32; 3]],
         packed: &[[u8; N]],
     ) {
@@ -409,7 +410,7 @@ impl VegetationMeshInputs {
 }
 
 pub(super) fn retain_model_shadow_position(
-    meshes: &mut Assets<Mesh>,
+    meshes: &mut (impl AssetWrite<Mesh> + ?Sized),
     handle: &Handle<Mesh>,
     positions: &[[f32; 3]],
 ) {
@@ -434,7 +435,7 @@ pub(super) fn rest_skinning(
     catalog: &archive::Catalog,
     resource: &str,
     model: &bmd6::ModelInfo,
-    buffers: &mut Assets<ShaderBuffer>,
+    buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
 ) -> Result<Arc<shadow_updates::RestSkinning>, String> {
     let binding = bmd6::resolve_skeleton_binding(resource, |path| {
         catalog
@@ -724,7 +725,7 @@ impl ParallelShadowOwner {
 
     pub(super) fn from_scene(
         scene: &SceneData,
-        images: &mut Assets<Image>,
+        images: &mut (impl AssetWrite<Image> + ?Sized),
     ) -> Result<Self, String> {
         let dimensions = scene
             .shadow_target_dimensions
@@ -1453,7 +1454,7 @@ pub(super) fn build_whole_view_layer(
     plans: Vec<WorldShadowMaskPlan>,
     world: &world_mesh::WorldMesh,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
-    shader_buffers: &mut Assets<ShaderBuffer>,
+    shader_buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
     matrix_bank: &mut super::world_instances::WorldMatrices,
 ) -> shadow_pass::ShadowLayer {
     let has_instances = plans.iter().any(|plan| !plan.instances.is_empty());
@@ -1533,7 +1534,7 @@ mod upload_tests {
 fn upload_shadow_values<T: Default + Clone>(
     mut values: Vec<T>,
     cached: &mut Option<(Handle<ShaderBuffer>, usize)>,
-    buffers: &mut Assets<ShaderBuffer>,
+    buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
 ) -> Handle<ShaderBuffer>
 where
     Vec<T>: bevy::render::render_resource::ShaderType
@@ -1569,7 +1570,7 @@ pub(super) fn build_world_layer(
     plans: Vec<WorldShadowMaskPlan>,
     matrices: Option<&Handle<ShaderBuffer>>,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
-    shader_buffers: &mut Assets<ShaderBuffer>,
+    shader_buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
 ) -> shadow_pass::ShadowLayer {
     build_world_shadow_layer(plans, matrices, dimensions, shader_buffers, None)
 }
@@ -1578,7 +1579,7 @@ pub(super) fn build_world_shadow_layer(
     plans: Vec<WorldShadowMaskPlan>,
     matrices: Option<&Handle<ShaderBuffer>>,
     dimensions: shadow_pass::ParallelShadowTargetDimensions,
-    shader_buffers: &mut Assets<ShaderBuffer>,
+    shader_buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
     mut uploads: Option<&mut Vec<WorldShadowUpload>>,
 ) -> shadow_pass::ShadowLayer {
     let mut instances = Vec::new();
@@ -1792,7 +1793,9 @@ pub(super) fn initialize_parallel_shadow_owner(
     scene: Res<SceneData>,
     mut images: ResMut<Assets<Image>>,
     mut frame: ResMut<shadow_pass::ShadowSceneFrame>,
+    existing: Option<Res<ParallelShadowOwner>>,
 ) {
+    if existing.is_some() { return; }
     match ParallelShadowOwner::from_scene(&scene, &mut images) {
         Ok(owner) => {
             println!(
@@ -1877,7 +1880,7 @@ pub(super) fn sync_shadow_target<E: MaterialExtension + ShadowImageAccess>(
         // hasn't changed targets. Process additions, not every material/frame.
         for event in added_materials.read() {
             if let bevy::asset::AssetEvent::Added { id } = event {
-                if let Some(mut material) = materials.get_mut(*id) {
+                if let Some(mut material) = Assets::get_mut(&mut *materials, *id) {
                     material
                         .extension
                         .sync_shadow_images(&target, &screen, &cloud, &local_target);

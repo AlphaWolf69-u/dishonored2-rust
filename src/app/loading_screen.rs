@@ -27,27 +27,42 @@ pub fn request_level(name: impl Into<String>) {
 
 #[derive(Default)]
 pub(super) struct PreparedLevel {
-    resources: Vec<Box<dyn FnOnce(&mut World) + Send + Sync>>,
+    resources: Vec<PreparedResource>,
+    publications: Vec<Box<dyn FnOnce(&mut World) + Send + Sync>>,
     diagnostic_exit: bool,
 }
 impl PreparedLevel {
     pub(super) fn diagnostic_exit() -> Self {
         Self {
             resources: Vec::new(),
+            publications: Vec::new(),
             diagnostic_exit: true,
         }
     }
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.resources.push(Box::new(move |world| {
-            world.insert_resource(resource);
-        }));
+        self.resources.push(PreparedResource {
+            kind: std::any::TypeId::of::<R>(), value: Box::new(resource),
+            publish: |value, world| { world.insert_resource(*value.downcast::<R>().unwrap()); },
+        });
         self
     }
-    fn publish(self, world: &mut World) {
-        for insert in self.resources {
-            insert(world);
-        }
+    pub(super) fn take_resource<R: Resource>(&mut self) -> Option<R> {
+        let index = self.resources.iter().position(|resource| resource.kind == std::any::TypeId::of::<R>())?;
+        Some(*self.resources.swap_remove(index).value.downcast::<R>().unwrap())
     }
+    pub(super) fn on_publish(&mut self, publish: impl FnOnce(&mut World) + Send + Sync + 'static) {
+        self.publications.push(Box::new(publish));
+    }
+    fn publish(self, world: &mut World) {
+        for resource in self.resources { (resource.publish)(resource.value, world); }
+        for publish in self.publications { publish(world); }
+    }
+}
+
+struct PreparedResource {
+    kind: std::any::TypeId,
+    value: Box<dyn std::any::Any + Send + Sync>,
+    publish: fn(Box<dyn std::any::Any + Send + Sync>, &mut World),
 }
 
 /// Capture the host systems before registering map-dependent plugins. The
@@ -121,6 +136,8 @@ pub(super) struct Acquisition {
     map: String,
     tick: f64,
     finished: bool,
+    initial_load: bool,
+    render_finished: bool,
     continued: bool,
     debug_continued: bool,
     completion_visible: bool,
@@ -131,6 +148,9 @@ pub(super) struct Acquisition {
     debug_sequence: VecDeque<String>,
     debug_sequence_active: bool,
     played_seconds: f64,
+    last_loading_update: std::time::Instant,
+    max_loading_gap: std::time::Duration,
+    upload_budget: Option<usize>,
 }
 #[derive(Component)]
 struct LoadingCamera;
@@ -213,10 +233,15 @@ pub(super) fn install(
     app.init_resource::<ScenePublished>().add_plugins(
         bevy::render::extract_resource::ExtractResourcePlugin::<ScenePublished>::default(),
     );
+    app.init_resource::<super::scene_preparation::SceneGpuInputs>().add_plugins(
+        bevy::render::extract_resource::ExtractResourcePlugin::<super::scene_preparation::SceneGpuInputs>::default(),
+    );
     app.init_resource::<SceneImageRequests>().add_plugins(
         bevy::render::extract_resource::ExtractResourcePlugin::<SceneImageRequests>::default(),
     );
     crate::loading::gate(GPU_GATE);
+    crate::loading::gate("initial view texture residency");
+    crate::loading::gate("initial forward and shadow submissions");
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.insert_resource(gpu.clone()).add_systems(
@@ -228,6 +253,8 @@ pub(super) fn install(
     app.insert_resource(crate::gameplay::game_clock_runtime::GamePaused(true));
     app.init_resource::<super::resident_images::UiImages>();
     app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
+    let upload_budget = app.world().resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes;
+    limit_loading_uploads(app.world_mut());
     app.insert_resource(Acquisition {
         catalog: catalog.clone(),
         base: base.clone(),
@@ -241,6 +268,8 @@ pub(super) fn install(
         map,
         tick: 0.0,
         finished: false,
+        initial_load: true,
+        render_finished: false,
         continued: false,
         debug_continued: false,
         completion_visible: false,
@@ -256,6 +285,9 @@ pub(super) fn install(
             .collect(),
         debug_sequence_active: std::env::var_os("DH2_DEBUG_LEVEL_SEQUENCE").is_some(),
         played_seconds: 0.0,
+        last_loading_update: std::time::Instant::now(),
+        max_loading_gap: std::time::Duration::ZERO,
+        upload_budget,
     })
     .add_systems(Startup, show_bootstrap)
     .add_systems(First, acquire)
@@ -268,7 +300,8 @@ pub(super) fn install(
         PostUpdate,
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
-    .add_systems(Last, finish_loading);
+    .add_systems(Last, (initial_render_ready, finish_loading).chain())
+    .add_systems(PostUpdate, super::loading_fade::advance_fade);
     Ok(())
 }
 
@@ -284,6 +317,8 @@ fn show_bootstrap(
         Msaa::Off,
         LoadingCamera,
     ));
+    commands.spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
+        BackgroundColor(Color::BLACK), GlobalZIndex(i32::MAX - 1), super::loading_fade::FadeLayer));
     let catalog = &state.input.as_ref().unwrap().0;
     let super::resident_images::UiImages {
         resident, aliases, ..
@@ -344,7 +379,12 @@ fn acquire(world: &mut World) {
         if let Some(request) = request {
             match LevelResources::resolve(&state.catalog, &request) {
                 Ok(level) => {
+                    state.upload_budget = world.resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes;
+                    limit_loading_uploads(world);
+                    state.last_loading_update = std::time::Instant::now();
+                    state.max_loading_gap = std::time::Duration::ZERO;
                     state.finished = false;
+                    for mut colour in world.query_filtered::<&mut BackgroundColor, With<super::loading_fade::FadeLayer>>().iter_mut(world) { colour.0 = Color::BLACK; }
                     state.next = Some(level);
                     state.gpu.0.store(3, std::sync::atomic::Ordering::Release);
                     world.resource_mut::<ScenePublished>().0 = false;
@@ -366,6 +406,9 @@ fn acquire(world: &mut World) {
             return;
         }
     }
+    let now = std::time::Instant::now();
+    state.max_loading_gap = state.max_loading_gap.max(now - state.last_loading_update);
+    state.last_loading_update = now;
     if state.next.is_some() {
         if state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 {
             world.insert_resource(state);
@@ -385,6 +428,7 @@ fn acquire(world: &mut World) {
         state.continued = false;
         state.debug_continued = false;
         state.completion_visible = false;
+        state.render_finished = false;
         state.tick = 0.0;
         state.pending.clear();
         state.gpu.0.store(0, std::sync::atomic::Ordering::Release);
@@ -486,6 +530,7 @@ fn acquire(world: &mut World) {
     // Give the bootstrap a complete extraction/presentation before work starts.
     if state.frames >= 2 {
         if let Some((catalog, level, base)) = state.input.take() {
+            let preparation = super::scene_preparation::ScenePreparation::new(world);
             let (send, receive) = mpsc::channel();
             state.result = Some(Mutex::new(receive));
             std::thread::Builder::new()
@@ -493,7 +538,11 @@ fn acquire(world: &mut World) {
                 .stack_size(32 << 20)
                 .spawn(move || {
                     let result = super::level_prepare::prepare_level(base, catalog, level)
-                        .map_err(|e| e.to_string());
+                        .map_err(|e| e.to_string())
+                        .map(|mut prepared| {
+                            if !prepared.diagnostic_exit { preparation.prepare(&mut prepared); }
+                            prepared
+                        });
                     let _ = send.send(result);
                 })
                 .expect("map acquisition thread");
@@ -581,6 +630,40 @@ fn acquire(world: &mut World) {
     world.insert_resource(state);
 }
 
+/// Reuse the production renderer's readiness signals. The benchmark's 30
+/// consecutive-frame warmup is deliberately absent: one complete submission
+/// is enough, without an arbitrary loading delay.
+fn initial_render_ready(
+    mut state: ResMut<Acquisition>, published: Res<ScenePublished>,
+    forward: Res<crate::shadow_pass::ShadowCaptureReadiness>,
+    directional: Res<crate::shadow_pass::ShadowSceneFrame>,
+    sun: Option<Res<super::ParallelShadowOwner>>,
+    local: Option<Res<super::local_shadow_updates::LocalShadowOwner>>,
+    local_done: Res<crate::shadow_pass::LocalShadowCompletion>,
+) {
+    if state.finished || state.render_finished || !published.0 { return; }
+    let ready = forward.0.load(std::sync::atomic::Ordering::Acquire) != 0
+        && (sun.is_none() || matches!(directional.state, crate::shadow_pass::ShadowSceneState::Ready { .. }))
+        && local.as_ref().is_none_or(|owner| local_done.0.lock().is_ok_and(|done| {
+            done.as_ref().is_some_and(|(_, atlas, cache, _)| *atlas == owner.atlas_image.id() && *cache == owner.cache_image.id())
+        }));
+    if ready {
+        state.render_finished = true;
+        crate::loading::complete("initial forward and shadow submissions");
+        super::load_timing::mark("initial forward and shadow submissions ready");
+    }
+}
+
+/// Host: use the installed streaming budget to bound backend image acquisition
+/// while displaying loading UI. Restore the host's normal policy before play.
+/// Oversized single assets still progress, per Bevy's soft-limit contract.
+fn limit_loading_uploads(world: &mut World) {
+    let kb = crate::platform::console::shared().read().cvars.float("r_textureStreamingPerFrameBudgetKB")
+        .unwrap_or(super::texture_streaming::TEXTURE_UPLOAD_BUDGET_KB);
+    world.resource_mut::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes =
+        (kb > 0.).then_some((kb * 1024.) as usize);
+}
+
 fn finish_loading(
     mut state: ResMut<Acquisition>,
     mut frame: ResMut<crate::rendering::bevy_backend::flash_ui::FlashUiFrame>,
@@ -588,13 +671,19 @@ fn finish_loading(
     mut paused: ResMut<crate::gameplay::game_clock_runtime::GamePaused>,
     mut overlays: Query<&mut Visibility, With<super::state::GameplayOverlay>>,
     mut cursors: Query<&mut bevy::window::CursorOptions>,
+    mut fade: Option<ResMut<super::loading_fade::LoadingFade>>,
+    mut uploads: ResMut<bevy::render::render_asset::RenderAssetBytesPerFrame>,
 ) {
     if state.published && state.movie.is_some() && state.continued && crate::loading::ready() {
+        if let Some(fade) = fade.as_deref_mut() { fade.start(state.initial_load); }
+        uploads.max_bytes = state.upload_budget;
+        state.initial_load = false;
         state.finished = true;
         state.played_seconds = 0.0;
         paused.0 = false;
         for mut cursor in &mut cursors {
-            cursor.visible = true;
+            cursor.visible = false;
+            cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
         }
         for mut overlay in &mut overlays {
             *overlay = Visibility::Inherited;
@@ -604,6 +693,9 @@ fn finish_loading(
         state.movie = None;
         frame.0 = None;
         super::load_timing::mark("loading presentation closed");
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD window update maximum gap: {:.3} ms", state.max_loading_gap.as_secs_f64()*1000.);
+        }
     }
 }
 
@@ -679,6 +771,11 @@ fn gpu_ready(
     mut commands: Commands,
     requested: Res<SceneImageRequests>,
     images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    scene_inputs: (
+        Res<super::scene_preparation::SceneGpuInputs>,
+        Res<bevy::render::render_asset::RenderAssets<bevy::render::mesh::RenderMesh>>,
+        Res<bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>,
+    ),
 ) {
     use std::sync::atomic::Ordering;
     let phase = state.0.load(Ordering::Acquire);
@@ -686,6 +783,11 @@ fn gpu_ready(
         if requested.phase == phase
             && requested.generation == state.1.load(Ordering::Acquire)
             && requested.images.iter().all(|id| images.get(*id).is_some())
+            && (phase != GPU_MAP_IMAGES || (
+                scene_inputs.0.images.iter().all(|id| images.get(*id).is_some())
+                && scene_inputs.0.meshes.iter().all(|id| scene_inputs.1.get(*id).is_some())
+                && scene_inputs.0.buffers.iter().all(|id| scene_inputs.2.get(*id).is_some())
+            ))
         {
             state.0.store(phase + 1, Ordering::Release);
         }

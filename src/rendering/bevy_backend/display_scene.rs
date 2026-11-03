@@ -53,6 +53,7 @@ pub struct DisplaySceneFrame(pub Option<DisplayFrame>);
 pub struct DisplayPlugin;
 impl Plugin for DisplayPlugin {
     fn build(&self, app: &mut App) {
+        crate::loading::gate("initial gameplay composition");
         super::camera_scene::register(app);
         super::alpha_depth_scene::register(app);
         super::display_capture::register(app);
@@ -138,11 +139,11 @@ fn render_display(
         Option<&super::auto_exposure::ExposureParameters>,
         &mut Tonemapping,
     )>,
-    mut last_error: Local<Option<String>>,
-    mut last_lens_error: Local<Option<String>>,
+    status: (Local<Option<String>>, Local<Option<String>>, Local<Option<Entity>>),
     capture_request: Res<super::display_capture::DisplayCaptureRequest>,
     mut capture: ResMut<super::display_capture::DisplayCaptureGpu>,
 ) {
+    let (mut last_error, mut last_lens_error, mut ready_view) = status;
     let (camera_gpu, alpha_gpu, fog_gpu) = camera_outputs;
     let Some(frame) = &frame.0 else {
         return;
@@ -401,6 +402,15 @@ fn render_display(
         // Extracted from the unchanged main-world setting again next frame.
         // The backend pass returns immediately for None; never apply both.
         *tonemapping_mode = Tonemapping::None;
+        // Pipeline idleness alone can precede the first successful scene.
+        // Publish readiness only after the real atmosphere/camera/lens chain.
+        if *ready_view != Some(frame.camera) && water_frame.0.as_ref().is_some_and(|water| {
+            camera_gpu.half_colour(frame.camera, water.matrices.frame).is_some()
+                && fog_gpu.camera_depth(frame.camera, water.matrices.frame).is_some()
+        }) && (lens_drawn || frame.lens.as_ref().is_none_or(|lens| lens.settings.skip_post_process)) {
+            crate::loading::complete("initial gameplay composition");
+            *ready_view = Some(frame.camera);
+        }
         Ok(())
     })();
     match result {

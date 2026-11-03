@@ -1,4 +1,5 @@
 //! Texture streaming.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::ImageAccess;
 use super::{
     Arc, AssetId, DecalMaterial, Extent3d, GpuImage, ImageAddressMode, ImageSampler,
@@ -14,7 +15,7 @@ use bevy::prelude::*;
 pub(super) fn load_resident_2d(
     catalog: &archive::Catalog,
     name: &str,
-    images: &mut Assets<Image>,
+    images: &mut dyn AssetWrite<Image>,
     resident: &mut std::collections::HashMap<String, Handle<Image>>,
 ) -> Result<Handle<Image>, String> {
     let path = material::image_load_resource(catalog, name)
@@ -59,13 +60,17 @@ pub(super) struct DiffuseMipState {
 /// Explicit init/common image references survive world destruction. Capture
 /// the current streamed identity at a map boundary, never a second base copy.
 /// No registry lookup or lock is added to ordinary gameplay streaming.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub(super) struct SharedImages {
     paths: std::collections::HashSet<String>,
     resident: std::collections::HashMap<String, (Option<u8>, Handle<Image>, DiffuseMipState)>,
 }
 
 impl SharedImages {
+    pub(super) fn can_reuse(&self, path: &str, preferred: Option<u8>) -> bool {
+        self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
+    }
+
     pub fn new(catalog: &archive::Catalog) -> Result<Self, String> {
         let language = crate::assets::lang::read_text_language(catalog.base())?;
         let mut paths = std::collections::HashSet::new();
@@ -209,7 +214,8 @@ pub(super) fn initialize_scene_images(
     catalog: &archive::Catalog,
     common: bool,
 ) -> Result<Vec<AssetId<Image>>, String> {
-    with_scene_images(world, |scene, images, probes, decals, skies, shared| {
+    let mut prepared = world.remove_resource::<PreparedBaseImages>().unwrap_or_default();
+    let result =     with_scene_images(world, |scene, images, probes, decals, skies, shared| {
         let mut ids = Vec::new();
         let (mut loaded, mut bytes, mut reused) = (0, 0, 0);
         for slot in 0..scene.diffuse_image_paths.len() {
@@ -218,7 +224,11 @@ pub(super) fn initialize_scene_images(
             }
             let resident = scene.diffuse_mip_states[slot].resident.is_some();
             let size =
-                initialize_resident_image(catalog, slot, scene, images, probes, decals, skies)?;
+                if let Some(streamed) = prepared.0.remove(&slot) {
+                    commit_resident_image(streamed, slot, scene, images, probes, decals, skies)?
+                } else {
+                    initialize_resident_image(catalog, slot, scene, images, probes, decals, skies)?
+                };
             if resident {
                 reused += 1;
             } else {
@@ -231,7 +241,24 @@ pub(super) fn initialize_scene_images(
         }
         info!(target: "dh2::textures", common, resident_images=loaded, resident_bytes=bytes, reused_images=reused, "Scene base mips initialized");
         Ok(ids)
-    })
+    });
+    if !prepared.0.is_empty() { world.insert_resource(prepared); }
+    result
+}
+
+#[derive(Resource, Default)]
+pub(super) struct PreparedBaseImages(pub std::collections::HashMap<usize, StreamedDiffuse>);
+
+pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages) -> Result<PreparedBaseImages, String> {
+    let mut result = PreparedBaseImages::default();
+    for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
+        if shared.can_reuse(path, queue.preferred_mip) { continue; }
+        let mut streamed = read_streamed_diffuse_at_target(catalog, path, TextureReadTarget::Initial(queue.preferred_mip))?
+            .ok_or_else(|| format!("resident image is absent: {path}"))?;
+        streamed.image.data = Some(std::mem::take(&mut streamed.uploads).into_iter().flat_map(|mip| mip.payload).collect());
+        result.0.insert(slot, streamed);
+    }
+    Ok(result)
 }
 
 pub(super) struct StreamedDiffuse {
@@ -877,13 +904,19 @@ pub(super) fn initialize_resident_image(
         TextureReadTarget::Initial(queue.preferred_mip),
     )?
     .ok_or_else(|| format!("resident image is absent: {path}"))?;
-    let data: Vec<_> = streamed
-        .uploads
-        .into_iter()
-        .flat_map(|mip| mip.payload)
-        .collect();
-    let bytes = data.len();
-    streamed.image.data = Some(data);
+    commit_resident_image(streamed, slot, queue, images, probe_materials, decal_materials, sky_materials)
+}
+
+fn commit_resident_image(
+    mut streamed: StreamedDiffuse, slot: usize, queue: &mut SceneRenderQueue,
+    images: &mut Assets<Image>, probe_materials: &mut Assets<ProbeMaterial>,
+    decal_materials: &mut Assets<DecalMaterial>,
+    sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+) -> Result<usize, String> {
+    if !streamed.uploads.is_empty() {
+        streamed.image.data = Some(streamed.uploads.into_iter().flat_map(|mip| mip.payload).collect());
+    }
+    let bytes = streamed.image.data.as_ref().map_or(0, Vec::len);
     let mip_count = streamed.image.texture_descriptor.mip_level_count;
     if let Some(handle) = &queue.diffuse_image_handles[slot] {
         // Fulfil the registered identity. Its material references already wait
@@ -942,11 +975,13 @@ pub(super) fn stream_visible_textures(
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     arms: Option<Res<super::player_arms::PlayerArms>>,
     mut instance_slots: Local<InstanceImageSlots>,
+    mut initial_view_ready: Local<bool>,
 ) {
     let Some(mut worker) = worker else {
         return;
     };
     if queue.is_added() {
+        *initial_view_ready = false;
         *instance_slots = Default::default();
     }
     queue.texture_stream_frame += 1;
@@ -1245,7 +1280,7 @@ pub(super) fn stream_visible_textures(
             .as_ref()
             .map(|handle| handle.id());
         if matches!(target, TextureReadTarget::Exact(_, _)) {
-            let Some(old) = previous.and_then(|id| images.get(id)) else {
+            let Some(old) = previous.and_then(|id| Assets::get(&*images, id)) else {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
                         "exact_mip_lost_resident stream_frame={frame} slot={slot} path={path:?} target={target:?} recorded_resident={:?} handle_id={previous:?}",
@@ -1418,6 +1453,12 @@ pub(super) fn stream_visible_textures(
                 break;
             }
         }
+    }
+    if !*initial_view_ready && queue.texture_viewport_pixels != 0 && worker.inflight_count == 0
+        && queue.diffuse_image_pending.iter().all(Option::is_none) {
+        *initial_view_ready = true;
+        crate::loading::complete("initial view texture residency");
+        super::load_timing::mark("initial view texture residency ready");
     }
 }
 

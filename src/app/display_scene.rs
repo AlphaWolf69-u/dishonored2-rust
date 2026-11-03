@@ -1,5 +1,6 @@
 //! Prepared level display inputs. Gameplay updates consume typed values only;
 //! images and registered defaults are read from archives once during setup.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use crate::{
     assets::{archive::Catalog, environment::ParameterReader},
     entities::EnvironmentRenderParameters,
@@ -62,7 +63,7 @@ impl DisplayScene {
         world: &EnvironmentRenderParameters,
         areas: &[AreaEnvironment],
         screen_fx: Option<&EnvironmentRenderParameters>,
-        images: &mut Assets<Image>,
+        images: &mut dyn AssetWrite<Image>,
     ) -> Result<Self, String> {
         let empty = EnvironmentRenderParameters { layers: Vec::new() };
         let default_reader = ParameterReader {
@@ -262,7 +263,7 @@ impl DisplayScene {
 fn load_cube(
     catalog: &Catalog,
     name: &str,
-    images: &mut Assets<Image>,
+    images: &mut dyn AssetWrite<Image>,
     resident: &mut HashMap<String, Handle<Image>>,
 ) -> Result<Handle<Image>, String> {
     let key = if name.eq_ignore_ascii_case("_defaultColorCube") {

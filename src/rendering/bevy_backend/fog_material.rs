@@ -1,5 +1,6 @@
 //! Shared gameplay-camera inputs for transparent material fog. Image handles
 //! persist across frames; the render owner fills them before transparent draws.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{
     fog::{FogFrame, FogParameters, FogView},
     fog_targets::FogExtents,
@@ -46,7 +47,7 @@ pub struct FogMaterialBindings {
 }
 impl FogMaterialBindings {
     /// Valid disabled transport for renderers/tests without an atmosphere.
-    pub fn disabled(images: &mut Assets<Image>, buffers: &mut Assets<ShaderBuffer>) -> Self {
+    pub fn disabled(images: &mut (impl AssetWrite<Image> + ?Sized), buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized)) -> Self {
         // AsBindGroup's absent-image fallback is a colour texture even for a
         // depth binding. Keep a real depth view while readiness stays zero.
         FogMaterialResources::new(images, buffers).bindings()
@@ -116,7 +117,7 @@ impl FogMaterialResources {
     pub fn publish_bindings(&mut self) -> Option<FogMaterialBindings> {
         std::mem::take(&mut self.bindings_dirty).then(|| self.bindings())
     }
-    pub fn new(images: &mut Assets<Image>, buffers: &mut Assets<ShaderBuffer>) -> Self {
+    pub fn new(images: &mut (impl AssetWrite<Image> + ?Sized), buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized)) -> Self {
         use bevy::{
             image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
             render::render_resource::TextureFormat,
@@ -185,7 +186,7 @@ impl FogMaterialResources {
     /// Floating fog/exposure changes update the shared buffer, never materials.
     pub fn resize(
         &mut self,
-        images: &mut Assets<Image>,
+        images: &mut (impl AssetWrite<Image> + ?Sized),
         extents: FogExtents,
     ) -> Result<bool, String> {
         if self.extents == Some(extents) {
@@ -224,7 +225,7 @@ impl FogMaterialResources {
     pub fn publish_objects(
         &mut self,
         frame: super::fog_objects::FogObjectFrame,
-        buffers: &mut Assets<ShaderBuffer>,
+        buffers: &mut (impl AssetWrite<ShaderBuffer> + ?Sized),
     ) -> Result<(), String> {
         let size = (frame.capacity.max(1) * super::fog_objects::FogObjectParameters::SIZE) as u64;
         let buffer = buffers

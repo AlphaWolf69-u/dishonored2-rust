@@ -46,8 +46,8 @@ pub(super) fn prepare(
     world: &crate::world_mesh::WorldMesh,
     instances: &[RenderInstance],
     resolver: &mut MaterialResolver,
-    meshes: &mut Assets<Mesh>,
-    commands: &mut Commands,
+    meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
 ) -> Images {
     let mut names = BTreeSet::new();
     for decal in sources
@@ -131,7 +131,7 @@ pub(super) fn prepare(
                 .ok_or("projected decal controls absent")?;
             let depth_box =
                 program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox;
-            let proxy = |commands: &mut Commands, mesh: Handle<Mesh>, layout: u32| {
+            let proxy = |commands: &mut super::setup_commands::SetupCommands, mesh: Handle<Mesh>, layout: u32| {
                 let skinned = meshes
                     .get(&mesh)
                     .is_some_and(|mesh| mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX));

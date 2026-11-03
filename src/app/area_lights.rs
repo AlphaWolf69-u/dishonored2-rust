@@ -10,7 +10,13 @@ pub(super) fn load(
     mut commands: Commands,
     scene: Res<SceneData>,
     mut images: ResMut<Assets<Image>>,
+    prepared: Option<Res<AreaLightSources>>,
 ) {
+    if prepared.is_some() { return; }
+    commands.insert_resource(prepare(&scene, &mut images));
+}
+
+pub(super) fn prepare(scene: &SceneData, images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>) -> AreaLightSources {
     let result = (|| {
         let mut resident = HashMap::new();
         let mut aliases = HashMap::new();
@@ -30,7 +36,7 @@ pub(super) fn load(
                                 .as_ref()
                                 .ok_or("area-light image catalog unavailable")?,
                             name,
-                            &mut images,
+                            images,
                             &mut resident,
                             &mut aliases,
                         )
@@ -39,5 +45,5 @@ pub(super) fn load(
             })
             .collect()
     })();
-    commands.insert_resource(AreaLightSources(result));
+    AreaLightSources(result)
 }

@@ -1,4 +1,5 @@
 //! Publish placed world water's source geometry without host transform baking.
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::{world_instances::WorldMatrices, world_mesh, MaterialHandle, WorldShadowMeshSources};
 use crate::rendering::bevy_backend::{
     water_scene::{WaterWorldMesh, WaterWorldMeshes},
@@ -9,9 +10,9 @@ use bevy::{prelude::*, render::storage::ShaderBuffer};
 pub(super) fn prepare_world_geometry(
     world: &world_mesh::WorldMesh,
     sources: &WorldShadowMeshSources,
-    meshes: &mut Assets<Mesh>,
+    meshes: &mut dyn AssetWrite<Mesh>,
     matrices: &mut WorldMatrices,
-    buffers: &mut Assets<ShaderBuffer>,
+    buffers: &mut dyn AssetWrite<ShaderBuffer>,
 ) -> WaterWorldMeshes {
     let objects: std::collections::HashMap<_, _> = sources
         .objects

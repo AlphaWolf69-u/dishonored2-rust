@@ -22,6 +22,7 @@ use super::{
     WorldShadowMeshSources, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES, DEFAULT_NEAR,
 };
 use bevy::prelude::*;
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
 // Model vtable+88 (1bd8b0): the center of the current world bounds,
 // shared by every material surface, rather than its vertex-density centroid.
@@ -68,7 +69,7 @@ fn parallel_light_inputs(
 pub(super) fn setup(
     mut commands: Commands,
     mut scene: ResMut<SceneData>,
-    mut programs: Option<ResMut<ProgramCacheSource>>,
+    programs: (Option<ResMut<ProgramCacheSource>>, Option<Res<super::scene_preparation::SetupPrepared>>),
     navigation: Option<Res<NavigationWorld>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
@@ -83,13 +84,42 @@ pub(super) fn setup(
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
     effect_graphs: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>,
 ) {
+    let (mut programs, prepared) = programs;
+    if prepared.is_some() { return; }
+    let mut commands = super::setup_commands::SetupCommands::Direct(commands);
+    prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
+        &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
+        &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
+        &mut world_matrices, machinery.as_deref(), environment_volumes.as_deref(),
+        effect_graphs.as_deref(), None);
+}
+
+pub(super) fn prepare(
+    commands: &mut super::setup_commands::SetupCommands,
+    scene: &mut SceneData,
+    mut programs: Option<&mut ProgramCacheSource>,
+    navigation: Option<&NavigationWorld>,
+    meshes: &mut dyn AssetWrite<Mesh>,
+    images: &mut dyn AssetWrite<Image>,
+    probe_materials: &mut dyn AssetWrite<ProbeMaterial>,
+    sky_materials: &mut dyn AssetWrite<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
+    probe_sh_buffers: &mut dyn AssetWrite<ShaderBuffer>,
+    render_device: &RenderDevice,
+    decal_materials: &mut dyn AssetWrite<DecalMaterial>,
+    view_settings: &ViewSettings,
+    world_matrices: &mut super::world_instances::WorldMatrices,
+    machinery: Option<&super::machinery::AmbientMachinery>,
+    environment_volumes: Option<&super::state::EnvironmentVolumes>,
+    effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
+    shared_images: Option<&super::texture_streaming::SharedImages>,
+) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
     let catalog_storage = scene.catalog.take();
     let catalog = catalog_storage.as_deref();
     let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
-        &mut images,
-        &mut probe_sh_buffers,
+        images,
+        probe_sh_buffers,
     );
     commands.insert_resource(fog_material.clone());
     if let (Some(catalog), Some(parameters)) =
@@ -122,7 +152,7 @@ pub(super) fn setup(
             &scene.area_environments,
             sun,
             DEFAULT_FAR,
-            &mut images,
+            images,
         )
         .unwrap_or_else(|error| panic!("fog scene preparation failed: {error}"));
         let screen_fx = super::pause_fx::load(catalog)
@@ -141,10 +171,10 @@ pub(super) fn setup(
             parameters,
             &scene.area_environments,
             screen_fx_environment.as_ref(),
-            &mut images,
+            images,
         )
         .unwrap_or_else(|error| panic!("display scene preparation failed: {error}"));
-        fog.upload_volumes(std::mem::take(&mut scene.area_fog), &mut meshes);
+        fog.upload_volumes(std::mem::take(&mut scene.area_fog), meshes);
         commands.insert_resource(fog);
         commands.insert_resource(display);
     }
@@ -313,19 +343,19 @@ pub(super) fn setup(
     sampler.anisotropy_clamp = 1;
     let linear_clamp_image = images.add(linear_clamp);
     let material_exposure = probe_sh_buffers.add(auto_exposure::initial_material_exposure());
-    let vegetation = super::vegetation_wind::VegetationMaterials::new(&mut probe_sh_buffers);
+    let vegetation = super::vegetation_wind::VegetationMaterials::new(probe_sh_buffers);
     let loaded_reflections =
         super::environment_reflection::load(
             catalog,
             scene.environment_probes.as_deref(),
-            &mut images,
-            &mut probe_sh_buffers,
+            images,
+            probe_sh_buffers,
         )
         .expect("installed environment reflections");
     let water_probes = loaded_reflections.water_probes(
         scene.environment_probes.as_deref(),
         vertex_probe_buffer.clone(),
-        &mut probe_sh_buffers,
+        probe_sh_buffers,
     );
     commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterLighting(
         water_probes,
@@ -347,10 +377,10 @@ pub(super) fn setup(
         anisotropic_sampler_image,
         catalog,
         programs: programs.as_deref_mut().map(|source| &mut source.0),
-        probe_materials: &mut probe_materials,
-        sky_materials: &mut sky_materials,
-        decal_materials: &mut decal_materials,
-        probe_sh_buffers: &mut probe_sh_buffers,
+        probe_materials: probe_materials,
+        sky_materials: sky_materials,
+        decal_materials: decal_materials,
+        probe_sh_buffers: probe_sh_buffers,
         probe_sh_buffer,
         vertex_probe_buffer,
         shadow_buffer,
@@ -377,7 +407,7 @@ pub(super) fn setup(
     };
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
-    let mut world_shadow_mesh_sources = WorldShadowMeshSources::prepare(&scene.world, &mut meshes);
+    let mut world_shadow_mesh_sources = WorldShadowMeshSources::prepare(&scene.world, meshes);
     super::load_timing::mark("setup: world shadow mesh sources");
     let mut world_admissions = HashMap::<String, Result<u8, String>>::new();
     let mut vegetation_meshes = VegetationMeshInputs::default();
@@ -585,7 +615,7 @@ pub(super) fn setup(
             vegetation_meshes.prepare(
                 resolver.needs_vegetation_channels(&render_instance.material),
                 &render_instance.mesh,
-                &mut meshes,
+                meshes,
                 &source.positions,
                 &source.packed_channels,
             );
@@ -595,7 +625,7 @@ pub(super) fn setup(
         }
     }
     super::load_timing::mark("setup: world geometry and materials");
-    super::load_timing::asset_bytes(&meshes, &images);
+
     if trace_startup {
         eprintln!(
             "Startup trace: BWM setup finished ({} render instances, {} diffuse paths discovered); beginning placed-model setup",
@@ -777,7 +807,7 @@ pub(super) fn setup(
                             instance,
                         )
                     };
-                    retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
+                    retain_model_shadow_position(meshes, &mesh, &surface.positions);
                     if let Some(mut mesh) = meshes.get_mut(&mesh) {
                         // Physics-system skinning re-poses these every frame.
                         if deformed.contains(&number) {
@@ -806,7 +836,7 @@ pub(super) fn setup(
                     vegetation_meshes.prepare(
                         resolver.needs_vegetation_channels(&mat.handle),
                         &mesh,
-                        &mut meshes,
+                        meshes,
                         &surface.positions,
                         &surface.packed_channels,
                     );
@@ -1012,11 +1042,11 @@ pub(super) fn setup(
                     instance,
                 )
             };
-            retain_model_shadow_position(&mut meshes, &mesh, &surface.positions);
+            retain_model_shadow_position(meshes, &mesh, &surface.positions);
             vegetation_meshes.prepare(
                 resolver.needs_vegetation_channels(&mat.handle),
                 &mesh,
-                &mut meshes,
+                meshes,
                 &surface.positions,
                 &surface.packed_channels,
             );
@@ -1104,7 +1134,7 @@ pub(super) fn setup(
         );
     }
     if let Some(catalog) = catalog {
-        match super::player_arms::load_player_arms(catalog, &mut resolver, &mut meshes, &mut commands) {
+        match super::player_arms::load_player_arms(catalog, &mut resolver, meshes, commands) {
             Ok(arms) => commands.insert_resource(arms),
             Err(error) => eprintln!("First-person arms unavailable: {error}"),
         }
@@ -1675,7 +1705,7 @@ pub(super) fn setup(
         targets[active].label
     );
     println!(
-        "Controls: click to capture mouse, mouse/arrows look, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F pick up mapped items; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
+        "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F pick up mapped items; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
     );
     println!(
         "Mapped pickups with explicit item and quantity: {}",
@@ -1743,9 +1773,9 @@ pub(super) fn setup(
         let sources = Arc::new(
             crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
-        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, &mut meshes, &mut commands);
+        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, meshes, commands);
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
-            &mut resolver, &mut meshes, &mut commands));
+            &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
@@ -1782,10 +1812,10 @@ pub(super) fn setup(
     );
     commands.insert_resource(vegetation_meshes);
     commands.insert_resource(super::water_objects::prepare_world_geometry(
-        &scene.world, &world_shadow_mesh_sources, &mut meshes,
-        &mut world_matrices, resolver.probe_sh_buffers,
+        &scene.world, &world_shadow_mesh_sources, meshes,
+        world_matrices, resolver.probe_sh_buffers,
     ));
-    world_shadow_mesh_sources.release_cpu_copies(&mut meshes);
+    world_shadow_mesh_sources.release_cpu_copies(meshes);
     commands.insert_resource(world_shadow_mesh_sources);
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
@@ -1843,6 +1873,10 @@ pub(super) fn setup(
     if let Some(catalog) = catalog {
         super::load_timing::keep_load_list(catalog);
     }
+    if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
+        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared)
+            .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
+    }
     let image_catalog = catalog_storage.clone();
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
@@ -1882,8 +1916,8 @@ pub(super) fn setup(
 fn spawn_particle_surfaces(
     sources: &crate::rendering::particles::world_sources::WorldFxSources,
     resolver: &mut MaterialResolver,
-    meshes: &mut Assets<Mesh>,
-    commands: &mut Commands,
+    meshes: &mut dyn AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
 ) -> Vec<(super::MaterialHandle, Vec<(usize, crate::rendering::bevy_backend::surface_gpu::ImageRole)>)> {
     let mut proxies = Vec::new();
     for (source, material, model) in sources.world_meshes() {

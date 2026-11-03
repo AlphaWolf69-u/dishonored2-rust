@@ -852,6 +852,8 @@ pub(super) fn prepare_level(
                     .map_err(std::io::Error::other)? as u64,
             },
         )
+        .insert_resource(super::loading_fade::LoadingFade::load(catalog.as_ref().unwrap(), entity_document.as_ref())
+            .map_err(std::io::Error::other)?)
         .insert_resource(SceneData {
             source_path: path.clone(),
             world,
