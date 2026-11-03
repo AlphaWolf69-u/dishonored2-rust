@@ -2,10 +2,37 @@
 //! References are global; media keeps the bank that owns its source object.
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
-    PlaybackContainer, PlaybackNode, PlaybackSwitch};
-use std::{borrow::Cow, collections::{HashMap, HashSet}, io, sync::Arc};
+    PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, io};
 
-struct LoadedBank<'a> { bytes: Cow<'a, [u8]>, feedback: bool }
+struct LoadedBank<'a> { bytes: BankBytes<'a>, feedback: bool }
+
+enum BankBytes<'a> {
+    Borrowed(&'a [u8]),
+    Shared(MediaBytes),
+}
+
+impl std::ops::Deref for BankBytes<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self { Self::Borrowed(bytes) => bytes, Self::Shared(bytes) => bytes }
+    }
+}
+
+impl BankBytes<'_> {
+    fn media(&self, bytes: &[u8]) -> MediaBytes {
+        if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
+            return bytes.into();
+        }
+        match self {
+            Self::Borrowed(_) => bytes.into(),
+            Self::Shared(owner) => {
+                let start = bytes.as_ptr() as usize - owner.as_ptr() as usize;
+                owner.slice(start..start + bytes.len())
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Object { kind: u8, bank: usize, start: usize, length: usize }
@@ -50,6 +77,10 @@ impl<'a> PlaybackBanks<'a> {
     /// objects (1410f2370 / 1410f2270 / 1410f6450). Standard codec sources
     /// retain their resident media too (1410f1910 / 141122400, flags 4/12|128).
     pub fn insert(&mut self, bytes: Cow<'a, [u8]>) -> io::Result<usize> {
+        let bytes = match bytes {
+            Cow::Borrowed(bytes) => BankBytes::Borrowed(bytes),
+            Cow::Owned(bytes) => BankBytes::Shared(bytes.into()),
+        };
         let chunks = bank_chunks(&bytes)?;
         let feedback = bank_feedback(&chunks)?;
         let mut objects = chunks.get(b"HIRC").map(|hierarchy| bank_objects(hierarchy))
@@ -77,6 +108,12 @@ impl<'a> PlaybackBanks<'a> {
 
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
+    /// Allocation identities shared with the prepared encoded sources.
+    pub fn resident_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.banks.iter().filter_map(|bank| match &bank.bytes {
+            BankBytes::Shared(bytes) => Some(bytes.allocation()), BankBytes::Borrowed(_) => None,
+        })
+    }
     /// The actual parent chain used by pending-action cancellation
     /// (141115df0 / 1410e9950), independently of playlist membership.
     pub fn actor_hierarchy(&self, id: u32) -> io::Result<Option<Vec<u32>>> {
@@ -241,7 +278,7 @@ impl<'a> PlaybackBanks<'a> {
     }
 
     fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,
-        visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<(Arc<[u8]>, Option<u32>)>>) -> io::Result<Option<PlaybackNode>> {
+        visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<(MediaBytes, Option<u32>)>>) -> io::Result<Option<PlaybackNode>> {
         if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
         let Some(&object) = self.actors.get(&id) else { visited.remove(&id); return Ok(None); };
         let bytes = self.bytes(object);
@@ -282,8 +319,8 @@ impl<'a> PlaybackBanks<'a> {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
-                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id))?
-                        .map(|(media, streamed)| (Arc::<[u8]>::from(media), streamed));
+                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id),
+                        |bytes| self.banks[object.bank].bytes.media(bytes))?;
                     entry.insert(source).clone()
                 },
             };

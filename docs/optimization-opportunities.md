@@ -5,6 +5,28 @@ not fixed while the module was open. Each entry: what, where, measured or
 estimated gain, what it must keep equal to the original, and why it waits.
 Remove an entry when it is implemented and measured.
 
+- Wwise playback preparation repeatedly parses/clones parent property chains
+  into event graphs (`assets::wwise::playback::media_properties`,
+  `app::audio::graph::Definition::decode`). The load attribution includes
+  49 MiB in bank lookup and 25 MiB in graph construction; only an unmeasured
+  fraction is these properties. Sharing immutable chains could save tens of
+  MiB and startup parsing, but needs per-owner accounting before changing
+  graph-local node indexing and inherited property evaluation. Encoded media
+  duplication is addressed separately; do not count logical source lengths
+  as physical allocations when the sources share bank DATA.
+- Navigation candidates still allocate a temporary Vec per query, as before.
+  At roughly 1.4 microseconds/query in the measured release walk, reusable
+  per-worker scratch is a low priority. Shared mutable scratch would serialize
+  concurrent queries; measure actual allocator CPU before adding ownership
+  machinery. The immutable triangle/cell backing is now packed, with no
+  per-query compressed-mesh decoding.
+- UI gradient ramps remain cached by immutable content across movie opens.
+  Constant authored ramps reuse their texture, but an animated sequence of
+  distinct ramps could grow that cache. No growth was measured in this audit;
+  inspect a real animated-ramp workload and the GDraw ramp lifetime before
+  imposing eviction that could add re-uploads. Obsolete bitmap/glyph textures
+  now release on movie close; their IDs/generations cannot be reused.
+
 | Opportunity | Where | Gain | Keeps | Status |
 |---|---|---|---|---|
 | Share parsed immutable Iggy libraries between players | `flash::Player::load_installed` thread-local raw-byte cache | one source-byte and relocation-table copy per extra loaded instance of a library; the installed English font library alone is 1,453,747 bytes | each player's separate AVM2 objects, timelines, host and font-cache identity | recorded in the font acquisition sweep: the current cache keeps raw bytes and each player reparses a clone. Measure concurrent player ownership before replacing it with a parsed-file owner; serialized player-pointer fields must remain interpreted through the requesting player |

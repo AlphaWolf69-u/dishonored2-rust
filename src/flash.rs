@@ -1,6 +1,7 @@
 //! The Flash runtime used by the game's Iggy UI (`Engine\flash`).
 pub mod avm2;
 pub mod bitmap;
+pub mod bitmap_resources;
 pub mod bounds;
 pub mod display;
 pub mod events;

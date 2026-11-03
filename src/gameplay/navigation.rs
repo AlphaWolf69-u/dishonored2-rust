@@ -27,12 +27,29 @@ struct Triangle {
 
 pub struct CollisionWorld {
     triangles: Vec<Triangle>,
-    /// foldhash (hashbrown's default): looked up per cell of every query.
-    cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>>,
-    large: Vec<usize>,
+    index: TriangleIndex,
     owner_ids: HashMap<String, Vec<u32>>,
     owner_active: Vec<bool>,
     materials: Vec<PhysicsMaterial>,
+}
+
+/// Host broad phase replacing Havok's compressed-mesh tree. Once built, its
+/// lists are immutable: pack them without changing triangle/query order.
+enum TriangleIndex {
+    Packed {
+        cells: hashbrown::HashMap<(i32, i32, i32), std::ops::Range<usize>>,
+        indices: Box<[u32]>,
+        large: Box<[u32]>,
+    },
+    /// Same-build memory/CPU comparison; never selected during normal play.
+    Expanded(ExpandedIndex),
+}
+
+#[derive(Default)]
+struct ExpandedIndex {
+    /// foldhash (hashbrown's default): looked up per cell of every query.
+    cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>>,
+    large: Vec<usize>,
 }
 
 impl CollisionWorld {
@@ -68,10 +85,10 @@ impl CollisionWorld {
         for (index, id) in owners.iter().enumerate() {
             owner_ids.entry(id.clone()).or_default().push(index as u32);
         }
+        let mut build_index = ExpandedIndex::default();
         let mut world = Self {
             triangles: Vec::new(),
-            cells: hashbrown::HashMap::new(),
-            large: Vec::new(),
+            index: TriangleIndex::Expanded(ExpandedIndex::default()),
             owner_ids,
             owner_active: vec![true; owners.len()],
             materials,
@@ -106,16 +123,49 @@ impl CollisionWorld {
                 * (high.1 - low.1 + 1) as i64
                 * (high.2 - low.2 + 1) as i64;
             if cells > 4096 {
-                world.large.push(index);
+                // Triangle IDs are also the public u32 physics shape keys.
+                build_index.large.push(index);
                 continue;
             }
             for x in low.0..=high.0 {
                 for y in low.1..=high.1 {
                     for z in low.2..=high.2 {
-                        world.cells.entry((x, y, z)).or_default().push(index);
+                        build_index.cells.entry((x, y, z)).or_default().push(index);
                     }
                 }
             }
+        }
+        let expanded_bytes = world.triangles.capacity() * std::mem::size_of::<Triangle>()
+            + build_index.large.capacity() * std::mem::size_of::<usize>()
+            + build_index.cells.values().map(|v| v.capacity() * std::mem::size_of::<usize>()).sum::<usize>()
+            + build_index.cells.capacity() * std::mem::size_of::<((i32, i32, i32), Vec<usize>)>();
+        if std::env::var("DH2_DEBUG_COLLISION_EXPANDED").as_deref() == Ok("1") {
+            world.index = TriangleIndex::Expanded(build_index);
+        } else {
+            let count: usize = build_index.cells.values().map(Vec::len).sum();
+            let mut indices = Vec::with_capacity(count);
+            let mut cells = hashbrown::HashMap::with_capacity(build_index.cells.len());
+            for (cell, list) in build_index.cells {
+                let start = indices.len();
+                indices.extend(list.into_iter().map(|id| u32::try_from(id).expect("collision shape key exceeds u32")));
+                cells.insert(cell, start..indices.len());
+            }
+            let large = build_index.large.into_iter().map(|id| u32::try_from(id).expect("collision shape key exceeds u32")).collect();
+            world.triangles.shrink_to_fit();
+            world.index = TriangleIndex::Packed { cells, indices: indices.into_boxed_slice(), large };
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let bytes = match &world.index {
+                TriangleIndex::Expanded(_) => expanded_bytes,
+                TriangleIndex::Packed { cells, indices, large } => {
+                    world.triangles.capacity() * std::mem::size_of::<Triangle>()
+                        + (indices.len() + large.len()) * std::mem::size_of::<u32>()
+                        + cells.capacity() * std::mem::size_of::<((i32, i32, i32), std::ops::Range<usize>)>()
+                }
+            };
+            println!("MEMORY collision index: bytes={bytes} expanded_bytes={expanded_bytes} triangles={} cells={}", world.triangles.len(), match &world.index {
+                TriangleIndex::Packed { cells, .. } => cells.len(), TriangleIndex::Expanded(index) => index.cells.len(),
+            });
         }
         world
     }
@@ -135,7 +185,10 @@ impl CollisionWorld {
     }
 
     pub fn large_triangle_count(&self) -> usize {
-        self.large.len()
+        match &self.index {
+            TriangleIndex::Packed { large, .. } => large.len(),
+            TriangleIndex::Expanded(index) => index.large.len(),
+        }
     }
 
     pub fn nearby_triangle_count(&self, point: Vec3, radius: f32) -> usize {
@@ -208,14 +261,34 @@ impl CollisionWorld {
     /// Matching triangle indices in ascending order, so results never depend
     /// on hash order (first_hit_details keeps the first of equal distances).
     fn candidates(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<usize> {
+        static TIMING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let started = (*TIMING.get_or_init(|| std::env::var("DH2_DEBUG_COLLISION_TIMING").as_deref() == Ok("1")))
+            .then(std::time::Instant::now);
         let low = cell(min);
         let high = cell(max);
-        let mut found = self.large.clone();
-        for x in low.0..=high.0 {
-            for y in low.1..=high.1 {
-                for z in low.2..=high.2 {
-                    if let Some(indices) = self.cells.get(&(x, y, z)) {
-                        found.extend(indices.iter().copied());
+        let mut found;
+        match &self.index {
+            TriangleIndex::Packed { cells, indices, large } => {
+                found = large.iter().map(|&id| id as usize).collect::<Vec<_>>();
+                for x in low.0..=high.0 {
+                    for y in low.1..=high.1 {
+                        for z in low.2..=high.2 {
+                            if let Some(range) = cells.get(&(x, y, z)) {
+                                found.extend(indices[range.clone()].iter().map(|&id| id as usize));
+                            }
+                        }
+                    }
+                }
+            }
+            TriangleIndex::Expanded(index) => {
+                found = index.large.clone();
+                for x in low.0..=high.0 {
+                    for y in low.1..=high.1 {
+                        for z in low.2..=high.2 {
+                            if let Some(indices) = index.cells.get(&(x, y, z)) {
+                                found.extend(indices.iter().copied());
+                            }
+                        }
                     }
                 }
             }
@@ -230,6 +303,20 @@ impl CollisionWorld {
         });
         found.sort_unstable();
         found.dedup();
+        if let Some(started) = started {
+            thread_local! {
+                static COST: std::cell::Cell<(u64, u128, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
+            }
+            let elapsed = started.elapsed().as_nanos();
+            COST.with(|cost| {
+                let (calls, ns, hits) = cost.get();
+                let next = (calls + 1, ns + elapsed, hits + found.len() as u64);
+                cost.set(next);
+                if next.0 % 512 == 0 {
+                    println!("PERF collision candidates: calls={} ns={} candidates={}", next.0, next.1, next.2);
+                }
+            });
+        }
         found
     }
 

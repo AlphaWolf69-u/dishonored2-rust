@@ -351,6 +351,7 @@ const LEVEL_SOUNDS_GATE: &str = "level emitter and world FX sound events";
 
 /// Prepare `events` not prepared yet on all cores. Returns how many were.
 fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
+    let prepare_started = std::time::Instant::now();
     let events: Vec<u32> = events.iter().copied().filter(|e| !registry.sources.contains_key(e)).collect();
     let shared = &*registry;
     let pool = bevy::tasks::ComputeTaskPool::get();
@@ -369,6 +370,16 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32]) -> usize {
     }).into_iter().flatten().collect();
     let count = prepared.len();
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        println!("PERF sound preparation: events={count} wall_ms={:.3}", prepare_started.elapsed().as_secs_f64() * 1000.0);
+        let banks = registry.library.resident_allocations().collect::<HashMap<_, _>>();
+        let sources = graph::resident_allocations();
+        let mut owners = banks.clone();
+        owners.extend(sources.iter().copied());
+        println!("MEMORY sound encoded residency: bank_bytes={} source_allocation_bytes={} unique_bytes={} source_owners={} shared_bank_owners={}",
+            banks.values().sum::<usize>(), sources.iter().copied().collect::<HashMap<_, _>>().values().sum::<usize>(),
+            owners.values().sum::<usize>(), sources.iter().copied().collect::<HashMap<_, _>>().len(),
+            sources.iter().filter(|(id, _)| banks.contains_key(id)).count());
+        graph::capture_media_signatures();
         for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
         }

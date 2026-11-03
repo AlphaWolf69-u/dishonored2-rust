@@ -5,7 +5,7 @@
 //! interpreter nests AS3 calls on the native stack); the main thread sends it
 //! input and frame ticks and receives draw lists.
 use crate::assets::{archive::Catalog, installation, lang};
-use crate::flash::{player::CharRef, raster, render, Player};
+use crate::flash::{bitmap_resources, player::CharRef, render, Player};
 use crate::gameplay::game_clock_runtime::GamePaused;
 use crate::gameplay::pause_state::{self, Character, Movie, Request};
 use crate::platform::bindings::{self, Keyboard};
@@ -81,11 +81,11 @@ struct Loaded {
 
 thread_local! {
     // What the movie thread keeps between opens: the installed catalog and
-    // each library resource's decoded bitmaps (the files do not change while
+    // each library resource's compressed bitmaps (the files do not change while
     // the game runs). Every open still builds a new player, as the game does
     // (`m_cacheResources` 0).
     static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
-    static DECODED: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<(u16, Arc<Image>)>>>> = std::cell::RefCell::new(HashMap::new());
+    static BITMAPS: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<(u16, Arc<Image>)>>>> = std::cell::RefCell::new(HashMap::new());
 }
 
 fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
@@ -98,17 +98,16 @@ fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     Ok(c)
 }
 
-fn decode(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
+fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
     let mut out = HashMap::new();
     for (index, path) in resources {
-        let images = match DECODED.with(|d| d.borrow().get(path).cloned()) {
+        let images = match BITMAPS.with(|d| d.borrow().get(path).cloned()) {
             Some(images) => images,
             None => {
-                let mut decoded = raster::Images::default();
                 let file = player.state.borrow().file(*index);
-                decoded.load(catalog, *index, path, &file)?;
-                let images = std::rc::Rc::new(decoded.images.into_iter().map(|(c, (width, height, rgba))| (c.id, Arc::new(Image { width, height, rgba }))).collect::<Vec<_>>());
-                DECODED.with(|d| d.borrow_mut().insert(path.clone(), images.clone()));
+                let images = std::rc::Rc::new(bitmap_resources::load(catalog, path, &file)?.into_iter()
+                    .map(|(id, image)| (id, Arc::new(image))).collect::<Vec<_>>());
+                BITMAPS.with(|d| d.borrow_mut().insert(path.clone(), images.clone()));
                 images
             }
         };
@@ -133,7 +132,7 @@ impl Loaded {
         let mut images = self.pause_images.clone();
         if let Some((g, resources)) = self.pause.boxes.global_with_resources() {
             let catalog = installed_catalog()?;
-            for (mut c, image) in decode(&catalog, g, resources)? {
+            for (mut c, image) in library_images(&catalog, g, resources)? {
                 c.library += render::LAYER_LIBRARY_OFFSET;
                 images.insert(c, image);
             }
@@ -208,7 +207,7 @@ fn prepare(screen: (i32, i32)) -> Result<Prepared, String> {
     let movie = pause_state::movie(debug_character());
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     pause_state::file_ready(&mut player, screen)?;
-    let images = decode(&catalog, &player, &resources)?;
+    let images = library_images(&catalog, &player, &resources)?;
     let options = pause_state::read_options(&catalog)?;
     // The chapter header's map lookup, cached per map.
     crate::gameplay::map_info::current_loading_info(&catalog);

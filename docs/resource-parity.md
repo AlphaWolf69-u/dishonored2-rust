@@ -32,7 +32,7 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 |---|---|---|
 | `FUN_1400bd480` arkWwiseBankLoader::LoadBanksAndPackages | loads the `common`, `init` and map packages (`FUN_1400bd510`; loose banks `FUN_1400bca10`) | ported: `app::audio::level_banks` reads `wwisedescription.txt` (`FUN_1400c0cb0`, path `FUN_1400c1480`) and loads the `common`, `init` and current-map entries' packages (prefix + language / `sfx.pck`, plus `main-init.pck`) and banks (FNV-1 ids, verified on `main-common-sfx.pck`). Loose-bank mode (`FUN_1400bca10`) not ported |
 | Wwise codecs | media stay encoded; Vorbis and IMA ADPCM decode per voice; Vorbis packets are decoded as installed | ported: `assets::wwise::VorbisCursor`, `AdpcmCursor`; installed Wwise Vorbis packets decoded in place through vendored `lewton` (window flags from the neighbouring packets' modes), with the decoder setup rebuilt once per distinct Wwise setup. Verified: all 132,518 installed Vorbis media give the samples of their ww2ogg conversion |
-| `141122400` | a source references its Sound's media rather than copying it | ported: prepared media shared by Wwise sound id |
+| `141122400`, `1411284e0`, `1410f1910` | a source references its loaded Sound/bank media rather than copying it | ported: prepared media shared by Wwise sound id; owned bank DATA ranges share their encoded backing through ADPCM/Vorbis preparation and playback. Borrowed diagnostic banks copy because they do not own their source lifetime. Parallel preparation publishes one cached source identity. `host:` Arc-backed byte ranges retain their bank until its last user releases it; complete map unload remains partial |
 | stream manager (stream type != 0 sources) | streamed sources (type 2, no bank prefix) are read from their package while they play; prefetched sources (type 1) start at once from a bank prefix while the rest streams | partial: type 2 format is read at load and media on the IO pool when an event plays it, held by that playback and released after; a request waits for its read, as the original starts a non-prefetch stream once its first buffer arrives. `approximate_`: type 1 media (eotw: 13, 1 MB; ~4 KB prefixes) stay resident whole, which starts them at once as the prefix does |
 | listed `soundevent` decls | loaded with the map | ported: prepared at startup |
 
@@ -91,7 +91,7 @@ trailing `*` covers a family of kinds.
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
-| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; lifecycle not ported (see its class) |
+| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Only mip 0 is connected, as before; original mip-chain and CPU library-cache unload remain partial |
 | `image` | `app::texture_streaming`, `assets::texture` (image class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `inventoryitem` | none | none: no owner yet |
 | `inventoryItemCollection` | none | none: no owner yet |
@@ -119,7 +119,7 @@ trailing `*` covers a family of kinds.
 | `physhape` | `assets::physworld` | partial: reads its resources; lifecycle not ported (see its class) |
 | `physicsMaterial` | `assets::entities::physics_material`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
 | `physSystem` | none | none: no owner yet |
-| `physworld` | `assets::physworld`, `gameplay::body_storage` | partial: reads its resources; lifecycle not ported (see its class) |
+| `physworld` | `assets::physworld`, `gameplay::body_storage`, `gameplay::navigation` | partial: reads its resources; lifecycle not ported (see its class). Host navigation broad phase keeps decoded full-precision triangles for query speed; immutable cell lists pack u32 shape keys into one allocation, retaining their order and releasing construction capacity. This replaces the Havok compressed-mesh tree (`141262020`); no per-query mesh decoding or reduced precision |
 | `playerLocomotion` | `assets::entities::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `playerMode` | `assets::entities::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `playerStatisticsManager` | none | none: no owner yet |

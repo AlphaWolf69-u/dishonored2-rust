@@ -11,6 +11,8 @@ mod vorbis;
 pub use vorbis::VorbisCursor;
 mod declaration;
 mod playback;
+mod media_bytes;
+pub use media_bytes::MediaBytes;
 pub use playback::{Controls, PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
 pub use bank::{ActionDelay, ActionTransition, AdvancedSettings, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
@@ -311,7 +313,7 @@ pub fn decode_wem_pcm(bytes: &[u8]) -> io::Result<DecodedAudio> {
 pub struct EncodedVorbis {
     /// The installed Wwise media, whose packets are decoded in place, or for
     /// a layout that is not, its Ogg Vorbis conversion.
-    pub ogg: std::sync::Arc<[u8]>,
+    pub ogg: MediaBytes,
     index: vorbis::PacketIndex,
     pub channels: u16,
     pub sample_rate: u32,
@@ -324,7 +326,7 @@ pub struct EncodedVorbis {
 /// 64 samples each, channels interleaved by block. Wwise decodes ADPCM while
 /// a source plays; an [`AdpcmCursor`] decodes one block at a time.
 pub struct EncodedAdpcm {
-    pub data: std::sync::Arc<[u8]>,
+    pub data: MediaBytes,
     pub channels: u16,
     pub sample_rate: u32,
     pub frames: usize,
@@ -339,7 +341,7 @@ pub enum SourceMedia {
 }
 
 /// The fmt fields and data chunk of an IMA ADPCM WEM, as `decode_wem` checks them.
-fn ima_media(bytes: &[u8]) -> io::Result<Option<EncodedAdpcm>> {
+fn ima_media_shared(bytes: &[u8], owner: Option<&MediaBytes>) -> io::Result<Option<EncodedAdpcm>> {
     let (mut format, mut data) = (None, None);
     let mut cursor = 12usize;
     while cursor + 8 <= bytes.len() {
@@ -368,7 +370,11 @@ fn ima_media(bytes: &[u8]) -> io::Result<Option<EncodedAdpcm>> {
     let frames = data.len() / block * 64;
     let (_, points) = wem_source_metadata(bytes)?;
     let loop_points = loop_points(points, frames)?;
-    Ok(Some(EncodedAdpcm { data: data.into(), channels, sample_rate, frames, loop_points }))
+    let data = if let Some(owner) = owner {
+        let start = data.as_ptr() as usize - bytes.as_ptr() as usize;
+        owner.slice(start..start + data.len())
+    } else { data.into() };
+    Ok(Some(EncodedAdpcm { data, channels, sample_rate, frames, loop_points }))
 }
 
 /// One voice's decoder over [`EncodedAdpcm`]: the block holding the last
@@ -403,10 +409,19 @@ impl AdpcmCursor {
     }
 }
 
-/// Prepare installed media for playback: Vorbis with a header frame count
-/// stays encoded; PCM, IMA ADPCM and Vorbis without one are decoded.
+/// Prepare installed media for playback: IMA ADPCM and Vorbis with a header
+/// frame count stay encoded; PCM and Vorbis without one are decoded.
 pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
-    if let Some(adpcm) = ima_media(bytes)? {
+    prepare_wem_inner(bytes, None)
+}
+
+/// Gameplay keeps the encoded source as a range of its resident bank/package.
+pub fn prepare_shared_wem(bytes: &MediaBytes) -> io::Result<SourceMedia> {
+    prepare_wem_inner(bytes, Some(bytes))
+}
+
+fn prepare_wem_inner(bytes: &[u8], owner: Option<&MediaBytes>) -> io::Result<SourceMedia> {
+    if let Some(adpcm) = ima_media_shared(bytes, owner)? {
         return Ok(SourceMedia::Adpcm(adpcm));
     }
     let (frames, points) = wem_source_metadata(bytes)?;
@@ -420,7 +435,7 @@ pub fn prepare_wem(bytes: &[u8]) -> io::Result<SourceMedia> {
             if channels == 0 || sample_rate == 0 { return Err(invalid("invalid Wwise Vorbis sample format")); }
             let frames = frames as usize;
             let loop_points = loop_points(points, frames)?;
-            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: bytes.into(), index, channels, sample_rate, frames, loop_points }));
+            return Ok(SourceMedia::Vorbis(EncodedVorbis { ogg: owner.cloned().unwrap_or_else(|| bytes.into()), index, channels, sample_rate, frames, loop_points }));
         }
         let encoded = decode_wem(bytes)?;
         if encoded.starts_with(b"OggS") {
@@ -747,7 +762,7 @@ pub struct MediaGroup {
 
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
-    pub media: std::sync::Arc<[u8]>,
+    pub media: MediaBytes,
     /// The package media id of a streamed source (stream type 2), which the
     /// original reads through its stream manager while it plays instead of
     /// keeping it resident. Prefetched sources (type 1) stay resident.
@@ -900,7 +915,8 @@ fn media_from_sound(
     sound: &[u8],
     chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
     package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
-) -> io::Result<Option<(Vec<u8>, Option<u32>)>> {
+    hold_bank: impl Fn(&[u8]) -> MediaBytes,
+) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     if sound.len() < 13 { return Ok(None); }
     let media_id = read_u32_slice(sound, 9)?;
     // Streamed and prefetched sources use the full package file. DIDX may
@@ -915,7 +931,7 @@ fn media_from_sound(
             // stream delivers. Type 1 (prefetch) starts at once from a bank
             // prefix (~4 KB); at eotw that is 13 media, 1 MB in all, so they
             // stay resident whole, which starts them at once as well.
-            return Ok(Some((media, (sound[8] == 2).then_some(media_id))));
+            return Ok(Some((media.into(), (sound[8] == 2).then_some(media_id))));
         }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
@@ -924,10 +940,10 @@ fn media_from_sound(
             if read_u32_slice(record, 0)? != media_id { continue; }
             let start = read_u32_slice(record, 4)? as usize;
             let end = start.checked_add(read_u32_slice(record, 8)? as usize).ok_or_else(|| invalid("Wwise media range overflow"))?;
-            return Ok(Some((data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?.to_vec(), None)));
+            return Ok(Some((hold_bank(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?), None)));
         }
     }
-    Ok(package_media(media_id)?.map(|media| (media, None)))
+    Ok(package_media(media_id)?.map(|media| (media.into(), None)))
 }
 
 /// List event object IDs in the HIRC chunk for building an installed-bank index.

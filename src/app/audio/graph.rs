@@ -71,7 +71,7 @@ fn read_streamed(locator: &StreamLocator) -> io::Result<Samples> {
     file.seek(SeekFrom::Start(locator.offset))?;
     let mut bytes = vec![0; locator.size];
     file.read_exact(&mut bytes)?;
-    match crate::assets::wwise::prepare_wem(&bytes)? {
+    match crate::assets::wwise::prepare_shared_wem(&bytes.into())? {
         crate::assets::wwise::SourceMedia::Vorbis(media) => Ok(Samples::Vorbis(Arc::new(media))),
         crate::assets::wwise::SourceMedia::Adpcm(media) => Ok(Samples::Adpcm(Arc::new(media))),
         crate::assets::wwise::SourceMedia::Decoded(_) => Err(invalid("streamed Wwise source no longer stays encoded")),
@@ -111,11 +111,14 @@ static STREAMED: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>
 
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
-fn prepare_streamed(sound: u32, media: &[u8], locator: StreamLocator) -> io::Result<PreparedMedia> {
+fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator) -> io::Result<PreparedMedia> {
     if let Some(prepared) = STREAMED.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.len())) {
         return Ok(prepared.clone());
     }
-    let (channels, rate, frames, points) = match crate::assets::wwise::prepare_wem(media)? {
+    let format = if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
+        crate::assets::wwise::prepare_wem(media)?
+    } else { crate::assets::wwise::prepare_shared_wem(media)? };
+    let (channels, rate, frames, points) = match format {
         crate::assets::wwise::SourceMedia::Vorbis(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
         crate::assets::wwise::SourceMedia::Adpcm(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
         crate::assets::wwise::SourceMedia::Decoded(_) => return prepare_media(sound, media),
@@ -124,16 +127,21 @@ fn prepare_streamed(sound: u32, media: &[u8], locator: StreamLocator) -> io::Res
     let rate = SampleRate::new(rate).ok_or_else(|| invalid("invalid Wwise streamed sample rate"))?;
     let source = StreamedSource { locator, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(None) };
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
-    STREAMED.lock().unwrap_or_else(|e| e.into_inner()).insert((sound, media.len()), prepared.clone());
-    Ok(prepared)
+    // Parallel event preparation can reach the same source concurrently.
+    // Publish one identity; losing preparations must not escape into graphs.
+    Ok(STREAMED.lock().unwrap_or_else(|e| e.into_inner())
+        .entry((sound, media.len())).or_insert(prepared).clone())
 }
 
-fn prepare_media(sound: u32, media: &[u8]) -> io::Result<PreparedMedia> {
+fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes) -> io::Result<PreparedMedia> {
     if let Some(prepared) = MEDIA.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.len())) {
         return Ok(prepared.clone());
     }
     let _tag = crate::platform::allocation_tags::tag("sound media");
-    let prepared = match crate::assets::wwise::prepare_wem(media)? {
+    let source = if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
+        crate::assets::wwise::prepare_wem(media)?
+    } else { crate::assets::wwise::prepare_shared_wem(media)? };
+    let prepared = match source {
         crate::assets::wwise::SourceMedia::Vorbis(media) => {
             let channels = ChannelCount::new(media.channels).ok_or_else(|| invalid("invalid Wwise Vorbis channel count"))?;
             let rate = SampleRate::new(media.sample_rate).ok_or_else(|| invalid("invalid Wwise Vorbis sample rate"))?;
@@ -153,6 +161,11 @@ fn prepare_media(sound: u32, media: &[u8]) -> io::Result<PreparedMedia> {
             (Samples::Pcm(pcm), channels, rate, frames, points)
         }
     };
+    {
+        let mut cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(prepared) = cache.get(&(sound, media.len())) { return Ok(prepared.clone()); }
+        cache.insert((sound, media.len()), prepared.clone());
+    }
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         let held = match &prepared.0 { Samples::Pcm(p) => p.samples.len() * 4, Samples::Vorbis(v) => v.ogg.len(), Samples::Adpcm(a) => a.data.len(), Samples::Silence(_) | Samples::Streamed(_) => 0 };
         let codec = crate::assets::wwise::wem_codec(media).unwrap_or(0);
@@ -160,8 +173,35 @@ fn prepare_media(sound: u32, media: &[u8]) -> io::Result<PreparedMedia> {
         let entry = tally.entry(codec).or_default();
         entry.0 += 1; entry.1 += media.len(); entry.2 += held;
     }
-    MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert((sound, media.len()), prepared.clone());
     Ok(prepared)
+}
+
+/// Physical encoded allocations, not the sum of overlapping source views.
+pub(super) fn resident_allocations() -> Vec<(usize, usize)> {
+    MEDIA.lock().unwrap_or_else(|e| e.into_inner()).values().filter_map(|prepared| match &prepared.0 {
+        Samples::Vorbis(media) => Some(media.ogg.allocation()),
+        Samples::Adpcm(media) => Some(media.data.allocation()),
+        _ => None,
+    }).collect()
+}
+
+/// Numeric capture of the actual prepared source bytes and playback metadata.
+/// Optional: reading every encoded byte is inappropriate for ordinary loads.
+pub(super) fn capture_media_signatures() {
+    use std::hash::{Hash, Hasher};
+    if std::env::var("DH2_DEBUG_SOUND_HASHES").as_deref() != Ok("1") { return; }
+    let cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+    for (&(sound, size), (samples, channels, rate, frames, points)) in cache.iter() {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        match samples {
+            Samples::Vorbis(media) => media.ogg.as_ref().hash(&mut hash),
+            Samples::Adpcm(media) => media.data.as_ref().hash(&mut hash),
+            Samples::Pcm(pcm) => for value in pcm.samples.iter() { value.to_bits().hash(&mut hash); },
+            _ => continue,
+        }
+        println!("MEDIA source={sound:08x} size={size} channels={} rate={} frames={frames} loops={points:?} hash={:016x}",
+            channels.get(), rate.get(), hash.finish());
+    }
 }
 struct Sound {
     samples: Samples,

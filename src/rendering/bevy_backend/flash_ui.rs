@@ -31,12 +31,7 @@ pub const TRANSFER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/d
 /// BC7 UNORM): the UI is drawn and blended in gamma space.
 const UI_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
-/// A decoded RGBA8 bitmap.
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
+pub use crate::flash::bitmap_resources::Image;
 
 /// One frame of UI to draw. `generation` identifies the player whose
 /// library bitmaps `images` holds.
@@ -435,7 +430,21 @@ fn render_flash_ui(
     mut context: RenderContext,
     view: ViewQuery<&ViewTarget>,
 ) {
-    let Some(frame) = &frame.0 else { return };
+    let Some(frame) = &frame.0 else {
+        if gpu.uploaded.take().is_some() {
+            // Closing the movie drops its player (m_cacheResources = 0).
+            // A new open has a new generation and globally unique glyph-page
+            // IDs, so these textures cannot be reused. Previously old glyph
+            // IDs survived every open indefinitely. Keep shared ramps/white;
+            // bitmap generations were already re-uploaded on every new open.
+            let before = gpu.textures.len();
+            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                println!("MEMORY UI closed: released_textures={} retained_shared={}", before - gpu.textures.len(), gpu.textures.len());
+            }
+        }
+        return;
+    };
     if frame.list.batches.is_empty() {
         return;
     }
@@ -475,7 +484,8 @@ fn render_flash_ui(
             TextureKey::White => upload(&device, &queue, 1, 1, &[255; 4]),
             TextureKey::Ramp(bytes) => upload(&device, &queue, 64, 1, bytes),
             TextureKey::Bitmap(_, c) => match frame.images.get(c) {
-                Some(image) => upload(&device, &queue, image.width, image.height, &image.rgba),
+                Some(image) => upload_format(&device, &queue, image.width, image.height,
+                    if image.format == 13 { TextureFormat::Bc7RgbaUnorm } else { TextureFormat::Rgba8Unorm }, &image.bytes),
                 None => continue,
             },
             TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
