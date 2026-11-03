@@ -514,7 +514,7 @@ executor's queue: only the loading call owns and waits for its temporary workers
 The final visual responsiveness assessment still requires the user because
 visual inspection is disabled.
 
-Final requirement audit (appearance confirmation outstanding):
+Requirement audit before user verification:
 
 | Requirement | Current evidence | Still needed |
 |---|---|---|
@@ -524,3 +524,9 @@ Final requirement audit (appearance confirmation outstanding):
 | Authored fade from black | Installed declarations and world durations, original constructor defaults and packed curves; initial fade completes at about 4 s and later fades at about 2 s in production clients. | User confirmation of the displayed transition. |
 
 This audit is not a completion claim. No image inspection or test suite is used.
+
+On 2026-11-04 the user checked the final release in Dust District and confirmed
+"All four work": loading responsiveness, immediate camera control, complete
+world presentation on entry and the fade from black. This resolves the pending
+appearance checks in the historical audit above. The implementation is merged
+into main; the queued main release build remains the final delivery check.
