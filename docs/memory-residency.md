@@ -121,5 +121,23 @@ generation and new glyph IDs. Shared ramps, render targets and programs stay
 cached. This prevents an additional atlas page per repeated menu open from
 accumulating; no unmeasured process-byte saving is assigned to this cleanup.
 
+## GPU composition and build verification
+
+Device-bracketed D3D12 captures of the production pause renderer contain
+98 UI draws with the identical ordered vertex counts in both modes. All
+41 library bitmap textures change from RGBA8_UNORM to BC7_UNORM; their
+captured payload falls from 29,787,968 to 7,446,992 bytes, exactly 75%.
+The 1,048,576-byte R8 glyph page has the same hash in both captures. There
+are no extra UI draws and no change to glyphs or draw geometry. No images
+were visually inspected. The first capture attempts selected the unrelated
+D3D11 presentation device and were rejected; the accepted captures use the
+existing `debug_graphics_capture` device-bracketing path.
+
+The game development build, `cargo check --features game --bins`, and
+`cargo check --no-default-features --lib` pass. No tests were written or run.
+The main-branch release build is started separately for the user; its result
+is recorded in `artifacts/residency-main-release-build.result.json` without
+progress polling.
+
 Measurement logs live in `artifacts/residency-*.log`; no game bytes are
 included in this document or committed.
