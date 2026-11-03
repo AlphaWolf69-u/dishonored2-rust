@@ -46,6 +46,8 @@ pub struct Vertex {
 pub enum Texture {
     White,
     Bitmap(CharRef),
+    /// An installed game image bound by IggyFunctions.setTextureForBitmap.
+    Game(String),
     /// Index into `DrawList::ramps`.
     Ramp(usize),
     /// Index into `DrawList::glyph_pages`.
@@ -412,7 +414,7 @@ impl Builder<'_> {
         }
     }
 
-    fn bitmap(&mut self, c: CharRef, w: f32, h: f32, uv: [f32; 4], m: &Affine, col: &Colour, smooth: bool, blend: u8) {
+    fn bitmap(&mut self, texture: Texture, w: f32, h: f32, uv: [f32; 4], m: &Affine, col: &Colour, smooth: bool, blend: u8) {
         let mul = col.mul.map(|v| v as f32);
         let add = col.add.map(|v| v as f32 / 255.0);
         let corner = |x: f32, y: f32| {
@@ -420,7 +422,7 @@ impl Builder<'_> {
             Vertex { position: [px as f32, py as f32], uv: [x / w * uv[0] + uv[2], y / h * uv[1] + uv[3]], mul, add, params: [0.0; 2], w: 1.0 }
         };
         let (a, b, cc, d) = (corner(0.0, 0.0), corner(w, 0.0), corner(w, h), corner(0.0, h));
-        self.push(Texture::Bitmap(c), false, smooth, blend, [a, b, cc, a, cc, d]);
+        self.push(texture, false, smooth, blend, [a, b, cc, a, cc, d]);
     }
 
     /// `FUN_14102dcd0`: the engine's visible glyphs, tessellated as vectors
@@ -599,7 +601,7 @@ impl Builder<'_> {
     /// The object's own drawing and its children.
     fn draw_content(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         let Some(d) = display_ref(o) else { return };
-        let (kind, character, graphics, blend) = (d.kind, d.character, d.graphics.clone(), d.blend);
+        let (kind, character, graphics, blend, game_texture) = (d.kind, d.character, d.graphics.clone(), d.blend, d.game_texture.clone());
         drop(d);
         let (m, c) = (*m, *c);
         if let Some(g) = graphics {
@@ -632,7 +634,7 @@ impl Builder<'_> {
                 if let Some(ch) = character.or(from_data) {
                     let file = player::state(self.vm).borrow().file(ch.library);
                     if let Ok(Some(b)) = file.bitmap(ch.id as usize) {
-                        self.bitmap(ch, b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
+                        self.bitmap(game_texture.map(Texture::Game).unwrap_or(Texture::Bitmap(ch)), b.width as f32, b.height as f32, b.uv, &m, &c, smooth, blend);
                     }
                 }
             }
@@ -881,7 +883,7 @@ pub fn stack(base: &mut DrawList, mut top: DrawList) {
             Texture::Bitmap(c) => c.library += LAYER_LIBRARY_OFFSET,
             Texture::Ramp(i) => *i += ramps,
             Texture::Glyphs(i) => *i += pages,
-            Texture::White => {}
+            Texture::White | Texture::Game(_) => {}
         }
     }
     base.vertices.append(&mut top.vertices);

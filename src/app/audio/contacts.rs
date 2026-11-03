@@ -40,7 +40,7 @@ fn texts_at_load(base: &std::path::Path, catalog: &Catalog) -> Result<HashMap<St
     let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
     let map = map.trim_start_matches("maps/").trim_end_matches(".map");
     let language = crate::assets::lang::read_text_language(base)?;
-    let list = crate::assets::map_resources::level_load_list(base, catalog, map, language)?;
+    let list = crate::assets::map_resources::acquire_level_list(base, catalog, map, language)?;
     let mut texts = HashMap::new();
     for resource in list.iter().filter(|r| r.kind == "physicsMaterial" || r.kind == "soundevent"
         || (r.kind == "fx" && r.path.contains("/contactsystem/")))

@@ -317,7 +317,7 @@ fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
         let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
         let map = map.trim_start_matches("maps/").trim_end_matches(".map");
         let language = crate::assets::lang::read_text_language(&base)?;
-        let list = crate::assets::map_resources::level_load_list(&base, &catalog, map, language)?;
+        let list = crate::assets::map_resources::acquire_level_list(&base, &catalog, map, language)?;
         let mut events = Vec::new();
         for resource in list.iter().filter(|r| r.kind == "soundevent") {
             let Some(name) = resource.path.strip_prefix("generated/decls/soundevent/").and_then(|p| p.strip_suffix(".decl")) else { continue };

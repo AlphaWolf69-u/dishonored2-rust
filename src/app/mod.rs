@@ -150,6 +150,9 @@ use light_culling::{
 mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};
 mod launch;
+mod loading_screen;
+mod level_prepare;
+mod loading_movie;
 mod audio;
 mod engine_keys;
 mod player;

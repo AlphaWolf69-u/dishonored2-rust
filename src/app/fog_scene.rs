@@ -398,14 +398,14 @@ pub(super) fn publish_fog_frame(
         return;
     };
     ray_sources.0 = Some(fog.ray_program);
-    if !clock.advanced() {
-        return;
-    }
+    let advanced = clock.advanced();
+    // Loading can hold the simulation at time zero before any view exists.
+    if !advanced && output.0.is_some() { return; }
     output.0 = None;
     material.object_frame = None;
     let result = (|| -> Result<FogFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
-        let delta = clock.delta(3).ok_or("fog gameplay clock unavailable")?;
+        let delta = if advanced { clock.delta(3).ok_or("fog gameplay clock unavailable")? } else { 0. };
         let (camera, transform, projection, camera_view) =
             cameras.single().map_err(|error| error.to_string())?;
         let full = camera_view

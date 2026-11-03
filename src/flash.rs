@@ -129,9 +129,13 @@ impl Player {
     /// Register a library (`IggyLibraryCreateFromMemory`): its SymbolClass
     /// table and ABC become available to every movie.
     pub fn load_library(&mut self, file: IggyFile) -> Result<usize> {
+        self.load_shared_library(Rc::new(file))
+    }
+
+    fn load_shared_library(&mut self, file: Rc<IggyFile>) -> Result<usize> {
         let name = file.library_name().map_err(|e| Error::Internal(e.to_string()))?.unwrap_or_default();
-        let unit = match file.abc().map_err(|e| Error::Internal(e.to_string()))? {
-            Some(abc) => Some(self.vm.load_abc(abc)?),
+        let unit = match file.parsed_abc().map_err(Error::Internal)? {
+            Some(abc) => Some(self.vm.load_shared_abc(abc)?),
             None => None,
         };
         let index = self.state.borrow_mut().add_library(file, unit.clone(), name)?;
@@ -144,8 +148,12 @@ impl Player {
     /// Create the movie (`IggyPlayerCreateFromMemory`) and its root: the
     /// document class instance on the main timeline, added to the stage.
     pub fn load_movie(&mut self, file: IggyFile) -> Result<Obj> {
+        self.load_shared_movie(Rc::new(file))
+    }
+
+    fn load_shared_movie(&mut self, file: Rc<IggyFile>) -> Result<Obj> {
         let document = file.document_class().map_err(|e| Error::Internal(e.to_string()))?;
-        let library = self.load_library(file)?;
+        let library = self.load_shared_library(file)?;
         // `FUN_14100a6e0`: the document class (else MovieClip) is bound to
         // the root, which is already the Stage's child, before its
         // constructor runs; `super()` builds and constructs frame 1.
@@ -191,23 +199,9 @@ impl Player {
     ) -> std::result::Result<(Player, Vec<(usize, String)>), String> {
         use crate::assets::lang;
         thread_local! {
-            // Installed movie bytes and string tables, kept for the next
-            // player on this thread (the files do not change while the game
-            // runs; each player still parses its own copy).
-            static BYTES: RefCell<std::collections::HashMap<String, Rc<Vec<u8>>>> = RefCell::new(std::collections::HashMap::new());
             static STRINGS: RefCell<std::collections::HashMap<String, Rc<lang::StringTable>>> = RefCell::new(std::collections::HashMap::new());
         }
-        let read = |p: &str| -> std::result::Result<IggyFile, String> {
-            let bytes = match BYTES.with(|b| b.borrow().get(p).cloned()) {
-                Some(b) => b,
-                None => {
-                    let b = Rc::new(catalog.read(p).map_err(|e| e.to_string())?.ok_or_else(|| format!("{p} not indexed"))?);
-                    BYTES.with(|cache| cache.borrow_mut().insert(p.to_string(), b.clone()));
-                    b
-                }
-            };
-            IggyFile::parse((*bytes).clone()).map_err(|e| format!("{p}: {e}"))
-        };
+        let read = |p: &str| crate::assets::iggy::acquire(catalog, p);
         let movie = read(movie_path)?;
         let info = movie.movie().map_err(|e| e.to_string())?;
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
@@ -226,10 +220,10 @@ impl Player {
         let mut resources = Vec::new();
         for import in &info.imports {
             let path = lang::library_resource(&import.library, language);
-            let index = player.load_library(read(&path)?).map_err(|e| format!("{path}: {}", player.describe(&e)))?;
+            let index = player.load_shared_library(read(&path)?).map_err(|e| format!("{path}: {}", player.describe(&e)))?;
             resources.push((index, path));
         }
-        player.load_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
+        player.load_shared_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
         player.initialize_sound_events().map_err(|e| format!("{movie_path} sound events: {}", player.describe(&e)))?;
         resources.push((player.state.borrow().libraries.len() - 1, movie_path.to_string()));
         Ok((player, resources))

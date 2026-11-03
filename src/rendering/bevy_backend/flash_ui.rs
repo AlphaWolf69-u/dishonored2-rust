@@ -39,6 +39,7 @@ pub use crate::flash::bitmap_resources::Image;
 pub struct FlashFrame {
     pub list: Arc<DrawList>,
     pub images: Arc<HashMap<CharRef, Arc<Image>>>,
+    pub game_images: Arc<HashMap<String, Handle<bevy::prelude::Image>>>,
     pub generation: u64,
     /// Distinct for every built list (the vertices are uploaded once).
     pub serial: u64,
@@ -64,6 +65,7 @@ impl Plugin for FlashUiPlugin {
 enum TextureKey {
     White,
     Bitmap(u64, CharRef),
+    Game(String),
     Ramp(Vec<u8>),
     /// A glyph cache page by (id, version).
     Glyphs(u64, u64),
@@ -85,7 +87,7 @@ struct FlashUiGpu {
     /// The scene-to-canvas and canvas-to-scene passes, by display format.
     transfer: Option<TransferPrograms>,
     /// The draw list whose vertices are in `vertices` (its serial).
-    uploaded: Option<u64>,
+    uploaded: Option<(u64, u64)>,
     /// The gamma-space canvas the UI is drawn on, and its size.
     canvas: Option<(Texture, TextureView, (u32, u32))>,
     textures: HashMap<TextureKey, (Texture, TextureView)>,
@@ -427,6 +429,7 @@ fn render_flash_ui(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut gpu: ResMut<FlashUiGpu>,
+    images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     mut context: RenderContext,
     view: ViewQuery<&ViewTarget>,
 ) {
@@ -438,7 +441,7 @@ fn render_flash_ui(
             // IDs survived every open indefinitely. Keep shared ramps/white;
             // bitmap generations were already re-uploaded on every new open.
             let before = gpu.textures.len();
-            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
+            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_) | TextureKey::Game(_)));
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 println!("MEMORY UI closed: released_textures={} retained_shared={}", before - gpu.textures.len(), gpu.textures.len());
             }
@@ -466,6 +469,7 @@ fn render_flash_ui(
         .map(|b| match &b.texture {
             FillTexture::White => TextureKey::White,
             FillTexture::Bitmap(c) => TextureKey::Bitmap(frame.generation, *c),
+            FillTexture::Game(name) => TextureKey::Game(name.clone()),
             FillTexture::Ramp(i) => TextureKey::Ramp(frame.list.ramps[*i].to_vec()),
             FillTexture::Glyphs(i) => TextureKey::Glyphs(frame.list.glyph_pages[*i].id, frame.list.glyph_pages[*i].version),
         })
@@ -483,9 +487,14 @@ fn render_flash_ui(
         let uploaded = match key {
             TextureKey::White => upload(&device, &queue, 1, 1, &[255; 4]),
             TextureKey::Ramp(bytes) => upload(&device, &queue, 64, 1, bytes),
+            // 1410150f0 binds the existing idImage, not a second UI copy.
+            TextureKey::Game(name) => match frame.game_images.get(name).and_then(|handle| images.get(handle.id())) {
+                Some(image) => (image.texture.clone(), image.texture_view.clone()),
+                None => return, // The image owner has not uploaded it yet.
+            },
             TextureKey::Bitmap(_, c) => match frame.images.get(c) {
                 Some(image) => upload_format(&device, &queue, image.width, image.height,
-                    if image.format == 13 { TextureFormat::Bc7RgbaUnorm } else { TextureFormat::Rgba8Unorm }, &image.bytes),
+                    super::image_formats::gpu_image_format(image.format).remove_srgb_suffix(), &image.bytes),
                 None => continue,
             },
             TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
@@ -559,7 +568,7 @@ fn render_flash_ui(
         .collect();
     let list_bytes = vertex_bytes(&frame.list.vertices);
     let needed = (list_bytes.len() + std::mem::size_of_val(quads.as_slice())) as u64;
-    let identity = frame.serial;
+    let identity = (frame.generation, frame.serial);
     if gpu.vertices.as_ref().is_none_or(|(_, size)| *size < needed) {
         let size = needed.next_power_of_two().max(4096);
         let buffer = device.create_buffer(&BufferDescriptor { label: Some("flash vertices"), size, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });

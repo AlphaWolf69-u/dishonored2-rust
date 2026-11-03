@@ -335,7 +335,7 @@ pub(super) fn publish_display_frame(
     // A paused frame keeps the environment (its tracks do not advance), but
     // the override slots still apply: the pause screen FX blends in.
     let weight = screen_fx.as_ref().map_or(0., |f| f.weight);
-    if !clock.advanced() && weight == *published_screen_fx {
+    if !clock.advanced() && weight == *published_screen_fx && output.0.is_some() {
         return;
     }
     *published_screen_fx = weight;

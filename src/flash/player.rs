@@ -93,13 +93,12 @@ pub fn state(vm: &Vm) -> Shared {
 }
 
 impl PlayerState {
-    pub fn add_library(&mut self, file: IggyFile, unit: Option<Rc<Unit>>, name: String) -> Result<usize> {
+    pub fn add_library(&mut self, file: Rc<IggyFile>, unit: Option<Rc<Unit>>, name: String) -> Result<usize> {
         let symbols = file
             .symbol_classes()
             .map_err(|e| super::avm2::Error::Internal(e.to_string()))?
             .into_iter()
             .collect();
-        let file = Rc::new(file);
         let count = file.movie().map(|m| m.character_count).unwrap_or(0) as usize;
         for id in 0..count {
             if let Ok(Some(font)) = file.shared_font(id) {

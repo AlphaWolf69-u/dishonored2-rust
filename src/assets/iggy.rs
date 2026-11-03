@@ -109,6 +109,7 @@ impl DataSection {
 pub struct IggyFile {
     bytes: Vec<u8>,
     sections: Vec<DataSection>,
+    parsed_abc: std::cell::OnceCell<std::rc::Rc<swf::avm2::types::AbcFile>>,
 }
 
 impl fmt::Debug for IggyFile {
@@ -378,7 +379,17 @@ impl IggyFile {
         if sections.first().map(|s| s.kind) != Some(ROOT_KIND) {
             return Err(Error::Corrupt("first section is not the movie root"));
         }
-        Ok(Self { bytes, sections })
+        Ok(Self { bytes, sections, parsed_abc: Default::default() })
+    }
+
+    /// Immutable compiled definition data shared by player VMs. Namespace and
+    /// execution state belong to the VM; the source syntax tree does not.
+    pub fn parsed_abc(&self) -> std::result::Result<Option<std::rc::Rc<swf::avm2::types::AbcFile>>, String> {
+        if let Some(parsed) = self.parsed_abc.get() { return Ok(Some(parsed.clone())); }
+        let Some(bytes) = self.abc().map_err(|e| e.to_string())? else { return Ok(None) };
+        let parsed = std::rc::Rc::new(swf::avm2::read::Reader::new(bytes).read().map_err(|e| format!("ABC: {e}"))?);
+        let _ = self.parsed_abc.set(parsed.clone());
+        Ok(Some(parsed))
     }
 
     pub fn sections(&self) -> &[DataSection] {
@@ -512,3 +523,28 @@ impl<'a> Node<'a> {
 
 #[cfg(test)]
 mod tests;
+
+/// Immutable installed Iggy resources. 1400607f0 first resolves an existing
+/// resident object through 14005feb0. Each player still owns its VM and live
+/// timeline state; only the parsed file/relocations and borrowed fonts share.
+/// Host: the UI worker uses Rc; no VM object crosses thread boundaries.
+pub fn acquire(catalog: &super::archive::Catalog, resource: &str) -> std::result::Result<std::rc::Rc<IggyFile>, String> {
+    type Key = (std::path::PathBuf, String);
+    thread_local! {
+        static FILES: std::cell::RefCell<std::collections::HashMap<Key, std::rc::Rc<IggyFile>>> = std::cell::RefCell::new(Default::default());
+    }
+    let key = (catalog.base().to_owned(), resource.replace('\\', "/").to_ascii_lowercase());
+    if let Some(file) = FILES.with(|files| files.borrow().get(&key).cloned()) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD Iggy reuse: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
+        }
+        return Ok(file);
+    }
+    let bytes = catalog.read(resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} not indexed"))?;
+    let file = std::rc::Rc::new(IggyFile::parse(bytes).map_err(|e| format!("{resource}: {e}"))?);
+    FILES.with(|files| files.borrow_mut().insert(key, file.clone()));
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("LOAD Iggy acquire: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
+    }
+    Ok(file)
+}

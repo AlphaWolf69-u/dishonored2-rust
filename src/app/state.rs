@@ -83,6 +83,9 @@ pub(super) struct ShadowCasterWorld(pub(super) tome::shadow_caster::ShadowCaster
 pub(super) struct ViewSettings(pub(super) Result<game_settings::ViewSettings, String>);
 
 #[derive(Component)]
+pub(super) struct GameplayOverlay;
+
+#[derive(Component)]
 pub(super) struct CoordinateOverlay;
 
 #[derive(Component)]

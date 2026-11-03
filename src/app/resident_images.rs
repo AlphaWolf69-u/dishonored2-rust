@@ -46,3 +46,47 @@ pub(super) fn prepare_image(
     );
     Ok(handle)
 }
+
+/// UI consumers request the same installed-image owner as scene consumers.
+/// Retain the handles across bootstrap/loading/pause; no UI-owned copy/upload.
+#[derive(Resource, Default)]
+pub(super) struct UiImages {
+    pub resident: HashMap<String, Handle<Image>>,
+    pub aliases: HashMap<String, Handle<Image>>,
+}
+
+pub(super) fn publish_ui_images(
+    mut frame: ResMut<crate::rendering::bevy_backend::flash_ui::FlashUiFrame>,
+    mut cache: ResMut<UiImages>,
+    mut images: ResMut<Assets<Image>>,
+    loading: Res<super::loading_screen::Acquisition>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if !frame.is_changed() {
+        return;
+    }
+    let Some(frame) = frame.0.as_mut() else {
+        return;
+    };
+    let mut named = HashMap::new();
+    for batch in &frame.list.batches {
+        let crate::flash::render::Texture::Game(name) = &batch.texture else {
+            continue;
+        };
+        if named.contains_key(name) {
+            continue;
+        }
+        let UiImages { resident, aliases } = &mut *cache;
+        match prepare_image(&loading.catalog, name, &mut images, resident, aliases) {
+            Ok(image) => {
+                named.insert(name.clone(), image);
+            }
+            Err(error) => {
+                error!("UI image acquisition failed: {error}");
+                exit.write(AppExit::error());
+                return;
+            }
+        }
+    }
+    frame.game_images = std::sync::Arc::new(named);
+}

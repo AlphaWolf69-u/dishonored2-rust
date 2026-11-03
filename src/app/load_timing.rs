@@ -53,7 +53,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
 }
 
-static LIST: std::sync::OnceLock<Vec<crate::assets::map_resources::Resource>> = std::sync::OnceLock::new();
+static LIST: std::sync::OnceLock<std::sync::Arc<Vec<crate::assets::map_resources::Resource>>> = std::sync::OnceLock::new();
 
 /// Keep the current map's load lists for the coverage report.
 pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
@@ -63,7 +63,7 @@ pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
     let Some(map) = crate::gameplay::map_info::current_map() else { return };
     let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
     let language = crate::assets::lang::read_text_language(catalog.base()).unwrap_or("english");
-    match crate::assets::map_resources::level_load_list(catalog.base(), catalog, &map, language) {
+    match crate::assets::map_resources::acquire_level_list(catalog.base(), catalog, &map, language) {
         Ok(list) => drop(LIST.set(list)),
         Err(e) => eprintln!("LOAD list {map}: {e}"),
     }
@@ -82,8 +82,7 @@ pub(super) fn level_ready(
         return;
     }
     *done = true;
-    crate::loading::play_started();
-    mark("level ready");
+    mark("level resources ready");
     asset_bytes(&meshes, &images);
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         let bytes: usize = buffers.iter().map(|(_, b)| b.data.as_ref().map_or(0, Vec::len)).sum();

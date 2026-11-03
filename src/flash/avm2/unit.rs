@@ -35,7 +35,7 @@ pub struct Body {
 
 pub struct Unit {
     pub id: u32,
-    pub abc: AbcFile,
+    pub abc: Rc<AbcFile>,
     pub pools: Pools,
     body_of: Vec<Option<usize>>,
     bodies: RefCell<HashMap<usize, Rc<Body>>>,
@@ -58,6 +58,10 @@ impl Unit {
     }
 
     pub fn with_namespace_class(id: u32, abc: AbcFile, namespace: Option<Rc<Class>>) -> Rc<Self> {
+        Self::with_shared_abc(id, Rc::new(abc), namespace)
+    }
+
+    pub fn with_shared_abc(id: u32, abc: Rc<AbcFile>, namespace: Option<Rc<Class>>) -> Rc<Self> {
         let pools = Pools::new(id, &abc);
         let mut body_of = vec![None; abc.methods.len()];
         for (i, body) in abc.method_bodies.iter().enumerate() {

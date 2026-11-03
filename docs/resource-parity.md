@@ -12,7 +12,7 @@ output), `blocked: <reason, next step>`, `host: <why the backend differs>`,
 
 | Original | Behavior | Status |
 |---|---|---|
-| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` records reads and gates; the rewrite's loads are not driven by the lists yet |
+| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` records reads, actual manifest progress and readiness gates; `app::loading_screen` presents bootstrap/map stages in one renderer; the rewrite's loads are not driven by the lists yet |
 | `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | blocked: vfunc `+0xb0` (map name to container id) not traced |
 | "%i streamed" entries | some listed resources are registered for streaming rather than loaded | blocked: trace which entries count as streamed |
 
@@ -152,3 +152,59 @@ trailing `*` covers a family of kinds.
 | `gameLogicState*` | `gameplay::pause_state` (pause only) | partial: pause state only |
 | `mainMenuSection*` | none | none: no main menu |
 | `menuSectionOption*` | `gameplay::options` | partial |
+
+### Loading presentation and shared UI acquisitions
+
+| Original | Owner / behavior | Status |
+|---|---|---|
+| `140369120` | `app::loading_screen`: installed startup image before map publication | host: Bevy image composition in the existing gameplay window |
+| `1400473b0`, `1400479a0` | `app::loading_movie`: installed mapinfo data and authored Iggy layout/callbacks | partial: mission/map text, image, shuffled tips, actual resource progress, authored continue/close callback connected; cinematic and saved-transition variants remain outside this direct-map flow |
+| `1400607f0` -> `14005feb0` | `flash::bitmap_resources`: shared immutable compressed library images; `app::resident_images`: shared game-image handles; `gameplay::map_info`: shared immutable parsed declarations | host: Arc registry lifetime; acquisition returns the resident identity, movie state remains separate; forced purge classes remain partial |
+| `1410150f0` | `flash::iggy_functions` / `flash::render` / `bevy_backend::flash_ui`: named game image bound to Bitmap | partial: bound image now reaches composition using the image owner’s existing GPU texture; installed loading-image path connected; game-image formats use the existing image-format transport; forced image purge remains with image lifecycle above |
+
+Expected cost of this change: `level_prepare::prepare_level` moves its existing
+parsing off the event/render thread, without changing the parsers or geometry.
+The common UI library payload is acquired once across loading/pause players;
+reacquisition should perform zero archive reads/decodes and reuse Arc identity.
+No gameplay GPU pass is added: the loading UI disappears when its gates finish.
+No RAM saving or gameplay CPU timing improvement is claimed without targeted
+owner measurements. Existing original per-tag budgets remain the baseline.
+
+Manifest reuse expectation: `assets::map_resources::acquire_level_list` returns
+one immutable request list to loading progress, audio contacts, listed sound
+preparation and diagnostics. After the first request, archive-index scans and
+manifest decoding for that same map/language should be zero; those callers
+must receive the same Arc identity. This is startup work, not a walking-frame
+optimization. Individual resource payload acquisition remains with its owner.
+
+Iggy definition reuse expectation: the shared parsed Iggy file also owns one
+immutable ABC syntax tree. Loading and pause VMs retain their own namespaces,
+classes, globals and mutable execution state; `Vm::load_shared_abc` should not
+parse that source again. This removes repeated source-definition parsing and
+retained duplicate ABC trees while preserving per-player VM state. Measure
+acquisition/parse counts and identities during the actual startup handoff;
+this does not claim whole-frame CPU savings.
+
+The Iggy resource owner (`assets::iggy::acquire`) retains parsed file relocations
+and the immutable ABC source tree. Per-player `flash::avm2::Unit` keeps its own
+namespace pools, classes, globals and execution state. `141093380` remains the
+file reader; the resident identity follows `1400607f0` / `14005feb0`. Host: Rc
+ownership is confined to the UI worker; forced resource-class purge remains
+partial. Named game textures are acquired/uploaded by `app::resident_images`
+and bound by `bevy_backend::flash_ui`; the UI does not decode/upload another copy.
+
+Loading progress expectation: original `1400661e0` publishes a cached loaded/total
+value. The host read recorder should update the acquired count when a new read
+arrives; `loading::progress` must perform no manifest traversal. This replaces
+46,546 membership lookups per progress sample on EotW with a cached count, while
+retaining exact (kind,path) comparisons for hash collisions and duplicate list
+entries. This affects loading CPU only, with no gameplay sampling cost.
+
+2026-11-03 production-client verification: EotW and Dust District complete both
+loading stages and enter gameplay. Loading/pause preparation reuses the same
+four common Iggy file identities; the selected map manifest is acquired once
+and reused three times. Dust District publishes the authored background in a
+57-batch, 26,892-vertex loading draw list. No first-publication AS3 exception is
+reported. These verify acquisition identity and loading integration, not full
+map-to-map purge/residency parity or gameplay CPU timing. See `docs/loading.md`
+for scope, captures and the remaining human appearance check.

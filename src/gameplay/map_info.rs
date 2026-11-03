@@ -26,7 +26,21 @@ pub struct LoadingInfo {
 }
 
 /// The mapinfo decl whose low- or high-chaos map is `map`.
-pub fn find(catalog: &Catalog, map: &str) -> Option<Fields> {
+pub fn find(catalog: &Catalog, map: &str) -> Option<std::sync::Arc<Fields>> {
+    // 1400607f0/14005feb0: resident declarations retain their resource identity.
+    // Key by installation as well as map so separate installs cannot alias.
+    type Key = (std::path::PathBuf, String);
+    static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<Key, Option<std::sync::Arc<Fields>>>>> = std::sync::Mutex::new(None);
+    let key = (catalog.base().to_owned(), map.to_ascii_lowercase());
+    let mut resident = RESIDENT.lock().unwrap();
+    let resident = resident.get_or_insert_with(Default::default);
+    if let Some(edit) = resident.get(&key) { return edit.clone(); }
+    let result = find_uncached(catalog, map).map(std::sync::Arc::new);
+    resident.insert(key, result.clone());
+    result
+}
+
+fn find_uncached(catalog: &Catalog, map: &str) -> Option<Fields> {
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     catalog.paths_containing("generated/decls/mapinfo/").into_iter().find_map(|path| {
         let name = path.strip_prefix("generated/decls/mapinfo/")?.strip_suffix(".decl")?.to_string();

@@ -197,7 +197,11 @@ impl Vm {
         let parsed = swf::avm2::read::Reader::new(abc)
             .read()
             .map_err(|e| Error::Internal(format!("ABC: {e}")))?;
-        let unit = Unit::with_namespace_class(self.units.len() as u32, parsed, Some(self.b().namespace.clone()));
+        self.load_shared_abc(Rc::new(parsed))
+    }
+
+    pub fn load_shared_abc(&mut self, parsed: Rc<swf::avm2::types::AbcFile>) -> Result<Rc<Unit>> {
+        let unit = Unit::with_shared_abc(self.units.len() as u32, parsed, Some(self.b().namespace.clone()));
         self.units.push(unit.clone());
         for (index, script) in unit.abc.scripts.iter().enumerate() {
             let traits = unit::build_traits(&unit, &script.traits, None)?;

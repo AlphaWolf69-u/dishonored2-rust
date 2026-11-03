@@ -1,12 +1,12 @@
 //! Library bitmap residency. GDraw `1402e2c00` uploads raw iggytex blocks
 //! directly (format 13 -> DXGI_FORMAT_BC7_UNORM), without an RGBA copy.
-use crate::assets::{archive::Catalog, iggy::IggyFile};
+use crate::assets::{archive::Catalog, iggy::IggyFile, texture::ImageFormat};
 
 pub struct Image {
     pub width: u32,
     pub height: u32,
-    /// GDraw raw format: 0 RGBA8, 13 BC7. UI composition stays UNORM.
-    pub format: u8,
+    /// Authored GPU format. The GDraw canvas samples display colours as UNORM.
+    pub format: ImageFormat,
     pub bytes: Box<[u8]>,
 }
 
@@ -29,9 +29,9 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
         let (format, bytes) = if entry.format == 13 && width % 4 == 0 && height % 4 == 0 && !expanded {
             let size = width as usize / 4 * (height as usize / 4) * 16;
             let start = entry.offset as usize;
-            (13, data.get(start..start + size).ok_or("iggytex entry outside file")?.to_vec())
+            (ImageFormat::Bc7, data.get(start..start + size).ok_or("iggytex entry outside file")?.to_vec())
         } else {
-            (0, super::raster::decode_entry(&data, &entry)?)
+            (ImageFormat::Rgba8, super::raster::decode_entry(&data, &entry)?)
         };
         images.push((entry.character, Image { width, height, format, bytes: bytes.into_boxed_slice() }));
     }
@@ -39,5 +39,23 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
         println!("MEMORY UI bitmaps: resource={resource} bytes={} rgba_bytes={rgba_bytes} images={} load_ms={:.3}",
             images.iter().map(|(_, image)| image.bytes.len()).sum::<usize>(), images.len(), started.elapsed().as_secs_f64() * 1000.0);
     }
+    Ok(images)
+}
+
+/// Process resident library images. The resource registry returns the existing
+/// payload on reacquisition (1400607f0 -> 14005feb0); live movie state remains
+/// separate. Share immutable compressed images across loading and pause players.
+/// bevy_backend: Arc owns the payload independently of either movie thread.
+type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
+static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(std::path::PathBuf, String), LibraryImages>>> = std::sync::Mutex::new(None);
+
+pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<LibraryImages, String> {
+    let key = (catalog.base().to_owned(), resource.replace('\\', "/").to_ascii_lowercase());
+    let mut resident = RESIDENT.lock().unwrap();
+    let resident = resident.get_or_insert_with(Default::default);
+    if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
+    let images: LibraryImages = std::sync::Arc::new(load(catalog, resource, file)?.into_iter()
+        .map(|(id, image)| (id, std::sync::Arc::new(image))).collect());
+    resident.insert(key, images.clone());
     Ok(images)
 }

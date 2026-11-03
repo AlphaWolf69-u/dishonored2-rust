@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct Images {
     pub images: HashMap<CharRef, (u32, u32, Vec<u8>)>,
+    pub game_images: HashMap<String, (u32, u32, Vec<u8>)>,
 }
 
 /// Decode mip 0 of a raw iggytex entry (`FUN_1402e2c00` formats).
@@ -89,6 +90,7 @@ pub fn rasterize(list: &DrawList, images: &Images, width: u32, height: u32, back
         let image: Option<(u32, u32, Vec<u8>)> = match &batch.texture {
             Texture::White => None,
             Texture::Bitmap(c) => images.images.get(c).cloned(),
+            Texture::Game(name) => images.game_images.get(name).cloned(),
             Texture::Ramp(i) => Some((64, 1, list.ramps[*i].to_vec())),
             Texture::Glyphs(i) => list.glyph_pages.get(*i).map(|p|
                 (p.width, p.height, p.coverage.iter().flat_map(|&coverage| [coverage; 4]).collect())),

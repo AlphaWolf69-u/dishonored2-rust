@@ -89,6 +89,29 @@ pub fn level_load_list(base: &Path, catalog: &Catalog, map: &str, language: &str
     Ok(list)
 }
 
+/// The resource manager's already prepared map request list (1400661e0).
+/// Share the immutable request descriptors between consumers; the registered
+/// resource owners decide whether each payload is already resident.
+pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
+    type Key = (std::path::PathBuf, String, String);
+    static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
+    let key = (base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
+    let mut lists = LISTS.lock().unwrap();
+    let lists = lists.get_or_insert_with(Default::default);
+    if let Some(list) = lists.get(&key) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD manifest reuse: {map} identity={:p}", std::sync::Arc::as_ptr(list));
+        }
+        return Ok(list.clone());
+    }
+    let list = std::sync::Arc::new(level_load_list(base, catalog, map, language)?);
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("LOAD manifest acquire: {map} identity={:p} entries={}", std::sync::Arc::as_ptr(&list), list.len());
+    }
+    lists.insert(key, list.clone());
+    Ok(list)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

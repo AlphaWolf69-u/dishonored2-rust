@@ -2836,3 +2836,12 @@ per manager instance, maintains its authored actor lists, and forwards Finished.
 Target/tag producers and removal of the scene actor on completion still require
 entity-lifecycle integration and remain explicit unavailable paths. Other enabled
 FX families are admitted only when their actual producers are implemented.
+
+
+The loading flow stays inside the gameplay application. `app::launch` composes
+persistent services; `app::level_prepare` performs map CPU acquisition;
+`app::loading_screen` owns publication/readiness and the startup presentation;
+`app::loading_movie` adapts mapinfo data to the installed Iggy movie. Shared
+immutable UI image ownership lives in `flash::bitmap_resources`, not in either
+screen controller. Loading and pause players execute on the same UI worker so
+library/font registrations can be reused while movie state is replaced.

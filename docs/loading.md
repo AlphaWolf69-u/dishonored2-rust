@@ -72,17 +72,74 @@ does not retain the old level's live entity/game state, nor establish which
 assets survive every forced purge. Persistent disk/driver cache policy is a
 separate question and is not established by this evidence.
 
-## Rewrite implications
+## Rewrite loading flow
 
-The current desktop launcher starts a new game process (`launcher::ops::start`).
-`app::launch` acquires substantial level data before constructing the Bevy app.
-Neither behavior provides the original's continuous menu-to-level lifecycle.
-The existing `loading` module already records resource reads and readiness
-gates, but the resource ledger still marks manifest-driven acquisition and
-many unload policies partial.
+`app::launch` creates the window, renderer and shared application services first.
+`app::loading_screen` presents the installed startup background using the existing
+resident-image owner. Once that window can render, the UI worker loads the selected
+map's authored loading movie. The main-menu map and menu movie are deliberately
+skipped until the save/menu flow exists.
 
-A faithful loading flow needs an early visible bootstrap, a persistent menu/
-game runtime with reusable resource owners, and a separate map transition
-that constructs/restores the destination world behind the loading UI. Its
-completion must cover initialization/GPU readiness as well as file reads.
-This research does not claim those screens are implemented yet.
+`app::level_prepare` acquires the map on a worker and publishes typed resources to
+the existing application. Map-dependent systems wait without changing their
+ordering against Bevy transforms, visibility or uploads. The map Startup schedule
+runs after publication; its scene construction still contains synchronous work.
+The loading presentation remains up through this work and the asynchronous gates.
+Scene/Bevy asset construction can still hold the last loading frame; its
+incremental publication work is recorded in `optimization-opportunities.md`.
+The render-side gate covers pending image uploads and pipeline preparation before
+play; ordinary high-mip streaming continues afterward. The active loading state
+blocks player input and pauses the gameplay clock; its movie advances on real
+time. Pause preparation happens on that same UI worker behind its existing gate.
+
+`app::loading_movie` implements `1400473b0` and `1400479a0`: it reads the installed
+mapinfo's Iggy movie, layout, mission index/name/summary, image and tips. It calls
+`_C_Show(layout)` and `_C_UpdateLoadingCompletion(acquired / requested)`. The movie
+provides its authored layout and animations. `140021e60` initializes the
+loading layout to 0, mission index to -1 and `m_waitInteractionAtEnd` to true.
+Once resources are ready, the host calls `_C_LoadingCompleted` and forwards
+keyboard/mouse events; the movie's `OnLoadingDisabled` ends the screen after
+its authored close. An explicit false declaration skips that interaction. No simulated progress or timed end
+is used. The manifest coverage report remains important: unsupported resource
+classes are still partial and are not claimed to have acquired payloads.
+
+Resource owners shared by the two stages retain their identities: the archive
+catalog, parsed Iggy files and immutable ABC definitions on the UI worker,
+compressed library images, game images, map manifests and parsed mapinfo declarations. GPU pipelines/device remain those of the
+same renderer. Game-texture bindings from `IggyFunctions.setTextureForBitmap`
+now reach the compositor rather than silently drawing the placeholder bitmap.
+Live loading-movie state is released when play starts; it is separate from those
+immutable library resources. Resource residency on forced purges and arbitrary
+map-to-map transitions remains governed by the partial lifecycles in the ledger.
+
+Production-client validation (dev profile, DirectX 12, 2026-11-03):
+
+- Edge of the World and Dust District both pass bootstrap -> installed loading
+  movie -> all resource/GPU gates -> movie continue/close -> gameplay -> clean
+  scheduled exit. Captures were saved; their images were not inspected.
+- Dust District's first nonempty loading draw list has stage 1920x1080,
+  57 batches and 26,892 vertices, and binds the authored `loading_dust_is.png`.
+  The movie reports no AS3 exception in that first publication.
+- Four shared libraries (`lib_common`, controller buttons, particles and the
+  Russian font library) return exactly the same file identities during loading
+  and pause preparation. The map manifest is acquired once and reused three
+  times by other consumers. Its immutable source descriptors remain shared.
+- All 39 installed mapinfo declarations name the loading movie. The authored
+  non-default layout values are precisely the no-tips and training values in
+  the executable's `141a1bb60` enum table; explicit false wait flags are supported.
+- Loading progress uses a cached count. No gameplay GPU pass was added. These
+  are startup/ownership checks, not a claim of improved gameplay CPU timings.
+- No synthetic or unit tests were written or run. Human appearance verification
+  remains pending because image inspection is disabled by the user.
+
+Local artifacts: `artifacts/loading-eotw-3.*`, `artifacts/loading-dust.*`,
+`artifacts/loading-mapinfo-summary.json`, `artifacts/loading-build-10.*`.
+
+
+Initial paused scene publication: `1408ad580` pauses simulation-clock stepping,
+but a newly constructed world still needs initialized render inputs. Fog, water
+and display publishers now create their first publication with delta zero even
+when the clock is paused; later unchanged paused frames retain that publication.
+This lets the existing particle-material gate prepare before play rather than
+waiting for simulation to start. Simulation time and authored animations stay
+paused until the loading movie's close callback.

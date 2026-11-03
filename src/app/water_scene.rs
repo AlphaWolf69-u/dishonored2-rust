@@ -277,15 +277,15 @@ pub(super) fn publish_water_frame(
         queries.0 = None;
         return;
     };
-    if !clock.advanced() {
-        return;
-    }
+    let advanced = clock.advanced();
+    // A newly loaded paused scene still needs its initial renderer inputs.
+    if !advanced && output.0.is_some() { return; }
     output.0 = None;
     queries.0 = None;
     selection.0=None;
     let result = (|| -> Result<WaterFrame, String> {
         let clock = clock.clock().map_err(str::to_owned)?;
-        let delta = clock.delta(3).ok_or("water gameplay clock unavailable")?;
+        let delta = if advanced { clock.delta(3).ok_or("water gameplay clock unavailable")? } else { 0. };
         let (camera, transform, projection) = cameras.single().map_err(|e| e.to_string())?;
         let Projection::Custom(custom) = projection else {
             return Err("water camera projection unavailable".into());

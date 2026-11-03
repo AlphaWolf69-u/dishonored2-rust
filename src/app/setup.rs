@@ -160,6 +160,8 @@ pub(super) fn setup(
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
             ZIndex(100),
+            super::state::GameplayOverlay,
+            Visibility::Hidden,
         ))
         .with_children(|parent| {
             parent.spawn((

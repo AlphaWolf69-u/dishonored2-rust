@@ -42,6 +42,11 @@ enum Command {
     Tick(f64, std::time::Instant),
     /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
     Close,
+    Loading { screen: (i32, i32), map: String, frames: Sender<Result<super::loading_movie::Frame, String>> },
+    LoadingTick { dt: f64, progress: f64, ready: bool },
+    EndLoading,
+    LoadingKey { down: bool, vk: u32 },
+    LoadingButton { down: bool, button: u8 },
     /// Diagnostic (F11, like the F8 capture): write the display trees and the
     /// draw list to `artifacts/flash-dumps/`, with the window size.
     DebugDump { window: (u32, u32) },
@@ -85,7 +90,6 @@ thread_local! {
     // the game runs). Every open still builds a new player, as the game does
     // (`m_cacheResources` 0).
     static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
-    static BITMAPS: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<(u16, Arc<Image>)>>>> = std::cell::RefCell::new(HashMap::new());
 }
 
 fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
@@ -98,19 +102,11 @@ fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     Ok(c)
 }
 
-fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
+pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
     let mut out = HashMap::new();
     for (index, path) in resources {
-        let images = match BITMAPS.with(|d| d.borrow().get(path).cloned()) {
-            Some(images) => images,
-            None => {
-                let file = player.state.borrow().file(*index);
-                let images = std::rc::Rc::new(bitmap_resources::load(catalog, path, &file)?.into_iter()
-                    .map(|(id, image)| (id, Arc::new(image))).collect::<Vec<_>>());
-                BITMAPS.with(|d| d.borrow_mut().insert(path.clone(), images.clone()));
-                images
-            }
-        };
+        let file = player.state.borrow().file(*index);
+        let images = bitmap_resources::acquire(catalog, path, &file)?;
         out.extend(images.iter().map(|(id, image)| (CharRef { library: *index, id: *id }, image.clone())));
     }
     Ok(out)
@@ -175,6 +171,20 @@ impl Default for PauseMenu {
             .expect("pause movie thread");
         Self { commands, events, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None) }
     }
+}
+
+impl PauseMenu {
+    pub(super) fn start_loading(&self, screen: (i32, i32), map: String) -> Receiver<Result<super::loading_movie::Frame, String>> {
+        let (frames, receive) = channel();
+        let _ = self.commands.send(Command::Loading { screen, map, frames });
+        receive
+    }
+    pub(super) fn tick_loading(&self, dt: f64, progress: f64, ready: bool) {
+        let _ = self.commands.send(Command::LoadingTick { dt, progress, ready });
+    }
+    pub(super) fn loading_key(&self, down: bool, vk: u32) { let _ = self.commands.send(Command::LoadingKey { down, vk }); }
+    pub(super) fn loading_button(&self, down: bool, button: u8) { let _ = self.commands.send(Command::LoadingButton { down, button }); }
+    pub(super) fn end_loading(&self) { let _ = self.commands.send(Command::EndLoading); }
 }
 
 /// The player character. The rewrite has no save state yet, so the character
@@ -284,10 +294,18 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
     let first = inbox.recv().ok()?;
     let mut out: Vec<Command> = Vec::new();
     let mut tick: Option<(f64, std::time::Instant)> = None;
+    let mut loading_tick: Option<(f64, f64, bool)> = None;
     for command in std::iter::once(first).chain(inbox.try_iter()) {
         match command {
             Command::Tick(dt, sent) => {
                 tick = Some(tick.map_or((dt, sent), |(sum, first)| (sum + dt, first)));
+            }
+            Command::LoadingTick { dt, progress, ready } => {
+                loading_tick = Some((loading_tick.map_or(dt, |(sum, _, _)| sum + dt), progress, ready));
+            }
+            Command::Loading { .. } | Command::EndLoading => {
+                loading_tick = None;
+                out.push(command);
             }
             Command::Cursor { .. } if matches!(out.last(), Some(Command::Cursor { .. })) => *out.last_mut().unwrap() = command,
             // A reload or unload ends the batch's earlier frames.
@@ -299,12 +317,14 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
         }
     }
     out.extend(tick.map(|(dt, sent)| Command::Tick(dt, sent)));
+    out.extend(loading_tick.map(|(dt, progress, ready)| Command::LoadingTick { dt, progress, ready }));
     Some(out)
 }
 
 /// The movie thread: one player at a time, rebuilt on every Open.
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut loaded: Option<Loaded> = None;
+    let mut loading: Option<(super::loading_movie::Movie, Sender<Result<super::loading_movie::Frame, String>>)> = None;
     let keyboard = Keyboard::default();
     let mut generation = 0u64;
     let mut serial = 0u64;
@@ -319,6 +339,29 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
+            Command::Loading { screen, map, frames } => {
+                generation += 1;
+                match super::loading_movie::Movie::load(screen, &map, generation) {
+                    Ok(movie) => loading = Some((movie, frames)),
+                    Err(error) => { let _ = frames.send(Err(error)); }
+                }
+            }
+            Command::LoadingTick { dt, progress, ready } => {
+                if let Some((movie, frames)) = loading.as_mut() {
+                    let _ = frames.send(movie.frame(dt, progress, ready));
+                }
+            }
+            Command::LoadingKey { down, vk } => {
+                if let Some((movie, frames)) = loading.as_mut() {
+                    if let Err(e) = movie.key(down, vk) { let _ = frames.send(Err(e)); }
+                }
+            }
+            Command::LoadingButton { down, button } => {
+                if let Some((movie, frames)) = loading.as_mut() {
+                    if let Err(e) = movie.mouse_button(down, button) { let _ = frames.send(Err(e)); }
+                }
+            }
+            Command::EndLoading => loading = None,
             Command::Prepare { screen } => {
                 if loaded.is_none() && prepared.as_ref().is_none_or(|p| p.screen != screen) {
                     match prepare(screen) {
@@ -523,7 +566,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                             render::stack(&mut list, render::draw_list_cached(&g.vm, &mut l.global_cache));
                         }
                         serial += 1;
-                        FlashFrame { list: Arc::new(list), images: l.images.clone(), generation, serial }
+                        FlashFrame { game_images: Default::default(), list: Arc::new(list), images: l.images.clone(), generation, serial }
                     }
                 };
                 last_frame = Some(frame.clone());
@@ -543,6 +586,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
 #[allow(clippy::too_many_arguments)]
 pub fn update_pause_menu(
     mut menu: NonSendMut<PauseMenu>,
+    loading: Res<super::loading_screen::Acquisition>,
     mut keys: MessageReader<KeyboardInput>,
     mut buttons: MessageReader<MouseButtonInput>,
     mut wheels: MessageReader<MouseWheel>,
@@ -602,6 +646,7 @@ pub fn update_pause_menu(
         }
     }
     for input in keys.read() {
+        if super::loading_screen::is_loading(&loading) { continue; }
         // Engine keyboard events do not repeat.
         if input.repeat {
             continue;
@@ -709,7 +754,7 @@ pub fn update_pause_menu(
         }
     }
     if !menu.open {
-        frame.0 = None;
+        if !super::loading_screen::is_loading(&loading) { frame.0 = None; }
         // Build the next open's player while the menu is closed.
         if let Some(w) = windows.iter().next() {
             let size = (w.physical_width(), w.physical_height());
@@ -722,7 +767,7 @@ pub fn update_pause_menu(
     }
     // The movie draws its own cursor; the OS cursor is released and hidden
     // while the pause state is open (whether the game hides it is not traced).
-    if menu.open != paused.0 {
+    if menu.open != paused.0 && !super::loading_screen::is_loading(&loading) {
         crate::platform::console::shared().write(|c| if menu.open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });
         for mut c in &mut cursors {
             if menu.open {
@@ -733,7 +778,7 @@ pub fn update_pause_menu(
             }
         }
     }
-    paused.0 = menu.open;
+    paused.0 = menu.open || super::loading_screen::is_loading(&loading);
 }
 
 /// Run condition for gameplay input: the pause decl blocks player input

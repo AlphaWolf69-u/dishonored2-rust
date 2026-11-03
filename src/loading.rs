@@ -26,6 +26,18 @@ struct State {
     loaded: HashMap<String, HashSet<String>>,
     gates: Vec<(&'static str, bool)>,
     playing: bool,
+    required: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>,
+    required_heads: HashMap<u64, usize>,
+    required_next: Vec<usize>,
+    acquired: usize,
+}
+
+fn resource_key(kind: &str, path: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::hash::DefaultHasher::new();
+    kind.hash(&mut hash);
+    path.hash(&mut hash);
+    hash.finish()
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -39,7 +51,14 @@ pub fn read(kind: &str, path: &str) {
     let path = path.to_ascii_lowercase().replace('\\', "/");
     let late = with(|s| {
         let late = s.playing && !s.loaded.get(kind).is_some_and(|paths| paths.contains(&path));
-        s.loaded.entry(kind.to_owned()).or_default().insert(path.clone());
+        if s.loaded.entry(kind.to_owned()).or_default().insert(path.clone()) {
+            let mut index = s.required_heads.get(&resource_key(kind, &path)).copied().unwrap_or(usize::MAX);
+            while index != usize::MAX {
+                let required = &s.required[index];
+                if required.kind == kind && required.path == path { s.acquired += 1; }
+                index = s.required_next[index];
+            }
+        }
         late
     });
     if late && !path.contains(".bimage7_mip") && std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
@@ -50,6 +69,32 @@ pub fn read(kind: &str, path: &str) {
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
     with(|s| s.playing = true);
+}
+
+/// Start the map resource phase while keeping registry/resident identities.
+/// 1400661e0 reports resources acquired / resources requested; streaming mips
+/// remain outside this progress count.
+pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>) {
+    with(|s| {
+        s.playing = false;
+        s.required = list;
+        s.required_heads.clear();
+        s.required_next.clear();
+        s.acquired = 0;
+        for (index, resource) in s.required.iter().enumerate() {
+            let previous = s.required_heads.insert(resource_key(&resource.kind, &resource.path), index).unwrap_or(usize::MAX);
+            s.required_next.push(previous);
+            if s.loaded.get(&resource.kind).is_some_and(|paths| paths.contains(&resource.path)) { s.acquired += 1; }
+        }
+    });
+}
+
+pub fn progress() -> f64 {
+    with(|s| {
+        if s.playing { return 1.0; }
+        if s.required.is_empty() { return 0.0; }
+        s.acquired as f64 / s.required.len() as f64
+    })
 }
 
 /// Register work the level must finish before play.

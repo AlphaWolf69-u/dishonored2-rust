@@ -91,3 +91,18 @@ Remove an entry when it is implemented and measured.
   recorded separately from sparse GPU publication, whose byte saving is known.
   Host phase proxies also retain zero-count submissions while inactive to
   admit effects immediately without a one-frame visibility handoff delay.
+
+
+## Loading scene publication
+
+`app::level_prepare` now moves archive parsing and map CPU acquisition off the
+window/event thread. `app::setup` and audio startup still build their Bevy assets
+synchronously after publication. Existing release load traces (`residency-expanded`
+and `residency-profile-baseline`, local artifacts) put scene construction at
+roughly 7–9 seconds including initial image reads; this can hold the last loading
+frame during that phase. Incremental publication would improve event/animation
+responsiveness rather than reduce the underlying parser/mesh work. It requires
+separating CPU cooking from main-world Assets/Commands publication while keeping
+one handle allocator and image owner; a second application/device or private
+copy of its asset stores would break ownership. This remains a host scheduling
+limitation, not a claim of complete asynchronous scene construction.
