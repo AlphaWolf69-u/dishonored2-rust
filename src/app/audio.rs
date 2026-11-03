@@ -193,13 +193,9 @@ pub(super) fn begin_level(world: &mut World) {
     world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
+    world.insert_resource(contacts::ContactSounds::default());
     world.resource_mut::<Messages<SoundEvent>>().clear();
     world.resource_mut::<Messages<ContactSound>>().clear();
-}
-
-pub(super) fn load_level_contacts(world: &mut World) {
-    world.remove_resource::<contacts::ContactSounds>();
-    world.init_resource::<contacts::ContactSounds>();
 }
 
 impl Plugin for SoundPlugin {
@@ -217,7 +213,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
-            .add_systems(Startup, (index_banks, preload_level_events).chain())
+            .add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
             .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
@@ -680,6 +676,7 @@ impl AudioPreparation {
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands) {
+        commands.insert_resource(contacts::ContactSounds::acquire());
         prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
         prepare_listed_events(&mut self.registry);
     }

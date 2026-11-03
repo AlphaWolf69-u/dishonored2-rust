@@ -165,3 +165,15 @@ Particle GPU materials currently own textures per material/state variant;
 sharing those image identities requires a lifecycle change through the particle
 image owner and per-tag original measurements. No resident-memory saving is
 claimed for the scheduling change; reducing that duplication remains separate.
+
+The transition trace (`loading-teardown`) disproves the hypothesis that deep
+world-resource destruction causes the remaining one-second blank interval:
+entities take 1.374 / 2.746 ms, publication reset 39.257 / 48.000 ms, total
+`LevelLifetime::clear` 86.754 / 96.303 ms. After that, contact-sound `FromWorld`
+construction reacquires the destination manifest and contact/sound declarations
+on the window thread. Move that same owner acquisition into `AudioPreparation`
+on the existing worker; reset only its mutable level state on unload. Expected
+gain is removal of the remaining roughly 0.8–1 second acquisition from the
+window thread, not faster destruction or reduced audio coverage. Startup's
+synchronous diagnostic path must skip an already acquired owner. Verification
+is pending.

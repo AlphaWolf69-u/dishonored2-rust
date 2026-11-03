@@ -1,10 +1,24 @@
 //! arkDeclFade (colour at +0x58, opacity +0xd0), sampled by 140167170.
 use super::*;
-use crate::gameplay::effects::{curve::EffectFloatCurve, vector_curve::EffectVectorCurvePair};
-#[derive(Default)]
+use crate::gameplay::effects::{curve::EffectFloatCurve, vector_curve::{EffectVectorCurve, EffectVectorCurvePair}};
 pub struct Fade {
     pub colour: EffectVectorCurvePair<3>,
     pub opacity: EffectFloatCurve,
+}
+impl Default for Fade {
+    fn default() -> Self {
+        // 00f610 -> 00f740 resets RGB and opacity and appends one t=0 key.
+        // Both constructors (00d610 / 00d0b0) select interpolation mode 4,
+        // hence [incoming, value, outgoing] storage even for that single key.
+        // Partial edits without `num` modify this constructor-owned storage.
+        Self {
+            colour: EffectVectorCurvePair {
+                maximum: EffectVectorCurve { times: vec![0.], values: vec![[0.; 3]; 3] },
+                minimum: Default::default(),
+            },
+            opacity: EffectFloatCurve { times: vec![0.], values: vec![0.; 3] },
+        }
+    }
 }
 impl Fade {
     pub fn parse(text: &str) -> Result<Self, String> {

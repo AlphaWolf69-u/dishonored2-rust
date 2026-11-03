@@ -440,7 +440,6 @@ fn acquire(world: &mut World) {
         state.map = level.entities.trim_end_matches(".entities").to_owned() + ".map";
         crate::gameplay::map_info::set_current_map(&state.map);
         crate::loading::restart_level();
-        super::audio::load_level_contacts(world);
         state.input = Some((state.catalog.clone(), level, state.base.clone()));
         state.published = false;
         state.frames = 0;

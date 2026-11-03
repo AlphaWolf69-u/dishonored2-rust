@@ -216,6 +216,29 @@ for scope, captures and the remaining human appearance check.
 
 ### Responsive loading and load fade
 
+Contact-sound declaration admission (`1400661e0` listed resources) stays in
+`app::audio::contacts`. Its map-scoped owner now acquires through the existing
+audio preparation worker on initial load and transitions. Plugin construction
+creates an unacquired slot, publication supplies the resolved state before map
+systems run, and unload clears it without synchronously rereading declarations.
+The synchronous Startup entry remains for diagnostic callers and skips an
+already acquired state. Resource paths, lookup caches and error handling are
+unchanged; this is host thread scheduling. The production client verifies
+837–866 ms of acquisition on the worker and 117–130 ms transition intervals,
+with successful initial/return map handoffs and one persistent audio output.
+Bulk event decoding retains its existing task pool: an alternative background
+pool doubled decoding cost without improving observed loading gaps, so that
+experiment was reverted. The independent contact-acquisition correction remains.
+
+Fade constructor/reset (`14000f610` -> `14000f740`, curve constructors
+`14000d610` / `14000d0b0`) starts RGB and opacity with a single t=0 cubic key.
+Installed partial edits retain those arrays when `num` is omitted. The loader
+now applies those defaults before edits; empty arrays incorrectly rejected
+`fade_black_loop`, referenced by tutorial and end maps. All 36 installed worlds
+explicitly provide both load-fade durations and reference three fade declarations.
+End/tutorial script-driven replacement of a constant-black fade remains part of
+their cinematic/FX lifecycle, not an invented timer in the loading controller.
+
 The composition gate uses the camera owner's same-frame completion flag;
 optional DoF scratch-image residency is not a completion requirement when that
 effect is disabled. Explicit `r_skipPostProcess` bypasses only the disabled

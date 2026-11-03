@@ -37,6 +37,8 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) {
+        let timing = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let entities_started = timing.then(std::time::Instant::now);
         world.resource_scope(
             |world, mut shared: Mut<super::texture_streaming::SharedImages>| {
                 if let Some(queue) = world.get_resource::<super::SceneRenderQueue>() {
@@ -59,9 +61,21 @@ impl LevelLifetime {
                 world.despawn(entity);
             }
         }
-        for id in self.resources.drain(..) {
-            world.remove_resource_by_id(id);
+        if let Some(started) = entities_started {
+            eprintln!("LOAD teardown entities: {:.3} ms", started.elapsed().as_secs_f64() * 1000.0);
         }
+        for id in self.resources.drain(..) {
+            let resource_timing = timing.then(|| (std::time::Instant::now(),
+                world.components().get_info(id).map(|info| info.name().to_string()).unwrap_or_default()));
+            world.remove_resource_by_id(id);
+            if let Some((started, name)) = resource_timing {
+                let elapsed = started.elapsed();
+                if elapsed.as_millis() >= 10 {
+                    eprintln!("LOAD teardown resource {name}: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+                }
+            }
+        }
+        let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
     }
 }

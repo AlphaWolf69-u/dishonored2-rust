@@ -1,5 +1,14 @@
 # Loading stages
 
+Installed fade coverage audit: all 36 indexed world entity resources contain
+explicit initial/later duration fields. Their references use three installed
+fade declarations. `fade_black_loop` omits curve counts and changes only the
+constructor's opacity value; reset `14000f740` (called by `14000f610`) supplies
+one t=0 cubic key for both RGB and opacity, initialized to zero. Initializing
+empty vectors instead rejects this valid partial edit. The fade owner now
+ports those constructor defaults before applying installed edits. The ordinary
+start-level fade still resolves its explicit three-key opacity curve unchanged.
+
 Evidence from the installed assets and Dishonored2.exe, 2026-11-03.
 This describes the stage split and verified reuse mechanisms, not a complete
 port of every resource class's residency policy.
@@ -432,3 +441,47 @@ large shader-buffer preparation (112.942 ms), and first-view bind groups
 (106.919 ms). The worst bounded frame includes several such phases; it is not
 one remaining 350 ms image operation. Further work must keep ownership and
 readiness intact and avoid conflating per-function costs with whole-frame gaps.
+
+Release comparison (`loading-release-*`, same binary, DX12 1280x720; all three
+processes exit 0): longest mesh preparation 590.223 -> 110.076 ms; particle
+preparation 506.849 -> 26.527 ms; longest movie-visible update gap
+704.718 -> 242.154 ms. Loading closes at 19.095 / 20.055 s respectively, then
+the installed initial fade completes in 4.003 s. These are loading costs;
+they do not establish walking CPU or FPS changes. No shader errors occurred.
+
+The release Dust -> EotW -> Dust sequence retains PID 19592, catalog
+0x1ed708fee20, device 0x1ed25a75f80, window 65v0 and one audio output. Visible
+loading gaps are 281.607 / 180.974 / 186.485 ms; both later-load fades complete
+in about 2 s. Outgoing-world release still causes 1036.942 / 929.513 ms gaps
+before the destination movie is visible. Diagnostic spans now separate entity
+destruction, each removed resource and scene-publication reset so the responsible
+owner can be corrected without moving unrelated work or weakening readiness.
+
+The follow-up disproved destruction as the one-second cause: entity destruction
+takes 1.374 / 2.746 ms and the full world-clear function 86.754 / 96.303 ms.
+`audio::load_level_contacts` then reconstructed its `FromWorld` resource on the
+window thread, reacquiring the destination manifest/declarations. That same
+contact owner now acquires on the existing audio worker, and its baseline slot
+is empty while map producers are suspended. Startup diagnostic callers use the
+same constructor and skip an already acquired owner.
+
+`loading-contact-transitions` exits 0 with contact acquisition
+837.816 / 854.449 / 865.939 ms on the worker. The transition interval to
+"outgoing world released" falls from 1077 / 935 ms to 117 / 130 ms, while
+world clear remains 86.675 / 95.979 ms. All three loading handoffs complete.
+`loading-contact-tutorial` also exits 0 and admits the installed constant-black
+fade with one opacity key and three packed values. That declaration deliberately
+stays black until cinematic/FX code replaces it; the loader does not fabricate
+a fade-out for it.
+
+A first tutorial run records a 3112.160 ms gap before scene publication, during
+bulk sound preparation. A repeated phase capture does not reproduce the long
+gap, but shows the frame waiting 116.757 ms with only 4.328 ms of render work.
+Bulk sound preparation occupies the same ComputeTaskPool used by frame
+scheduling. A same-binary AsyncComputeTaskPool comparison did not substantiate
+the starvation hypothesis: both prepared 1437 events, but background decoding
+took 333.146 vs 166.434 ms, and 537.429 vs 224.821 ms with four configured
+workers. Maximum window gaps did not improve (186.055 vs 157.687 ms;
+176.322 vs 176.629 ms). The pool change and switch were removed. The original
+three-second observation remains unexplained; repeated tutorial captures no
+longer reproduce it. No claim is made that that cold-loading stall is fixed.

@@ -111,17 +111,24 @@ struct Active {
     parameter: (u32, f32),
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub(super) struct ContactSounds {
-    definitions: Result<Definitions, String>,
+    definitions: Option<Result<Definitions, String>>,
     active: Vec<Active>,
     seed: u32,
     reported: HashSet<String>,
 }
-impl FromWorld for ContactSounds {
-    fn from_world(_: &mut World) -> Self {
-        Self { definitions: Definitions::load(), active: Vec::new(), seed: 0, reported: HashSet::new() }
+impl ContactSounds {
+    pub(super) fn acquire() -> Self {
+        let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
+        Self { definitions: Some(Definitions::load()), ..Default::default() }
     }
+}
+
+/// Synchronous diagnostic entry; production publishes this owner from the
+/// acquisition worker before running Startup or admitting map systems.
+pub(super) fn initialize(mut commands: Commands, state: Res<ContactSounds>) {
+    if state.definitions.is_none() { commands.insert_resource(ContactSounds::acquire()); }
 }
 
 pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageReader<ContactSound>,
@@ -140,7 +147,8 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
     for active in &mut state.active { active.age += dt; }
     for ContactSound(contact) in contacts.read() {
         let prepared = (|| {
-            let definitions = state.definitions.as_mut().map_err(|error| error.clone())?;
+            let definitions = state.definitions.as_mut().ok_or("contact definitions have not been acquired")?
+                .as_mut().map_err(|error| error.clone())?;
             let groups = definitions.resolve(contact)?;
             let value = energy.clamp(contact.speed * contact.speed * contact.mass);
             Ok::<_, String>((groups, (energy.id, value)))

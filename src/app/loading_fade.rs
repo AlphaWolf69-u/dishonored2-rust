@@ -58,10 +58,15 @@ impl LoadingFade {
                 .read(&format!("generated/decls/fade/{path}.decl"))
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("missing fade {path}"))?;
-            Ok(Some(Definition {
-                fade: crate::assets::fx::fade::Fade::parse(&crate::entities::declaration_text(
+            let fade = crate::assets::fx::fade::Fade::parse(&crate::entities::declaration_text(
                     &source,
-                ))?,
+                ))?;
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("LOAD fade definition: {path} duration={duration} opacity_keys={} opacity_values={}",
+                    fade.opacity.times.len(), fade.opacity.values.len());
+            }
+            Ok(Some(Definition {
+                fade,
                 duration,
             }))
         };
