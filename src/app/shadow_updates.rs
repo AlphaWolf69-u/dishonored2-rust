@@ -314,7 +314,22 @@ pub(super) fn initialize_screen_shadow_source(
     scene: Res<SceneData>,
     mut programs: ResMut<ProgramCacheSource>,
     mut images: ResMut<Assets<Image>>,
+    existing: Option<Res<ScreenShadowSource>>,
 ) {
+    if existing.is_some() { return; }
+    match prepare_screen_shadow_source(&scene, &mut programs, &mut images) {
+        Ok((frame, source)) => { commands.insert_resource(frame); commands.insert_resource(source); }
+        Err(error) => {
+            eprintln!("Screen source unavailable: {error}");
+            commands.insert_resource(ScreenShadowSource(Err(error)));
+        }
+    }
+}
+
+pub(super) fn prepare_screen_shadow_source(
+    scene: &SceneData, programs: &mut ProgramCacheSource,
+    images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
+) -> Result<(screen_shadow_pass::ScreenShadowFrame, ScreenShadowSource), String> {
     let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>, Option<Handle<Image>>), String> {
         let library = programs.0.as_mut().map_err(|error| error.clone())?;
         let catalog = scene
@@ -417,7 +432,7 @@ pub(super) fn initialize_screen_shadow_source(
             let empty = crate::entities::EnvironmentRenderParameters {layers:Vec::new()};
             let defaults = crate::assets::environment::ParameterReader {catalog,parameters:&empty};
             let source = defaults.image_source("SSAO/Zbuffer")?;
-            Some(super::texture_streaming::load_resident_2d(catalog,&source,&mut images,&mut Default::default())?)
+            Some(super::texture_streaming::load_resident_2d(catalog,&source,images,&mut Default::default())?)
         } else {None};
         Ok((
             ScreenShadowParameters {
@@ -434,25 +449,12 @@ pub(super) fn initialize_screen_shadow_source(
             depth_default,
         ))
     })();
-    match result {
-        Ok((parameters, cloud, depth_default)) => {
-            commands.insert_resource(screen_shadow_pass::ScreenShadowFrame {
-                output: images.add(screen_shadow_pass::visibility_image(1, 1)),
-                cloud,
-                depth_default,
-                current: None,
-                ambient_occlusion: None,
-                player_depth_hack: 0.0,
-                produced: Default::default(),
-                directional_produced: Default::default(),
-            });
-            commands.insert_resource(ScreenShadowSource(Ok(parameters)));
-        }
-        Err(error) => {
-            eprintln!("Screen source unavailable: {error}");
-            commands.insert_resource(ScreenShadowSource(Err(error)));
-        }
-    }
+    let (parameters, cloud, depth_default) = result?;
+    Ok((screen_shadow_pass::ScreenShadowFrame {
+        output: images.add(screen_shadow_pass::visibility_image(1, 1)),
+        cloud, depth_default, current: None, ambient_occlusion: None,
+        player_depth_hack: 0.0, produced: Default::default(), directional_produced: Default::default(),
+    }, ScreenShadowSource(Ok(parameters))))
 }
 
 pub(super) fn prepare_screen_shadow_frame(

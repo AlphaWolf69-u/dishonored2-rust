@@ -150,6 +150,7 @@ pub(super) struct Acquisition {
     played_seconds: f64,
     last_loading_update: std::time::Instant,
     max_loading_gap: std::time::Duration,
+    movie_max_gap: std::time::Duration,
     upload_budget: Option<usize>,
 }
 #[derive(Component)]
@@ -287,6 +288,7 @@ pub(super) fn install(
         played_seconds: 0.0,
         last_loading_update: std::time::Instant::now(),
         max_loading_gap: std::time::Duration::ZERO,
+        movie_max_gap: std::time::Duration::ZERO,
         upload_budget,
     })
     .add_systems(Startup, show_bootstrap)
@@ -315,6 +317,7 @@ fn show_bootstrap(
         Camera3d::default(),
         bevy::core_pipeline::tonemapping::Tonemapping::None,
         Msaa::Off,
+        bevy::camera::visibility::RenderLayers::none(),
         LoadingCamera,
     ));
     commands.spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
@@ -383,6 +386,7 @@ fn acquire(world: &mut World) {
                     limit_loading_uploads(world);
                     state.last_loading_update = std::time::Instant::now();
                     state.max_loading_gap = std::time::Duration::ZERO;
+                    state.movie_max_gap = std::time::Duration::ZERO;
                     state.finished = false;
                     for mut colour in world.query_filtered::<&mut BackgroundColor, With<super::loading_fade::FadeLayer>>().iter_mut(world) { colour.0 = Color::BLACK; }
                     state.next = Some(level);
@@ -407,14 +411,31 @@ fn acquire(world: &mut World) {
         }
     }
     let now = std::time::Instant::now();
-    state.max_loading_gap = state.max_loading_gap.max(now - state.last_loading_update);
+    let gap = now - state.last_loading_update;
+    if gap > state.max_loading_gap {
+        state.max_loading_gap = gap;
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD window gap: {:.3} ms frame={} movie={} worker={} published={} gpu_phase={}",
+                gap.as_secs_f64()*1000., state.frames, state.movie_visible, state.result.is_some(), state.published,
+                state.gpu.0.load(std::sync::atomic::Ordering::Acquire));
+            if let Some(profile) = world.get_resource::<crate::platform::frame_profile::CpuFrameProfile>() {
+                let mut phases: Vec<_> = profile.latest_ns().into_iter().enumerate().collect();
+                phases.sort_unstable_by_key(|(_, ns)| std::cmp::Reverse(*ns));
+                eprintln!("LOAD window gap phases: {:?}", phases.into_iter().take(8).map(|(i, ns)| (crate::platform::frame_profile::LABELS[i], ns as f64 / 1_000_000.0)).collect::<Vec<_>>());
+            }
+        }
+    }
+    if state.movie_visible { state.movie_max_gap = state.movie_max_gap.max(gap); }
     state.last_loading_update = now;
     if state.next.is_some() {
         if state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 {
             world.insert_resource(state);
             return;
         }
-        state.lifetime.clear(world);
+        {
+            let _span = super::load_timing::Span::new("outgoing world release");
+            state.lifetime.clear(world);
+        }
         let level = state.next.take().unwrap();
         state.map = level.entities.trim_end_matches(".entities").to_owned() + ".map";
         crate::gameplay::map_info::set_current_map(&state.map);
@@ -439,6 +460,7 @@ fn acquire(world: &mut World) {
             Camera3d::default(),
             bevy::core_pipeline::tonemapping::Tonemapping::None,
             Msaa::Off,
+            bevy::camera::visibility::RenderLayers::none(),
             LoadingCamera,
         ));
         super::load_timing::mark("outgoing world released");
@@ -539,9 +561,9 @@ fn acquire(world: &mut World) {
                 .spawn(move || {
                     let result = super::level_prepare::prepare_level(base, catalog, level)
                         .map_err(|e| e.to_string())
-                        .map(|mut prepared| {
-                            if !prepared.diagnostic_exit { preparation.prepare(&mut prepared); }
-                            prepared
+                        .and_then(|mut prepared| {
+                            if !prepared.diagnostic_exit { preparation.prepare(&mut prepared)?; }
+                            Ok(prepared)
                         });
                     let _ = send.send(result);
                 })
@@ -584,6 +606,7 @@ fn acquire(world: &mut World) {
                 let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world);
                 prepared.publish(world);
                 if let Some(mut startup) = state.startup.take() {
+                    let _span = super::load_timing::Span::new("remaining startup");
                     startup.run(world);
                     state.startup = Some(startup);
                 }
@@ -684,6 +707,9 @@ fn finish_loading(
         for mut cursor in &mut cursors {
             cursor.visible = false;
             cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("LOAD cursor handoff: visible={} grab={:?}", cursor.visible, cursor.grab_mode);
+            }
         }
         for mut overlay in &mut overlays {
             *overlay = Visibility::Inherited;
@@ -694,7 +720,7 @@ fn finish_loading(
         frame.0 = None;
         super::load_timing::mark("loading presentation closed");
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("LOAD window update maximum gap: {:.3} ms", state.max_loading_gap.as_secs_f64()*1000.);
+            eprintln!("LOAD window update maximum gap: {:.3} ms; movie visible {:.3} ms; restored upload budget {:?}", state.max_loading_gap.as_secs_f64()*1000., state.movie_max_gap.as_secs_f64()*1000., uploads.max_bytes);
         }
     }
 }

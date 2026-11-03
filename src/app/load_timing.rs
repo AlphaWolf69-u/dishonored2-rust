@@ -5,6 +5,21 @@ use std::time::Instant;
 
 static MARKS: Mutex<Option<(Instant, Instant)>> = Mutex::new(None);
 
+/// Exact host publication costs, separate from the worker's phase markers.
+pub(super) struct Span(&'static str, Option<Instant>);
+impl Span {
+    pub(super) fn new(label: &'static str) -> Self {
+        Self(label, (std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")).then(Instant::now))
+    }
+}
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some(start) = self.1 {
+            eprintln!("LOAD host {}: {:.3} ms", self.0, start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+}
+
 pub(super) fn mark(phase: &str) {
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
         return;

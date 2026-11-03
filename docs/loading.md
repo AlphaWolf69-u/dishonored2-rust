@@ -358,3 +358,37 @@ and skip already prepared owners. The GPU input gate includes those prepared
 attachment images as well as renderable meshes and shader buffers. This removes
 the remaining measured shadow-construction wait from the window thread, without
 changing queries, light selection, target sizes or image precision.
+
+
+Dust transition rejection (diagnostic `loading-handoff-transition`): the worker
+moved setup ahead of `initialize_screen_shadow_source`, so setup had already
+transferred `SceneData.catalog` before that initializer ran. The initializer
+reported `screen catalog is unavailable`; without its depth source, projected
+decal variants failed to compile (`prepass_depth` absent) and forward readiness
+correctly remained incomplete. The screen-shadow owner now prepares through
+its same helper on the worker, before setup transfers the catalog. All loading
+cameras are explicitly UI-only. Acquisition errors return to the loading
+coordinator rather than silently omitting this required owner. This repairs the
+initialization order; it does not bypass readiness or clear failed pipelines.
+
+The repaired production-client sequence (`loading-handoff-transition-fixed`,
+dev DX12) completed EotW -> Dust -> EotW with zero shader errors. All three
+loads retained PID 20812, catalog 0x21438ddee60, device 0x21477270530, window
+65v0 and one audio output. Every handoff logged hidden/locked cursor state and
+restoration of the pre-loading upload policy. The movie-visible maximum update
+gaps were 848.540 / 954.235 / 903.863 ms: the deadlock is repaired, but this is
+not acceptance of fully responsive loading. Exact host publication/startup
+spans are being used to locate that remaining scheduling stall.
+
+Exact Dust host spans (`loading-publication-dust`, same dev client): asset
+publication 3.549 ms, entity publication 2.605 ms, remaining Startup 6.028 ms.
+Thus the 955.603 ms maximum is not scene publication or vegetation Startup.
+It occurs after GPU activation; the existing per-phase frame profiler is being
+sampled at loading gaps to separate backend preparation from handoff waits.
+
+The follow-up phase trace (`loading-phases-dust`) confirms two separate host
+stalls: 721.466 ms in RenderSystems::PrepareAssets and 638.575 ms in the first
+transparent draw stage. The longest window gap was 948.535 ms. Worker cooking,
+entity publication and remaining Startup are not the cause. The Dust load still
+completed normally. Further responsiveness work must address backend asset
+preparation and first-draw work rather than weaken readiness or insert a delay.

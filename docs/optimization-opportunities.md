@@ -139,3 +139,11 @@ also move through their same helpers on that worker. Publication and backend
 uploads still require measurements: moving meshes alone was not evidence that
 every loading stall had gone away. GPU image uploads use the configured soft
 budget during loading, restored to the prior host policy before gameplay.
+
+Targeted dev Dust loading trace (`loading-phases-dust`) measures asset publication
+3.543 ms, entity publication 2.310 ms and remaining Startup 5.519 ms. Remaining
+loading hitches are in backend PrepareAssets (721.466 ms) and the first
+transparent draw stage (638.575 ms), not synchronous scene setup. Investigate
+which asset types participate in the soft upload budget and first-use draw
+initialization before changing them. These are dev diagnostic spans, not
+release gameplay CPU or FPS measurements; no walking-performance gain is claimed.

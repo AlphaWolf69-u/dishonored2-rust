@@ -43,7 +43,10 @@ impl ScenePreparation {
             audio: super::audio::AudioPreparation::take(world),
         }
     }
-    pub fn prepare(mut self, prepared: &mut super::loading_screen::PreparedLevel) {
+    pub fn prepare(
+        mut self,
+        prepared: &mut super::loading_screen::PreparedLevel,
+    ) -> Result<(), String> {
         let mut scene = prepared
             .take_resource::<SceneData>()
             .expect("prepared scene");
@@ -64,6 +67,15 @@ impl ScenePreparation {
             queue: Default::default(),
         };
         self.audio.prepare(&mut commands);
+        if let Some(programs) = &mut programs {
+            let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(
+                &scene,
+                programs,
+                &mut self.images,
+            )?;
+            commands.insert_resource(frame);
+            commands.insert_resource(source);
+        }
         commands.insert_resource(super::area_lights::prepare(&scene, &mut self.images));
         super::setup::prepare(
             &mut commands,
@@ -138,6 +150,7 @@ impl ScenePreparation {
             prepared.insert_resource(value);
         }
         prepared.on_publish(move |world| {
+            let assets = super::load_timing::Span::new("asset publication");
             self.meshes
                 .publish(&mut world.resource_mut::<Assets<Mesh>>());
             self.images
@@ -151,8 +164,12 @@ impl ScenePreparation {
             self.skies
                 .publish(&mut world.resource_mut::<Assets<SkyMaterial>>());
             self.audio.publish(world);
+            drop(assets);
+            let entities = super::load_timing::Span::new("entity publication");
             commands.publish(world);
+            drop(entities);
             super::load_timing::mark("prepared scene published");
         });
+        Ok(())
     }
 }

@@ -163,6 +163,8 @@ own shader sources are embedded, so launch is independent of the working folder.
 loading movie and play in one Bevy application. `app::level_prepare` acquires
 typed map inputs on its worker; `app::scene_preparation` runs the same setup
 body there using payload batches tied to the live asset/entity allocators.
+Screen-shadow inputs prepare before setup takes the catalog; other startup
+owners must keep that dependency explicit when moved to the worker.
 `app::level_lifetime` releases outgoing world
 entities and publications after render acknowledgement. `app::loading_movie`
 owns the authored presentation and continuation callbacks. Shared assets stay
