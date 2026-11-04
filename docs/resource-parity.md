@@ -62,7 +62,7 @@ trailing `*` covers a family of kinds.
 | `Achievement` | none | none: no owner yet |
 | `achievementManager` | none | none: no owner yet |
 | `activeRagdoll` | none | none: no owner yet |
-| `anim` | `assets::edge_animation` | partial: reads its resources; lifecycle not ported (see its class) |
+| `anim` | `assets::edge_animation::{EdgeAnimation,residency}` | host: immutable compressed resource identity; requested init/common clips persist, map-only entries are weak and prune after actor release. Original lookup/purge `1400607f0`/`140060180`, blob loader `14024adf0`; sampling reads the same compressed bytes. Three-map production acquisition 600 -> 276, with identical fingerprints for all 600 requests and zero outgoing map leases. Per-character playback state stays separate; no GPU upload belongs to the clip itself |
 | `animBasic` | `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `animSet` | `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `animTree` | none | none: no owner yet |
@@ -2010,3 +2010,29 @@ packed-query redesign would require its own affected-query performance proof;
 this resource audit does not undo the measured implementation. Source blob,
 prepared tables and worker Arcs all release at the map boundary. No new CPU
 measurement, test or visual inspection was used for this finding.
+
+
+Animation session-reuse acceptance (0c38214 compiled source): library/game-bin
+checks, dev build and copied/shared EotW -> Dust -> EotW clients exited 0. Both
+modes requested the same 200 identities 600 times; every requested source-byte
+CRC, frame count/rate, flags and properties matched. Actual classification is
+162 common clips and 38 map-only clips, so the conditional all-common 600 ->
+200 prediction becomes exactly 200 + 38 + 38 = 276 reads/parses. Measured
+acquisitions were 600 -> 276, 324 reuses, and archive bytes 3,360,864 ->
+1,266,848. Only requested clips are retained; 2,479 other common-manifest clips
+are not acquired by this owner.
+
+Both map purges removed 38 map lookup entries, reported zero live map leases,
+and retained the same 162 common clips / 1,121,838 owned allocation bytes. The
+compressed allocation survives the load gap instead of being rebuilt; this is
+a load/reuse result, not a resident-memory reduction. The owner shares manifest
+metadata and uses integer indices for common membership. Production parsing
+transfers the archive buffer after reading its metadata; the borrowed parser
+uses the same header decoder and copies its blob. Keeping the owned buffer's
+trailer capacity can add a few bytes per clip; no whole-process or steady-state
+CPU gain is claimed. Per-rig pose validation still runs on acquisition.
+Source sampling/pose algorithms and per-character time remain unchanged.
+Local evidence: artifacts/lifecycles-animation-residency-comparison.json.
+No tests, visuals or CPU benchmarks were run.
+
+Delivery: main 4efdc12 sound-property release completed with exit 0.
