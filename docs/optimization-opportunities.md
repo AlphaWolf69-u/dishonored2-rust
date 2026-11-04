@@ -275,12 +275,11 @@ No CPU timing or RSS claim is assigned.
 Setup model temporary ownership: model_cache/md6_cache are only referenced
 through the placement summary, but remain allocated until setup returns after
 water/FX/particle acquisition. Their decoded surface vectors are staging, while
-published mesh/query/skinning owners hold runtime backing independently. Next
-change: release both caches at their actual last use, before later acquisition,
-and report the capacities being released as temporary payload bytes (excluding
-allocator/header overhead). Expected benefit is a lower overlapping loading
-peak, not lower gameplay CPU or necessarily lower steady-state memory. No extra
-cache, parallel copy or source conversion is needed. Native model input closes
+published mesh/query/skinning owners hold runtime backing independently.
+Implemented retirement before later acquisition: the three-map production run
+released vertex/index capacities 30,158,970 / 26,266,368 / 30,158,970 bytes,
+excluding metadata and allocator overhead. This removes overlapping live staging;
+it is not an observed RSS or gameplay CPU saving. Native model input closes
 at 14025aa00's exit; runtime geometry lifetime is a separate owner.
 
 
@@ -288,8 +287,10 @@ Particle owner sweep for shared image streaming: material image-view changes mus
 refresh bindings while preserving uniforms and pipelines. ParticlePass now keys
 pipelines by draw state, accumulation, distortion and effective lighting mode;
 this pass's formats/layout/shader stay fixed. Sampler-driven material rebuilding
-reuses those pipeline identities. Request/unique/reuse counters provide the
-actual creation count; no CPU-time claim follows from them. Binding-only refresh
-and replacing the custom 2D image acquisition/upload with the scene streamer are
-still being connected together; do not claim shared ownership from a path table
-alone. 3D volume images need their own dimension-aware owner treatment.
+reuses those pipeline identities. Production requests 72/94/72 used 18/16/18 unique pipelines (54/78/54 reuses);
+no CPU-time claim follows from counts. The subsequent shared 2D route includes
+metadata acquisition, scene slots/uploads, demand and binding refresh, with its
+own production validation still pending. Sampler refresh was not exercised by
+the earlier run. 3D volumes retain their dimension-aware acquisition/upload;
+check active full/inline extents and separate mip resources before claiming a
+missing streaming policy or forcing them through the 2D scheduler.

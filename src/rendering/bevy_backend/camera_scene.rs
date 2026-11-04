@@ -61,6 +61,7 @@ fn publish_particles(
     water: &super::water_scene::WaterFrame,
     queries: &super::particle_systems::ParticleQueryFrame,
     fog_frame: &FogSceneFrame,
+    image_sources: &super::particle_images::SceneParticleImages,
 ) -> Result<(), String> {
     gpu.particle_publication = None;
     let frame = fog_frame
@@ -107,6 +108,7 @@ fn publish_particles(
                     cvars: &console.cvars,
                     transparency: &transparency,
                     areas: &frame.areas,
+                    world_images: &image_sources.world_materials,
                 })
             })?;
         drop(console);
@@ -565,6 +567,7 @@ fn render_particles(
 /// World FX inputs and the pre-pass water state read by the FX update.
 #[derive(SystemParam)]
 struct FxUpdateInputs<'w> {
+    scene_images: Res<'w, super::particle_images::SceneParticleImages>,
     world_sources: Res<'w, super::world_effects::WorldEffectSources>,
     world_graphs: Res<'w, super::world_effects::WorldEffectDefinitions>,
     world_frames: Res<'w, super::world_effects::WorldEffectFrames>,
@@ -694,7 +697,7 @@ fn prepare_screen_effects(
                 });
             // Publication does not depend on this frame's simulation result:
             // systems publish only for the frame they were made visible in.
-            let simulation = simulation.and(publish_particles(&mut gpu, water, &particle_view, &fog_frame));
+            let simulation = simulation.and(publish_particles(&mut gpu, water, &particle_view, &fog_frame, &fx.scene_images));
             match simulation {
                 Ok(()) => *particle_error = None,
                 Err(error) if particle_error.as_ref() != Some(&error) => {

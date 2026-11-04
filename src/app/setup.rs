@@ -1789,13 +1789,16 @@ pub(super) fn prepare(
     // World FX load after the water and ocean programs, as before. Particle
     // surface proxies may register further images: extend the tables.
     let mut particle_surfaces = Vec::new();
+    let mut particle_world_images = HashMap::new();
+    let mut dynamic_particle_materials = HashSet::new();
     if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
         let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
             .unwrap_or_else(|error| panic!("world FX program library: {error}"));
         let sources = Arc::new(
             crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
-        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, meshes, commands);
+        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, meshes, commands,
+            &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials);
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
@@ -1809,7 +1812,7 @@ pub(super) fn prepare(
         particle_image_slots.push((slot, image.clone()));
     }
     commands.insert_resource(crate::rendering::bevy_backend::particle_images::SceneParticleImages {
-        slots: Arc::new(particle_image_slots), ..Default::default()
+        slots: Arc::new(particle_image_slots), world_materials: Arc::new(particle_world_images), ..Default::default()
     });
     particle_resources.report_scene_images(&resolver.diffuse_image_paths);
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
@@ -1820,7 +1823,9 @@ pub(super) fn prepare(
         material_images.insert(proxy.clone(), images.iter().map(|&(slot, _)| slot).collect());
         for (slot, role) in images {
             diffuse_image_materials[slot].push((proxy.clone(), role));
-            particle_surface_images.push(slot);
+            if !dynamic_particle_materials.contains(&proxy) {
+                particle_surface_images.push(slot);
+            }
         }
     }
     particle_surface_images.sort_unstable();
@@ -1952,6 +1957,9 @@ fn spawn_particle_surfaces(
     resolver: &mut MaterialResolver,
     meshes: &mut dyn AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
+    resources: &mut crate::rendering::particles::definition::ParticleResources,
+    world_images: &mut HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
+    dynamic_materials: &mut HashSet<super::MaterialHandle>,
 ) -> Vec<(super::MaterialHandle, Vec<(usize, crate::rendering::bevy_backend::surface_gpu::ImageRole)>)> {
     let mut proxies = Vec::new();
     for (source, material, model) in sources.world_meshes() {
@@ -1993,6 +2001,19 @@ fn spawn_particle_surfaces(
         let images = resolver.model_images(&material);
         let mesh = meshes.add(source_mesh(&positions, &uvs, &indices, &packed, false));
         let instanced = resolver.probe_materials.add(instanced);
+        let mut bindings = Vec::new();
+        if let Some(catalog) = resolver.catalog {
+            for &(slot, _) in &images {
+                if let Some(image) = resources.scene_image(catalog, &resolver.diffuse_image_paths[slot])
+                    .unwrap_or_else(|error| panic!("particle world image acquisition: {error}")) {
+                    bindings.push(image);
+                }
+            }
+        }
+        if !bindings.is_empty() && bindings.len() == images.len() {
+            world_images.entry(material.clone()).or_insert(bindings);
+            dynamic_materials.insert(super::MaterialHandle::Probe(instanced.clone()));
+        }
         proxies.push((super::MaterialHandle::Probe(instanced.clone()), images));
         commands.spawn((
             Mesh3d(mesh),

@@ -361,10 +361,13 @@ pub(super) fn stream_visible_models(
     view_settings: Option<Res<ViewSettings>>,
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
-    arms: Option<Res<super::player_arms::PlayerArms>>,
-    particle_images: Option<Res<crate::rendering::bevy_backend::particle_images::SceneParticleImages>>,
+    texture_consumers: (
+        Option<Res<super::player_arms::PlayerArms>>,
+        Option<Res<crate::rendering::bevy_backend::particle_images::SceneParticleImages>>,
+    ),
     mut early: Option<ResMut<EarlyTomeQuery>>,
 ) {
+    let (arms, particle_images) = texture_consumers;
     if scene.is_added() {
         *query_cache = Default::default();
         *updates = Default::default();

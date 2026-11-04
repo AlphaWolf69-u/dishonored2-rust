@@ -52,6 +52,9 @@ impl Default for ParticleResources {
 }
 impl ParticleResources {
     pub fn use_scene_images(&mut self) { self.images.use_scene_images(); }
+    pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<super::image_resources::ParticleImage>>, String> {
+        self.images.scene_image(catalog, name)
+    }
     pub fn images(&self) -> impl Iterator<Item = &Arc<super::image_resources::ParticleImage>> {
         self.images.images()
     }

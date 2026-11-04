@@ -66,6 +66,9 @@ impl Default for ParticleImages {
 impl ParticleImages {
     pub fn use_scene_images(&mut self) { self.scene_images = self.shared; }
     pub fn images(&self) -> impl Iterator<Item = &Arc<ParticleImage>> { self.images.values() }
+    pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<ParticleImage>>, String> {
+        if self.scene_images { self.image(catalog, name).map(Some) } else { Ok(None) }
+    }
     pub fn report_scene_overlap(&self, paths: &[String]) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
         let paths: std::collections::HashSet<_> = paths.iter().map(String::as_str).collect();
@@ -111,6 +114,21 @@ impl ParticleImages {
             if let Some(image) = self.volumes.get(&path) { return Ok(image.clone()); }
         }
         let image = crate::material::load_3d_image(catalog, source)?;
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let full = if path.starts_with('_') {
+                Some([image.info.width, image.info.height])
+            } else {
+                catalog.read_prefix(&path, 48).map_err(|e| e.to_string())?.map(|header| [
+                    u32::from_le_bytes(header[32..36].try_into().unwrap()),
+                    u32::from_le_bytes(header[36..40].try_into().unwrap()),
+                ])
+            };
+            let separate: Vec<_> = (0..=15).filter(|mip|
+                catalog.contains(&format!("{path}_mip{mip}"))).collect();
+            eprintln!("MEMORY particle volume descriptor: path={path} inline={}x{}x{} mips={} full_xy={full:?} separate_levels={separate:?} payload_bytes={}",
+                image.info.width, image.info.height, image.depth, image.info.mip_count, image.payload.len());
+        }
+
         let image = Arc::new(ParticleImage::new(path.clone(), image.info, image.depth, image.payload, self.retain_payload));
         self.reads += 1;
         self.bytes += image.payload_bytes;

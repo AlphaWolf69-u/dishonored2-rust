@@ -38,6 +38,7 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub cvars: &'a crate::platform::cvars::CVars,
     pub transparency: &'a crate::rendering::particles::transparency::ParticleTransparency,
     pub areas: &'a [super::fog::AreaFogFrame],
+    pub world_images: &'a HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
 }
 
 pub(crate) struct ParticleSystem {
@@ -65,6 +66,9 @@ pub(crate) struct ParticleSystem {
     visibility: crate::rendering::particles::visibility::ParticleVisibilityState,
     force_simulate: bool,
     force_visible: bool,
+    texture_area: f32,
+    texture_images: Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>,
+    world_texture_images: Option<Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     probe_query: crate::probe_lighting::ProbeQuery,
     debug_reported_child_draw: bool,
 }
@@ -96,6 +100,28 @@ impl ParticleSystem {
         let Some(first) = self.stages.first() else {
             return Ok(());
         };
+        // 14031ad30 walks prepared surfaces without an instance-count test.
+        // Prefetch inactive renderers too, before their next burst activates.
+        for image in &self.texture_images { image.demand.submit_dynamic(self.texture_area); }
+        if self.world_texture_images.is_none() {
+            let mut seen = std::collections::HashSet::new();
+            let mut images = Vec::new();
+            for stage in &self.stages {
+                let definition = &stage.declaration.stages[stage.index];
+                for name in definition.sprites.iter().filter(|d| d.enabled).filter_map(|d| d.material.as_ref())
+                    .chain(definition.meshes.iter().filter(|d| d.enabled && d.model.is_some()).filter_map(|d| d.material.as_ref())) {
+                    if let Some(bindings) = context.world_images.get(name) {
+                        for image in bindings {
+                            if seen.insert(image.path.clone()) { images.push(image.clone()); }
+                        }
+                    }
+                }
+            }
+            self.world_texture_images = Some(images);
+        }
+        for image in self.world_texture_images.as_ref().unwrap() {
+            image.demand.submit_dynamic(self.texture_area);
+        }
         let owner_scale = crate::float::multiply(
             context.view.owner_scale,
             first
@@ -245,9 +271,6 @@ impl ParticleSystem {
                     );
                     self.debug_reported_child_draw = true;
                 }
-                for image in material.images.values() {
-                    if image.scene_owned { image.demand.submit_dynamic(self.texture_area); }
-                }
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
                     lighting: if material.option("fx/opt/use_lighting")? != 0 {
@@ -298,9 +321,6 @@ impl ParticleSystem {
                 if material.distortion{transparency.mode=0;}
                 let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
                     transparency.mode!=0,self.water_flags&8!=0);
-                for image in material.images.values() {
-                    if image.scene_owned { image.demand.submit_dynamic(self.texture_area); }
-                }
                 output.push(super::particle_pass::ParticleDraw {
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
@@ -329,14 +349,19 @@ impl ParticleSystem {
                 && !stage.infinite_life
                 && !(stage.burst && !stage.burst_event.is_empty())
         });
-        let force_visible = declaration
+        let texture_materials: Vec<_> = declaration
             .stages
             .iter()
             .filter(|stage| stage.enabled)
             .flat_map(|stage|stage.sprites.iter().filter(|sprite|sprite.enabled).filter_map(|sprite|sprite.material.as_ref())
                 .chain(stage.meshes.iter().filter(|mesh|mesh.enabled&&mesh.model.is_some()).filter_map(|mesh|mesh.material.as_ref())))
             .filter_map(|name| definition.materials.get(name))
-            .any(|material| material.darkvision_layer != 0);
+            .collect();
+        let force_visible = texture_materials.iter().any(|material| material.darkvision_layer != 0);
+        let mut seen = std::collections::HashSet::new();
+        let texture_images = texture_materials.iter().flat_map(|material| material.images.values())
+            .filter(|image| image.scene_owned && seen.insert(image.path.clone()))
+            .cloned().collect();
         let (effect, (stages, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
@@ -376,6 +401,8 @@ impl ParticleSystem {
             force_simulate,
             force_visible,
             texture_area: 0.,
+            texture_images,
+            world_texture_images: None,
             probe_query: Default::default(),
             debug_reported_child_draw: false,
         })

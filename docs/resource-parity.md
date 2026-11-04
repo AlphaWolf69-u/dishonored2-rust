@@ -1530,3 +1530,26 @@ unique pipelines, reusing 54/78/54. That run reported zero binding refreshes, so
 it does not prove sampler-switch refresh coverage. The new shared-image route
 and metadata-only particle acquisition are not certified by that earlier run.
 The c1c8760 main release build completed with exit 0.
+
+
+Prepared-renderer demand source correction: 1401fbad0 publishes all prepared
+renderer surfaces into arkRenderModelParticleSystem; 14031ad30 walks that list
+at chunk_000119.c:6300 without an instance-count test before 14031a510. The first
+per-draw feedback omitted inactive renderer prefetch. Prepare a deduplicated
+image list for the selected declaration's enabled FX renderers and publish once
+per visible system. World-material mesh renderers need the same treatment:
+bind their already-resolved scene image slots to declaration material names,
+cache those image references on the system's first publication, then submit the
+same system area. Remove their permanent whole-screen fallback while retaining
+the projected-decal fallback that shared the old list. Expected work: one atomic
+publication per unique image of a visible system, no per-particle image lookup,
+no root-graph clone, no image-payload duplicate, and no world-material image
+held at whole-screen demand just because its definition exists. Preserve the
+rendered geometry/materials. No CPU-time or RSS saving is assigned.
+
+The special +0x1bf0 exclusion in 14031ad30 is auxiliary render data populated by
+volumetric overrides (14028bfa0/14028c100), not the particle constructor
+1401fb4d0, whose base starts the pointer null. Thus it does not invalidate this
+particle surface-material traversal. First shared-route game compilation found
+two integration defects (system arity and an omitted state field), corrected
+before any build was delivered; that failed check is not acceptance evidence.

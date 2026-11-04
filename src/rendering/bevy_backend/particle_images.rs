@@ -11,6 +11,7 @@ use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
 pub(crate) struct SceneParticleImages {
     pub slots: Arc<Vec<(usize, Arc<crate::rendering::particles::image_resources::ParticleImage>)>>,
     pub handles: Arc<HashMap<Arc<str>, Handle<Image>>>,
+    pub world_materials: Arc<HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>>,
 }
 
 struct ResidentImage {
